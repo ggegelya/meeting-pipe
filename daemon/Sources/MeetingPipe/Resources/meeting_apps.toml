@@ -1,0 +1,40 @@
+# Native macOS apps that count as "in a meeting" when running.
+# Source: §5 of SPEC.md.
+[native]
+bundle_ids = [
+    "us.zoom.xos",
+    "com.microsoft.teams2",
+    "com.microsoft.teams",
+    "com.tinyspeck.slackmacgap",
+    "com.cisco.webexmeetingsapp",
+    "com.skype.skype",
+    "com.google.meet",
+]
+
+# Browser tab title fragments that indicate a meeting is open.
+# Pattern is plain substring (case-insensitive).
+[browser]
+url_fragments = [
+    "meet.google.com",
+    "teams.microsoft.com",
+    "teams.live.com",
+    "zoom.us/j/",
+    "zoom.us/wc/",
+    "webex.com/meet",
+    "webex.com/wbxmjs",
+]
+
+# Browser bundle IDs whose frontmost window we inspect via Accessibility.
+[browser.bundles]
+ids = [
+    "com.apple.Safari",
+    "com.google.Chrome",
+    "com.google.Chrome.canary",
+    "com.brave.Browser",
+    "company.thebrowser.Browser",
+    "com.microsoft.edgemac",
+    "org.mozilla.firefox",
+    "com.vivaldi.Vivaldi",
+    "com.operasoftware.Opera",
+    "com.kagi.kagimacOS",
+]

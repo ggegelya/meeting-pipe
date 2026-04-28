@@ -1,0 +1,115 @@
+"""Pydantic settings model mirroring config.example.toml.
+
+Loaded once at CLI start. Same TOML lives in the daemon (Swift) and pipeline (Python),
+which is fine because both are read-only consumers — config is owned by the user.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import tomllib
+from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+def _expand(p: str) -> Path:
+    return Path(os.path.expanduser(p))
+
+
+CONFIG_PATH = _expand("~/.config/meeting-pipe/config.toml")
+SECRETS_PATH = _expand("~/.config/meeting-pipe/secrets.env")
+
+
+class Recording(BaseModel):
+    output_dir: Path = Field(default=_expand("~/Documents/Meetings/raw"))
+    audio_device: str = "Aggregate Device"
+    sample_rate: int = 16000
+    auto_consent_apps: list[str] = Field(default_factory=list)
+
+
+class Detection(BaseModel):
+    debounce_start_sec: float = 5.0
+    debounce_end_sec: float = 10.0
+    manual_hotkey: str = "ctrl+option+m"
+    prompt_timeout_sec: float = 30.0
+
+
+class Transcription(BaseModel):
+    model: str = "large-v3"
+    compute_type: Literal["int8", "float16", "float32"] = "int8"
+    language: str = "auto"
+    min_speakers: int = 1
+    max_speakers: int = 8
+    disable_diarization: bool = False
+
+
+class Summarization(BaseModel):
+    model: str = "claude-sonnet-4-6"
+    max_tokens: int = 4000
+    team_context: str = ""
+
+
+class NotionCfg(BaseModel):
+    database_id: str = ""
+    default_status: str = "Captured"
+    include_full_transcript: bool = True
+
+
+class Modes(BaseModel):
+    regulated_mode: bool = False
+
+
+class Config(BaseModel):
+    recording: Recording = Field(default_factory=Recording)
+    detection: Detection = Field(default_factory=Detection)
+    transcription: Transcription = Field(default_factory=Transcription)
+    summarization: Summarization = Field(default_factory=Summarization)
+    notion: NotionCfg = Field(default_factory=NotionCfg)
+    modes: Modes = Field(default_factory=Modes)
+
+    @classmethod
+    def load(cls, path: Path | None = None) -> "Config":
+        path = path or CONFIG_PATH
+        if not path.exists():
+            return cls()
+        with path.open("rb") as f:
+            raw = tomllib.load(f)
+        # Normalize tilde in output_dir if user wrote one.
+        rec = raw.get("recording", {})
+        if isinstance(rec.get("output_dir"), str):
+            rec["output_dir"] = str(_expand(rec["output_dir"]))
+        return cls(**raw)
+
+
+def load_secrets(path: Path = SECRETS_PATH) -> None:
+    """Source ~/.config/meeting-pipe/secrets.env into os.environ.
+
+    Daemon does this in Swift; Python does it independently so `mp` works
+    when run by hand without the daemon.
+    """
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] == '"':
+            v = v[1:-1]
+        os.environ.setdefault(k.strip(), v)
+
+
+def require_env(name: str) -> str:
+    """Fail fast with an actionable message if a secret is missing."""
+    val = os.environ.get(name)
+    if not val:
+        sys.stderr.write(
+            f"ERROR: ${name} is not set. Add it to {SECRETS_PATH} (mode 0600) or export it.\n"
+        )
+        sys.exit(2)
+    return val
