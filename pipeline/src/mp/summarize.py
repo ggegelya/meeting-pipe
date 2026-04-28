@@ -7,6 +7,11 @@ MeetingSummary. One retry on schema violation; otherwise we surface the error.
 Prompt caching is enabled on the system prompt so repeated calls within the
 5-minute window only pay ~0.1x for the system block. The transcript itself is
 the volatile part and goes after the cache breakpoint.
+
+Two retry layers:
+  - `_create_message`: tenacity-wrapped; retries on rate limits, 5xx, and
+    transient connection errors with exponential backoff.
+  - `_call_with_retry`: one retry on a schema-violating tool_use response.
 """
 from __future__ import annotations
 
@@ -15,14 +20,46 @@ import logging
 import sys
 from importlib import resources
 from pathlib import Path
+from typing import Any
 
 import anthropic
 from pydantic import ValidationError
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from .config import Config, load_secrets, require_env
 from .schemas import SUMMARY_TOOL, MeetingSummary
 
 log = logging.getLogger("mp.summarize")
+
+# Retry only on transient failures. BadRequestError / AuthenticationError /
+# PermissionDeniedError / NotFoundError are caller bugs — failing fast is right.
+_RETRYABLE_ANTHROPIC = (
+    anthropic.RateLimitError,
+    anthropic.APIConnectionError,
+    anthropic.APITimeoutError,
+    anthropic.InternalServerError,
+)
+
+
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(4),
+    # 2s, 4s, 8s — capped at 30s. Anthropic's `retry-after` header would be
+    # ideal, but tenacity doesn't read it; this is a reasonable default that
+    # respects the SDK's own internal retries (it adds 2 more on top).
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception_type(_RETRYABLE_ANTHROPIC),
+    before_sleep=before_sleep_log(log, logging.WARNING),
+)
+def _create_message(client: anthropic.Anthropic, **kwargs: Any) -> Any:
+    """Anthropic call with tenacity retry on rate limits / 5xx / connection errors."""
+    return client.messages.create(**kwargs)
 
 
 def _load_system_prompt(team_context: str) -> str:
@@ -75,7 +112,8 @@ def _call_with_retry(
     last_err: Exception | None = None
     for attempt in (1, 2):
         log.info("Anthropic call attempt %d (model=%s)", attempt, cfg.summarization.model)
-        response = client.messages.create(
+        response = _create_message(
+            client,
             model=cfg.summarization.model,
             max_tokens=cfg.summarization.max_tokens,
             system=[

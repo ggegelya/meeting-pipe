@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import anthropic
+import httpx
 import pytest
 
 from mp.config import Config
@@ -103,3 +105,70 @@ def test_summarize_retries_on_schema_violation(tmp_path: Path, monkeypatch):
         summarize(transcript, cfg=Config())
 
     assert fake_client.messages.create.call_count == 2
+
+
+def _rate_limit_error() -> anthropic.RateLimitError:
+    """Construct a RateLimitError without hitting the network.
+
+    The anthropic SDK constructor takes (message, response, body); we pass a
+    minimal httpx.Response with the right status code.
+    """
+    response = httpx.Response(status_code=429, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"))
+    return anthropic.RateLimitError(
+        message="rate limited",
+        response=response,
+        body={"type": "error", "error": {"type": "rate_limit_error", "message": "x"}},
+    )
+
+
+def test_summarize_retries_on_rate_limit(tmp_path: Path, monkeypatch):
+    """Tenacity should retry RateLimitError and succeed once the API recovers."""
+    transcript = tmp_path / "x.md"
+    transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    # Make tenacity's wait near-zero so the test runs in milliseconds.
+    monkeypatch.setattr("mp.summarize._create_message.retry.wait", lambda *_a, **_k: 0)
+
+    good_block = MagicMock(type="tool_use", input=_make_summary().model_dump())
+    good_response = MagicMock(content=[good_block], stop_reason="tool_use")
+
+    fake_client = MagicMock()
+    fake_client.messages.create.side_effect = [
+        _rate_limit_error(),
+        _rate_limit_error(),
+        good_response,
+    ]
+
+    with patch("mp.summarize.anthropic.Anthropic", return_value=fake_client):
+        summarize(transcript, cfg=Config())
+
+    # 2 rate-limited attempts + 1 success = 3 total
+    assert fake_client.messages.create.call_count == 3
+
+
+def test_summarize_does_not_retry_on_bad_request(tmp_path: Path, monkeypatch):
+    """4xx (other than 429) is a caller bug — fail fast, don't retry."""
+    transcript = tmp_path / "x.md"
+    transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    response = httpx.Response(
+        status_code=400,
+        request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+    )
+    bad_request = anthropic.BadRequestError(
+        message="bad",
+        response=response,
+        body={"type": "error", "error": {"type": "invalid_request_error", "message": "x"}},
+    )
+
+    fake_client = MagicMock()
+    fake_client.messages.create.side_effect = bad_request
+
+    with patch("mp.summarize.anthropic.Anthropic", return_value=fake_client):
+        with pytest.raises(anthropic.BadRequestError):
+            summarize(transcript, cfg=Config())
+
+    # Single call, no retries.
+    assert fake_client.messages.create.call_count == 1
