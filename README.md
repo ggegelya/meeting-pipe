@@ -80,6 +80,10 @@ The installer can't do these for you:
    HF_TOKEN=hf_...
    ```
 
+   You can rotate these any time — the daemon re-reads `secrets.env` every
+   time it spawns the pipeline, so a new value takes effect on the next
+   recording. No restart needed.
+
 5. **Configure** `~/.config/meeting-pipe/config.toml`:
    - Set `notion.database_id` to your Meetings database ID
      (the 32-char string in the database URL).

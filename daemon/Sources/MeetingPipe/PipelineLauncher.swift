@@ -27,6 +27,12 @@ final class PipelineLauncher {
         p.executableURL = URL(fileURLWithPath: mpPath.shell)
         p.arguments = mpPath.args + ["run-all", wav.path]
 
+        // Re-read secrets.env on every launch so users can rotate
+        // ANTHROPIC_API_KEY / NOTION_TOKEN / HF_TOKEN without restarting the
+        // daemon. The daemon's own env was sourced once at startup; spawned
+        // pipeline processes get a fresh read every time.
+        p.environment = Self.freshEnvironment()
+
         let outPipe = Pipe()
         let errPipe = Pipe()
         p.standardOutput = outPipe
@@ -85,6 +91,30 @@ final class PipelineLauncher {
         } catch {
             completion(.failure(error))
         }
+    }
+
+    /// Build a process environment with a freshly-read secrets file overlaid
+    /// on top of the daemon's current environment. Visible for tests.
+    static func freshEnvironment(
+        secretsURL: URL? = nil,
+        baseEnvironment: [String: String]? = nil
+    ) -> [String: String] {
+        var env = baseEnvironment ?? ProcessInfo.processInfo.environment
+        let url = secretsURL ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/meeting-pipe/secrets.env")
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return env }
+        for raw in text.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty || line.hasPrefix("#") { continue }
+            guard let eq = line.firstIndex(of: "=") else { continue }
+            let key = String(line[..<eq])
+            var value = String(line[line.index(after: eq)...])
+            if value.hasPrefix("\"") && value.hasSuffix("\"") && value.count >= 2 {
+                value = String(value.dropFirst().dropLast())
+            }
+            env[key] = value
+        }
+        return env
     }
 
     /// Resolution order: prebuilt venv (`~/.local/share/meeting-pipe/venv/bin/mp`)
