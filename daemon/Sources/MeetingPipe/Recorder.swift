@@ -103,12 +103,36 @@ final class Recorder {
         process = nil
     }
 
-    private static func findFFmpeg() -> String? {
-        let candidates = [
-            "/opt/homebrew/bin/ffmpeg",
-            "/usr/local/bin/ffmpeg",
+    /// Resolution order:
+    ///   1. `$MEETINGPIPE_FFMPEG` — explicit override for non-standard layouts.
+    ///   2. `$PATH` — respects whatever the user actually uses (brew, MacPorts,
+    ///      nix, asdf, mise). LaunchAgent's PATH is set in launchd.plist.template,
+    ///      but the user's interactive shell PATH may differ — both are honored.
+    ///   3. Common package-manager prefixes — fallback when PATH is unset
+    ///      (e.g. when a non-shell process spawned the daemon).
+    static func findFFmpeg() -> String? {
+        if let override = ProcessInfo.processInfo.environment["MEETINGPIPE_FFMPEG"],
+           FileManager.default.isExecutableFile(atPath: override) {
+            return override
+        }
+
+        if let path = ProcessInfo.processInfo.environment["PATH"], !path.isEmpty {
+            for entry in path.split(separator: ":") {
+                let candidate = URL(fileURLWithPath: String(entry))
+                    .appendingPathComponent("ffmpeg")
+                if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                    return candidate.path
+                }
+            }
+        }
+
+        let fallbacks = [
+            "/opt/homebrew/bin/ffmpeg",   // Apple Silicon Homebrew
+            "/usr/local/bin/ffmpeg",      // Intel Homebrew
+            "/opt/local/bin/ffmpeg",      // MacPorts
+            "/run/current-system/sw/bin/ffmpeg",  // nix-darwin
             "/usr/bin/ffmpeg"
         ]
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+        return fallbacks.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 }
