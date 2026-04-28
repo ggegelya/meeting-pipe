@@ -6,11 +6,21 @@ final class ConsentStore {
     private let url: URL
     private var bundles: Set<String>
 
-    init() {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/MeetingPipe", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        self.url = dir.appendingPathComponent("auto_consent.json")
+    /// `customURL` is for testing. Production calls `init()` and lands at
+    /// ~/Library/Application Support/MeetingPipe/auto_consent.json.
+    init(url customURL: URL? = nil) {
+        if let customURL = customURL {
+            self.url = customURL
+            try? FileManager.default.createDirectory(
+                at: customURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+        } else {
+            let dir = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/MeetingPipe", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            self.url = dir.appendingPathComponent("auto_consent.json")
+        }
 
         if let data = try? Data(contentsOf: url),
            let arr = try? JSONDecoder().decode([String].self, from: data) {

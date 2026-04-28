@@ -59,6 +59,9 @@ jobs:
         run: swift --version
       - name: Build
         run: swift build
-      # No `swift test` target yet — the daemon code interacts with macOS
-      # frameworks (NSWorkspace, AVCapture, Carbon) that need a real desktop
-      # session and TCC-granted permissions. Adding XCTest once Phase 9 lands.
+      - name: Test
+        # Pure-logic tests: HotkeyManager.parse, ConsentStore round-trip,
+        # Config TOML parsing, AppState equality. Integration tests that
+        # need TCC permissions (NSWorkspace observers, AVCaptureDevice KVO)
+        # still require a real desktop session and aren't run in CI.
+        run: swift test
