@@ -9,8 +9,12 @@ on:
 jobs:
   pipeline:
     name: Pipeline (pytest)
-    # Pure-Python tests — runs everywhere. The transcribe/summarize tests mock
-    # heavy deps so we don't need ffmpeg or ML wheels installed.
+    # Pure-Python tests — runs everywhere. The transcribe step's heavy deps
+    # (whisperx + torch) are imported lazily inside the function body, so the
+    # tests can exercise the renderer + everything else without installing
+    # them. We deliberately bypass `uv run` and `uv sync` to avoid pulling
+    # the full project dependency tree (and the multi-minute torch wheel
+    # download) on every CI run.
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -22,11 +26,10 @@ jobs:
           enable-cache: true
       - name: Set up Python
         run: uv python install 3.11
-      - name: Install minimal dev deps
-        # We deliberately don't install whisperx/torch in CI — those are pulled
-        # in only for the transcribe step, which is mocked out in tests.
+
+      - name: Install dev deps + editable package (no project deps)
         run: |
-          uv venv
+          uv venv --python 3.11
           uv pip install \
             "anthropic>=0.40.0" \
             "httpx>=0.27.0" \
@@ -34,21 +37,21 @@ jobs:
             "tenacity>=8.2.0" \
             "pytest>=8.0.0" \
             "ruff>=0.5.0"
-      - name: Lint
-        run: uv run ruff check src tests
-      - name: Test
-        # Skip transcribe.py import (heavy ML deps); test rendering only.
-        # test_transcribe.py imports `render_markdown` directly which works
-        # because it doesn't trigger the lazy whisperx import.
-        run: |
           uv pip install -e . --no-deps
-          uv run pytest -v --ignore=tests/test_transcribe.py
-      - name: Render-only transcribe test
-        # render_markdown has no heavy deps; run it explicitly so we still cover it.
-        run: uv run pytest -v tests/test_transcribe.py
+
+      - name: Lint
+        # Use the venv binary directly — `uv run` would trigger `uv sync`
+        # and pull in whisperx + torch, which we don't need for tests.
+        run: .venv/bin/ruff check src tests
+
+      - name: Test
+        # All tests run together. test_transcribe.py only touches
+        # render_markdown, which sits at module top and doesn't trigger
+        # the lazy `import whisperx` inside transcribe().
+        run: .venv/bin/pytest -v
 
   daemon:
-    name: Daemon (swift build)
+    name: Daemon (swift build + test)
     runs-on: macos-14
     defaults:
       run:
@@ -61,7 +64,8 @@ jobs:
         run: swift build
       - name: Test
         # Pure-logic tests: HotkeyManager.parse, ConsentStore round-trip,
-        # Config TOML parsing, AppState equality. Integration tests that
-        # need TCC permissions (NSWorkspace observers, AVCaptureDevice KVO)
-        # still require a real desktop session and aren't run in CI.
+        # Config TOML parsing, AppState equality, ffmpeg lookup, secrets
+        # re-source. Integration tests that need TCC permissions
+        # (NSWorkspace observers, AVCaptureDevice KVO) still require a real
+        # desktop session and aren't run in CI.
         run: swift test

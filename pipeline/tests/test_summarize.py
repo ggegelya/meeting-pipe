@@ -1,7 +1,6 @@
 """Tests for summarize.py — mock the Anthropic client to avoid network calls."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
