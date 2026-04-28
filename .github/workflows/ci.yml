@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pipeline:
+    name: Pipeline (pytest)
+    # Pure-Python tests — runs everywhere. The transcribe/summarize tests mock
+    # heavy deps so we don't need ffmpeg or ML wheels installed.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pipeline
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Install minimal dev deps
+        # We deliberately don't install whisperx/torch in CI — those are pulled
+        # in only for the transcribe step, which is mocked out in tests.
+        run: |
+          uv venv
+          uv pip install \
+            "anthropic>=0.40.0" \
+            "httpx>=0.27.0" \
+            "pydantic>=2.7.0" \
+            "tenacity>=8.2.0" \
+            "pytest>=8.0.0" \
+            "ruff>=0.5.0"
+      - name: Lint
+        run: uv run ruff check src tests
+      - name: Test
+        # Skip transcribe.py import (heavy ML deps); test rendering only.
+        # test_transcribe.py imports `render_markdown` directly which works
+        # because it doesn't trigger the lazy whisperx import.
+        run: |
+          uv pip install -e . --no-deps
+          uv run pytest -v --ignore=tests/test_transcribe.py
+      - name: Render-only transcribe test
+        # render_markdown has no heavy deps; run it explicitly so we still cover it.
+        run: uv run pytest -v tests/test_transcribe.py
+
+  daemon:
+    name: Daemon (swift build)
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: daemon
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: swift --version
+      - name: Build
+        run: swift build
+      # No `swift test` target yet — the daemon code interacts with macOS
+      # frameworks (NSWorkspace, AVCapture, Carbon) that need a real desktop
+      # session and TCC-granted permissions. Adding XCTest once Phase 9 lands.

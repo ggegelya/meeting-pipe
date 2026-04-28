@@ -1,0 +1,46 @@
+# Copy to ~/.config/meeting-pipe/config.toml and edit.
+
+[recording]
+# Where raw WAVs land. Tilde is expanded at runtime.
+output_dir = "~/Documents/Meetings/raw"
+# Name as it appears in Audio MIDI Setup. Must be the Aggregate Device that
+# combines BlackHole 2ch + your physical mic. NOT an index.
+audio_device = "Aggregate Device"
+sample_rate = 16000
+# Bundle IDs that auto-start recording without a prompt, e.g. ["us.zoom.xos"].
+auto_consent_apps = []
+
+[detection]
+debounce_start_sec = 5
+debounce_end_sec = 10
+manual_hotkey = "ctrl+option+m"
+prompt_timeout_sec = 30
+
+[transcription]
+# faster-whisper model identifier.
+model = "large-v3"
+# int8 = CPU. float16 = MPS (experimental — leave as int8 unless validated).
+compute_type = "int8"
+# "auto", "uk", "en", etc. (ISO 639-1).
+language = "auto"
+min_speakers = 1
+max_speakers = 8
+# If true, all segments are labeled "Speaker" (skip pyannote diarization).
+disable_diarization = false
+
+[summarization]
+# Latest Sonnet at time of writing. Bump deliberately.
+model = "claude-sonnet-4-6"
+max_tokens = 4000
+team_context = "FDA 21 CFR Part 11 regulated SaaS, .NET 8 + Angular + AWS EKS"
+
+[notion]
+# Notion database ID (32 chars, no hyphens — copy from the database URL).
+database_id = ""
+default_status = "Captured"
+# Toggle off for regulated meetings to keep transcripts out of Notion.
+include_full_transcript = true
+
+[modes]
+# When true, pipeline writes local Markdown only and skips Notion entirely.
+regulated_mode = false
