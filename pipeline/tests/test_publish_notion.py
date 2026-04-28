@@ -138,6 +138,51 @@ def test_regulated_mode_skips_notion(tmp_path: Path, monkeypatch):
     assert not (tmp_path / "20260428-1200.notion.json").exists()
 
 
+def test_update_deletes_all_children_in_parallel(tmp_path: Path, monkeypatch):
+    """The body-replace path must DELETE every existing child.
+
+    With 50 blocks under a thread pool, sequential and parallel both produce
+    50 DELETEs — what we're really testing is correctness under concurrency:
+    no skipped IDs, no double-deletes, all unique IDs accounted for.
+    """
+    summary_path = _write_summary(tmp_path)
+    sidecar = tmp_path / "20260428-1200.notion.json"
+    sidecar.write_text(
+        json.dumps({"page_id": "page-existing", "page_url": "x"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
+
+    block_ids = [f"blk-{i:03d}" for i in range(50)]
+    deleted_ids: list[str] = []
+    deleted_lock = __import__("threading").Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "PATCH" and path == "/v1/pages/page-existing":
+            return httpx.Response(200, json={"id": "page-existing", "url": "https://x"})
+        if request.method == "GET" and path == "/v1/blocks/page-existing/children":
+            return httpx.Response(
+                200,
+                json={"results": [{"id": bid} for bid in block_ids]},
+            )
+        if request.method == "DELETE" and path.startswith("/v1/blocks/blk-"):
+            with deleted_lock:
+                deleted_ids.append(path.rsplit("/", 1)[-1])
+            return httpx.Response(200, json={"id": path.rsplit("/", 1)[-1]})
+        if request.method == "PATCH" and path == "/v1/blocks/page-existing/children":
+            return httpx.Response(200, json={})
+        return httpx.Response(404, json={"message": f"unexpected {request.method} {path}"})
+
+    _install_mock_transport(monkeypatch, handler)
+
+    publish(summary_path, cfg=_cfg())
+
+    # Each block ID gets exactly one DELETE.
+    assert sorted(deleted_ids) == sorted(block_ids)
+    assert len(deleted_ids) == 50
+
+
 def test_missing_database_id_raises(tmp_path: Path, monkeypatch):
     summary_path = _write_summary(tmp_path)
     monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
