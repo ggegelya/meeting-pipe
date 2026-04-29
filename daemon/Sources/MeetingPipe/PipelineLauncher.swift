@@ -131,10 +131,15 @@ final class PipelineLauncher {
             return MPInvocation(shell: venvBin.path, args: [])
         }
 
-        // Discover repo root by walking up from the executable path looking for `pipeline/pyproject.toml`.
+        // Discover repo root by walking up from the executable path looking
+        // for `pipeline/pyproject.toml`. The walk depth covers two layouts:
+        //   - dev:    .build/release/MeetingPipe                          (3 hops)
+        //   - bundled: .build/release/MeetingPipe.app/Contents/MacOS/...  (6 hops)
+        // 10 leaves headroom if the user ever moves the .app under
+        // /Applications or similar.
         if let bin = Bundle.main.executableURL {
             var dir = bin.deletingLastPathComponent()
-            for _ in 0..<6 {
+            for _ in 0..<10 {
                 let candidate = dir.appendingPathComponent("pipeline/pyproject.toml")
                 if FileManager.default.fileExists(atPath: candidate.path) {
                     let uvCandidates = ["/opt/homebrew/bin/uv", "/usr/local/bin/uv"]

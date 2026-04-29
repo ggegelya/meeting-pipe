@@ -59,6 +59,71 @@ say "Building daemon (release)"
 DAEMON_BIN="$REPO_ROOT/daemon/.build/release/MeetingPipe"
 [[ -x "$DAEMON_BIN" ]] || die "Daemon build did not produce $DAEMON_BIN"
 
+# 2b. Wrap in .app bundle --------------------------------------------------
+#
+# UNUserNotificationCenter — and the modern macOS notification subsystem
+# in general — refuses to run from a bare executable. It looks up
+# CFBundleIdentifier from the surrounding bundle and throws
+# NSInternalInconsistencyException ("bundleProxyForCurrentProcess is nil")
+# if there isn't one. We wrap the SPM build product in a minimal .app:
+#
+#   MeetingPipe.app/
+#     Contents/
+#       Info.plist
+#       MacOS/
+#         MeetingPipe                       (the SPM binary)
+#         MeetingPipe_MeetingPipe.bundle/   (resources, side-by-side
+#                                            so Bundle.module still works)
+#
+# LSUIElement=true keeps it Dock-less. The NSMicrophoneUsageDescription
+# string drives the first-launch permission prompt.
+
+APP="$REPO_ROOT/daemon/.build/release/MeetingPipe.app"
+say "Assembling $APP"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS"
+
+cp "$DAEMON_BIN" "$APP/Contents/MacOS/MeetingPipe"
+# Side-by-side resource bundle (SwiftPM convention: <Target>_<Target>.bundle).
+for bundle in "$REPO_ROOT/daemon/.build/release/"*.bundle; do
+    [[ -e "$bundle" ]] && cp -R "$bundle" "$APP/Contents/MacOS/"
+done
+
+cat >"$APP/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.meetingpipe.daemon</string>
+    <key>CFBundleName</key>
+    <string>MeetingPipe</string>
+    <key>CFBundleDisplayName</key>
+    <string>MeetingPipe</string>
+    <key>CFBundleExecutable</key>
+    <string>MeetingPipe</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>MeetingPipe records meeting audio for transcription. Audio never leaves your Mac.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>MeetingPipe inspects the frontmost browser tab to detect web meetings (Google Meet, Teams Web).</string>
+</dict>
+</plist>
+PLIST
+
+# Re-point DAEMON_BIN at the bundled executable so the LaunchAgent picks it up.
+DAEMON_BIN="$APP/Contents/MacOS/MeetingPipe"
+[[ -x "$DAEMON_BIN" ]] || die "Bundled daemon missing at $DAEMON_BIN"
+
 # 3. Pipeline venv ---------------------------------------------------------
 
 say "Installing pipeline at $DATA_DIR/venv"
