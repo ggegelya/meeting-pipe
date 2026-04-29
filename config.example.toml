@@ -3,27 +3,16 @@
 [recording]
 # Where raw WAVs land. Tilde is expanded at runtime.
 output_dir = "~/Documents/Meetings/raw"
-# Name as it appears in Audio MIDI Setup. Must be the Aggregate Device that
-# combines BlackHole 2ch + your physical mic. NOT an index.
-audio_device = "Aggregate Device"
+# Sample rate of the produced WAV. 16 kHz is the only rate WhisperX
+# actually consumes; bumping higher just wastes disk + transcription time.
 sample_rate = 16000
 # Bundle IDs that auto-start recording without a prompt, e.g. ["us.zoom.xos"].
 auto_consent_apps = []
-# When true (and capture_mode = "blackhole"), the daemon transparently builds
-# a transient Multi-Output Device combining BlackHole with whatever your
-# default output is at the moment of recording (built-in speakers, AirPods,
-# Focal Bathys, etc.) and switches system output to it for the duration of
-# the meeting. The original output is restored when recording stops. Set to
-# false if you already manage Multi-Output Devices yourself (e.g. via Loopback).
-# Has no effect when capture_mode is "process_tap" or "none".
-auto_route_output = true
 
-# How to capture remote-side audio:
-#   "auto"        → process_tap on macOS 14.2+, blackhole otherwise (default)
-#   "process_tap" → Apple's CATap API (no BlackHole, requires Screen Recording perm)
-#   "blackhole"   → legacy: ffmpeg from a manually-built Aggregate Device + Multi-Output
-#   "none"        → mic only; you only see your half of the conversation
-capture_mode = "auto"
+# No microphone or output-device fields here — the daemon captures system
+# audio via ScreenCaptureKit (regardless of which output device you use)
+# and the user's voice via the macOS default input. Change the input in
+# System Settings ▸ Sound ▸ Input and the next recording follows.
 
 [detection]
 debounce_start_sec = 5
@@ -48,6 +37,14 @@ disable_diarization = false
 model = "claude-sonnet-4-6"
 max_tokens = 4000
 team_context = "FDA 21 CFR Part 11 regulated SaaS, .NET 8 + Angular + AWS EKS"
+# Long-meeting guard: when the transcript markdown is longer than this many
+# characters (~roughly 80 000 ≈ 20 000 tokens ≈ 1 hour of speech), the
+# pipeline SKIPS automatic summarization + Notion publishing to avoid
+# burning Anthropic tokens on long meetings. The transcript is left on disk
+# along with a `.READY_FOR_MANUAL.md` file containing the exact prompt the
+# pipeline would have sent — paste both into Claude Code and process the
+# meeting locally without paying API costs. Set to 0 to disable the guard.
+skip_above_chars = 80000
 
 [notion]
 # Notion database ID (32 chars, no hyphens — copy from the database URL).

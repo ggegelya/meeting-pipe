@@ -26,12 +26,10 @@ final class ConfigTests: XCTestCase {
         let url = writeTOML("""
         [recording]
         output_dir = "/tmp/recordings"
-        audio_device = "MyDevice"
         sample_rate = 48000
         auto_consent_apps = ["us.zoom.xos", "com.microsoft.teams2"]
         """)
         let cfg = try Config.load(from: url)
-        XCTAssertEqual(cfg.recording.audioDevice, "MyDevice")
         XCTAssertEqual(cfg.recording.sampleRate, 48000)
         XCTAssertEqual(cfg.recording.outputDir.path, "/tmp/recordings")
         XCTAssertEqual(cfg.recording.autoConsentApps, ["us.zoom.xos", "com.microsoft.teams2"])
@@ -41,7 +39,6 @@ final class ConfigTests: XCTestCase {
         // Empty TOML → defaults.
         let url = writeTOML("")
         let cfg = try Config.load(from: url)
-        XCTAssertEqual(cfg.recording.audioDevice, "Aggregate Device")
         XCTAssertEqual(cfg.recording.sampleRate, 16000)
         XCTAssertEqual(cfg.detection.manualHotkey, "ctrl+option+m")
         XCTAssertEqual(cfg.detection.debounceStartSec, 5)
@@ -72,7 +69,24 @@ final class ConfigTests: XCTestCase {
     func testDefaultFallbackInstantiates() {
         // Public API used when no config file exists.
         let cfg = Config.defaultFallback()
-        XCTAssertEqual(cfg.recording.audioDevice, "Aggregate Device")
+        XCTAssertEqual(cfg.recording.sampleRate, 16000)
         XCTAssertEqual(cfg.detection.manualHotkey, "ctrl+option+m")
+    }
+
+    func testIgnoresLegacyFieldsWithoutCrashing() throws {
+        // Older configs may still have audio_device / capture_mode etc.
+        // We don't read them anymore but parsing should silently succeed.
+        let url = writeTOML("""
+        [recording]
+        output_dir = "/tmp/x"
+        sample_rate = 16000
+        audio_device = "old-aggregate"
+        capture_mode = "process_tap"
+        mic_device = "old-mic"
+        auto_route_output = true
+        """)
+        let cfg = try Config.load(from: url)
+        XCTAssertEqual(cfg.recording.sampleRate, 16000)
+        XCTAssertEqual(cfg.recording.outputDir.path, "/tmp/x")
     }
 }

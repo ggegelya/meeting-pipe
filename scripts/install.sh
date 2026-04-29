@@ -28,42 +28,26 @@ die()  { printf "\033[1;31mxx\033[0m %s\n" "$*" >&2; exit 1; }
 
 [[ "$(uname -s)" == "Darwin" ]] || die "macOS only."
 
+# macOS 14+ required for ScreenCaptureKit's `excludesCurrentProcessAudio`.
+SW_VERS=$(sw_vers -productVersion)
+SW_MAJOR=${SW_VERS%%.*}
+if (( SW_MAJOR < 14 )); then
+    die "macOS 14 (Sonoma) or newer required. Detected: $SW_VERS"
+fi
+
 if ! command -v brew >/dev/null 2>&1; then
     die "Homebrew not found. Install from https://brew.sh first."
 fi
 
+# ffmpeg is used by WhisperX (pipeline) to load audio. The daemon itself
+# records natively via ScreenCaptureKit + AVAudioEngine — no external tools.
+# uv manages the Python venv.
 for tool in ffmpeg uv; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         say "Installing $tool via brew"
         brew install "$tool"
     fi
 done
-
-# BlackHole 2ch is the legacy capture path. On macOS 14.2+ the daemon
-# defaults to Apple's CATap API and BlackHole is no longer required —
-# only nudge the user to install it on older macOS or when capture_mode
-# in config.toml is explicitly set to "blackhole".
-SW_VERS=$(sw_vers -productVersion)
-SW_MAJOR=${SW_VERS%%.*}
-SW_REST=${SW_VERS#*.}
-SW_MINOR=${SW_REST%%.*}
-NEEDS_BLACKHOLE=1
-if [[ $SW_MAJOR -gt 14 ]] || { [[ $SW_MAJOR -eq 14 ]] && [[ ${SW_MINOR:-0} -ge 2 ]]; }; then
-    # macOS 14.2+ — process-tap path covers the default "auto" mode.
-    if [[ -f "$CONFIG_DIR/config.toml" ]] && grep -qE '^\s*capture_mode\s*=\s*"blackhole"' "$CONFIG_DIR/config.toml"; then
-        NEEDS_BLACKHOLE=1
-    else
-        NEEDS_BLACKHOLE=0
-        say "macOS $SW_VERS detected — using Apple's process-tap API for system audio (no BlackHole needed)."
-    fi
-fi
-
-if (( NEEDS_BLACKHOLE )) && ! brew list --cask blackhole-2ch >/dev/null 2>&1; then
-    warn "BlackHole 2ch not installed. Run:  brew install --cask blackhole-2ch"
-    warn "After install, open Audio MIDI Setup and create an Aggregate Device"
-    warn "combining BlackHole 2ch + your physical mic. Name it 'Aggregate Device'"
-    warn "(or whatever you set in config.toml)."
-fi
 
 # 2. Daemon build ----------------------------------------------------------
 
@@ -225,9 +209,9 @@ Next steps:
   1. Edit $CONFIG_DIR/secrets.env with your API keys.
   2. Edit $CONFIG_DIR/config.toml — particularly notion.database_id.
   3. Grant macOS permissions when prompted:
-       Microphone, Notifications, Accessibility (browser tab detection),
-       and Screen Recording (gates Apple's process-tap audio API on
-       macOS 14.2+; not needed if you set capture_mode="blackhole").
+       Microphone (records your voice via the system default input),
+       Screen Recording (lets ScreenCaptureKit capture system audio),
+       Notifications, Accessibility (browser tab detection).
        (System Settings → Privacy & Security)
   4. Look for the menu bar icon: 〰️  → "MeetingPipe: Idle".
 

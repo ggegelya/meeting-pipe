@@ -19,6 +19,10 @@ dependencies = [
     "whisperx>=3.1.1",
     "torch>=2.2.0,<2.5.0",
     "torchaudio>=2.2.0,<2.5.0",
+    # pyannote.audio (pulled in by whisperx) imports matplotlib unconditionally
+    # in its segmentation task mixins. Not in pyannote's own install_requires,
+    # so we declare it explicitly to keep the venv resolvable.
+    "matplotlib>=3.7",
     # Notion + auth + retries.
     "tenacity>=8.2.0",
 ]

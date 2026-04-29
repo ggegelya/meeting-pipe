@@ -2,22 +2,16 @@ import Foundation
 import TOMLKit
 
 /// Mirrors config.example.toml. Loaded once at startup; mutations don't propagate.
+///
+/// The capture stack (system audio + mic) is fully auto-detected since the
+/// rewrite to ScreenCaptureKit + AVAudioEngine. There are no audio-device
+/// fields here anymore — SCStream taps the system bus regardless of output
+/// device, and AVAudioEngine.inputNode follows the system default input.
 struct Config {
     struct Recording {
         var outputDir: URL
-        var audioDevice: String
         var sampleRate: Int
         var autoConsentApps: [String]
-        /// When true, the daemon transparently builds a Multi-Output Device
-        /// combining BlackHole + the user's current default output for the
-        /// duration of each recording. Eliminates the need to pre-build
-        /// per-headphone Multi-Output Devices in Audio MIDI Setup.
-        var autoRouteOutput: Bool
-        /// "auto" (default) → process_tap on macOS 14.2+, blackhole below.
-        /// "process_tap"    → CATap-based (no BlackHole, requires Screen Recording perm).
-        /// "blackhole"      → legacy path: ffmpeg from the user's named Aggregate Device.
-        /// "none"           → record only the mic; no system-audio capture.
-        var captureMode: String
     }
 
     struct Detection {
@@ -54,11 +48,8 @@ struct Config {
         let mod = toml["modes"]?.table
 
         let outputDirRaw = rec?["output_dir"]?.string ?? "~/Documents/Meetings/raw"
-        let device = rec?["audio_device"]?.string ?? "Aggregate Device"
         let sampleRate = rec?["sample_rate"]?.int ?? 16000
         let consent = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string }) ?? []
-        let autoRoute = rec?["auto_route_output"]?.bool ?? true
-        let captureMode = rec?["capture_mode"]?.string ?? "auto"
 
         let debounceStart = det?["debounce_start_sec"]?.double ?? 5
         let debounceEnd = det?["debounce_end_sec"]?.double ?? 10
@@ -70,11 +61,8 @@ struct Config {
         return Config(
             recording: Recording(
                 outputDir: expandTilde(outputDirRaw),
-                audioDevice: device,
                 sampleRate: sampleRate,
-                autoConsentApps: consent,
-                autoRouteOutput: autoRoute,
-                captureMode: captureMode
+                autoConsentApps: consent
             ),
             detection: Detection(
                 debounceStartSec: debounceStart,
@@ -91,11 +79,8 @@ struct Config {
         Config(
             recording: Recording(
                 outputDir: expandTilde("~/Documents/Meetings/raw"),
-                audioDevice: "Aggregate Device",
                 sampleRate: 16000,
-                autoConsentApps: [],
-                autoRouteOutput: true,
-                captureMode: "auto"
+                autoConsentApps: []
             ),
             detection: Detection(
                 debounceStartSec: 5,

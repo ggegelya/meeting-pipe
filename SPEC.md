@@ -33,8 +33,10 @@ and operate the system; this file documents *why* it's shaped the way it is.
 
 | Layer            | Choice                                          | Why |
 |------------------|-------------------------------------------------|-----|
-| Daemon           | Swift menu-bar app, no Dock icon                | Native NSWorkspace, AVCaptureDevice KVO, UNUserNotificationCenter. ~500 LOC. |
-| Audio capture    | BlackHole 2ch + Aggregate Device + ffmpeg       | Already validated. Scriptable. |
+| Daemon           | Swift menu-bar app, no Dock icon                | Native NSWorkspace, AVCaptureDevice KVO, UNUserNotificationCenter. |
+| System audio     | ScreenCaptureKit (`SCStream` w/ `capturesAudio = true`) | Apple-recommended since macOS 13. No aggregate devices, no BlackHole, no ffmpeg subprocess. Excludes our own process audio so notifications don't loop back. |
+| Microphone       | `AVAudioEngine.inputNode`                        | Auto-tracks the macOS default input. User changes input in System Settings ▸ Sound → next recording adapts. |
+| Mixing + write   | `AVAudioMixerNode` + `AVAudioFile`               | In-process. Mixer resamples to 16 kHz mono; AVAudioFile writes Int16 PCM WAV. |
 | Transcription    | WhisperX (faster-whisper + pyannote.audio)       | Best on-device diarization quality for free. |
 | Summarization    | Anthropic Messages API direct, Claude Sonnet 4.6 | Headless, deterministic, structured outputs via tool-use schema. **Not Claude Code** — Claude Code is interactive; an unattended pipeline calls the API directly. |
 | Publishing       | Notion REST API + integration token              | Robust unattended; idempotent; testable. **Not Notion MCP** — MCP is for interactive Claude. |
@@ -46,45 +48,52 @@ and operate the system; this file documents *why* it's shaped the way it is.
 ## 3. Architecture
 
 ```
-            ┌─────────────────────────────────────────────┐
-            │          MeetingPipe.app  (Swift)           │
-            │   NSWorkspace ─┐                            │
-            │   AVCaptureDev ┼──> Detector ──> StateMachine
-            │   Hotkey ──────┘                  │         │
-            │                                   ▼         │
-            │                               Notifier      │
-            │                                   │         │
-            │                                   ▼         │
-            │                               Recorder ──┐  │
-            └──────────────────────────────────────────┼──┘
-                                                       │
-                            ┌──────────────────────────┘
-                            │ (ffmpeg subprocess: BlackHole+mic → WAV)
-                            ▼
-                  $RECORDINGS_DIR/{ts}.wav
-                            │
-                            │ (PipelineLauncher invokes `mp run-all`)
-                            ▼
-                  ┌─────────────────────┐
-                  │   pipeline (Py)     │
-                  │  ┌───────────────┐  │
-                  │  │  transcribe   │  │  WhisperX + pyannote
-                  │  └──────┬────────┘  │  → {ts}.json + {ts}.md
-                  │         ▼           │
-                  │  ┌───────────────┐  │
-                  │  │  summarize    │  │  Anthropic API (tool-use schema)
-                  │  └──────┬────────┘  │  → {ts}.summary.json + .summary.md
-                  │         ▼           │
-                  │  ┌───────────────┐  │
-                  │  │ publish_notion│  │  Notion REST
-                  │  └──────┬────────┘  │  → {ts}.notion.json (page id)
-                  └─────────┼───────────┘
-                            ▼
-                       Notification:
-                  "Done — open in Notion"
+            ┌─────────────────────────────────────────────────────┐
+            │              MeetingPipe.app  (Swift)               │
+            │  NSWorkspace ─┐                                     │
+            │  AVCaptureDev ┼──> Detector ──> StateMachine        │
+            │  Hotkey ──────┘                  │                  │
+            │                                  ▼                  │
+            │                              Notifier               │
+            │                                  │                  │
+            │                                  ▼                  │
+            │                          MeetingRecorder            │
+            │   SCStream ──┐                   │                  │
+            │   (system    │   AVAudioEngine   │                  │
+            │    audio)    └─►  ┌─────────┐    │                  │
+            │                   │  Mixer  │ ──►│ AVAudioFile      │
+            │   AVAudioEngine   └─────────┘    │ (16k mono WAV)   │
+            │   .inputNode ────► (mic)         │                  │
+            │   (system default)               ▼                  │
+            └──────────────────────── $RECORDINGS_DIR/{ts}.wav ───┘
+                                                  │
+                                                  │ (PipelineLauncher invokes `mp run-all`)
+                                                  ▼
+                                        ┌─────────────────────┐
+                                        │   pipeline (Py)     │
+                                        │  ┌───────────────┐  │
+                                        │  │  transcribe   │  │  WhisperX + pyannote
+                                        │  └──────┬────────┘  │  → {ts}.json + {ts}.md
+                                        │         ▼           │
+                                        │  guard: long?       │  → {ts}.READY_FOR_MANUAL.md
+                                        │         │           │     (skip API; manual processing)
+                                        │         ▼ (no)      │
+                                        │  ┌───────────────┐  │
+                                        │  │  summarize    │  │  Anthropic API (tool-use schema)
+                                        │  └──────┬────────┘  │  → {ts}.summary.json + .summary.md
+                                        │         ▼           │
+                                        │  ┌───────────────┐  │
+                                        │  │ publish_notion│  │  Notion REST
+                                        │  └──────┬────────┘  │  → {ts}.notion.json (page id)
+                                        └─────────┼───────────┘
+                                                  ▼
+                                             Notification:
+                                        "Done — open in Notion"
 ```
 
-The pipeline runs out-of-process — daemon doesn't block on transcription.
+Recording is fully in-process: ScreenCaptureKit and AVAudioEngine deliver
+PCM directly into the daemon's mixer. The pipeline still runs
+out-of-process so transcription doesn't block the daemon.
 
 ---
 
@@ -151,10 +160,12 @@ meeting-pipe/
 ├── daemon/                          Swift menu bar app
 │   ├── Package.swift
 │   └── Sources/MeetingPipe/
-│       ├── App.swift                @main, AppDelegate, status bar
-│       ├── Coordinator.swift        State machine
+│       ├── App.swift                @main, AppDelegate
+│       ├── Coordinator.swift        State machine + recorder lifecycle
 │       ├── Detector.swift           NSWorkspace + AVCaptureDevice + Accessibility
-│       ├── Recorder.swift           ffmpeg subprocess management
+│       ├── MeetingRecorder.swift    AVAudioEngine + AVAudioFile WAV writer
+│       ├── SystemAudioCapture.swift SCStream wrapper for system audio
+│       ├── MeetingPromptWindow.swift On-screen "Record this meeting?" panel
 │       ├── Notifier.swift           UNUserNotificationCenter + actions
 │       ├── PipelineLauncher.swift   Spawns `mp run-all`
 │       ├── HotkeyManager.swift      Carbon-based global hotkey
@@ -170,13 +181,15 @@ meeting-pipe/
 │   ├── src/mp/
 │   │   ├── __init__.py
 │   │   ├── __main__.py              Subcommand dispatcher
+│   │   ├── doctor.py                `mp doctor` preflight (secrets + APIs)
 │   │   ├── transcribe.py
 │   │   ├── summarize.py
 │   │   ├── publish_notion.py
-│   │   ├── orchestrate.py           `run-all`
+│   │   ├── orchestrate.py           `run-all` + long-meeting guard
 │   │   ├── config.py                Pydantic settings
 │   │   ├── schemas.py               Pydantic models for summary JSON
 │   │   └── prompts/
+│   │       ├── __init__.py
 │   │       └── meeting_summary.md
 │   └── tests/
 │       ├── test_schemas.py
@@ -213,12 +226,12 @@ Daemon and pipeline both source `secrets.env` on startup.
 
 ## 8. Permissions
 
-| Permission       | Why                                              | Granted via                          |
-|------------------|--------------------------------------------------|--------------------------------------|
-| Microphone       | ffmpeg recording                                 | First launch prompt                  |
-| Screen Recording | ffmpeg avfoundation on some macOS versions       | System Settings → Privacy & Security |
-| Accessibility    | Reading browser window titles                    | System Settings → Privacy & Security |
-| Notifications    | Prompts and completion alerts                    | First launch prompt                  |
+| Permission       | Why                                                                | Granted via                          |
+|------------------|--------------------------------------------------------------------|--------------------------------------|
+| Microphone       | `AVAudioEngine.inputNode` — captures user voice                    | First launch prompt                  |
+| Screen Recording | `SCStream.capturesAudio` — gates system-audio capture in TCC        | System Settings → Privacy & Security |
+| Accessibility    | Reading browser window titles                                       | System Settings → Privacy & Security |
+| Notifications    | Prompts and completion alerts                                       | First launch prompt                  |
 
 ---
 
@@ -258,14 +271,35 @@ and includes the configured `team_context` so domain terms aren't misclassified.
 | Browser tab title patterns drift                              | Patterns in TOML, not compiled. Easy to tweak. |
 | pyannote diarization weak on Ukrainian                        | `disable_diarization=true` → label all as "Speaker". |
 | MPS backend instability in faster-whisper                     | Default `compute_type="int8"` (CPU). |
-| BlackHole Aggregate Device renames                            | Config uses **name**, not index. README warns. |
+| Long meetings burning Anthropic tokens silently                | `summarization.skip_above_chars` (default 80 000) writes a manual-processing bundle instead of calling the API. |
 | Anthropic API cost creep                                      | ≈$0.05/meeting on Sonnet 4.6 at typical 5k in / 2k out. |
 | Compliance for client/regulated calls                         | `regulated_mode=true` skips Notion entirely. |
 | HuggingFace TOS gating                                        | `install.sh` prints exact URLs to accept; pipeline fails-fast on 401. |
 
 ---
 
-## 11. Definition of done
+## 11. Long-meeting guard
+
+The Anthropic API charges per token. A 1+ hour meeting can produce a
+transcript that runs many tens of thousands of tokens, which is real money
+to summarize automatically. To avoid that:
+
+- After `transcribe` produces `<stem>.md`, the orchestrator checks
+  `len(md) > summarization.skip_above_chars` (default `80000` ≈ 20 000
+  tokens ≈ ~1 hour of speech).
+- On hit: stages 2 and 3 are skipped. Anthropic and Notion are not called.
+- A sidecar `<stem>.READY_FOR_MANUAL.md` is written. It contains:
+  - A short header explaining what's going on.
+  - The path to the transcript (so the user can attach it).
+  - The exact system prompt that the pipeline would have used (copied from
+    `pipeline/src/mp/prompts/meeting_summary.md`).
+- The user pastes both into Claude Code (or any LLM frontend) and processes
+  the meeting locally. No API charges.
+- Setting `summarization.skip_above_chars = 0` disables the guard.
+
+---
+
+## 12. Definition of done
 
 - All phases merged with green CI.
 - README walks a fresh user from clone to first auto-published Notion page.
