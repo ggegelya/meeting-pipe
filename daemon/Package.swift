@@ -3,7 +3,9 @@ import PackageDescription
 
 let package = Package(
     name: "MeetingPipe",
-    platforms: [.macOS(.v13)],
+    // macOS 14 required for ScreenCaptureKit's `excludesCurrentProcessAudio`
+    // (added in 13.3 but easier to bump than gate per-call).
+    platforms: [.macOS(.v14)],
     products: [
         .executable(name: "MeetingPipe", targets: ["MeetingPipe"])
     ],

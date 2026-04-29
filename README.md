@@ -3,7 +3,7 @@
 Background macOS daemon that detects video meetings, captures audio locally,
 transcribes with speaker identification, generates a summary + action items via
 Claude, and publishes to Notion. Zero recurring cost. Fully on-device audio.
-**macOS only.**
+**macOS 14+ only.**
 
 See [`SPEC.md`](./SPEC.md) for the full design.
 
@@ -13,8 +13,9 @@ See [`SPEC.md`](./SPEC.md) for the full design.
 
 1. **Detects** when you're in a meeting (Zoom, Teams, Slack huddles, Google Meet,
    Webex — native apps and browser tabs).
-2. **Asks** to record via a notification (or auto-records if you tagged the app).
-3. **Captures** system audio + your mic to `~/Documents/Meetings/raw/`.
+2. **Asks** to record via an on-screen panel (top-right, Notion-style).
+3. **Captures** system audio (every other process) + your mic, mixes them, and
+   writes a 16 kHz mono WAV to `~/Documents/Meetings/raw/`.
 4. **Transcribes** with WhisperX + pyannote diarization, fully on-device.
 5. **Summarizes** with Claude Sonnet (title, decisions, action items, questions).
 6. **Publishes** to a Notion database with idempotent updates.
@@ -23,11 +24,16 @@ See [`SPEC.md`](./SPEC.md) for the full design.
 A global hotkey (default `⌃⌥M`) toggles recording manually if detection misses a
 meeting or you want a quick voice memo.
 
+For meetings longer than ~1 hour, the pipeline writes the transcript to disk
+along with a paste-into-Claude-Code bundle and **does not call the Anthropic
+API**. See "Long meetings" below.
+
 ---
 
 ## Requirements
 
-- macOS 13+ (Ventura or later) on Apple Silicon or Intel.
+- **macOS 14 (Sonoma) or later** — required for ScreenCaptureKit's
+  `excludesCurrentProcessAudio`.
 - ~10 GB free disk (large-v3 Whisper model + pyannote).
 - A Notion integration token + a database to write to.
 - An Anthropic API key.
@@ -47,7 +53,10 @@ cd meeting-pipe
 The installer will:
 
 1. Verify Homebrew, install `ffmpeg` and `uv` if missing.
-2. Build the Swift menu-bar daemon (`swift build -c release`).
+   (`ffmpeg` is used by the Python pipeline for audio loading; the daemon
+   itself records natively via ScreenCaptureKit — no subprocess.)
+2. Build the Swift menu-bar daemon (`swift build -c release`) and wrap it
+   in a `.app` bundle so notifications work.
 3. Install the Python pipeline into `~/.local/share/meeting-pipe/venv/`.
 4. Stage `~/.config/meeting-pipe/config.toml` and `secrets.env` (mode 0600).
 5. Pre-fetch HF models if `HF_TOKEN` is set.
@@ -57,39 +66,11 @@ The installer will:
 
 The installer can't do these for you:
 
-1. **Audio capture path** — depends on your macOS version:
-
-   - **macOS 14.2 or later (Sonoma 14.2+)**: nothing to install. The daemon
-     uses Apple's process-tap API (`AudioHardwareCreateProcessTap`) to
-     capture system audio directly. You'll be asked once for **Screen
-     Recording** permission on first launch (the same TCC entitlement gates
-     audio process taps; no pixels are read). Skip to step 3.
-
-   - **macOS 13.x or earlier, OR you opted into `capture_mode = "blackhole"`**:
-     install BlackHole 2ch:
-
-     ```bash
-     brew install --cask blackhole-2ch
-     ```
-
-2. **(BlackHole path only) Create an Aggregate Device** in `Audio MIDI
-   Setup.app` combining BlackHole 2ch + your physical mic. Name it
-   `Aggregate Device` (or set a different name in `config.toml`).
-
-   You don't need to build a Multi-Output Device per headphone setup — the
-   daemon does that for you when `capture_mode = "blackhole"`. It
-   transparently builds a transient `MeetingPipe-Capture` Multi-Output
-   Device combining BlackHole with your current default output (built-in
-   speakers, AirPods, Focal Bathys, etc.) and switches system output to it.
-   The original output is restored when recording stops. Disable via
-   `auto_route_output = false` if you already manage routing yourself
-   (e.g. with Loopback).
-
-3. **Accept Hugging Face TOS** for the pyannote models:
+1. **Accept Hugging Face TOS** for the pyannote models:
    - <https://huggingface.co/pyannote/speaker-diarization-3.1>
    - <https://huggingface.co/pyannote/segmentation-3.0>
 
-4. **Fill in secrets** at `~/.config/meeting-pipe/secrets.env`:
+2. **Fill in secrets** at `~/.config/meeting-pipe/secrets.env`:
 
    ```env
    ANTHROPIC_API_KEY=sk-ant-...
@@ -101,21 +82,24 @@ The installer can't do these for you:
    time it spawns the pipeline, so a new value takes effect on the next
    recording. No restart needed.
 
-5. **Configure** `~/.config/meeting-pipe/config.toml`:
+   To verify: `~/.local/share/meeting-pipe/venv/bin/mp doctor` — pings each
+   API and tells you which secret is wrong.
+
+3. **Configure** `~/.config/meeting-pipe/config.toml`:
    - Set `notion.database_id` to your Meetings database ID
      (the 32-char string in the database URL).
-   - Adjust `recording.audio_device` if you named your aggregate differently.
 
-6. **Grant macOS permissions** when prompted on first launch:
-   - Microphone (for ffmpeg recording)
-   - Screen Recording (gates Apple's process-tap audio API on macOS 14.2+;
-     also required by ffmpeg avfoundation on some macOS versions). Not
-     needed if you set `capture_mode = "blackhole"`.
-   - Accessibility (for reading browser tab titles to detect Meet/Teams Web)
-   - Notifications (for record / skip prompts)
+4. **Grant macOS permissions** when prompted on first launch:
+   - **Microphone** — `AVAudioEngine` reads from the system default input.
+   - **Screen Recording** — gates `SCStream.capturesAudio` in TCC.
+   - **Accessibility** — reads browser tab titles to detect Meet/Teams Web.
+   - **Notifications** — record/skip prompts and completion alerts.
 
-   The daemon checks each on startup; if any are missing, the menu bar item
-   shows a banner with deeplinks to the right Settings panes.
+   No audio devices to set up. The daemon captures whatever your system
+   audio is currently playing (regardless of output device — speakers,
+   wired headphones, AirPods, anything) and the mic that macOS treats as
+   the default input. Change the input in System Settings ▸ Sound and the
+   next recording adapts.
 
 ---
 
@@ -146,7 +130,35 @@ or re-publishing a fixed transcript:
 mp transcribe   <wav>
 mp summarize    <transcript.md>
 mp publish-notion <summary.json>
+
+# Preflight check (validates secrets + live API access)
+mp doctor
 ```
+
+---
+
+## Long meetings
+
+The Anthropic API charges per token. A 1-hour meeting can cost real money to
+auto-summarize — and you might prefer to handle it yourself in Claude Code,
+where you have access to the full conversation context anyway.
+
+Default behavior: if the transcript exceeds **80 000 characters** (~20 000
+tokens, ~1 hour of speech), the pipeline:
+
+1. Saves the transcript markdown as usual at `<stem>.md`.
+2. Writes a sidecar `<stem>.READY_FOR_MANUAL.md` containing the exact system
+   prompt the pipeline would have used, plus a pointer to the transcript.
+3. **Skips** the Anthropic call and the Notion publish.
+4. Sends a desktop notification.
+
+To process the meeting yourself: open Claude Code, paste the system prompt
+from the `.READY_FOR_MANUAL.md` file, attach (or paste) the transcript
+markdown, and ask for the summary. No API charge.
+
+To change the threshold or disable the guard, edit
+`summarization.skip_above_chars` in `~/.config/meeting-pipe/config.toml`.
+Set to `0` to disable.
 
 ---
 
@@ -156,8 +168,7 @@ Everything lives under `~/Library/Logs/MeetingPipe/`:
 
 - `daemon.log`   — state transitions, recording start/stop, pipeline kick-off
 - `detector.log` — meeting detection events (which app/tab, debounce timing)
-- `recorder.log` — ffmpeg lifecycle
-- `ffmpeg.log`   — ffmpeg's own stderr, so you can see why a recording failed
+- `recorder.log` — recording lifecycle, duration parity check
 - `pipeline.log` — transcription, summarization, Notion publishing
 - `launchd.{out,err}.log` — daemon stdout/stderr
 
@@ -178,8 +189,12 @@ See [`config.example.toml`](./config.example.toml). Highlights:
   "Speaker".
 - `summarization.team_context` — domain string injected into the system prompt
   so Claude doesn't extract domain terms ("validation", "QMS") as action items.
+- `summarization.skip_above_chars` — long-meeting guard (default 80 000).
 - `modes.regulated_mode` — when `true`, skip Notion entirely and produce only
   a local Markdown summary. Use this for client/regulated calls.
+
+There are no microphone or output-device settings — the daemon auto-detects
+both. Change the system default input in System Settings ▸ Sound to swap mics.
 
 ---
 
@@ -191,14 +206,20 @@ running and (b) some app holding the mic. If you join muted, the mic signal
 doesn't fire — Zoom only opens the input device when you unmute. Use the
 `⌃⌥M` hotkey or set `auto_consent_apps`.
 
-**ffmpeg recording produces a 0-byte file.**
-Check `ffmpeg.log`. Most common cause: the configured `audio_device` name
-doesn't match anything in `Audio MIDI Setup`. Run
-`ffmpeg -f avfoundation -list_devices true -i ""` to see exact names.
+**The recording is silent / very quiet.**
+Check `recorder.log` for the `duration check` line at the end of a recording.
+With the in-process recorder it should always read `ratio=~100%`. If it
+doesn't, the Screen Recording permission may not have been granted (system
+audio capture is gated). Check System Settings ▸ Privacy & Security ▸
+Screen Recording — MeetingPipe should be enabled.
+
+**The recording is missing system audio (only my voice).**
+ScreenCaptureKit needs Screen Recording permission. After granting, restart
+the daemon: `launchctl kickstart -k gui/$(id -u)/com.meetingpipe.daemon`.
 
 **Diarization fails with HTTP 401.**
 You haven't accepted the pyannote TOS. Visit the URLs in the install section
-above, click "Agree to Terms", then re-run.
+above, click "Agree to Terms", then re-run. `mp doctor` flags this.
 
 **The menu bar icon shows "Idle" but I'm in a meeting.**
 Open Console.app, filter on `subsystem:com.meetingpipe.daemon`. The detector
@@ -206,14 +227,9 @@ emits an `os_log` line for every state change. If you see no events, restart
 the daemon: `launchctl kickstart -k gui/$(id -u)/com.meetingpipe.daemon`.
 
 **Notion publish fails with 401 / 404.**
-- 401 → `NOTION_TOKEN` is wrong or revoked.
+- 401 → `NOTION_TOKEN` is wrong or revoked. `mp doctor` confirms.
 - 404 → the integration isn't shared with your database, or
   `notion.database_id` is wrong (use the ID, not the page slug).
-
-**ffmpeg processes survive after the daemon exits.**
-This is the bug we explicitly guard against — `Recorder.stop()` sends `SIGINT`
-and waits up to 5 s for a clean flush. If you find an orphan, run
-`pkill -INT ffmpeg` and file an issue with `ffmpeg.log`.
 
 ---
 

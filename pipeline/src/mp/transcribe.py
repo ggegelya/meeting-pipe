@@ -59,23 +59,38 @@ def transcribe(wav: Path, cfg: Config | None = None, out_dir: Path | None = None
         transcribe_kwargs["language"] = tcfg.language
 
     log.info("Transcribing")
-    result = model.transcribe(audio, **transcribe_kwargs)
+    try:
+        result = model.transcribe(audio, **transcribe_kwargs)
+    except IndexError:
+        # WhisperX's VAD can return zero speech segments on a near-silent
+        # input, then transformers crashes accessing inputs[0]. Treat as
+        # "no speech" rather than an orchestrator-level failure — the wav
+        # is still on disk for inspection, and run-all can continue past
+        # this step (downstream summarize will see an empty transcript and
+        # produce a "(no content)" stub instead of a billable LLM call).
+        log.warning("No speech detected in audio (VAD returned zero segments). Writing empty transcript.")
+        result = {"language": "en", "segments": []}
     detected_lang = result.get("language", tcfg.language if tcfg.language != "auto" else "en")
 
     # Word-level alignment with wav2vec2 — required for diarization to map
-    # speaker turns onto word boundaries.
-    log.info("Aligning (lang=%s)", detected_lang)
-    try:
-        align_model, metadata = whisperx.load_align_model(language_code=detected_lang, device=device)
-        result = whisperx.align(
-            result["segments"], align_model, metadata, audio, device, return_char_alignments=False
-        )
-    except Exception as e:  # noqa: BLE001
-        # Some less-common languages have no alignment model. Skip alignment
-        # and continue with sentence-level segments only.
-        log.warning("Alignment skipped (%s): %s", detected_lang, e)
+    # speaker turns onto word boundaries. Skip when there's no speech: the
+    # align-model load triggers a 360 MB wav2vec2 download on first run, and
+    # there's nothing to align anyway.
+    if not result.get("segments"):
+        log.info("Skipping alignment + diarization (no segments)")
+    else:
+        log.info("Aligning (lang=%s)", detected_lang)
+        try:
+            align_model, metadata = whisperx.load_align_model(language_code=detected_lang, device=device)
+            result = whisperx.align(
+                result["segments"], align_model, metadata, audio, device, return_char_alignments=False
+            )
+        except Exception as e:  # noqa: BLE001
+            # Some less-common languages have no alignment model. Skip alignment
+            # and continue with sentence-level segments only.
+            log.warning("Alignment skipped (%s): %s", detected_lang, e)
 
-    if not tcfg.disable_diarization:
+    if not tcfg.disable_diarization and result.get("segments"):
         hf_token = require_env("HF_TOKEN")
         log.info("Diarizing (min=%d, max=%d)", tcfg.min_speakers, tcfg.max_speakers)
         try:

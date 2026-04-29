@@ -44,7 +44,7 @@ final class PipelineLauncher {
             FileManager.default.createFile(atPath: logURL.path, contents: nil)
         }
         let logHandle = (try? FileHandle(forWritingTo: logURL))
-        try? logHandle?.seekToEnd()
+        _ = try? logHandle?.seekToEnd()
 
         var stderrTail = Data()
         let stderrLimit = 4096

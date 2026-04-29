@@ -49,6 +49,13 @@ class Summarization(BaseModel):
     model: str = "claude-sonnet-4-6"
     max_tokens: int = 4000
     team_context: str = ""
+    # Long-meeting guard: if the transcript markdown is longer than this
+    # many characters, the orchestrator skips summarize + publish so we
+    # don't burn Anthropic tokens on a long meeting. The transcript stays
+    # on disk along with a `.READY_FOR_MANUAL.md` paste-into-Claude-Code
+    # bundle. 0 disables the guard. 80 000 chars ≈ 20 000 tokens ≈ 1 hour
+    # of speech.
+    skip_above_chars: int = 80000
 
 
 class NotionCfg(BaseModel):
@@ -88,6 +95,13 @@ def load_secrets(path: Path = SECRETS_PATH) -> None:
 
     Daemon does this in Swift; Python does it independently so `mp` works
     when run by hand without the daemon.
+
+    The file is authoritative: an entry here overrides whatever the parent
+    shell happened to export. setdefault was the wrong API — if the shell
+    has e.g. ANTHROPIC_API_KEY="" exported (Claude Code does this), the
+    real value in this file would be ignored and downstream `require_env`
+    would fail with a confusing "missing" error even though the file is
+    populated correctly.
     """
     if not path.exists():
         return
@@ -101,7 +115,7 @@ def load_secrets(path: Path = SECRETS_PATH) -> None:
         v = v.strip()
         if len(v) >= 2 and v[0] == v[-1] == '"':
             v = v[1:-1]
-        os.environ.setdefault(k.strip(), v)
+        os.environ[k.strip()] = v
 
 
 def require_env(name: str) -> str:

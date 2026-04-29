@@ -22,15 +22,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.main.info("MeetingPipe starting")
 
-        // First thing: undo any audio-routing state left by a previous crashed
-        // run. If we crashed mid-recording, the user's system output would
-        // still be pointed at our transient device — this restores it before
-        // we do anything else. Same for orphaned process taps.
-        AudioRouter.cleanupStale()
-        if #available(macOS 14.2, *) {
-            ProcessTapRouter.cleanupStale()
-        }
-
         let config: Config
         do {
             config = try Config.load()
@@ -42,10 +33,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusBar = StatusBarController(item: statusItem)
-        statusBar.setIdle()
 
+        // Wire the coordinator into the status bar BEFORE setIdle() so the
+        // initial menu build sees a non-nil target. NSMenu auto-disables
+        // items whose target is nil (Cocoa menu validation), which would
+        // otherwise leave Start Recording / Open … greyed out until the
+        // next state change rebuilt the menu.
         coordinator = Coordinator(config: config, statusBar: statusBar)
         statusBar.coordinator = coordinator
+        statusBar.setIdle()
         coordinator.start()
 
         // Best-effort notification authorization. Doesn't block startup if denied.
