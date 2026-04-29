@@ -9,14 +9,21 @@ audio_device = "Aggregate Device"
 sample_rate = 16000
 # Bundle IDs that auto-start recording without a prompt, e.g. ["us.zoom.xos"].
 auto_consent_apps = []
-# When true, the daemon transparently builds a transient Multi-Output Device
-# combining BlackHole with whatever your default output is at the moment of
-# recording (built-in speakers, AirPods, Focal Bathys, etc.) and switches
-# system output to it for the duration of the meeting. The original output
-# is restored when recording stops. Set to false if you already manage
-# Multi-Output Devices yourself (e.g. via Loopback) and don't want the
-# daemon touching your audio routing.
+# When true (and capture_mode = "blackhole"), the daemon transparently builds
+# a transient Multi-Output Device combining BlackHole with whatever your
+# default output is at the moment of recording (built-in speakers, AirPods,
+# Focal Bathys, etc.) and switches system output to it for the duration of
+# the meeting. The original output is restored when recording stops. Set to
+# false if you already manage Multi-Output Devices yourself (e.g. via Loopback).
+# Has no effect when capture_mode is "process_tap" or "none".
 auto_route_output = true
+
+# How to capture remote-side audio:
+#   "auto"        → process_tap on macOS 14.2+, blackhole otherwise (default)
+#   "process_tap" → Apple's CATap API (no BlackHole, requires Screen Recording perm)
+#   "blackhole"   → legacy: ffmpeg from a manually-built Aggregate Device + Multi-Output
+#   "none"        → mic only; you only see your half of the conversation
+capture_mode = "auto"
 
 [detection]
 debounce_start_sec = 5

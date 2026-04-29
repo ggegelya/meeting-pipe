@@ -39,9 +39,26 @@ for tool in ffmpeg uv; do
     fi
 done
 
-# BlackHole 2ch is required for system-audio capture. We can't auto-accept its
-# kernel-extension prompt, so just remind the user.
-if ! brew list --cask blackhole-2ch >/dev/null 2>&1; then
+# BlackHole 2ch is the legacy capture path. On macOS 14.2+ the daemon
+# defaults to Apple's CATap API and BlackHole is no longer required —
+# only nudge the user to install it on older macOS or when capture_mode
+# in config.toml is explicitly set to "blackhole".
+SW_VERS=$(sw_vers -productVersion)
+SW_MAJOR=${SW_VERS%%.*}
+SW_REST=${SW_VERS#*.}
+SW_MINOR=${SW_REST%%.*}
+NEEDS_BLACKHOLE=1
+if [[ $SW_MAJOR -gt 14 ]] || { [[ $SW_MAJOR -eq 14 ]] && [[ ${SW_MINOR:-0} -ge 2 ]]; }; then
+    # macOS 14.2+ — process-tap path covers the default "auto" mode.
+    if [[ -f "$CONFIG_DIR/config.toml" ]] && grep -qE '^\s*capture_mode\s*=\s*"blackhole"' "$CONFIG_DIR/config.toml"; then
+        NEEDS_BLACKHOLE=1
+    else
+        NEEDS_BLACKHOLE=0
+        say "macOS $SW_VERS detected — using Apple's process-tap API for system audio (no BlackHole needed)."
+    fi
+fi
+
+if (( NEEDS_BLACKHOLE )) && ! brew list --cask blackhole-2ch >/dev/null 2>&1; then
     warn "BlackHole 2ch not installed. Run:  brew install --cask blackhole-2ch"
     warn "After install, open Audio MIDI Setup and create an Aggregate Device"
     warn "combining BlackHole 2ch + your physical mic. Name it 'Aggregate Device'"
@@ -116,6 +133,8 @@ cat >"$APP/Contents/Info.plist" <<'PLIST'
     <string>MeetingPipe records meeting audio for transcription. Audio never leaves your Mac.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>MeetingPipe inspects the frontmost browser tab to detect web meetings (Google Meet, Teams Web).</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>MeetingPipe captures system audio (other participants' voices) directly via Apple's process-tap API on macOS 14.2+. The same TCC entitlement gates audio process taps; no screen pixels are read.</string>
 </dict>
 </plist>
 PLIST
@@ -206,7 +225,9 @@ Next steps:
   1. Edit $CONFIG_DIR/secrets.env with your API keys.
   2. Edit $CONFIG_DIR/config.toml — particularly notion.database_id.
   3. Grant macOS permissions when prompted:
-       Microphone, Screen Recording, Accessibility, Notifications.
+       Microphone, Notifications, Accessibility (browser tab detection),
+       and Screen Recording (gates Apple's process-tap audio API on
+       macOS 14.2+; not needed if you set capture_mode="blackhole").
        (System Settings → Privacy & Security)
   4. Look for the menu bar icon: 〰️  → "MeetingPipe: Idle".
 

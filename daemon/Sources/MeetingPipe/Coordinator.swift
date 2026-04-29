@@ -16,6 +16,18 @@ final class Coordinator: NSObject {
     private let consent: ConsentStore
     private let launcher: PipelineLauncher
     private let audioRouter: AudioRouter
+    /// Non-nil only on macOS 14.2+. Type-erased to keep the field
+    /// declaration outside the @available umbrella.
+    private let processTapRouter: AnyObject?
+
+    /// Which capture path is currently engaged for the active recording.
+    /// Drives teardown so we hit the correct router on stop.
+    private enum ActiveCapture { case none, processTap, blackHole }
+    private var activeCapture: ActiveCapture = .none
+
+    /// Overrides config.recording.audioDevice for the duration of an active
+    /// recording when ProcessTapRouter generates a transient device name.
+    private var captureDeviceOverride: String?
 
     private var state: AppState = .idle {
         didSet { Log.main.info("state: \(String(describing: oldValue)) → \(String(describing: self.state))") }
@@ -37,7 +49,29 @@ final class Coordinator: NSObject {
         self.consent = ConsentStore()
         self.launcher = PipelineLauncher()
         self.audioRouter = AudioRouter()
+        if #available(macOS 14.2, *) {
+            self.processTapRouter = ProcessTapRouter()
+        } else {
+            self.processTapRouter = nil
+        }
         super.init()
+    }
+
+    /// Resolves config.captureMode + macOS version to the actual backend.
+    private func effectiveCaptureMode() -> ActiveCapture {
+        switch config.recording.captureMode.lowercased() {
+        case "process_tap":
+            if #available(macOS 14.2, *) { return .processTap }
+            Log.recorder.warning("capture_mode=process_tap requires macOS 14.2+; falling back to blackhole")
+            return .blackHole
+        case "blackhole":
+            return .blackHole
+        case "none":
+            return .none
+        default: // "auto" or anything we don't recognize
+            if #available(macOS 14.2, *) { return .processTap }
+            return .blackHole
+        }
     }
 
     func start() {
@@ -66,8 +100,9 @@ final class Coordinator: NSObject {
             recorder.stop()
         }
         // Always run — no-op if nothing was enabled. Ensures we never
-        // leave the user's system output pointed at our transient device.
-        audioRouter.restoreOutput()
+        // leave the user's system output pointed at our transient device,
+        // and don't leak transient process taps / aggregate devices.
+        tearDownActiveCapture()
     }
 
     // MARK: Menu actions
@@ -101,36 +136,78 @@ final class Coordinator: NSObject {
     private func beginRecording(source: AppSource?) {
         cancelPromptTimeout()
 
-        // Auto-route system audio so BlackHole gets a copy of remote-side
-        // audio. Failures here aren't fatal — we still record the mic, the
-        // transcript will just be one-sided.
-        if config.recording.autoRouteOutput {
-            do {
-                try audioRouter.enableCapture()
-            } catch {
-                Log.recorder.warning("audio routing skipped: \(error.localizedDescription)")
-                notifier.notifyError("Audio routing: \(error.localizedDescription)")
+        let mode = effectiveCaptureMode()
+        var deviceName = config.recording.audioDevice
+        activeCapture = .none
+        captureDeviceOverride = nil
+
+        // Engage the chosen capture backend. Each branch is best-effort:
+        // a failure here logs + degrades gracefully (mic-only) rather than
+        // aborting the recording entirely.
+        switch mode {
+        case .processTap:
+            if #available(macOS 14.2, *), let router = processTapRouter as? ProcessTapRouter {
+                do {
+                    deviceName = try router.prepare()
+                    activeCapture = .processTap
+                    captureDeviceOverride = deviceName
+                    Log.recorder.info("capture: process_tap → device=\(deviceName)")
+                } catch {
+                    Log.recorder.warning("process_tap setup failed (\(error.localizedDescription)); proceeding mic-only")
+                    notifier.notifyError("System audio capture: \(error.localizedDescription)")
+                }
             }
+
+        case .blackHole:
+            if config.recording.autoRouteOutput {
+                do {
+                    try audioRouter.enableCapture()
+                    activeCapture = .blackHole
+                } catch {
+                    Log.recorder.warning("audio routing skipped: \(error.localizedDescription)")
+                    notifier.notifyError("Audio routing: \(error.localizedDescription)")
+                }
+            }
+
+        case .none:
+            // Mic-only by user request.
+            break
         }
 
         do {
             let file = try recorder.start(
-                deviceName: config.recording.audioDevice,
+                deviceName: deviceName,
                 sampleRate: config.recording.sampleRate,
                 outputDir: config.recording.outputDir
             )
             state = .recording(file: file, source: source)
             statusBar.setRecording(file: file)
             notifier.notifyRecordingStarted(file: file)
-            Log.writeLine("daemon", "recording started → \(file.path) (source: \(source?.bundleID ?? "manual"))")
+            Log.writeLine("daemon", "recording started → \(file.path) source=\(source?.bundleID ?? "manual") capture=\(activeCapture)")
         } catch {
-            // Recorder failed — undo the audio routing too.
-            audioRouter.restoreOutput()
+            // Recorder failed — undo whichever capture path we engaged.
+            tearDownActiveCapture()
             Log.main.error("failed to start recorder: \(error.localizedDescription)")
             notifier.notifyError("Could not start recording: \(error.localizedDescription)")
             state = .idle
             statusBar.setIdle()
         }
+    }
+
+    /// Reverse of the per-mode setup in beginRecording. Idempotent.
+    private func tearDownActiveCapture() {
+        switch activeCapture {
+        case .processTap:
+            if #available(macOS 14.2, *), let router = processTapRouter as? ProcessTapRouter {
+                router.teardown()
+            }
+        case .blackHole:
+            audioRouter.restoreOutput()
+        case .none:
+            break
+        }
+        activeCapture = .none
+        captureDeviceOverride = nil
     }
 
     private func stopRecording(file: URL, source: AppSource?) {
@@ -142,9 +219,10 @@ final class Coordinator: NSObject {
             guard let self = self else { return }
             self.recorder.stop()
             DispatchQueue.main.async {
-                // Restore system output AFTER ffmpeg has flushed — flipping
-                // mid-recording would cause a click in the captured audio.
-                self.audioRouter.restoreOutput()
+                // Tear down whichever capture backend we engaged AFTER ffmpeg
+                // has flushed — flipping mid-recording would cause a click in
+                // the captured audio.
+                self.tearDownActiveCapture()
                 Log.writeLine("daemon", "recording stopped → \(file.path)")
                 self.handoff(file: file)
             }
