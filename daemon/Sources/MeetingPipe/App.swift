@@ -25,8 +25,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // First thing: undo any audio-routing state left by a previous crashed
         // run. If we crashed mid-recording, the user's system output would
         // still be pointed at our transient device — this restores it before
-        // we do anything else.
+        // we do anything else. Same for orphaned process taps.
         AudioRouter.cleanupStale()
+        if #available(macOS 14.2, *) {
+            ProcessTapRouter.cleanupStale()
+        }
 
         let config: Config
         do {

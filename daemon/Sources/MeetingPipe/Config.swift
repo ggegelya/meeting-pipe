@@ -13,6 +13,11 @@ struct Config {
         /// duration of each recording. Eliminates the need to pre-build
         /// per-headphone Multi-Output Devices in Audio MIDI Setup.
         var autoRouteOutput: Bool
+        /// "auto" (default) → process_tap on macOS 14.2+, blackhole below.
+        /// "process_tap"    → CATap-based (no BlackHole, requires Screen Recording perm).
+        /// "blackhole"      → legacy path: ffmpeg from the user's named Aggregate Device.
+        /// "none"           → record only the mic; no system-audio capture.
+        var captureMode: String
     }
 
     struct Detection {
@@ -53,6 +58,7 @@ struct Config {
         let sampleRate = rec?["sample_rate"]?.int ?? 16000
         let consent = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string }) ?? []
         let autoRoute = rec?["auto_route_output"]?.bool ?? true
+        let captureMode = rec?["capture_mode"]?.string ?? "auto"
 
         let debounceStart = det?["debounce_start_sec"]?.double ?? 5
         let debounceEnd = det?["debounce_end_sec"]?.double ?? 10
@@ -67,7 +73,8 @@ struct Config {
                 audioDevice: device,
                 sampleRate: sampleRate,
                 autoConsentApps: consent,
-                autoRouteOutput: autoRoute
+                autoRouteOutput: autoRoute,
+                captureMode: captureMode
             ),
             detection: Detection(
                 debounceStartSec: debounceStart,
@@ -87,7 +94,8 @@ struct Config {
                 audioDevice: "Aggregate Device",
                 sampleRate: 16000,
                 autoConsentApps: [],
-                autoRouteOutput: true
+                autoRouteOutput: true,
+                captureMode: "auto"
             ),
             detection: Detection(
                 debounceStartSec: 5,

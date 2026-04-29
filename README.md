@@ -57,25 +57,33 @@ The installer will:
 
 The installer can't do these for you:
 
-1. **Install BlackHole 2ch** (system-audio routing — macOS forbids apps from
-   capturing other apps' audio without it):
+1. **Audio capture path** — depends on your macOS version:
 
-   ```bash
-   brew install --cask blackhole-2ch
-   ```
+   - **macOS 14.2 or later (Sonoma 14.2+)**: nothing to install. The daemon
+     uses Apple's process-tap API (`AudioHardwareCreateProcessTap`) to
+     capture system audio directly. You'll be asked once for **Screen
+     Recording** permission on first launch (the same TCC entitlement gates
+     audio process taps; no pixels are read). Skip to step 3.
 
-2. **Create an Aggregate Device** in `Audio MIDI Setup.app` combining
-   BlackHole 2ch + your physical mic. Name it `Aggregate Device` (or set a
-   different name in `config.toml`).
+   - **macOS 13.x or earlier, OR you opted into `capture_mode = "blackhole"`**:
+     install BlackHole 2ch:
 
-   **You no longer need to build a Multi-Output Device per headphone setup** —
-   the daemon does that for you. When recording starts, it transparently
-   creates a transient `MeetingPipe-Capture` Multi-Output Device combining
-   BlackHole with whatever your current default output is (built-in
+     ```bash
+     brew install --cask blackhole-2ch
+     ```
+
+2. **(BlackHole path only) Create an Aggregate Device** in `Audio MIDI
+   Setup.app` combining BlackHole 2ch + your physical mic. Name it
+   `Aggregate Device` (or set a different name in `config.toml`).
+
+   You don't need to build a Multi-Output Device per headphone setup — the
+   daemon does that for you when `capture_mode = "blackhole"`. It
+   transparently builds a transient `MeetingPipe-Capture` Multi-Output
+   Device combining BlackHole with your current default output (built-in
    speakers, AirPods, Focal Bathys, etc.) and switches system output to it.
-   When recording stops, the original output is restored. Disable via
-   `auto_route_output = false` in `config.toml` if you already manage
-   routing yourself (e.g. with Loopback).
+   The original output is restored when recording stops. Disable via
+   `auto_route_output = false` if you already manage routing yourself
+   (e.g. with Loopback).
 
 3. **Accept Hugging Face TOS** for the pyannote models:
    - <https://huggingface.co/pyannote/speaker-diarization-3.1>
@@ -100,7 +108,9 @@ The installer can't do these for you:
 
 6. **Grant macOS permissions** when prompted on first launch:
    - Microphone (for ffmpeg recording)
-   - Screen Recording (avfoundation requires this on some macOS versions)
+   - Screen Recording (gates Apple's process-tap audio API on macOS 14.2+;
+     also required by ffmpeg avfoundation on some macOS versions). Not
+     needed if you set `capture_mode = "blackhole"`.
    - Accessibility (for reading browser tab titles to detect Meet/Teams Web)
    - Notifications (for record / skip prompts)
 
