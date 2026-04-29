@@ -22,6 +22,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.main.info("MeetingPipe starting")
 
+        // First thing: undo any audio-routing state left by a previous crashed
+        // run. If we crashed mid-recording, the user's system output would
+        // still be pointed at our transient device — this restores it before
+        // we do anything else.
+        AudioRouter.cleanupStale()
+
         let config: Config
         do {
             config = try Config.load()
