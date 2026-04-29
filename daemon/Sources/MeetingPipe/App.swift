@@ -51,6 +51,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             Log.main.info("Notification auth granted: \(granted)")
         }
+
+        // Pre-warm the Screen Recording TCC check ONCE at startup, not on
+        // every Start Recording click. Without this prewarm, each recording
+        // start would call SCShareableContent again, which re-prompts on
+        // any binary whose signature TCC hasn't seen before.
+        Task.detached {
+            await SystemAudioCapture.prewarm()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
