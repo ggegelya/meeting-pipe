@@ -32,19 +32,55 @@ final class SystemAudioCapture: NSObject {
         )!
     }()
 
+    /// Cached SCShareableContent (and the chosen display). Each call to
+    /// `SCShareableContent.excludingDesktopWindows(...)` triggers a TCC
+    /// permission check, and on a freshly-rebuilt binary that hasn't been
+    /// granted Screen Recording yet, every call re-prompts the user. We
+    /// fetch it ONCE at daemon startup (via `prewarm()`) and reuse the
+    /// result across recordings, so the user only sees the prompt the
+    /// first time after install (or after a binary signature change that
+    /// invalidates TCC's record).
+    private static var cachedContent: SCShareableContent?
+
     init(onBuffer: @escaping (AVAudioPCMBuffer) -> Void) {
         self.onBuffer = onBuffer
         super.init()
+    }
+
+    /// Fetch the shareable-content list once at daemon startup. If the
+    /// user grants Screen Recording, the content is cached. If they deny,
+    /// the call throws — we swallow the error here; subsequent recording
+    /// starts will retry (and re-prompt at most once per daemon lifetime
+    /// per pre-warm cycle).
+    static func prewarm() async {
+        if cachedContent != nil { return }
+        do {
+            cachedContent = try await SCShareableContent.excludingDesktopWindows(
+                false,
+                onScreenWindowsOnly: true
+            )
+            Log.recorder.info("SCShareableContent prewarmed (\(cachedContent?.displays.count ?? 0) displays)")
+            Log.writeLine("recorder", "SCShareableContent prewarmed")
+        } catch {
+            Log.recorder.warning("SCShareableContent prewarm failed: \(error.localizedDescription)")
+            Log.writeLine("recorder", "WARN: SCShareableContent prewarm failed: \(error.localizedDescription)")
+        }
     }
 
     /// Start capturing system audio. The "filter" must reference a real
     /// display, but with width/height set tiny we incur essentially zero
     /// video processing cost. We're only interested in `.audio` outputs.
     func start() async throws {
-        let content = try await SCShareableContent.excludingDesktopWindows(
-            false,
-            onScreenWindowsOnly: true
-        )
+        let content: SCShareableContent
+        if let cached = Self.cachedContent {
+            content = cached
+        } else {
+            content = try await SCShareableContent.excludingDesktopWindows(
+                false,
+                onScreenWindowsOnly: true
+            )
+            Self.cachedContent = content
+        }
         guard let display = content.displays.first else {
             throw CaptureError.noDisplay
         }

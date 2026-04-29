@@ -5,7 +5,6 @@ enum Log {
     static let main = Logger(subsystem: "com.meetingpipe.daemon", category: "main")
     static let detector = Logger(subsystem: "com.meetingpipe.daemon", category: "detector")
     static let recorder = Logger(subsystem: "com.meetingpipe.daemon", category: "recorder")
-    static let pipeline = Logger(subsystem: "com.meetingpipe.daemon", category: "pipeline")
 
     private static let isoFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()

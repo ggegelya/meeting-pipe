@@ -1,6 +1,10 @@
 import AppKit
 import UserNotifications
 
+/// Outcomes the Coordinator cares about. Both the on-screen prompt panel
+/// (`MeetingPromptWindow`) and the "Done — open in Notion" notification
+/// route into this delegate, so the state machine has one entry point per
+/// outcome regardless of the surface that produced it.
 protocol NotifierDelegate: AnyObject {
     func notifier(_ notifier: Notifier, didChooseRecord source: AppSource)
     func notifier(_ notifier: Notifier, didChooseSkip source: AppSource)
@@ -8,23 +12,18 @@ protocol NotifierDelegate: AnyObject {
     func notifier(_ notifier: Notifier, didOpenPage url: URL)
 }
 
-/// Wraps UNUserNotificationCenter. Action identifiers and category IDs match
-/// what the system delivery callback dispatches on.
+/// Wraps UNUserNotificationCenter for the informational banner notifications
+/// (recording started / processing / done / error). The "Record this
+/// meeting?" prompt itself lives in `MeetingPromptWindow` — banners get
+/// silenced under Focus modes and are easy to miss; the floating panel
+/// is the primary surface.
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     weak var delegate: NotifierDelegate?
-
-    // Category & action IDs must match between registration and userInfo lookups.
-    private static let promptCategory = "MP_MEETING_DETECTED"
-    private static let actionRecord = "MP_RECORD"
-    private static let actionSkip = "MP_SKIP"
-    private static let actionAlways = "MP_ALWAYS"
 
     private static let doneCategory = "MP_DONE"
     private static let actionOpen = "MP_OPEN_PAGE"
 
-    /// Maps notification request identifiers → AppSource so we can resolve
-    /// which meeting the user clicked Record on.
-    private var pendingSources: [String: AppSource] = [:]
+    /// Map id → URL so we can resolve which Notion page the user clicked.
     private var donePages: [String: URL] = [:]
 
     override init() {
@@ -38,19 +37,6 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     // MARK: Posting
-
-    func notifyMeetingDetected(source: AppSource) {
-        let content = UNMutableNotificationContent()
-        content.title = "Meeting detected: \(source.displayName)"
-        content.body = "Record this meeting?"
-        content.categoryIdentifier = Self.promptCategory
-        content.sound = .default
-
-        let id = "prompt-\(UUID().uuidString)"
-        pendingSources[id] = source
-        let req = UNNotificationRequest(identifier: id, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
-    }
 
     func notifyRecordingStarted(file: URL) {
         post(title: "Recording started", body: file.lastPathComponent)
@@ -92,16 +78,6 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     // MARK: Categories
 
     private func registerCategories() {
-        let record = UNNotificationAction(identifier: Self.actionRecord, title: "Record", options: [.foreground])
-        let skip = UNNotificationAction(identifier: Self.actionSkip, title: "Skip", options: [])
-        let always = UNNotificationAction(identifier: Self.actionAlways, title: "Always for this app", options: [])
-        let prompt = UNNotificationCategory(
-            identifier: Self.promptCategory,
-            actions: [record, skip, always],
-            intentIdentifiers: [],
-            options: []
-        )
-
         let open = UNNotificationAction(identifier: Self.actionOpen, title: "Open in Notion", options: [.foreground])
         let done = UNNotificationCategory(
             identifier: Self.doneCategory,
@@ -109,8 +85,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             intentIdentifiers: [],
             options: []
         )
-
-        UNUserNotificationCenter.current().setNotificationCategories([prompt, done])
+        UNUserNotificationCenter.current().setNotificationCategories([done])
     }
 
     // MARK: UNUserNotificationCenterDelegate
@@ -126,24 +101,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                                  withCompletionHandler completionHandler: @escaping () -> Void) {
         let id = response.notification.request.identifier
         let action = response.actionIdentifier
-
-        // Default tap (no action button) on a prompt = treat as Record.
         let isDefault = action == UNNotificationDefaultActionIdentifier
 
-        if let source = pendingSources.removeValue(forKey: id) {
-            switch action {
-            case Self.actionRecord:
-                delegate?.notifier(self, didChooseRecord: source)
-            case Self.actionSkip:
-                delegate?.notifier(self, didChooseSkip: source)
-            case Self.actionAlways:
-                delegate?.notifier(self, didChooseAlways: source)
-            default:
-                if isDefault {
-                    delegate?.notifier(self, didChooseRecord: source)
-                }
-            }
-        } else if let url = donePages.removeValue(forKey: id) {
+        if let url = donePages.removeValue(forKey: id) {
             if action == Self.actionOpen || isDefault {
                 delegate?.notifier(self, didOpenPage: url)
             }

@@ -24,9 +24,12 @@ SECRETS_PATH = _expand("~/.config/meeting-pipe/secrets.env")
 
 class Recording(BaseModel):
     output_dir: Path = Field(default=_expand("~/Documents/Meetings/raw"))
-    audio_device: str = "Aggregate Device"
     sample_rate: int = 16000
     auto_consent_apps: list[str] = Field(default_factory=list)
+    # `extra="ignore"` — old config files in the wild may still have
+    # capture_mode / audio_device / mic_device fields. Tolerate them
+    # silently rather than rejecting the whole config.
+    model_config = {"extra": "ignore"}
 
 
 class Detection(BaseModel):
