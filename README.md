@@ -68,6 +68,15 @@ The installer can't do these for you:
    BlackHole 2ch + your physical mic. Name it `Aggregate Device` (or set a
    different name in `config.toml`).
 
+   **You no longer need to build a Multi-Output Device per headphone setup** —
+   the daemon does that for you. When recording starts, it transparently
+   creates a transient `MeetingPipe-Capture` Multi-Output Device combining
+   BlackHole with whatever your current default output is (built-in
+   speakers, AirPods, Focal Bathys, etc.) and switches system output to it.
+   When recording stops, the original output is restored. Disable via
+   `auto_route_output = false` in `config.toml` if you already manage
+   routing yourself (e.g. with Loopback).
+
 3. **Accept Hugging Face TOS** for the pyannote models:
    - <https://huggingface.co/pyannote/speaker-diarization-3.1>
    - <https://huggingface.co/pyannote/segmentation-3.0>

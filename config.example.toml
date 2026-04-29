@@ -9,6 +9,14 @@ audio_device = "Aggregate Device"
 sample_rate = 16000
 # Bundle IDs that auto-start recording without a prompt, e.g. ["us.zoom.xos"].
 auto_consent_apps = []
+# When true, the daemon transparently builds a transient Multi-Output Device
+# combining BlackHole with whatever your default output is at the moment of
+# recording (built-in speakers, AirPods, Focal Bathys, etc.) and switches
+# system output to it for the duration of the meeting. The original output
+# is restored when recording stops. Set to false if you already manage
+# Multi-Output Devices yourself (e.g. via Loopback) and don't want the
+# daemon touching your audio routing.
+auto_route_output = true
 
 [detection]
 debounce_start_sec = 5

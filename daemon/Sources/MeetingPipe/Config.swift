@@ -8,6 +8,11 @@ struct Config {
         var audioDevice: String
         var sampleRate: Int
         var autoConsentApps: [String]
+        /// When true, the daemon transparently builds a Multi-Output Device
+        /// combining BlackHole + the user's current default output for the
+        /// duration of each recording. Eliminates the need to pre-build
+        /// per-headphone Multi-Output Devices in Audio MIDI Setup.
+        var autoRouteOutput: Bool
     }
 
     struct Detection {
@@ -47,6 +52,7 @@ struct Config {
         let device = rec?["audio_device"]?.string ?? "Aggregate Device"
         let sampleRate = rec?["sample_rate"]?.int ?? 16000
         let consent = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string }) ?? []
+        let autoRoute = rec?["auto_route_output"]?.bool ?? true
 
         let debounceStart = det?["debounce_start_sec"]?.double ?? 5
         let debounceEnd = det?["debounce_end_sec"]?.double ?? 10
@@ -60,7 +66,8 @@ struct Config {
                 outputDir: expandTilde(outputDirRaw),
                 audioDevice: device,
                 sampleRate: sampleRate,
-                autoConsentApps: consent
+                autoConsentApps: consent,
+                autoRouteOutput: autoRoute
             ),
             detection: Detection(
                 debounceStartSec: debounceStart,
@@ -79,7 +86,8 @@ struct Config {
                 outputDir: expandTilde("~/Documents/Meetings/raw"),
                 audioDevice: "Aggregate Device",
                 sampleRate: 16000,
-                autoConsentApps: []
+                autoConsentApps: [],
+                autoRouteOutput: true
             ),
             detection: Detection(
                 debounceStartSec: 5,

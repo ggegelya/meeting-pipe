@@ -15,6 +15,7 @@ final class Coordinator: NSObject {
     private let hotkey: HotkeyManager
     private let consent: ConsentStore
     private let launcher: PipelineLauncher
+    private let audioRouter: AudioRouter
 
     private var state: AppState = .idle {
         didSet { Log.main.info("state: \(String(describing: oldValue)) → \(String(describing: self.state))") }
@@ -35,6 +36,7 @@ final class Coordinator: NSObject {
         self.hotkey = HotkeyManager()
         self.consent = ConsentStore()
         self.launcher = PipelineLauncher()
+        self.audioRouter = AudioRouter()
         super.init()
     }
 
@@ -63,6 +65,9 @@ final class Coordinator: NSObject {
             // Best-effort flush; we don't want orphan ffmpeg.
             recorder.stop()
         }
+        // Always run — no-op if nothing was enabled. Ensures we never
+        // leave the user's system output pointed at our transient device.
+        audioRouter.restoreOutput()
     }
 
     // MARK: Menu actions
@@ -95,6 +100,19 @@ final class Coordinator: NSObject {
 
     private func beginRecording(source: AppSource?) {
         cancelPromptTimeout()
+
+        // Auto-route system audio so BlackHole gets a copy of remote-side
+        // audio. Failures here aren't fatal — we still record the mic, the
+        // transcript will just be one-sided.
+        if config.recording.autoRouteOutput {
+            do {
+                try audioRouter.enableCapture()
+            } catch {
+                Log.recorder.warning("audio routing skipped: \(error.localizedDescription)")
+                notifier.notifyError("Audio routing: \(error.localizedDescription)")
+            }
+        }
+
         do {
             let file = try recorder.start(
                 deviceName: config.recording.audioDevice,
@@ -106,6 +124,8 @@ final class Coordinator: NSObject {
             notifier.notifyRecordingStarted(file: file)
             Log.writeLine("daemon", "recording started → \(file.path) (source: \(source?.bundleID ?? "manual"))")
         } catch {
+            // Recorder failed — undo the audio routing too.
+            audioRouter.restoreOutput()
             Log.main.error("failed to start recorder: \(error.localizedDescription)")
             notifier.notifyError("Could not start recording: \(error.localizedDescription)")
             state = .idle
@@ -122,6 +142,9 @@ final class Coordinator: NSObject {
             guard let self = self else { return }
             self.recorder.stop()
             DispatchQueue.main.async {
+                // Restore system output AFTER ffmpeg has flushed — flipping
+                // mid-recording would cause a click in the captured audio.
+                self.audioRouter.restoreOutput()
                 Log.writeLine("daemon", "recording stopped → \(file.path)")
                 self.handoff(file: file)
             }
