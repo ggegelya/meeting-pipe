@@ -8,7 +8,7 @@ let package = Package(
         .executable(name: "MeetingPipe", targets: ["MeetingPipe"])
     ],
     dependencies: [
-        .package(url: "https://github.com/LebJe/TOMLKit", from: "0.6.1")
+        .package(url: "https://github.com/LebJe/TOMLKit", from: "0.6.0")
     ],
     targets: [
         .executableTarget(
