@@ -16,7 +16,7 @@ final class Coordinator: NSObject {
     private let detector: Detector
     private let hotkey: HotkeyManager
     private let consent: ConsentStore
-    private let launcher: PipelineLauncher
+    private let launcher: PipelineDriver
 
     private var state: AppState = .idle {
         didSet { Log.main.info("state: \(String(describing: oldValue)) → \(String(describing: self.state))") }
@@ -25,7 +25,11 @@ final class Coordinator: NSObject {
     /// Auto-skip timer when the user ignores a prompt. Spec §7 prompt_timeout_sec.
     private var promptTimeoutTimer: Timer?
 
-    init(config: Config, statusBar: StatusBarController) {
+    init(
+        config: Config,
+        statusBar: StatusBarController,
+        launcher: PipelineDriver? = nil
+    ) {
         self.config = config
         self.statusBar = statusBar
         self.recorder = MeetingRecorder()
@@ -37,7 +41,7 @@ final class Coordinator: NSObject {
         )
         self.hotkey = HotkeyManager()
         self.consent = ConsentStore()
-        self.launcher = PipelineLauncher()
+        self.launcher = launcher ?? PipelineLauncher()
         super.init()
     }
 

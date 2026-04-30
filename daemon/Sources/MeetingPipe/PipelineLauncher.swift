@@ -1,7 +1,14 @@
 import Foundation
 
+/// Contract the Coordinator depends on to run a captured audio file through
+/// the transcription/summarization/publish pipeline. The default
+/// implementation is `PipelineLauncher`; tests substitute a fake.
+protocol PipelineDriver: AnyObject {
+    func runAll(wav: URL, completion: @escaping (Result<URL?, Error>) -> Void)
+}
+
 /// Spawns `mp run-all <wav>` out of process so transcription doesn't block the daemon.
-final class PipelineLauncher {
+final class PipelineLauncher: PipelineDriver {
     enum LaunchError: Error, LocalizedError {
         case mpNotFound
         case nonZeroExit(Int32, String)

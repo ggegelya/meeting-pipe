@@ -29,24 +29,88 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from .config import Config, load_secrets, require_env
+from .endpoints import NOTION_API_BASE, NOTION_API_VERSION, notion_page_url
 from .schemas import MeetingSummary
+from .services import NotionPublisher
 
 log = logging.getLogger("mp.publish_notion")
-
-NOTION_API = "https://api.notion.com/v1"
-NOTION_VERSION = "2022-06-28"
 
 
 class NotionError(RuntimeError):
     pass
 
 
+class NotionRestPublisher:
+    """Concrete `NotionPublisher` that talks to api.notion.com directly.
+
+    Owns the httpx client and the create-vs-update decision, but stays
+    schema-thin: property mapping and block layout live in module-level
+    helpers below so they can be unit-tested in isolation.
+    """
+
+    def __init__(self, *, token: str, cfg: Config) -> None:
+        self._cfg = cfg
+        self._headers = {
+            "Authorization": f"Bearer {token}",
+            "Notion-Version": NOTION_API_VERSION,
+            "Content-Type": "application/json",
+        }
+
+    def upsert(
+        self,
+        *,
+        summary: MeetingSummary,
+        transcript_md: Path | None,
+        sidecar_path: Path,
+    ) -> dict[str, Any]:
+        existing = _load_sidecar(sidecar_path)
+        body_blocks = _build_blocks(
+            summary, transcript_md, self._cfg.notion.include_full_transcript
+        )
+
+        with httpx.Client(
+            base_url=NOTION_API_BASE,
+            headers=self._headers,
+            timeout=30.0,
+        ) as client:
+            if existing and existing.get("page_id"):
+                page_id = existing["page_id"]
+                log.info("Updating existing page %s", page_id)
+                page = _update_page(client, page_id, summary, self._cfg, body_blocks)
+                idempotent = True
+            else:
+                log.info("Creating new page in database %s", self._cfg.notion.database_id)
+                page = _create_page(client, self._cfg, summary, body_blocks)
+                idempotent = False
+
+        page_id = page["id"]
+        page_url = page.get("url") or notion_page_url(page_id)
+
+        sidecar_path.write_text(
+            json.dumps(
+                {"page_id": page_id, "page_url": page_url, "updated_at": _now_iso()},
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        log.info("Published → %s", page_url)
+        return {"page_id": page_id, "page_url": page_url, "idempotent": idempotent}
+
+
 def publish(
     summary_json: Path,
     cfg: Config | None = None,
     transcript_md: Path | None = None,
+    *,
+    publisher: NotionPublisher | None = None,
 ) -> dict[str, Any]:
-    """Publish the summary; return {page_id, page_url, idempotent: bool}."""
+    """Publish the summary; return {page_id, page_url, idempotent: bool}.
+
+    Pass a custom `publisher` to redirect output (e.g. local-only, test
+    capture); defaults to `NotionRestPublisher`. Honours `regulated_mode`
+    by short-circuiting before any publisher is instantiated.
+    """
     cfg = cfg or Config.load()
     load_secrets()
 
@@ -56,8 +120,6 @@ def publish(
 
     if not cfg.notion.database_id:
         raise NotionError("notion.database_id is empty in config.toml")
-
-    token = require_env("NOTION_TOKEN")
 
     summary = MeetingSummary.model_validate_json(summary_json.read_text(encoding="utf-8"))
 
@@ -69,42 +131,16 @@ def publish(
         transcript_md = candidate if candidate.exists() else None
 
     sidecar = _sidecar_path(summary_json)
-    existing = _load_sidecar(sidecar)
 
-    body_blocks = _build_blocks(summary, transcript_md, cfg.notion.include_full_transcript)
+    if publisher is None:
+        token = require_env("NOTION_TOKEN")
+        publisher = NotionRestPublisher(token=token, cfg=cfg)
 
-    with httpx.Client(
-        base_url=NOTION_API,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Notion-Version": NOTION_VERSION,
-            "Content-Type": "application/json",
-        },
-        timeout=30.0,
-    ) as client:
-        if existing and existing.get("page_id"):
-            page_id = existing["page_id"]
-            log.info("Updating existing page %s", page_id)
-            page = _update_page(client, page_id, summary, cfg, body_blocks)
-            idempotent = True
-        else:
-            log.info("Creating new page in database %s", cfg.notion.database_id)
-            page = _create_page(client, cfg, summary, body_blocks)
-            idempotent = False
-
-    page_id = page["id"]
-    page_url = page.get("url") or f"https://www.notion.so/{page_id.replace('-', '')}"
-
-    sidecar.write_text(
-        json.dumps(
-            {"page_id": page_id, "page_url": page_url, "updated_at": _now_iso()},
-            indent=2,
-        ),
-        encoding="utf-8",
+    return publisher.upsert(
+        summary=summary,
+        transcript_md=transcript_md,
+        sidecar_path=sidecar,
     )
-
-    log.info("Published → %s", page_url)
-    return {"page_id": page_id, "page_url": page_url, "idempotent": idempotent}
 
 
 # --- HTTP layer ---------------------------------------------------------------

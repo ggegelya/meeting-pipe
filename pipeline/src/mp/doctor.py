@@ -17,6 +17,21 @@ import sys
 import httpx
 
 from .config import CONFIG_PATH, SECRETS_PATH, Config, load_secrets
+from .endpoints import (
+    ANTHROPIC_API_BASE,
+    ANTHROPIC_API_VERSION,
+    ANTHROPIC_CONSOLE_KEYS_URL,
+    ANTHROPIC_DOCTOR_PROBE_MODEL,
+    ANTHROPIC_MESSAGES_PATH,
+    HF_API_WHOAMI,
+    HF_TOKENS_URL,
+    NOTION_API_BASE,
+    NOTION_API_VERSION,
+    NOTION_INTEGRATIONS_URL,
+    PYANNOTE_GATED_REPOS,
+    hf_model_api_url,
+    hf_model_page_url,
+)
 
 
 def _ok(msg: str) -> None:
@@ -95,20 +110,20 @@ def check_anthropic(present: bool) -> None:
     print("\n== Anthropic API ==")
     if not present:
         _fail("ANTHROPIC_API_KEY missing — skipping live check")
-        _info("get one at: https://console.anthropic.com/settings/keys")
+        _info(f"get one at: {ANTHROPIC_CONSOLE_KEYS_URL}")
         return
     api_key = os.environ["ANTHROPIC_API_KEY"]
     try:
         # Minimal billable call. We pin to a cheap model so this costs ~nothing.
         resp = httpx.post(
-            "https://api.anthropic.com/v1/messages",
+            f"{ANTHROPIC_API_BASE}{ANTHROPIC_MESSAGES_PATH}",
             headers={
                 "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
+                "anthropic-version": ANTHROPIC_API_VERSION,
                 "content-type": "application/json",
             },
             json={
-                "model": "claude-haiku-4-5-20251001",
+                "model": ANTHROPIC_DOCTOR_PROBE_MODEL,
                 "max_tokens": 1,
                 "messages": [{"role": "user", "content": "ping"}],
             },
@@ -133,15 +148,15 @@ def check_notion(present: bool, cfg: Config | None) -> None:
     print("\n== Notion API ==")
     if not present:
         _fail("NOTION_TOKEN missing — skipping live check")
-        _info("create an integration at: https://www.notion.so/profile/integrations")
+        _info(f"create an integration at: {NOTION_INTEGRATIONS_URL}")
         return
     token = os.environ["NOTION_TOKEN"]
     headers = {
         "Authorization": f"Bearer {token}",
-        "Notion-Version": "2022-06-28",
+        "Notion-Version": NOTION_API_VERSION,
     }
     try:
-        me = httpx.get("https://api.notion.com/v1/users/me", headers=headers, timeout=10.0)
+        me = httpx.get(f"{NOTION_API_BASE}/users/me", headers=headers, timeout=10.0)
     except httpx.HTTPError as e:
         _fail(f"network error reaching api.notion.com: {e}")
         return
@@ -156,7 +171,7 @@ def check_notion(present: bool, cfg: Config | None) -> None:
         return
     db_id = cfg.notion.database_id
     try:
-        db = httpx.get(f"https://api.notion.com/v1/databases/{db_id}", headers=headers, timeout=10.0)
+        db = httpx.get(f"{NOTION_API_BASE}/databases/{db_id}", headers=headers, timeout=10.0)
     except httpx.HTTPError as e:
         _fail(f"network error fetching database: {e}")
         return
@@ -177,12 +192,12 @@ def check_huggingface(present: bool) -> None:
     print("\n== HuggingFace (pyannote model gate) ==")
     if not present:
         _warn("HF_TOKEN missing — diarization will fail at first model download")
-        _info("create a Read token at: https://huggingface.co/settings/tokens")
+        _info(f"create a Read token at: {HF_TOKENS_URL}")
         return
     token = os.environ["HF_TOKEN"]
     try:
         whoami = httpx.get(
-            "https://huggingface.co/api/whoami-v2",
+            HF_API_WHOAMI,
             headers={"Authorization": f"Bearer {token}"},
             timeout=10.0,
         )
@@ -196,10 +211,10 @@ def check_huggingface(present: bool) -> None:
 
     # Probe gated repos. /api/models/{repo} returns 401 if TOS not accepted,
     # 200 if accepted (or repo public). The diarization pipeline pulls both.
-    for repo in ("pyannote/speaker-diarization-3.1", "pyannote/segmentation-3.0"):
+    for repo in PYANNOTE_GATED_REPOS:
         try:
             r = httpx.get(
-                f"https://huggingface.co/api/models/{repo}",
+                hf_model_api_url(repo),
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=10.0,
             )
@@ -210,7 +225,7 @@ def check_huggingface(present: bool) -> None:
             _ok(f"{repo}: TOS accepted, downloadable")
         elif r.status_code in (401, 403):
             _fail(f"{repo}: TOS NOT accepted (HTTP {r.status_code})")
-            _info(f"open https://huggingface.co/{repo} in a browser, click Agree")
+            _info(f"open {hf_model_page_url(repo)} in a browser, click Agree")
         else:
             _warn(f"{repo}: unexpected status {r.status_code}")
 

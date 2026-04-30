@@ -1,0 +1,71 @@
+"""Service-layer protocols for external dependencies.
+
+Concrete implementations live alongside their use sites
+(`AnthropicSummaryClient` in `summarize.py`, `NotionRestPublisher` in
+`publish_notion.py`, `PyannoteDiarizer` in `transcribe.py`). The protocols
+exist so callers depend on contracts, not vendor SDKs, which:
+
+  - lets tests inject in-memory fakes instead of mocking httpx / anthropic
+  - lets us swap providers (a different LLM, a non-Notion sink) without
+    touching the orchestrator
+  - draws a hard boundary between "domain logic" and "this is how the
+    Anthropic SDK happens to be shaped today"
+
+Keep these protocols narrow. They describe what the orchestrator needs,
+not everything the underlying SDK can do.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Protocol, runtime_checkable
+
+from .schemas import MeetingSummary
+
+
+@runtime_checkable
+class SummaryClient(Protocol):
+    """Produces a structured `MeetingSummary` from a transcript.
+
+    Implementations decide how (LLM, hand-written, file paste). The
+    orchestrator only knows that calling this returns a validated summary
+    or raises.
+    """
+
+    def summarize(
+        self,
+        *,
+        system_prompt: str,
+        transcript: str,
+        model: str,
+        max_tokens: int,
+    ) -> MeetingSummary: ...
+
+
+@runtime_checkable
+class NotionPublisher(Protocol):
+    """Publishes a `MeetingSummary` to whatever sink is configured.
+
+    Returns a dict with at least `page_id`, `page_url`, and `idempotent`
+    (or `regulated: True` when the publisher chose to no-op).
+    """
+
+    def upsert(
+        self,
+        *,
+        summary: MeetingSummary,
+        transcript_md: Path | None,
+        sidecar_path: Path,
+    ) -> dict[str, Any]: ...
+
+
+@runtime_checkable
+class Diarizer(Protocol):
+    """Returns a pyannote-style `Annotation` for the given audio file."""
+
+    def diarize(
+        self,
+        wav: Path,
+        *,
+        min_speakers: int,
+        max_speakers: int,
+    ) -> Any: ...
