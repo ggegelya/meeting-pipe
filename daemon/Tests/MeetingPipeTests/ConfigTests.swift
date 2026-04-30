@@ -42,7 +42,7 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(cfg.recording.sampleRate, 16000)
         XCTAssertEqual(cfg.detection.manualHotkey, "ctrl+option+m")
         XCTAssertEqual(cfg.detection.debounceStartSec, 5)
-        XCTAssertEqual(cfg.detection.debounceEndSec, 10)
+        XCTAssertEqual(cfg.detection.debounceEndSec, 5)
         XCTAssertFalse(cfg.modes.regulatedMode)
     }
 

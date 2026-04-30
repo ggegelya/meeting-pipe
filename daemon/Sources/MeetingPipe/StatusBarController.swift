@@ -24,9 +24,9 @@ final class StatusBarController {
         rebuildMenu(state: .prompting(source: source))
     }
 
-    func setRecording(file: URL) {
-        item.button?.title = " Recording"
-        rebuildMenu(state: .recording(file: file, source: nil))
+    func setRecording(file: URL, source: AppSource?, summaryMode: SummaryMode) {
+        item.button?.title = summaryMode == .byo ? " Recording (BYO)" : " Recording"
+        rebuildMenu(state: .recording(file: file, source: source, summaryMode: summaryMode))
     }
 
     func setStopping() {
@@ -68,6 +68,11 @@ final class StatusBarController {
         let openRecordings = NSMenuItem(title: "Open Recordings Folder", action: #selector(Coordinator.menuOpenRecordings), keyEquivalent: "")
         openRecordings.target = coordinator
         menu.addItem(openRecordings)
+
+        menu.addItem(.separator())
+        let prefs = NSMenuItem(title: "Preferences…", action: #selector(Coordinator.menuPreferences), keyEquivalent: ",")
+        prefs.target = coordinator
+        menu.addItem(prefs)
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit MeetingPipe", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))

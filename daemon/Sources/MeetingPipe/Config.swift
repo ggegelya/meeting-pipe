@@ -31,12 +31,12 @@ struct Config {
 
     static let defaultPath: URL = {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/meeting-pipe/config.toml")
+            .appendingPathComponent(Endpoints.Paths.configRelative)
     }()
 
     static let secretsPath: URL = {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/meeting-pipe/secrets.env")
+            .appendingPathComponent(Endpoints.Paths.secretsRelative)
     }()
 
     static func load(from url: URL = Config.defaultPath) throws -> Config {
@@ -52,7 +52,7 @@ struct Config {
         let consent = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string }) ?? []
 
         let debounceStart = det?["debounce_start_sec"]?.double ?? 5
-        let debounceEnd = det?["debounce_end_sec"]?.double ?? 10
+        let debounceEnd = det?["debounce_end_sec"]?.double ?? 5
         let hotkey = det?["manual_hotkey"]?.string ?? "ctrl+option+m"
         let promptTimeout = det?["prompt_timeout_sec"]?.double ?? 30
 
@@ -84,7 +84,7 @@ struct Config {
             ),
             detection: Detection(
                 debounceStartSec: 5,
-                debounceEndSec: 10,
+                debounceEndSec: 5,
                 manualHotkey: "ctrl+option+m",
                 promptTimeoutSec: 30
             ),

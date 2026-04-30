@@ -13,8 +13,8 @@ final class StateTests: XCTestCase {
 
         XCTAssertFalse(AppState.prompting(source: src).isAcceptingPrompts)
         XCTAssertFalse(AppState.suppressed(source: src).isAcceptingPrompts)
-        XCTAssertFalse(AppState.recording(file: url, source: src).isAcceptingPrompts)
-        XCTAssertFalse(AppState.stopping(file: url, source: src).isAcceptingPrompts)
+        XCTAssertFalse(AppState.recording(file: url, source: src, summaryMode: .auto).isAcceptingPrompts)
+        XCTAssertFalse(AppState.stopping(file: url, source: src, summaryMode: .auto).isAcceptingPrompts)
         XCTAssertFalse(AppState.handoff(file: url).isAcceptingPrompts)
     }
 

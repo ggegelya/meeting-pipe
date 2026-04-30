@@ -1,7 +1,25 @@
 import Foundation
 
+/// Contract the Coordinator depends on to run a captured audio file through
+/// the transcription/summarization/publish pipeline. The default
+/// implementation is `PipelineLauncher`; tests substitute a fake.
+///
+/// `summaryMode == .byo` instructs the pipeline to skip the Anthropic call
+/// and write a paste-into-Claude-Code bundle instead. The launcher passes
+/// `MP_FORCE_BYO=1` through the subprocess environment.
+protocol PipelineDriver: AnyObject {
+    func runAll(wav: URL, summaryMode: SummaryMode, completion: @escaping (Result<URL?, Error>) -> Void)
+}
+
+extension PipelineDriver {
+    /// Convenience for callers that don't care about summary mode (auto).
+    func runAll(wav: URL, completion: @escaping (Result<URL?, Error>) -> Void) {
+        runAll(wav: wav, summaryMode: .auto, completion: completion)
+    }
+}
+
 /// Spawns `mp run-all <wav>` out of process so transcription doesn't block the daemon.
-final class PipelineLauncher {
+final class PipelineLauncher: PipelineDriver {
     enum LaunchError: Error, LocalizedError {
         case mpNotFound
         case nonZeroExit(Int32, String)
@@ -17,7 +35,11 @@ final class PipelineLauncher {
     }
 
     /// `completion` receives the Notion page URL (nil in regulated_mode) or an error.
-    func runAll(wav: URL, completion: @escaping (Result<URL?, Error>) -> Void) {
+    func runAll(
+        wav: URL,
+        summaryMode: SummaryMode = .auto,
+        completion: @escaping (Result<URL?, Error>) -> Void
+    ) {
         guard let mpPath = Self.findMP() else {
             completion(.failure(LaunchError.mpNotFound))
             return
@@ -31,7 +53,14 @@ final class PipelineLauncher {
         // ANTHROPIC_API_KEY / NOTION_TOKEN / HF_TOKEN without restarting the
         // daemon. The daemon's own env was sourced once at startup; spawned
         // pipeline processes get a fresh read every time.
-        p.environment = Self.freshEnvironment()
+        var env = Self.freshEnvironment()
+        if summaryMode == .byo {
+            // Pipeline checks this flag in orchestrate.run_all and short-
+            // circuits to the manual-paste bundle. Env-var (not flag) so
+            // existing `mp run-all <wav>` invocations stay backward-compatible.
+            env["MP_FORCE_BYO"] = "1"
+        }
+        p.environment = env
 
         let outPipe = Pipe()
         let errPipe = Pipe()

@@ -34,7 +34,10 @@ class Recording(BaseModel):
 
 class Detection(BaseModel):
     debounce_start_sec: float = 5.0
-    debounce_end_sec: float = 10.0
+    # 5s (down from 10s) since Signal C (meeting-window-closed) gives us a
+    # faster confirmation that the call actually ended. Stays in sync with
+    # the daemon's Config.swift default and config.example.toml.
+    debounce_end_sec: float = 5.0
     manual_hotkey: str = "ctrl+option+m"
     prompt_timeout_sec: float = 30.0
 

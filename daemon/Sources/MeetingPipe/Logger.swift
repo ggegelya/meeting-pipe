@@ -2,9 +2,9 @@ import Foundation
 import os.log
 
 enum Log {
-    static let main = Logger(subsystem: "com.meetingpipe.daemon", category: "main")
-    static let detector = Logger(subsystem: "com.meetingpipe.daemon", category: "detector")
-    static let recorder = Logger(subsystem: "com.meetingpipe.daemon", category: "recorder")
+    static let main = Logger(subsystem: Endpoints.logSubsystem, category: "main")
+    static let detector = Logger(subsystem: Endpoints.logSubsystem, category: "detector")
+    static let recorder = Logger(subsystem: Endpoints.logSubsystem, category: "recorder")
 
     private static let isoFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
@@ -14,7 +14,7 @@ enum Log {
 
     static var logsDir: URL {
         let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Logs/MeetingPipe", isDirectory: true)
+            .appendingPathComponent(Endpoints.Paths.logsRelative, isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

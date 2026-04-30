@@ -33,6 +33,7 @@ from tenacity import (
 
 from .config import Config, load_secrets, require_env
 from .schemas import SUMMARY_TOOL, MeetingSummary
+from .services import SummaryClient
 
 log = logging.getLogger("mp.summarize")
 
@@ -67,25 +68,104 @@ def _load_system_prompt(team_context: str) -> str:
     return text.replace("{team_context}", team_context or "(no team context configured)")
 
 
-def summarize(transcript_md: Path, cfg: Config | None = None) -> dict[str, Path]:
+class AnthropicSummaryClient:
+    """Concrete `SummaryClient` backed by Anthropic's tool-use API.
+
+    Holds a single `anthropic.Anthropic` instance for connection reuse and
+    encapsulates the tool-use round-trip plus one schema-violation retry.
+    Constructed once per `summarize()` call; tests substitute a fake
+    implementing the same `SummaryClient` protocol.
+    """
+
+    def __init__(self, *, api_key: str) -> None:
+        self._client = anthropic.Anthropic(api_key=api_key)
+
+    def summarize(
+        self,
+        *,
+        system_prompt: str,
+        transcript: str,
+        model: str,
+        max_tokens: int,
+    ) -> MeetingSummary:
+        last_err: Exception | None = None
+        for attempt in (1, 2):
+            log.info("Anthropic call attempt %d (model=%s)", attempt, model)
+            response = _create_message(
+                self._client,
+                model=model,
+                max_tokens=max_tokens,
+                system=[
+                    {
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                ],
+                tools=[SUMMARY_TOOL],
+                tool_choice={"type": "tool", "name": "emit_meeting_summary"},
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            "Summarize this meeting. Call `emit_meeting_summary` exactly once.\n\n"
+                            "TRANSCRIPT:\n\n" + transcript
+                        ),
+                    }
+                ],
+            )
+
+            tool_blocks = [b for b in response.content if b.type == "tool_use"]
+            if not tool_blocks:
+                last_err = RuntimeError(f"No tool_use block (stop_reason={response.stop_reason})")
+                log.warning("Attempt %d: %s", attempt, last_err)
+                continue
+
+            try:
+                return MeetingSummary.model_validate(tool_blocks[0].input)
+            except ValidationError as ve:
+                last_err = ve
+                log.warning("Attempt %d: schema violation: %s", attempt, ve)
+                continue
+
+        assert last_err is not None
+        raise last_err
+
+
+def summarize(
+    transcript_md: Path,
+    cfg: Config | None = None,
+    *,
+    client: SummaryClient | None = None,
+) -> dict[str, Path]:
     """Read `<stem>.md` and write `<stem>.summary.json` + `<stem>.summary.md`.
 
     The transcript path is the speaker-segmented Markdown produced by
     `mp transcribe`. The .json sidecar is the canonical structured output;
     the .summary.md is a human-readable rendering for Notion / quick review.
+
+    Pass a custom `client` to swap the LLM provider or to inject a fake
+    in tests; defaults to `AnthropicSummaryClient`.
     """
     cfg = cfg or Config.load()
     load_secrets()
-    api_key = require_env("ANTHROPIC_API_KEY")
 
     transcript = transcript_md.read_text(encoding="utf-8")
     if not transcript.strip():
         raise ValueError(f"Empty transcript: {transcript_md}")
 
     system_prompt = _load_system_prompt(cfg.summarization.team_context)
-    client = anthropic.Anthropic(api_key=api_key)
 
-    summary = _call_with_retry(client, cfg, system_prompt, transcript)
+    if client is None:
+        api_key = require_env("ANTHROPIC_API_KEY")
+        client = AnthropicSummaryClient(api_key=api_key)
+
+    summary = client.summarize(
+        system_prompt=system_prompt,
+        transcript=transcript,
+        model=cfg.summarization.model,
+        max_tokens=cfg.summarization.max_tokens,
+    )
 
     stem = transcript_md.stem
     out_dir = transcript_md.parent
@@ -100,56 +180,6 @@ def summarize(transcript_md: Path, cfg: Config | None = None) -> dict[str, Path]
 
     log.info("Wrote %s and %s", json_path, md_path)
     return {"json": json_path, "md": md_path}
-
-
-def _call_with_retry(
-    client: anthropic.Anthropic,
-    cfg: Config,
-    system_prompt: str,
-    transcript: str,
-) -> MeetingSummary:
-    last_err: Exception | None = None
-    for attempt in (1, 2):
-        log.info("Anthropic call attempt %d (model=%s)", attempt, cfg.summarization.model)
-        response = _create_message(
-            client,
-            model=cfg.summarization.model,
-            max_tokens=cfg.summarization.max_tokens,
-            system=[
-                {
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"},
-                },
-            ],
-            tools=[SUMMARY_TOOL],
-            tool_choice={"type": "tool", "name": "emit_meeting_summary"},
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        "Summarize this meeting. Call `emit_meeting_summary` exactly once.\n\n"
-                        "TRANSCRIPT:\n\n" + transcript
-                    ),
-                }
-            ],
-        )
-
-        tool_blocks = [b for b in response.content if b.type == "tool_use"]
-        if not tool_blocks:
-            last_err = RuntimeError(f"No tool_use block (stop_reason={response.stop_reason})")
-            log.warning("Attempt %d: %s", attempt, last_err)
-            continue
-
-        try:
-            return MeetingSummary.model_validate(tool_blocks[0].input)
-        except ValidationError as ve:
-            last_err = ve
-            log.warning("Attempt %d: schema violation: %s", attempt, ve)
-            continue
-
-    assert last_err is not None
-    raise last_err
 
 
 def _render_summary_md(s: MeetingSummary) -> str:

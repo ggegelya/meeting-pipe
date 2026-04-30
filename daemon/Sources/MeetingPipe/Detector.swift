@@ -9,12 +9,64 @@ protocol DetectorDelegate: AnyObject {
     func detector(_ detector: Detector, event: DetectorEvent)
 }
 
+/// Pure function describing the detector's signal-composition rules.
+///
+/// Lifted out of `Detector` so it can be unit-tested without the real
+/// NSWorkspace / AVCapture / Accessibility plumbing. Each input is a
+/// boolean derived elsewhere; this enum makes the start/end decision.
+enum SignalDecision: Equatable {
+    case shouldStart
+    case shouldEnd
+    case noChange
+}
+
+/// Inputs to the signal composer — three independent probes plus the
+/// "are we currently recording" bit.
+struct DetectorSignals: Equatable {
+    /// Signal A — a known meeting app is running OR a meeting tab is frontmost.
+    var meetingAppPresent: Bool
+    /// Signal B — some application is currently capturing the mic.
+    var micActive: Bool
+    /// Signal C — a meeting *window* is currently open (best-effort probe).
+    /// On unsupported apps this stays `true` so we don't spuriously stop
+    /// recording. False is only returned when the probe is confident.
+    var meetingWindowOpen: Bool
+    /// Have we already emitted `.started`? Determines start vs. end semantics.
+    var hasFiredStart: Bool
+
+    /// Decide whether the current signal snapshot should fire start or end.
+    ///
+    ///   - Start fires when both meeting app + mic are present.
+    ///     Window state is intentionally ignored at start: many meeting
+    ///     apps open the mic before any window is visible.
+    ///   - End fires when EITHER mic releases OR the window closes
+    ///     (the meeting app staying alive in the dock isn't enough to
+    ///     keep us recording — that's the regression the user hit).
+    func decide() -> SignalDecision {
+        if hasFiredStart {
+            return (!micActive || !meetingWindowOpen) ? .shouldEnd : .noChange
+        }
+        return (meetingAppPresent && micActive) ? .shouldStart : .noChange
+    }
+}
+
 /// Two-signal AND with debounce (SPEC §5):
 ///   A. Meeting app frontmost / running (native bundle ID, or browser tab title).
 ///   B. Microphone in use somewhere.
 /// Both must hold for `debounceStartSec` before .started fires; either
 /// going false for `debounceEndSec` fires .ended.
+///
+/// Once recording, a third signal (meeting-window-closed) also triggers
+/// end. This catches the common case where Zoom/Teams keeps the input
+/// device opened for a few extra seconds after a hangup.
 final class Detector {
+    /// Closure form of the window probe so tests can inject a fake without
+    /// running Accessibility. Returns `true` when a known meeting window
+    /// is currently visible, `false` only when the probe is confident
+    /// the window is gone, `nil` when the probe can't tell (treated as
+    /// "still open" by the composer to avoid false-stops).
+    typealias WindowProbe = (AppSource) -> Bool?
+
     weak var delegate: DetectorDelegate?
 
     private let debounceStartSec: Double
@@ -22,6 +74,7 @@ final class Detector {
     private let nativeBundles: Set<String>
     private let browserBundles: Set<String>
     private let browserURLFragments: [String]
+    private let windowProbe: WindowProbe
 
     /// Signal A — last seen meeting app source (or nil).
     private var meetingApp: AppSource?
@@ -34,17 +87,25 @@ final class Detector {
 
     private var hasFiredStart: Bool = false
     private var pendingSource: AppSource?
+    /// The `AppSource` that drove the current recording. Pinned at .started
+    /// so the window probe knows which app to inspect.
+    private var recordingSource: AppSource?
 
     private var nsObservers: [NSObjectProtocol] = []
     private var avObservation: NSKeyValueObservation?
 
-    init(debounceStartSec: Double, debounceEndSec: Double) {
+    init(
+        debounceStartSec: Double,
+        debounceEndSec: Double,
+        windowProbe: WindowProbe? = nil
+    ) {
         self.debounceStartSec = debounceStartSec
         self.debounceEndSec = debounceEndSec
         let apps = Detector.loadMeetingApps()
         self.nativeBundles = apps.native
         self.browserBundles = apps.browsers
         self.browserURLFragments = apps.urlFragments
+        self.windowProbe = windowProbe ?? Detector.defaultWindowProbe
     }
 
     func start() {
@@ -107,54 +168,89 @@ final class Detector {
     // MARK: Evaluation
 
     private func reevaluate() {
-        // Refresh both signals.
-        let a = scanMeetingApp()
-        let b = micInUse()
+        // Refresh signals.
+        let app = scanMeetingApp()
+        let mic = micInUse()
+        // Only run the AX window probe once we've fired .started — before
+        // that, `decide()` ignores `meetingWindowOpen` (start fires on
+        // app+mic alone) and the AX traversal is wasted work on the main
+        // run loop. Pass `true` (the safe "still open" default) so the
+        // composer's start path stays unaffected.
+        let windowOpen = hasFiredStart ? currentWindowOpen(app: app) : true
 
-        meetingApp = a
-        micActive = b
+        meetingApp = app
+        micActive = mic
 
-        let bothOn = (a != nil) && b
+        let signals = DetectorSignals(
+            meetingAppPresent: app != nil,
+            micActive: mic,
+            meetingWindowOpen: windowOpen,
+            hasFiredStart: hasFiredStart
+        )
 
-        if bothOn {
+        switch signals.decide() {
+        case .shouldStart:
             // Cancel any pending end-debounce; arm start-debounce if not already firing.
             endTimer?.invalidate(); endTimer = nil
-            if hasFiredStart {
-                // Already in a meeting. Don't re-emit .started even if the
-                // user switches from Zoom to a Meet tab mid-call — Coordinator
-                // owns the active recording and treats it as one meeting.
-                return
-            }
             if startTimer == nil {
-                pendingSource = a
+                pendingSource = app
                 startTimer = Timer.scheduledTimer(withTimeInterval: debounceStartSec, repeats: false) { [weak self] _ in
                     guard let self = self else { return }
                     self.startTimer = nil
-                    // Confirm both still on at fire time.
+                    // Confirm both signals still on at fire time. Window
+                    // state is intentionally NOT re-checked here — many
+                    // meeting apps don't paint the call window until you
+                    // unmute, but the detector's job is to capture from
+                    // the moment audio is exchanged.
                     if self.scanMeetingApp() != nil && self.micInUse(), let src = self.pendingSource {
                         self.hasFiredStart = true
+                        self.recordingSource = src
                         Log.detector.info("→ started: \(src.bundleID)")
                         Log.writeLine("detector", "started bundle=\(src.bundleID) name=\(src.displayName)")
                         self.delegate?.detector(self, event: .started(src))
                     }
                 }
             }
-        } else {
+        case .shouldEnd:
             startTimer?.invalidate(); startTimer = nil
             pendingSource = nil
-            if hasFiredStart && endTimer == nil {
+            if endTimer == nil {
                 endTimer = Timer.scheduledTimer(withTimeInterval: debounceEndSec, repeats: false) { [weak self] _ in
                     guard let self = self else { return }
                     self.endTimer = nil
-                    if self.scanMeetingApp() == nil || !self.micInUse() {
+                    let confirmApp = self.scanMeetingApp()
+                    let confirmMic = self.micInUse()
+                    let confirmWindow = self.currentWindowOpen(app: confirmApp)
+                    let reFired = DetectorSignals(
+                        meetingAppPresent: confirmApp != nil,
+                        micActive: confirmMic,
+                        meetingWindowOpen: confirmWindow,
+                        hasFiredStart: true
+                    ).decide()
+                    if reFired == .shouldEnd {
                         self.hasFiredStart = false
-                        Log.detector.info("→ ended")
-                        Log.writeLine("detector", "ended")
+                        self.recordingSource = nil
+                        Log.detector.info("→ ended (mic=\(confirmMic) window=\(confirmWindow))")
+                        Log.writeLine("detector", "ended mic=\(confirmMic) window=\(confirmWindow)")
                         self.delegate?.detector(self, event: .ended)
                     }
                 }
             }
+        case .noChange:
+            // Nothing to arm; either we're already in steady state or
+            // the previous timer is still pending.
+            break
         }
+    }
+
+    /// Resolve the window probe for the current state. Falls back to
+    /// `true` when there's no app to inspect or the probe can't tell —
+    /// the composer treats unknown as "still open" so we never stop
+    /// recording on an inconclusive signal.
+    private func currentWindowOpen(app: AppSource?) -> Bool {
+        let target = recordingSource ?? app
+        guard let target = target else { return true }
+        return windowProbe(target) ?? true
     }
 
     // MARK: Signal A
@@ -249,6 +345,61 @@ final class Detector {
             }
         }
         return false
+    }
+
+    // MARK: Window probe (Signal C)
+
+    /// Default probe: walks the target app's AX window list looking for a
+    /// title that *isn't* the welcome / settings / chat surface. When it
+    /// can't decide (no AX permission, unfamiliar app), returns nil so
+    /// the composer treats the meeting as still in progress.
+    ///
+    /// Browser meetings reuse the same heuristic on the frontmost browser
+    /// window's title — which is what `scanBrowserTab` already produces,
+    /// so for browser sources we just confirm `scanBrowserTab()` still
+    /// finds a meeting tab.
+    private static func defaultWindowProbe(_ source: AppSource) -> Bool? {
+        guard AXIsProcessTrusted() else { return nil }
+
+        // Browser case: re-check tab title presence. We can't construct
+        // a `Detector` instance here, so duplicate the lookup minimally.
+        if let pid = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == source.bundleID
+        })?.processIdentifier {
+            let axApp = AXUIElementCreateApplication(pid)
+            var windowsRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+                  let windows = windowsRef as? [AXUIElement] else {
+                return nil
+            }
+            // Native meeting apps lose their call window when the user hangs up,
+            // even though the dock icon stays. Use that as a strong signal.
+            //
+            // Heuristic: if the only remaining windows are sized like the
+            // launcher / preferences (small) and have titles like "Zoom",
+            // "Settings", "Chat", "Home", treat as closed. If any window
+            // has a title with meeting-flavored words, treat as open.
+            var sawMeetingWord = false
+            var anyVisible = false
+            for win in windows {
+                var titleRef: CFTypeRef?
+                let titleStatus = AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef)
+                guard titleStatus == .success, let title = titleRef as? String else { continue }
+                anyVisible = true
+                let lowered = title.lowercased()
+                let meetingWords = ["meeting", "zoom meeting", "call", "huddle", "webex meeting"]
+                if meetingWords.contains(where: { lowered.contains($0) }) {
+                    sawMeetingWord = true
+                    break
+                }
+            }
+            if !anyVisible { return false }
+            if sawMeetingWord { return true }
+            // No meeting word, but windows exist (app is up): inconclusive.
+            return nil
+        }
+
+        return nil
     }
 
     // MARK: Resource loading

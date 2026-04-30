@@ -17,6 +17,9 @@ Subcommands:
   summarize <transcript.md>   Anthropic summarization → <stem>.summary.json/.md
   publish-notion <summary.json>
                               Publish summary to Notion (idempotent)
+  publish-from-paste <transcript.md>
+                              Parse <stem>.summary.md you wrote by hand,
+                              then publish to Notion (BYO summary mode)
   run-all <wav>               Run all three in order, fail-fast
   doctor                      Preflight check (secrets, config, live API access)
 
@@ -50,6 +53,9 @@ def main() -> int:
         return run(rest)
     if cmd in {"publish-notion", "publish_notion"}:
         from .publish_notion import main as run
+        return run(rest)
+    if cmd in {"publish-from-paste", "publish_from_paste"}:
+        from .publish_from_paste import main as run
         return run(rest)
     if cmd in {"run-all", "run_all"}:
         from .orchestrate import main as run
