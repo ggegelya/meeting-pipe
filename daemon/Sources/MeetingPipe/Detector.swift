@@ -171,7 +171,12 @@ final class Detector {
         // Refresh signals.
         let app = scanMeetingApp()
         let mic = micInUse()
-        let windowOpen = currentWindowOpen(app: app)
+        // Only run the AX window probe once we've fired .started — before
+        // that, `decide()` ignores `meetingWindowOpen` (start fires on
+        // app+mic alone) and the AX traversal is wasted work on the main
+        // run loop. Pass `true` (the safe "still open" default) so the
+        // composer's start path stays unaffected.
+        let windowOpen = hasFiredStart ? currentWindowOpen(app: app) : true
 
         meetingApp = app
         micActive = mic

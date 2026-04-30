@@ -19,9 +19,13 @@ dependencies = [
     "whisperx>=3.1.1",
     "torch>=2.2.0,<2.5.0",
     "torchaudio>=2.2.0,<2.5.0",
-    # pyannote.audio (pulled in by whisperx) imports matplotlib unconditionally
-    # in its segmentation task mixins. Not in pyannote's own install_requires,
-    # so we declare it explicitly to keep the venv resolvable.
+    # pyannote.audio is imported directly by transcribe.py (PyannoteDiarizer
+    # calls Pipeline.from_pretrained), so declare it explicitly even though
+    # whisperx pulls it transitively. Same story for pandas — used by
+    # annotation_to_whisperx_df. matplotlib is needed because pyannote's
+    # segmentation task mixins import it unconditionally and don't declare it.
+    "pyannote.audio>=3.3.0",
+    "pandas>=2.0",
     "matplotlib>=3.7",
     # Notion + auth + retries.
     "tenacity>=8.2.0",

@@ -43,8 +43,14 @@ final class ConfigStore: ObservableObject {
 
     private var saveTimer: Timer?
 
-    /// `now: Date` is monkey-patchable for tests that don't want to wait
-    /// the debounce window. Production callers use the no-arg overload.
+    /// Set true at the end of `init`. `didSet` callbacks fire while we
+    /// assign the `@Published` defaults during init; gating `scheduleSave`
+    /// on this flag prevents a spurious immediate write of compile-time
+    /// defaults to the user's config file when init runs off the main
+    /// thread (where the previous `Thread.current.isMainThread` re-entry
+    /// guard didn't actually catch the re-entry).
+    private var isInitialized: Bool = false
+
     init(configURL: URL = Config.defaultPath) throws {
         self.configURL = configURL
         let raw: String
@@ -72,6 +78,10 @@ final class ConfigStore: ObservableObject {
         self.promptTimeoutSec = det?["prompt_timeout_sec"]?.double ?? 30
 
         self.regulatedMode = mod?["regulated_mode"]?.bool ?? false
+
+        // Arming this last is the whole point — every prior `self.x = …`
+        // triggered didSet which now no-ops on `!isInitialized`.
+        self.isInitialized = true
     }
 
     // MARK: - Persistence
@@ -86,9 +96,10 @@ final class ConfigStore: ObservableObject {
     /// 500ms is below human-noticeable latency but high enough that
     /// dragging a slider doesn't thrash the file system.
     private func scheduleSave() {
-        // Avoid re-entry during init: didSet fires while published vars
-        // are being assigned in init. Once we have a saveTimer-capable
-        // run loop, we're past init.
+        // Drop the storm of didSet callbacks fired during init.
+        guard isInitialized else { return }
+        // Timer.scheduledTimer must be called from a thread with a run
+        // loop. Hop to main if a non-UI setter raced in.
         guard Thread.current.isMainThread else {
             DispatchQueue.main.async { [weak self] in self?.scheduleSave() }
             return
@@ -132,8 +143,13 @@ final class ConfigStore: ObservableObject {
         )
         let tmp = configURL.appendingPathExtension("writing")
         try toml.data(using: .utf8)?.write(to: tmp, options: .atomic)
+        // Propagate the replace error rather than swallowing with `try?` —
+        // a silent failure here would mean every subsequent Preferences
+        // edit also vanishes (the user thinks they saved, but the file
+        // didn't change), and the user has no signal anything is wrong.
+        // The caller logs at error level via the writeQueue's catch.
         if FileManager.default.fileExists(atPath: configURL.path) {
-            _ = try? FileManager.default.replaceItemAt(configURL, withItemAt: tmp)
+            _ = try FileManager.default.replaceItemAt(configURL, withItemAt: tmp)
         } else {
             try FileManager.default.moveItem(at: tmp, to: configURL)
         }
