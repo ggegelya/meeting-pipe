@@ -26,7 +26,7 @@ final class StatusBarController {
 
     func setRecording(file: URL) {
         item.button?.title = " Recording"
-        rebuildMenu(state: .recording(file: file, source: nil))
+        rebuildMenu(state: .recording(file: file, source: nil, summaryMode: .auto))
     }
 
     func setStopping() {

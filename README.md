@@ -28,6 +28,12 @@ For meetings longer than ~1 hour, the pipeline writes the transcript to disk
 along with a paste-into-Claude-Code bundle and **does not call the Anthropic
 API**. See "Long meetings" below.
 
+The on-screen prompt also has a **Record (BYO)** button: same flow, but
+opt-in per-meeting — useful for sensitive calls or when you'd rather
+hand-summarise. After the recording finishes, save your summary as
+`<stem>.summary.md` next to the transcript and run
+`mp publish-from-paste <stem>.md` to push it to Notion.
+
 ---
 
 ## Requirements

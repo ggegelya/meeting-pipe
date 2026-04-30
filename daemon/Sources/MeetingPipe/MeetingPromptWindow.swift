@@ -19,6 +19,9 @@ protocol MeetingPromptDelegate: AnyObject {
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecord source: AppSource)
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseSkip source: AppSource)
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseAlways source: AppSource)
+    /// User chose "Record (BYO)" — the recording proceeds normally, but the
+    /// pipeline writes a manual-paste bundle instead of calling Anthropic.
+    func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecordBYO source: AppSource)
 }
 
 /// Threading: every public method must run on the main queue. Same contract
@@ -31,8 +34,8 @@ final class MeetingPromptWindow {
     private var dismissTimer: Timer?
     private var currentSource: AppSource?
 
-    private static let panelWidth: CGFloat = 360
-    private static let panelHeight: CGFloat = 152
+    private static let panelWidth: CGFloat = 380
+    private static let panelHeight: CGFloat = 180
     private static let edgeInset: CGFloat = 16
 
     func present(source: AppSource, autoDismissAfter seconds: TimeInterval) {
@@ -120,23 +123,36 @@ final class MeetingPromptWindow {
         bg.addSubview(body)
 
         let record = makeButton(title: "Record", isPrimary: true, action: #selector(RoundedBackgroundView.didClickRecord))
+        let recordBYO = makeButton(title: "Record (BYO)", isPrimary: false, action: #selector(RoundedBackgroundView.didClickRecordBYO))
+        recordBYO.toolTip = "Record, but skip the Anthropic API call. You'll summarize the transcript yourself."
         let skip = makeButton(title: "Skip", isPrimary: false, action: #selector(RoundedBackgroundView.didClickSkip))
         let always = makeButton(title: "Always for \(source.displayName)", isPrimary: false, action: #selector(RoundedBackgroundView.didClickAlways))
-        for b in [record, skip, always] {
+        for b in [record, recordBYO, skip, always] {
             b.target = bg
             bg.addSubview(b)
         }
         bg.host = self
 
-        let buttonsRow = NSStackView(views: [skip, always, record])
-        buttonsRow.orientation = .horizontal
-        buttonsRow.alignment = .centerY
-        buttonsRow.spacing = 8
-        buttonsRow.distribution = .fill
-        buttonsRow.translatesAutoresizingMaskIntoConstraints = false
-        bg.addSubview(buttonsRow)
-        // Push Record to the right edge.
-        buttonsRow.setHuggingPriority(.defaultLow, for: .horizontal)
+        // Two rows: Skip + Always on top, Record + BYO on bottom-right.
+        // Keeps the primary action (Record) closest to where the eye lands
+        // after reading the meeting name.
+        let topRow = NSStackView(views: [skip, always])
+        topRow.orientation = .horizontal
+        topRow.alignment = .centerY
+        topRow.spacing = 8
+        topRow.distribution = .fill
+        topRow.translatesAutoresizingMaskIntoConstraints = false
+        topRow.setHuggingPriority(.defaultLow, for: .horizontal)
+        bg.addSubview(topRow)
+
+        let bottomRow = NSStackView(views: [recordBYO, record])
+        bottomRow.orientation = .horizontal
+        bottomRow.alignment = .centerY
+        bottomRow.spacing = 8
+        bottomRow.distribution = .fill
+        bottomRow.translatesAutoresizingMaskIntoConstraints = false
+        bottomRow.setHuggingPriority(.defaultLow, for: .horizontal)
+        bg.addSubview(bottomRow)
 
         NSLayoutConstraint.activate([
             title.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 16),
@@ -150,9 +166,13 @@ final class MeetingPromptWindow {
             body.leadingAnchor.constraint(equalTo: title.leadingAnchor),
             body.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 8),
 
-            buttonsRow.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 16),
-            buttonsRow.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -16),
-            buttonsRow.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -14),
+            topRow.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 16),
+            topRow.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -16),
+            topRow.topAnchor.constraint(equalTo: body.bottomAnchor, constant: 12),
+
+            bottomRow.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 16),
+            bottomRow.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -16),
+            bottomRow.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -14),
         ])
         return bg
     }
@@ -208,6 +228,12 @@ final class MeetingPromptWindow {
         delegate?.meetingPrompt(self, didChooseAlways: s)
         dismiss()
     }
+
+    fileprivate func handleRecordBYO() {
+        guard let s = currentSource else { return }
+        delegate?.meetingPrompt(self, didChooseRecordBYO: s)
+        dismiss()
+    }
 }
 
 /// Rounded translucent background. Uses NSVisualEffectView so the panel
@@ -247,4 +273,5 @@ private final class RoundedBackgroundView: NSView {
     @objc func didClickRecord() { host?.handleRecord() }
     @objc func didClickSkip() { host?.handleSkip() }
     @objc func didClickAlways() { host?.handleAlways() }
+    @objc func didClickRecordBYO() { host?.handleRecordBYO() }
 }
