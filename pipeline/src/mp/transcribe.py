@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config, load_secrets, require_env
+from .endpoints import PYANNOTE_DIARIZATION_REPO, hf_model_page_url
 
 log = logging.getLogger("mp.transcribe")
 
@@ -109,9 +110,9 @@ def transcribe(wav: Path, cfg: Config | None = None, out_dir: Path | None = None
         except Exception as e:  # noqa: BLE001
             log.error(
                 "Diarization failed (%s). Falling back to single-speaker labels. "
-                "Common cause: HF model TOS not accepted at "
-                "https://huggingface.co/pyannote/speaker-diarization-3.1",
+                "Common cause: HF model TOS not accepted at %s",
                 e,
+                hf_model_page_url(PYANNOTE_DIARIZATION_REPO),
             )
 
     structured = {

@@ -31,12 +31,12 @@ struct Config {
 
     static let defaultPath: URL = {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/meeting-pipe/config.toml")
+            .appendingPathComponent(Endpoints.Paths.configRelative)
     }()
 
     static let secretsPath: URL = {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/meeting-pipe/secrets.env")
+            .appendingPathComponent(Endpoints.Paths.secretsRelative)
     }()
 
     static func load(from url: URL = Config.defaultPath) throws -> Config {
