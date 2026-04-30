@@ -17,6 +17,7 @@ final class Coordinator: NSObject {
     private let hotkey: HotkeyManager
     private let consent: ConsentStore
     private let launcher: PipelineDriver
+    private let preferencesWindow: PreferencesWindow?
 
     private var state: AppState = .idle {
         didSet { Log.main.info("state: \(String(describing: oldValue)) → \(String(describing: self.state))") }
@@ -28,7 +29,8 @@ final class Coordinator: NSObject {
     init(
         config: Config,
         statusBar: StatusBarController,
-        launcher: PipelineDriver? = nil
+        launcher: PipelineDriver? = nil,
+        configStore: ConfigStore? = nil
     ) {
         self.config = config
         self.statusBar = statusBar
@@ -42,6 +44,7 @@ final class Coordinator: NSObject {
         self.hotkey = HotkeyManager()
         self.consent = ConsentStore()
         self.launcher = launcher ?? PipelineLauncher()
+        self.preferencesWindow = configStore.map { PreferencesWindow(store: $0) }
         super.init()
     }
 
@@ -85,6 +88,10 @@ final class Coordinator: NSObject {
     @objc func menuOpenRecordings() {
         try? FileManager.default.createDirectory(at: config.recording.outputDir, withIntermediateDirectories: true)
         NSWorkspace.shared.open(config.recording.outputDir)
+    }
+
+    @objc func menuPreferences() {
+        preferencesWindow?.show()
     }
 
     // MARK: State transitions
