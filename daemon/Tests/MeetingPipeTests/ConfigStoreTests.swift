@@ -114,4 +114,24 @@ final class ConfigStoreTests: XCTestCase {
         let onDisk = try String(contentsOf: url, encoding: .utf8)
         XCTAssertFalse(onDisk.contains("48000"))
     }
+
+    func test_init_does_not_persist_compile_time_defaults() throws {
+        // Regression test: the init's `self.x = ...` assignments fire
+        // `didSet` → `scheduleSave`, which (until isInitialized landed)
+        // could race in and overwrite the user's file with compile-time
+        // defaults if the init ran off the main thread. Instead of
+        // simulating that race directly, assert the lighter invariant:
+        // a fresh ConfigStore against a non-existent file MUST NOT
+        // create the file as a side-effect of construction.
+        let url = try makeTempConfigURL()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        _ = try ConfigStore(configURL: url)
+        // Give the run loop a tick so any erroneously-scheduled timer
+        // would have fired by now.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: url.path),
+            "ConfigStore.init must not persist anything; the file should still not exist"
+        )
+    }
 }

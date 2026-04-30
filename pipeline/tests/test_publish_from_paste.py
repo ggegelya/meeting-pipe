@@ -109,6 +109,28 @@ def test_parse_picks_up_language_hint():
     assert s.detected_language == "uk"
 
 
+def test_parse_accepts_checked_todos():
+    """Some LLMs emit `[x]` for action items the meeting already resolved.
+    They should land in actions, not vanish silently."""
+    raw = (
+        "# Quick chat\n## Summary\n- bullet\n## Action Items\n"
+        "- [x] **Alice**: Done before the meeting\n"
+        "- [X] Also already done\n"
+        "- [ ] **Bob**: Pending\n"
+    )
+    s = parse_summary_md(raw)
+    tasks = sorted(a.task for a in s.actions)
+    assert tasks == ["Also already done", "Done before the meeting", "Pending"]
+
+
+def test_parse_accepts_plain_attendees_label():
+    """Different LLM frontends emit `Attendees:` with or without bold.
+    Both forms should populate attendees."""
+    raw = "# T\nAttendees: Alice, Bob\n## Summary\n- bullet"
+    s = parse_summary_md(raw)
+    assert s.attendees == ["Alice", "Bob"]
+
+
 # --- End-to-end publish_from_paste ----------------------------------------
 
 
@@ -163,3 +185,32 @@ def test_publish_from_paste_missing_file_raises(tmp_path):
     transcript.write_text("anything", encoding="utf-8")
     with pytest.raises(FileNotFoundError):
         publish_from_paste(transcript, cfg=Config())
+
+
+def test_publish_from_paste_regulated_mode_preserves_user_md(tmp_path, monkeypatch):
+    """In regulated mode the user's hand-written .summary.md must survive
+    untouched — overwriting it with our canonical render before short-
+    circuiting the publish would silently destroy editorial content."""
+    transcript = tmp_path / "20260430-1500.md"
+    transcript.write_text("# Transcript\n", encoding="utf-8")
+    user_md = "# Confidential\n\nDo not rewrite this body. Custom layout matters.\n"
+    summary_md = tmp_path / "20260430-1500.summary.md"
+    summary_md.write_text(user_md, encoding="utf-8")
+
+    cfg = Config()
+    cfg.modes.regulated_mode = True
+
+    # No mock transport — regulated_mode must short-circuit before any
+    # network call. If we hit Notion the test fails on the missing token.
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+
+    result = publish_from_paste(transcript, cfg=cfg)
+    assert result.get("regulated") is True
+    assert result["page_id"] is None
+
+    # User's .summary.md untouched — same bytes back.
+    assert summary_md.read_text(encoding="utf-8") == user_md
+    # And no .summary.json sidecar got written either; regulated_mode
+    # means "nothing on disk gets rewritten without an explicit user
+    # action".
+    assert not (tmp_path / "20260430-1500.summary.json").exists()

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 
 /// Top-level state owner. Detector and HotkeyManager push events in;
@@ -9,22 +10,39 @@ import Foundation
 /// and HotkeyManager already dispatch back here.
 final class Coordinator: NSObject {
     private let config: Config
+    private let configStore: ConfigStore?
     private let statusBar: StatusBarController
     private let recorder: MeetingRecorder
     private let notifier: Notifier
     private let promptWindow: MeetingPromptWindow
-    private let detector: Detector
+    /// `var` so we can swap in a fresh Detector when the user changes
+    /// debounce values via Preferences. See `applyConfigRefreshIfPossible`.
+    private var detector: Detector
     private let hotkey: HotkeyManager
     private let consent: ConsentStore
     private let launcher: PipelineDriver
     private let preferencesWindow: PreferencesWindow?
 
     private var state: AppState = .idle {
-        didSet { Log.main.info("state: \(String(describing: oldValue)) → \(String(describing: self.state))") }
+        didSet {
+            Log.main.info("state: \(String(describing: oldValue)) → \(String(describing: self.state))")
+            // Mid-recording config edits get deferred (see
+            // applyConfigRefreshIfPossible) — apply them when we transition
+            // back to idle so the next meeting picks up the new values.
+            if case .idle = state { applyConfigRefreshIfPossible() }
+        }
     }
 
     /// Auto-skip timer when the user ignores a prompt. Spec §7 prompt_timeout_sec.
     private var promptTimeoutTimer: Timer?
+
+    /// Set when ConfigStore persists while we're mid-recording. We can't
+    /// rebuild the Detector live without losing its `hasFiredStart`
+    /// bookkeeping (the new instance would never fire `.ended` for the
+    /// in-flight meeting). Apply on next `.idle` instead.
+    private var pendingDetectorRefresh: Bool = false
+
+    private var configCancellable: AnyCancellable?
 
     init(
         config: Config,
@@ -33,13 +51,14 @@ final class Coordinator: NSObject {
         configStore: ConfigStore? = nil
     ) {
         self.config = config
+        self.configStore = configStore
         self.statusBar = statusBar
         self.recorder = MeetingRecorder()
         self.notifier = Notifier()
         self.promptWindow = MeetingPromptWindow()
         self.detector = Detector(
-            debounceStartSec: config.detection.debounceStartSec,
-            debounceEndSec: config.detection.debounceEndSec
+            debounceStartSec: configStore?.debounceStartSec ?? config.detection.debounceStartSec,
+            debounceEndSec: configStore?.debounceEndSec ?? config.detection.debounceEndSec
         )
         self.hotkey = HotkeyManager()
         self.consent = ConsentStore()
@@ -56,14 +75,21 @@ final class Coordinator: NSObject {
         detector.delegate = self
         detector.start()
 
-        if let parsed = HotkeyManager.parse(config.detection.manualHotkey) {
+        if let parsed = HotkeyManager.parse(liveManualHotkey) {
             hotkey.register(keyCode: parsed.keyCode, modifiers: parsed.modifiers) { [weak self] in
                 DispatchQueue.main.async { self?.toggleManual() }
             }
-            Log.main.info("Hotkey registered: \(self.config.detection.manualHotkey)")
+            Log.main.info("Hotkey registered: \(self.liveManualHotkey)")
         } else {
-            Log.main.warning("Could not parse hotkey: \(self.config.detection.manualHotkey)")
+            Log.main.warning("Could not parse hotkey: \(self.liveManualHotkey)")
         }
+
+        // Refresh affected components when the user saves Preferences.
+        // ConfigStore already debounces 500ms, so we don't pile up rebuilds
+        // while a slider is being dragged.
+        configCancellable = configStore?.didPersist
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.handleConfigPersisted() }
     }
 
     func shutdown() {
@@ -86,12 +112,39 @@ final class Coordinator: NSObject {
     }
 
     @objc func menuOpenRecordings() {
-        try? FileManager.default.createDirectory(at: config.recording.outputDir, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(config.recording.outputDir)
+        let dir = liveOutputDir
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(dir)
     }
 
     @objc func menuPreferences() {
         preferencesWindow?.show()
+    }
+
+    // MARK: Live-config readers
+    //
+    // When a `ConfigStore` is wired up, prefer its current value over the
+    // boot-time `config` snapshot. That way Preferences edits take effect
+    // at the next read without bouncing the daemon. Detector debounce
+    // values are special-cased: they're constructor params, so we rebuild
+    // the Detector on persist (see `applyConfigRefreshIfPossible`).
+
+    private var liveOutputDir: URL {
+        guard let raw = configStore?.outputDirPath else { return config.recording.outputDir }
+        let expanded = (raw as NSString).expandingTildeInPath
+        return URL(fileURLWithPath: expanded)
+    }
+
+    private var liveAutoConsentApps: [String] {
+        configStore?.autoConsentApps ?? config.recording.autoConsentApps
+    }
+
+    private var livePromptTimeoutSec: Double {
+        configStore?.promptTimeoutSec ?? config.detection.promptTimeoutSec
+    }
+
+    private var liveManualHotkey: String {
+        configStore?.manualHotkey ?? config.detection.manualHotkey
     }
 
     // MARK: State transitions
@@ -117,9 +170,9 @@ final class Coordinator: NSObject {
         cancelPromptTimeout()
 
         do {
-            let file = try recorder.start(outputDir: config.recording.outputDir)
+            let file = try recorder.start(outputDir: liveOutputDir)
             state = .recording(file: file, source: source, summaryMode: summaryMode)
-            statusBar.setRecording(file: file)
+            statusBar.setRecording(file: file, source: source, summaryMode: summaryMode)
             notifier.notifyRecordingStarted(file: file)
             Log.writeLine(
                 "daemon",
@@ -172,7 +225,7 @@ final class Coordinator: NSObject {
 
     private func startPromptTimeout(for source: AppSource) {
         cancelPromptTimeout()
-        promptTimeoutTimer = Timer.scheduledTimer(withTimeInterval: config.detection.promptTimeoutSec, repeats: false) { [weak self] _ in
+        promptTimeoutTimer = Timer.scheduledTimer(withTimeInterval: livePromptTimeoutSec, repeats: false) { [weak self] _ in
             guard let self = self else { return }
             DispatchQueue.main.async {
                 if case .prompting(let src) = self.state, src == source {
@@ -188,6 +241,32 @@ final class Coordinator: NSObject {
     private func cancelPromptTimeout() {
         promptTimeoutTimer?.invalidate()
         promptTimeoutTimer = nil
+    }
+
+    // MARK: Config refresh
+
+    private func handleConfigPersisted() {
+        pendingDetectorRefresh = true
+        applyConfigRefreshIfPossible()
+    }
+
+    /// Rebuild the Detector with the live debounce values, but only when
+    /// we're idle — rebuilding mid-recording would reset `hasFiredStart`,
+    /// stranding the in-flight meeting because the new Detector wouldn't
+    /// fire `.ended`. Anything stashed gets applied on the next idle
+    /// transition (see `state.didSet`).
+    private func applyConfigRefreshIfPossible() {
+        guard pendingDetectorRefresh, case .idle = state, let store = configStore else { return }
+        pendingDetectorRefresh = false
+
+        let newStart = store.debounceStartSec
+        let newEnd = store.debounceEndSec
+        Log.main.info("config persisted → rebuilding detector (start=\(newStart) end=\(newEnd))")
+        detector.stop()
+        let fresh = Detector(debounceStartSec: newStart, debounceEndSec: newEnd)
+        fresh.delegate = self
+        fresh.start()
+        detector = fresh
     }
 }
 
@@ -205,7 +284,7 @@ extension Coordinator: DetectorDelegate {
         guard state.isAcceptingPrompts else { return }
 
         // Auto-consent (config or persisted "Always").
-        if config.recording.autoConsentApps.contains(source.bundleID) ||
+        if liveAutoConsentApps.contains(source.bundleID) ||
            consent.isAutoConsented(bundleID: source.bundleID) {
             Log.writeLine("daemon", "auto-consent → recording (\(source.bundleID))")
             beginRecording(source: source, summaryMode: .auto)
@@ -219,7 +298,7 @@ extension Coordinator: DetectorDelegate {
         // the panel doesn't get suppressed under Focus modes and is harder
         // to miss. If the user wants OS-level persistence too, flip the
         // notifier call back on here.
-        promptWindow.present(source: source, autoDismissAfter: config.detection.promptTimeoutSec)
+        promptWindow.present(source: source, autoDismissAfter: livePromptTimeoutSec)
         startPromptTimeout(for: source)
         Log.writeLine("daemon", "meeting detected → prompting (\(source.bundleID))")
     }

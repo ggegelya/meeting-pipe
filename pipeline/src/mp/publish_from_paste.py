@@ -28,13 +28,17 @@ log = logging.getLogger("mp.publish_from_paste")
 
 
 # Heading + bullet regexes. Match Markdown produced by Claude Code or
-# claude.ai by default — H2 sections, "- " or "* " bullets, "[ ]" todos.
+# claude.ai by default — H2 sections, "- " or "* " bullets, "[ ]"/"[x]" todos.
 _H1 = re.compile(r"^# (.+?)\s*$", re.MULTILINE)
 _H2 = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 _BULLET = re.compile(r"^\s*[-*]\s+(.+?)\s*$", re.MULTILINE)
 _NUMBERED = re.compile(r"^\s*\d+[.)]\s+(.+?)\s*$", re.MULTILINE)
+# `[ ]` and `[x]`/`[X]` both match — a checked item is parsed as a completed
+# action (confidence stays "medium", task text is unchanged). The owner
+# separator is `:` or `-` (no `|` — that was a bug from putting `|` inside
+# the character class, where it's literal, not alternation).
 _TODO = re.compile(
-    r"^\s*[-*]\s+\[\s?\]\s+(?:\*\*(?P<owner>[^*]+)\*\*\s*[:|-]\s*)?(?P<task>.+?)\s*$",
+    r"^\s*[-*]\s+\[(?P<done>[ xX])\]\s+(?:\*\*(?P<owner>[^*]+)\*\*\s*[:\-]\s*)?(?P<task>.+?)\s*$",
     re.MULTILINE,
 )
 
@@ -158,7 +162,9 @@ def _extract_attendees(section_body: str, full_text: str) -> list[str]:
     bullets = _extract_bullets(section_body)
     if bullets:
         return bullets
-    m = re.search(r"\*\*Attendees:\*\*\s*([^\n]+)", full_text)
+    # Match `**Attendees:** Alice, Bob`, `Attendees: Alice, Bob`, or any
+    # mix — different LLM frontends emit different bolding conventions.
+    m = re.search(r"(?:\*\*)?Attendees:(?:\*\*)?\s*([^\n]+)", full_text)
     if m:
         return [name.strip() for name in m.group(1).split(",") if name.strip()]
     return []
@@ -195,6 +201,19 @@ def publish_from_paste(transcript_md: Path, cfg: Config | None = None) -> dict:
         len(summary.actions),
         len(summary.questions),
     )
+
+    if cfg.modes.regulated_mode:
+        # Don't touch the user's hand-written .summary.md and don't write
+        # the .summary.json sidecar — regulated_mode means "nothing leaves
+        # this machine, and nothing on disk gets rewritten without an
+        # explicit user action". publish() short-circuits internally too,
+        # but we have to gate file writes here because they happen before
+        # the publish call.
+        log.info(
+            "regulated_mode=true → preserving %s untouched, skipping Notion publish",
+            summary_md_path,
+        )
+        return publish(summary_json_path, cfg=cfg, transcript_md=transcript_md)
 
     # Persist the canonical .summary.json so re-runs (or the auto-flow
     # later) see a consistent on-disk shape.
