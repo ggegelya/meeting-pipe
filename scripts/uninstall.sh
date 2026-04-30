@@ -21,9 +21,6 @@ if [[ -f "$PLIST" ]]; then
     echo "Removed LaunchAgent."
 fi
 
-# Kill any straggler ffmpeg the daemon spawned.
-pkill -f "ffmpeg.*pcm_s16le.*meeting-pipe\|ffmpeg.*avfoundation" 2>/dev/null || true
-
 rm -rf "$DATA_DIR"
 rm -rf "$LOG_DIR"
 rm -rf "$APP_SUPPORT"

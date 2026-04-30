@@ -129,6 +129,29 @@ def _request(client: httpx.Client, method: str, path: str, **kwargs: Any) -> dic
     return resp.json()
 
 
+def _fetch_all_child_ids(client: httpx.Client, page_id: str) -> list[str]:
+    """Page through `/blocks/{id}/children` until no more results.
+
+    Notion paginates at 100 per response. Without the `start_cursor` loop, a
+    page that previously held >100 blocks would leak orphan children on
+    update — they'd survive the delete-then-recreate and pile up over re-runs.
+    """
+    ids: list[str] = []
+    start_cursor: str | None = None
+    while True:
+        path = f"/blocks/{page_id}/children?page_size=100"
+        if start_cursor:
+            path += f"&start_cursor={start_cursor}"
+        resp = _request(client, "GET", path)
+        ids.extend(b["id"] for b in resp.get("results", []))
+        if not resp.get("has_more"):
+            break
+        start_cursor = resp.get("next_cursor")
+        if not start_cursor:
+            break
+    return ids
+
+
 def _create_page(
     client: httpx.Client, cfg: Config, summary: MeetingSummary, body: list[dict]
 ) -> dict[str, Any]:
@@ -161,8 +184,7 @@ def _update_page(
     #    transcript can carry 50+ blocks. 8 concurrent workers stays well
     #    below Notion's per-integration rate limit (~3 r/s sustained, with
     #    burst headroom) while shrinking wall time roughly 8x.
-    children = _request(client, "GET", f"/blocks/{page_id}/children?page_size=100")
-    block_ids = [b["id"] for b in children.get("results", [])]
+    block_ids = _fetch_all_child_ids(client, page_id)
     if block_ids:
         with ThreadPoolExecutor(max_workers=8) as ex:
             # list() forces materialization so exceptions surface.
@@ -300,6 +322,12 @@ def _transcript_toggle(transcript: str) -> dict:
             )
         if len(children) >= 90:
             # Notion children cap is 100 per request; leave headroom.
+            dropped = len(paragraphs) - paragraphs.index(para) - 1
+            log.warning(
+                "Transcript truncated for Notion: dropped %d of %d paragraphs "
+                "(full transcript remains on disk).",
+                dropped, len(paragraphs),
+            )
             children.append(
                 {
                     "object": "block",

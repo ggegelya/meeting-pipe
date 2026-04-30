@@ -16,6 +16,7 @@ on a 1+ hour transcript.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -116,11 +117,13 @@ def run_all(wav: Path, cfg: Config | None = None) -> dict:
     log.info("[1/3] transcribe")
     t = transcribe(wav, cfg=cfg)
 
-    md_text = t["md"].read_text(encoding="utf-8")
-
     # Short-circuit #1: empty transcript (silent audio, broken capture).
-    # Don't burn Anthropic tokens summarizing nothing.
-    if "**" not in md_text:
+    # Don't burn Anthropic tokens summarizing nothing. Read the structured
+    # JSON's segment count rather than scanning the markdown — the previous
+    # `"**" not in md_text` heuristic broke the moment any header line
+    # contained bold styling.
+    structured = json.loads(t["json"].read_text(encoding="utf-8"))
+    if not structured.get("segments"):
         log.warning("Transcript has no speaker turns — skipping summarize + publish.")
         log.warning("  WAV: %s", wav)
         log.warning("  MD : %s", t["md"])
@@ -133,6 +136,8 @@ def run_all(wav: Path, cfg: Config | None = None) -> dict:
             "page_url": None,
             "skipped": "no_speech",
         }
+
+    md_text = t["md"].read_text(encoding="utf-8")
 
     # Short-circuit #2: long-meeting guard. Avoid Anthropic costs on a
     # 1+ hour transcript by handing it to the user for manual processing.

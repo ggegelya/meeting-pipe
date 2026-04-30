@@ -1,5 +1,4 @@
 import AppKit
-import UserNotifications
 
 @main
 final class App {
@@ -42,15 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator = Coordinator(config: config, statusBar: statusBar)
         statusBar.coordinator = coordinator
         statusBar.setIdle()
-        coordinator.start()
-
-        // Best-effort notification authorization. Doesn't block startup if denied.
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
-            if let error = error {
-                Log.main.warning("Notification auth error: \(error.localizedDescription)")
-            }
-            Log.main.info("Notification auth granted: \(granted)")
-        }
+        coordinator.start()  // requests notification authorization via Notifier
 
         // Pre-warm the Screen Recording TCC check ONCE at startup, not on
         // every Start Recording click. Without this prewarm, each recording
