@@ -32,9 +32,18 @@ log = logging.getLogger("mp.run_all")
 
 
 def _configure_logging() -> None:
-    """Mirror logs to stderr (captured by the Swift launcher) and ~/Library/Logs."""
+    """Mirror logs to stderr (captured by the Swift launcher) and ~/Library/Logs.
+
+    The file handler is always opened so `pipeline.log` exists on disk after
+    the first run, even if nothing is logged. Without this, a silent failure
+    earlier in the pipeline left the user with no log to grep — which is how
+    the diarization regression went undiagnosed for weeks.
+    """
     logs_dir = Path(os.path.expanduser("~/Library/Logs/MeetingPipe"))
     logs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = logs_dir / "pipeline.log"
+    log_file.touch(exist_ok=True)
+
     fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
     root = logging.getLogger()
@@ -46,7 +55,7 @@ def _configure_logging() -> None:
     stream.setFormatter(logging.Formatter(fmt))
     root.addHandler(stream)
 
-    file_handler = logging.FileHandler(logs_dir / "pipeline.log", encoding="utf-8")
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setFormatter(logging.Formatter(fmt))
     root.addHandler(file_handler)
 
