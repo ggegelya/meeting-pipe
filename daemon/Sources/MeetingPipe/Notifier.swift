@@ -33,7 +33,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func requestAuthorization() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+            if let error = error {
+                Log.main.warning("Notification auth error: \(error.localizedDescription)")
+            }
+            Log.main.info("Notification auth granted: \(granted)")
+        }
     }
 
     // MARK: Posting

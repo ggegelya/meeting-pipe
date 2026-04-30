@@ -93,10 +93,11 @@ final class Detector {
     private func wireMicObserver() {
         // Primary: KVO on AVCaptureDevice.isInUseByAnotherApplication.
         // Secondary: Core Audio property in reevaluate() poll.
+        // The KVO callback just kicks reevaluate() — that already re-runs
+        // micInUse() (AV + CoreAudio) so duplicating the probes here is wasted.
         if let mic = AVCaptureDevice.default(for: .audio) {
-            avObservation = mic.observe(\.isInUseByAnotherApplication, options: [.new, .initial]) { [weak self] dev, _ in
-                DispatchQueue.main.async { [weak self] in
-                    self?.micActive = dev.isInUseByAnotherApplication || Detector.coreAudioMicRunning()
+            avObservation = mic.observe(\.isInUseByAnotherApplication, options: [.new, .initial]) { [weak self] _, _ in
+                DispatchQueue.main.async {
                     self?.reevaluate()
                 }
             }
@@ -119,11 +120,9 @@ final class Detector {
             // Cancel any pending end-debounce; arm start-debounce if not already firing.
             endTimer?.invalidate(); endTimer = nil
             if hasFiredStart {
-                // Already in a meeting — re-fire only if the source changed (different app).
-                if let src = a, src != pendingSource {
-                    pendingSource = src
-                    // Don't re-emit .started; treat as same meeting.
-                }
+                // Already in a meeting. Don't re-emit .started even if the
+                // user switches from Zoom to a Meet tab mid-call — Coordinator
+                // owns the active recording and treats it as one meeting.
                 return
             }
             if startTimer == nil {

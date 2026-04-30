@@ -22,6 +22,8 @@ from .config import Config, load_secrets, require_env
 
 log = logging.getLogger("mp.transcribe")
 
+_UNSET: object = object()
+
 
 def _device_for(compute_type: str) -> str:
     # int8 → CPU. float16 → cuda (Linux) or mps (macOS). On macOS we leave it
@@ -140,13 +142,12 @@ def render_markdown(structured: dict[str, Any]) -> str:
     lines.append(f"_Language detected: {structured.get('language', 'unknown')}_")
     lines.append("")
 
-    current_speaker: str | None = object()  # type: ignore[assignment]
+    current_speaker: str | object = _UNSET
     buffer: list[str] = []
 
     def flush() -> None:
-        if buffer and current_speaker is not None:
-            label = current_speaker if isinstance(current_speaker, str) else "Speaker"
-            lines.append(f"**{label}**: " + " ".join(buffer).strip())
+        if buffer and isinstance(current_speaker, str):
+            lines.append(f"**{current_speaker}**: " + " ".join(buffer).strip())
             lines.append("")
             buffer.clear()
 

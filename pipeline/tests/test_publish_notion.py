@@ -183,6 +183,57 @@ def test_update_deletes_all_children_in_parallel(tmp_path: Path, monkeypatch):
     assert len(deleted_ids) == 50
 
 
+def test_update_paginates_existing_children(tmp_path: Path, monkeypatch):
+    """If the previous run left >100 children, the GET must page through all
+    of them. Without pagination we'd leak orphan blocks on every update.
+    """
+    summary_path = _write_summary(tmp_path)
+    sidecar = tmp_path / "20260428-1200.notion.json"
+    sidecar.write_text(
+        json.dumps({"page_id": "page-big", "page_url": "x"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
+
+    page1 = [f"blk-p1-{i:03d}" for i in range(100)]
+    page2 = [f"blk-p2-{i:03d}" for i in range(50)]
+    deleted_ids: list[str] = []
+    deleted_lock = __import__("threading").Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        params = dict(request.url.params)
+        if request.method == "PATCH" and path == "/v1/pages/page-big":
+            return httpx.Response(200, json={"id": "page-big", "url": "https://x"})
+        if request.method == "GET" and path == "/v1/blocks/page-big/children":
+            if params.get("start_cursor") == "cursor-2":
+                return httpx.Response(
+                    200,
+                    json={"results": [{"id": b} for b in page2], "has_more": False},
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "results": [{"id": b} for b in page1],
+                    "has_more": True,
+                    "next_cursor": "cursor-2",
+                },
+            )
+        if request.method == "DELETE" and path.startswith("/v1/blocks/blk-"):
+            with deleted_lock:
+                deleted_ids.append(path.rsplit("/", 1)[-1])
+            return httpx.Response(200, json={"id": path.rsplit("/", 1)[-1]})
+        if request.method == "PATCH" and path == "/v1/blocks/page-big/children":
+            return httpx.Response(200, json={})
+        return httpx.Response(404, json={"message": f"unexpected {request.method} {path}"})
+
+    _install_mock_transport(monkeypatch, handler)
+    publish(summary_path, cfg=_cfg())
+
+    assert sorted(deleted_ids) == sorted(page1 + page2)
+    assert len(deleted_ids) == 150
+
+
 def test_missing_database_id_raises(tmp_path: Path, monkeypatch):
     summary_path = _write_summary(tmp_path)
     monkeypatch.setenv("NOTION_TOKEN", "ntn-test")

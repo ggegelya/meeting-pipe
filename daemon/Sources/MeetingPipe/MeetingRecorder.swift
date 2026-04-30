@@ -36,6 +36,7 @@ final class MeetingRecorder {
     private var micFile: AVAudioFile?
     private var systemFile: AVAudioFile?
     private var systemCapture: SystemAudioCapture?
+    private var systemStartTask: Task<Void, Never>?
 
     private(set) var currentFile: URL?
     private var micURL: URL?
@@ -145,7 +146,12 @@ final class MeetingRecorder {
             }
         }
         self.systemCapture = capture
-        Task.detached { [weak self] in
+        // Run start() off the calling thread but track the Task so stop()
+        // can await it. Without that, a fast stop() races the in-flight
+        // start: the SCStream becomes "started" only after stop() ran its
+        // teardown, leaving the stream orphaned until SystemAudioCapture
+        // deinits.
+        systemStartTask = Task { [weak self] in
             do {
                 try await capture.start()
                 Log.writeLine("recorder", "SCStream started")
@@ -182,6 +188,12 @@ final class MeetingRecorder {
         self.startedAt = nil
         self.micFires = 0
         self.systemFires = 0
+
+        // Wait for the SCStream start to finish (success or failure) before
+        // tearing down — otherwise we can stop() a stream that hasn't fully
+        // started yet, leaving an orphaned SCStream alive.
+        await systemStartTask?.value
+        systemStartTask = nil
 
         // Halt capture before closing files.
         await systemCapture?.stop()

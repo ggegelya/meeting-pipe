@@ -87,8 +87,13 @@ final class Coordinator: NSObject {
 
     private func toggleManual() {
         switch state {
-        case .idle, .prompting, .suppressed:
+        case .idle:
             beginRecording(source: nil)
+        case .prompting(let src), .suppressed(let src):
+            // Preserve meeting attribution when the user overrides via hotkey
+            // — without this, "Always for {App}" would never see the source.
+            promptWindow.dismiss()
+            beginRecording(source: src)
         case .recording(let file, let src):
             stopRecording(file: file, source: src)
         case .stopping, .handoff:
