@@ -16,7 +16,11 @@ auto_consent_apps = []
 
 [detection]
 debounce_start_sec = 5
-debounce_end_sec = 10
+# Window-closed signal (Signal C) lets us shrink this from 10s — Zoom and
+# Teams keep the input device opened for a few seconds after a hangup, but
+# the call window disappears immediately. 5s is enough margin to absorb
+# a stuttery probe without trimming the tail of speech.
+debounce_end_sec = 5
 manual_hotkey = "ctrl+option+m"
 prompt_timeout_sec = 30
 
