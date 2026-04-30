@@ -79,18 +79,27 @@ DAEMON_BIN="$REPO_ROOT/daemon/.build/release/MeetingPipe"
 # LSUIElement=true keeps it Dock-less. The NSMicrophoneUsageDescription
 # string drives the first-launch permission prompt.
 
-APP="$REPO_ROOT/daemon/.build/release/MeetingPipe.app"
-say "Assembling $APP"
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+APP_BUILD="$REPO_ROOT/daemon/.build/release/MeetingPipe.app"
+say "Assembling $APP_BUILD"
+rm -rf "$APP_BUILD"
+mkdir -p "$APP_BUILD/Contents/MacOS" "$APP_BUILD/Contents/Resources"
 
-cp "$DAEMON_BIN" "$APP/Contents/MacOS/MeetingPipe"
+cp "$DAEMON_BIN" "$APP_BUILD/Contents/MacOS/MeetingPipe"
 # Side-by-side resource bundle (SwiftPM convention: <Target>_<Target>.bundle).
 for bundle in "$REPO_ROOT/daemon/.build/release/"*.bundle; do
-    [[ -e "$bundle" ]] && cp -R "$bundle" "$APP/Contents/MacOS/"
+    [[ -e "$bundle" ]] && cp -R "$bundle" "$APP_BUILD/Contents/MacOS/"
 done
 
-cat >"$APP/Contents/Info.plist" <<'PLIST'
+# Generate AppIcon.icns. Failure is non-fatal — Spotlight still indexes
+# the .app, just without a custom icon.
+ICON_PATH="$APP_BUILD/Contents/Resources/AppIcon.icns"
+if "$REPO_ROOT/scripts/gen-icon.swift" "$ICON_PATH" >/dev/null 2>&1; then
+    say "Generated $ICON_PATH"
+else
+    warn "AppIcon generation failed; .app will use generic system icon"
+fi
+
+cat >"$APP_BUILD/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -103,6 +112,8 @@ cat >"$APP/Contents/Info.plist" <<'PLIST'
     <string>MeetingPipe</string>
     <key>CFBundleExecutable</key>
     <string>MeetingPipe</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -123,7 +134,23 @@ cat >"$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Re-point DAEMON_BIN at the bundled executable so the LaunchAgent picks it up.
+# 2c. Place .app in ~/Applications so Spotlight indexes it ----------------
+#
+# ~/Applications wins over /Applications here: it doesn't need admin, it
+# doesn't conflict with package managers, and Spotlight indexes it the
+# same way. mdimport at the end forces the index to refresh immediately
+# instead of waiting for the next housekeeping pass.
+APPS_DIR="$HOME/Applications"
+APP="$APPS_DIR/MeetingPipe.app"
+mkdir -p "$APPS_DIR"
+say "Installing app bundle → $APP"
+rm -rf "$APP"
+ditto "$APP_BUILD" "$APP"
+mdimport "$APP" >/dev/null 2>&1 || true
+
+# Re-point DAEMON_BIN at the installed bundle so the LaunchAgent points
+# at the long-lived ~/Applications copy, not the .build/release one
+# (which gets blown away on every clean build).
 DAEMON_BIN="$APP/Contents/MacOS/MeetingPipe"
 [[ -x "$DAEMON_BIN" ]] || die "Bundled daemon missing at $DAEMON_BIN"
 

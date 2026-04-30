@@ -13,6 +13,7 @@ LAUNCHAGENTS="$HOME/Library/LaunchAgents"
 LAUNCHD_LABEL="com.meetingpipe.daemon"
 LOG_DIR="$HOME/Library/Logs/MeetingPipe"
 APP_SUPPORT="$HOME/Library/Application Support/MeetingPipe"
+APP_BUNDLE="$HOME/Applications/MeetingPipe.app"
 
 PLIST="$LAUNCHAGENTS/${LAUNCHD_LABEL}.plist"
 if [[ -f "$PLIST" ]]; then
@@ -24,7 +25,8 @@ fi
 rm -rf "$DATA_DIR"
 rm -rf "$LOG_DIR"
 rm -rf "$APP_SUPPORT"
-echo "Removed venv, logs, and app support."
+rm -rf "$APP_BUNDLE"
+echo "Removed venv, logs, app support, and ~/Applications/MeetingPipe.app."
 
 if (( PURGE )); then
     rm -rf "$CONFIG_DIR"
