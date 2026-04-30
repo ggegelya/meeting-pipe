@@ -31,14 +31,45 @@ def test_renders_speaker_segmented_md():
 
 
 def test_handles_missing_speaker_label():
+    """Missing speaker labels render as `Speaker?` — never `Speaker` — so
+    a silent diarization failure can't masquerade as a one-person meeting."""
     structured = {
         "language": "uk",
         "audio_path": "/tmp/x.wav",
         "segments": [{"text": "Hello"}, {"text": "World"}],
     }
     md = render_markdown(structured)
-    assert "**Speaker**" in md
+    assert "**Speaker?**" in md
+    assert "**Speaker**:" not in md
     assert "Hello World" in md
+
+
+def test_renders_warning_banner_when_diarization_failed():
+    structured = {
+        "language": "en",
+        "audio_path": "/tmp/x.wav",
+        "diarization_failed": True,
+        "diarization_failure_reason": "RuntimeError: model unavailable",
+        "segments": [{"text": "Solo voice."}],
+    }
+    md = render_markdown(structured)
+    assert "⚠️ Diarization failed" in md
+    assert "RuntimeError: model unavailable" in md
+    assert "**Speaker?**: Solo voice." in md
+
+
+def test_no_warning_banner_on_successful_diarization():
+    structured = {
+        "language": "en",
+        "audio_path": "/tmp/x.wav",
+        "diarization_failed": False,
+        "segments": [
+            {"speaker": "SPEAKER_00", "text": "Hi."},
+            {"speaker": "SPEAKER_01", "text": "Hello."},
+        ],
+    }
+    md = render_markdown(structured)
+    assert "⚠️" not in md
 
 
 def test_skips_empty_segments():

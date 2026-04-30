@@ -93,6 +93,8 @@ def transcribe(wav: Path, cfg: Config | None = None, out_dir: Path | None = None
             # and continue with sentence-level segments only.
             log.warning("Alignment skipped (%s): %s", detected_lang, e)
 
+    diarization_failed = False
+    diarization_failure_reason: str | None = None
     if not tcfg.disable_diarization and result.get("segments"):
         hf_token = require_env("HF_TOKEN")
         log.info("Diarizing (min=%d, max=%d)", tcfg.min_speakers, tcfg.max_speakers)
@@ -108,6 +110,8 @@ def transcribe(wav: Path, cfg: Config | None = None, out_dir: Path | None = None
             )
             result = whisperx.assign_word_speakers(diarize_segments, result)
         except Exception as e:  # noqa: BLE001
+            diarization_failed = True
+            diarization_failure_reason = f"{type(e).__name__}: {e}"
             log.error(
                 "Diarization failed (%s). Falling back to single-speaker labels. "
                 "Common cause: HF model TOS not accepted at %s",
@@ -115,12 +119,30 @@ def transcribe(wav: Path, cfg: Config | None = None, out_dir: Path | None = None
                 hf_model_page_url(PYANNOTE_DIARIZATION_REPO),
             )
 
+        # Even when no exception was raised, the run may have produced zero
+        # speaker assignments — a known whisperx symptom that previously went
+        # undetected. Flag that case explicitly so the markdown banner fires
+        # and the user knows the labels are unreliable.
+        if not diarization_failed and result.get("segments"):
+            any_assigned = any(
+                seg.get("speaker") is not None for seg in result["segments"]
+            )
+            if not any_assigned:
+                diarization_failed = True
+                diarization_failure_reason = (
+                    "diarization returned no speaker assignments "
+                    "(whisperx assign_word_speakers produced empty result)"
+                )
+                log.error("Diarization returned no speaker assignments — see commit 3 fix path")
+
     structured = {
         "language": detected_lang,
         "segments": result.get("segments", []),
         "audio_path": str(wav),
         "model": tcfg.model,
         "diarization": not tcfg.disable_diarization,
+        "diarization_failed": diarization_failed,
+        "diarization_failure_reason": diarization_failure_reason,
     }
     json_path.write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -131,10 +153,16 @@ def transcribe(wav: Path, cfg: Config | None = None, out_dir: Path | None = None
     return {"json": json_path, "md": md_path}
 
 
+_UNKNOWN_SPEAKER = "Speaker?"
+
+
 def render_markdown(structured: dict[str, Any]) -> str:
     """Render the structured transcript into speaker-segmented Markdown.
 
     Consecutive segments from the same speaker are merged into a single block.
+    When diarization failed (or returned no assignments), prepend a warning
+    banner and use `Speaker?` for missing labels so the failure can never go
+    unnoticed in downstream review.
     """
     lines: list[str] = []
     title = Path(structured.get("audio_path", "transcript")).stem
@@ -142,6 +170,14 @@ def render_markdown(structured: dict[str, Any]) -> str:
     lines.append("")
     lines.append(f"_Language detected: {structured.get('language', 'unknown')}_")
     lines.append("")
+
+    if structured.get("diarization_failed"):
+        reason = structured.get("diarization_failure_reason") or "unknown"
+        lines.append(
+            f"> ⚠️ Diarization failed; all turns labeled `{_UNKNOWN_SPEAKER}`. "
+            f"Reason: {reason}"
+        )
+        lines.append("")
 
     current_speaker: str | object = _UNSET
     buffer: list[str] = []
@@ -153,7 +189,7 @@ def render_markdown(structured: dict[str, Any]) -> str:
             buffer.clear()
 
     for seg in structured.get("segments", []):
-        speaker = seg.get("speaker") or "Speaker"
+        speaker = seg.get("speaker") or _UNKNOWN_SPEAKER
         text = (seg.get("text") or "").strip()
         if not text:
             continue
@@ -166,7 +202,7 @@ def render_markdown(structured: dict[str, Any]) -> str:
     # Speaker count footer for quick eyeballing.
     counts: dict[str, int] = defaultdict(int)
     for seg in structured.get("segments", []):
-        counts[seg.get("speaker") or "Speaker"] += 1
+        counts[seg.get("speaker") or _UNKNOWN_SPEAKER] += 1
     if counts:
         lines.append("---")
         lines.append("")
