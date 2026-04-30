@@ -61,6 +61,13 @@ class PyannoteDiarizer:
         from pyannote.audio import Pipeline as PyannotePipeline  # type: ignore
         import torch  # type: ignore
 
+        # huggingface_hub >=0.23 removed `use_auth_token` from hf_hub_download
+        # in favor of `token`. pyannote.audio 3.3.x still passes the old name,
+        # which raises TypeError at load time on modern hub installs. Until
+        # pyannote ships a version that uses `token=`, translate the kwarg
+        # in flight at the bound references in pyannote's own modules.
+        _patch_pyannote_hf_hub_token_kwarg()
+
         pipe = PyannotePipeline.from_pretrained(
             PYANNOTE_DIARIZATION_REPO,
             use_auth_token=self._hf_token,
@@ -96,6 +103,40 @@ class PyannoteDiarizer:
             min_speakers=min_speakers,
             max_speakers=max_speakers,
         )
+
+
+def _patch_pyannote_hf_hub_token_kwarg() -> None:
+    """Translate `use_auth_token=` → `token=` for pyannote's bound
+    references to `huggingface_hub.hf_hub_download`.
+
+    Why a shim and not a version pin: `huggingface_hub<0.23` would
+    revert security fixes shipped over 18 months. pyannote.audio 3.3.x
+    is what whisperx 3.3 wants, so we can't simply upgrade pyannote
+    either. The shim is idempotent (skipped on second call) and a
+    no-op once a future pyannote starts emitting `token=` directly.
+
+    Visible at module level so it's testable without spinning up the
+    real pyannote pipeline.
+    """
+    try:
+        import pyannote.audio.core.pipeline as _ppip  # type: ignore
+        import pyannote.audio.core.model as _pmod  # type: ignore
+    except ImportError:  # pragma: no cover
+        return
+
+    real = _ppip.hf_hub_download
+    if getattr(real, "_mp_use_auth_token_shim", False):
+        return
+
+    def shim(*args: Any, **kwargs: Any) -> Any:
+        if "use_auth_token" in kwargs:
+            tok = kwargs.pop("use_auth_token")
+            kwargs.setdefault("token", tok)
+        return real(*args, **kwargs)
+
+    shim._mp_use_auth_token_shim = True  # type: ignore[attr-defined]
+    _ppip.hf_hub_download = shim
+    _pmod.hf_hub_download = shim
 
 
 def annotation_to_whisperx_df(annotation: Any) -> Any:
