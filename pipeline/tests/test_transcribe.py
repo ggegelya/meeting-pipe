@@ -128,6 +128,57 @@ def test_pyannote_diarizer_satisfies_protocol(tmp_path: Path):
     )
 
 
+def test_hf_hub_token_shim_translates_kwarg(monkeypatch):
+    """The shim must convert `use_auth_token` into `token` at the bound
+    reference inside pyannote's modules — that's where the call site
+    lives. Without this, hf_hub 1.x raises TypeError before the model
+    even starts downloading.
+    """
+    from mp.transcribe import _patch_pyannote_hf_hub_token_kwarg
+
+    # Build minimal stand-ins for pyannote.audio.core.{pipeline,model}.
+    # We don't want to import the real pyannote in this test.
+    import sys
+    import types
+
+    received: dict = {}
+
+    def real_hf_hub_download(*args, **kwargs):
+        # Simulate hf_hub 1.x: reject `use_auth_token` if present.
+        if "use_auth_token" in kwargs:
+            raise TypeError(
+                "hf_hub_download() got an unexpected keyword argument 'use_auth_token'"
+            )
+        received.update(kwargs)
+        return "ok"
+
+    pipeline_mod = types.ModuleType("pyannote.audio.core.pipeline")
+    pipeline_mod.hf_hub_download = real_hf_hub_download
+    model_mod = types.ModuleType("pyannote.audio.core.model")
+    model_mod.hf_hub_download = real_hf_hub_download
+
+    parent_audio = types.ModuleType("pyannote.audio")
+    parent_core = types.ModuleType("pyannote.audio.core")
+    parent_pa = types.ModuleType("pyannote")
+    monkeypatch.setitem(sys.modules, "pyannote", parent_pa)
+    monkeypatch.setitem(sys.modules, "pyannote.audio", parent_audio)
+    monkeypatch.setitem(sys.modules, "pyannote.audio.core", parent_core)
+    monkeypatch.setitem(sys.modules, "pyannote.audio.core.pipeline", pipeline_mod)
+    monkeypatch.setitem(sys.modules, "pyannote.audio.core.model", model_mod)
+
+    _patch_pyannote_hf_hub_token_kwarg()
+
+    # After patching, pyannote-internal calls with the old kwarg succeed.
+    assert pipeline_mod.hf_hub_download(use_auth_token="hf-test") == "ok"
+    assert received["token"] == "hf-test"
+    assert "use_auth_token" not in received
+
+    # Idempotency: second call doesn't double-wrap.
+    shim1 = pipeline_mod.hf_hub_download
+    _patch_pyannote_hf_hub_token_kwarg()
+    assert pipeline_mod.hf_hub_download is shim1
+
+
 def test_skips_empty_segments():
     structured = {
         "language": "en",
