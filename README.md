@@ -55,12 +55,21 @@ The installer will:
 1. Verify Homebrew, install `ffmpeg` and `uv` if missing.
    (`ffmpeg` is used by the Python pipeline for audio loading; the daemon
    itself records natively via ScreenCaptureKit — no subprocess.)
-2. Build the Swift menu-bar daemon (`swift build -c release`) and wrap it
-   in a `.app` bundle so notifications work.
+2. Build the Swift menu-bar daemon (`swift build -c release`), generate
+   an `AppIcon.icns` from SF Symbols, wrap the binary in a `.app` bundle,
+   and `ditto` it into `~/Applications/MeetingPipe.app` so Spotlight
+   can launch it.
 3. Install the Python pipeline into `~/.local/share/meeting-pipe/venv/`.
 4. Stage `~/.config/meeting-pipe/config.toml` and `secrets.env` (mode 0600).
 5. Pre-fetch HF models if `HF_TOKEN` is set.
 6. Install the LaunchAgent so the daemon starts at login.
+
+**First launch & Gatekeeper.** The app is unsigned (no Apple Developer
+subscription required for personal use). On first launch from Spotlight,
+macOS shows an "unverified developer" dialog. Right-click the app icon
+in Finder → Open, confirm once, and macOS remembers the decision. The
+LaunchAgent path runs the binary directly so it's not subject to that
+dialog after the first manual approval.
 
 ### One-time manual steps
 
