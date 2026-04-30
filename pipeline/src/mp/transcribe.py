@@ -20,6 +20,7 @@ from typing import Any
 
 from .config import Config, load_secrets, require_env
 from .endpoints import PYANNOTE_DIARIZATION_REPO, hf_model_page_url
+from .services import Diarizer
 
 log = logging.getLogger("mp.transcribe")
 
@@ -32,10 +33,101 @@ def _device_for(compute_type: str) -> str:
     return "cpu" if compute_type == "int8" else "cuda"
 
 
-def transcribe(wav: Path, cfg: Config | None = None, out_dir: Path | None = None) -> dict[str, Path]:
+class PyannoteDiarizer:
+    """Concrete `Diarizer` that calls pyannote.audio.Pipeline directly.
+
+    We deliberately bypass whisperx's `DiarizationPipeline` wrapper. In
+    whisperx 3.3.x with pyannote 3.x, passing the in-memory numpy waveform
+    through that wrapper occasionally produces an empty assignment — every
+    word ends up with `speaker=None`, which is what produced the
+    one-bucket transcripts that triggered this work.
+
+    Calling pyannote with the WAV path (which the file is anyway) sidesteps
+    the wrapper's tensor-shape handling. The returned `Annotation` is then
+    converted to the DataFrame shape `whisperx.assign_word_speakers`
+    expects in `transcribe()` below.
+    """
+
+    def __init__(self, *, hf_token: str, device: str) -> None:
+        self._hf_token = hf_token
+        self._device = device
+        self._pipeline: Any | None = None
+
+    def _ensure_pipeline(self) -> Any:
+        if self._pipeline is not None:
+            return self._pipeline
+        # Lazy import — pyannote pulls in torch + a chunk of audio deps,
+        # which we don't want loaded for `mp --help` or unit tests.
+        from pyannote.audio import Pipeline as PyannotePipeline  # type: ignore
+        import torch  # type: ignore
+
+        pipe = PyannotePipeline.from_pretrained(
+            PYANNOTE_DIARIZATION_REPO,
+            use_auth_token=self._hf_token,
+        )
+        if pipe is None:
+            # `from_pretrained` returns None when the local cache is missing
+            # AND the HF call returned 401 (TOS not accepted). Surface the
+            # actionable cause.
+            raise RuntimeError(
+                "pyannote.Pipeline.from_pretrained returned None — "
+                f"accept TOS at {hf_model_page_url(PYANNOTE_DIARIZATION_REPO)} "
+                "and retry"
+            )
+        # `to(device)` is a no-op on CPU; on cuda/mps it pins the model.
+        if self._device != "cpu":
+            try:
+                pipe.to(torch.device(self._device))
+            except Exception as e:  # noqa: BLE001
+                log.warning("Could not move pyannote pipeline to %s: %s", self._device, e)
+        self._pipeline = pipe
+        return pipe
+
+    def diarize(
+        self,
+        wav: Path,
+        *,
+        min_speakers: int,
+        max_speakers: int,
+    ) -> Any:
+        pipe = self._ensure_pipeline()
+        return pipe(
+            str(wav),
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+        )
+
+
+def annotation_to_whisperx_df(annotation: Any) -> Any:
+    """Convert a pyannote `Annotation` into the DataFrame shape
+    `whisperx.assign_word_speakers` expects.
+
+    Visible at module level so tests can hand it a fake annotation
+    (any object with `itertracks(yield_label=True)`) without spinning
+    up pyannote.
+    """
+    import pandas as pd  # type: ignore
+
+    rows = [
+        {"start": segment.start, "end": segment.end, "speaker": label}
+        for segment, _, label in annotation.itertracks(yield_label=True)
+    ]
+    return pd.DataFrame(rows, columns=["start", "end", "speaker"])
+
+
+def transcribe(
+    wav: Path,
+    cfg: Config | None = None,
+    out_dir: Path | None = None,
+    *,
+    diarizer: Diarizer | None = None,
+) -> dict[str, Path]:
     """Transcribe `wav` and write `<stem>.json` + `<stem>.md` next to it.
 
     Returns paths to both outputs.
+
+    Pass `diarizer` to swap the speaker-attribution backend or to inject
+    a fake in tests; defaults to `PyannoteDiarizer`.
     """
     cfg = cfg or Config.load()
     load_secrets()
@@ -96,19 +188,20 @@ def transcribe(wav: Path, cfg: Config | None = None, out_dir: Path | None = None
     diarization_failed = False
     diarization_failure_reason: str | None = None
     if not tcfg.disable_diarization and result.get("segments"):
-        hf_token = require_env("HF_TOKEN")
         log.info("Diarizing (min=%d, max=%d)", tcfg.min_speakers, tcfg.max_speakers)
         try:
-            # whisperx 3.1+ moved the import path; try both.
-            try:
-                from whisperx.diarize import DiarizationPipeline  # type: ignore
-            except ImportError:
-                from whisperx import DiarizationPipeline  # type: ignore
-            diarize_model = DiarizationPipeline(use_auth_token=hf_token, device=device)
-            diarize_segments = diarize_model(
-                audio, min_speakers=tcfg.min_speakers, max_speakers=tcfg.max_speakers
+            # Default to PyannoteDiarizer; tests can pass an in-memory fake
+            # via the `diarizer` kwarg without ever touching pyannote.
+            if diarizer is None:
+                hf_token = require_env("HF_TOKEN")
+                diarizer = PyannoteDiarizer(hf_token=hf_token, device=device)
+            annotation = diarizer.diarize(
+                wav,
+                min_speakers=tcfg.min_speakers,
+                max_speakers=tcfg.max_speakers,
             )
-            result = whisperx.assign_word_speakers(diarize_segments, result)
+            diarize_df = annotation_to_whisperx_df(annotation)
+            result = whisperx.assign_word_speakers(diarize_df, result)
         except Exception as e:  # noqa: BLE001
             diarization_failed = True
             diarization_failure_reason = f"{type(e).__name__}: {e}"
@@ -120,9 +213,7 @@ def transcribe(wav: Path, cfg: Config | None = None, out_dir: Path | None = None
             )
 
         # Even when no exception was raised, the run may have produced zero
-        # speaker assignments — a known whisperx symptom that previously went
-        # undetected. Flag that case explicitly so the markdown banner fires
-        # and the user knows the labels are unreliable.
+        # speaker assignments — guard against silent regressions.
         if not diarization_failed and result.get("segments"):
             any_assigned = any(
                 seg.get("speaker") is not None for seg in result["segments"]
@@ -131,9 +222,9 @@ def transcribe(wav: Path, cfg: Config | None = None, out_dir: Path | None = None
                 diarization_failed = True
                 diarization_failure_reason = (
                     "diarization returned no speaker assignments "
-                    "(whisperx assign_word_speakers produced empty result)"
+                    "(assign_word_speakers produced empty result)"
                 )
-                log.error("Diarization returned no speaker assignments — see commit 3 fix path")
+                log.error("Diarization returned no speaker assignments")
 
     structured = {
         "language": detected_lang,
