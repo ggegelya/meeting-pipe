@@ -99,29 +99,32 @@ final class Coordinator: NSObject {
     private func toggleManual() {
         switch state {
         case .idle:
-            beginRecording(source: nil)
+            beginRecording(source: nil, summaryMode: .auto)
         case .prompting(let src), .suppressed(let src):
             // Preserve meeting attribution when the user overrides via hotkey
             // — without this, "Always for {App}" would never see the source.
             promptWindow.dismiss()
-            beginRecording(source: src)
-        case .recording(let file, let src):
-            stopRecording(file: file, source: src)
+            beginRecording(source: src, summaryMode: .auto)
+        case .recording(let file, let src, let mode):
+            stopRecording(file: file, source: src, summaryMode: mode)
         case .stopping, .handoff:
             // Already in flight; ignore.
             break
         }
     }
 
-    private func beginRecording(source: AppSource?) {
+    private func beginRecording(source: AppSource?, summaryMode: SummaryMode) {
         cancelPromptTimeout()
 
         do {
             let file = try recorder.start(outputDir: config.recording.outputDir)
-            state = .recording(file: file, source: source)
+            state = .recording(file: file, source: source, summaryMode: summaryMode)
             statusBar.setRecording(file: file)
             notifier.notifyRecordingStarted(file: file)
-            Log.writeLine("daemon", "recording started → \(file.path) source=\(source?.bundleID ?? "manual")")
+            Log.writeLine(
+                "daemon",
+                "recording started → \(file.path) source=\(source?.bundleID ?? "manual") mode=\(summaryMode == .byo ? "byo" : "auto")"
+            )
         } catch {
             Log.main.error("failed to start recorder: \(error.localizedDescription)")
             notifier.notifyError("Could not start recording: \(error.localizedDescription)")
@@ -130,8 +133,8 @@ final class Coordinator: NSObject {
         }
     }
 
-    private func stopRecording(file: URL, source: AppSource?) {
-        state = .stopping(file: file, source: source)
+    private func stopRecording(file: URL, source: AppSource?, summaryMode: SummaryMode) {
+        state = .stopping(file: file, source: source, summaryMode: summaryMode)
         statusBar.setStopping()
 
         // Recorder.stop is async — runs on a background task so the UI stays
@@ -141,16 +144,16 @@ final class Coordinator: NSObject {
             await recorder.stop()
             guard let self = self else { return }
             Log.writeLine("daemon", "recording stopped → \(file.path)")
-            self.handoff(file: file)
+            self.handoff(file: file, summaryMode: summaryMode)
         }
     }
 
-    private func handoff(file: URL) {
+    private func handoff(file: URL, summaryMode: SummaryMode) {
         state = .handoff(file: file)
         statusBar.setHandoff()
         notifier.notifyProcessing(file: file)
 
-        launcher.runAll(wav: file) { [weak self] result in
+        launcher.runAll(wav: file, summaryMode: summaryMode) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 switch result {
@@ -205,7 +208,7 @@ extension Coordinator: DetectorDelegate {
         if config.recording.autoConsentApps.contains(source.bundleID) ||
            consent.isAutoConsented(bundleID: source.bundleID) {
             Log.writeLine("daemon", "auto-consent → recording (\(source.bundleID))")
-            beginRecording(source: source)
+            beginRecording(source: source, summaryMode: .auto)
             return
         }
 
@@ -223,8 +226,8 @@ extension Coordinator: DetectorDelegate {
 
     private func handleMeetingEnded() {
         switch state {
-        case .recording(let file, let src):
-            stopRecording(file: file, source: src)
+        case .recording(let file, let src, let mode):
+            stopRecording(file: file, source: src, summaryMode: mode)
         case .prompting, .suppressed:
             cancelPromptTimeout()
             promptWindow.dismiss()
@@ -239,7 +242,7 @@ extension Coordinator: DetectorDelegate {
 extension Coordinator: NotifierDelegate {
     func notifier(_ notifier: Notifier, didChooseRecord source: AppSource) {
         guard case .prompting(let pending) = state, pending == source else { return }
-        beginRecording(source: source)
+        beginRecording(source: source, summaryMode: .auto)
     }
 
     func notifier(_ notifier: Notifier, didChooseSkip source: AppSource) {
@@ -253,7 +256,7 @@ extension Coordinator: NotifierDelegate {
     func notifier(_ notifier: Notifier, didChooseAlways source: AppSource) {
         consent.setAutoConsented(bundleID: source.bundleID, value: true)
         Log.writeLine("daemon", "user always-consented (\(source.bundleID))")
-        beginRecording(source: source)
+        beginRecording(source: source, summaryMode: .auto)
     }
 
     func notifier(_ notifier: Notifier, didOpenPage url: URL) {
@@ -273,5 +276,9 @@ extension Coordinator: MeetingPromptDelegate {
     }
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseAlways source: AppSource) {
         notifier(notifier, didChooseAlways: source)
+    }
+    func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecordBYO source: AppSource) {
+        guard case .prompting(let pending) = state, pending == source else { return }
+        beginRecording(source: source, summaryMode: .byo)
     }
 }

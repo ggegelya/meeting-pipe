@@ -114,13 +114,27 @@ after raising `summarization.skip_above_chars` in
     return bundle
 
 
-def run_all(wav: Path, cfg: Config | None = None) -> dict:
-    """Run transcribe → summarize → publish. Raises on first failure."""
+def run_all(
+    wav: Path,
+    cfg: Config | None = None,
+    *,
+    force_byo: bool | None = None,
+) -> dict:
+    """Run transcribe → summarize → publish. Raises on first failure.
+
+    `force_byo=True` short-circuits to the manual-paste bundle after
+    transcription, even when the transcript is short enough to auto-
+    summarize. Defaults to reading `MP_FORCE_BYO=1` from the environment
+    so the Swift launcher can opt in per-meeting without flag plumbing.
+    """
     cfg = cfg or Config.load()
     load_secrets()
 
+    if force_byo is None:
+        force_byo = os.environ.get("MP_FORCE_BYO") == "1"
+
     log.info("=" * 60)
-    log.info("run-all: %s", wav)
+    log.info("run-all: %s%s", wav, " (BYO summary)" if force_byo else "")
     log.info("=" * 60)
 
     log.info("[1/3] transcribe")
@@ -148,7 +162,26 @@ def run_all(wav: Path, cfg: Config | None = None) -> dict:
 
     md_text = t["md"].read_text(encoding="utf-8")
 
-    # Short-circuit #2: long-meeting guard. Avoid Anthropic costs on a
+    # Short-circuit #2a: explicit BYO request from the user (per-meeting
+    # toggle on the prompt panel). Same machinery as the long-meeting
+    # guard — write the bundle and stop.
+    if force_byo:
+        bundle = _write_manual_bundle(t["md"], len(md_text), threshold=0)
+        log.info("BYO summary requested — skipping Anthropic call.")
+        log.info("Manual-processing bundle written: %s", bundle)
+        log.info("Run `mp publish-from-paste %s` after saving your summary.", t["md"])
+        return {
+            "transcript_json": str(t["json"]),
+            "transcript_md": str(t["md"]),
+            "summary_json": None,
+            "summary_md": None,
+            "page_id": None,
+            "page_url": None,
+            "skipped": "byo",
+            "manual_bundle": str(bundle),
+        }
+
+    # Short-circuit #2b: long-meeting guard. Avoid Anthropic costs on a
     # 1+ hour transcript by handing it to the user for manual processing.
     threshold = cfg.summarization.skip_above_chars
     if threshold and len(md_text) > threshold:
