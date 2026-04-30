@@ -70,6 +70,11 @@ final class StatusBarController {
         menu.addItem(openRecordings)
 
         menu.addItem(.separator())
+        let prefs = NSMenuItem(title: "Preferences…", action: #selector(Coordinator.menuPreferences), keyEquivalent: ",")
+        prefs.target = coordinator
+        menu.addItem(prefs)
+
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit MeetingPipe", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
         item.menu = menu

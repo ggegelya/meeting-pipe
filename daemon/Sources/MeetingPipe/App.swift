@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var statusBar: StatusBarController!
     private var coordinator: Coordinator!
+    private var configStore: ConfigStore?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.main.info("MeetingPipe starting")
@@ -30,6 +31,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             config = Config.defaultFallback()
         }
 
+        // ConfigStore powers the Preferences UI. Failure to read isn't
+        // fatal — the daemon keeps running with the in-memory `config`,
+        // and the user just sees a less-friendly menu.
+        let store: ConfigStore?
+        do {
+            store = try ConfigStore()
+        } catch {
+            Log.main.warning("ConfigStore disabled: \(String(describing: error))")
+            store = nil
+        }
+        self.configStore = store
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusBar = StatusBarController(item: statusItem)
 
@@ -38,7 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // items whose target is nil (Cocoa menu validation), which would
         // otherwise leave Start Recording / Open … greyed out until the
         // next state change rebuilt the menu.
-        coordinator = Coordinator(config: config, statusBar: statusBar)
+        coordinator = Coordinator(config: config, statusBar: statusBar, configStore: store)
         statusBar.coordinator = coordinator
         statusBar.setIdle()
         coordinator.start()  // requests notification authorization via Notifier
