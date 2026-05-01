@@ -1,0 +1,291 @@
+/* =========================================================================
+   Meeting Pipe -- Color & Type Foundations
+   =========================================================================
+   A mac-first, local-first aesthetic. Calm, paper-warm neutrals with one
+   electric "signal" accent that earns its place: it represents live capture,
+   the moment audio is flowing through the pipe. Used sparingly.
+
+   Two surfaces are first-class:
+     - Light  -- default app chrome (matches macOS hudWindow / app windows)
+     - Dark   -- auto-flips with system; muted, not pitch black
+   ========================================================================= */
+
+:root {
+  color-scheme: light dark;
+
+  /* --- Brand palette --------------------------------------------------- */
+  /* Ink -- the primary text/foreground. Warmer than pure black. */
+  --mp-ink-900: #14161A;
+  --mp-ink-800: #1F2227;
+  --mp-ink-700: #2C3037;
+  --mp-ink-600: #4A4F58;
+  --mp-ink-500: #6E747F;
+  --mp-ink-400: #9098A4;
+  --mp-ink-300: #B7BDC6;
+  --mp-ink-200: #D8DCE2;
+  --mp-ink-100: #ECEEF2;
+  --mp-ink-50:  #F5F6F8;
+
+  /* Paper -- the canvas. A cool-warm off-white that reads as "calm document". */
+  --mp-paper:        #FBFAF7;   /* base canvas */
+  --mp-paper-sunk:   #F4F2EC;   /* recessed wells */
+  --mp-paper-raised: #FFFFFF;   /* cards, sheets */
+
+  /* Signal -- electric blue. The "live" color. Use only for:
+       - active recording state
+       - primary action buttons
+       - playhead / waveform highlight
+     Never as a decorative gradient or background fill on large surfaces. */
+  --mp-signal-700: #1B53D6;
+  --mp-signal-600: #2667F0;     /* primary */
+  --mp-signal-500: #3D80FF;
+  --mp-signal-400: #6BA0FF;
+  --mp-signal-100: #E3ECFF;     /* tinted backgrounds only */
+
+  /* Pulse -- warm coral. Reserved for the recording dot only.
+     Borrowed from the universal "REC" red but warmer + less alarmed. */
+  --mp-pulse-600: #E5484D;
+  --mp-pulse-500: #F5595E;
+  --mp-pulse-100: #FFE4E4;
+
+  /* Semantic states (functional) */
+  --mp-success-600: #1F8F4E;
+  --mp-success-100: #DCF1E2;
+  --mp-warning-600: #B27300;
+  --mp-warning-100: #FFF1CC;
+  --mp-danger-600:  #C92A2A;
+  --mp-danger-100:  #FCE4E4;
+
+  /* --- Semantic foreground / background -------------------------------- */
+  --mp-fg:        var(--mp-ink-900);
+  --mp-fg-muted: var(--mp-ink-600);
+  --mp-fg-subtle: var(--mp-ink-500);
+  --mp-fg-faint:  var(--mp-ink-400);
+  --mp-fg-on-signal: #FFFFFF;
+
+  --mp-bg:           var(--mp-paper);
+  --mp-bg-raised:    var(--mp-paper-raised);
+  --mp-bg-sunk:      var(--mp-paper-sunk);
+  --mp-bg-overlay:   rgba(20, 22, 26, 0.42);   /* scrim */
+
+
+  --mp-border:        rgba(20, 22, 26, 0.10);
+  --mp-border-strong: rgba(20, 22, 26, 0.18);
+  --mp-border-faint:  rgba(20, 22, 26, 0.06);
+
+  /* HUD / floating panel -- matches macOS NSVisualEffectView .hudWindow */
+  --mp-hud-bg:        rgba(248, 247, 244, 0.78);
+  --mp-hud-stroke:    rgba(20, 22, 26, 0.08);
+  --mp-hud-shadow:
+      0 1px 2px rgba(20, 22, 26, 0.10),
+      0 12px 32px rgba(20, 22, 26, 0.18),
+      0 24px 60px rgba(20, 22, 26, 0.14);
+
+  /* --- Type ------------------------------------------------------------ */
+
+  /* Display -- for hero moments only (marketing site, big numbers).
+     Inter Tight has a slight condensation that reads "engineered". */
+  --mp-font-display: "Inter Tight", "SF Pro Display", -apple-system,
+                      BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+
+  /* UI sans -- body, labels, buttons, all chrome.
+     We mirror SF's metrics so on-mac it inherits SF Pro. */
+  --mp-font-sans:    -apple-system, BlinkMacSystemFont, "SF Pro Text",
+                      "Inter", "Helvetica Neue", Arial, sans-serif;
+
+  /* Mono -- code, file paths, bundle IDs, key bindings. */
+  --mp-font-mono:    "JetBrains Mono", "SF Mono", ui-monospace,
+                      "Menlo", "Consolas", monospace;
+
+  /* Type ramp -- base 13px (mac native), modest 1.125 step.
+     Compact ramp because this is a chrome-heavy app, not a content reader. */
+  --mp-text-xs:   11px;     /* captions, status bar text */
+  --mp-text-sm:   12px;     /* secondary labels */
+  --mp-text-base: 13px;     /* DEFAULT body / button label — mac native */
+  --mp-text-md:   15px;     /* prominent body */
+  --mp-text-lg:   17px;     /* panel titles (matches NSPanel title) */
+  --mp-text-xl:   22px;     /* section headers in prefs */
+  --mp-text-2xl:  28px;     /* page titles */
+  --mp-text-3xl:  40px;     /* marketing display */
+  --mp-text-4xl:  56px;     /* hero */
+
+  /* Weights -- mac uses .regular / .medium / .semibold; rarely bold. */
+  --mp-weight-regular:  400;
+  --mp-weight-medium:   500;
+  --mp-weight-semibold: 600;
+
+  /* Line heights -- tight; this is interface, not prose. */
+  --mp-leading-tight:  1.15;
+  --mp-leading-snug:   1.30;
+  --mp-leading-normal: 1.45;
+  --mp-leading-loose:  1.60;
+
+  /* Tracking -- SF-like negative tracking on display sizes. */
+  --mp-tracking-tight:  -0.02em;
+  --mp-tracking-snug:   -0.01em;
+  --mp-tracking-normal:  0em;
+  --mp-tracking-wide:    0.02em;   /* eyebrow / section meta */
+  --mp-tracking-caps:    0.08em;   /* uppercase labels */
+
+  /* --- Spacing --------------------------------------------------------- */
+  /* 4px grid. Mac chrome lives mostly on the 8 / 12 / 16 / 20 ticks. */
+  --mp-space-1:  4px;
+  --mp-space-2:  8px;
+  --mp-space-3:  12px;
+  --mp-space-4:  16px;
+  --mp-space-5:  20px;
+  --mp-space-6:  24px;
+  --mp-space-8:  32px;
+  --mp-space-10: 40px;
+  --mp-space-12: 48px;
+  --mp-space-16: 64px;
+
+  /* --- Radii ----------------------------------------------------------- */
+  /* macOS NSPanel uses 14, controls use ~6. We follow that. */
+  --mp-radius-xs:   4px;    /* small chips, tags */
+  --mp-radius-sm:   6px;    /* buttons, inputs */
+  --mp-radius-md:   10px;   /* cards */
+  --mp-radius-lg:   14px;   /* panels, sheets — matches NSPanel cornerRadius */
+  --mp-radius-xl:   20px;   /* large hero cards */
+  --mp-radius-full: 999px;  /* pills, dots */
+
+  /* --- Shadows --------------------------------------------------------- */
+  /* Subtle by default; mac chrome relies more on hairlines than shadows. */
+  --mp-shadow-hairline: inset 0 0 0 0.5px rgba(20, 22, 26, 0.10);
+  --mp-shadow-xs:  0 1px 1.5px rgba(20, 22, 26, 0.06);
+  --mp-shadow-sm:  0 1px 2px rgba(20, 22, 26, 0.08),
+                    0 2px 6px rgba(20, 22, 26, 0.06);
+  --mp-shadow-md:  0 1px 2px rgba(20, 22, 26, 0.08),
+                    0 6px 16px rgba(20, 22, 26, 0.10);
+  --mp-shadow-lg:  0 1px 2px rgba(20, 22, 26, 0.08),
+                    0 12px 32px rgba(20, 22, 26, 0.16),
+                    0 24px 60px rgba(20, 22, 26, 0.12);
+
+  /* Focus ring -- matches macOS controlAccentColor outline. */
+  --mp-focus-ring: 0 0 0 3px rgba(38, 103, 240, 0.32);
+
+  /* --- Motion ---------------------------------------------------------- */
+  /* Mac favors short, snappy fades. No bounces. */
+  --mp-ease-out:    cubic-bezier(0.22, 0.61, 0.36, 1);
+  --mp-ease-in-out: cubic-bezier(0.45, 0, 0.20, 1);
+  --mp-dur-fast:    120ms;
+  --mp-dur-base:    180ms;   /* matches the 0.18s panel fade in code */
+  --mp-dur-slow:    280ms;
+}
+
+/* Auto dark mode -- same palette, inverted surfaces.
+   Mac apps follow the system; we never let the user override per-page. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --mp-fg:        #F0F1F3;
+    --mp-fg-muted: #B7BDC6;
+    --mp-fg-subtle: #8A909A;
+    --mp-fg-faint:  #5E6470;
+
+    --mp-bg:           #1A1B1E;
+    --mp-bg-raised:    #25272B;
+    --mp-bg-sunk:      #131417;
+    --mp-bg-overlay:   rgba(0, 0, 0, 0.55);
+
+    --mp-border:        rgba(255, 255, 255, 0.08);
+    --mp-border-strong: rgba(255, 255, 255, 0.16);
+    --mp-border-faint:  rgba(255, 255, 255, 0.05);
+
+    --mp-hud-bg:        rgba(38, 40, 44, 0.78);
+    --mp-hud-stroke:    rgba(255, 255, 255, 0.08);
+    --mp-hud-shadow:
+        0 1px 2px rgba(0, 0, 0, 0.40),
+        0 12px 32px rgba(0, 0, 0, 0.50),
+        0 24px 60px rgba(0, 0, 0, 0.45);
+
+    --mp-signal-100: rgba(38, 103, 240, 0.18);
+    --mp-pulse-100:  rgba(229, 72, 77, 0.18);
+  }
+}
+
+/* =========================================================================
+   Semantic role classes -- apply these directly, don't restyle the elements.
+   ========================================================================= */
+
+html, body { font-family: var(--mp-font-sans); color: var(--mp-fg);
+             background: var(--mp-bg);
+             font-size: var(--mp-text-base); line-height: var(--mp-leading-normal);
+             -webkit-font-smoothing: antialiased;
+             -moz-osx-font-smoothing: grayscale;
+             text-rendering: optimizeLegibility; }
+
+.mp-display {
+  font-family: var(--mp-font-display);
+  font-size: var(--mp-text-4xl);
+  font-weight: var(--mp-weight-semibold);
+  line-height: var(--mp-leading-tight);
+  letter-spacing: var(--mp-tracking-tight);
+}
+
+.mp-h1 {
+  font-family: var(--mp-font-display);
+  font-size: var(--mp-text-3xl);
+  font-weight: var(--mp-weight-semibold);
+  line-height: var(--mp-leading-tight);
+  letter-spacing: var(--mp-tracking-tight);
+}
+
+.mp-h2 {
+  font-family: var(--mp-font-display);
+  font-size: var(--mp-text-2xl);
+  font-weight: var(--mp-weight-semibold);
+  line-height: var(--mp-leading-snug);
+  letter-spacing: var(--mp-tracking-snug);
+}
+
+.mp-h3 {
+  font-size: var(--mp-text-xl);
+  font-weight: var(--mp-weight-semibold);
+  line-height: var(--mp-leading-snug);
+  letter-spacing: var(--mp-tracking-snug);
+}
+
+.mp-title {
+  /* Panel/sheet title -- matches NSPanel "Meeting detected" subtitle weight */
+  font-size: var(--mp-text-lg);
+  font-weight: var(--mp-weight-semibold);
+  line-height: var(--mp-leading-snug);
+  letter-spacing: var(--mp-tracking-snug);
+}
+
+.mp-body { font-size: var(--mp-text-base); line-height: var(--mp-leading-normal); }
+.mp-body-prom { font-size: var(--mp-text-md); line-height: var(--mp-leading-normal); }
+.mp-secondary { font-size: var(--mp-text-base); color: var(--mp-fg-muted); }
+.mp-caption {
+  font-size: var(--mp-text-sm);
+  color: var(--mp-fg-subtle);
+  line-height: var(--mp-leading-snug);
+}
+
+.mp-eyebrow {
+  font-size: var(--mp-text-xs);
+  font-weight: var(--mp-weight-semibold);
+  letter-spacing: var(--mp-tracking-caps);
+  text-transform: uppercase;
+  color: var(--mp-fg-subtle);
+}
+
+.mp-mono {
+  font-family: var(--mp-font-mono);
+  font-size: var(--mp-text-sm);
+  font-feature-settings: "ss01", "cv02";
+}
+
+.mp-kbd {
+  font-family: var(--mp-font-mono);
+  font-size: var(--mp-text-xs);
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--mp-radius-xs);
+  background: var(--mp-bg-raised);
+  border: 1px solid var(--mp-border);
+  box-shadow: 0 1px 0 rgba(20, 22, 26, 0.06);
+  color: var(--mp-fg-muted);
+}

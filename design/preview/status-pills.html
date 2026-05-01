@@ -1,0 +1,31 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Status pills</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  body { margin:0; padding:20px; background:var(--mp-bg); display:flex; flex-direction:column; gap:10px; }
+  .pill { display:inline-flex; align-items:center; gap:6px;
+          height:22px; padding:0 10px 0 8px; border-radius:999px;
+          font-size:var(--mp-text-sm); font-weight:var(--mp-weight-medium);
+          background: var(--mp-ink-100); color: var(--mp-fg-muted);
+          border: 1px solid var(--mp-border); }
+  .pill .dot { width:6px; height:6px; border-radius:50%; background: var(--mp-ink-400);}
+  .pill.recording { background: rgba(229,72,77,0.10); color: #C92A2A; border-color: rgba(229,72,77,0.25); }
+  .pill.recording .dot { background: var(--mp-pulse-600); animation: pulse 1.6s ease-in-out infinite; }
+  .pill.live { background: var(--mp-signal-100); color: var(--mp-signal-700); border-color: rgba(38,103,240,0.25); }
+  .pill.live .dot { background: var(--mp-signal-600); }
+  .pill.success { background: var(--mp-success-100); color: var(--mp-success-600); border-color: rgba(31,143,78,0.25); }
+  .pill.success .dot { background: var(--mp-success-600); }
+  @keyframes pulse { 0%,100% {opacity: 1;} 50% {opacity: 0.35;} }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+</style></head>
+<body>
+  <div class="row">
+    <span class="pill"><span class="dot"></span> Idle</span>
+    <span class="pill live"><span class="dot"></span> Detected Zoom</span>
+    <span class="pill recording"><span class="dot"></span> Recording · 12:04</span>
+    <span class="pill recording"><span class="dot"></span> Recording (BYO) · 03:47</span>
+    <span class="pill"><span class="dot"></span> Stopping…</span>
+    <span class="pill"><span class="dot"></span> Processing…</span>
+    <span class="pill success"><span class="dot"></span> Published to Notion</span>
+  </div>
+</body></html>

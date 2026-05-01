@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none">
+  
+  <defs>
+    <clipPath id="squircle">
+      <path d="M128 0&#xA;               C 200 0 256 56 256 128&#xA;               C 256 200 200 256 128 256&#xA;               C 56 256 0 200 0 128&#xA;               C 0 56 56 0 128 0 Z"></path>
+    </clipPath>
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"></stop>
+      <stop offset="1" stop-color="#F4F2EC"></stop>
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#squircle)">
+    <rect width="256" height="256" fill="url(#paper)"></rect>
+    
+    <rect x="0.5" y="0.5" width="255" height="255" stroke="rgba(20,22,26,0.10)" fill="none" rx="56"></rect>
+    
+    <rect x="40" y="92" width="176" height="80" rx="28" stroke="#14161A" stroke-width="6" fill="none"></rect>
+    
+    <rect x="64" y="128" width="10" height="20" rx="5" fill="#14161A"></rect>
+    <rect x="84" y="118" width="10" height="40" rx="5" fill="#14161A"></rect>
+    <rect x="104" y="106" width="10" height="64" rx="5" fill="#14161A"></rect>
+    <rect x="124" y="96" width="10" height="84" rx="5" fill="#2667F0"></rect>
+    <rect x="144" y="106" width="10" height="64" rx="5" fill="#14161A"></rect>
+    <rect x="164" y="118" width="10" height="40" rx="5" fill="#14161A"></rect>
+    <rect x="184" y="128" width="10" height="20" rx="5" fill="#14161A"></rect>
+  </g>
+</svg>

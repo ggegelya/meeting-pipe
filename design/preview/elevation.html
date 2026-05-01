@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Shadows · Elevation</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  body { margin:0; padding:30px; background:var(--mp-bg); }
+  .row { display:flex; gap:24px; }
+  .item { flex:1; display:flex; flex-direction:column; align-items:center; gap:10px; }
+  .box { width:100%; height:80px; background:var(--mp-bg-raised); border-radius:var(--mp-radius-md); border:1px solid var(--mp-border); }
+  .name { font-family:var(--mp-font-mono); font-size:11px; color:var(--mp-fg-subtle); }
+  .hud { background: rgba(255,255,255,0.7); backdrop-filter: blur(20px); border:0.5px solid var(--mp-hud-stroke);}
+</style></head>
+<body>
+  <div class="row">
+    <div class="item"><div class="box" style="box-shadow:var(--mp-shadow-xs)"></div><span class="name">resting</span></div>
+    <div class="item"><div class="box" style="box-shadow:var(--mp-shadow-sm)"></div><span class="name">raised · sm</span></div>
+    <div class="item"><div class="box" style="box-shadow:var(--mp-shadow-md)"></div><span class="name">popover · md</span></div>
+    <div class="item"><div class="box hud" style="box-shadow:var(--mp-hud-shadow); border-radius:var(--mp-radius-lg)"></div><span class="name">HUD panel · lg</span></div>
+  </div>
+</body></html>

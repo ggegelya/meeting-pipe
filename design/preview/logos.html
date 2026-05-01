@@ -1,0 +1,21 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Logo lockups</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  body { margin:0; padding:24px; background:var(--mp-bg); display:flex; flex-direction:column; gap:18px; align-items:flex-start; }
+  .row { display:flex; gap:18px; align-items:center; flex-wrap:wrap; }
+  .meta { font-family:var(--mp-font-mono); font-size:11px; color:var(--mp-fg-subtle); width:80px; }
+  .dark { background:#14161A; color:#fff; padding:10px 14px; border-radius:var(--mp-radius-sm); display:inline-flex; align-items:center; }
+  .light { color: var(--mp-fg); display:inline-flex; align-items:center; }
+  .signal { color: var(--mp-signal-600); display:inline-flex; align-items:center; }
+</style></head>
+<body>
+  <div class="row"><span class="meta">app icon</span><img src="../assets/app-icon.svg" width="64" height="64" alt=""><img src="../assets/app-icon.svg" width="40" height="40" alt=""><img src="../assets/app-icon.svg" width="28" height="28" alt=""></div>
+  <div class="row"><span class="meta">horizontal</span><span class="light"><img src="../assets/logo.svg" height="28"></span></div>
+  <div class="row"><span class="meta">on dark</span><span class="dark"><img src="../assets/logo.svg" height="24"></span></div>
+  <div class="row"><span class="meta">in signal</span><span class="signal"><img src="../assets/logo.svg" height="28"></span></div>
+  <div class="row"><span class="meta">menubar</span>
+    <span class="light" style="background:var(--mp-bg-raised);border:1px solid var(--mp-border);padding:2px 8px;border-radius:4px;font-size:12px;height:22px"><img src="../assets/menubar-icon.svg" width="16" height="16" style="margin-right:6px"> Idle</span>
+    <span class="light" style="background:var(--mp-bg-raised);border:1px solid var(--mp-border);padding:2px 8px;border-radius:4px;font-size:12px;height:22px"><img src="../assets/menubar-icon-recording.svg" width="16" height="16" style="margin-right:6px"> Recording</span>
+  </div>
+</body></html>

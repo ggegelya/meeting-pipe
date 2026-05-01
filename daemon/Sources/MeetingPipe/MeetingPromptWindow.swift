@@ -6,15 +6,16 @@ import AppKit
 /// Banner notifications get suppressed under Focus modes and are easy to miss
 /// — a floating panel stays put until the user clicks or the timeout fires.
 ///
-/// Lifecycle: `present` shows the panel (animated), `dismiss` fades it out.
-/// One panel at a time — calling `present` again replaces the current one.
-/// The panel itself does not own state; `MeetingPromptDelegate` carries the
+/// Lifecycle: `present` shows the panel (animated) AND starts the mic-level
+/// monitor. `dismiss` fades it out AND stops the monitor. One panel at a
+/// time — calling `present` again replaces the current one. The panel
+/// itself does not own outcome state; `MeetingPromptDelegate` carries the
 /// click outcome back to the Coordinator (same surface area as the existing
 /// `NotifierDelegate.didChooseRecord/Skip/Always`).
 ///
-/// Sizing constraints: width fixed at 360, height grows with subtitle length
-/// up to 200. Always pinned 16pt from the top-right edge of the screen the
-/// menu bar lives on (mainScreen).
+/// Sizing: width fixed at 380, height fixed at 226 to make room for the
+/// app-glyph + privacy-copy line. Pinned 16pt from the top-right of the
+/// screen the menu bar lives on.
 protocol MeetingPromptDelegate: AnyObject {
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecord source: AppSource)
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseSkip source: AppSource)
@@ -31,11 +32,18 @@ final class MeetingPromptWindow {
     weak var delegate: MeetingPromptDelegate?
 
     private var panel: NSPanel?
-    private var dismissTimer: Timer?
     private var currentSource: AppSource?
+    private weak var liveWaveform: LiveWaveformView?
+    private weak var dismissProgress: DismissProgressView?
+    private let levelMonitor = MicLevelMonitor()
+
+    /// Auto-dismiss timer kept here so we can pause/resume in sync with hover.
+    private var dismissTimer: Timer?
+    private var dismissDeadline: Date?
+    private var dismissRemainingOnPause: TimeInterval?
 
     private static let panelWidth: CGFloat = 380
-    private static let panelHeight: CGFloat = 180
+    private static let panelHeight: CGFloat = 226
     private static let edgeInset: CGFloat = 16
 
     func present(source: AppSource, autoDismissAfter seconds: TimeInterval) {
@@ -43,16 +51,25 @@ final class MeetingPromptWindow {
         dismiss(animated: false)
         currentSource = source
 
-        let panel = makePanel(source: source)
+        let panel = makePanel(source: source, timeoutSec: seconds)
         self.panel = panel
         positionPanel(panel)
 
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.18
+            ctx.duration = MPMotion.durBase
+            ctx.timingFunction = MPMotion.easeOut
             panel.animator().alphaValue = 1
         }
+
+        // Start the live mic monitor — the waveform reads from this. If the
+        // mic permission is missing, the monitor silently no-ops and the bars
+        // stay at the floor level.
+        levelMonitor.start { [weak self] level in
+            self?.liveWaveform?.push(level: level)
+        }
+        dismissProgress?.start(timeoutSec: seconds)
 
         scheduleAutoDismiss(after: seconds)
     }
@@ -60,6 +77,11 @@ final class MeetingPromptWindow {
     func dismiss(animated: Bool = true) {
         dismissTimer?.invalidate()
         dismissTimer = nil
+        dismissDeadline = nil
+        dismissRemainingOnPause = nil
+        levelMonitor.stop()
+        dismissProgress?.stop()
+
         guard let panel = panel else { return }
         self.panel = nil
         currentSource = nil
@@ -68,7 +90,8 @@ final class MeetingPromptWindow {
             return
         }
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.15
+            ctx.duration = MPMotion.durFast + 0.03   // ~150ms — matches existing fade-out
+            ctx.timingFunction = MPMotion.easeOut
             panel.animator().alphaValue = 0
         }, completionHandler: {
             panel.orderOut(nil)
@@ -77,7 +100,7 @@ final class MeetingPromptWindow {
 
     // MARK: - Panel construction
 
-    private func makePanel(source: AppSource) -> NSPanel {
+    private func makePanel(source: AppSource, timeoutSec: TimeInterval) -> NSPanel {
         let rect = NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight)
         let panel = NSPanel(
             contentRect: rect,
@@ -95,99 +118,140 @@ final class MeetingPromptWindow {
         panel.backgroundColor = .clear
         panel.isOpaque = false
 
-        panel.contentView = makeContentView(source: source)
+        panel.contentView = makeContentView(source: source, timeoutSec: timeoutSec)
         return panel
     }
 
-    private func makeContentView(source: AppSource) -> NSView {
+    private func makeContentView(source: AppSource, timeoutSec: TimeInterval) -> NSView {
         let bg = RoundedBackgroundView(frame: NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight))
-        bg.cornerRadius = 14
+        bg.cornerRadius = MPRadius.lg
 
-        let title = NSTextField(labelWithString: "Meeting detected")
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
-        title.textColor = .secondaryLabelColor
+        // --- Eyebrow row: app glyph + label + live waveform ----------
+        let glyph = AppGlyphView(source: source)
+        bg.addSubview(glyph)
+
+        let eyebrow = NSTextField(labelWithString: "Meeting detected")
+        eyebrow.font = .mpBodyMedium()
+        eyebrow.textColor = MPColors.fgMuted
+        eyebrow.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(eyebrow)
+
+        let waveform = LiveWaveformView(frame: .zero)
+        waveform.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(waveform)
+        self.liveWaveform = waveform
+
+        // --- Title: source name --------------------------------------
+        let title = NSTextField(labelWithString: source.displayName)
+        title.font = .mpTitle()
+        title.textColor = MPColors.fg
+        title.lineBreakMode = .byTruncatingTail
         title.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(title)
 
-        let subtitle = NSTextField(labelWithString: source.displayName)
-        subtitle.font = .systemFont(ofSize: 17, weight: .semibold)
-        subtitle.textColor = .labelColor
-        subtitle.lineBreakMode = .byTruncatingTail
-        subtitle.translatesAutoresizingMaskIntoConstraints = false
-        bg.addSubview(subtitle)
-
+        // --- Body --------------------------------------------------
         let body = NSTextField(labelWithString: "Record this meeting?")
-        body.font = .systemFont(ofSize: 13, weight: .regular)
-        body.textColor = .secondaryLabelColor
+        body.font = .mpBody()
+        body.textColor = MPColors.fgMuted
         body.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(body)
 
-        let record = makeButton(title: "Record", isPrimary: true, action: #selector(RoundedBackgroundView.didClickRecord))
-        let recordBYO = makeButton(title: "Record (BYO)", isPrimary: false, action: #selector(RoundedBackgroundView.didClickRecordBYO))
+        // --- Privacy clarification ----------------------------------
+        // Required because the prompt now starts the mic for level metering.
+        // Copy taken verbatim from the design spec (chat #2 turn 3).
+        let privacy = NSTextField(labelWithString: "Listening for level only — nothing is captured until you choose Record.")
+        privacy.font = .systemFont(ofSize: MPType.textXS, weight: MPType.regular)
+        privacy.textColor = MPColors.fgSubtle
+        privacy.maximumNumberOfLines = 2
+        privacy.lineBreakMode = .byWordWrapping
+        privacy.cell?.wraps = true
+        privacy.cell?.isScrollable = false
+        privacy.preferredMaxLayoutWidth = Self.panelWidth - 2 * MPSpace.s4
+        privacy.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(privacy)
+
+        // --- Buttons --------------------------------------------------
+        let skip = MPButton(title: "Skip", style: .text,
+                            target: bg, action: #selector(RoundedBackgroundView.didClickSkip))
+        let always = MPButton(title: "Always for \(source.displayName)", style: .text,
+                              target: bg, action: #selector(RoundedBackgroundView.didClickAlways))
+        let recordBYO = MPButton(title: "Record (BYO)", style: .ghost,
+                                 target: bg, action: #selector(RoundedBackgroundView.didClickRecordBYO))
         recordBYO.toolTip = "Record, but skip the Anthropic API call. You'll summarize the transcript yourself."
-        let skip = makeButton(title: "Skip", isPrimary: false, action: #selector(RoundedBackgroundView.didClickSkip))
-        let always = makeButton(title: "Always for \(source.displayName)", isPrimary: false, action: #selector(RoundedBackgroundView.didClickAlways))
-        for b in [record, recordBYO, skip, always] {
-            b.target = bg
-            bg.addSubview(b)
-        }
+        let record = MPButton(title: "Record", style: .primary,
+                              target: bg, action: #selector(RoundedBackgroundView.didClickRecord))
+        record.bindAsDefault()
         bg.host = self
 
-        // Two rows: Skip + Always on top, Record + BYO on bottom-right.
-        // Keeps the primary action (Record) closest to where the eye lands
-        // after reading the meeting name.
-        let topRow = NSStackView(views: [skip, always])
-        topRow.orientation = .horizontal
-        topRow.alignment = .centerY
-        topRow.spacing = 8
-        topRow.distribution = .fill
-        topRow.translatesAutoresizingMaskIntoConstraints = false
-        topRow.setHuggingPriority(.defaultLow, for: .horizontal)
-        bg.addSubview(topRow)
+        for b in [skip, always, recordBYO, record] {
+            b.translatesAutoresizingMaskIntoConstraints = false
+            bg.addSubview(b)
+        }
 
-        let bottomRow = NSStackView(views: [recordBYO, record])
-        bottomRow.orientation = .horizontal
-        bottomRow.alignment = .centerY
-        bottomRow.spacing = 8
-        bottomRow.distribution = .fill
-        bottomRow.translatesAutoresizingMaskIntoConstraints = false
-        bottomRow.setHuggingPriority(.defaultLow, for: .horizontal)
-        bg.addSubview(bottomRow)
+        // --- Auto-dismiss progress hairline (bottom edge) -----------
+        let progress = DismissProgressView(frame: .zero)
+        progress.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(progress)
+        self.dismissProgress = progress
+        bg.dismissProgress = progress
+
+        // --- Layout ------------------------------------------------------
+        // Inset matches the design's HUD card spec (16pt sides, 14pt top).
+        let inset: CGFloat = MPSpace.s4   // 16
+        let topInset: CGFloat = 14
+        let bottomInset: CGFloat = 14
 
         NSLayoutConstraint.activate([
-            title.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 16),
-            title.topAnchor.constraint(equalTo: bg.topAnchor, constant: 14),
-            title.trailingAnchor.constraint(lessThanOrEqualTo: bg.trailingAnchor, constant: -16),
+            // Eyebrow row: glyph (24×24) + eyebrow text + waveform (right).
+            glyph.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: inset),
+            glyph.topAnchor.constraint(equalTo: bg.topAnchor, constant: topInset),
+            glyph.widthAnchor.constraint(equalToConstant: 24),
+            glyph.heightAnchor.constraint(equalToConstant: 24),
 
-            subtitle.leadingAnchor.constraint(equalTo: title.leadingAnchor),
-            subtitle.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 2),
-            subtitle.trailingAnchor.constraint(lessThanOrEqualTo: bg.trailingAnchor, constant: -16),
+            eyebrow.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: MPSpace.s2),
+            eyebrow.centerYAnchor.constraint(equalTo: glyph.centerYAnchor),
 
-            body.leadingAnchor.constraint(equalTo: title.leadingAnchor),
-            body.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 8),
+            waveform.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -inset),
+            waveform.centerYAnchor.constraint(equalTo: glyph.centerYAnchor),
+            waveform.widthAnchor.constraint(equalToConstant: LiveWaveformView.intrinsicWidth),
+            waveform.heightAnchor.constraint(equalToConstant: 14),
 
-            topRow.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 16),
-            topRow.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -16),
-            topRow.topAnchor.constraint(equalTo: body.bottomAnchor, constant: 12),
+            // Title flush-left; aligned with glyph (NOT indented under it —
+            // this preserves the JSX hierarchy where the source name reads
+            // as the panel's primary content).
+            title.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: inset),
+            title.topAnchor.constraint(equalTo: glyph.bottomAnchor, constant: MPSpace.s1),
+            title.trailingAnchor.constraint(lessThanOrEqualTo: bg.trailingAnchor, constant: -inset),
 
-            bottomRow.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 16),
-            bottomRow.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -16),
-            bottomRow.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -14),
+            body.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: inset),
+            body.topAnchor.constraint(equalTo: title.bottomAnchor, constant: MPSpace.s2),
+            body.trailingAnchor.constraint(lessThanOrEqualTo: bg.trailingAnchor, constant: -inset),
+
+            privacy.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: inset),
+            privacy.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -inset),
+            privacy.topAnchor.constraint(equalTo: body.bottomAnchor, constant: MPSpace.s1),
+
+            // Primary row: BYO + Record, right-aligned, on the bottom.
+            record.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -bottomInset),
+            record.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -inset),
+
+            recordBYO.centerYAnchor.constraint(equalTo: record.centerYAnchor),
+            recordBYO.trailingAnchor.constraint(equalTo: record.leadingAnchor, constant: -MPSpace.s2),
+
+            // Secondary row: Skip + Always, left-aligned, above primary.
+            skip.bottomAnchor.constraint(equalTo: record.topAnchor, constant: -MPSpace.s2),
+            skip.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: inset),
+
+            always.centerYAnchor.constraint(equalTo: skip.centerYAnchor),
+            always.leadingAnchor.constraint(equalTo: skip.trailingAnchor, constant: MPSpace.s1),
+
+            // Dismiss progress: 2pt bar flush to the bottom edge, full width.
+            progress.leadingAnchor.constraint(equalTo: bg.leadingAnchor),
+            progress.trailingAnchor.constraint(equalTo: bg.trailingAnchor),
+            progress.bottomAnchor.constraint(equalTo: bg.bottomAnchor),
+            progress.heightAnchor.constraint(equalToConstant: 2),
         ])
         return bg
-    }
-
-    private func makeButton(title: String, isPrimary: Bool, action: Selector) -> NSButton {
-        let b = NSButton(title: title, target: nil, action: action)
-        b.bezelStyle = .rounded
-        b.controlSize = .regular
-        b.translatesAutoresizingMaskIntoConstraints = false
-        if isPrimary {
-            b.keyEquivalent = "\r"
-            b.bezelColor = .controlAccentColor
-            b.contentTintColor = .white
-        }
-        return b
     }
 
     private func positionPanel(_ panel: NSPanel) {
@@ -202,11 +266,28 @@ final class MeetingPromptWindow {
 
     private func scheduleAutoDismiss(after seconds: TimeInterval) {
         dismissTimer?.invalidate()
+        dismissDeadline = Date().addingTimeInterval(seconds)
         dismissTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
-            // Auto-dismiss = same as Skip semantically. Coordinator already
-            // has a parallel timeout that flips state to .suppressed; we just
-            // hide the window so it doesn't sit there after the timeout.
             DispatchQueue.main.async { self?.dismiss() }
+        }
+    }
+
+    /// Pauses the auto-dismiss timer + the progress fill while the mouse is
+    /// over the panel. Mirrors the JSX behavior: a user reading the panel
+    /// shouldn't lose it mid-decision.
+    fileprivate func setHovered(_ hovered: Bool) {
+        dismissProgress?.setPaused(hovered)
+        if hovered {
+            // Capture remaining time, cancel timer.
+            if let deadline = dismissDeadline {
+                dismissRemainingOnPause = max(0, deadline.timeIntervalSinceNow)
+            }
+            dismissTimer?.invalidate()
+            dismissTimer = nil
+        } else if let remaining = dismissRemainingOnPause {
+            // Resume with whatever was left.
+            scheduleAutoDismiss(after: remaining)
+            dismissRemainingOnPause = nil
         }
     }
 
@@ -236,19 +317,26 @@ final class MeetingPromptWindow {
     }
 }
 
-/// Rounded translucent background. Uses NSVisualEffectView so the panel
-/// blends with whatever's behind it instead of looking like a stuck dialog.
+/// Rounded translucent background. Uses NSVisualEffectView with `.hudWindow`
+/// material so the panel blends with the desktop behind it instead of
+/// looking like a stuck dialog. Owns the mouse-tracking that drives
+/// pause-on-hover for the dismiss progress hairline.
 private final class RoundedBackgroundView: NSView {
-    var cornerRadius: CGFloat = 12 { didSet { needsLayout = true } }
+    var cornerRadius: CGFloat = MPRadius.lg { didSet { needsLayout = true } }
     weak var host: MeetingPromptWindow?
+    weak var dismissProgress: DismissProgressView?
 
     private let blur = NSVisualEffectView()
+    private var trackingArea: NSTrackingArea?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.cornerRadius = cornerRadius
         layer?.masksToBounds = true
+        // 0.5px hairline stroke matches the design's HUD spec.
+        layer?.borderWidth = 0.5
+        layer?.borderColor = MPColors.border.cgColor
 
         blur.material = .hudWindow
         blur.blendingMode = .behindWindow
@@ -268,7 +356,24 @@ private final class RoundedBackgroundView: NSView {
     override func layout() {
         super.layout()
         layer?.cornerRadius = cornerRadius
+        layer?.borderColor = MPColors.border.cgColor
     }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea { removeTrackingArea(existing) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { host?.setHovered(true) }
+    override func mouseExited(with event: NSEvent) { host?.setHovered(false) }
 
     @objc func didClickRecord() { host?.handleRecord() }
     @objc func didClickSkip() { host?.handleSkip() }

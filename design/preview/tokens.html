@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Tokens at a glance</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  body { margin:0; padding:18px; background:var(--mp-bg); display:grid; grid-template-columns: 1.1fr 1fr; gap:14px; }
+  .col { display:flex; flex-direction:column; gap:6px; }
+  .h { font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--mp-fg-subtle); margin-bottom:2px; }
+  .row { display:flex; align-items:center; gap:8px; font-family:var(--mp-font-mono); font-size:11px; color:var(--mp-fg-muted); }
+  .swatch { width:14px; height:14px; border-radius:3px; border:1px solid var(--mp-border); }
+  .name { color:var(--mp-fg); }
+</style></head>
+<body>
+  <div class="col">
+    <div class="h">Color tokens</div>
+    <div class="row"><span class="swatch" style="background:#FBFAF7"></span><span class="name">--mp-bg</span> Paper</div>
+    <div class="row"><span class="swatch" style="background:#FFFFFF"></span><span class="name">--mp-bg-raised</span> White</div>
+    <div class="row"><span class="swatch" style="background:#14161A"></span><span class="name">--mp-fg</span> Ink 900</div>
+    <div class="row"><span class="swatch" style="background:#4A4F58"></span><span class="name">--mp-fg-muted</span> Ink 600</div>
+    <div class="row"><span class="swatch" style="background:#9098A4"></span><span class="name">--mp-fg-subtle</span> Ink 500</div>
+    <div class="row"><span class="swatch" style="background:#2667F0"></span><span class="name">--mp-signal-600</span> Primary</div>
+    <div class="row"><span class="swatch" style="background:#E5484D"></span><span class="name">--mp-pulse-600</span> REC dot</div>
+    <div class="row"><span class="swatch" style="background:#1F8F4E"></span><span class="name">--mp-success-600</span></div>
+  </div>
+  <div class="col">
+    <div class="h">Type · spacing · radii</div>
+    <div class="row"><span class="name">--mp-text-base</span> 13 / system</div>
+    <div class="row"><span class="name">--mp-text-lg</span> 17 / panel title</div>
+    <div class="row"><span class="name">--mp-font-display</span> Inter Tight</div>
+    <div class="row"><span class="name">--mp-font-mono</span> JetBrains Mono</div>
+    <div class="row"><span class="name">--mp-space-{1..16}</span> 4 8 12 16 20 24 32 40 48 64</div>
+    <div class="row"><span class="name">--mp-radius-sm/md/lg</span> 6 / 10 / 14</div>
+    <div class="row"><span class="name">--mp-dur-base</span> 180ms · ease-out</div>
+    <div class="row"><span class="name">--mp-shadow-lg</span> HUD floating panel</div>
+  </div>
+</body></html>

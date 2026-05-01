@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="32" viewBox="0 0 128 32" fill="none">
+  
+  <g transform="translate(0,0)">
+    
+    <rect x="1" y="6" width="30" height="20" rx="6" stroke="currentColor" stroke-width="2" fill="none"></rect>
+    
+    <rect x="6" y="13" width="2.5" height="6" rx="1.25" fill="currentColor"></rect>
+    <rect x="10" y="10" width="2.5" height="12" rx="1.25" fill="currentColor"></rect>
+    <rect x="14" y="8" width="2.5" height="16" rx="1.25" fill="currentColor"></rect>
+    <rect x="18" y="11" width="2.5" height="10" rx="1.25" fill="currentColor"></rect>
+    <rect x="22" y="14" width="2.5" height="4" rx="1.25" fill="currentColor"></rect>
+    <rect x="26" y="13" width="2.5" height="6" rx="1.25" fill="currentColor"></rect>
+  </g>
+  <text x="40" y="22" font-family="Inter Tight, -apple-system, system-ui, sans-serif" font-size="17" font-weight="600" letter-spacing="-0.02em" fill="currentColor">
+    Meeting Pipe
+  </text>
+</svg>

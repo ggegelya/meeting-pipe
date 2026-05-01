@@ -1,0 +1,31 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Signal scale</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  body { margin:0; padding:20px; background:var(--mp-bg); display:flex; flex-direction:column; gap:14px; }
+  .h2 { font-size: var(--mp-text-sm); color:var(--mp-fg-muted); margin: 0; font-weight:var(--mp-weight-semibold); letter-spacing:var(--mp-tracking-caps); text-transform:uppercase; }
+  .row { display:flex; gap:0; border-radius:var(--mp-radius-md); overflow:hidden; border:1px solid var(--mp-border); }
+  .step { flex:1; padding:12px 10px; display:flex; flex-direction:column; gap:4px; }
+  .name { font-size:var(--mp-text-xs); font-weight:var(--mp-weight-semibold); letter-spacing:var(--mp-tracking-wide); }
+  .hex  { font-family:var(--mp-font-mono); font-size:10px; opacity:0.75; }
+</style></head>
+<body>
+  <div>
+    <div class="h2" style="margin-bottom:8px">Signal — primary action / live capture</div>
+    <div class="row">
+      <div class="step" style="background:#E3ECFF;color:#1B53D6"><span class="name">100</span><span class="hex">#E3ECFF</span></div>
+      <div class="step" style="background:#6BA0FF;color:#fff"><span class="name">400</span><span class="hex">#6BA0FF</span></div>
+      <div class="step" style="background:#3D80FF;color:#fff"><span class="name">500</span><span class="hex">#3D80FF</span></div>
+      <div class="step" style="background:#2667F0;color:#fff"><span class="name">600</span><span class="hex">#2667F0</span></div>
+      <div class="step" style="background:#1B53D6;color:#fff"><span class="name">700</span><span class="hex">#1B53D6</span></div>
+    </div>
+  </div>
+  <div>
+    <div class="h2" style="margin-bottom:8px">Pulse — recording dot only</div>
+    <div class="row">
+      <div class="step" style="background:#FFE4E4;color:#C92A2A"><span class="name">100</span><span class="hex">#FFE4E4</span></div>
+      <div class="step" style="background:#F5595E;color:#fff"><span class="name">500</span><span class="hex">#F5595E</span></div>
+      <div class="step" style="background:#E5484D;color:#fff"><span class="name">600</span><span class="hex">#E5484D</span></div>
+    </div>
+  </div>
+</body></html>
