@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import ScreenCaptureKit
 
@@ -42,6 +43,27 @@ final class SystemAudioCapture: NSObject {
     /// invalidates TCC's record).
     private static var cachedContent: SCShareableContent?
 
+    /// Last-known TCC outcome for Screen Recording. Drives the menu-bar
+    /// warning, the post-recording "mic-only" notification, and the inline
+    /// banner on the prompt panel. Reads can happen on any thread but writes
+    /// only from `prewarm()` / `start()`.
+    enum PermissionState {
+        case unknown   // we haven't checked yet (cold launch before prewarm)
+        case granted   // last call to SCShareableContent / SCStream succeeded
+        case denied    // last call threw a TCC denial — silent mic-only mode
+    }
+    static private(set) var permissionState: PermissionState = .unknown
+
+    /// Open System Settings → Privacy & Security → Screen Recording. Used by
+    /// the menu-bar warning, the prompt-panel inline banner, and the
+    /// "Recording was mic-only" notification action. All known call sites
+    /// run on the main thread, and `NSWorkspace.shared.open(_:)` is
+    /// documented as thread-safe regardless.
+    static func openScreenRecordingSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     init(onBuffer: @escaping (AVAudioPCMBuffer) -> Void) {
         self.onBuffer = onBuffer
         super.init()
@@ -53,15 +75,17 @@ final class SystemAudioCapture: NSObject {
     /// starts will retry (and re-prompt at most once per daemon lifetime
     /// per pre-warm cycle).
     static func prewarm() async {
-        if cachedContent != nil { return }
+        if cachedContent != nil { permissionState = .granted; return }
         do {
             cachedContent = try await SCShareableContent.excludingDesktopWindows(
                 false,
                 onScreenWindowsOnly: true
             )
+            permissionState = .granted
             Log.recorder.info("SCShareableContent prewarmed (\(cachedContent?.displays.count ?? 0) displays)")
             Log.writeLine("recorder", "SCShareableContent prewarmed")
         } catch {
+            permissionState = .denied
             Log.recorder.warning("SCShareableContent prewarm failed: \(error.localizedDescription)")
             Log.writeLine("recorder", "WARN: SCShareableContent prewarm failed: \(error.localizedDescription)")
         }
@@ -75,12 +99,18 @@ final class SystemAudioCapture: NSObject {
         if let cached = Self.cachedContent {
             content = cached
         } else {
-            content = try await SCShareableContent.excludingDesktopWindows(
-                false,
-                onScreenWindowsOnly: true
-            )
+            do {
+                content = try await SCShareableContent.excludingDesktopWindows(
+                    false,
+                    onScreenWindowsOnly: true
+                )
+            } catch {
+                Self.permissionState = .denied
+                throw error
+            }
             Self.cachedContent = content
         }
+        Self.permissionState = .granted
         guard let display = content.displays.first else {
             throw CaptureError.noDisplay
         }

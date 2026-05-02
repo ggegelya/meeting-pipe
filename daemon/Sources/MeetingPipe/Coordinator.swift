@@ -42,6 +42,10 @@ final class Coordinator: NSObject {
     /// in-flight meeting). Apply on next `.idle` instead.
     private var pendingDetectorRefresh: Bool = false
 
+    /// Show the "Screen Recording disabled" startup notification at most
+    /// once per daemon launch — repeated banners would be noisy.
+    private var didNotifyAboutPermissionDenial: Bool = false
+
     private var configCancellable: AnyCancellable?
 
     init(
@@ -90,6 +94,24 @@ final class Coordinator: NSObject {
         configCancellable = configStore?.didPersist
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.handleConfigPersisted() }
+
+        // Surface the Screen Recording permission state once prewarm has had
+        // a chance to settle. Without this, a denied TCC silently degrades
+        // every recording to mic-only — and the user only finds out at
+        // playback. 2.5s is enough for the prewarm Task to complete on a
+        // cold launch; if it's still .unknown after that we don't bug the
+        // user (the menu-bar warning catches it once the state resolves).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            self?.checkScreenRecordingPermissionAtStartup()
+        }
+    }
+
+    private func checkScreenRecordingPermissionAtStartup() {
+        guard !didNotifyAboutPermissionDenial,
+              SystemAudioCapture.permissionState == .denied else { return }
+        didNotifyAboutPermissionDenial = true
+        notifier.notifySystemAudioBlocked()
+        statusBar.refreshMenuForPermissionChange()
     }
 
     func shutdown() {
@@ -119,6 +141,10 @@ final class Coordinator: NSObject {
 
     @objc func menuPreferences() {
         preferencesWindow?.show()
+    }
+
+    @objc func menuOpenScreenRecordingSettings() {
+        SystemAudioCapture.openScreenRecordingSettings()
     }
 
     // MARK: Live-config readers
@@ -197,6 +223,16 @@ final class Coordinator: NSObject {
             await recorder.stop()
             guard let self = self else { return }
             Log.writeLine("daemon", "recording stopped → \(file.path)")
+            // The recording captured no system-audio frames AND we know the
+            // TCC perm is denied → user just lost the other side of the
+            // call. Surface it. We avoid the heuristic "0 frames implies
+            // perm denied" because legitimate silent system audio also
+            // produces low fire counts; we gate on permissionState too.
+            if recorder.lastSystemFires == 0,
+               SystemAudioCapture.permissionState == .denied {
+                self.notifier.notifyMicOnlyRecording(file: file)
+                self.statusBar.refreshMenuForPermissionChange()
+            }
             self.handoff(file: file, summaryMode: summaryMode)
         }
     }
@@ -340,6 +376,10 @@ extension Coordinator: NotifierDelegate {
 
     func notifier(_ notifier: Notifier, didOpenPage url: URL) {
         NSWorkspace.shared.open(url)
+    }
+
+    func notifierDidRequestScreenRecordingSettings(_ notifier: Notifier) {
+        SystemAudioCapture.openScreenRecordingSettings()
     }
 }
 

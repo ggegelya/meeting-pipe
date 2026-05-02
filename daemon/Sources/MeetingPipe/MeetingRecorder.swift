@@ -47,6 +47,13 @@ final class MeetingRecorder {
     private var micFires: UInt64 = 0
     private var systemFires: UInt64 = 0
 
+    /// Snapshot of the counters at the most recent `stop()`. The Coordinator
+    /// reads these to decide whether to warn the user that the recording
+    /// captured mic only (because Screen Recording is denied). Reset to zero
+    /// at each `start()`.
+    private(set) var lastMicFires: UInt64 = 0
+    private(set) var lastSystemFires: UInt64 = 0
+
     var isRecording: Bool { currentFile != nil }
 
     enum RecorderError: Error, LocalizedError {
@@ -70,6 +77,8 @@ final class MeetingRecorder {
     func start(outputDir: URL) throws -> URL {
         if isRecording { throw RecorderError.alreadyRecording }
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        lastMicFires = 0
+        lastSystemFires = 0
 
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -186,6 +195,8 @@ final class MeetingRecorder {
         self.micURL = nil
         self.systemURL = nil
         self.startedAt = nil
+        self.lastMicFires = micFires
+        self.lastSystemFires = systemFires
         self.micFires = 0
         self.systemFires = 0
 

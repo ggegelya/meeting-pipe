@@ -12,6 +12,10 @@ final class StatusBarController {
     private lazy var idleIcon: NSImage = Self.makeIdleIcon(size: Self.iconSize)
     private lazy var recordingIcon: NSImage = Self.makeRecordingIcon(size: Self.iconSize)
 
+    /// Last state we built a menu for, so `refreshMenuForPermissionChange`
+    /// can rebuild without callers having to remember which state we're in.
+    private var lastMenuState: AppState = .idle
+
     init(item: NSStatusItem) {
         self.item = item
         if let button = item.button {
@@ -131,13 +135,33 @@ final class StatusBarController {
         return img
     }
 
+    /// Rebuild the menu against whatever state we last rendered. Called when
+    /// the Screen Recording permission flips to denied (or back) so the
+    /// warning row appears/disappears without waiting for the next state
+    /// transition.
+    func refreshMenuForPermissionChange() {
+        rebuildMenu(state: lastMenuState)
+    }
+
     private func rebuildMenu(state: AppState) {
+        lastMenuState = state
         let menu = NSMenu()
 
         let header = NSMenuItem(title: stateLabel(state), action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
+
+        if SystemAudioCapture.permissionState == .denied {
+            let warn = NSMenuItem(
+                title: "⚠ System audio blocked — Open Screen Recording Settings…",
+                action: #selector(Coordinator.menuOpenScreenRecordingSettings),
+                keyEquivalent: ""
+            )
+            warn.target = coordinator
+            menu.addItem(warn)
+            menu.addItem(.separator())
+        }
 
         switch state {
         case .idle:

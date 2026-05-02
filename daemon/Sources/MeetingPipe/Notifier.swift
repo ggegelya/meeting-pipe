@@ -10,6 +10,8 @@ protocol NotifierDelegate: AnyObject {
     func notifier(_ notifier: Notifier, didChooseSkip source: AppSource)
     func notifier(_ notifier: Notifier, didChooseAlways source: AppSource)
     func notifier(_ notifier: Notifier, didOpenPage url: URL)
+    /// User clicked "Open Settings" on a Screen-Recording permission warning.
+    func notifierDidRequestScreenRecordingSettings(_ notifier: Notifier)
 }
 
 /// Wraps UNUserNotificationCenter for the informational banner notifications
@@ -22,6 +24,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     private static let doneCategory = "MP_DONE"
     private static let actionOpen = "MP_OPEN_PAGE"
+    private static let permCategory = "MP_PERM"
+    private static let actionOpenSettings = "MP_OPEN_SETTINGS"
 
     /// Map id → URL so we can resolve which Notion page the user clicked.
     private var donePages: [String: URL] = [:]
@@ -71,6 +75,32 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         post(title: "MeetingPipe error", body: message)
     }
 
+    /// Posted at startup when Screen Recording TCC is denied. The daemon
+    /// keeps running, but every recording will be mic-only until the user
+    /// grants the permission. The action button opens System Settings.
+    func notifySystemAudioBlocked() {
+        let content = UNMutableNotificationContent()
+        content.title = "Screen Recording disabled"
+        content.body = "MeetingPipe will record your microphone only. The other side of the call won't be captured."
+        content.categoryIdentifier = Self.permCategory
+        content.sound = .default
+        let req = UNNotificationRequest(identifier: "perm-startup", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
+    /// Posted after a recording stops if no system-audio samples were ever
+    /// delivered. Stronger surface than the startup banner because the user
+    /// has just lost half a meeting and may not have seen the startup one.
+    func notifyMicOnlyRecording(file: URL) {
+        let content = UNMutableNotificationContent()
+        content.title = "Recording was mic-only"
+        content.body = "Screen Recording permission is off, so only your voice was captured. Enable it in System Settings to record both sides."
+        content.categoryIdentifier = Self.permCategory
+        content.sound = .default
+        let req = UNNotificationRequest(identifier: "perm-stop-\(file.lastPathComponent)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
     private func post(title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title
@@ -90,7 +120,14 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             intentIdentifiers: [],
             options: []
         )
-        UNUserNotificationCenter.current().setNotificationCategories([done])
+        let openSettings = UNNotificationAction(identifier: Self.actionOpenSettings, title: "Open Settings", options: [.foreground])
+        let perm = UNNotificationCategory(
+            identifier: Self.permCategory,
+            actions: [openSettings],
+            intentIdentifiers: [],
+            options: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([done, perm])
     }
 
     // MARK: UNUserNotificationCenterDelegate
@@ -112,6 +149,13 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             if action == Self.actionOpen || isDefault {
                 delegate?.notifier(self, didOpenPage: url)
             }
+        }
+
+        // Permission notifications: any tap (action button or default) opens
+        // System Settings. The id prefix is enough to disambiguate from the
+        // "done" category, which is handled above and removed from the map.
+        if id.hasPrefix("perm-"), action == Self.actionOpenSettings || isDefault {
+            delegate?.notifierDidRequestScreenRecordingSettings(self)
         }
         completionHandler()
     }
