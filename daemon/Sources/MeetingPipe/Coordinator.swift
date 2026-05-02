@@ -15,6 +15,7 @@ final class Coordinator: NSObject {
     private let recorder: MeetingRecorder
     private let notifier: Notifier
     private let promptWindow: MeetingPromptWindow
+    private let recordingHUD: RecordingHUDWindow
     /// `var` so we can swap in a fresh Detector when the user changes
     /// debounce values via Preferences. See `applyConfigRefreshIfPossible`.
     private var detector: Detector
@@ -60,6 +61,7 @@ final class Coordinator: NSObject {
         self.recorder = MeetingRecorder()
         self.notifier = Notifier()
         self.promptWindow = MeetingPromptWindow()
+        self.recordingHUD = RecordingHUDWindow()
         self.detector = Detector(
             debounceStartSec: configStore?.debounceStartSec ?? config.detection.debounceStartSec,
             debounceEndSec: configStore?.debounceEndSec ?? config.detection.debounceEndSec
@@ -75,6 +77,7 @@ final class Coordinator: NSObject {
         notifier.delegate = self
         notifier.requestAuthorization()
         promptWindow.delegate = self
+        recordingHUD.delegate = self
 
         detector.delegate = self
         detector.start()
@@ -199,6 +202,7 @@ final class Coordinator: NSObject {
             let file = try recorder.start(outputDir: liveOutputDir)
             state = .recording(file: file, source: source, summaryMode: summaryMode)
             statusBar.setRecording(file: file, source: source, summaryMode: summaryMode)
+            recordingHUD.present(source: source, startedAt: Date())
             notifier.notifyRecordingStarted(file: file)
             Log.writeLine(
                 "daemon",
@@ -215,6 +219,7 @@ final class Coordinator: NSObject {
     private func stopRecording(file: URL, source: AppSource?, summaryMode: SummaryMode) {
         state = .stopping(file: file, source: source, summaryMode: summaryMode)
         statusBar.setStopping()
+        recordingHUD.dismiss()
 
         // Recorder.stop is async — runs on a background task so the UI stays
         // responsive. Once flushed, we kick off the pipeline handoff.
@@ -399,5 +404,13 @@ extension Coordinator: MeetingPromptDelegate {
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecordBYO source: AppSource) {
         guard case .prompting(let pending) = state, pending == source else { return }
         beginRecording(source: source, summaryMode: .byo)
+    }
+}
+
+extension Coordinator: RecordingHUDDelegate {
+    func recordingHUDDidRequestStop(_ hud: RecordingHUDWindow) {
+        // Reuse the existing toggle path so manual-stop, hotkey-stop, and
+        // HUD-stop all flow through one state-machine entry.
+        toggleManual()
     }
 }

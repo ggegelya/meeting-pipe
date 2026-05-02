@@ -82,10 +82,16 @@ final class MPButton: NSButton {
             titleColor = MPColors.fgOnSignal
 
         case .ghost:
+            // Resting fill is a faint surface tint (not clear): on the dark
+            // hudWindow material the bare 1pt border alone wasn't enough
+            // affordance to read as "button" — labels blended into the
+            // body. The tint matches paperRaised (light) / bgRaised (dark)
+            // at low alpha, so the buttons sit on the surface like Notion's
+            // pill controls do.
             let fill: NSColor
             if isPressed { fill = MPColors.ink100 }
             else if isHovered { fill = MPColors.ink50 }
-            else { fill = NSColor.clear }
+            else { fill = MPColors.bgRaised.withAlphaComponent(0.55) }
             layer.backgroundColor = fill.cgColor
             layer.borderWidth = 1
             layer.borderColor = MPColors.borderStrong.cgColor
