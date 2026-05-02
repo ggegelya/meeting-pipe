@@ -165,7 +165,7 @@ private struct PreferencesView: View {
             }
             Section("Prompt") {
                 LabeledContent("Timeout (sec)") {
-                    Slider(value: $store.promptTimeoutSec, in: 5...120, step: 5)
+                    Slider(value: $store.promptTimeoutSec, in: 1...120, step: 1)
                     Text("\(Int(store.promptTimeoutSec))s").monospacedDigit().frame(width: 36, alignment: .trailing)
                 }
             }

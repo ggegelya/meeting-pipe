@@ -350,56 +350,72 @@ final class Detector {
     // MARK: Window probe (Signal C)
 
     /// Default probe: walks the target app's AX window list looking for a
-    /// title that *isn't* the welcome / settings / chat surface. When it
-    /// can't decide (no AX permission, unfamiliar app), returns nil so
-    /// the composer treats the meeting as still in progress.
+    /// "meeting word" in any window's title. When it sees one, the call
+    /// is still active. When it doesn't, the call has ended (the launcher
+    /// / chat / settings windows survive but lose the meeting language).
+    /// When the probe genuinely can't tell — AX permission missing, AX read
+    /// failed — it returns nil so the composer treats the meeting as still
+    /// in progress (better to over-record than to false-stop on a missing
+    /// permission).
     ///
-    /// Browser meetings reuse the same heuristic on the frontmost browser
-    /// window's title — which is what `scanBrowserTab` already produces,
-    /// so for browser sources we just confirm `scanBrowserTab()` still
-    /// finds a meeting tab.
+    /// Why "no meeting word ⇒ ended" works: while the daemon is recording,
+    /// our own AVAudioEngine mic capture keeps `micInUse()` returning true,
+    /// so the mic signal can NEVER drop and the window probe is the only
+    /// signal that can fire `.ended`. Returning nil for "windows exist but
+    /// none has a meeting word" was the bug — it left recordings running
+    /// for hours after the user hung up. The end-debounce (default 2-5s)
+    /// absorbs transient title flips while screen-sharing or switching
+    /// windows mid-call.
     private static func defaultWindowProbe(_ source: AppSource) -> Bool? {
         guard AXIsProcessTrusted() else { return nil }
 
-        // Browser case: re-check tab title presence. We can't construct
-        // a `Detector` instance here, so duplicate the lookup minimally.
-        if let pid = NSWorkspace.shared.runningApplications.first(where: {
+        guard let pid = NSWorkspace.shared.runningApplications.first(where: {
             $0.bundleIdentifier == source.bundleID
-        })?.processIdentifier {
-            let axApp = AXUIElementCreateApplication(pid)
-            var windowsRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-                  let windows = windowsRef as? [AXUIElement] else {
-                return nil
-            }
-            // Native meeting apps lose their call window when the user hangs up,
-            // even though the dock icon stays. Use that as a strong signal.
-            //
-            // Heuristic: if the only remaining windows are sized like the
-            // launcher / preferences (small) and have titles like "Zoom",
-            // "Settings", "Chat", "Home", treat as closed. If any window
-            // has a title with meeting-flavored words, treat as open.
-            var sawMeetingWord = false
-            var anyVisible = false
-            for win in windows {
-                var titleRef: CFTypeRef?
-                let titleStatus = AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef)
-                guard titleStatus == .success, let title = titleRef as? String else { continue }
-                anyVisible = true
-                let lowered = title.lowercased()
-                let meetingWords = ["meeting", "zoom meeting", "call", "huddle", "webex meeting"]
-                if meetingWords.contains(where: { lowered.contains($0) }) {
-                    sawMeetingWord = true
-                    break
-                }
-            }
-            if !anyVisible { return false }
-            if sawMeetingWord { return true }
-            // No meeting word, but windows exist (app is up): inconclusive.
+        })?.processIdentifier else {
+            // App not running anymore. The meeting is definitively over.
+            Log.writeLine("detector", "windowprobe app=\(source.bundleID) NOT_RUNNING → ended")
+            return false
+        }
+
+        let axApp = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else {
+            // AX read failed (transient). Keep it inconclusive so we don't
+            // false-stop on a one-off failure.
             return nil
         }
 
-        return nil
+        let meetingWords = ["meeting", "zoom meeting", "call", "huddle", "webex meeting"]
+        var sawMeetingWord = false
+        var anyVisible = false
+        var titles: [String] = []
+        for win in windows {
+            var titleRef: CFTypeRef?
+            let titleStatus = AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef)
+            guard titleStatus == .success, let title = titleRef as? String,
+                  !title.isEmpty else { continue }
+            anyVisible = true
+            titles.append(title)
+            let lowered = title.lowercased()
+            if meetingWords.contains(where: { lowered.contains($0) }) {
+                sawMeetingWord = true
+            }
+        }
+
+        // Diagnostic: dump the titles we saw so we can extend the heuristic
+        // if a future Teams/Zoom rev breaks the assumption. Cheap — only
+        // logs while we're in a hasFiredStart context (this probe is only
+        // called from currentWindowOpen, which gates on hasFiredStart).
+        Log.writeLine(
+            "detector",
+            "windowprobe app=\(source.bundleID) titles=[\(titles.joined(separator: " | "))] meetingWord=\(sawMeetingWord) anyVisible=\(anyVisible)"
+        )
+
+        if !anyVisible { return false }
+        if sawMeetingWord { return true }
+        // Windows exist but none has a meeting word — the call is over.
+        return false
     }
 
     // MARK: Resource loading
