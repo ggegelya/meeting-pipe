@@ -20,9 +20,25 @@ extension PipelineDriver {
 
 /// Spawns `mp run-all <wav>` out of process so transcription doesn't block the daemon.
 final class PipelineLauncher: PipelineDriver {
+    /// Hard cap on subprocess wallclock. The pipeline's worst legitimate
+    /// run on this hardware is around 30 minutes for a 3-hour input
+    /// (16 min transcribe + small alignment + skipped diarization on long
+    /// audio). 90 minutes is generous headroom that still ensures the
+    /// daemon can never sit in `.handoff` indefinitely if the pipeline
+    /// hangs (May 2026 incident: a 3h audio file pinned 4 cores for 13h
+    /// of wallclock before manual kill).
+    static let defaultMaxRuntime: TimeInterval = 90 * 60
+
+    private let maxRuntime: TimeInterval
+
+    init(maxRuntime: TimeInterval = PipelineLauncher.defaultMaxRuntime) {
+        self.maxRuntime = maxRuntime
+    }
+
     enum LaunchError: Error, LocalizedError {
         case mpNotFound
         case nonZeroExit(Int32, String)
+        case timeout(TimeInterval)
 
         var errorDescription: String? {
             switch self {
@@ -30,6 +46,8 @@ final class PipelineLauncher: PipelineDriver {
                 return "`mp` (pipeline) not found. Did you run scripts/install.sh?"
             case .nonZeroExit(let code, let tail):
                 return "pipeline exited \(code): \(tail)"
+            case .timeout(let seconds):
+                return "pipeline timed out after \(Int(seconds / 60)) min — killed to free CPU. The audio file is preserved; re-run `mp run-all <wav>` manually after diagnosing."
             }
         }
     }
@@ -91,10 +109,38 @@ final class PipelineLauncher: PipelineDriver {
             }
         }
 
+        // Watchdog: the pipeline subprocess gets a hard wallclock budget.
+        // If it overruns, we SIGTERM, then SIGKILL after a grace period;
+        // the existing terminationHandler routes the "killed" status into
+        // the LaunchError.timeout completion. Read by both the timer and
+        // the terminationHandler under a lock-free flag — the timer only
+        // sets it, the handler only reads it.
+        let timedOut = TimeoutFlag()
+        let watchdog = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        watchdog.schedule(deadline: .now() + self.maxRuntime)
+        let timeoutSeconds = self.maxRuntime
+        watchdog.setEventHandler {
+            guard p.isRunning else { return }
+            timedOut.set()
+            Log.main.warning("Pipeline exceeded \(Int(timeoutSeconds / 60)) min — terminating")
+            p.terminate()
+            // Grace period: if SIGTERM doesn't take, escalate.
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30) {
+                if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+            }
+        }
+        watchdog.resume()
+
         p.terminationHandler = { proc in
+            watchdog.cancel()
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
             try? logHandle?.close()
+
+            if timedOut.isSet {
+                completion(.failure(LaunchError.timeout(timeoutSeconds)))
+                return
+            }
 
             if proc.terminationStatus != 0 {
                 let tail = String(data: stderrTail, encoding: .utf8) ?? ""
@@ -118,8 +164,19 @@ final class PipelineLauncher: PipelineDriver {
         do {
             try p.run()
         } catch {
+            watchdog.cancel()
             completion(.failure(error))
         }
+    }
+
+    /// Tiny one-way flag for the watchdog → terminationHandler signal.
+    /// Atomic via a serial OS lock — Swift's stdlib still doesn't ship a
+    /// public atomic Bool, and a real lock is cheap for a one-shot flip.
+    private final class TimeoutFlag: @unchecked Sendable {
+        private var flag = false
+        private let lock = NSLock()
+        func set() { lock.lock(); flag = true; lock.unlock() }
+        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return flag }
     }
 
     /// Build a process environment with a freshly-read secrets file overlaid

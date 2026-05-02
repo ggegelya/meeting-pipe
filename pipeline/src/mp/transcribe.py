@@ -189,6 +189,11 @@ def transcribe(
 
     log.info("Loading audio %s", wav)
     audio = whisperx.load_audio(str(wav))
+    # WhisperX delivers float32 mono at 16 kHz, regardless of the source
+    # format. Compute duration once and reuse it for the diarization
+    # length guard below.
+    audio_duration_min = len(audio) / 16000.0 / 60.0
+    log.info("Audio duration: %.1f min", audio_duration_min)
 
     transcribe_kwargs: dict[str, Any] = {"batch_size": 16}
     if tcfg.language and tcfg.language.lower() != "auto":
@@ -228,7 +233,26 @@ def transcribe(
 
     diarization_failed = False
     diarization_failure_reason: str | None = None
-    if not tcfg.disable_diarization and result.get("segments"):
+    # Length guard: diarizing multi-hour audio with our pinned pyannote on
+    # CPU has hung indefinitely. Skip and let the orchestrator's long-
+    # meeting BYO bundle handle summarization.
+    skip_diarization_for_length = (
+        tcfg.max_diarization_minutes
+        and audio_duration_min > tcfg.max_diarization_minutes
+    )
+    if skip_diarization_for_length:
+        log.warning(
+            "Audio is %.1f min — exceeds max_diarization_minutes=%d. "
+            "Skipping diarization; transcript will use single-speaker labels.",
+            audio_duration_min,
+            tcfg.max_diarization_minutes,
+        )
+        diarization_failed = True
+        diarization_failure_reason = (
+            f"audio length {audio_duration_min:.0f} min "
+            f"> max_diarization_minutes={tcfg.max_diarization_minutes}"
+        )
+    elif not tcfg.disable_diarization and result.get("segments"):
         log.info("Diarizing (min=%d, max=%d)", tcfg.min_speakers, tcfg.max_speakers)
         try:
             # Default to PyannoteDiarizer; tests can pass an in-memory fake

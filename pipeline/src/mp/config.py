@@ -49,6 +49,13 @@ class Transcription(BaseModel):
     min_speakers: int = 1
     max_speakers: int = 8
     disable_diarization: bool = False
+    # pyannote diarization is O(audio_length^2) on CPU and the pinned model
+    # versions (pyannote 0.0.1 trained / 3.3.2 installed; torch 1.10 trained
+    # / 2.4 installed) routinely hang on multi-hour recordings — a 3-hour
+    # input burned 13 hours of wallclock before manual kill. Skip the stage
+    # when the audio exceeds this length; transcript is still produced,
+    # speaker labels fall back to a single "Speaker". 0 disables the guard.
+    max_diarization_minutes: int = 60
 
 
 class Summarization(BaseModel):
