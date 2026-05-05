@@ -62,10 +62,37 @@ def _create_message(client: anthropic.Anthropic, **kwargs: Any) -> Any:
     return client.messages.create(**kwargs)
 
 
-def _load_system_prompt(team_context: str) -> str:
+def _load_system_prompt(team_context: str, summary_language: str = "auto") -> str:
     # Loaded from the package so the installed venv has the prompt available.
     text = resources.files("mp.prompts").joinpath("meeting_summary.md").read_text(encoding="utf-8")
-    return text.replace("{team_context}", team_context or "(no team context configured)")
+    text = text.replace("{team_context}", team_context or "(no team context configured)")
+    return text.replace(
+        "{summary_language_directive}",
+        _summary_language_directive(summary_language),
+    )
+
+
+def _summary_language_directive(summary_language: str) -> str:
+    """Map the config knob to a one-paragraph directive for the model.
+
+    "auto" → match the transcript's detected language (Russian transcript
+    yields a Russian summary). An ISO 639-1 code → force that language
+    regardless of transcript language. Anything else falls back to auto
+    rather than confusing the model with a malformed directive.
+    """
+    code = (summary_language or "auto").strip().lower()
+    if code == "auto" or len(code) != 2 or not code.isalpha():
+        return (
+            "Write the summary in the SAME language as the transcript. "
+            "If the transcript is in Russian, write everything in Russian. "
+            "If it's in Ukrainian, write everything in Ukrainian. English transcript, English summary. "
+            "Match the transcript's dominant language for code-switched content."
+        )
+    return (
+        f"Write the summary in language `{code}` (ISO 639-1) regardless of the "
+        "transcript's language. Translate quoted phrases as needed; preserve "
+        "proper nouns and code identifiers verbatim."
+    )
 
 
 class AnthropicSummaryClient:
@@ -154,7 +181,10 @@ def summarize(
     if not transcript.strip():
         raise ValueError(f"Empty transcript: {transcript_md}")
 
-    system_prompt = _load_system_prompt(cfg.summarization.team_context)
+    system_prompt = _load_system_prompt(
+        cfg.summarization.team_context,
+        cfg.summarization.summary_language,
+    )
 
     if client is None:
         api_key = require_env("ANTHROPIC_API_KEY")

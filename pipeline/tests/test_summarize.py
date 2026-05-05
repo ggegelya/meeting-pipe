@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from mp.config import Config
-from mp.summarize import _render_summary_md, summarize
+from mp.summarize import _load_system_prompt, _render_summary_md, _summary_language_directive, summarize
 from mp.schemas import ActionItem, MeetingSummary
 
 
@@ -144,6 +144,42 @@ def test_summarize_retries_on_rate_limit(tmp_path: Path, monkeypatch):
 
     # 2 rate-limited attempts + 1 success = 3 total
     assert fake_client.messages.create.call_count == 3
+
+
+def test_auto_language_directive_tells_model_to_match_transcript():
+    """The default `summary_language=auto` should instruct the model to
+    write output in the transcript's own language — Russian transcript →
+    Russian summary, etc."""
+    directive = _summary_language_directive("auto")
+    assert "SAME language as the transcript" in directive
+    # Sanity-check the example clause survived (multi-language guidance).
+    assert "Russian" in directive
+
+
+def test_explicit_language_directive_overrides_to_iso_code():
+    """An ISO 639-1 code in the config forces the model to ignore the
+    transcript language and produce the summary in the configured one."""
+    directive = _summary_language_directive("en")
+    assert "language `en`" in directive
+    assert "regardless" in directive
+
+
+def test_unknown_language_value_falls_back_to_auto():
+    """Bad config (e.g. `summary_language = "english"` typed in by the
+    user) should NOT confuse the model. Fall through to auto behavior."""
+    directive = _summary_language_directive("english")
+    assert "SAME language as the transcript" in directive
+
+
+def test_load_system_prompt_substitutes_language_directive():
+    """End-to-end: the placeholder `{summary_language_directive}` in the
+    prompt file is replaced by the resolved directive — ensures we don't
+    ship an unresolved placeholder to the model."""
+    prompt = _load_system_prompt("acme regulated SaaS", summary_language="ru")
+    assert "{summary_language_directive}" not in prompt
+    assert "language `ru`" in prompt
+    # team_context placeholder still resolves correctly alongside the new one.
+    assert "acme regulated SaaS" in prompt
 
 
 def test_summarize_does_not_retry_on_bad_request(tmp_path: Path, monkeypatch):
