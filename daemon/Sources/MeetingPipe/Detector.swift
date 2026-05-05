@@ -256,8 +256,15 @@ final class Detector {
     // MARK: Signal A
 
     private func scanMeetingApp() -> AppSource? {
-        if let native = scanNativeApp() { return native }
+        // Browser tab with a meeting URL fragment is the more specific
+        // signal: "user is actively in meet.google.com" beats "Teams is
+        // sitting idle in the dock". Without this ordering, an autostarted
+        // Teams in the background outranked the real Google Meet call
+        // and the recordingSource got pinned to the wrong app — which
+        // also broke the window-probe end signal (it inspected Teams
+        // windows that had no relation to the actual call).
         if let browser = scanBrowserTab() { return browser }
+        if let native = scanNativeApp() { return native }
         return nil
     }
 
@@ -271,28 +278,65 @@ final class Detector {
         return nil
     }
 
-    /// Reads the frontmost browser tab title via Accessibility. Degrades gracefully
-    /// (returns nil) when permission isn't granted.
+    /// Locate a browser whose tab title contains a known meeting URL
+    /// fragment. Tries the frontmost browser's focused window first
+    /// (cheap; the common case), then falls back to walking every running
+    /// browser's window list — covers the user clicking another app
+    /// mid-call. Degrades to nil when AX permission is missing.
     private func scanBrowserTab() -> AppSource? {
         guard AXIsProcessTrusted() else { return nil }
-        guard let front = NSWorkspace.shared.frontmostApplication,
-              let bid = front.bundleIdentifier,
-              browserBundles.contains(bid) else { return nil }
 
-        let axApp = AXUIElementCreateApplication(front.processIdentifier)
+        // Frontmost-focused fast path.
+        if let front = NSWorkspace.shared.frontmostApplication,
+           let bid = front.bundleIdentifier,
+           browserBundles.contains(bid),
+           let title = focusedWindowTitle(forPID: front.processIdentifier),
+           titleMatchesMeetingFragment(title) {
+            return AppSource(bundleID: bid, displayName: front.localizedName ?? "Browser")
+        }
+
+        // Background-window slow path: any running browser may host the
+        // call in a window that isn't currently focused. Scoped to known
+        // browser bundles so the AX traversal stays bounded.
+        for app in NSWorkspace.shared.runningApplications {
+            guard let bid = app.bundleIdentifier,
+                  browserBundles.contains(bid) else { continue }
+            if anyWindowMatchesMeetingFragment(pid: app.processIdentifier) {
+                return AppSource(bundleID: bid, displayName: app.localizedName ?? "Browser")
+            }
+        }
+        return nil
+    }
+
+    private func focusedWindowTitle(forPID pid: pid_t) -> String? {
+        let axApp = AXUIElementCreateApplication(pid)
         var windowRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
               let win = windowRef else { return nil }
-
         var titleRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(win as! AXUIElement, kAXTitleAttribute as CFString, &titleRef) == .success,
               let title = titleRef as? String else { return nil }
+        return title
+    }
 
-        let lowered = title.lowercased()
-        if browserURLFragments.contains(where: { lowered.contains($0) }) {
-            return AppSource(bundleID: bid, displayName: front.localizedName ?? "Browser")
+    private func anyWindowMatchesMeetingFragment(pid: pid_t) -> Bool {
+        let axApp = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { return false }
+        for win in windows {
+            var titleRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef) == .success,
+                  let title = titleRef as? String,
+                  !title.isEmpty else { continue }
+            if titleMatchesMeetingFragment(title) { return true }
         }
-        return nil
+        return false
+    }
+
+    private func titleMatchesMeetingFragment(_ title: String) -> Bool {
+        let lowered = title.lowercased()
+        return browserURLFragments.contains(where: { lowered.contains($0) })
     }
 
     // MARK: Signal B
