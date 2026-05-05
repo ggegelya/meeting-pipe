@@ -14,6 +14,7 @@ usage: mp <subcommand> [args...]
 
 Subcommands:
   transcribe <wav>            Transcribe + diarize → <stem>.json + <stem>.md
+  transcribe-stream ...       Long-running streaming transcribe (daemon-spawned)
   summarize <transcript.md>   Anthropic summarization → <stem>.summary.json/.md
   publish-notion <summary.json>
                               Publish summary to Notion (idempotent)
@@ -47,6 +48,9 @@ def main() -> int:
     # transcription dependency cost (torch + whisperx are heavy).
     if cmd == "transcribe":
         from .transcribe import main as run
+        return run(rest)
+    if cmd in {"transcribe-stream", "transcribe_stream"}:
+        from .transcribe_stream import main as run
         return run(rest)
     if cmd == "summarize":
         from .summarize import main as run

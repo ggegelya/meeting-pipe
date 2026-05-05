@@ -81,6 +81,83 @@ def test_env_var_triggers_byo(tmp_path: Path, monkeypatch):
     assert result["skipped"] == "byo"
 
 
+def _streamed_transcript(tmp_path: Path) -> Path:
+    """Write a `<stem>.json` with the `streaming: true` marker the
+    daemon's StreamingTranscriber leaves on disk during recording."""
+    stem = "20260430-1500"
+    json_path = tmp_path / f"{stem}.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "language": "en",
+                "segments": [
+                    {"start": 0.0, "end": 1.0, "text": "Hi.", "words": []},
+                    {"start": 1.0, "end": 2.0, "text": "World.", "words": []},
+                ],
+                "audio_path": str(tmp_path / f"{stem}.wav"),
+                "audio_seconds": 2.0,
+                "model": "mlx-community/whisper-large-v3-turbo",
+                "backend": "mlx-stream",
+                "streaming": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return json_path
+
+
+def test_streamed_transcript_skips_offline_transcribe(tmp_path: Path, monkeypatch):
+    """When the daemon's streaming transcriber already wrote a
+    `<stem>.json` with `streaming: true`, the orchestrator must NOT
+    invoke the offline mlx-whisper path again — it should just diarize,
+    summarize, and publish."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    wav = tmp_path / "20260430-1500.wav"
+    wav.write_bytes(b"")
+    _streamed_transcript(tmp_path)
+
+    cfg = Config()
+    cfg.transcription.disable_diarization = True  # skip diarize work in this test
+
+    summary_json = tmp_path / "20260430-1500.summary.json"
+    summary_json.write_text("{}", encoding="utf-8")
+
+    with patch("mp.orchestrate.transcribe") as t, \
+         patch("mp.orchestrate.run_diarize") as d, \
+         patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
+         patch("mp.orchestrate.publish", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+        result = run_all(wav, cfg=cfg)
+
+    t.assert_not_called()  # offline transcribe skipped
+    d.assert_not_called()  # diarization disabled by config in this test
+    assert result["page_id"] == "p"
+
+
+def test_streamed_transcript_falls_back_when_unusable(tmp_path: Path, monkeypatch):
+    """A streamed JSON with zero segments (e.g. SIGKILL mid-recording)
+    must fall back to the offline transcribe path so the user still
+    gets a transcript at the end."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    wav = tmp_path / "20260430-1500.wav"
+    wav.write_bytes(b"")
+
+    # Streaming JSON with no segments — the orchestrator should ignore it.
+    (tmp_path / "20260430-1500.json").write_text(
+        json.dumps({"streaming": True, "segments": [], "language": "en"}),
+        encoding="utf-8",
+    )
+
+    cfg = Config()
+    stubbed = _stub_transcribe_output(tmp_path, segments=2, char_count=200)
+
+    with patch("mp.orchestrate.transcribe", return_value=stubbed) as t, \
+         patch("mp.orchestrate.summarize", return_value={"json": tmp_path / "x.summary.json", "md": tmp_path / "x.md"}), \
+         patch("mp.orchestrate.publish", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+        run_all(wav, cfg=cfg)
+
+    t.assert_called_once()  # fell back to offline transcribe
+
+
 def test_no_speech_short_circuits_before_byo_check(tmp_path: Path, monkeypatch):
     """Empty transcript path takes precedence — don't even bother with
     the BYO bundle if there's nothing to summarise."""

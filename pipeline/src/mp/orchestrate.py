@@ -24,9 +24,10 @@ from importlib import resources
 from pathlib import Path
 
 from .config import Config, load_secrets
+from .diarize import assign_speakers, diarize as run_diarize
 from .publish_notion import publish
 from .summarize import summarize
-from .transcribe import transcribe
+from .transcribe import render_markdown, transcribe
 
 log = logging.getLogger("mp.run_all")
 
@@ -137,8 +138,19 @@ def run_all(
     log.info("run-all: %s%s", wav, " (BYO summary)" if force_byo else "")
     log.info("=" * 60)
 
-    log.info("[1/3] transcribe")
-    t = transcribe(wav, cfg=cfg)
+    # Streaming-transcribe path: when the daemon's StreamingTranscriber
+    # ran during recording, the transcript JSON + Markdown are already on
+    # disk. We pick up where the streamer left off — assign speakers via
+    # diarization and proceed straight to summarize + publish. Falls back
+    # to a fresh full transcribe if the streamed output is missing or
+    # looks broken (zero segments, malformed JSON).
+    streamed = _existing_streamed_transcript(wav)
+    if streamed is not None:
+        log.info("[1/3] transcribe (streamed during recording, finalizing)")
+        t = _finalize_streamed_transcript(wav, streamed, cfg)
+    else:
+        log.info("[1/3] transcribe")
+        t = transcribe(wav, cfg=cfg)
 
     # Short-circuit #1: empty transcript (silent audio, broken capture).
     # Don't burn Anthropic tokens summarizing nothing. Read the structured
@@ -216,6 +228,97 @@ def run_all(
         "summary_md": str(s["md"]),
         **pub,
     }
+
+
+def _existing_streamed_transcript(wav: Path) -> dict | None:
+    """Return the structured JSON the daemon's StreamingTranscriber wrote
+    during recording, or None if it doesn't exist / is unusable.
+
+    A "usable" streamed transcript is one with at least one segment AND
+    the `streaming: true` marker (so we don't accidentally pick up a
+    stale offline transcript from a previous run).
+    """
+    json_path = wav.parent / f"{wav.stem}.json"
+    if not json_path.exists():
+        return None
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(data, dict):
+        return None
+    if not data.get("streaming"):
+        return None
+    if not data.get("segments"):
+        log.warning("Streamed transcript has zero segments — falling back to offline transcribe")
+        return None
+    return data
+
+
+def _finalize_streamed_transcript(wav: Path, streamed: dict, cfg: Config) -> dict[str, Path]:
+    """Run diarization on the canonical merged WAV and stamp speaker
+    labels onto the streamed segments. Rewrites <stem>.json + <stem>.md
+    in place so downstream stages see a single, consistent transcript.
+    """
+    json_path = wav.parent / f"{wav.stem}.json"
+    md_path = wav.parent / f"{wav.stem}.md"
+    tcfg = cfg.transcription
+
+    diarization_failed = False
+    diarization_failure_reason: str | None = None
+    diar_segments: list = []
+
+    audio_seconds = streamed.get("audio_seconds") or 0.0
+    audio_minutes = audio_seconds / 60.0
+    skip_for_length = (
+        tcfg.max_diarization_minutes
+        and audio_minutes > tcfg.max_diarization_minutes
+    )
+
+    if tcfg.disable_diarization:
+        log.info("Diarization disabled by config")
+    elif skip_for_length:
+        log.warning(
+            "Audio is %.1f min — exceeds max_diarization_minutes=%d. Skipping.",
+            audio_minutes, tcfg.max_diarization_minutes,
+        )
+        diarization_failed = True
+        diarization_failure_reason = (
+            f"audio length {audio_minutes:.0f} min > max={tcfg.max_diarization_minutes}"
+        )
+    else:
+        try:
+            diar_segments = run_diarize(
+                wav,
+                min_speakers=tcfg.min_speakers,
+                max_speakers=tcfg.max_speakers,
+                cluster_threshold=tcfg.diarize_cluster_threshold,
+            )
+        except Exception as e:  # noqa: BLE001
+            diarization_failed = True
+            diarization_failure_reason = f"{type(e).__name__}: {e}"
+            log.error("Diarization failed: %s", e)
+
+    if diar_segments:
+        labelled = assign_speakers(streamed["segments"], diar_segments)
+    elif diarization_failed:
+        labelled = [{**s, "speaker": "Speaker?"} for s in streamed["segments"]]
+    else:
+        labelled = list(streamed["segments"])
+
+    structured = {
+        **streamed,
+        "segments": labelled,
+        "diarization": not tcfg.disable_diarization and not skip_for_length,
+        "diarization_failed": diarization_failed,
+        "diarization_failure_reason": diarization_failure_reason,
+        "streaming": True,
+        "finalized": True,
+    }
+    json_path.write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
+    md_path.write_text(render_markdown(structured), encoding="utf-8")
+    log.info("Finalized streamed transcript: %s", json_path)
+    return {"json": json_path, "md": md_path}
 
 
 def main(argv: list[str]) -> int:
