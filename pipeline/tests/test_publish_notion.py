@@ -240,3 +240,71 @@ def test_missing_database_id_raises(tmp_path: Path, monkeypatch):
     cfg = _cfg(database_id="")
     with pytest.raises(pub_mod.NotionError):
         publish(summary_path, cfg=cfg)
+
+
+def test_meta_sidecar_overrides_llm_title(tmp_path: Path, monkeypatch):
+    """When the daemon writes a `<stem>.meta.json` with `meeting_title`,
+    that name should win over the LLM-derived `summary.title` in the
+    Notion page properties — the whole point of the meta sidecar.
+    """
+    summary_path = _write_summary(tmp_path)
+    meta = tmp_path / "20260428-1200.meta.json"
+    meta.write_text(
+        json.dumps(
+            {
+                "meeting_title": "Sprint Retrospective",
+                "source_bundle_id": "com.google.Chrome",
+                "source_display_name": "Google Chrome",
+                "source_kind": "browser",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
+
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            captured.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={"id": "page-meta-1", "url": "https://www.notion.so/page-meta-1"},
+            )
+        return httpx.Response(404, json={"message": "unexpected route"})
+
+    _install_mock_transport(monkeypatch, handler)
+    publish(summary_path, cfg=_cfg())
+
+    assert len(captured) == 1
+    title_runs = captured[0]["properties"]["Name"]["title"]
+    assert title_runs[0]["text"]["content"] == "Sprint Retrospective"
+
+
+def test_meta_sidecar_blank_title_falls_back(tmp_path: Path, monkeypatch):
+    """An empty or whitespace `meeting_title` must not clobber the
+    LLM-derived title; the sidecar exists for many other reasons.
+    """
+    summary_path = _write_summary(tmp_path)
+    meta = tmp_path / "20260428-1200.meta.json"
+    meta.write_text(
+        json.dumps({"meeting_title": "  ", "source_bundle_id": "us.zoom.xos"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
+
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            captured.append(json.loads(request.content))
+            return httpx.Response(
+                200, json={"id": "page-x", "url": "https://www.notion.so/page-x"}
+            )
+        return httpx.Response(404, json={"message": "unexpected"})
+
+    _install_mock_transport(monkeypatch, handler)
+    publish(summary_path, cfg=_cfg())
+
+    title_runs = captured[0]["properties"]["Name"]["title"]
+    assert title_runs[0]["text"]["content"] == "Test meeting"  # LLM-derived

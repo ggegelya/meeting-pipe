@@ -10,17 +10,42 @@ enum AppSourceKind: Equatable, Hashable {
 
 /// What detected the meeting. Used for "Always for {AppName}" consent
 /// and for selecting the right end-detection probe.
-struct AppSource: Equatable, Hashable {
+///
+/// `meetingTitle` is best-effort metadata: the human-readable name the
+/// source app shows for the call (e.g. a Zoom topic, a Calendar event
+/// behind a Google Meet, a Slack huddle channel). Excluded from
+/// `Equatable` and `Hashable` because the title can shift mid-call
+/// (Teams chrome, screen-share titles), and identity-based comparisons
+/// in the state machine ("did the user click Record on this source?")
+/// must stay stable across those transient title flips.
+struct AppSource: Hashable {
     let bundleID: String
     let displayName: String
     let kind: AppSourceKind
+    let meetingTitle: String?
 
-    /// Kind defaults to `.native` so existing test fixtures stay compiling.
-    /// Production construction sites in Detector pass the correct kind.
-    init(bundleID: String, displayName: String, kind: AppSourceKind = .native) {
+    init(
+        bundleID: String,
+        displayName: String,
+        kind: AppSourceKind = .native,
+        meetingTitle: String? = nil
+    ) {
         self.bundleID = bundleID
         self.displayName = displayName
         self.kind = kind
+        self.meetingTitle = meetingTitle
+    }
+
+    static func == (lhs: AppSource, rhs: AppSource) -> Bool {
+        lhs.bundleID == rhs.bundleID
+            && lhs.displayName == rhs.displayName
+            && lhs.kind == rhs.kind
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(bundleID)
+        hasher.combine(displayName)
+        hasher.combine(kind)
     }
 }
 

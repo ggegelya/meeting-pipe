@@ -130,6 +130,16 @@ def publish(
         candidate = summary_json.parent / f"{stem}.md"
         transcript_md = candidate if candidate.exists() else None
 
+    # Prefer the meeting name extracted by the daemon at recording-start
+    # time (Zoom topic, Calendar event behind a Meet link, Slack channel,
+    # etc.) over the LLM-derived title. Falls back to summary.title when
+    # the sidecar is absent or empty — older recordings stay unaffected.
+    meta = _load_meta_sidecar(summary_json)
+    if meta:
+        meeting_title = (meta.get("meeting_title") or "").strip()
+        if meeting_title:
+            summary = summary.model_copy(update={"title": meeting_title[:120]})
+
     sidecar = _sidecar_path(summary_json)
 
     if publisher is None:
@@ -388,6 +398,24 @@ def _transcript_toggle(transcript: str) -> dict:
 def _sidecar_path(summary_json: Path) -> Path:
     stem = summary_json.name.removesuffix(".summary.json")
     return summary_json.parent / f"{stem}.notion.json"
+
+
+def _meta_sidecar_path(summary_json: Path) -> Path:
+    """Path to the daemon-produced metadata sidecar (meeting name, source app)."""
+    stem = summary_json.name.removesuffix(".summary.json")
+    return summary_json.parent / f"{stem}.meta.json"
+
+
+def _load_meta_sidecar(summary_json: Path) -> dict[str, Any] | None:
+    p = _meta_sidecar_path(summary_json)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:  # noqa: BLE001
+        log.warning("Could not parse meta sidecar %s; ignoring", p)
+        return None
 
 
 def _load_sidecar(p: Path) -> dict[str, Any] | None:

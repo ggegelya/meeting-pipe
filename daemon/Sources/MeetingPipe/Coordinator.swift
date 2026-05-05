@@ -251,10 +251,39 @@ final class Coordinator: NSObject {
                 self.notifier.notifyMicOnlyRecording(file: file)
                 self.statusBar.refreshMenuForPermissionChange()
             }
+            self.writeMetaSidecar(file: file, source: source)
             self.notifier.notifyProcessing(file: file)
             self.enqueueJob(file: file, summaryMode: summaryMode)
             self.state = .idle
             self.statusBar.setIdle()
+        }
+    }
+
+    /// Drop a `<wav-stem>.meta.json` next to the recording so the pipeline
+    /// can pick up the meeting name + source app for a contextual Notion
+    /// title. Best-effort: a write failure is logged but doesn't block the
+    /// pipeline (the LLM-derived title is the existing fallback).
+    private func writeMetaSidecar(file: URL, source: AppSource?) {
+        guard let source = source else { return }
+        let stem = file.deletingPathExtension().lastPathComponent
+        let sidecar = file.deletingLastPathComponent().appendingPathComponent("\(stem).meta.json")
+        var dict: [String: Any] = [
+            "source_bundle_id": source.bundleID,
+            "source_display_name": source.displayName,
+            "source_kind": source.kind == .browser ? "browser" : "native",
+        ]
+        if let title = source.meetingTitle, !title.isEmpty {
+            dict["meeting_title"] = title
+        }
+        do {
+            let data = try JSONSerialization.data(
+                withJSONObject: dict,
+                options: [.prettyPrinted, .sortedKeys]
+            )
+            try data.write(to: sidecar, options: .atomic)
+            Log.writeLine("daemon", "meta sidecar → \(sidecar.lastPathComponent) title=\(source.meetingTitle ?? "(none)")")
+        } catch {
+            Log.main.warning("Failed to write meta sidecar: \(error.localizedDescription)")
         }
     }
 
