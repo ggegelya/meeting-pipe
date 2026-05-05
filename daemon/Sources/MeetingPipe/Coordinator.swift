@@ -293,15 +293,20 @@ final class Coordinator: NSObject {
             await transcriber.stop()
             guard let self = self else { return }
             Log.writeLine("daemon", "recording stopped → \(file.path)")
-            // The recording captured no system-audio frames AND we know the
-            // TCC perm is denied → user just lost the other side of the
-            // call. Surface it. We avoid the heuristic "0 frames implies
-            // perm denied" because legitimate silent system audio also
-            // produces low fire counts; we gate on permissionState too.
-            if recorder.lastSystemFires == 0,
-               SystemAudioCapture.permissionState == .denied {
-                self.notifier.notifyMicOnlyRecording(file: file)
-                self.statusBar.refreshMenuForPermissionChange()
+            // No system-audio frames means the user just lost the other
+            // side of the call. Always surface it — the previous gate
+            // also required `permissionState == .denied`, which silently
+            // dropped the warning when the state was `.unknown` (fresh
+            // launch, prewarm hadn't run yet) and produced exactly the
+            // mic-only recording the user reported losing on May 5.
+            // The notifier message branches on permissionState so
+            // "Open Settings" only appears when a perm change would help.
+            if recorder.lastSystemFires == 0 {
+                let perm = SystemAudioCapture.permissionState
+                self.notifier.notifyMicOnlyRecording(file: file, permissionState: perm)
+                if perm == .denied || perm == .unknown {
+                    self.statusBar.refreshMenuForPermissionChange()
+                }
             }
             self.writeMetaSidecar(file: file, source: source)
             self.notifier.notifyProcessing(file: file)

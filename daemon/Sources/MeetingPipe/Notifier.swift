@@ -91,11 +91,29 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// Posted after a recording stops if no system-audio samples were ever
     /// delivered. Stronger surface than the startup banner because the user
     /// has just lost half a meeting and may not have seen the startup one.
-    func notifyMicOnlyRecording(file: URL) {
+    ///
+    /// `permissionState` shapes the message. Until this commit the warning
+    /// only fired when the state was definitively `.denied`; an `.unknown`
+    /// state (fresh daemon launch with no prewarm yet) silently produced
+    /// mic-only recordings with no surface — that's the regression the
+    /// May 5 18:30 recording hit.
+    func notifyMicOnlyRecording(
+        file: URL,
+        permissionState: SystemAudioCapture.PermissionState
+    ) {
         let content = UNMutableNotificationContent()
         content.title = "Recording was mic-only"
-        content.body = "Screen Recording permission is off, so only your voice was captured. Enable it in System Settings to record both sides."
-        content.categoryIdentifier = Self.permCategory
+        switch permissionState {
+        case .denied:
+            content.body = "Screen Recording permission is off, so only your voice was captured. Enable it in System Settings to record both sides."
+            content.categoryIdentifier = Self.permCategory
+        case .unknown:
+            content.body = "Screen Recording wasn't available at recording start, so only your voice was captured. Open Settings to grant the permission for next time."
+            content.categoryIdentifier = Self.permCategory
+        case .granted:
+            content.body = "Permission is granted but no system audio reached the recorder. Check ~/Library/Logs/MeetingPipe/recorder.log for SCStream errors."
+            // No "Open Settings" action — it's not a permission problem.
+        }
         content.sound = .default
         let req = UNNotificationRequest(identifier: "perm-stop-\(file.lastPathComponent)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(req)
