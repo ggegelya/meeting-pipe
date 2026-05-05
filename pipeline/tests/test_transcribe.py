@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from mp.diarize import DiarizationSegment, _renumber_speakers, assign_speakers
-from mp.transcribe import _normalize_segment, render_markdown
+from mp.transcribe import _normalize_segment, _resolve_mlx_model_id, render_markdown
 
 
 # --- render_markdown ---------------------------------------------------------
@@ -183,6 +183,41 @@ def test_renumber_speakers_preserves_already_contiguous_ids():
 
 def test_renumber_speakers_empty_input():
     assert _renumber_speakers([]) == []
+
+
+# --- MLX model resolver -------------------------------------------------------
+
+
+def test_resolve_mlx_model_id_passes_full_repo_through():
+    """A `mlx-community/...` HuggingFace repo must round-trip unchanged
+    so users who set the canonical name keep getting exactly that model."""
+    assert _resolve_mlx_model_id("mlx-community/whisper-large-v3-turbo") == "mlx-community/whisper-large-v3-turbo"
+    assert _resolve_mlx_model_id("mlx-community/whisper-medium") == "mlx-community/whisper-medium"
+
+
+def test_resolve_mlx_model_id_prefixes_bare_faster_whisper_names():
+    """Pre-Tier-1 configs used bare faster-whisper names — auto-prefix
+    them to the MLX repo so legacy configs keep working without a manual
+    migration step. Without this, mlx-whisper hits a 404 trying to fetch
+    `huggingface.co/api/models/large-v3` (no such repo)."""
+    assert _resolve_mlx_model_id("large-v3") == "mlx-community/whisper-large-v3"
+    assert _resolve_mlx_model_id("large-v3-turbo") == "mlx-community/whisper-large-v3-turbo"
+    assert _resolve_mlx_model_id("medium") == "mlx-community/whisper-medium"
+    assert _resolve_mlx_model_id("tiny.en") == "mlx-community/whisper-tiny.en"
+
+
+def test_resolve_mlx_model_id_passes_local_paths_through():
+    """A user pointing at a locally-converted MLX directory should not
+    be silently rerouted to HuggingFace."""
+    assert _resolve_mlx_model_id("~/models/whisper-custom") == "~/models/whisper-custom"
+    assert _resolve_mlx_model_id("./local-model") == "./local-model"
+
+
+def test_resolve_mlx_model_id_falls_back_to_default_on_empty():
+    """Defensive: an empty config value shouldn't propagate to mlx-whisper
+    as the empty string."""
+    assert _resolve_mlx_model_id("") == "mlx-community/whisper-large-v3-turbo"
+    assert _resolve_mlx_model_id("   ") == "mlx-community/whisper-large-v3-turbo"
 
 
 # --- Segment normalization ----------------------------------------------------

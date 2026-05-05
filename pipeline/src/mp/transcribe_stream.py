@@ -214,8 +214,9 @@ def _diarize_chunk(state: StreamState, chunk: np.ndarray, offset: float) -> None
 
 def _transcribe_chunk_mlx(state: StreamState, chunk: np.ndarray, offset: float) -> None:
     import mlx_whisper  # type: ignore
+    from .transcribe import _resolve_mlx_model_id
     kwargs: dict[str, Any] = {
-        "path_or_hf_repo": state.model,
+        "path_or_hf_repo": _resolve_mlx_model_id(state.model),
         "word_timestamps": True,
         "verbose": None,
     }

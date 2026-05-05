@@ -153,9 +153,10 @@ def _run_mlx(wav: Path, tcfg) -> tuple[str, str, list[dict], float]:
     """Native MLX/Metal Whisper. ~5-10× faster than faster-whisper on M-series."""
     import mlx_whisper  # type: ignore
 
-    log.info("Loading MLX Whisper (%s)", tcfg.model)
+    model_id = _resolve_mlx_model_id(tcfg.model)
+    log.info("Loading MLX Whisper (%s)", model_id)
     kwargs: dict[str, Any] = {
-        "path_or_hf_repo": tcfg.model,
+        "path_or_hf_repo": model_id,
         "word_timestamps": True,
         # Disable mlx-whisper's tqdm bar (it spams pipeline.log otherwise).
         "verbose": None,
@@ -204,6 +205,26 @@ def _run_faster_whisper(wav: Path, tcfg) -> tuple[str, str, list[dict], float]:
         })
         last_end = float(s.end)
     return "faster-whisper", info.language, segments, last_end
+
+
+def _resolve_mlx_model_id(model: str) -> str:
+    """Map a transcription.model string to an mlx-whisper-compatible
+    HuggingFace repo or local path.
+
+    Pre-Tier-1 configs (and any older docs) used bare faster-whisper
+    names like `large-v3`, `medium`, `tiny.en`. Those don't exist as
+    standalone HF repos — mlx-whisper fetches `mlx-community/whisper-X`
+    repos for the same models. Auto-prefix when the model string is a
+    bare name so legacy configs keep working without manual migration.
+    Anything containing `/` (HF org/repo) or `~`/`/` (local path) is
+    passed through untouched.
+    """
+    s = model.strip()
+    if not s:
+        return "mlx-community/whisper-large-v3-turbo"
+    if "/" in s or s.startswith("~") or s.startswith("."):
+        return s
+    return f"mlx-community/whisper-{s}"
 
 
 def _normalize_segment(seg: dict) -> dict:

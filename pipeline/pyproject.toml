@@ -27,8 +27,15 @@ dependencies = [
     # pain, ~5-10× faster than pyannote-CPU. ONNX Runtime is bundled.
     # Pin under 1.13 — 1.13.0 ships a Python wheel whose .so references
     # libonnxruntime.1.24.4.dylib but the wheel doesn't bundle that dylib,
-    # so import fails at load time. 1.12.x bundles correctly.
+    # so import fails at load time. 1.12.x bundles correctly via the
+    # sister `sherpa-onnx-core` package.
     "sherpa-onnx>=1.10.30,<1.13",
+    # Explicit because 1.12.x split the C++ dylibs into a separate
+    # package. sherpa-onnx itself doesn't pin this with == in its
+    # METADATA, so `uv sync` has been observed to drop it across
+    # subsequent re-syncs, leaving sherpa_onnx importable but failing
+    # at first use with "Library not loaded: libonnxruntime.1.24.4.dylib".
+    "sherpa-onnx-core>=1.10.30,<1.13",
     # Notion + auth + retries.
     "tenacity>=8.2.0",
 ]
