@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 @main
 final class App {
@@ -18,6 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBar: StatusBarController!
     private var coordinator: Coordinator!
     private var configStore: ConfigStore?
+    private var secretsStore: SecretsStore?
+    private var secretsCancellable: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.main.info("MeetingPipe starting")
@@ -43,6 +46,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         self.configStore = store
 
+        // SecretsStore is unfailing: a missing secrets.env is a normal
+        // first-run state, not an error — the file will be created by
+        // the first save from Preferences (with mode 0600).
+        let secrets = SecretsStore()
+        self.secretsStore = secrets
+
+        // When the user edits secrets via Preferences, mirror the new
+        // values into the daemon's process env immediately so any
+        // future spawn picks them up. PipelineLauncher.freshEnvironment
+        // re-reads the file at spawn time too, but the env mirror is
+        // important for fields the daemon reads directly (none today,
+        // but the contract is clearer this way).
+        self.secretsCancellable = secrets.didPersist.sink { [weak secrets] in
+            guard let s = secrets else { return }
+            setenv("ANTHROPIC_API_KEY", s.anthropicAPIKey, 1)
+            setenv("NOTION_TOKEN", s.notionToken, 1)
+        }
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusBar = StatusBarController(item: statusItem)
 
@@ -51,7 +72,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // items whose target is nil (Cocoa menu validation), which would
         // otherwise leave Start Recording / Open … greyed out until the
         // next state change rebuilt the menu.
-        coordinator = Coordinator(config: config, statusBar: statusBar, configStore: store)
+        coordinator = Coordinator(
+            config: config,
+            statusBar: statusBar,
+            configStore: store,
+            secretsStore: secrets
+        )
         statusBar.coordinator = coordinator
         statusBar.setIdle()
         coordinator.start()  // requests notification authorization via Notifier

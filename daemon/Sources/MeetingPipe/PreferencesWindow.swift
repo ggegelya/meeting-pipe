@@ -8,9 +8,11 @@ import SwiftUI
 final class PreferencesWindow {
     private var window: NSWindow?
     private let store: ConfigStore
+    private let secrets: SecretsStore
 
-    init(store: ConfigStore) {
+    init(store: ConfigStore, secrets: SecretsStore) {
         self.store = store
+        self.secrets = secrets
     }
 
     func show() {
@@ -20,12 +22,12 @@ final class PreferencesWindow {
             return
         }
 
-        let view = PreferencesView(store: store)
+        let view = PreferencesView(store: store, secrets: secrets)
         let host = NSHostingController(rootView: view)
         let w = NSWindow(contentViewController: host)
         w.title = "MeetingPipe Preferences"
         w.styleMask = [.titled, .closable, .miniaturizable]
-        w.setContentSize(NSSize(width: 480, height: 560))
+        w.setContentSize(NSSize(width: 540, height: 620))
         w.isReleasedWhenClosed = false
         w.center()
         // Capture close so we don't keep a dead window pointer around;
@@ -52,8 +54,11 @@ private final class PreferencesWindowDelegate: NSObject, NSWindowDelegate {
 
 private struct PreferencesView: View {
     @ObservedObject var store: ConfigStore
+    @ObservedObject var secrets: SecretsStore
+    @StateObject private var doctor = DoctorRunner()
 
     @State private var newConsentBundleID: String = ""
+    @State private var doctorSheetOpen: Bool = false
 
     var body: some View {
         TabView {
@@ -63,11 +68,20 @@ private struct PreferencesView: View {
             detectionTab
                 .tabItem { Label("Detection", systemImage: "waveform") }
 
+            integrationsTab
+                .tabItem { Label("Integrations", systemImage: "key") }
+
+            pipelineTab
+                .tabItem { Label("Pipeline", systemImage: "gearshape.2") }
+
             modesTab
                 .tabItem { Label("Modes", systemImage: "lock.shield") }
         }
         .padding(20)
-        .frame(minWidth: 460, minHeight: 520)
+        .frame(minWidth: 520, minHeight: 580)
+        .sheet(isPresented: $doctorSheetOpen) {
+            doctorSheet
+        }
     }
 
     // MARK: Recording
@@ -171,6 +185,169 @@ private struct PreferencesView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: Integrations
+
+    private var integrationsTab: some View {
+        Form {
+            Section("Anthropic") {
+                LabeledContent("API key") {
+                    SecureField("sk-ant-…", text: $secrets.anthropicAPIKey)
+                        .textFieldStyle(.roundedBorder)
+                }
+                Text("Required for the summary step. Stored in ~/.config/meeting-pipe/secrets.env (mode 0600).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Notion") {
+                LabeledContent("Integration token") {
+                    SecureField("ntn_…", text: $secrets.notionToken)
+                        .textFieldStyle(.roundedBorder)
+                }
+                LabeledContent("Database ID") {
+                    TextField("32-char hex from your database URL", text: $store.notionDatabaseId)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                }
+                Text("Create the integration at notion.so/profile/integrations, share your Meetings database with it, and paste the database ID here.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Verify") {
+                Button {
+                    doctorSheetOpen = true
+                    doctor.run()
+                } label: {
+                    Label("Run mp doctor", systemImage: "stethoscope")
+                }
+                Text("Pings Anthropic + Notion, validates the ML runtimes, surfaces any missing setup. Output appears in a popup.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: Pipeline
+
+    private var pipelineTab: some View {
+        Form {
+            Section("Summary language") {
+                LabeledContent("") {
+                    Picker("", selection: $store.summaryLanguage) {
+                        Text("Match transcript (auto)").tag("auto")
+                        Text("English (en)").tag("en")
+                        Text("Українська (uk)").tag("uk")
+                        Text("Русский (ru)").tag("ru")
+                        Text("Deutsch (de)").tag("de")
+                        Text("Español (es)").tag("es")
+                        Text("Français (fr)").tag("fr")
+                        Text("Italiano (it)").tag("it")
+                        Text("Português (pt)").tag("pt")
+                        Text("Polski (pl)").tag("pl")
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
+                Text("Auto mirrors the transcript's detected language. Force a code to always summarize in that language regardless of input.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Long-meeting guard") {
+                LabeledContent("Skip auto-summary above") {
+                    Slider(
+                        value: Binding(
+                            get: { Double(store.summarizationSkipAboveChars) },
+                            set: { store.summarizationSkipAboveChars = Int($0) }
+                        ),
+                        in: 0...300_000,
+                        step: 5_000
+                    )
+                    Text(skipThresholdLabel)
+                        .monospacedDigit()
+                        .frame(width: 110, alignment: .trailing)
+                }
+                Text("When the transcript exceeds this size, the pipeline writes a paste-into-Claude bundle instead of calling the Anthropic API. 0 disables the guard. ~80,000 chars ≈ 1 hour of speech.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var skipThresholdLabel: String {
+        let n = store.summarizationSkipAboveChars
+        if n == 0 { return "Disabled" }
+        // Rough conversion: ~80,000 chars = 1 hour of speech.
+        let hours = Double(n) / 80_000.0
+        if hours >= 1 {
+            return String(format: "%.1f h", hours)
+        }
+        return "\(n / 1000)k chars"
+    }
+
+    // MARK: Doctor sheet
+
+    private var doctorSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "stethoscope")
+                Text("mp doctor").font(.headline)
+                Spacer()
+                statusLabel
+            }
+
+            ScrollView {
+                Text(doctor.output.isEmpty ? "Running…" : doctor.output)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .background(Color(NSColor.textBackgroundColor))
+            .border(Color.secondary.opacity(0.3))
+
+            HStack {
+                Button("Re-run") {
+                    doctor.run()
+                }
+                .disabled(doctor.state == .running)
+                Spacer()
+                Button("Close") {
+                    if doctor.state == .running { doctor.cancel() }
+                    doctorSheetOpen = false
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 560, minHeight: 420)
+    }
+
+    private var statusLabel: some View {
+        switch doctor.state {
+        case .idle:
+            return AnyView(Text("Idle").foregroundStyle(.secondary).font(.caption))
+        case .running:
+            return AnyView(
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Running…").font(.caption)
+                }
+            )
+        case .finished(let exit):
+            let ok = exit == 0
+            return AnyView(
+                HStack(spacing: 4) {
+                    Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundStyle(ok ? Color.green : Color.red)
+                    Text(ok ? "Done (exit 0)" : "Failed (exit \(exit))").font(.caption)
+                }
+            )
+        }
     }
 
     // MARK: Modes

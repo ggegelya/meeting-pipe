@@ -69,7 +69,8 @@ final class Coordinator: NSObject {
         config: Config,
         statusBar: StatusBarController,
         launcher: PipelineDriver? = nil,
-        configStore: ConfigStore? = nil
+        configStore: ConfigStore? = nil,
+        secretsStore: SecretsStore? = nil
     ) {
         self.config = config
         self.configStore = configStore
@@ -85,7 +86,15 @@ final class Coordinator: NSObject {
         self.hotkey = HotkeyManager()
         self.consent = ConsentStore()
         self.launcher = launcher ?? PipelineLauncher()
-        self.preferencesWindow = configStore.map { PreferencesWindow(store: $0) }
+        // PreferencesWindow needs both stores. When the daemon was
+        // launched with neither (test fixtures, headless smoke runs)
+        // the menu item is wired through this guard; clicking it
+        // becomes a no-op rather than crashing.
+        if let configStore = configStore, let secretsStore = secretsStore {
+            self.preferencesWindow = PreferencesWindow(store: configStore, secrets: secretsStore)
+        } else {
+            self.preferencesWindow = nil
+        }
         super.init()
     }
 

@@ -101,6 +101,39 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertTrue(raw.contains("regulated_mode = true"))
     }
 
+    func test_loads_pipeline_side_fields_surfaced_in_ui() throws {
+        let url = try makeTempConfigURL()
+        try """
+        [notion]
+        database_id = "abc123"
+
+        [summarization]
+        summary_language = "ru"
+        skip_above_chars = 50000
+        """.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        XCTAssertEqual(store.notionDatabaseId, "abc123")
+        XCTAssertEqual(store.summaryLanguage, "ru")
+        XCTAssertEqual(store.summarizationSkipAboveChars, 50000)
+    }
+
+    func test_round_trip_persists_pipeline_side_fields() throws {
+        let url = try makeTempConfigURL()
+        try "".write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        store.notionDatabaseId = "deadbeef"
+        store.summaryLanguage = "uk"
+        store.summarizationSkipAboveChars = 0
+        try store.saveNow()
+
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(raw.contains("database_id = \"deadbeef\""))
+        XCTAssertTrue(raw.contains("summary_language = \"uk\""))
+        XCTAssertTrue(raw.contains("skip_above_chars = 0"))
+    }
+
     func test_writeBack_is_pure() throws {
         let url = try makeTempConfigURL()
         try "".write(to: url, atomically: true, encoding: .utf8)

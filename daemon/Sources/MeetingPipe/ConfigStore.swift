@@ -35,6 +35,14 @@ final class ConfigStore: ObservableObject {
 
     @Published var regulatedMode: Bool { didSet { scheduleSave() } }
 
+    /// Pipeline-side fields surfaced in the UI for first-run setup.
+    /// The pipeline reads these from the same TOML file at subprocess
+    /// spawn time, so changes here take effect on the next recording
+    /// without restarting the daemon.
+    @Published var notionDatabaseId: String { didSet { scheduleSave() } }
+    @Published var summaryLanguage: String { didSet { scheduleSave() } }
+    @Published var summarizationSkipAboveChars: Int { didSet { scheduleSave() } }
+
     /// Fired AFTER a successful disk write so subscribers (the daemon's
     /// Coordinator) can re-read affected fields without polling. Sends
     /// nothing — it's a "config changed, refresh whatever you care about"
@@ -67,6 +75,8 @@ final class ConfigStore: ObservableObject {
         let rec = doc["recording"]?.table
         let det = doc["detection"]?.table
         let mod = doc["modes"]?.table
+        let notion = doc["notion"]?.table
+        let summ = doc["summarization"]?.table
 
         self.outputDirPath = rec?["output_dir"]?.string ?? "~/Documents/Meetings/raw"
         self.sampleRate = rec?["sample_rate"]?.int ?? 16000
@@ -78,6 +88,10 @@ final class ConfigStore: ObservableObject {
         self.promptTimeoutSec = det?["prompt_timeout_sec"]?.double ?? 30
 
         self.regulatedMode = mod?["regulated_mode"]?.bool ?? false
+
+        self.notionDatabaseId = notion?["database_id"]?.string ?? ""
+        self.summaryLanguage = summ?["summary_language"]?.string ?? "auto"
+        self.summarizationSkipAboveChars = summ?["skip_above_chars"]?.int ?? 80000
 
         // Arming this last is the whole point — every prior `self.x = …`
         // triggered didSet which now no-ops on `!isInitialized`.
@@ -132,6 +146,10 @@ final class ConfigStore: ObservableObject {
         ensureTable("detection")["prompt_timeout_sec"] = promptTimeoutSec
 
         ensureTable("modes")["regulated_mode"] = regulatedMode
+
+        ensureTable("notion")["database_id"] = notionDatabaseId
+        ensureTable("summarization")["summary_language"] = summaryLanguage
+        ensureTable("summarization")["skip_above_chars"] = summarizationSkipAboveChars
     }
 
     /// Render `rawDocument` and replace `configURL` atomically.
