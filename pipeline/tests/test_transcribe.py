@@ -195,15 +195,26 @@ def test_resolve_mlx_model_id_passes_full_repo_through():
     assert _resolve_mlx_model_id("mlx-community/whisper-medium") == "mlx-community/whisper-medium"
 
 
-def test_resolve_mlx_model_id_prefixes_bare_faster_whisper_names():
-    """Pre-Tier-1 configs used bare faster-whisper names — auto-prefix
-    them to the MLX repo so legacy configs keep working without a manual
-    migration step. Without this, mlx-whisper hits a 404 trying to fetch
-    `huggingface.co/api/models/large-v3` (no such repo)."""
-    assert _resolve_mlx_model_id("large-v3") == "mlx-community/whisper-large-v3"
+def test_resolve_mlx_model_id_maps_legacy_names_to_real_mlx_repos():
+    """Pre-Tier-1 configs used bare faster-whisper names — those have to
+    map to the ACTUAL published mlx-community repos (not a naive prefix).
+    `large-v3` notably routes to `-turbo` since the mlx-community repo
+    only ships the distilled / smaller variants under explicit names;
+    `mlx-community/whisper-large-v3` does NOT exist and was the bug
+    that made the previous fix's auto-prefix produce 404s in the wild."""
+    assert _resolve_mlx_model_id("large-v3") == "mlx-community/whisper-large-v3-turbo"
     assert _resolve_mlx_model_id("large-v3-turbo") == "mlx-community/whisper-large-v3-turbo"
-    assert _resolve_mlx_model_id("medium") == "mlx-community/whisper-medium"
-    assert _resolve_mlx_model_id("tiny.en") == "mlx-community/whisper-tiny.en"
+    assert _resolve_mlx_model_id("large-v2") == "mlx-community/whisper-large-v2-mlx"
+    assert _resolve_mlx_model_id("medium") == "mlx-community/whisper-medium-mlx"
+    assert _resolve_mlx_model_id("medium.en") == "mlx-community/whisper-medium.en-mlx"
+    assert _resolve_mlx_model_id("tiny.en") == "mlx-community/whisper-tiny.en-mlx"
+
+
+def test_resolve_mlx_model_id_falls_back_to_naive_prefix_for_unknown_names():
+    """Future Whisper variants we haven't enumerated should still be
+    reachable by setting `model = "<name>"`; mlx-whisper's own 404 path
+    surfaces a real typo. This is the escape hatch we keep open."""
+    assert _resolve_mlx_model_id("hypothetical-future-variant") == "mlx-community/whisper-hypothetical-future-variant"
 
 
 def test_resolve_mlx_model_id_passes_local_paths_through():

@@ -207,23 +207,50 @@ def _run_faster_whisper(wav: Path, tcfg) -> tuple[str, str, list[dict], float]:
     return "faster-whisper", info.language, segments, last_end
 
 
+_DEFAULT_MLX_MODEL = "mlx-community/whisper-large-v3-turbo"
+
+# Canonical MLX repo names for the faster-whisper bare names that
+# pre-Tier-1 configs use. The mlx-community repo isn't 1:1 with the
+# faster-whisper naming — `large-v3` only exists in MLX as the
+# `-turbo` distillation (faster, near-equal WER), and the smaller
+# variants get an explicit `-mlx` suffix. Without this table, naive
+# prefixing produces 404s like `mlx-community/whisper-large-v3` and
+# the pipeline silently degrades to faster-whisper-CPU.
+_LEGACY_TO_MLX = {
+    "large-v3":         "mlx-community/whisper-large-v3-turbo",
+    "large-v3-turbo":   "mlx-community/whisper-large-v3-turbo",
+    "large-v2":         "mlx-community/whisper-large-v2-mlx",
+    "large":            "mlx-community/whisper-large-v3-turbo",
+    "medium":           "mlx-community/whisper-medium-mlx",
+    "medium.en":        "mlx-community/whisper-medium.en-mlx",
+    "small":            "mlx-community/whisper-small-mlx",
+    "small.en":         "mlx-community/whisper-small.en-mlx",
+    "base":             "mlx-community/whisper-base-mlx",
+    "base.en":          "mlx-community/whisper-base.en-mlx",
+    "tiny":             "mlx-community/whisper-tiny-mlx",
+    "tiny.en":          "mlx-community/whisper-tiny.en-mlx",
+}
+
+
 def _resolve_mlx_model_id(model: str) -> str:
     """Map a transcription.model string to an mlx-whisper-compatible
     HuggingFace repo or local path.
 
-    Pre-Tier-1 configs (and any older docs) used bare faster-whisper
-    names like `large-v3`, `medium`, `tiny.en`. Those don't exist as
-    standalone HF repos — mlx-whisper fetches `mlx-community/whisper-X`
-    repos for the same models. Auto-prefix when the model string is a
-    bare name so legacy configs keep working without manual migration.
-    Anything containing `/` (HF org/repo) or `~`/`/` (local path) is
-    passed through untouched.
+    Anything containing `/` (HF org/repo) or starting with `~`/`.`
+    (local path) passes through untouched. Bare faster-whisper names
+    are mapped via `_LEGACY_TO_MLX` to the actual published mlx-community
+    repos. Unknown bare names fall back to a naive `mlx-community/
+    whisper-X` prefix so a future Whisper variant we haven't enumerated
+    can still be reached by setting `model = "<name>"`; mlx-whisper's
+    own 404 path then surfaces the typo.
     """
     s = model.strip()
     if not s:
-        return "mlx-community/whisper-large-v3-turbo"
+        return _DEFAULT_MLX_MODEL
     if "/" in s or s.startswith("~") or s.startswith("."):
         return s
+    if s in _LEGACY_TO_MLX:
+        return _LEGACY_TO_MLX[s]
     return f"mlx-community/whisper-{s}"
 
 
