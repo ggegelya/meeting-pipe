@@ -23,6 +23,13 @@ final class Coordinator: NSObject {
     private let consent: ConsentStore
     private let launcher: PipelineDriver
     private let preferencesWindow: PreferencesWindow?
+    /// Long-running transcription subprocess that runs in parallel with
+    /// the recorder. When the recording stops, we signal it to flush;
+    /// the orchestrator then picks up its `<stem>.json` and skips the
+    /// offline ASR stage. Best-effort: a failure here is recoverable —
+    /// the orchestrator falls back to a fresh offline transcribe when
+    /// the streamed JSON is missing or has zero segments.
+    private let streamingTranscriber = StreamingTranscriber()
 
     private var state: AppState = .idle {
         didSet {
@@ -132,7 +139,13 @@ final class Coordinator: NSObject {
         hotkey.unregister()
         if recorder.isRecording {
             // Best-effort flush; we don't want orphan recording state.
-            Task { await recorder.stop() }
+            // Streaming transcriber is signaled in parallel — its hard
+            // SIGKILL escalation makes sure we can't sit here forever.
+            let transcriber = self.streamingTranscriber
+            Task {
+                await recorder.stop()
+                await transcriber.stop()
+            }
         }
     }
 
@@ -219,6 +232,29 @@ final class Coordinator: NSObject {
                 "daemon",
                 "recording started → \(file.path) source=\(source?.bundleID ?? "manual") mode=\(summaryMode == .byo ? "byo" : "auto")"
             )
+            // Kick off streaming transcribe so transcription runs in
+            // parallel with the meeting. Best-effort — a failure here
+            // (mp not installed, AVAudioFile not yet flushing) just
+            // means the orchestrator's offline path picks up at stop.
+            // BYO mode skips streaming because the orchestrator short-
+            // circuits before transcribe anyway, so spawning would be
+            // wasted work.
+            if summaryMode != .byo,
+               let micURL = recorder.micURL {
+                let stem = file.deletingPathExtension().lastPathComponent
+                let outputDir = file.deletingLastPathComponent()
+                do {
+                    try streamingTranscriber.start(
+                        stem: stem,
+                        outputDir: outputDir,
+                        micURL: micURL,
+                        systemURL: recorder.systemURL,
+                        language: nil  // pipeline reads its own config
+                    )
+                } catch {
+                    Log.main.warning("Streaming transcriber failed to start (\(error.localizedDescription)) — offline transcribe will run at stop")
+                }
+            }
         } catch {
             Log.main.error("failed to start recorder: \(error.localizedDescription)")
             notifier.notifyError("Could not start recording: \(error.localizedDescription)")
@@ -237,8 +273,15 @@ final class Coordinator: NSObject {
         // pipeline processing and the recording-side state returns to
         // .idle so the user can record another meeting immediately.
         let recorder = self.recorder
+        let transcriber = self.streamingTranscriber
         Task { @MainActor [weak self] in
             await recorder.stop()
+            // Tell the streaming transcriber to drain its remaining
+            // buffer and finalize <stem>.json. The orchestrator then
+            // skips the offline ASR stage. We bound the wait inside
+            // StreamingTranscriber.stop (SIGTERM → 60 s grace → SIGKILL)
+            // so a hung subprocess can't pin the daemon in `.stopping`.
+            await transcriber.stop()
             guard let self = self else { return }
             Log.writeLine("daemon", "recording stopped → \(file.path)")
             // The recording captured no system-audio frames AND we know the

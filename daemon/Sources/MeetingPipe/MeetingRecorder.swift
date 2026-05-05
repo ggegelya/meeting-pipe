@@ -39,8 +39,11 @@ final class MeetingRecorder {
     private var systemStartTask: Task<Void, Never>?
 
     private(set) var currentFile: URL?
-    private var micURL: URL?
-    private var systemURL: URL?
+    /// Intermediate per-source WAV paths exposed so the streaming
+    /// transcriber can tail them as the daemon writes. Both URLs are
+    /// only valid between `start()` and `stop()`.
+    private(set) var micURL: URL?
+    private(set) var systemURL: URL?
     private(set) var startedAt: Date?
 
     /// Diagnostic counters so we can tell what's actually flowing in.

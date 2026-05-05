@@ -205,12 +205,14 @@ final class PipelineLauncher: PipelineDriver {
 
     /// Resolution order: prebuilt venv (`~/.local/share/meeting-pipe/venv/bin/mp`)
     /// → `uv run mp` invoked from the repo's pipeline dir → bare `mp` on PATH.
-    private struct MPInvocation {
+    /// Exposed `internal` so the streaming transcriber can reuse the same
+    /// resolution logic without duplicating it.
+    struct MPInvocation {
         let shell: String
         let args: [String]
     }
 
-    private static func findMP() -> MPInvocation? {
+    static func findMP() -> MPInvocation? {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let venvBin = home.appendingPathComponent(".local/share/meeting-pipe/venv/bin/mp")
         if FileManager.default.isExecutableFile(atPath: venvBin.path) {
