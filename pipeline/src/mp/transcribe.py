@@ -1,174 +1,58 @@
-"""WhisperX-based transcription with pyannote diarization.
+"""Whisper transcription on MLX (Apple Silicon native) + sherpa-onnx
+diarization, with a faster-whisper-CPU fallback for non-Apple-Silicon
+hosts.
 
-Output: <stem>.json (structured) + <stem>.md (speaker-segmented Markdown).
+Output:
+  <stem>.json   structured transcript ({language, segments[], …})
+  <stem>.md     speaker-segmented Markdown
 
-Implementation notes
---------------------
-- We import whisperx lazily so `mp --help` and unit tests don't pay the model-import cost.
-- HF_TOKEN is required for pyannote model downloads on first run.
-- compute_type="int8" runs on CPU. "float16" on Apple Silicon needs MPS support
-  in faster-whisper which is still flaky — we don't expose it via the CLI.
+The pre-MLX implementation used whisperx (faster-whisper + wav2vec2
+alignment + pyannote diarization) on CPU and ran at ~2× realtime
+end-to-end. mlx-whisper is ~5-10× faster than faster-whisper-CPU on
+M-series hardware and emits word-level timestamps directly, so the
+wav2vec2 alignment step (which downloaded a per-language ~360 MB model
+on every new language) is no longer needed. Diarization moves to
+sherpa-onnx (`mp.diarize`) which runs on CoreML / Apple Neural Engine
+and is language-agnostic.
+
+Multilang: mlx-whisper covers all 99 Whisper languages out of the box.
+`config.transcription.language = "auto"` (default) lets the model pick;
+forcing a language (e.g. `"uk"`, `"ru"`, `"en"`) skips the autodetect
+step and is slightly faster.
 """
 from __future__ import annotations
 
 import json
 import logging
+import platform
 import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from .config import Config, load_secrets, require_env
-from .endpoints import PYANNOTE_DIARIZATION_REPO, hf_model_page_url
-from .services import Diarizer
+from .config import Config, load_secrets
+from .diarize import DiarizationSegment, assign_speakers, diarize
 
 log = logging.getLogger("mp.transcribe")
 
 _UNSET: object = object()
+_UNKNOWN_SPEAKER = "Speaker?"
 
 
-def _device_for(compute_type: str) -> str:
-    # int8 → CPU. float16 → cuda (Linux) or mps (macOS). On macOS we leave it
-    # to the user's torch install to honor MPS; whisperx accepts "cpu" or "cuda".
-    return "cpu" if compute_type == "int8" else "cuda"
-
-
-class PyannoteDiarizer:
-    """Concrete `Diarizer` that calls pyannote.audio.Pipeline directly.
-
-    We deliberately bypass whisperx's `DiarizationPipeline` wrapper. In
-    whisperx 3.3.x with pyannote 3.x, passing the in-memory numpy waveform
-    through that wrapper occasionally produces an empty assignment — every
-    word ends up with `speaker=None`, which is what produced the
-    one-bucket transcripts that triggered this work.
-
-    Calling pyannote with the WAV path (which the file is anyway) sidesteps
-    the wrapper's tensor-shape handling. The returned `Annotation` is then
-    converted to the DataFrame shape `whisperx.assign_word_speakers`
-    expects in `transcribe()` below.
-    """
-
-    def __init__(self, *, hf_token: str, device: str) -> None:
-        self._hf_token = hf_token
-        self._device = device
-        self._pipeline: Any | None = None
-
-    def _ensure_pipeline(self) -> Any:
-        if self._pipeline is not None:
-            return self._pipeline
-        # Lazy import — pyannote pulls in torch + a chunk of audio deps,
-        # which we don't want loaded for `mp --help` or unit tests.
-        from pyannote.audio import Pipeline as PyannotePipeline  # type: ignore
-        import torch  # type: ignore
-
-        # huggingface_hub >=0.23 removed `use_auth_token` from hf_hub_download
-        # in favor of `token`. pyannote.audio 3.3.x still passes the old name,
-        # which raises TypeError at load time on modern hub installs. Until
-        # pyannote ships a version that uses `token=`, translate the kwarg
-        # in flight at the bound references in pyannote's own modules.
-        _patch_pyannote_hf_hub_token_kwarg()
-
-        pipe = PyannotePipeline.from_pretrained(
-            PYANNOTE_DIARIZATION_REPO,
-            use_auth_token=self._hf_token,
-        )
-        if pipe is None:
-            # `from_pretrained` returns None when the local cache is missing
-            # AND the HF call returned 401 (TOS not accepted). Surface the
-            # actionable cause.
-            raise RuntimeError(
-                "pyannote.Pipeline.from_pretrained returned None — "
-                f"accept TOS at {hf_model_page_url(PYANNOTE_DIARIZATION_REPO)} "
-                "and retry"
-            )
-        # `to(device)` is a no-op on CPU; on cuda/mps it pins the model.
-        if self._device != "cpu":
-            try:
-                pipe.to(torch.device(self._device))
-            except Exception as e:  # noqa: BLE001
-                log.warning("Could not move pyannote pipeline to %s: %s", self._device, e)
-        self._pipeline = pipe
-        return pipe
-
-    def diarize(
-        self,
-        wav: Path,
-        *,
-        min_speakers: int,
-        max_speakers: int,
-    ) -> Any:
-        pipe = self._ensure_pipeline()
-        return pipe(
-            str(wav),
-            min_speakers=min_speakers,
-            max_speakers=max_speakers,
-        )
-
-
-def _patch_pyannote_hf_hub_token_kwarg() -> None:
-    """Translate `use_auth_token=` → `token=` for pyannote's bound
-    references to `huggingface_hub.hf_hub_download`.
-
-    Why a shim and not a version pin: `huggingface_hub<0.23` would
-    revert security fixes shipped over 18 months. pyannote.audio 3.3.x
-    is what whisperx 3.3 wants, so we can't simply upgrade pyannote
-    either. The shim is idempotent (skipped on second call) and a
-    no-op once a future pyannote starts emitting `token=` directly.
-
-    Visible at module level so it's testable without spinning up the
-    real pyannote pipeline.
-    """
-    try:
-        import pyannote.audio.core.pipeline as _ppip  # type: ignore
-        import pyannote.audio.core.model as _pmod  # type: ignore
-    except ImportError:  # pragma: no cover
-        return
-
-    real = _ppip.hf_hub_download
-    if getattr(real, "_mp_use_auth_token_shim", False):
-        return
-
-    def shim(*args: Any, **kwargs: Any) -> Any:
-        if "use_auth_token" in kwargs:
-            tok = kwargs.pop("use_auth_token")
-            kwargs.setdefault("token", tok)
-        return real(*args, **kwargs)
-
-    shim._mp_use_auth_token_shim = True  # type: ignore[attr-defined]
-    _ppip.hf_hub_download = shim
-    _pmod.hf_hub_download = shim
-
-
-def annotation_to_whisperx_df(annotation: Any) -> Any:
-    """Convert a pyannote `Annotation` into the DataFrame shape
-    `whisperx.assign_word_speakers` expects.
-
-    Visible at module level so tests can hand it a fake annotation
-    (any object with `itertracks(yield_label=True)`) without spinning
-    up pyannote.
-    """
-    import pandas as pd  # type: ignore
-
-    rows = [
-        {"start": segment.start, "end": segment.end, "speaker": label}
-        for segment, _, label in annotation.itertracks(yield_label=True)
-    ]
-    return pd.DataFrame(rows, columns=["start", "end", "speaker"])
+def _is_apple_silicon() -> bool:
+    return sys.platform == "darwin" and platform.machine() == "arm64"
 
 
 def transcribe(
     wav: Path,
     cfg: Config | None = None,
     out_dir: Path | None = None,
-    *,
-    diarizer: Diarizer | None = None,
 ) -> dict[str, Path]:
     """Transcribe `wav` and write `<stem>.json` + `<stem>.md` next to it.
 
-    Returns paths to both outputs.
-
-    Pass `diarizer` to swap the speaker-attribution backend or to inject
-    a fake in tests; defaults to `PyannoteDiarizer`.
+    Returns paths to both outputs. The structured JSON shape is preserved
+    from the previous whisperx-based implementation so downstream stages
+    (orchestrate, summarize, publish) don't need to change.
     """
     cfg = cfg or Config.load()
     load_secrets()
@@ -178,125 +62,66 @@ def transcribe(
     json_path = out_dir / f"{stem}.json"
     md_path = out_dir / f"{stem}.md"
 
-    # Lazy imports — heavy.
-    import whisperx  # type: ignore
-
     tcfg = cfg.transcription
-    device = _device_for(tcfg.compute_type)
 
-    log.info("Loading model %s (compute_type=%s, device=%s)", tcfg.model, tcfg.compute_type, device)
-    model = whisperx.load_model(tcfg.model, device, compute_type=tcfg.compute_type)
+    # 1. ASR + word-level timestamps.
+    backend, language, segments, audio_seconds = _run_asr(wav, tcfg)
+    log.info("ASR done: backend=%s lang=%s segments=%d duration=%.1fs",
+             backend, language, len(segments), audio_seconds)
 
-    log.info("Loading audio %s", wav)
-    audio = whisperx.load_audio(str(wav))
-    # WhisperX delivers float32 mono at 16 kHz, regardless of the source
-    # format. Compute duration once and reuse it for the diarization
-    # length guard below.
-    audio_duration_min = len(audio) / 16000.0 / 60.0
-    log.info("Audio duration: %.1f min", audio_duration_min)
-
-    transcribe_kwargs: dict[str, Any] = {"batch_size": 16}
-    if tcfg.language and tcfg.language.lower() != "auto":
-        transcribe_kwargs["language"] = tcfg.language
-
-    log.info("Transcribing")
-    try:
-        result = model.transcribe(audio, **transcribe_kwargs)
-    except IndexError:
-        # WhisperX's VAD can return zero speech segments on a near-silent
-        # input, then transformers crashes accessing inputs[0]. Treat as
-        # "no speech" rather than an orchestrator-level failure — the wav
-        # is still on disk for inspection, and run-all can continue past
-        # this step (downstream summarize will see an empty transcript and
-        # produce a "(no content)" stub instead of a billable LLM call).
-        log.warning("No speech detected in audio (VAD returned zero segments). Writing empty transcript.")
-        result = {"language": "en", "segments": []}
-    detected_lang = result.get("language", tcfg.language if tcfg.language != "auto" else "en")
-
-    # Word-level alignment with wav2vec2 — required for diarization to map
-    # speaker turns onto word boundaries. Skip when there's no speech: the
-    # align-model load triggers a 360 MB wav2vec2 download on first run, and
-    # there's nothing to align anyway.
-    if not result.get("segments"):
-        log.info("Skipping alignment + diarization (no segments)")
-    else:
-        log.info("Aligning (lang=%s)", detected_lang)
-        try:
-            align_model, metadata = whisperx.load_align_model(language_code=detected_lang, device=device)
-            result = whisperx.align(
-                result["segments"], align_model, metadata, audio, device, return_char_alignments=False
-            )
-        except Exception as e:  # noqa: BLE001
-            # Some less-common languages have no alignment model. Skip alignment
-            # and continue with sentence-level segments only.
-            log.warning("Alignment skipped (%s): %s", detected_lang, e)
-
+    # 2. Diarization.
     diarization_failed = False
     diarization_failure_reason: str | None = None
-    # Length guard: diarizing multi-hour audio with our pinned pyannote on
-    # CPU has hung indefinitely. Skip and let the orchestrator's long-
-    # meeting BYO bundle handle summarization.
-    skip_diarization_for_length = (
+    diarization_segments: list[DiarizationSegment] = []
+
+    audio_minutes = audio_seconds / 60.0
+    skip_for_length = (
         tcfg.max_diarization_minutes
-        and audio_duration_min > tcfg.max_diarization_minutes
+        and audio_minutes > tcfg.max_diarization_minutes
     )
-    if skip_diarization_for_length:
+
+    if not segments:
+        log.info("Skipping diarization (no segments)")
+    elif tcfg.disable_diarization:
+        log.info("Diarization disabled by config")
+    elif skip_for_length:
         log.warning(
-            "Audio is %.1f min — exceeds max_diarization_minutes=%d. "
-            "Skipping diarization; transcript will use single-speaker labels.",
-            audio_duration_min,
-            tcfg.max_diarization_minutes,
+            "Audio is %.1f min — exceeds max_diarization_minutes=%d. Skipping.",
+            audio_minutes, tcfg.max_diarization_minutes,
         )
         diarization_failed = True
         diarization_failure_reason = (
-            f"audio length {audio_duration_min:.0f} min "
+            f"audio length {audio_minutes:.0f} min "
             f"> max_diarization_minutes={tcfg.max_diarization_minutes}"
         )
-    elif not tcfg.disable_diarization and result.get("segments"):
-        log.info("Diarizing (min=%d, max=%d)", tcfg.min_speakers, tcfg.max_speakers)
+    else:
         try:
-            # Default to PyannoteDiarizer; tests can pass an in-memory fake
-            # via the `diarizer` kwarg without ever touching pyannote.
-            if diarizer is None:
-                hf_token = require_env("HF_TOKEN")
-                diarizer = PyannoteDiarizer(hf_token=hf_token, device=device)
-            annotation = diarizer.diarize(
+            diarization_segments = diarize(
                 wav,
                 min_speakers=tcfg.min_speakers,
                 max_speakers=tcfg.max_speakers,
+                cluster_threshold=tcfg.diarize_cluster_threshold,
             )
-            diarize_df = annotation_to_whisperx_df(annotation)
-            result = whisperx.assign_word_speakers(diarize_df, result)
         except Exception as e:  # noqa: BLE001
             diarization_failed = True
             diarization_failure_reason = f"{type(e).__name__}: {e}"
-            log.error(
-                "Diarization failed (%s). Falling back to single-speaker labels. "
-                "Common cause: HF model TOS not accepted at %s",
-                e,
-                hf_model_page_url(PYANNOTE_DIARIZATION_REPO),
-            )
+            log.error("Diarization failed: %s", e)
 
-        # Even when no exception was raised, the run may have produced zero
-        # speaker assignments — guard against silent regressions.
-        if not diarization_failed and result.get("segments"):
-            any_assigned = any(
-                seg.get("speaker") is not None for seg in result["segments"]
-            )
-            if not any_assigned:
-                diarization_failed = True
-                diarization_failure_reason = (
-                    "diarization returned no speaker assignments "
-                    "(assign_word_speakers produced empty result)"
-                )
-                log.error("Diarization returned no speaker assignments")
+    # 3. Assign speakers to each transcript segment.
+    if diarization_segments:
+        segments = assign_speakers(segments, diarization_segments)
+    elif diarization_failed:
+        # Mark everything as unknown so the failure surfaces in the MD banner.
+        segments = [{**s, "speaker": _UNKNOWN_SPEAKER} for s in segments]
 
-    structured = {
-        "language": detected_lang,
-        "segments": result.get("segments", []),
+    structured: dict[str, Any] = {
+        "language": language,
+        "segments": segments,
         "audio_path": str(wav),
-        "model": tcfg.model,
-        "diarization": not tcfg.disable_diarization,
+        "audio_seconds": audio_seconds,
+        "model": tcfg.model if backend == "mlx" else tcfg.fallback_model,
+        "backend": backend,
+        "diarization": not tcfg.disable_diarization and not skip_for_length,
         "diarization_failed": diarization_failed,
         "diarization_failure_reason": diarization_failure_reason,
     }
@@ -309,16 +134,109 @@ def transcribe(
     return {"json": json_path, "md": md_path}
 
 
-_UNKNOWN_SPEAKER = "Speaker?"
+# --- ASR backends -------------------------------------------------------------
+
+
+def _run_asr(wav: Path, tcfg) -> tuple[str, str, list[dict], float]:
+    """Run whichever Whisper backend is available. Returns
+    `(backend, language, segments, audio_seconds)`.
+    """
+    if _is_apple_silicon():
+        try:
+            return _run_mlx(wav, tcfg)
+        except Exception as e:  # noqa: BLE001
+            log.warning("mlx-whisper failed (%s); falling back to faster-whisper", e)
+    return _run_faster_whisper(wav, tcfg)
+
+
+def _run_mlx(wav: Path, tcfg) -> tuple[str, str, list[dict], float]:
+    """Native MLX/Metal Whisper. ~5-10× faster than faster-whisper on M-series."""
+    import mlx_whisper  # type: ignore
+
+    log.info("Loading MLX Whisper (%s)", tcfg.model)
+    kwargs: dict[str, Any] = {
+        "path_or_hf_repo": tcfg.model,
+        "word_timestamps": True,
+        # Disable mlx-whisper's tqdm bar (it spams pipeline.log otherwise).
+        "verbose": None,
+    }
+    if tcfg.language and tcfg.language.lower() != "auto":
+        kwargs["language"] = tcfg.language
+
+    log.info("Transcribing %s", wav.name)
+    result = mlx_whisper.transcribe(str(wav), **kwargs)
+
+    raw_segments = result.get("segments", [])
+    language = result.get("language", "en")
+
+    audio_seconds = float(raw_segments[-1]["end"]) if raw_segments else 0.0
+    segments = [_normalize_segment(s) for s in raw_segments]
+    return "mlx", language, segments, audio_seconds
+
+
+def _run_faster_whisper(wav: Path, tcfg) -> tuple[str, str, list[dict], float]:
+    """Cross-platform fallback. Slower than MLX but works on Linux/Intel."""
+    from faster_whisper import WhisperModel  # type: ignore
+
+    log.info("Loading faster-whisper (%s, int8 CPU)", tcfg.fallback_model)
+    model = WhisperModel(tcfg.fallback_model, device="cpu", compute_type="int8")
+    language = None if (tcfg.language or "auto").lower() == "auto" else tcfg.language
+
+    log.info("Transcribing %s", wav.name)
+    seg_iter, info = model.transcribe(
+        str(wav),
+        language=language,
+        word_timestamps=True,
+        vad_filter=True,
+    )
+    segments = []
+    last_end = 0.0
+    for s in seg_iter:
+        words = []
+        if getattr(s, "words", None):
+            for w in s.words:
+                words.append({"word": w.word, "start": float(w.start or 0), "end": float(w.end or 0)})
+        segments.append({
+            "start": float(s.start),
+            "end": float(s.end),
+            "text": s.text,
+            "words": words,
+        })
+        last_end = float(s.end)
+    return "faster-whisper", info.language, segments, last_end
+
+
+def _normalize_segment(seg: dict) -> dict:
+    """Trim mlx-whisper's segment dict to the fields the downstream
+    pipeline relies on. Keeps `words` when present so streaming
+    consumers (Tier 2) can render partial transcripts."""
+    out = {
+        "start": float(seg.get("start", 0.0)),
+        "end": float(seg.get("end", 0.0)),
+        "text": (seg.get("text") or "").strip(),
+    }
+    if "words" in seg:
+        out["words"] = [
+            {
+                "word": w.get("word", ""),
+                "start": float(w.get("start", out["start"])),
+                "end": float(w.get("end", out["end"])),
+            }
+            for w in seg["words"]
+        ]
+    return out
+
+
+# --- Markdown rendering -------------------------------------------------------
 
 
 def render_markdown(structured: dict[str, Any]) -> str:
     """Render the structured transcript into speaker-segmented Markdown.
 
-    Consecutive segments from the same speaker are merged into a single block.
-    When diarization failed (or returned no assignments), prepend a warning
-    banner and use `Speaker?` for missing labels so the failure can never go
-    unnoticed in downstream review.
+    Consecutive segments from the same speaker are merged into a single
+    block. When diarization failed (or returned no assignments), prepend
+    a warning banner and use `Speaker?` for missing labels so the
+    failure can never go unnoticed in downstream review.
     """
     lines: list[str] = []
     title = Path(structured.get("audio_path", "transcript")).stem
@@ -355,7 +273,6 @@ def render_markdown(structured: dict[str, Any]) -> str:
         buffer.append(text)
     flush()
 
-    # Speaker count footer for quick eyeballing.
     counts: dict[str, int] = defaultdict(int)
     for seg in structured.get("segments", []):
         counts[seg.get("speaker") or _UNKNOWN_SPEAKER] += 1

@@ -13,20 +13,22 @@ dependencies = [
     "pydantic>=2.7.0",
     "pydantic-settings>=2.4.0",
     "tomli>=2.0.1; python_version < '3.11'",
-    # Transcription stack. WhisperX wraps faster-whisper + pyannote.
-    # Pinned ranges to stay reproducible; bump deliberately.
+    # ASR. mlx-whisper is the Apple-Silicon-native MLX/Metal backend; it
+    # outperforms faster-whisper-on-CPU by ~5-10× on M-series and supports
+    # all 99 Whisper languages with word-level timestamps. faster-whisper
+    # stays in the dep list as a graceful fallback for non-Apple-Silicon
+    # environments (CI, Linux).
+    "mlx-whisper>=0.4.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "faster-whisper>=1.0.3",
-    "whisperx>=3.1.1",
-    "torch>=2.2.0,<2.5.0",
-    "torchaudio>=2.2.0,<2.5.0",
-    # pyannote.audio is imported directly by transcribe.py (PyannoteDiarizer
-    # calls Pipeline.from_pretrained), so declare it explicitly even though
-    # whisperx pulls it transitively. Same story for pandas — used by
-    # annotation_to_whisperx_df. matplotlib is needed because pyannote's
-    # segmentation task mixins import it unconditionally and don't declare it.
-    "pyannote.audio>=3.3.0",
-    "pandas>=2.0",
-    "matplotlib>=3.7",
+    "soundfile>=0.12.1",
+    "numpy>=1.26",
+    # Diarization. sherpa-onnx runs offline speaker diarization on CoreML
+    # (Apple Neural Engine) — language-agnostic, no torch/pyannote pin
+    # pain, ~5-10× faster than pyannote-CPU. ONNX Runtime is bundled.
+    # Pin under 1.13 — 1.13.0 ships a Python wheel whose .so references
+    # libonnxruntime.1.24.4.dylib but the wheel doesn't bundle that dylib,
+    # so import fails at load time. 1.12.x bundles correctly.
+    "sherpa-onnx>=1.10.30,<1.13",
     # Notion + auth + retries.
     "tenacity>=8.2.0",
 ]

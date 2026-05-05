@@ -60,7 +60,11 @@ class NotionPublisher(Protocol):
 
 @runtime_checkable
 class Diarizer(Protocol):
-    """Returns a pyannote-style `Annotation` for the given audio file."""
+    """Speaker-diarize a WAV. Returns a list of objects each having
+    `start: float`, `end: float`, `speaker: str`. Implementations can
+    use any backend (sherpa-onnx, pyannote, an in-memory fake) so long
+    as they respect that contract.
+    """
 
     def diarize(
         self,
@@ -68,4 +72,4 @@ class Diarizer(Protocol):
         *,
         min_speakers: int,
         max_speakers: int,
-    ) -> Any: ...
+    ) -> list: ...

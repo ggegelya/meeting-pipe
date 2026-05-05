@@ -9,7 +9,6 @@ import os
 import sys
 import tomllib
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -43,25 +42,42 @@ class Detection(BaseModel):
 
 
 class Transcription(BaseModel):
-    model: str = "large-v3"
-    compute_type: Literal["int8", "float16", "float32"] = "int8"
+    # MLX-converted Whisper repo on Hugging Face. Defaults to the turbo
+    # variant — best speed/quality tradeoff on Apple Silicon, ~5-10× faster
+    # than faster-whisper-CPU at near-equal WER. Pre-converted alternates:
+    #   mlx-community/whisper-large-v3-mlx
+    #   mlx-community/whisper-medium
+    # On non-Apple-Silicon hosts the pipeline falls back to faster-whisper
+    # using `fallback_model` below.
+    model: str = "mlx-community/whisper-large-v3-turbo"
+    fallback_model: str = "large-v3"
     language: str = "auto"
     min_speakers: int = 1
     max_speakers: int = 8
     disable_diarization: bool = False
-    # pyannote diarization is O(audio_length^2) on CPU and the pinned model
-    # versions (pyannote 0.0.1 trained / 3.3.2 installed; torch 1.10 trained
-    # / 2.4 installed) routinely hang on multi-hour recordings — a 3-hour
-    # input burned 13 hours of wallclock before manual kill. Skip the stage
-    # when the audio exceeds this length; transcript is still produced,
-    # speaker labels fall back to a single "Speaker". 0 disables the guard.
-    max_diarization_minutes: int = 60
+    # Diarization runs offline on sherpa-onnx (CoreML on Apple Silicon).
+    # Roughly 0.05-0.3× realtime — multi-hour recordings finish in
+    # minutes rather than the multi-hour pyannote-CPU runs we used to see.
+    # Keep a generous safety guard: 0 disables it.
+    max_diarization_minutes: int = 240
+    # sherpa-onnx FastClustering merge threshold (cosine distance).
+    # Higher = merge more aggressively = fewer speakers.
+    # 0.7-0.85 is a reasonable range for English/EU-language meetings.
+    # Tune up if you see one person split across N speaker labels;
+    # tune down if multiple participants get collapsed into one.
+    diarize_cluster_threshold: float = 0.85
 
 
 class Summarization(BaseModel):
     model: str = "claude-sonnet-4-6"
     max_tokens: int = 4000
     team_context: str = ""
+    # Output language for the summary. "auto" mirrors the transcript's
+    # detected language (Russian transcript → Russian summary, etc.) so
+    # non-English meetings stay in their native language for review.
+    # Force a specific ISO 639-1 code to override (e.g. "en" to always
+    # produce an English summary regardless of transcript language).
+    summary_language: str = "auto"
     # Long-meeting guard: if the transcript markdown is longer than this
     # many characters, the orchestrator skips summarize + publish so we
     # don't burn Anthropic tokens on a long meeting. The transcript stays

@@ -1,34 +1,21 @@
-"""Tests for transcript Markdown rendering + diarization plumbing.
+"""Tests for transcript Markdown rendering + speaker assignment.
 
 The transcribe step itself runs heavy ML models — we don't exercise the
-whisper.load_model path in CI. What we DO test:
+mlx-whisper.transcribe / sherpa-onnx paths in CI. What we DO test:
 
   - render_markdown's contract (warning banner, Speaker?, segment merging)
-  - annotation_to_whisperx_df: pyannote → DataFrame conversion
-  - the Diarizer protocol can be satisfied by a stub, so the diarization
-    path is exercisable without actually running pyannote
+  - assign_speakers: midpoint match, closest-fallback, empty diarization
+  - Segment normalization preserves the schema downstream consumes
 """
 from __future__ import annotations
 
-from collections import namedtuple
 from pathlib import Path
 
-from mp.transcribe import annotation_to_whisperx_df, render_markdown
+from mp.diarize import DiarizationSegment, _renumber_speakers, assign_speakers
+from mp.transcribe import _normalize_segment, render_markdown
 
 
-# Minimal pyannote Annotation stand-in: only itertracks(yield_label=True)
-# is part of the contract `annotation_to_whisperx_df` depends on.
-_Segment = namedtuple("Segment", ["start", "end"])
-
-
-class _FakeAnnotation:
-    def __init__(self, tracks: list[tuple[float, float, str]]) -> None:
-        self._tracks = tracks
-
-    def itertracks(self, *, yield_label: bool):
-        # Mirror pyannote's tuple shape: (segment, track_id, label).
-        for start, end, label in self._tracks:
-            yield _Segment(start=start, end=end), "_", label
+# --- render_markdown ---------------------------------------------------------
 
 
 def test_renders_speaker_segmented_md():
@@ -36,20 +23,20 @@ def test_renders_speaker_segmented_md():
         "language": "en",
         "audio_path": "/tmp/meeting.wav",
         "segments": [
-            {"speaker": "SPEAKER_00", "text": "Hi everyone."},
-            {"speaker": "SPEAKER_00", "text": "Thanks for joining."},
-            {"speaker": "SPEAKER_01", "text": "Glad to be here."},
-            {"speaker": "SPEAKER_00", "text": "Let's start."},
+            {"speaker": "speaker_0", "text": "Hi everyone."},
+            {"speaker": "speaker_0", "text": "Thanks for joining."},
+            {"speaker": "speaker_1", "text": "Glad to be here."},
+            {"speaker": "speaker_0", "text": "Let's start."},
         ],
     }
     md = render_markdown(structured)
     # Consecutive same-speaker turns merge into one block.
-    assert md.count("**SPEAKER_00**") == 2
-    assert "**SPEAKER_01**: Glad to be here." in md
+    assert md.count("**speaker_0**") == 2
+    assert "**speaker_1**: Glad to be here." in md
     assert "Hi everyone. Thanks for joining." in md
     assert "_Language detected: en_" in md
     # Footer with speaker counts.
-    assert "- SPEAKER_00:" in md
+    assert "- speaker_0:" in md
 
 
 def test_handles_missing_speaker_label():
@@ -86,97 +73,12 @@ def test_no_warning_banner_on_successful_diarization():
         "audio_path": "/tmp/x.wav",
         "diarization_failed": False,
         "segments": [
-            {"speaker": "SPEAKER_00", "text": "Hi."},
-            {"speaker": "SPEAKER_01", "text": "Hello."},
+            {"speaker": "speaker_0", "text": "Hi."},
+            {"speaker": "speaker_1", "text": "Hello."},
         ],
     }
     md = render_markdown(structured)
     assert "⚠️" not in md
-
-
-def test_annotation_to_dataframe_yields_one_row_per_track():
-    ann = _FakeAnnotation([
-        (0.0, 1.5, "SPEAKER_00"),
-        (1.5, 3.2, "SPEAKER_01"),
-        (3.2, 4.0, "SPEAKER_00"),
-    ])
-    df = annotation_to_whisperx_df(ann)
-    assert list(df.columns) == ["start", "end", "speaker"]
-    assert len(df) == 3
-    assert df.iloc[1]["speaker"] == "SPEAKER_01"
-    assert df.iloc[1]["start"] == 1.5
-
-
-def test_annotation_to_dataframe_handles_empty_annotation():
-    df = annotation_to_whisperx_df(_FakeAnnotation([]))
-    assert list(df.columns) == ["start", "end", "speaker"]
-    assert len(df) == 0
-
-
-def test_pyannote_diarizer_satisfies_protocol(tmp_path: Path):
-    """Concrete `PyannoteDiarizer` is structurally a `Diarizer` — verified
-    via `runtime_checkable` Protocol isinstance check, so future signature
-    drift can't silently slip past the type system in py-tests too."""
-    from mp.services import Diarizer
-    from mp.transcribe import PyannoteDiarizer
-
-    # We don't construct the real model (HF download); just verify the
-    # class shape against the protocol.
-    assert isinstance(
-        PyannoteDiarizer.__new__(PyannoteDiarizer),
-        Diarizer,
-    )
-
-
-def test_hf_hub_token_shim_translates_kwarg(monkeypatch):
-    """The shim must convert `use_auth_token` into `token` at the bound
-    reference inside pyannote's modules — that's where the call site
-    lives. Without this, hf_hub 1.x raises TypeError before the model
-    even starts downloading.
-    """
-    from mp.transcribe import _patch_pyannote_hf_hub_token_kwarg
-
-    # Build minimal stand-ins for pyannote.audio.core.{pipeline,model}.
-    # We don't want to import the real pyannote in this test.
-    import sys
-    import types
-
-    received: dict = {}
-
-    def real_hf_hub_download(*args, **kwargs):
-        # Simulate hf_hub 1.x: reject `use_auth_token` if present.
-        if "use_auth_token" in kwargs:
-            raise TypeError(
-                "hf_hub_download() got an unexpected keyword argument 'use_auth_token'"
-            )
-        received.update(kwargs)
-        return "ok"
-
-    pipeline_mod = types.ModuleType("pyannote.audio.core.pipeline")
-    pipeline_mod.hf_hub_download = real_hf_hub_download
-    model_mod = types.ModuleType("pyannote.audio.core.model")
-    model_mod.hf_hub_download = real_hf_hub_download
-
-    parent_audio = types.ModuleType("pyannote.audio")
-    parent_core = types.ModuleType("pyannote.audio.core")
-    parent_pa = types.ModuleType("pyannote")
-    monkeypatch.setitem(sys.modules, "pyannote", parent_pa)
-    monkeypatch.setitem(sys.modules, "pyannote.audio", parent_audio)
-    monkeypatch.setitem(sys.modules, "pyannote.audio.core", parent_core)
-    monkeypatch.setitem(sys.modules, "pyannote.audio.core.pipeline", pipeline_mod)
-    monkeypatch.setitem(sys.modules, "pyannote.audio.core.model", model_mod)
-
-    _patch_pyannote_hf_hub_token_kwarg()
-
-    # After patching, pyannote-internal calls with the old kwarg succeed.
-    assert pipeline_mod.hf_hub_download(use_auth_token="hf-test") == "ok"
-    assert received["token"] == "hf-test"
-    assert "use_auth_token" not in received
-
-    # Idempotency: second call doesn't double-wrap.
-    shim1 = pipeline_mod.hf_hub_download
-    _patch_pyannote_hf_hub_token_kwarg()
-    assert pipeline_mod.hf_hub_download is shim1
 
 
 def test_skips_empty_segments():
@@ -191,3 +93,134 @@ def test_skips_empty_segments():
     }
     md = render_markdown(structured)
     assert "Real content." in md
+
+
+# --- assign_speakers ----------------------------------------------------------
+
+
+def test_assign_speakers_midpoint_match():
+    """Each transcript segment's midpoint is matched against the
+    diarization timeline; the speaker label flows through verbatim."""
+    transcript = [
+        {"start": 0.0, "end": 2.0, "text": "Hi."},
+        {"start": 2.0, "end": 5.0, "text": "How are you?"},
+        {"start": 5.0, "end": 8.0, "text": "Fine, thanks."},
+    ]
+    diar = [
+        DiarizationSegment(start=0.0, end=2.5, speaker="speaker_0"),
+        DiarizationSegment(start=2.5, end=6.0, speaker="speaker_1"),
+        DiarizationSegment(start=6.0, end=10.0, speaker="speaker_0"),
+    ]
+    out = assign_speakers(transcript, diar)
+    assert out[0]["speaker"] == "speaker_0"  # midpoint 1.0 in [0, 2.5]
+    assert out[1]["speaker"] == "speaker_1"  # midpoint 3.5 in [2.5, 6.0]
+    assert out[2]["speaker"] == "speaker_0"  # midpoint 6.5 in [6.0, 10.0]
+
+
+def test_assign_speakers_falls_back_to_closest():
+    """When a transcript segment's midpoint sits in a tiny gap between
+    diarization segments, we attach to the nearest by edge distance
+    instead of dropping the speaker label."""
+    transcript = [{"start": 5.0, "end": 5.5, "text": "Quick interjection."}]
+    diar = [
+        DiarizationSegment(start=0.0, end=4.0, speaker="speaker_0"),
+        DiarizationSegment(start=6.0, end=10.0, speaker="speaker_1"),
+    ]
+    out = assign_speakers(transcript, diar)
+    # Midpoint 5.25 is closer to speaker_1's start at 6.0 (distance 0.75)
+    # than speaker_0's end at 4.0 (distance 1.25).
+    assert out[0]["speaker"] == "speaker_1"
+
+
+def test_assign_speakers_empty_diarization_marks_unknown():
+    """When diarization produced nothing, every segment gets the
+    fallback label so the failure is visible in downstream Markdown."""
+    transcript = [{"start": 0.0, "end": 1.0, "text": "Hi."}]
+    out = assign_speakers(transcript, [])
+    assert out[0]["speaker"] == "Speaker?"
+
+
+def test_assign_speakers_does_not_mutate_input():
+    """Callers reuse the transcript list elsewhere — assign_speakers must
+    return new dicts rather than tagging speakers onto the originals."""
+    transcript = [{"start": 0.0, "end": 1.0, "text": "Hi."}]
+    diar = [DiarizationSegment(start=0.0, end=1.0, speaker="speaker_0")]
+    out = assign_speakers(transcript, diar)
+    assert "speaker" not in transcript[0]
+    assert out[0] is not transcript[0]
+
+
+# --- Speaker renumbering ------------------------------------------------------
+
+
+def test_renumber_speakers_makes_ids_contiguous():
+    """sherpa-onnx hands back IDs from internal cluster numbers — they
+    can have gaps (`speaker_0, speaker_4, speaker_22`). Downstream
+    rendering and the Anthropic prompt look weird with those gaps, so
+    we renumber in order of first appearance."""
+    segs = [
+        DiarizationSegment(start=0.0, end=1.0, speaker="speaker_4"),
+        DiarizationSegment(start=1.0, end=2.0, speaker="speaker_22"),
+        DiarizationSegment(start=2.0, end=3.0, speaker="speaker_4"),
+        DiarizationSegment(start=3.0, end=4.0, speaker="speaker_0"),
+    ]
+    out = _renumber_speakers(segs)
+    # First appearance: speaker_4 → 0, speaker_22 → 1, speaker_0 → 2.
+    assert [s.speaker for s in out] == ["speaker_0", "speaker_1", "speaker_0", "speaker_2"]
+    # Timing fields untouched.
+    assert out[1].start == 1.0 and out[1].end == 2.0
+
+
+def test_renumber_speakers_preserves_already_contiguous_ids():
+    """A well-numbered input must round-trip unchanged."""
+    segs = [
+        DiarizationSegment(start=0.0, end=1.0, speaker="speaker_0"),
+        DiarizationSegment(start=1.0, end=2.0, speaker="speaker_1"),
+    ]
+    out = _renumber_speakers(segs)
+    assert [s.speaker for s in out] == ["speaker_0", "speaker_1"]
+
+
+def test_renumber_speakers_empty_input():
+    assert _renumber_speakers([]) == []
+
+
+# --- Segment normalization ----------------------------------------------------
+
+
+def test_normalize_segment_preserves_words_when_present():
+    raw = {
+        "start": 0.5,
+        "end": 1.5,
+        "text": " Hi there. ",
+        "words": [
+            {"word": "Hi", "start": 0.5, "end": 0.8},
+            {"word": "there.", "start": 0.9, "end": 1.5},
+        ],
+    }
+    out = _normalize_segment(raw)
+    assert out["text"] == "Hi there."
+    assert len(out["words"]) == 2
+    assert out["words"][0]["word"] == "Hi"
+    assert out["words"][0]["start"] == 0.5
+
+
+def test_normalize_segment_drops_words_when_absent():
+    raw = {"start": 0.0, "end": 1.0, "text": "No words list."}
+    out = _normalize_segment(raw)
+    assert "words" not in out
+    assert out["text"] == "No words list."
+
+
+def test_normalize_segment_handles_missing_word_timings():
+    """Some Whisper outputs return word entries without `start`/`end`
+    (e.g. silence padding). They should fall back to the segment-level
+    boundaries instead of crashing."""
+    raw = {
+        "start": 1.0,
+        "end": 2.0,
+        "text": "Edge case.",
+        "words": [{"word": "Edge"}, {"word": "case."}],
+    }
+    out = _normalize_segment(raw)
+    assert all(w["start"] == 1.0 and w["end"] == 2.0 for w in out["words"])
