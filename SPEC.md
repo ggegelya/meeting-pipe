@@ -37,7 +37,8 @@ and operate the system; this file documents *why* it's shaped the way it is.
 | System audio     | ScreenCaptureKit (`SCStream` w/ `capturesAudio = true`) | Apple-recommended since macOS 13. No aggregate devices, no BlackHole, no ffmpeg subprocess. Excludes our own process audio so notifications don't loop back. |
 | Microphone       | `AVAudioEngine.inputNode`                        | Auto-tracks the macOS default input. User changes input in System Settings ▸ Sound → next recording adapts. |
 | Mixing + write   | `AVAudioMixerNode` + `AVAudioFile`               | In-process. Mixer resamples to 16 kHz mono; AVAudioFile writes Int16 PCM WAV. |
-| Transcription    | WhisperX (faster-whisper + pyannote.audio)       | Best on-device diarization quality for free. |
+| ASR              | mlx-whisper (Apple Silicon native MLX/Metal)     | ~5-10× faster than faster-whisper-CPU on M-series; emits word-level timestamps directly. faster-whisper kept as fallback for non-Apple-Silicon. |
+| Diarization      | sherpa-onnx (CoreML / Apple Neural Engine)       | Replaces pyannote-on-CPU. Language-agnostic, no torch/HF-TOS pin pain, runs at ~0.1-0.3× realtime. |
 | Summarization    | Anthropic Messages API direct, Claude Sonnet 4.6 | Headless, deterministic, structured outputs via tool-use schema. **Not Claude Code** — Claude Code is interactive; an unattended pipeline calls the API directly. |
 | Publishing       | Notion REST API + integration token              | Robust unattended; idempotent; testable. **Not Notion MCP** — MCP is for interactive Claude. |
 | Glue             | Python 3.11, single CLI with subcommands          | Each step debuggable in isolation. |
@@ -72,7 +73,8 @@ and operate the system; this file documents *why* it's shaped the way it is.
                                         ┌─────────────────────┐
                                         │   pipeline (Py)     │
                                         │  ┌───────────────┐  │
-                                        │  │  transcribe   │  │  WhisperX + pyannote
+                                        │  │  transcribe   │  │  mlx-whisper (ASR)
+                                        │  │       +       │  │  + sherpa-onnx (diarize)
                                         │  └──────┬────────┘  │  → {ts}.json + {ts}.md
                                         │         ▼           │
                                         │  guard: long?       │  → {ts}.READY_FOR_MANUAL.md
@@ -111,11 +113,21 @@ RECORDING
   │  (detector: meeting ended, debounced)
   │  (or user: hotkey / "Stop")
   ▼
-STOPPING                           
-  │  (ffmpeg flushed)
-  ▼
-HANDOFF ──(spawn `mp run-all`)──> IDLE
+STOPPING ─(recorder flushed)─> IDLE
+                                 │
+                                 │  (concurrently — does not block recording)
+                                 ▼
+                          ProcessingJobs queue (FIFO)
+                                 │  one whisper.cpp at a time so the CPU isn't thrashed,
+                                 │  but recording can start a new meeting at any time
+                                 ▼
+                          spawn `mp run-all` per job → notification on done
 ```
+
+`.handoff` used to be a state; it lived inside `AppState` and blocked the
+daemon from starting a new recording while the previous transcription was
+running. It now lives in a separate `ProcessingJob` queue on `Coordinator`
+so recording stays unblocked while jobs run in the background.
 
 ---
 
@@ -181,10 +193,12 @@ meeting-pipe/
 │   ├── src/mp/
 │   │   ├── __init__.py
 │   │   ├── __main__.py              Subcommand dispatcher
-│   │   ├── doctor.py                `mp doctor` preflight (secrets + APIs)
-│   │   ├── transcribe.py
-│   │   ├── summarize.py
+│   │   ├── doctor.py                `mp doctor` preflight (secrets + ML runtimes + APIs)
+│   │   ├── transcribe.py            mlx-whisper ASR (faster-whisper fallback)
+│   │   ├── diarize.py               sherpa-onnx offline diarization (CoreML EP)
+│   │   ├── summarize.py             Anthropic tool-use, multilang prompt
 │   │   ├── publish_notion.py
+│   │   ├── publish_from_paste.py    BYO summary mode
 │   │   ├── orchestrate.py           `run-all` + long-meeting guard
 │   │   ├── config.py                Pydantic settings
 │   │   ├── schemas.py               Pydantic models for summary JSON
@@ -193,9 +207,13 @@ meeting-pipe/
 │   │       └── meeting_summary.md
 │   └── tests/
 │       ├── test_schemas.py
-│       ├── test_transcribe.py       Renderer tests (no ML dep)
-│       ├── test_summarize.py        Mocked Anthropic SDK
-│       └── test_publish_notion.py   httpx MockTransport
+│       ├── test_transcribe.py       Renderer + speaker assignment (no ML dep)
+│       ├── test_summarize.py        Mocked Anthropic SDK + multilang directive
+│       ├── test_publish_notion.py   httpx MockTransport
+│       ├── test_publish_from_paste.py
+│       ├── test_orchestrate.py
+│       ├── test_doctor.py
+│       └── test_endpoints.py
 ├── scripts/
 │   ├── install.sh
 │   ├── uninstall.sh
@@ -217,7 +235,9 @@ written to TOML.
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
 NOTION_TOKEN=ntn_...
-HF_TOKEN=hf_...
+# HF_TOKEN is optional — only needed if you opt back into pyannote diarization.
+# The default sherpa-onnx pipeline does not touch Hugging Face.
+HF_TOKEN=
 ```
 
 Daemon and pipeline both source `secrets.env` on startup.
@@ -232,6 +252,20 @@ Daemon and pipeline both source `secrets.env` on startup.
 | Screen Recording | `SCStream.capturesAudio` — gates system-audio capture in TCC        | System Settings → Privacy & Security |
 | Accessibility    | Reading browser window titles                                       | System Settings → Privacy & Security |
 | Notifications    | Prompts and completion alerts                                       | First launch prompt                  |
+
+---
+
+## 8.5. Multilingual support
+
+| Stage | Multilang behavior |
+|---|---|
+| ASR (mlx-whisper) | All 99 Whisper languages. `language="auto"` auto-detects from the first 30 s; an explicit ISO 639-1 code (`"en"`, `"uk"`, `"ru"`, `"de"`) skips detection. |
+| Diarization (sherpa-onnx + NeMo TitaNet) | Language-agnostic. Speaker identity is encoded in phoneme-level acoustic features that transfer across languages. No per-language model. |
+| Summarization | The Anthropic prompt detects the transcript language and writes the summary in that same language by default. `summarization.summary_language` in config can force a specific output language regardless. |
+| Notion title | Inherits the summary language (or, when present, the meeting-name sidecar from the daemon — that name lives in whatever the source app exposed). |
+
+Code-switched calls (e.g. UA/EN, RU/EN): Whisper picks the dominant
+language; the summary follows.
 
 ---
 
@@ -269,12 +303,11 @@ and includes the configured `team_context` so domain terms aren't misclassified.
 |---------------------------------------------------------------|------------|
 | `isInUseByAnotherApplication` flakiness across macOS versions | Core Audio `DeviceIsRunningSomewhere` fallback + 3s poll. |
 | Browser tab title patterns drift                              | Patterns in TOML, not compiled. Easy to tweak. |
-| pyannote diarization weak on Ukrainian                        | `disable_diarization=true` → label all as "Speaker". |
-| MPS backend instability in faster-whisper                     | Default `compute_type="int8"` (CPU). |
+| Diarization quality variance per language                     | sherpa-onnx with NeMo TitaNet generalizes well across languages, but `disable_diarization=true` is the escape hatch. |
+| Apple Silicon MLX requirement for fast path                   | Pipeline auto-falls-back to faster-whisper on non-arm64 hosts; daemon is macOS-only anyway. |
 | Long meetings burning Anthropic tokens silently                | `summarization.skip_above_chars` (default 80 000) writes a manual-processing bundle instead of calling the API. |
 | Anthropic API cost creep                                      | ≈$0.05/meeting on Sonnet 4.6 at typical 5k in / 2k out. |
 | Compliance for client/regulated calls                         | `regulated_mode=true` skips Notion entirely. |
-| HuggingFace TOS gating                                        | `install.sh` prints exact URLs to accept; pipeline fails-fast on 401. |
 
 ---
 

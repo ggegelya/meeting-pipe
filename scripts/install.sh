@@ -7,9 +7,15 @@
 #   1. Verify macOS + brew + uv + ffmpeg.
 #   2. Build the daemon (swift build -c release).
 #   3. Install the pipeline venv at ~/.local/share/meeting-pipe/venv.
-#   4. Pre-fetch HF models (pyannote — requires HF token).
+#   4. Pre-fetch sherpa-onnx diarization models (~32 MB, public).
 #   5. Stage config files at ~/.config/meeting-pipe/.
 #   6. Install LaunchAgent for autostart.
+#
+# Tier-1 transcription stack: mlx-whisper for ASR (Apple Silicon native,
+# ~5-10× faster than faster-whisper-CPU) + sherpa-onnx for diarization
+# (CoreML-accelerated, no HuggingFace TOS gate). HF_TOKEN is no longer
+# required — kept in secrets.env only for users who deliberately opt
+# back into a pyannote workflow.
 
 set -euo pipefail
 
@@ -168,29 +174,32 @@ mkdir -p "$DATA_DIR"
 )
 [[ -x "$DATA_DIR/venv/bin/mp" ]] || die "mp launcher not at $DATA_DIR/venv/bin/mp"
 
-# 4. HF models -------------------------------------------------------------
+# 4. Diarization models ----------------------------------------------------
+#
+# sherpa-onnx pulls two ONNX models on first use (~32 MB combined):
+# pyannote-segmentation-3.0 and NeMo TitaNet-small. Both live on
+# k2-fsa's GitHub Releases — no auth, no TOS gate. Pre-fetching them
+# here means the first real recording doesn't pay the download latency.
 
-if [[ -f "$CONFIG_DIR/secrets.env" ]] && grep -q '^HF_TOKEN=' "$CONFIG_DIR/secrets.env"; then
-    say "Pre-fetching pyannote models (one-time, ~1GB)"
-    # shellcheck disable=SC1090
-    set -a; . "$CONFIG_DIR/secrets.env"; set +a
-    "$DATA_DIR/venv/bin/python" - <<'PY' || warn "Model pre-fetch failed; will retry at first run"
-import os
-from huggingface_hub import snapshot_download
-for repo in ("pyannote/speaker-diarization-3.1", "pyannote/segmentation-3.0"):
-    try:
-        snapshot_download(repo_id=repo, token=os.environ.get("HF_TOKEN"))
-        print(f"  ✓ {repo}")
-    except Exception as e:
-        print(f"  ✗ {repo}: {e}")
-        print(f"    Accept the TOS at: https://huggingface.co/{repo}")
+say "Pre-fetching sherpa-onnx diarization models (~32 MB)"
+"$DATA_DIR/venv/bin/python" - <<'PY' || warn "Model pre-fetch failed; will retry at first run"
+import sys
+try:
+    from mp.diarize import _ensure_segmentation_model, _ensure_embedding_model
+    seg = _ensure_segmentation_model()
+    emb = _ensure_embedding_model()
+    print(f"  ✓ segmentation: {seg.name}")
+    print(f"  ✓ embedding:    {emb.name}")
+except Exception as e:
+    print(f"  ✗ pre-fetch failed: {e}", file=sys.stderr)
+    sys.exit(1)
 PY
-else
-    warn "No HF_TOKEN found in $CONFIG_DIR/secrets.env — diarization models will"
-    warn "download on first run. Accept the TOS at:"
-    warn "  https://huggingface.co/pyannote/speaker-diarization-3.1"
-    warn "  https://huggingface.co/pyannote/segmentation-3.0"
-fi
+
+# ASR models (mlx-whisper) are large (~1.5 GB for whisper-large-v3-turbo).
+# We don't pre-fetch them — first recording downloads them, after which
+# they live in ~/.cache/huggingface/hub. Pre-fetching adds ~3 minutes to
+# install time and most users tolerate the one-time first-recording wait.
+say "Note: Whisper model (~1.5 GB) downloads on first recording"
 
 # 5. Config staging --------------------------------------------------------
 
@@ -204,6 +213,8 @@ if [[ ! -f "$CONFIG_DIR/secrets.env" ]]; then
 # Required secrets for meeting-pipe.
 ANTHROPIC_API_KEY=
 NOTION_TOKEN=
+# Optional. Only needed if you opt back into pyannote diarization.
+# The default sherpa-onnx pipeline does not touch Hugging Face.
 HF_TOKEN=
 EOF
     chmod 600 "$CONFIG_DIR/secrets.env"

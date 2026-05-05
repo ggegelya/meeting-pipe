@@ -3,8 +3,8 @@
 [recording]
 # Where raw WAVs land. Tilde is expanded at runtime.
 output_dir = "~/Documents/Meetings/raw"
-# Sample rate of the produced WAV. 16 kHz is the only rate WhisperX
-# actually consumes; bumping higher just wastes disk + transcription time.
+# Sample rate of the produced WAV. 16 kHz is what Whisper consumes;
+# bumping higher just wastes disk + transcription time.
 sample_rate = 16000
 # Bundle IDs that auto-start recording without a prompt, e.g. ["us.zoom.xos"].
 auto_consent_apps = []
@@ -25,22 +25,33 @@ manual_hotkey = "ctrl+option+m"
 prompt_timeout_sec = 30
 
 [transcription]
-# faster-whisper model identifier.
-model = "large-v3"
-# int8 = CPU. float16 = MPS (experimental — leave as int8 unless validated).
-compute_type = "int8"
-# "auto", "uk", "en", etc. (ISO 639-1).
+# MLX-converted Whisper repo on HuggingFace. Default is the turbo variant
+# (best speed/quality tradeoff on Apple Silicon). Alternates:
+#   mlx-community/whisper-large-v3-mlx   (slightly slower, slightly more accurate)
+#   mlx-community/whisper-medium         (faster, mid-quality)
+# On non-Apple-Silicon hosts the pipeline auto-falls-back to faster-whisper.
+model = "mlx-community/whisper-large-v3-turbo"
+# Used by the faster-whisper fallback (Linux, Intel macOS).
+fallback_model = "large-v3"
+# "auto" (recommended), or an ISO 639-1 code to skip detection: "en", "uk", "ru", "de", ...
 language = "auto"
 min_speakers = 1
 max_speakers = 8
-# If true, all segments are labeled "Speaker" (skip pyannote diarization).
+# True → all segments labeled "Speaker" (skip diarization entirely).
 disable_diarization = false
+# Diarization safety guard. sherpa-onnx runs at ~0.05-0.3× realtime so
+# the historical 60-min cap is overconservative. 0 disables.
+max_diarization_minutes = 240
 
 [summarization]
 # Latest Sonnet at time of writing. Bump deliberately.
 model = "claude-sonnet-4-6"
 max_tokens = 4000
 team_context = "FDA 21 CFR Part 11 regulated SaaS, .NET 8 + Angular + AWS EKS"
+# Output language. "auto" (default) mirrors the transcript's detected
+# language (Russian transcript → Russian summary). Force a specific
+# ISO 639-1 code to override (e.g. "en" for English-only).
+summary_language = "auto"
 # Long-meeting guard: when the transcript markdown is longer than this many
 # characters (~roughly 80 000 ≈ 20 000 tokens ≈ 1 hour of speech), the
 # pipeline SKIPS automatic summarization + Notion publishing to avoid

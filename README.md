@@ -2,8 +2,10 @@
 
 Background macOS daemon that detects video meetings, captures audio locally,
 transcribes with speaker identification, generates a summary + action items via
-Claude, and publishes to Notion. Zero recurring cost. Fully on-device audio.
-**macOS 14+ only.**
+Claude, and publishes to Notion. Zero recurring cost beyond the Anthropic call.
+Fully on-device audio. Apple-Silicon-native ASR (MLX/Metal) + diarization
+(sherpa-onnx / CoreML). Multilingual: 99 languages via Whisper, summary
+written in the same language as the transcript. **macOS 14+ only.**
 
 See [`SPEC.md`](./SPEC.md) for the full design.
 
@@ -16,10 +18,16 @@ See [`SPEC.md`](./SPEC.md) for the full design.
 2. **Asks** to record via an on-screen panel (top-right, Notion-style).
 3. **Captures** system audio (every other process) + your mic, mixes them, and
    writes a 16 kHz mono WAV to `~/Documents/Meetings/raw/`.
-4. **Transcribes** with WhisperX + pyannote diarization, fully on-device.
-5. **Summarizes** with Claude Sonnet (title, decisions, action items, questions).
+4. **Transcribes** with mlx-whisper (Apple Silicon native, all 99 Whisper
+   languages) and labels speakers via sherpa-onnx diarization on CoreML.
+5. **Summarizes** with Claude Sonnet (title, decisions, action items, questions)
+   in the same language as the transcript.
 6. **Publishes** to a Notion database with idempotent updates.
 7. **Notifies** you when it's done — click to open the Notion page.
+
+A new recording can start while a previous one is still being processed —
+processing runs in the background and you only get notified when each
+meeting's Notion page is ready.
 
 A global hotkey (default `⌃⌥M`) toggles recording manually if detection misses a
 meeting or you want a quick voice memo.
@@ -40,11 +48,16 @@ hand-summarise. After the recording finishes, save your summary as
 
 - **macOS 14 (Sonoma) or later** — required for ScreenCaptureKit's
   `excludesCurrentProcessAudio`.
-- ~10 GB free disk (large-v3 Whisper model + pyannote).
+- **Apple Silicon (M-series)** for the fast path. mlx-whisper requires
+  arm64; on Intel Macs the pipeline falls back to faster-whisper-CPU and
+  runs roughly 5× slower.
+- ~3 GB free disk: ~1.5 GB for the MLX-converted Whisper model (downloaded
+  on first recording) + ~32 MB for sherpa-onnx diarization models.
 - A Notion integration token + a database to write to.
 - An Anthropic API key.
-- A Hugging Face token (free) — pyannote's diarization models are gated behind
-  a TOS acceptance.
+- **Hugging Face token is no longer required.** sherpa-onnx pulls models
+  from a public GitHub release. `HF_TOKEN` stays optional in the secrets
+  file for users who deliberately opt back into a pyannote workflow.
 
 ---
 
@@ -81,16 +94,12 @@ dialog after the first manual approval.
 
 The installer can't do these for you:
 
-1. **Accept Hugging Face TOS** for the pyannote models:
-   - <https://huggingface.co/pyannote/speaker-diarization-3.1>
-   - <https://huggingface.co/pyannote/segmentation-3.0>
-
-2. **Fill in secrets** at `~/.config/meeting-pipe/secrets.env`:
+1. **Fill in secrets** at `~/.config/meeting-pipe/secrets.env`:
 
    ```env
    ANTHROPIC_API_KEY=sk-ant-...
    NOTION_TOKEN=ntn_...
-   HF_TOKEN=hf_...
+   # HF_TOKEN is optional — only needed if you opt back into pyannote.
    ```
 
    You can rotate these any time — the daemon re-reads `secrets.env` every
@@ -98,13 +107,15 @@ The installer can't do these for you:
    recording. No restart needed.
 
    To verify: `~/.local/share/meeting-pipe/venv/bin/mp doctor` — pings each
-   API and tells you which secret is wrong.
+   API, validates the ML runtimes, and tells you which secret is wrong.
 
-3. **Configure** `~/.config/meeting-pipe/config.toml`:
+2. **Configure** `~/.config/meeting-pipe/config.toml`:
    - Set `notion.database_id` to your Meetings database ID
      (the 32-char string in the database URL).
+   - Optionally tune `transcription.diarize_cluster_threshold` if speaker
+     splitting looks off (higher → fewer speakers, lower → more).
 
-4. **Grant macOS permissions** when prompted on first launch:
+3. **Grant macOS permissions** when prompted on first launch:
    - **Microphone** — `AVAudioEngine` reads from the system default input.
    - **Screen Recording** — gates `SCStream.capturesAudio` in TCC.
    - **Accessibility** — reads browser tab titles to detect Meet/Teams Web.
@@ -199,9 +210,16 @@ See [`config.example.toml`](./config.example.toml). Highlights:
   (e.g. `["us.zoom.xos"]`).
 - `detection.manual_hotkey` — global hotkey for manual record (default
   `ctrl+option+m`).
-- `transcription.disable_diarization` — set to `true` for languages where
-  pyannote struggles (e.g. Ukrainian); transcript will label all turns as
-  "Speaker".
+- `transcription.model` — MLX Whisper repo. Default `mlx-community/whisper-large-v3-turbo`.
+- `transcription.language` — `"auto"` or an ISO 639-1 code (`"en"`, `"uk"`,
+  `"ru"`, `"de"`, ...) to skip detection.
+- `transcription.disable_diarization` — set to `true` to label all turns as
+  "Speaker" and skip the diarization stage entirely.
+- `transcription.diarize_cluster_threshold` — sherpa-onnx FastClustering
+  cosine-distance threshold (default `0.85`). Higher merges more aggressively
+  (fewer speakers); lower keeps more clusters separate.
+- `summarization.summary_language` — `"auto"` (default; matches transcript
+  language) or an ISO 639-1 code to force a specific output language.
 - `summarization.team_context` — domain string injected into the system prompt
   so Claude doesn't extract domain terms ("validation", "QMS") as action items.
 - `summarization.skip_above_chars` — long-meeting guard (default 80 000).
@@ -232,9 +250,13 @@ Screen Recording — MeetingPipe should be enabled.
 ScreenCaptureKit needs Screen Recording permission. After granting, restart
 the daemon: `launchctl kickstart -k gui/$(id -u)/com.meetingpipe.daemon`.
 
-**Diarization fails with HTTP 401.**
-You haven't accepted the pyannote TOS. Visit the URLs in the install section
-above, click "Agree to Terms", then re-run. `mp doctor` flags this.
+**Speaker labels look wrong (one person split across many speakers, or
+multiple people collapsed into one).**
+Tune `transcription.diarize_cluster_threshold` in `config.toml`. Default
+`0.85`. Raise to `0.9` if one person gets split; lower to `0.7-0.75` if
+multiple participants get merged. The change takes effect on the next
+recording (no daemon restart needed — the pipeline re-reads config each
+run).
 
 **The menu bar icon shows "Idle" but I'm in a meeting.**
 Open Console.app, filter on `subsystem:com.meetingpipe.daemon`. The detector

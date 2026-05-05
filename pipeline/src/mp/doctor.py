@@ -56,11 +56,20 @@ def _info(msg: str) -> None:
 
 def check_secrets_file() -> dict[str, bool]:
     """Verify ~/.config/meeting-pipe/secrets.env exists, has 0600 perms, and
-    declares the three keys. Returns {name: present-and-non-empty}."""
+    declares the required keys. Returns {name: present-and-non-empty}.
+
+    HF_TOKEN was required when diarization ran on pyannote (HF-gated TOS).
+    The current pipeline uses sherpa-onnx, whose models live on a public
+    GitHub Release, so HF_TOKEN is now optional. Still surfaced if present
+    so existing setups don't get a confusing missing-secret warning.
+    """
     print(f"\n== secrets file ==  ({SECRETS_PATH})")
+    required = ("ANTHROPIC_API_KEY", "NOTION_TOKEN")
+    optional = ("HF_TOKEN",)
+    all_keys = required + optional
     if not SECRETS_PATH.exists():
         _fail("secrets.env missing — copy from scripts/install.sh prompt or create manually")
-        return {"ANTHROPIC_API_KEY": False, "NOTION_TOKEN": False, "HF_TOKEN": False}
+        return {k: False for k in all_keys}
 
     mode = SECRETS_PATH.stat().st_mode & 0o777
     if mode != 0o600:
@@ -70,16 +79,17 @@ def check_secrets_file() -> dict[str, bool]:
 
     load_secrets()
     presence: dict[str, bool] = {}
-    for key in ("ANTHROPIC_API_KEY", "NOTION_TOKEN", "HF_TOKEN"):
+    for key in all_keys:
         val = os.environ.get(key, "")
         present = bool(val) and not val.startswith(("YOUR_", "PUT_", "REPLACE_", "<"))
         presence[key] = present
         if present:
-            # Show prefix only — never print the secret in full.
             prefix = val[:7] + "…" if len(val) > 8 else "(short)"
             _ok(f"{key} present ({prefix})")
-        else:
+        elif key in required:
             _fail(f"{key} is empty or placeholder")
+        else:
+            _info(f"{key} not set (optional — only used if you opt back into pyannote)")
     return presence
 
 
@@ -188,13 +198,56 @@ def check_notion(present: bool, cfg: Config | None) -> None:
         _fail(f"database fetch failed: HTTP {db.status_code} — {db.text[:200]}")
 
 
-# ---------- HuggingFace ----------------------------------------------------
+# ---------- ML runtimes ----------------------------------------------------
+
+def check_ml_runtimes() -> None:
+    """Verify the ASR + diarization stacks resolve, and report which backend
+    will actually be used. mlx-whisper is Apple-Silicon-only; faster-whisper
+    is the cross-platform fallback. sherpa-onnx must always import cleanly
+    or diarization is dead in the water.
+    """
+    import platform
+    import sys as _sys
+
+    print("\n== ML runtimes ==")
+
+    on_apple_silicon = _sys.platform == "darwin" and platform.machine() == "arm64"
+    if on_apple_silicon:
+        try:
+            import mlx_whisper  # type: ignore  # noqa: F401
+            _ok("mlx-whisper importable (Apple Silicon — Metal/MLX-accelerated ASR)")
+        except ImportError as e:
+            _fail(f"mlx-whisper not importable: {e}")
+            _info("install with: uv pip install mlx-whisper")
+    else:
+        _info(f"non-Apple-Silicon host ({platform.machine()}) — using faster-whisper fallback")
+
+    try:
+        import faster_whisper  # type: ignore  # noqa: F401
+        _ok("faster-whisper importable (CPU fallback)")
+    except ImportError as e:
+        if on_apple_silicon:
+            _info(f"faster-whisper missing (optional on Apple Silicon): {e}")
+        else:
+            _fail(f"faster-whisper not importable: {e}")
+
+    try:
+        import sherpa_onnx  # type: ignore  # noqa: F401
+        _ok("sherpa-onnx importable (offline diarization)")
+    except ImportError as e:
+        _fail(f"sherpa-onnx not importable — diarization will fail: {e}")
+        _info("install with: uv pip install 'sherpa-onnx>=1.10.30,<1.13'")
+
 
 def check_huggingface(present: bool) -> None:
-    print("\n== HuggingFace (pyannote model gate) ==")
+    """Optional HF_TOKEN check. Kept for users who deliberately opt back
+    into a pyannote-based diarization workflow. The default pipeline no
+    longer touches Hugging Face.
+    """
+    print("\n== HuggingFace (optional — only used if you opt back into pyannote) ==")
     if not present:
-        _warn("HF_TOKEN missing — diarization will fail at first model download")
-        _info(f"create a Read token at: {HF_TOKENS_URL}")
+        _info("HF_TOKEN not set — fine for the default sherpa-onnx pipeline")
+        _info(f"create a Read token at {HF_TOKENS_URL} only if you re-enable pyannote")
         return
     token = os.environ["HF_TOKEN"]
     try:
@@ -210,26 +263,6 @@ def check_huggingface(present: bool) -> None:
         _fail(f"token rejected: HTTP {whoami.status_code} — {whoami.text[:200]}")
         return
     _ok(f"token valid — user: {whoami.json().get('name', '(unknown)')}")
-
-    # Probe gated repos. /api/models/{repo} returns 401 if TOS not accepted,
-    # 200 if accepted (or repo public). The diarization pipeline pulls both.
-    for repo in PYANNOTE_GATED_REPOS:
-        try:
-            r = httpx.get(
-                hf_model_api_url(repo),
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10.0,
-            )
-        except httpx.HTTPError as e:
-            _fail(f"{repo}: network error: {e}")
-            continue
-        if r.status_code == 200:
-            _ok(f"{repo}: TOS accepted, downloadable")
-        elif r.status_code in (401, 403):
-            _fail(f"{repo}: TOS NOT accepted (HTTP {r.status_code})")
-            _info(f"open {hf_model_page_url(repo)} in a browser, click Agree")
-        else:
-            _warn(f"{repo}: unexpected status {r.status_code}")
 
 
 # ---------- Screen Recording TCC -------------------------------------------
@@ -310,6 +343,7 @@ def main(argv: list[str]) -> int:
     print("mp doctor — preflight check\n")
     presence = check_secrets_file()
     cfg = check_config()
+    check_ml_runtimes()
     check_anthropic(presence["ANTHROPIC_API_KEY"])
     check_notion(presence["NOTION_TOKEN"], cfg)
     check_huggingface(presence["HF_TOKEN"])
