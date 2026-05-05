@@ -15,7 +15,6 @@ final class StateTests: XCTestCase {
         XCTAssertFalse(AppState.suppressed(source: src).isAcceptingPrompts)
         XCTAssertFalse(AppState.recording(file: url, source: src, summaryMode: .auto).isAcceptingPrompts)
         XCTAssertFalse(AppState.stopping(file: url, source: src, summaryMode: .auto).isAcceptingPrompts)
-        XCTAssertFalse(AppState.handoff(file: url).isAcceptingPrompts)
     }
 
     func testAppSourceEquality() {

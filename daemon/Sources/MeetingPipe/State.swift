@@ -37,15 +37,19 @@ enum SummaryMode: Equatable {
     case byo
 }
 
+/// Recording-side state machine. Pipeline processing used to live as a
+/// `.handoff` case here, which blocked the daemon from recording a new
+/// meeting while the previous one was still being transcribed. Pipeline
+/// jobs now live in a separate queue (see `ProcessingJob`) and run
+/// concurrently with whatever recording state we're in.
 enum AppState: Equatable {
     case idle
     case prompting(source: AppSource)
     /// User picked Skip; suppress prompts until the meeting ends.
     case suppressed(source: AppSource)
     case recording(file: URL, source: AppSource?, summaryMode: SummaryMode)
-    /// ffmpeg is being shut down; no new actions accepted.
+    /// Recorder is being flushed; no new actions accepted briefly.
     case stopping(file: URL, source: AppSource?, summaryMode: SummaryMode)
-    case handoff(file: URL)
 
     var isAcceptingPrompts: Bool {
         switch self {
@@ -53,6 +57,17 @@ enum AppState: Equatable {
         default: return false
         }
     }
+}
+
+/// One unit of background pipeline work. Created when a recording
+/// finishes flushing and queued for sequential processing — running two
+/// whisper.cpp transcriptions in parallel would just thrash the CPU.
+/// The recording side of the daemon is unaffected by the queue depth.
+struct ProcessingJob: Equatable {
+    let id: UUID
+    let file: URL
+    let summaryMode: SummaryMode
+    let startedAt: Date
 }
 
 enum DetectorEvent {

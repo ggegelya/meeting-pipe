@@ -37,6 +37,15 @@ final class Coordinator: NSObject {
     /// Auto-skip timer when the user ignores a prompt. Spec §7 prompt_timeout_sec.
     private var promptTimeoutTimer: Timer?
 
+    /// FIFO queue of pipeline jobs spawned after recordings flush. The
+    /// queue is sequential (one whisper.cpp at a time) but the recording
+    /// side of the state machine runs in parallel, so the user can start
+    /// a new meeting while older recordings are still being transcribed.
+    private var processingJobs: [ProcessingJob] = []
+    /// Job whose subprocess is currently running (head of the queue).
+    /// `nil` between jobs and when the queue is empty.
+    private var activeJob: ProcessingJob?
+
     /// Set when ConfigStore persists while we're mid-recording. We can't
     /// rebuild the Detector live without losing its `hasFiredStart`
     /// bookkeeping (the new instance would never fire `.ended` for the
@@ -189,8 +198,10 @@ final class Coordinator: NSObject {
             beginRecording(source: src, summaryMode: .auto)
         case .recording(let file, let src, let mode):
             stopRecording(file: file, source: src, summaryMode: mode)
-        case .stopping, .handoff:
-            // Already in flight; ignore.
+        case .stopping:
+            // Recorder is mid-flush; a new start would race the await.
+            // Pipeline jobs no longer block this path — they live in
+            // `processingJobs` and run independently.
             break
         }
     }
@@ -221,8 +232,10 @@ final class Coordinator: NSObject {
         statusBar.setStopping()
         recordingHUD.dismiss()
 
-        // Recorder.stop is async — runs on a background task so the UI stays
-        // responsive. Once flushed, we kick off the pipeline handoff.
+        // Recorder.stop is async — runs on a background task so the UI
+        // stays responsive. Once flushed, the audio is enqueued for
+        // pipeline processing and the recording-side state returns to
+        // .idle so the user can record another meeting immediately.
         let recorder = self.recorder
         Task { @MainActor [weak self] in
             await recorder.stop()
@@ -238,16 +251,32 @@ final class Coordinator: NSObject {
                 self.notifier.notifyMicOnlyRecording(file: file)
                 self.statusBar.refreshMenuForPermissionChange()
             }
-            self.handoff(file: file, summaryMode: summaryMode)
+            self.notifier.notifyProcessing(file: file)
+            self.enqueueJob(file: file, summaryMode: summaryMode)
+            self.state = .idle
+            self.statusBar.setIdle()
         }
     }
 
-    private func handoff(file: URL, summaryMode: SummaryMode) {
-        state = .handoff(file: file)
-        statusBar.setHandoff()
-        notifier.notifyProcessing(file: file)
+    /// Append a freshly-flushed recording to the pipeline queue and start
+    /// the runner if nothing is currently being processed.
+    private func enqueueJob(file: URL, summaryMode: SummaryMode) {
+        let job = ProcessingJob(id: UUID(), file: file, summaryMode: summaryMode, startedAt: Date())
+        processingJobs.append(job)
+        statusBar.setProcessingCount(processingJobs.count)
+        Log.writeLine("daemon", "pipeline queued → \(file.lastPathComponent) (queue=\(processingJobs.count))")
+        startNextJobIfNeeded()
+    }
 
-        launcher.runAll(wav: file, summaryMode: summaryMode) { [weak self] result in
+    /// Run the head of the queue. Sequential by design: two whisper.cpp
+    /// processes at once would just thrash the CPU and slow both runs.
+    /// Recording is unaffected — the user can start a new meeting at any
+    /// time even while jobs are queued or running.
+    private func startNextJobIfNeeded() {
+        guard activeJob == nil, let next = processingJobs.first else { return }
+        activeJob = next
+        Log.writeLine("daemon", "pipeline starting → \(next.file.lastPathComponent)")
+        launcher.runAll(wav: next.file, summaryMode: next.summaryMode) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 switch result {
@@ -258,8 +287,12 @@ final class Coordinator: NSObject {
                     self.notifier.notifyError("Pipeline failed: \(err.localizedDescription)")
                     Log.writeLine("daemon", "pipeline FAIL → \(err.localizedDescription)")
                 }
-                self.state = .idle
-                self.statusBar.setIdle()
+                self.activeJob = nil
+                if let head = self.processingJobs.first, head.id == next.id {
+                    self.processingJobs.removeFirst()
+                }
+                self.statusBar.setProcessingCount(self.processingJobs.count)
+                self.startNextJobIfNeeded()
             }
         }
     }

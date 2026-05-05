@@ -15,6 +15,13 @@ final class StatusBarController {
     /// Last state we built a menu for, so `refreshMenuForPermissionChange`
     /// can rebuild without callers having to remember which state we're in.
     private var lastMenuState: AppState = .idle
+    /// Cached recording-side title so the processing badge can be appended
+    /// without callers re-supplying the current state.
+    private var baseTitle: String = "Idle"
+    /// Number of pipeline jobs currently queued or running. Surfaced as a
+    /// badge alongside the recording state title so the user always knows
+    /// how many meetings are still being transcribed in the background.
+    private var processingCount: Int = 0
 
     init(item: NSStatusItem) {
         self.item = item
@@ -26,32 +33,43 @@ final class StatusBarController {
 
     func setIdle() {
         item.button?.image = idleIcon
-        item.button?.title = " Idle"
+        baseTitle = "Idle"
+        applyTitle()
         rebuildMenu(state: .idle)
     }
 
     func setPrompting(_ source: AppSource) {
         item.button?.image = idleIcon
-        item.button?.title = " Detected \(source.displayName)"
+        baseTitle = "Detected \(source.displayName)"
+        applyTitle()
         rebuildMenu(state: .prompting(source: source))
     }
 
     func setRecording(file: URL, source: AppSource?, summaryMode: SummaryMode) {
         item.button?.image = recordingIcon
-        item.button?.title = summaryMode == .byo ? " Recording (BYO)" : " Recording"
+        baseTitle = summaryMode == .byo ? "Recording (BYO)" : "Recording"
+        applyTitle()
         rebuildMenu(state: .recording(file: file, source: source, summaryMode: summaryMode))
     }
 
     func setStopping() {
         item.button?.image = idleIcon
-        item.button?.title = " Stopping…"
+        baseTitle = "Stopping…"
+        applyTitle()
         rebuildMenu(state: .idle)
     }
 
-    func setHandoff() {
-        item.button?.image = idleIcon
-        item.button?.title = " Processing…"
-        rebuildMenu(state: .idle)
+    /// Update the processing-jobs badge. Called from the Coordinator
+    /// whenever the queue grows or shrinks; independent of recording state.
+    func setProcessingCount(_ n: Int) {
+        processingCount = n
+        applyTitle()
+        rebuildMenu(state: lastMenuState)
+    }
+
+    private func applyTitle() {
+        let badge = processingCount > 0 ? " · Processing (\(processingCount))" : ""
+        item.button?.title = " \(baseTitle)\(badge)"
     }
 
     // MARK: Icons
@@ -197,13 +215,13 @@ final class StatusBarController {
     }
 
     private func stateLabel(_ s: AppState) -> String {
+        let suffix = processingCount > 0 ? " · Processing (\(processingCount))" : ""
         switch s {
-        case .idle: return "MeetingPipe: Idle"
-        case .prompting(let src): return "MeetingPipe: Detected \(src.displayName)"
-        case .suppressed(let src): return "MeetingPipe: Suppressed (\(src.displayName))"
-        case .recording: return "MeetingPipe: Recording"
-        case .stopping: return "MeetingPipe: Stopping…"
-        case .handoff: return "MeetingPipe: Processing…"
+        case .idle: return "MeetingPipe: Idle\(suffix)"
+        case .prompting(let src): return "MeetingPipe: Detected \(src.displayName)\(suffix)"
+        case .suppressed(let src): return "MeetingPipe: Suppressed (\(src.displayName))\(suffix)"
+        case .recording: return "MeetingPipe: Recording\(suffix)"
+        case .stopping: return "MeetingPipe: Stopping…\(suffix)"
         }
     }
 }
