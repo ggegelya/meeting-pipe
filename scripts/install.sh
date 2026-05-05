@@ -181,15 +181,21 @@ mkdir -p "$DATA_DIR"
 # k2-fsa's GitHub Releases — no auth, no TOS gate. Pre-fetching them
 # here means the first real recording doesn't pay the download latency.
 
-say "Pre-fetching sherpa-onnx diarization models (~32 MB)"
+say "Pre-fetching sherpa-onnx diarization models (~34 MB total)"
 "$DATA_DIR/venv/bin/python" - <<'PY' || warn "Model pre-fetch failed; will retry at first run"
 import sys
 try:
-    from mp.diarize import _ensure_segmentation_model, _ensure_embedding_model
+    from mp.diarize import (
+        _ensure_segmentation_model,
+        _ensure_embedding_model,
+        _ensure_silero_vad,
+    )
     seg = _ensure_segmentation_model()
     emb = _ensure_embedding_model()
+    vad = _ensure_silero_vad()
     print(f"  ✓ segmentation: {seg.name}")
     print(f"  ✓ embedding:    {emb.name}")
+    print(f"  ✓ vad:          {vad.name}")
 except Exception as e:
     print(f"  ✗ pre-fetch failed: {e}", file=sys.stderr)
     sys.exit(1)

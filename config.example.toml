@@ -42,6 +42,13 @@ disable_diarization = false
 # Diarization safety guard. sherpa-onnx runs at ~0.05-0.3× realtime so
 # the historical 60-min cap is overconservative. 0 disables.
 max_diarization_minutes = 240
+# Offline diarize FastClustering threshold (cosine distance). Raise to
+# merge more aggressively (fewer speakers); lower for more granular.
+diarize_cluster_threshold = 0.85
+# Streaming (online) diarize threshold. Different algorithm than the
+# offline knob, different scale. Used by the `mp transcribe-stream`
+# sidecar that runs during recording.
+stream_diarize_threshold = 0.7
 
 [summarization]
 # Latest Sonnet at time of writing. Bump deliberately.

@@ -69,13 +69,19 @@ and operate the system; this file documents *why* it's shaped the way it is.
             └──────────────────────── $RECORDINGS_DIR/{ts}.wav ───┘
                                                   │
                                                   │ (PipelineLauncher invokes `mp run-all`)
+                                                  │
+                                                  │  In parallel during recording, a SECOND subprocess
+                                                  │  (`mp transcribe-stream`) tails the daemon's growing
+                                                  │  mic.wav / system.wav, runs mlx-whisper on 30 s chunks,
+                                                  │  and runs the StreamDiarizer per chunk.
+                                                  │  By the time the user hits Stop, {ts}.json is ~95 % done.
                                                   ▼
                                         ┌─────────────────────┐
                                         │   pipeline (Py)     │
                                         │  ┌───────────────┐  │
-                                        │  │  transcribe   │  │  mlx-whisper (ASR)
-                                        │  │       +       │  │  + sherpa-onnx (diarize)
-                                        │  └──────┬────────┘  │  → {ts}.json + {ts}.md
+                                        │  │  transcribe   │  │  Skipped if streaming already wrote a
+                                        │  │       +       │  │  usable {ts}.json (mlx + sherpa).
+                                        │  └──────┬────────┘  │  → {ts}.json + {ts}.md (canonical)
                                         │         ▼           │
                                         │  guard: long?       │  → {ts}.READY_FOR_MANUAL.md
                                         │         │           │     (skip API; manual processing)
@@ -180,6 +186,7 @@ meeting-pipe/
 │       ├── MeetingPromptWindow.swift On-screen "Record this meeting?" panel
 │       ├── Notifier.swift           UNUserNotificationCenter + actions
 │       ├── PipelineLauncher.swift   Spawns `mp run-all`
+│       ├── StreamingTranscriber.swift  Spawns/manages `mp transcribe-stream` (Tier 2)
 │       ├── HotkeyManager.swift      Carbon-based global hotkey
 │       ├── Config.swift             Loads ~/.config/meeting-pipe/config.toml
 │       ├── ConsentStore.swift       Persisted "Always for {App}" choices
@@ -195,7 +202,9 @@ meeting-pipe/
 │   │   ├── __main__.py              Subcommand dispatcher
 │   │   ├── doctor.py                `mp doctor` preflight (secrets + ML runtimes + APIs)
 │   │   ├── transcribe.py            mlx-whisper ASR (faster-whisper fallback)
+│   │   ├── transcribe_stream.py     Long-running streaming sidecar (Tier 2)
 │   │   ├── diarize.py               sherpa-onnx offline diarization (CoreML EP)
+│   │   │                            + StreamDiarizer for online clustering (Tier 2.5)
 │   │   ├── summarize.py             Anthropic tool-use, multilang prompt
 │   │   ├── publish_notion.py
 │   │   ├── publish_from_paste.py    BYO summary mode
@@ -252,6 +261,38 @@ Daemon and pipeline both source `secrets.env` on startup.
 | Screen Recording | `SCStream.capturesAudio` — gates system-audio capture in TCC        | System Settings → Privacy & Security |
 | Accessibility    | Reading browser window titles                                       | System Settings → Privacy & Security |
 | Notifications    | Prompts and completion alerts                                       | First launch prompt                  |
+
+---
+
+## 8.4. Performance & streaming pipeline (Tier 1 / 2 / 2.5)
+
+The pipeline used to run end-to-end after the user hit Stop. A 17-min
+recording took ~38 min of post-stop wallclock under whisperx + pyannote
+on CPU. Three tiers brought that to a few seconds:
+
+| Tier | Change | What it gets you | After-stop wait for a 17-min meeting |
+|---|---|---|---|
+| 1 | mlx-whisper (Apple Silicon native) replaces faster-whisper-CPU; sherpa-onnx replaces pyannote. | ~7× faster end-to-end. | ~38 min → **~5 min** |
+| 2 | `mp transcribe-stream` subprocess spawned at recording-start; tails the growing WAVs and transcribes 30-s chunks during the meeting. Orchestrator skips the offline transcribe stage at finalization. | Transcribe wallclock disappears into the meeting. | ~5 min → **~3 min** (just diarize + summarize + publish) |
+| 2.5 | StreamDiarizer (silero-vad + NeMo TitaNet + online incremental clustering) runs per-chunk inside the streaming subprocess. Orchestrator skips offline diarize when ≥50% of segments already have a label. | Diarization wallclock also disappears into the meeting. | ~3 min → **~10-30 s** (just summarize + publish) |
+
+Streaming details:
+
+- **Chunking**: 30 s windows (Whisper's natural context) with 5 s
+  overlap for context continuity at boundaries. Boundary-overlap
+  duplicates get dropped by `_absorb_segments` (≤0.25 s difference).
+- **Audio source**: the streaming sidecar tails the daemon's growing
+  `<stem>.mic.wav` and (when present) `<stem>.system.wav` directly.
+  AVAudioFile flushes PCM bytes to disk per `write(from:)` call; the
+  RIFF header's `data` size is stale until close, which the sidecar
+  ignores in favor of `os.stat()`-based byte tracking.
+- **Termination**: daemon sends SIGTERM at recorder.stop(); 60 s grace
+  to flush the final chunk; SIGKILL escalation. Failures fall through
+  to the offline path so quality never silently degrades.
+- **Fallback chain**: streaming JSON missing/empty → offline transcribe.
+  Streaming JSON present but no speakers → offline diarize over the
+  canonical merged WAV. Streaming JSON with speakers → straight to
+  summarize.
 
 ---
 

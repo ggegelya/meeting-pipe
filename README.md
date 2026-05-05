@@ -29,6 +29,22 @@ A new recording can start while a previous one is still being processed —
 processing runs in the background and you only get notified when each
 meeting's Notion page is ready.
 
+### Performance
+
+Transcription and diarization happen **in parallel with the meeting**, so
+the wait after you click Stop is essentially just summarize + publish.
+Measured on a 17-min recording, M-series Mac:
+
+| When |  | Wallclock after Stop |
+|---|---|---|
+| Original (whisperx + pyannote on CPU) | | ~38 min |
+| Tier 1 (mlx-whisper + sherpa-onnx) | | ~5 min |
+| Tier 2 (streaming transcribe during recording) | | ~3 min |
+| Tier 2.5 (streaming diarize during recording) | | **~10-30 s** |
+
+If streaming fails for any reason, the pipeline falls back to the offline
+path automatically — you never lose a transcript.
+
 A global hotkey (default `⌃⌥M`) toggles recording manually if detection misses a
 meeting or you want a quick voice memo.
 
@@ -217,7 +233,12 @@ See [`config.example.toml`](./config.example.toml). Highlights:
   "Speaker" and skip the diarization stage entirely.
 - `transcription.diarize_cluster_threshold` — sherpa-onnx FastClustering
   cosine-distance threshold (default `0.85`). Higher merges more aggressively
-  (fewer speakers); lower keeps more clusters separate.
+  (fewer speakers); lower keeps more clusters separate. Used by the
+  offline diarize fallback.
+- `transcription.stream_diarize_threshold` — online (streaming)
+  StreamDiarizer threshold (default `0.7`). Different scale than
+  `diarize_cluster_threshold` because the algorithms are different.
+  Used by the streaming sidecar that runs during recording.
 - `summarization.summary_language` — `"auto"` (default; matches transcript
   language) or an ISO 639-1 code to force a specific output language.
 - `summarization.team_context` — domain string injected into the system prompt
@@ -252,11 +273,25 @@ the daemon: `launchctl kickstart -k gui/$(id -u)/com.meetingpipe.daemon`.
 
 **Speaker labels look wrong (one person split across many speakers, or
 multiple people collapsed into one).**
-Tune `transcription.diarize_cluster_threshold` in `config.toml`. Default
-`0.85`. Raise to `0.9` if one person gets split; lower to `0.7-0.75` if
-multiple participants get merged. The change takes effect on the next
-recording (no daemon restart needed — the pipeline re-reads config each
-run).
+Two thresholds depending on which path produced the labels — check
+`pipeline.log` for "streaming" or "offline" diarize lines.
+
+- **Streaming (the common case):** tune `transcription.stream_diarize_threshold`
+  (default `0.7`). Raise toward `0.85` if one person gets split; lower
+  toward `0.55` if multiple participants get merged.
+- **Offline (fallback path, only runs when streaming was unusable):**
+  tune `transcription.diarize_cluster_threshold` (default `0.85`).
+
+Both take effect on the next recording — no daemon restart, the
+pipeline re-reads config each run.
+
+**The transcript I see right after stop has speaker labels but the next
+day they look different.**
+That can't happen — transcript files (`<stem>.json`, `<stem>.md`) are
+written once and not modified. If you see this, you're probably looking
+at two different runs (a re-run via `mp run-all <wav>` overwrote the
+first). Check `pipeline.log` for two "run-all" sections matching the
+file's timestamp.
 
 **The menu bar icon shows "Idle" but I'm in a meeting.**
 Open Console.app, filter on `subsystem:com.meetingpipe.daemon`. The detector
