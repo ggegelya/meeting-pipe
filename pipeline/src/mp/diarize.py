@@ -314,6 +314,98 @@ class StreamDiarizer:
         return len(self._centroids) - 1
 
 
+# --- Channel-aware speaker labelling -----------------------------------------
+#
+# When the daemon writes a stereo WAV with mic on L and system audio on R,
+# speaker labelling becomes a per-segment RMS comparison: whichever channel
+# was loudest during a transcript segment's time window owns the segment.
+# Much simpler and more accurate than embedding clustering for the typical
+# 1:1 call shape, and degrades gracefully into "speaker_0 always" when
+# system audio capture failed (R channel is silent the whole recording).
+
+
+# Speaker labels for the stereo channel-aware path. Stable strings so
+# downstream Markdown renders consistently across recordings.
+USER_SPEAKER = "speaker_user"
+OTHER_SPEAKER = "speaker_other"
+
+
+def is_stereo_recording(wav: Path) -> bool:
+    """Cheap channel-count probe (reads only the WAV header)."""
+    import soundfile as sf  # type: ignore
+    try:
+        return sf.info(str(wav)).channels == 2
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def assign_speakers_by_channel(
+    transcript_segments: list[dict],
+    wav: Path,
+    *,
+    dominance_ratio: float = 1.5,
+    min_other_rms: float = 50.0,
+) -> list[dict]:
+    """Stamp speaker labels onto each transcript segment by comparing
+    per-channel RMS over the segment's time window.
+
+    Heuristic per segment:
+      - L_rms > dominance_ratio * R_rms  → USER_SPEAKER
+      - R_rms > dominance_ratio * L_rms  → OTHER_SPEAKER
+      - both close                        → whichever is louder (overlap)
+
+    `min_other_rms` guards the degenerate "system audio is silent the
+    whole recording" case: when the right channel is below this floor,
+    we collapse all segments to USER_SPEAKER rather than producing a
+    silly "OTHER said one quiet word" attribution from background noise.
+    PCM s16 RMS of pure silence is ~0; threshold 50 is well above noise
+    floor and well below normal speech.
+    """
+    import numpy as np
+    import soundfile as sf  # type: ignore
+
+    audio, sr = sf.read(str(wav), dtype="int16", always_2d=True)
+    if audio.shape[1] != 2:
+        # Caller should have checked is_stereo_recording first; defend
+        # against future config drift by collapsing to a single label.
+        return [{**s, "speaker": USER_SPEAKER} for s in transcript_segments]
+
+    L = audio[:, 0].astype(np.float32)
+    R = audio[:, 1].astype(np.float32)
+
+    # Decide once whether the right channel ever had real audio. If
+    # not, all segments go to USER_SPEAKER — much more useful than
+    # spurious OTHER attributions on silence/noise.
+    overall_r_rms = float(np.sqrt(np.mean(R * R))) if R.size > 0 else 0.0
+    other_channel_present = overall_r_rms >= min_other_rms
+
+    out: list[dict] = []
+    for seg in transcript_segments:
+        seg = dict(seg)
+        if not other_channel_present:
+            seg["speaker"] = USER_SPEAKER
+            out.append(seg)
+            continue
+        start_i = max(0, int(float(seg.get("start", 0)) * sr))
+        end_i = min(audio.shape[0], int(float(seg.get("end", 0)) * sr))
+        if end_i <= start_i:
+            seg["speaker"] = USER_SPEAKER
+            out.append(seg)
+            continue
+        l_chunk = L[start_i:end_i]
+        r_chunk = R[start_i:end_i]
+        l_rms = float(np.sqrt(np.mean(l_chunk * l_chunk)))
+        r_rms = float(np.sqrt(np.mean(r_chunk * r_chunk)))
+        if l_rms > dominance_ratio * r_rms:
+            seg["speaker"] = USER_SPEAKER
+        elif r_rms > dominance_ratio * l_rms:
+            seg["speaker"] = OTHER_SPEAKER
+        else:
+            seg["speaker"] = USER_SPEAKER if l_rms >= r_rms else OTHER_SPEAKER
+        out.append(seg)
+    return out
+
+
 # --- Speaker assignment -------------------------------------------------------
 
 

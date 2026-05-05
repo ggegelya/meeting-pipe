@@ -24,7 +24,12 @@ from importlib import resources
 from pathlib import Path
 
 from .config import Config, load_secrets
-from .diarize import assign_speakers, diarize as run_diarize
+from .diarize import (
+    assign_speakers,
+    assign_speakers_by_channel,
+    diarize as run_diarize,
+    is_stereo_recording,
+)
 from .publish_notion import publish
 from .summarize import summarize
 from .transcribe import render_markdown, transcribe
@@ -300,6 +305,7 @@ def _finalize_streamed_transcript(wav: Path, streamed: dict, cfg: Config) -> dic
         and audio_minutes > tcfg.max_diarization_minutes
     )
 
+    used_channel_aware = False
     if tcfg.disable_diarization:
         log.info("Diarization disabled by config")
     elif skip_for_length:
@@ -311,6 +317,9 @@ def _finalize_streamed_transcript(wav: Path, streamed: dict, cfg: Config) -> dic
         diarization_failure_reason = (
             f"audio length {audio_minutes:.0f} min > max={tcfg.max_diarization_minutes}"
         )
+    elif is_stereo_recording(wav):
+        log.info("Stereo recording — channel-aware speaker labelling at finalization")
+        used_channel_aware = True
     else:
         try:
             diar_segments = run_diarize(
@@ -324,7 +333,9 @@ def _finalize_streamed_transcript(wav: Path, streamed: dict, cfg: Config) -> dic
             diarization_failure_reason = f"{type(e).__name__}: {e}"
             log.error("Diarization failed: %s", e)
 
-    if diar_segments:
+    if used_channel_aware:
+        labelled = assign_speakers_by_channel(streamed["segments"], wav)
+    elif diar_segments:
         labelled = assign_speakers(streamed["segments"], diar_segments)
     elif diarization_failed:
         labelled = [{**s, "speaker": "Speaker?"} for s in streamed["segments"]]

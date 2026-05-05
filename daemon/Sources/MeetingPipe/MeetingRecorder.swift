@@ -253,21 +253,48 @@ final class MeetingRecorder {
 
     // MARK: - ffmpeg post-process
 
-    /// Mix mic + system into a single 16 kHz mono WAV. We control gain
-    /// via `normalize=1` (each input scaled by 1/N=0.5 → no clipping).
+    /// Merge mic + system into a 16 kHz **stereo** WAV with the user's
+    /// mic on the left channel and the system audio mix on the right.
+    ///
+    /// The previous behavior was a 50/50 amix into mono. That made
+    /// diarization much harder than necessary on a 1:1 call: the
+    /// mic and system voices share the same channel and the diarizer
+    /// has to lean on embedding clustering to separate them. Worse,
+    /// when system audio capture silently fails, the mono file is
+    /// indistinguishable from "user was the only one talking" — which
+    /// is exactly the May 5 18:30 recording's failure mode.
+    ///
+    /// Keeping channel separation:
+    ///   - Trivial channel-aware speaker labelling at the diarize stage
+    ///     (per-segment RMS comparison; see `mp.diarize.assign_
+    ///     speakers_by_channel`).
+    ///   - Visible at a glance that system audio is missing — the right
+    ///     channel is silent.
+    ///   - File size grows ~2× vs mono. Negligible at 16 kHz s16le
+    ///     (~30 KB/s for stereo vs 15 KB/s mono).
     private func mergeViaFFmpeg(mic: URL, system: URL, final: URL) async {
         guard let ffmpeg = Self.findFFmpeg() else {
             Log.writeLine("recorder", "ERROR: ffmpeg not found — leaving mic.wav as final")
             try? FileManager.default.moveItem(at: mic, to: final)
             return
         }
+        // Filter graph:
+        //   [0:a] mic, mono Float32 48 kHz → resample to 16 kHz mono.
+        //   [1:a] system, stereo Float32 48 kHz → resample, mix to mono.
+        //   amerge stitches the two mono inputs into a stereo stream
+        //     (first input → L, second input → R).
+        let filter = """
+        [0:a]aresample=16000,aformat=channel_layouts=mono[micL];\
+        [1:a]aresample=16000,pan=mono|c0=0.5*c0+0.5*c1[sysR];\
+        [micL][sysR]amerge=inputs=2[stereo]
+        """
         let args = [
             "-y", "-hide_banner", "-loglevel", "warning",
             "-i", mic.path,
             "-i", system.path,
-            "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=longest:normalize=1[a]",
-            "-map", "[a]",
-            "-ac", "1", "-ar", "16000",
+            "-filter_complex", filter,
+            "-map", "[stereo]",
+            "-ar", "16000",
             "-c:a", "pcm_s16le",
             final.path,
         ]

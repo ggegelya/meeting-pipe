@@ -31,7 +31,14 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config, load_secrets
-from .diarize import DiarizationSegment, assign_speakers, diarize
+from .diarize import (
+    DiarizationSegment,
+    USER_SPEAKER,
+    assign_speakers,
+    assign_speakers_by_channel,
+    diarize,
+    is_stereo_recording,
+)
 
 log = logging.getLogger("mp.transcribe")
 
@@ -73,6 +80,7 @@ def transcribe(
     diarization_failed = False
     diarization_failure_reason: str | None = None
     diarization_segments: list[DiarizationSegment] = []
+    used_channel_aware = False
 
     audio_minutes = audio_seconds / 60.0
     skip_for_length = (
@@ -94,6 +102,14 @@ def transcribe(
             f"audio length {audio_minutes:.0f} min "
             f"> max_diarization_minutes={tcfg.max_diarization_minutes}"
         )
+    elif is_stereo_recording(wav):
+        # Daemon now writes stereo (mic-L, system-R) on a successful
+        # mic+system recording. Channel-aware labelling is much more
+        # accurate than embedding clustering for the 1:1 call case
+        # (and ~free CPU-wise — just per-segment RMS comparisons).
+        log.info("Stereo recording detected — using channel-aware speaker labelling")
+        segments = assign_speakers_by_channel(segments, wav)
+        used_channel_aware = True
     else:
         try:
             diarization_segments = diarize(
@@ -107,8 +123,11 @@ def transcribe(
             diarization_failure_reason = f"{type(e).__name__}: {e}"
             log.error("Diarization failed: %s", e)
 
-    # 3. Assign speakers to each transcript segment.
-    if diarization_segments:
+    # 3. Assign speakers to each transcript segment (skip when
+    # channel-aware already labelled them above).
+    if used_channel_aware:
+        pass
+    elif diarization_segments:
         segments = assign_speakers(segments, diarization_segments)
     elif diarization_failed:
         # Mark everything as unknown so the failure surfaces in the MD banner.
@@ -124,6 +143,7 @@ def transcribe(
         "diarization": not tcfg.disable_diarization and not skip_for_length,
         "diarization_failed": diarization_failed,
         "diarization_failure_reason": diarization_failure_reason,
+        "diarization_method": "channel-aware" if used_channel_aware else "embedding",
     }
     json_path.write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
 
