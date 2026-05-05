@@ -56,6 +56,13 @@ EMBEDDING_URL = (
 )
 EMBEDDING_FILENAME = "nemo_en_titanet_small.onnx"
 
+# silero-vad for streaming speech-activity detection. Tiny (~2 MB),
+# real-time on a single CPU thread, and language-agnostic.
+SILERO_VAD_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+)
+SILERO_VAD_FILENAME = "silero_vad.onnx"
+
 
 def models_dir() -> Path:
     """Where downloaded sherpa-onnx models live."""
@@ -162,6 +169,151 @@ def _renumber_speakers(segments: list[DiarizationSegment]) -> list[DiarizationSe
     return out
 
 
+# --- Streaming (online) diarization ------------------------------------------
+#
+# Pairs with `mp.transcribe_stream`. Each 30 s chunk goes through:
+#   1. silero-vad → speech intervals
+#   2. SpeakerEmbeddingExtractor on each interval → 192/256-dim embedding
+#   3. Online clustering: nearest-centroid match within `threshold`
+#      (cosine distance). New cluster created when no match.
+#
+# Cross-chunk continuity is preserved by keeping the centroid table
+# across calls — the same speaker keeps the same ID throughout the
+# meeting. Quality is competitive with offline diarization for typical
+# meeting audio; it can drift on long calls where one speaker's voice
+# changes pitch significantly. Offline finalization at stop is still an
+# option (orchestrator falls back if the streamed output is unusable).
+
+
+class StreamDiarizer:
+    """Online diarizer fed one audio chunk at a time. Maintains a small
+    table of speaker centroids and assigns each new speech segment to
+    the nearest centroid (or starts a new one)."""
+
+    SAMPLE_RATE = 16_000
+    DEFAULT_MIN_SEGMENT_SEC = 0.6
+    DEFAULT_MAX_SPEAKERS = 12
+
+    def __init__(
+        self,
+        *,
+        cluster_threshold: float = 0.5,
+        max_speakers: int = DEFAULT_MAX_SPEAKERS,
+        min_segment_sec: float = DEFAULT_MIN_SEGMENT_SEC,
+    ) -> None:
+        self._cluster_threshold = cluster_threshold
+        self._max_speakers = max_speakers
+        self._min_segment_sec = min_segment_sec
+        self._vad = None  # type: ignore[assignment]
+        self._extractor = None  # type: ignore[assignment]
+        # Each centroid is a unit-norm np.ndarray (float32). Index = speaker id.
+        self._centroids: list[np.ndarray] = []
+
+    def _ensure_models(self) -> None:
+        if self._vad is not None and self._extractor is not None:
+            return
+        import sherpa_onnx  # type: ignore
+
+        vad_path = _ensure_silero_vad()
+        emb_path = _ensure_embedding_model()
+
+        vad_config = sherpa_onnx.VadModelConfig(
+            silero_vad=sherpa_onnx.SileroVadModelConfig(
+                model=str(vad_path),
+                threshold=0.5,
+                min_silence_duration=0.5,
+                min_speech_duration=self._min_segment_sec,
+                window_size=512,
+            ),
+            sample_rate=self.SAMPLE_RATE,
+            num_threads=1,
+        )
+        # buffer_size_in_seconds defaults to 60 s — enough headroom for
+        # our 30 s chunks plus the 5 s overlap.
+        self._vad = sherpa_onnx.VoiceActivityDetector(vad_config, buffer_size_in_seconds=60)
+
+        ext_config = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+            model=str(emb_path),
+            num_threads=2,
+            provider="coreml",
+        )
+        self._extractor = sherpa_onnx.SpeakerEmbeddingExtractor(ext_config)
+
+    def process_chunk(
+        self, audio: np.ndarray, time_offset: float
+    ) -> list[DiarizationSegment]:
+        """Diarize one chunk of 16 kHz mono float32 audio. `time_offset`
+        is added to all returned segment timestamps so they line up with
+        the global recording timeline."""
+        if audio.size == 0:
+            return []
+        self._ensure_models()
+        assert self._vad is not None and self._extractor is not None
+
+        # Feed the VAD; collect speech intervals as raw samples.
+        self._vad.reset()
+        self._vad.accept_waveform(audio)
+        self._vad.flush()
+
+        speech_segments: list[tuple[int, int]] = []  # (start_sample, end_sample)
+        while not self._vad.empty():
+            seg = self._vad.front
+            speech_segments.append((seg.start, seg.start + len(seg.samples)))
+            self._vad.pop()
+
+        out: list[DiarizationSegment] = []
+        for start_sample, end_sample in speech_segments:
+            length = end_sample - start_sample
+            if length < int(self._min_segment_sec * self.SAMPLE_RATE):
+                continue
+            window = audio[start_sample:end_sample]
+            embedding = self._embed(window)
+            if embedding is None:
+                continue
+            speaker_id = self._assign_or_create(embedding)
+            out.append(
+                DiarizationSegment(
+                    start=start_sample / self.SAMPLE_RATE + time_offset,
+                    end=end_sample / self.SAMPLE_RATE + time_offset,
+                    speaker=f"speaker_{speaker_id}",
+                )
+            )
+        return out
+
+    def _embed(self, window: np.ndarray) -> np.ndarray | None:
+        assert self._extractor is not None
+        stream = self._extractor.create_stream()
+        stream.accept_waveform(self.SAMPLE_RATE, window)
+        stream.input_finished()
+        if not self._extractor.is_ready(stream):
+            return None
+        emb = np.asarray(self._extractor.compute(stream), dtype=np.float32)
+        norm = float(np.linalg.norm(emb))
+        if norm == 0:
+            return None
+        return emb / norm
+
+    def _assign_or_create(self, embedding: np.ndarray) -> int:
+        if not self._centroids:
+            self._centroids.append(embedding)
+            return 0
+        # Cosine distance against unit-norm centroids = 1 - dot product.
+        sims = np.array([float(np.dot(c, embedding)) for c in self._centroids])
+        nearest = int(np.argmax(sims))
+        if 1.0 - sims[nearest] <= self._cluster_threshold:
+            # Update centroid via running average; renormalize.
+            updated = self._centroids[nearest] + embedding
+            updated /= max(np.linalg.norm(updated), 1e-9)
+            self._centroids[nearest] = updated
+            return nearest
+        if len(self._centroids) >= self._max_speakers:
+            # Cap reached — assign to the nearest cluster anyway. Better
+            # to slightly mis-attribute than to keep growing forever.
+            return nearest
+        self._centroids.append(embedding)
+        return len(self._centroids) - 1
+
+
 # --- Speaker assignment -------------------------------------------------------
 
 
@@ -236,6 +388,14 @@ def _ensure_embedding_model() -> Path:
     if target.exists():
         return target
     _download(EMBEDDING_URL, target)
+    return target
+
+
+def _ensure_silero_vad() -> Path:
+    target = models_dir() / SILERO_VAD_FILENAME
+    if target.exists():
+        return target
+    _download(SILERO_VAD_URL, target)
     return target
 
 

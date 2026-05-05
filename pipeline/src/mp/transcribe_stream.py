@@ -31,6 +31,7 @@ from typing import Any
 import numpy as np
 
 from .config import Config, load_secrets
+from .diarize import StreamDiarizer, assign_speakers
 from .transcribe import _is_apple_silicon, render_markdown
 
 log = logging.getLogger("mp.transcribe_stream")
@@ -53,6 +54,8 @@ class StreamState:
     language: str | None
     model: str
     fallback_model: str
+    diarize: bool = True
+    diarize_threshold: float = 0.5
     # PCM samples accumulated and not yet transcribed (16 kHz mono float32).
     buffer: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
     # Time at the START of the buffer, in seconds since recording-start.
@@ -60,6 +63,8 @@ class StreamState:
     # at-stop diarization timeline.
     buffer_start: float = 0.0
     segments: list[dict] = field(default_factory=list)
+    diarization_segments: list = field(default_factory=list)  # list[DiarizationSegment]
+    diarizer: StreamDiarizer | None = None
     detected_language: str | None = None
     # Set when SIGTERM arrives — the main loop notices and flushes.
     stopping: bool = False
@@ -91,8 +96,13 @@ def main(argv: list[str]) -> int:
         language=args.language if args.language and args.language.lower() != "auto" else None,
         model=args.model or cfg.transcription.model,
         fallback_model=cfg.transcription.fallback_model,
+        diarize=not cfg.transcription.disable_diarization,
+        diarize_threshold=cfg.transcription.stream_diarize_threshold,
     )
     state.out_dir.mkdir(parents=True, exist_ok=True)
+    if state.diarize:
+        # Lazy: the actual model load happens on first chunk.
+        state.diarizer = StreamDiarizer(cluster_threshold=state.diarize_threshold)
 
     # SIGTERM (graceful) and SIGINT (Ctrl-C while debugging) both ask the
     # main loop to flush + exit. We don't trap SIGKILL — that's terminal
@@ -167,16 +177,39 @@ def _maybe_flush_chunks(state: StreamState, *, force: bool) -> None:
 
 
 def _transcribe_chunk(state: StreamState, chunk: np.ndarray, offset: float) -> None:
-    """Run a single chunk through mlx-whisper (or faster-whisper fallback)."""
+    """Run a single chunk through mlx-whisper (or faster-whisper fallback)
+    AND through the streaming diarizer (if enabled). Speaker labels get
+    stamped onto the ASR segments inside _absorb_segments — see how
+    `state.diarization_segments` accumulates and is consulted there."""
     if chunk.size == 0:
         return
     if _is_apple_silicon():
         try:
             _transcribe_chunk_mlx(state, chunk, offset)
-            return
         except Exception as e:  # noqa: BLE001
             log.warning("mlx chunk failed (%s) — falling back to faster-whisper", e)
-    _transcribe_chunk_faster_whisper(state, chunk, offset)
+            _transcribe_chunk_faster_whisper(state, chunk, offset)
+    else:
+        _transcribe_chunk_faster_whisper(state, chunk, offset)
+    _diarize_chunk(state, chunk, offset)
+
+
+def _diarize_chunk(state: StreamState, chunk: np.ndarray, offset: float) -> None:
+    """Run the streaming diarizer on the same chunk and append its
+    DiarizationSegments to `state.diarization_segments`. Best-effort:
+    a failure here doesn't crash transcription — the orchestrator's
+    offline diarize is the safety net at finalization."""
+    if state.diarizer is None:
+        return
+    try:
+        new = state.diarizer.process_chunk(chunk, time_offset=offset)
+        state.diarization_segments.extend(new)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Streaming diarize chunk failed (%s) — at-stop offline diarize will catch up", e)
+        # Don't try again on subsequent chunks — most likely a model load
+        # issue that won't resolve. Drop the diarizer; orchestrator will
+        # see segments without speaker labels and re-run offline.
+        state.diarizer = None
 
 
 def _transcribe_chunk_mlx(state: StreamState, chunk: np.ndarray, offset: float) -> None:
@@ -250,14 +283,24 @@ def _write_outputs(state: StreamState) -> None:
     json_path = state.out_dir / f"{state.stem}.json"
     md_path = state.out_dir / f"{state.stem}.md"
 
+    # Stamp streaming-diarizer speaker labels onto each transcript segment
+    # before persisting. When the diarizer is disabled or produced no
+    # segments, leave the segments label-less; the orchestrator then
+    # decides whether to run offline diarize at finalization.
+    diarized = bool(state.diarization_segments)
+    if diarized:
+        labelled = assign_speakers(state.segments, state.diarization_segments)
+    else:
+        labelled = list(state.segments)
+
     structured = {
         "language": state.detected_language or state.language or "en",
-        "segments": state.segments,
+        "segments": labelled,
         "audio_path": str(state.out_dir / f"{state.stem}.wav"),
-        "audio_seconds": state.segments[-1]["end"] if state.segments else 0.0,
+        "audio_seconds": labelled[-1]["end"] if labelled else 0.0,
         "model": state.model,
         "backend": "mlx-stream" if _is_apple_silicon() else "faster-whisper-stream",
-        "diarization": False,
+        "diarization": diarized,
         "diarization_failed": False,
         "diarization_failure_reason": None,
         "streaming": True,
@@ -266,7 +309,8 @@ def _write_outputs(state: StreamState) -> None:
 
     md = render_markdown(structured)
     md_path.write_text(md, encoding="utf-8")
-    log.info("Wrote %s and %s", json_path, md_path)
+    log.info("Wrote %s and %s (diarized=%s, speakers=%d)", json_path, md_path, diarized,
+             len({s.speaker for s in state.diarization_segments}))
 
 
 # --- WAV file tailing --------------------------------------------------------

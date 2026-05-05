@@ -66,6 +66,11 @@ class Transcription(BaseModel):
     # Tune up if you see one person split across N speaker labels;
     # tune down if multiple participants get collapsed into one.
     diarize_cluster_threshold: float = 0.85
+    # StreamDiarizer (online clustering) threshold. Different scale than
+    # the offline FastClustering threshold — this one is direct cosine
+    # distance against a running centroid table, evaluated per chunk
+    # boundary. 0.6-0.75 produces speaker counts comparable to offline.
+    stream_diarize_threshold: float = 0.7
 
 
 class Summarization(BaseModel):

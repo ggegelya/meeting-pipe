@@ -133,6 +133,94 @@ def test_streamed_transcript_skips_offline_transcribe(tmp_path: Path, monkeypatc
     assert result["page_id"] == "p"
 
 
+def test_streamed_transcript_with_speakers_skips_offline_diarize(tmp_path: Path, monkeypatch):
+    """When the StreamDiarizer ran during recording and most segments
+    already have a speaker label, the orchestrator must skip the offline
+    diarize stage entirely (Tier 2.5 — the whole point is to avoid the
+    re-run at finalization)."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    wav = tmp_path / "20260430-1500.wav"
+    wav.write_bytes(b"")
+    json_path = tmp_path / "20260430-1500.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "language": "en",
+                "segments": [
+                    {"start": 0.0, "end": 1.0, "text": "Hi.", "speaker": "speaker_0"},
+                    {"start": 1.0, "end": 2.0, "text": "Hello.", "speaker": "speaker_1"},
+                ],
+                "audio_path": str(wav),
+                "audio_seconds": 2.0,
+                "model": "mlx-community/whisper-large-v3-turbo",
+                "backend": "mlx-stream",
+                "diarization": True,
+                "streaming": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = Config()
+    summary_json = tmp_path / "20260430-1500.summary.json"
+    summary_json.write_text("{}", encoding="utf-8")
+
+    with patch("mp.orchestrate.transcribe") as t, \
+         patch("mp.orchestrate.run_diarize") as d, \
+         patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
+         patch("mp.orchestrate.publish", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+        result = run_all(wav, cfg=cfg)
+
+    t.assert_not_called()
+    d.assert_not_called()
+    assert result["page_id"] == "p"
+
+    # The finalized JSON should retain the streaming-diarizer labels.
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data.get("finalized") is True
+    assert data["segments"][0]["speaker"] == "speaker_0"
+
+
+def test_streamed_transcript_without_speakers_runs_offline_diarize(tmp_path: Path, monkeypatch):
+    """When streaming was on but the diarizer was disabled (or
+    erroreda), the streamed JSON has no speaker labels. The orchestrator
+    must fall back to offline diarize at finalization."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    wav = tmp_path / "20260430-1500.wav"
+    wav.write_bytes(b"")
+    (tmp_path / "20260430-1500.json").write_text(
+        json.dumps(
+            {
+                "language": "en",
+                "segments": [
+                    {"start": 0.0, "end": 1.0, "text": "Hi."},  # no speaker
+                    {"start": 1.0, "end": 2.0, "text": "Hello."},
+                ],
+                "audio_path": str(wav),
+                "audio_seconds": 2.0,
+                "model": "mlx-community/whisper-large-v3-turbo",
+                "backend": "mlx-stream",
+                "diarization": False,
+                "streaming": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = Config()
+    summary_json = tmp_path / "20260430-1500.summary.json"
+    summary_json.write_text("{}", encoding="utf-8")
+
+    with patch("mp.orchestrate.transcribe") as t, \
+         patch("mp.orchestrate.run_diarize", return_value=[]) as d, \
+         patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
+         patch("mp.orchestrate.publish", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+        run_all(wav, cfg=cfg)
+
+    t.assert_not_called()  # transcribe still skipped (we have segments)
+    d.assert_called_once()  # but diarize now runs
+
+
 def test_streamed_transcript_falls_back_when_unusable(tmp_path: Path, monkeypatch):
     """A streamed JSON with zero segments (e.g. SIGKILL mid-recording)
     must fall back to the offline transcribe path so the user still

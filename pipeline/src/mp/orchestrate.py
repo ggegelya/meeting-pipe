@@ -255,14 +255,39 @@ def _existing_streamed_transcript(wav: Path) -> dict | None:
     return data
 
 
+def _streamed_segments_have_speakers(streamed: dict) -> bool:
+    """The streaming sidecar may have already attached speaker labels via
+    the online diarizer (Tier 2.5). When at least half the segments have
+    a real speaker label (not None / not the `Speaker?` fallback), trust
+    the streamed diarization and skip the offline at-stop step entirely."""
+    segs = streamed.get("segments") or []
+    if not segs:
+        return False
+    labelled = sum(1 for s in segs if s.get("speaker") and s.get("speaker") != "Speaker?")
+    return labelled >= max(1, len(segs) // 2)
+
+
 def _finalize_streamed_transcript(wav: Path, streamed: dict, cfg: Config) -> dict[str, Path]:
-    """Run diarization on the canonical merged WAV and stamp speaker
-    labels onto the streamed segments. Rewrites <stem>.json + <stem>.md
-    in place so downstream stages see a single, consistent transcript.
+    """Finish the streamed transcript so downstream stages see a clean
+    `<stem>.json` + `<stem>.md`.
+
+    Two paths:
+      - Streaming diarizer already labelled most segments → trust it,
+        rewrite only the `finalized: true` marker. No offline diarize run.
+      - Speaker labels are missing or sparse → run offline diarize on
+        the canonical merged WAV (slower, but produces a correct
+        labelling that the streaming pass missed).
     """
     json_path = wav.parent / f"{wav.stem}.json"
     md_path = wav.parent / f"{wav.stem}.md"
     tcfg = cfg.transcription
+
+    if _streamed_segments_have_speakers(streamed):
+        log.info("Streaming diarizer already labelled segments — skipping offline diarize")
+        structured = {**streamed, "streaming": True, "finalized": True}
+        json_path.write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
+        md_path.write_text(render_markdown(structured), encoding="utf-8")
+        return {"json": json_path, "md": md_path}
 
     diarization_failed = False
     diarization_failure_reason: str | None = None
