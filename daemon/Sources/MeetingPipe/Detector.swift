@@ -105,7 +105,12 @@ final class Detector {
         self.nativeBundles = apps.native
         self.browserBundles = apps.browsers
         self.browserURLFragments = apps.urlFragments
-        self.windowProbe = windowProbe ?? Detector.defaultWindowProbe
+        // The default probe needs the URL fragments for the browser branch,
+        // so we bake them into a closure rather than reloading the TOML
+        // resource on every probe call. Tests still inject a fake.
+        self.windowProbe = windowProbe ?? Detector.makeDefaultWindowProbe(
+            browserURLFragments: apps.urlFragments
+        )
     }
 
     func start() {
@@ -272,7 +277,7 @@ final class Detector {
         for app in NSWorkspace.shared.runningApplications {
             guard let bid = app.bundleIdentifier else { continue }
             if nativeBundles.contains(bid) {
-                return AppSource(bundleID: bid, displayName: app.localizedName ?? bid)
+                return AppSource(bundleID: bid, displayName: app.localizedName ?? bid, kind: .native)
             }
         }
         return nil
@@ -292,7 +297,7 @@ final class Detector {
            browserBundles.contains(bid),
            let title = focusedWindowTitle(forPID: front.processIdentifier),
            titleMatchesMeetingFragment(title) {
-            return AppSource(bundleID: bid, displayName: front.localizedName ?? "Browser")
+            return AppSource(bundleID: bid, displayName: front.localizedName ?? "Browser", kind: .browser)
         }
 
         // Background-window slow path: any running browser may host the
@@ -302,7 +307,7 @@ final class Detector {
             guard let bid = app.bundleIdentifier,
                   browserBundles.contains(bid) else { continue }
             if anyWindowMatchesMeetingFragment(pid: app.processIdentifier) {
-                return AppSource(bundleID: bid, displayName: app.localizedName ?? "Browser")
+                return AppSource(bundleID: bid, displayName: app.localizedName ?? "Browser", kind: .browser)
             }
         }
         return nil
@@ -393,73 +398,113 @@ final class Detector {
 
     // MARK: Window probe (Signal C)
 
-    /// Default probe: walks the target app's AX window list looking for a
-    /// "meeting word" in any window's title. When it sees one, the call
-    /// is still active. When it doesn't, the call has ended (the launcher
-    /// / chat / settings windows survive but lose the meeting language).
-    /// When the probe genuinely can't tell — AX permission missing, AX read
-    /// failed — it returns nil so the composer treats the meeting as still
-    /// in progress (better to over-record than to false-stop on a missing
-    /// permission).
+    /// Build the default end-detection probe. Branches by `source.kind`:
+    ///   - `.native` apps (Zoom, Teams desktop, Webex desktop) match an
+    ///     English meeting-word in the title (calls show "Meeting", "Zoom
+    ///     Meeting", "Huddle", etc.; chat / launcher windows don't).
+    ///   - `.browser` sources match the meeting URL fragments loaded from
+    ///     `meeting_apps.toml` — the same signal that started detection.
+    ///     The English-word heuristic doesn't fit browsers ("Meet — abc-
+    ///     defg-hij" has no "meeting"; "Sprint planning meeting" in a
+    ///     stray Calendar tab would falsely keep the call alive).
     ///
-    /// Why "no meeting word ⇒ ended" works: while the daemon is recording,
-    /// our own AVAudioEngine mic capture keeps `micInUse()` returning true,
-    /// so the mic signal can NEVER drop and the window probe is the only
-    /// signal that can fire `.ended`. Returning nil for "windows exist but
-    /// none has a meeting word" was the bug — it left recordings running
-    /// for hours after the user hung up. The end-debounce (default 2-5s)
-    /// absorbs transient title flips while screen-sharing or switching
-    /// windows mid-call.
-    private static func defaultWindowProbe(_ source: AppSource) -> Bool? {
-        guard AXIsProcessTrusted() else { return nil }
+    /// Returns nil when the probe can't tell (AX denied / AX read failed)
+    /// so the composer treats the call as still in progress — better to
+    /// over-record than to false-stop on a transient probe failure.
+    ///
+    /// Why this is the only end signal: while the daemon is recording,
+    /// our own AVAudioEngine mic capture keeps `micInUse()` returning
+    /// true, so the mic signal cannot fire `.ended`. The window probe is
+    /// solely responsible for ending the recording when the call hangs up.
+    private static func makeDefaultWindowProbe(
+        browserURLFragments: [String]
+    ) -> WindowProbe {
+        return { source in
+            switch source.kind {
+            case .native:
+                return Detector.nativeWindowProbe(source)
+            case .browser:
+                return Detector.browserWindowProbe(source, fragments: browserURLFragments)
+            }
+        }
+    }
 
-        guard let pid = NSWorkspace.shared.runningApplications.first(where: {
-            $0.bundleIdentifier == source.bundleID
-        })?.processIdentifier else {
-            // App not running anymore. The meeting is definitively over.
-            Log.writeLine("detector", "windowprobe app=\(source.bundleID) NOT_RUNNING → ended")
+    private static func nativeWindowProbe(_ source: AppSource) -> Bool? {
+        guard AXIsProcessTrusted() else { return nil }
+        guard let pid = pidFor(bundleID: source.bundleID) else {
+            Log.writeLine("detector", "windowprobe(native) app=\(source.bundleID) NOT_RUNNING → ended")
             return false
         }
+        let titles = collectAXWindowTitles(pid: pid)
+        // AX read failed (transient). Keep it inconclusive so we don't
+        // false-stop on a one-off failure.
+        guard let titles = titles else { return nil }
 
+        let meetingWords = ["meeting", "zoom meeting", "call", "huddle", "webex meeting"]
+        var sawMeetingWord = false
+        for title in titles {
+            let lowered = title.lowercased()
+            if meetingWords.contains(where: { lowered.contains($0) }) {
+                sawMeetingWord = true
+                break
+            }
+        }
+        Log.writeLine(
+            "detector",
+            "windowprobe(native) app=\(source.bundleID) titles=[\(titles.joined(separator: " | "))] meetingWord=\(sawMeetingWord) anyVisible=\(!titles.isEmpty)"
+        )
+        if titles.isEmpty { return false }
+        return sawMeetingWord ? true : false
+    }
+
+    private static func browserWindowProbe(_ source: AppSource, fragments: [String]) -> Bool? {
+        guard AXIsProcessTrusted() else { return nil }
+        guard let pid = pidFor(bundleID: source.bundleID) else {
+            Log.writeLine("detector", "windowprobe(browser) app=\(source.bundleID) NOT_RUNNING → ended")
+            return false
+        }
+        let titles = collectAXWindowTitles(pid: pid)
+        guard let titles = titles else { return nil }
+
+        var sawFragment = false
+        for title in titles {
+            let lowered = title.lowercased()
+            if fragments.contains(where: { lowered.contains($0) }) {
+                sawFragment = true
+                break
+            }
+        }
+        Log.writeLine(
+            "detector",
+            "windowprobe(browser) app=\(source.bundleID) titles=[\(titles.joined(separator: " | "))] fragmentMatch=\(sawFragment) anyVisible=\(!titles.isEmpty)"
+        )
+        if titles.isEmpty { return false }
+        return sawFragment ? true : false
+    }
+
+    /// Helpers shared by both probe variants. Extracted so the two paths
+    /// stay narrow and readable, and so the AX traversal lives in one place.
+    private static func pidFor(bundleID: String) -> pid_t? {
+        NSWorkspace.shared.runningApplications.first {
+            $0.bundleIdentifier == bundleID
+        }?.processIdentifier
+    }
+
+    private static func collectAXWindowTitles(pid: pid_t) -> [String]? {
         let axApp = AXUIElementCreateApplication(pid)
         var windowsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
               let windows = windowsRef as? [AXUIElement] else {
-            // AX read failed (transient). Keep it inconclusive so we don't
-            // false-stop on a one-off failure.
             return nil
         }
-
-        let meetingWords = ["meeting", "zoom meeting", "call", "huddle", "webex meeting"]
-        var sawMeetingWord = false
-        var anyVisible = false
         var titles: [String] = []
         for win in windows {
             var titleRef: CFTypeRef?
-            let titleStatus = AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef)
-            guard titleStatus == .success, let title = titleRef as? String,
-                  !title.isEmpty else { continue }
-            anyVisible = true
+            guard AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef) == .success,
+                  let title = titleRef as? String, !title.isEmpty else { continue }
             titles.append(title)
-            let lowered = title.lowercased()
-            if meetingWords.contains(where: { lowered.contains($0) }) {
-                sawMeetingWord = true
-            }
         }
-
-        // Diagnostic: dump the titles we saw so we can extend the heuristic
-        // if a future Teams/Zoom rev breaks the assumption. Cheap — only
-        // logs while we're in a hasFiredStart context (this probe is only
-        // called from currentWindowOpen, which gates on hasFiredStart).
-        Log.writeLine(
-            "detector",
-            "windowprobe app=\(source.bundleID) titles=[\(titles.joined(separator: " | "))] meetingWord=\(sawMeetingWord) anyVisible=\(anyVisible)"
-        )
-
-        if !anyVisible { return false }
-        if sawMeetingWord { return true }
-        // Windows exist but none has a meeting word — the call is over.
-        return false
+        return titles
     }
 
     // MARK: Resource loading
