@@ -42,6 +42,13 @@ final class ConfigStore: ObservableObject {
     @Published var notionDatabaseId: String { didSet { scheduleSave() } }
     @Published var summaryLanguage: String { didSet { scheduleSave() } }
     @Published var summarizationSkipAboveChars: Int { didSet { scheduleSave() } }
+    /// Backend selection for the summarize stage. Mirrors
+    /// `summarization.backend` in the pipeline config; see
+    /// `pipeline/src/mp/summarize.py::_select_backend`.
+    /// Valid values: "anthropic", "local", "auto".
+    @Published var summarizationBackend: String { didSet { scheduleSave() } }
+    @Published var summarizationLocalModel: String { didSet { scheduleSave() } }
+    @Published var summarizationLocalEndpoint: String { didSet { scheduleSave() } }
 
     /// Fired AFTER a successful disk write so subscribers (the daemon's
     /// Coordinator) can re-read affected fields without polling. Sends
@@ -92,6 +99,11 @@ final class ConfigStore: ObservableObject {
         self.notionDatabaseId = notion?["database_id"]?.string ?? ""
         self.summaryLanguage = summ?["summary_language"]?.string ?? "auto"
         self.summarizationSkipAboveChars = summ?["skip_above_chars"]?.int ?? 80000
+        self.summarizationBackend = summ?["backend"]?.string ?? "anthropic"
+        self.summarizationLocalModel = summ?["local_model"]?.string
+            ?? "mlx-community/Qwen2.5-14B-Instruct-4bit"
+        self.summarizationLocalEndpoint = summ?["local_endpoint"]?.string
+            ?? "http://127.0.0.1:8765"
 
         // Arming this last is the whole point — every prior `self.x = …`
         // triggered didSet which now no-ops on `!isInitialized`.
@@ -150,6 +162,9 @@ final class ConfigStore: ObservableObject {
         ensureTable("notion")["database_id"] = notionDatabaseId
         ensureTable("summarization")["summary_language"] = summaryLanguage
         ensureTable("summarization")["skip_above_chars"] = summarizationSkipAboveChars
+        ensureTable("summarization")["backend"] = summarizationBackend
+        ensureTable("summarization")["local_model"] = summarizationLocalModel
+        ensureTable("summarization")["local_endpoint"] = summarizationLocalEndpoint
     }
 
     /// Render `rawDocument` and replace `configURL` atomically.

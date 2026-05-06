@@ -235,6 +235,36 @@ private struct PreferencesView: View {
 
     private var pipelineTab: some View {
         Form {
+            Section("Summarization backend") {
+                LabeledContent("Backend") {
+                    Picker("", selection: $store.summarizationBackend) {
+                        Text("Anthropic API (cloud)").tag("anthropic")
+                        Text("Local MLX (on-device)").tag("local")
+                        Text("Auto (cloud, fall back to local)").tag("auto")
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
+                Text(backendHelpText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if store.summarizationBackend != "anthropic" {
+                    LabeledContent("Local model") {
+                        TextField("", text: $store.summarizationLocalModel)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minWidth: 280)
+                    }
+                    LabeledContent("Local endpoint") {
+                        TextField("", text: $store.summarizationLocalEndpoint)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minWidth: 280)
+                    }
+                    Text("Local mode lazy-spawns mlx_lm.server on first use; the server shuts down after 5 min of idle. Models live in ~/.cache/huggingface/hub.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Summary language") {
                 LabeledContent("") {
                     Picker("", selection: $store.summaryLanguage) {
@@ -277,6 +307,17 @@ private struct PreferencesView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var backendHelpText: String {
+        switch store.summarizationBackend {
+        case "local":
+            return "Audio, transcript, and summary stay on this Mac. No outbound API calls."
+        case "auto":
+            return "Tries Anthropic first; falls back to local if the API fails or the key is missing."
+        default:
+            return "Calls api.anthropic.com. Requires ANTHROPIC_API_KEY in secrets.env."
+        }
     }
 
     private var skipThresholdLabel: String {
