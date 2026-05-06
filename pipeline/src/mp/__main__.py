@@ -25,6 +25,8 @@ Subcommands:
   doctor                      Preflight check (secrets, config, live API access)
   logs [--since 1h] [--category C] [--action A] [--json]
                               Filter and pretty-print JSONL event streams
+  dogfood <transcript.md>     Run Anthropic + local backends side-by-side
+  dogfood --report            Aggregate scored runs into a ship-decision report
 
 Globals:
   --help, -h                  Show this message
@@ -71,6 +73,9 @@ def main() -> int:
         return run(rest)
     if cmd == "logs":
         from .logs_cmd import main as run
+        return run(rest)
+    if cmd == "dogfood":
+        from .dogfood import main as run
         return run(rest)
 
     print(f"unknown subcommand: {cmd}\n", file=sys.stderr)
