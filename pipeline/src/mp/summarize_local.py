@@ -289,15 +289,36 @@ class LocalSummaryClient:
         directive to the existing system prompt. The local model has no
         tool-use forcing, so we lean on prompt discipline to keep the
         output parseable. Layer 1 of the 3-layer fallback in
-        ``_extract_summary``."""
+        ``_extract_summary``.
+
+        The reinforcement block restates the failure modes the local
+        model exhibited in dogfood (decision-vs-intent confusion, owner
+        propagation, empty questions) right before the schema, where
+        token attention is highest. Belt-and-suspenders with the master
+        prompt's worked examples.
+        """
         schema = json.dumps(SUMMARY_TOOL["input_schema"], indent=2)
+        reinforcement = (
+            "\n\n---\n\n## Before you reply, double-check these rules:\n"
+            "1. `decisions` must contain ONLY statements with explicit"
+            " commitment language (will/agreed/decided/approved). Plans to"
+            " analyze, intentions to study, or ideas being floated are NOT"
+            " decisions. If unsure, leave the array empty.\n"
+            "2. `owner` for each action must be a person literally named in"
+            " the transcript for THAT task. Do not assign every action to one"
+            " person. Use null when the transcript does not name an owner.\n"
+            "3. `questions` should not be empty unless the meeting truly"
+            " closed every loop. Look for unresolved clarifications,"
+            " expressed uncertainty, or deferred decisions.\n"
+            "4. Tools (Claude, Notion, Anthropic) are never owners.\n\n"
+        )
         directive = (
-            "\n\n---\n\nYour reply MUST be a single JSON object that validates"
+            "Your reply MUST be a single JSON object that validates"
             " against this JSON Schema. Output the JSON object and nothing else:"
             " no prose, no Markdown fences, no commentary.\n\n"
             f"```json-schema\n{schema}\n```"
         )
-        return system_prompt + directive
+        return system_prompt + reinforcement + directive
 
     def _compose_user_message(self, transcript: str) -> str:
         return (
