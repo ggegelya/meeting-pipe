@@ -213,6 +213,12 @@ final class Detector {
                         self.recordingSource = enriched
                         Log.detector.info("→ started: \(enriched.bundleID)")
                         Log.writeLine("detector", "started bundle=\(enriched.bundleID) name=\(enriched.displayName) title=\(enriched.meetingTitle ?? "(none)")")
+                        Log.event(category: "detector", action: "started", attributes: [
+                            "bundle_id": enriched.bundleID,
+                            "display_name": enriched.displayName,
+                            "kind": enriched.kind == .browser ? "browser" : "native",
+                            "meeting_title": enriched.meetingTitle ?? NSNull(),
+                        ])
                         self.delegate?.detector(self, event: .started(enriched))
                     }
                 }
@@ -235,9 +241,15 @@ final class Detector {
                     ).decide()
                     if reFired == .shouldEnd {
                         self.hasFiredStart = false
+                        let endedSource = self.recordingSource
                         self.recordingSource = nil
                         Log.detector.info("→ ended (mic=\(confirmMic) window=\(confirmWindow))")
                         Log.writeLine("detector", "ended mic=\(confirmMic) window=\(confirmWindow)")
+                        Log.event(category: "detector", action: "ended", attributes: [
+                            "bundle_id": endedSource?.bundleID ?? NSNull(),
+                            "mic_active": confirmMic,
+                            "window_open": confirmWindow,
+                        ])
                         self.delegate?.detector(self, event: .ended)
                     }
                 }

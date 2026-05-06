@@ -34,10 +34,24 @@ final class Coordinator: NSObject {
     private var state: AppState = .idle {
         didSet {
             Log.main.info("state: \(String(describing: oldValue)) → \(String(describing: self.state))")
+            Log.event(category: "coordinator", action: "state_change", attributes: [
+                "from": Coordinator.stateLabel(oldValue),
+                "to": Coordinator.stateLabel(state),
+            ])
             // Mid-recording config edits get deferred (see
             // applyConfigRefreshIfPossible) — apply them when we transition
             // back to idle so the next meeting picks up the new values.
             if case .idle = state { applyConfigRefreshIfPossible() }
+        }
+    }
+
+    private static func stateLabel(_ s: AppState) -> String {
+        switch s {
+        case .idle: return "idle"
+        case .prompting: return "prompting"
+        case .suppressed: return "suppressed"
+        case .recording: return "recording"
+        case .stopping: return "stopping"
         }
     }
 
@@ -241,6 +255,11 @@ final class Coordinator: NSObject {
                 "daemon",
                 "recording started → \(file.path) source=\(source?.bundleID ?? "manual") mode=\(summaryMode == .byo ? "byo" : "auto")"
             )
+            Log.event(category: "coordinator", action: "recording_started", attributes: [
+                "file": file.lastPathComponent,
+                "bundle_id": source?.bundleID ?? "manual",
+                "summary_mode": summaryMode == .byo ? "byo" : "auto",
+            ])
             // Kick off streaming transcribe so transcription runs in
             // parallel with the meeting. Best-effort — a failure here
             // (mp not installed, AVAudioFile not yet flushing) just
@@ -293,6 +312,11 @@ final class Coordinator: NSObject {
             await transcriber.stop()
             guard let self = self else { return }
             Log.writeLine("daemon", "recording stopped → \(file.path)")
+            Log.event(category: "coordinator", action: "recording_stopped", attributes: [
+                "file": file.lastPathComponent,
+                "bundle_id": source?.bundleID ?? "manual",
+                "system_audio_frames": recorder.lastSystemFires,
+            ])
             // No system-audio frames means the user just lost the other
             // side of the call. Always surface it — the previous gate
             // also required `permissionState == .denied`, which silently
@@ -351,6 +375,11 @@ final class Coordinator: NSObject {
         processingJobs.append(job)
         statusBar.setProcessingCount(processingJobs.count)
         Log.writeLine("daemon", "pipeline queued → \(file.lastPathComponent) (queue=\(processingJobs.count))")
+        Log.event(category: "coordinator", action: "pipeline_queued", attributes: [
+            "file": file.lastPathComponent,
+            "queue_depth": processingJobs.count,
+            "summary_mode": summaryMode == .byo ? "byo" : "auto",
+        ])
         startNextJobIfNeeded()
     }
 
@@ -362,6 +391,9 @@ final class Coordinator: NSObject {
         guard activeJob == nil, let next = processingJobs.first else { return }
         activeJob = next
         Log.writeLine("daemon", "pipeline starting → \(next.file.lastPathComponent)")
+        Log.event(category: "coordinator", action: "pipeline_started", attributes: [
+            "file": next.file.lastPathComponent,
+        ])
         launcher.runAll(wav: next.file, summaryMode: next.summaryMode) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
@@ -369,9 +401,17 @@ final class Coordinator: NSObject {
                 case .success(let pageURL):
                     self.notifier.notifyDone(pageURL: pageURL)
                     Log.writeLine("daemon", "pipeline OK → \(pageURL?.absoluteString ?? "(local-only)")")
+                    Log.event(category: "coordinator", action: "pipeline_succeeded", attributes: [
+                        "file": next.file.lastPathComponent,
+                        "page_url": pageURL?.absoluteString ?? NSNull(),
+                    ])
                 case .failure(let err):
                     self.notifier.notifyError("Pipeline failed: \(err.localizedDescription)")
                     Log.writeLine("daemon", "pipeline FAIL → \(err.localizedDescription)")
+                    Log.event(category: "coordinator", action: "pipeline_failed", attributes: [
+                        "file": next.file.lastPathComponent,
+                        "error": err.localizedDescription,
+                    ])
                 }
                 self.activeJob = nil
                 if let head = self.processingJobs.first, head.id == next.id {
@@ -390,6 +430,9 @@ final class Coordinator: NSObject {
             DispatchQueue.main.async {
                 if case .prompting(let src) = self.state, src == source {
                     Log.writeLine("daemon", "prompt timed out → suppressed (\(source.bundleID))")
+                    Log.event(category: "coordinator", action: "prompt_timeout", attributes: [
+                        "bundle_id": source.bundleID,
+                    ])
                     self.promptWindow.dismiss()
                     self.state = .suppressed(source: source)
                     self.statusBar.setIdle()
@@ -447,6 +490,9 @@ extension Coordinator: DetectorDelegate {
         if liveAutoConsentApps.contains(source.bundleID) ||
            consent.isAutoConsented(bundleID: source.bundleID) {
             Log.writeLine("daemon", "auto-consent → recording (\(source.bundleID))")
+            Log.event(category: "coordinator", action: "auto_consent", attributes: [
+                "bundle_id": source.bundleID,
+            ])
             beginRecording(source: source, summaryMode: .auto)
             return
         }
@@ -461,6 +507,11 @@ extension Coordinator: DetectorDelegate {
         promptWindow.present(source: source, autoDismissAfter: livePromptTimeoutSec)
         startPromptTimeout(for: source)
         Log.writeLine("daemon", "meeting detected → prompting (\(source.bundleID))")
+        Log.event(category: "coordinator", action: "prompt_shown", attributes: [
+            "bundle_id": source.bundleID,
+            "display_name": source.displayName,
+            "timeout_sec": livePromptTimeoutSec,
+        ])
     }
 
     private func handleMeetingEnded() {
@@ -490,11 +541,17 @@ extension Coordinator: NotifierDelegate {
         state = .suppressed(source: source)
         statusBar.setIdle()
         Log.writeLine("daemon", "user skipped (\(source.bundleID))")
+        Log.event(category: "coordinator", action: "user_skipped", attributes: [
+            "bundle_id": source.bundleID,
+        ])
     }
 
     func notifier(_ notifier: Notifier, didChooseAlways source: AppSource) {
         consent.setAutoConsented(bundleID: source.bundleID, value: true)
         Log.writeLine("daemon", "user always-consented (\(source.bundleID))")
+        Log.event(category: "coordinator", action: "user_consented_always", attributes: [
+            "bundle_id": source.bundleID,
+        ])
         beginRecording(source: source, summaryMode: .auto)
     }
 

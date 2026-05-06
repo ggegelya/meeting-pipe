@@ -30,6 +30,7 @@ from .diarize import (
     diarize as run_diarize,
     is_stereo_recording,
 )
+from . import events
 from .publish_notion import publish
 from .summarize import summarize
 from .transcribe import render_markdown, transcribe
@@ -142,7 +143,17 @@ def run_all(
     log.info("=" * 60)
     log.info("run-all: %s%s", wav, " (BYO summary)" if force_byo else "")
     log.info("=" * 60)
+    events.emit("pipeline", "run_started", wav=str(wav), force_byo=force_byo)
 
+    try:
+        return _run_all_inner(wav, cfg, force_byo=force_byo)
+    except Exception as e:
+        events.emit("pipeline", "run_failed", wav=str(wav),
+                    error=str(e), error_type=type(e).__name__)
+        raise
+
+
+def _run_all_inner(wav: Path, cfg: Config, *, force_byo: bool) -> dict:
     # Streaming-transcribe path: when the daemon's StreamingTranscriber
     # ran during recording, the transcript JSON + Markdown are already on
     # disk. We pick up where the streamer left off — assign speakers via
@@ -152,10 +163,13 @@ def run_all(
     streamed = _existing_streamed_transcript(wav)
     if streamed is not None:
         log.info("[1/3] transcribe (streamed during recording, finalizing)")
+        events.emit("pipeline", "stage_started", stage="transcribe", source="streamed")
         t = _finalize_streamed_transcript(wav, streamed, cfg)
     else:
         log.info("[1/3] transcribe")
+        events.emit("pipeline", "stage_started", stage="transcribe", source="offline")
         t = transcribe(wav, cfg=cfg)
+    events.emit("pipeline", "stage_completed", stage="transcribe", md=str(t["md"]))
 
     # Short-circuit #1: empty transcript (silent audio, broken capture).
     # Don't burn Anthropic tokens summarizing nothing. Read the structured
@@ -167,6 +181,7 @@ def run_all(
         log.warning("Transcript has no speaker turns — skipping summarize + publish.")
         log.warning("  WAV: %s", wav)
         log.warning("  MD : %s", t["md"])
+        events.emit("pipeline", "run_skipped", wav=str(wav), reason="no_speech")
         return {
             "transcript_json": str(t["json"]),
             "transcript_md": str(t["md"]),
@@ -187,6 +202,8 @@ def run_all(
         log.info("BYO summary requested — skipping Anthropic call.")
         log.info("Manual-processing bundle written: %s", bundle)
         log.info("Run `mp publish-from-paste %s` after saving your summary.", t["md"])
+        events.emit("pipeline", "run_skipped", wav=str(wav), reason="byo",
+                    transcript_chars=len(md_text), bundle=str(bundle))
         return {
             "transcript_json": str(t["json"]),
             "transcript_md": str(t["md"]),
@@ -208,6 +225,9 @@ def run_all(
             len(md_text), threshold,
         )
         log.warning("Manual-processing bundle written: %s", bundle)
+        events.emit("pipeline", "run_skipped", wav=str(wav), reason="too_long",
+                    transcript_chars=len(md_text), threshold=threshold,
+                    bundle=str(bundle))
         return {
             "transcript_json": str(t["json"]),
             "transcript_md": str(t["md"]),
@@ -220,12 +240,19 @@ def run_all(
         }
 
     log.info("[2/3] summarize")
+    events.emit("pipeline", "stage_started", stage="summarize")
     s = summarize(t["md"], cfg=cfg)
+    events.emit("pipeline", "stage_completed", stage="summarize", md=str(s["md"]))
 
     log.info("[3/3] publish")
+    events.emit("pipeline", "stage_started", stage="publish")
     pub = publish(s["json"], cfg=cfg, transcript_md=t["md"])
+    events.emit("pipeline", "stage_completed", stage="publish",
+                page_url=pub.get("page_url"))
 
     log.info("done: page_url=%s", pub.get("page_url"))
+    events.emit("pipeline", "run_completed", wav=str(wav),
+                page_url=pub.get("page_url"))
     return {
         "transcript_json": str(t["json"]),
         "transcript_md": str(t["md"]),

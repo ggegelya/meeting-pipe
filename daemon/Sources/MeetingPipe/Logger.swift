@@ -26,6 +26,38 @@ enum Log {
         let url = logsDir.appendingPathComponent("\(category).log")
         let line = "[\(isoFormatter.string(from: Date()))] \(message)\n"
         guard let data = line.data(using: .utf8) else { return }
+        appendData(data, to: url)
+    }
+
+    /// Structured event log. One JSON object per line in `events.jsonl`,
+    /// alongside the human-readable text logs. The text logs stay tailable
+    /// for live debugging; JSONL is for grepping with `jq` after the fact.
+    ///
+    /// Attribute values must be JSON-serializable (String, Bool, Int,
+    /// Double, Array, Dictionary, or NSNull). A non-serializable value
+    /// drops the event silently rather than crashing the daemon: an event
+    /// log going dark is preferable to a meeting going unrecorded.
+    static func event(
+        category: String,
+        action: String,
+        attributes: [String: Any] = [:]
+    ) {
+        var dict: [String: Any] = attributes
+        dict["ts"] = isoFormatter.string(from: Date())
+        dict["category"] = category
+        dict["action"] = action
+        guard JSONSerialization.isValidJSONObject(dict),
+              let json = try? JSONSerialization.data(
+                withJSONObject: dict, options: [.sortedKeys, .withoutEscapingSlashes]
+              ) else {
+            return
+        }
+        var line = json
+        line.append(0x0A) // newline
+        appendData(line, to: logsDir.appendingPathComponent("events.jsonl"))
+    }
+
+    private static func appendData(_ data: Data, to url: URL) {
         if !FileManager.default.fileExists(atPath: url.path) {
             FileManager.default.createFile(atPath: url.path, contents: data)
             return
