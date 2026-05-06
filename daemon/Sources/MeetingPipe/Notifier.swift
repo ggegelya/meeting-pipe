@@ -20,6 +20,13 @@ protocol NotifierDelegate: AnyObject {
         didMarkLooksGoodFor stem: String,
         recordingsDir: URL
     )
+    /// User clicked "Edit summary" on the published-meeting notification
+    /// or selected a meeting from the Recent meetings… submenu.
+    func notifier(
+        _ notifier: Notifier,
+        didRequestEditSummaryFor stem: String,
+        recordingsDir: URL
+    )
 }
 
 /// Wraps UNUserNotificationCenter for the informational banner notifications
@@ -35,6 +42,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private static let doneCorrectableLocalCategory = "MP_DONE_CORRECTABLE_LOCAL"
     private static let actionOpen = "MP_OPEN_PAGE"
     private static let actionLooksGood = "MP_LOOKS_GOOD"
+    private static let actionEditSummary = "MP_EDIT_SUMMARY"
     private static let permCategory = "MP_PERM"
     private static let actionOpenSettings = "MP_OPEN_SETTINGS"
 
@@ -190,6 +198,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private func registerCategories() {
         let open = UNNotificationAction(identifier: Self.actionOpen, title: "Open in Notion", options: [.foreground])
         let looksGood = UNNotificationAction(identifier: Self.actionLooksGood, title: "Looks good", options: [])
+        let edit = UNNotificationAction(identifier: Self.actionEditSummary, title: "Edit summary", options: [.foreground])
         // Three categories:
         //   * MP_DONE             : pre-Phase-2 fallback (Open in Notion only)
         //   * MP_DONE_CORRECTABLE  : Notion + correction action
@@ -202,13 +211,13 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         )
         let doneCorrectable = UNNotificationCategory(
             identifier: Self.doneCorrectableCategory,
-            actions: [open, looksGood],
+            actions: [open, looksGood, edit],
             intentIdentifiers: [],
             options: []
         )
         let doneCorrectableLocal = UNNotificationCategory(
             identifier: Self.doneCorrectableLocalCategory,
-            actions: [looksGood],
+            actions: [looksGood, edit],
             intentIdentifiers: [],
             options: []
         )
@@ -246,6 +255,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                     delegate?.notifier(
                         self,
                         didMarkLooksGoodFor: entry.stem,
+                        recordingsDir: entry.recordingsDir
+                    )
+                }
+                doneEntries.removeValue(forKey: id)
+            case Self.actionEditSummary:
+                if !entry.stem.isEmpty {
+                    delegate?.notifier(
+                        self,
+                        didRequestEditSummaryFor: entry.stem,
                         recordingsDir: entry.recordingsDir
                     )
                 }

@@ -253,6 +253,11 @@ final class StatusBarController {
         }
 
         menu.addItem(.separator())
+        if let coordinator = coordinator,
+           let recentItem = recentMeetingsMenuItem(coordinator: coordinator) {
+            menu.addItem(recentItem)
+        }
+
         let openLogs = NSMenuItem(title: "Open Logs Folder", action: #selector(Coordinator.menuOpenLogs), keyEquivalent: "")
         openLogs.target = coordinator
         menu.addItem(openLogs)
@@ -270,6 +275,29 @@ final class StatusBarController {
         menu.addItem(NSMenuItem(title: "Quit MeetingPipe", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
         item.menu = menu
+    }
+
+    /// "Recent meetings…" submenu containing the last 10 meetings with
+    /// a run sidecar on disk. Each child opens the correction sheet for
+    /// that stem. Returns nil when no eligible meetings exist so the
+    /// menu does not advertise an empty submenu.
+    private func recentMeetingsMenuItem(coordinator: Coordinator) -> NSMenuItem? {
+        let entries = coordinator.recentCorrectableMeetings(limit: 10)
+        if entries.isEmpty { return nil }
+        let parent = NSMenuItem(title: "Recent meetings…", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        for entry in entries {
+            let item = NSMenuItem(
+                title: entry.displayName,
+                action: #selector(Coordinator.menuRecentMeeting(_:)),
+                keyEquivalent: ""
+            )
+            item.target = coordinator
+            item.representedObject = entry.stem
+            submenu.addItem(item)
+        }
+        parent.submenu = submenu
+        return parent
     }
 
     /// Detailed model-download row, or nil when there's nothing to show.

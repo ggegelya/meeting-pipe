@@ -234,6 +234,37 @@ Set to `0` to disable.
 
 ---
 
+## Improving local quality
+
+When `summarization.backend` is `"local"`, you can grade each
+published summary so the local model gets better over time. There
+are two surfaces:
+
+- **Done-meeting notification.** After publish, the banner shows
+  three actions:
+  - **Open in Notion** (when applicable) opens the published page.
+  - **Looks good** records a verdict-good sample inline; nothing else
+    to do.
+  - **Edit summary** opens an editor sheet pre-populated with the
+    summary, where you can fix any field (title, summary bullets,
+    decisions, action items, questions, attendees) and save.
+- **Recent meetings…** in the menu bar lists the last 10 published
+  meetings; pick one to open the same editor sheet. Useful when you
+  dismissed the notification.
+
+Every grade lands as one JSON file under
+`~/Library/Application Support/MeetingPipe/corrections/<stem>.json`.
+The corpus stays on your machine. Nothing in this loop touches the
+network, regardless of which summarization backend you use.
+
+Run `mp corrections-stats` to see the current state of your corpus
+plus a Phase 3 readiness check (the upcoming local-LoRA training
+needs ~20 corrections covering ~200 minutes of speech before it can
+fine-tune a per-user adapter). Pass `--json` for a script-friendly
+form.
+
+---
+
 ## Logs
 
 Everything lives under `~/Library/Logs/MeetingPipe/`:

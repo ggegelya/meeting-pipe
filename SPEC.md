@@ -595,6 +595,7 @@ free-form attributes. Categories emitted today:
 | `coordinator` | `state_change`, `prompt_shown`, `prompt_timeout`, `user_skipped`, `user_consented_always`, `auto_consent`, `recording_started`, `recording_stopped`, `pipeline_queued`, `pipeline_started`, `pipeline_succeeded`, `pipeline_failed`, `dry_run_enabled`, `dry_run_would_record` |
 | `pipeline` | `run_started`, `stage_started`, `stage_completed`, `run_completed`, `run_skipped` (`no_speech` / `byo` / `too_long`), `run_failed` |
 | `publisher` | `sink_started`, `sink_completed`, `sink_failed` |
+| `correction` | `saved`, `failed` (Phase 2; see §17) |
 
 Failures during emit are swallowed: an empty event log is preferable
 to a crashed daemon or pipeline. The text logs already capture
@@ -650,3 +651,109 @@ for CI gating once the corpus is large enough).
 The grading is by hand by design: LLM-as-judge for "is the local
 model good enough to be the privacy-preserving default" is
 self-referential in a way that defeats the exercise.
+
+---
+
+## 17. Correction loop
+
+Phase 2 of the local-LLM productisation. Every published meeting
+offers the user an in-flow chance to grade the summary. Verdicts and
+edits accumulate locally; Phase 3 reads the corpus to fine-tune a
+per-user LoRA adapter.
+
+### Two on-disk artifacts
+
+**Run sidecar.** `<recordings>/<stem>.run.json`, written by
+`mp run-all` at the end of the summarize stage. Snapshots the
+runtime that produced `<stem>.summary.json` so a later correction is
+attributed to the right backend even if the user flips backends in
+between:
+
+```json
+{
+  "stem":               "20260508-1500",
+  "transcript_path":    "/abs/.../20260508-1500.md",
+  "transcript_chars":   12345,
+  "summary_json_path":  "/abs/.../20260508-1500.summary.json",
+  "backend":            "local",
+  "model":              "mlx-community/Qwen2.5-3B-Instruct-4bit",
+  "ts":                 "2026-05-08T14:33:00Z"
+}
+```
+
+Best-effort write; a failure is logged but does not block publish.
+
+**Correction record.**
+`~/Library/Application Support/MeetingPipe/corrections/<stem>.json`,
+written by the daemon when the user grades a meeting. One file per
+meeting, overwritten on re-correction (so the user can revise their
+own verdict cleanly):
+
+```json
+{
+  "transcript_path":   "/abs/.../<stem>.md",
+  "summary_json_path": "/abs/.../<stem>.summary.json",
+  "model_id":          "mlx-community/Qwen2.5-3B-Instruct-4bit",
+  "backend":           "local",
+  "ts":                "2026-05-08T14:33:00Z",
+  "verdict":           "good" | "bad" | "edited",
+  "original_summary":  { ... full MeetingSummary JSON ... },
+  "corrected_summary": { ... only present when verdict == "edited" ... },
+  "notes":             "free-form text, optional"
+}
+```
+
+JSON-per-file (not JSONL) so re-grading is a single rewrite; the
+Phase 3 trainer just globs the directory.
+
+### UI surfaces
+
+Both surfaces route through `CorrectionWindow.present(stem:, recordingsDir:)`.
+
+1. **Done-meeting notification.** `Notifier` adds two action buttons
+   to the published-meeting banner (`MP_DONE_CORRECTABLE` /
+   `MP_DONE_CORRECTABLE_LOCAL` categories), gated on the run sidecar
+   existing on disk:
+   - **Looks good** writes a verdict-good record inline. No window opens.
+   - **Edit summary** opens `CorrectionWindow`.
+2. **Recent meetings… menu.** A status-bar submenu lists the last 10
+   meetings with a run sidecar, newest first. Each child opens
+   `CorrectionWindow` for that stem. Useful for grading meetings the
+   user dismissed the notification for.
+
+`CorrectionWindow` (`daemon/Sources/MeetingPipe/CorrectionWindow.swift`)
+is a single-instance SwiftUI sheet that loads
+`<stem>.summary.json` + `<stem>.run.json`, lets the user edit the
+seven `MeetingSummary` fields plus a free-form notes block, and
+persists via `CorrectionStore.write` with `verdict = .edited`. A
+"Mark as unusable" footer button writes `verdict = .bad` without any
+edits.
+
+### `mp corrections-stats`
+
+Markdown report (or `--json`) over the corrections directory.
+Per-backend / per-model verdict breakdown plus per-field mean
+normalized Levenshtein distance between `original_summary` and
+`corrected_summary`. The Phase 3 readiness gate is two-part:
+
+- `count >= 20` corrections, AND
+- `sum(transcript_chars) >= 200_000` (≈200 minutes of speech).
+
+Both must hold before the trainer is willing to start. Twenty 20-min
+meetings, fifty 4-min meetings, or any mix that clears the chars
+threshold all qualify.
+
+### Event log
+
+Daemon emits one of:
+
+```json
+{ "category": "correction", "action": "saved",
+  "stem": "...", "verdict": "good|bad|edited",
+  "backend": "...", "model_id": "..." }
+{ "category": "correction", "action": "failed",
+  "stem": "...", "verdict": "...", "error": "..." }
+```
+
+so the corpus growth (and any IO error) is grep-able from
+`mp logs --category correction`.

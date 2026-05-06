@@ -225,6 +225,45 @@ final class Coordinator: NSObject {
         SystemAudioCapture.openScreenRecordingSettings()
     }
 
+    /// Open the correction sheet for whichever stem the menu item carries
+    /// in `representedObject`. The status bar builds the submenu from
+    /// `recentCorrectableMeetings()` so menus and the click site share
+    /// the same path resolution.
+    @objc func menuRecentMeeting(_ sender: NSMenuItem) {
+        guard let stem = sender.representedObject as? String else { return }
+        CorrectionWindow.present(stem: stem, recordingsDir: liveOutputDir)
+    }
+
+    /// List the last `limit` meetings that have a run sidecar on disk
+    /// (i.e. the summarize stage actually finished). Sorted newest
+    /// first by run-sidecar mtime so the most recent meeting is always
+    /// at the top of the menu.
+    func recentCorrectableMeetings(limit: Int = 10) -> [(stem: String, displayName: String)] {
+        let dir = liveOutputDir
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        let sidecars = entries.filter { $0.lastPathComponent.hasSuffix(".run.json") }
+        let sorted = sidecars.sorted { lhs, rhs in
+            let lDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate) ?? .distantPast
+            let rDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate) ?? .distantPast
+            return lDate > rDate
+        }
+        return sorted.prefix(limit).map { url in
+            let name = url.lastPathComponent
+            // Strip the trailing ".run.json" suffix.
+            let stem = String(name.dropLast(".run.json".count))
+            return (stem: stem, displayName: stem)
+        }
+    }
+
     // MARK: Live-config readers
     //
     // When a `ConfigStore` is wired up, prefer its current value over the
@@ -630,6 +669,14 @@ extension Coordinator: NotifierDelegate {
 
     func notifier(_ notifier: Notifier, didOpenPage url: URL) {
         NSWorkspace.shared.open(url)
+    }
+
+    func notifier(
+        _ notifier: Notifier,
+        didRequestEditSummaryFor stem: String,
+        recordingsDir: URL
+    ) {
+        CorrectionWindow.present(stem: stem, recordingsDir: recordingsDir)
     }
 
     func notifier(
