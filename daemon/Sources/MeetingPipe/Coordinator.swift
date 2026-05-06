@@ -445,7 +445,13 @@ final class Coordinator: NSObject {
                 guard let self = self else { return }
                 switch result {
                 case .success(let pageURL):
-                    self.notifier.notifyDone(pageURL: pageURL)
+                    let stem = next.file.deletingPathExtension().lastPathComponent
+                    let recordingsDir = next.file.deletingLastPathComponent()
+                    self.notifier.notifyDone(
+                        stem: stem,
+                        recordingsDir: recordingsDir,
+                        pageURL: pageURL
+                    )
                     Log.writeLine("daemon", "pipeline OK → \(pageURL?.absoluteString ?? "(local-only)")")
                     Log.event(category: "coordinator", action: "pipeline_succeeded", attributes: [
                         "file": next.file.lastPathComponent,
@@ -624,6 +630,54 @@ extension Coordinator: NotifierDelegate {
 
     func notifier(_ notifier: Notifier, didOpenPage url: URL) {
         NSWorkspace.shared.open(url)
+    }
+
+    func notifier(
+        _ notifier: Notifier,
+        didMarkLooksGoodFor stem: String,
+        recordingsDir: URL
+    ) {
+        // Inline write of a verdict-good correction record. Reads the
+        // run sidecar (for backend + model_id) and the summary JSON
+        // (for the original_summary blob) so the file is self-contained
+        // for Phase 3 training. A failure here is logged, not
+        // user-visible: the user already clicked "Looks good" and would
+        // rather have a silent miss than a banner about a sidecar.
+        let runURL = recordingsDir.appendingPathComponent("\(stem).run.json")
+        let summaryURL = recordingsDir.appendingPathComponent("\(stem).summary.json")
+        do {
+            let run = try CorrectionStore.loadRunSidecar(at: runURL)
+            let summary = try CorrectionStore.loadOriginalSummary(at: summaryURL)
+            let backend = (run["backend"] as? String) ?? ""
+            let model = (run["model"] as? String) ?? ""
+            let transcriptPath = (run["transcript_path"] as? String) ?? ""
+            let summaryJsonPath = (run["summary_json_path"] as? String) ?? summaryURL.path
+            let written = try CorrectionStore.write(
+                stem: stem,
+                transcriptPath: transcriptPath,
+                summaryJsonPath: summaryJsonPath,
+                modelId: model,
+                backend: backend,
+                verdict: .good,
+                originalSummary: summary
+            )
+            Log.writeLine("daemon", "correction saved → \(written.lastPathComponent) verdict=good")
+            Log.event(category: "correction", action: "saved", attributes: [
+                "stem": stem,
+                "verdict": "good",
+                "backend": backend,
+                "model_id": model,
+            ])
+        } catch {
+            Log.main.warning(
+                "Looks good: failed to record correction for \(stem): \(error.localizedDescription)"
+            )
+            Log.event(category: "correction", action: "failed", attributes: [
+                "stem": stem,
+                "verdict": "good",
+                "error": error.localizedDescription,
+            ])
+        }
     }
 
     func notifierDidRequestScreenRecordingSettings(_ notifier: Notifier) {

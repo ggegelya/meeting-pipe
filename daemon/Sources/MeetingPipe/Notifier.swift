@@ -2,7 +2,7 @@ import AppKit
 import UserNotifications
 
 /// Outcomes the Coordinator cares about. Both the on-screen prompt panel
-/// (`MeetingPromptWindow`) and the "Done — open in Notion" notification
+/// (`MeetingPromptWindow`) and the "Done, open in Notion" notification
 /// route into this delegate, so the state machine has one entry point per
 /// outcome regardless of the surface that produced it.
 protocol NotifierDelegate: AnyObject {
@@ -12,6 +12,14 @@ protocol NotifierDelegate: AnyObject {
     func notifier(_ notifier: Notifier, didOpenPage url: URL)
     /// User clicked "Open Settings" on a Screen-Recording permission warning.
     func notifierDidRequestScreenRecordingSettings(_ notifier: Notifier)
+    /// User clicked "Looks good" on the published-meeting notification.
+    /// `recordingsDir` is the parent directory of the recording (where
+    /// the run sidecar + summary JSON live).
+    func notifier(
+        _ notifier: Notifier,
+        didMarkLooksGoodFor stem: String,
+        recordingsDir: URL
+    )
 }
 
 /// Wraps UNUserNotificationCenter for the informational banner notifications
@@ -23,12 +31,22 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     weak var delegate: NotifierDelegate?
 
     private static let doneCategory = "MP_DONE"
+    private static let doneCorrectableCategory = "MP_DONE_CORRECTABLE"
+    private static let doneCorrectableLocalCategory = "MP_DONE_CORRECTABLE_LOCAL"
     private static let actionOpen = "MP_OPEN_PAGE"
+    private static let actionLooksGood = "MP_LOOKS_GOOD"
     private static let permCategory = "MP_PERM"
     private static let actionOpenSettings = "MP_OPEN_SETTINGS"
 
-    /// Map id → URL so we can resolve which Notion page the user clicked.
-    private var donePages: [String: URL] = [:]
+    /// Per-notification state. We keep this richer than the previous
+    /// id->URL map so the "Looks good" action can find the recording
+    /// without re-deriving paths on click.
+    private struct DoneEntry {
+        let stem: String
+        let recordingsDir: URL
+        let pageURL: URL?
+    }
+    private var doneEntries: [String: DoneEntry] = [:]
 
     override init() {
         super.init()
@@ -55,20 +73,59 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         post(title: "Recording stopped", body: "Processing \(file.lastPathComponent)…")
     }
 
-    func notifyDone(pageURL: URL?) {
+    /// Post the "meeting done" notification. When `stem` and
+    /// `recordingsDir` are supplied AND a `<stem>.run.json` exists next
+    /// to the recording, the notification surfaces a "Looks good" action
+    /// that writes a verdict-good correction record inline. Without
+    /// those, we fall back to the legacy behaviour (Open in Notion only,
+    /// or a plain "Local Markdown ready" banner under regulated mode).
+    func notifyDone(
+        stem: String? = nil,
+        recordingsDir: URL? = nil,
+        pageURL: URL?
+    ) {
+        let canCorrect = Self.canCorrect(stem: stem, recordingsDir: recordingsDir)
+
         let content = UNMutableNotificationContent()
+        content.sound = .default
+
+        let id = "done-\(UUID().uuidString)"
+
         if let url = pageURL {
             content.title = "Meeting published"
-            content.body = "Open in Notion"
-            content.categoryIdentifier = Self.doneCategory
-            let id = "done-\(UUID().uuidString)"
-            donePages[id] = url
-            content.sound = .default
-            let req = UNNotificationRequest(identifier: id, content: content, trigger: nil)
-            UNUserNotificationCenter.current().add(req)
+            content.body = canCorrect ? "Open in Notion. How did this summary look?"
+                                      : "Open in Notion"
+            content.categoryIdentifier = canCorrect
+                ? Self.doneCorrectableCategory
+                : Self.doneCategory
+            doneEntries[id] = DoneEntry(
+                stem: stem ?? "",
+                recordingsDir: recordingsDir ?? URL(fileURLWithPath: "/"),
+                pageURL: url
+            )
+        } else if canCorrect, let stem = stem, let dir = recordingsDir {
+            content.title = "Meeting processed"
+            content.body = "Local Markdown ready. How did this summary look?"
+            content.categoryIdentifier = Self.doneCorrectableLocalCategory
+            doneEntries[id] = DoneEntry(stem: stem, recordingsDir: dir, pageURL: nil)
         } else {
+            // No corrections, no Notion page: keep the legacy plain banner.
             post(title: "Meeting processed", body: "Local Markdown ready (regulated mode)")
+            return
         }
+
+        let req = UNNotificationRequest(identifier: id, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
+    /// True when the run sidecar is present, i.e. the pipeline actually
+    /// produced a summary the user can grade. Skipped paths (no_speech,
+    /// byo, too_long) never reach the summarize stage and never write
+    /// the run sidecar, so they correctly disable the correction action.
+    private static func canCorrect(stem: String?, recordingsDir: URL?) -> Bool {
+        guard let stem = stem, let dir = recordingsDir else { return false }
+        let runURL = dir.appendingPathComponent("\(stem).run.json")
+        return FileManager.default.fileExists(atPath: runURL.path)
     }
 
     func notifyError(_ message: String) {
@@ -132,9 +189,26 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     private func registerCategories() {
         let open = UNNotificationAction(identifier: Self.actionOpen, title: "Open in Notion", options: [.foreground])
+        let looksGood = UNNotificationAction(identifier: Self.actionLooksGood, title: "Looks good", options: [])
+        // Three categories:
+        //   * MP_DONE             : pre-Phase-2 fallback (Open in Notion only)
+        //   * MP_DONE_CORRECTABLE  : Notion + correction action
+        //   * MP_DONE_CORRECTABLE_LOCAL: regulated/local-only + correction action
         let done = UNNotificationCategory(
             identifier: Self.doneCategory,
             actions: [open],
+            intentIdentifiers: [],
+            options: []
+        )
+        let doneCorrectable = UNNotificationCategory(
+            identifier: Self.doneCorrectableCategory,
+            actions: [open, looksGood],
+            intentIdentifiers: [],
+            options: []
+        )
+        let doneCorrectableLocal = UNNotificationCategory(
+            identifier: Self.doneCorrectableLocalCategory,
+            actions: [looksGood],
             intentIdentifiers: [],
             options: []
         )
@@ -145,7 +219,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             intentIdentifiers: [],
             options: []
         )
-        UNUserNotificationCenter.current().setNotificationCategories([done, perm])
+        UNUserNotificationCenter.current().setNotificationCategories(
+            [done, doneCorrectable, doneCorrectableLocal, perm]
+        )
     }
 
     // MARK: UNUserNotificationCenterDelegate
@@ -163,9 +239,27 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         let action = response.actionIdentifier
         let isDefault = action == UNNotificationDefaultActionIdentifier
 
-        if let url = donePages.removeValue(forKey: id) {
-            if action == Self.actionOpen || isDefault {
-                delegate?.notifier(self, didOpenPage: url)
+        if let entry = doneEntries[id] {
+            switch action {
+            case Self.actionLooksGood:
+                if !entry.stem.isEmpty {
+                    delegate?.notifier(
+                        self,
+                        didMarkLooksGoodFor: entry.stem,
+                        recordingsDir: entry.recordingsDir
+                    )
+                }
+                doneEntries.removeValue(forKey: id)
+            case Self.actionOpen:
+                if let url = entry.pageURL {
+                    delegate?.notifier(self, didOpenPage: url)
+                }
+                doneEntries.removeValue(forKey: id)
+            default:
+                if isDefault, let url = entry.pageURL {
+                    delegate?.notifier(self, didOpenPage: url)
+                    doneEntries.removeValue(forKey: id)
+                }
             }
         }
 

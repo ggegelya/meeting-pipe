@@ -28,5 +28,8 @@ enum Endpoints {
         static let secretsRelative = ".config/meeting-pipe/secrets.env"
         static let logsRelative = "Library/Logs/MeetingPipe"
         static let recordingsRelative = "Documents/Meetings/raw"
+        /// Phase 2 correction corpus. Per-meeting JSON files; consumed by
+        /// `mp corrections-stats` and (Phase 3) the LoRA trainer.
+        static let correctionsRelative = "Library/Application Support/MeetingPipe/corrections"
     }
 }
