@@ -9,6 +9,7 @@ import os
 import sys
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -90,6 +91,17 @@ class Summarization(BaseModel):
     # bundle. 0 disables the guard. 80 000 chars ≈ 20 000 tokens ≈ 1 hour
     # of speech.
     skip_above_chars: int = 80000
+    # Backend selection (P2.3):
+    #   "anthropic": current behaviour, requires ANTHROPIC_API_KEY.
+    #   "local":     never call Anthropic; force the on-device MLX path.
+    #   "auto":      try Anthropic first, fall back to local on
+    #                network/auth failure.
+    # When `modes.regulated_mode = true` AND `backend = "local"`, the
+    # pipeline must not make any outbound HTTP request. This is the
+    # combination test_regulated_local_zero_egress locks in.
+    backend: Literal["anthropic", "local", "auto"] = "anthropic"
+    local_model: str = "mlx-community/Qwen2.5-14B-Instruct-4bit"
+    local_endpoint: str = "http://127.0.0.1:8765"
 
 
 class NotionCfg(BaseModel):

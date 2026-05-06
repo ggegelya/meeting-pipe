@@ -109,10 +109,19 @@ def check_config() -> Config | None:
     _info(f"recording.output_dir = {cfg.recording.output_dir}")
     _info(f"transcription.model = {cfg.transcription.model}, language = {cfg.transcription.language}")
     _info(f"summarization.model = {cfg.summarization.model}")
+    _info(f"summarization.backend = {cfg.summarization.backend}")
+    if cfg.summarization.backend in {"local", "auto"}:
+        _info(f"summarization.local_model = {cfg.summarization.local_model}")
+        _info(f"summarization.local_endpoint = {cfg.summarization.local_endpoint}")
     _info(f"notion.database_id = {cfg.notion.database_id or '(empty)'}")
     _info(f"modes.regulated_mode = {cfg.modes.regulated_mode}")
     if not cfg.notion.database_id and not cfg.modes.regulated_mode:
         _warn("notion.database_id is empty AND regulated_mode is off — Notion publish will fail")
+    if cfg.modes.regulated_mode and cfg.summarization.backend == "anthropic":
+        _warn(
+            "regulated_mode=true with backend=anthropic still calls api.anthropic.com. "
+            "Set summarization.backend = \"local\" for full zero-egress operation."
+        )
     return cfg
 
 

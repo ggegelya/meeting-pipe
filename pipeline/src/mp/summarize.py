@@ -16,6 +16,7 @@ Two retry layers:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from importlib import resources
 from pathlib import Path
@@ -187,8 +188,7 @@ def summarize(
     )
 
     if client is None:
-        api_key = require_env("ANTHROPIC_API_KEY")
-        client = AnthropicSummaryClient(api_key=api_key)
+        client = _select_backend(cfg)
 
     summary = client.summarize(
         system_prompt=system_prompt,
@@ -210,6 +210,100 @@ def summarize(
 
     log.info("Wrote %s and %s", json_path, md_path)
     return {"json": json_path, "md": md_path}
+
+
+def _select_backend(cfg: Config) -> SummaryClient:
+    """Resolve the backend per `summarization.backend`.
+
+    Three modes:
+      "anthropic": current behaviour, requires ANTHROPIC_API_KEY.
+      "local":     never call Anthropic; build a LocalSummaryClient.
+      "auto":      return an AutoFallbackSummaryClient that tries
+                   Anthropic first, falls back to local on
+                   network/auth failure.
+    """
+    backend = cfg.summarization.backend
+    if backend == "local":
+        from .summarize_local import LocalSummaryClient
+        host, port = _parse_local_endpoint(cfg.summarization.local_endpoint)
+        return LocalSummaryClient(
+            model=cfg.summarization.local_model,
+            host=host,
+            port=port,
+        )
+    if backend == "anthropic":
+        api_key = require_env("ANTHROPIC_API_KEY")
+        return AnthropicSummaryClient(api_key=api_key)
+    if backend == "auto":
+        return _AutoFallbackClient(cfg)
+    raise ValueError(f"unknown summarization.backend: {backend!r}")
+
+
+def _parse_local_endpoint(endpoint: str) -> tuple[str, int]:
+    # "http://127.0.0.1:8765" → ("127.0.0.1", 8765). Defaults match
+    # LocalSummaryClient's defaults so a partially-malformed value
+    # degrades to "the right answer most of the time".
+    default_host, default_port = "127.0.0.1", 8765
+    s = endpoint.strip()
+    for prefix in ("http://", "https://"):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    if "/" in s:
+        s = s.split("/", 1)[0]
+    if ":" in s:
+        host, port_s = s.rsplit(":", 1)
+        try:
+            return (host or default_host, int(port_s))
+        except ValueError:
+            return (host or default_host, default_port)
+    return (s or default_host, default_port)
+
+
+class _AutoFallbackClient:
+    """`SummaryClient` that tries Anthropic first, falls back to local
+    on network/auth failure. Built once per `summarize()` call so the
+    Anthropic auth check is deferred until first use; that lets the
+    fallback fire even when ANTHROPIC_API_KEY is unset.
+    """
+
+    def __init__(self, cfg: Config) -> None:
+        self._cfg = cfg
+
+    def summarize(
+        self,
+        *,
+        system_prompt: str,
+        transcript: str,
+        model: str,
+        max_tokens: int,
+    ) -> MeetingSummary:
+        # Read directly rather than via require_env: that helper calls
+        # sys.exit on miss, which would prevent us from falling back.
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if api_key:
+            try:
+                primary = AnthropicSummaryClient(api_key=api_key)
+                return primary.summarize(
+                    system_prompt=system_prompt, transcript=transcript,
+                    model=model, max_tokens=max_tokens,
+                )
+            except (anthropic.APIConnectionError, anthropic.APITimeoutError,
+                    anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
+                log.warning("Anthropic backend failed (%s); falling back to local", e)
+        else:
+            log.warning("ANTHROPIC_API_KEY not set; using local backend")
+
+        from .summarize_local import LocalSummaryClient
+        host, port = _parse_local_endpoint(self._cfg.summarization.local_endpoint)
+        with LocalSummaryClient(
+            model=self._cfg.summarization.local_model,
+            host=host, port=port,
+        ) as fallback:
+            return fallback.summarize(
+                system_prompt=system_prompt, transcript=transcript,
+                model=model, max_tokens=max_tokens,
+            )
 
 
 def _render_summary_md(s: MeetingSummary) -> str:
