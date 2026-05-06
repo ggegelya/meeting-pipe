@@ -67,6 +67,17 @@ summary_language = "auto"
 # pipeline would have sent — paste both into Claude Code and process the
 # meeting locally without paying API costs. Set to 0 to disable the guard.
 skip_above_chars = 80000
+# Backend selection (P2.3). One of:
+#   "anthropic" : current behaviour, requires ANTHROPIC_API_KEY in secrets.
+#   "local"     : on-device MLX (Qwen 14B-4bit by default). No outbound
+#                 API calls; audio/transcript/summary stay on this Mac.
+#                 First use downloads the model (~9 GB) into HF cache.
+#   "auto"      : try anthropic first, fall back to local on
+#                 network/auth failure.
+# Pair "local" with modes.regulated_mode = true for full zero-egress.
+backend = "anthropic"
+local_model = "mlx-community/Qwen2.5-14B-Instruct-4bit"
+local_endpoint = "http://127.0.0.1:8765"
 
 [notion]
 # Notion database ID (32 chars, no hyphens — copy from the database URL).

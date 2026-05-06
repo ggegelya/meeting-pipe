@@ -19,6 +19,10 @@ dependencies = [
     # stays in the dep list as a graceful fallback for non-Apple-Silicon
     # environments (CI, Linux).
     "mlx-whisper>=0.4.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    # Local-LLM summarization (P2). LocalSummaryClient lazy-spawns
+    # mlx_lm.server when summarization.backend = "local" or "auto".
+    # Apple Silicon only; fall back to backend="anthropic" elsewhere.
+    "mlx-lm>=0.20; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "faster-whisper>=1.0.3",
     "soundfile>=0.12.1",
     "numpy>=1.26",
