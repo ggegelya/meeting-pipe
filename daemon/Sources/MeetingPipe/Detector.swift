@@ -407,26 +407,25 @@ final class Detector {
 
     // MARK: Window probe (Signal C)
 
-    /// Build the default end-detection probe. Branches by `source.kind`:
-    ///   - `.native` apps (Zoom, Teams desktop, Webex desktop) match an
-    ///     English meeting-word in the title (calls show "Meeting", "Zoom
-    ///     Meeting", "Huddle", etc.; chat / launcher windows don't).
+    /// End-detection signal #2 (secondary). Primary is mic-release via
+    /// `isInUseByAnotherApplication`, see `micInUse()`. The window probe
+    /// catches the few-second tail where the meeting app keeps the input
+    /// device open after hangup, and the case where AX permission is
+    /// missing on the meeting app but not the mic.
+    ///
+    /// Branches by `source.kind`:
+    ///   - `.native` apps use a per-bundle recognizer
+    ///     (`isActiveMeetingWindow`) that distinguishes active call windows
+    ///     from chat threads, launchers, and "Schedule Meeting" dialogs.
+    ///     Unknown native bundles fall through to `nil` (inconclusive),
+    ///     so mic-release alone drives end detection for them.
     ///   - `.browser` sources match the meeting URL fragments loaded from
-    ///     `meeting_apps.toml` — the same signal that started detection.
-    ///     The English-word heuristic doesn't fit browsers ("Meet — abc-
-    ///     defg-hij" has no "meeting"; "Sprint planning meeting" in a
-    ///     stray Calendar tab would falsely keep the call alive).
+    ///     `meeting_apps.toml`, the same signal that started detection.
     ///
-    /// Returns nil when the probe can't tell (AX denied / AX read failed)
-    /// so the composer treats the call as still in progress — better to
-    /// over-record than to false-stop on a transient probe failure.
-    ///
-    /// Relationship to the mic signal: post-start, `micInUse()` skips its
-    /// broad CoreAudio fallback so `isInUseByAnotherApplication` (which
-    /// excludes self) carries the mic-release signal. The window probe
-    /// complements that by covering the few-second tail where the meeting
-    /// app keeps the input device open after hangup, and the case where
-    /// AX permission is missing on the meeting app but not the mic.
+    /// Returns nil when the probe can't tell (AX denied, AX read failed,
+    /// or unknown-shape native bundle), so the composer treats the call
+    /// as still in progress, preferring over-record to silent mid-call
+    /// stops.
     private static func makeDefaultWindowProbe(
         browserURLFragments: [String]
     ) -> WindowProbe {
@@ -451,21 +450,111 @@ final class Detector {
         // false-stop on a one-off failure.
         guard let titles = titles else { return nil }
 
-        let meetingWords = ["meeting", "zoom meeting", "call", "huddle", "webex meeting"]
-        var sawMeetingWord = false
-        for title in titles {
-            let lowered = title.lowercased()
-            if meetingWords.contains(where: { lowered.contains($0) }) {
-                sawMeetingWord = true
-                break
-            }
+        // Unknown-shape bundle: defer to mic-release. The recognizer's
+        // conservative default is `false` for unknown apps, which would
+        // wrongly fire end the moment the probe runs. Returning nil keeps
+        // the composer in "still open" mode and lets Part 1 handle end.
+        if !isKnownShapeApp(source.bundleID) {
+            Log.writeLine(
+                "detector",
+                "windowprobe(native) app=\(source.bundleID) UNKNOWN_SHAPE → inconclusive"
+            )
+            return nil
+        }
+
+        let recognized = titles.first { title in
+            isActiveMeetingWindow(bundleID: source.bundleID, kind: source.kind, title: title)
         }
         Log.writeLine(
             "detector",
-            "windowprobe(native) app=\(source.bundleID) titles=[\(titles.joined(separator: " | "))] meetingWord=\(sawMeetingWord) anyVisible=\(!titles.isEmpty)"
+            "windowprobe(native) app=\(source.bundleID) titles=[\(titles.joined(separator: " | "))] activeWindow=\(recognized ?? "(none)")"
         )
         if titles.isEmpty { return false }
-        return sawMeetingWord ? true : false
+        return recognized != nil
+    }
+
+    /// Recognize whether a window title belongs to an *active meeting
+    /// window* for the given app. Distinct from the per-app extractors
+    /// (`extractZoomNativeTitle` etc.): those try to pull a usable topic
+    /// and return nil for valid-but-bare meeting windows. Recognition
+    /// must be permissive about the bare case, because a false negative
+    /// here cuts the recording mid-call.
+    ///
+    /// Returns `true` on positive match. The probe upstream returns true
+    /// if ANY title in the app's window list recognizes; this function
+    /// alone never ends recording.
+    static func isActiveMeetingWindow(bundleID: String, kind: AppSourceKind, title: String) -> Bool {
+        let lowered = title.lowercased().trimmingCharacters(in: .whitespaces)
+
+        switch (bundleID, kind) {
+        case ("us.zoom.xos", _):
+            // Active meeting windows always end in "zoom meeting" (with
+            // or without topic prefix). Idle launcher and chrome dialogs
+            // are explicitly rejected so a future title format change
+            // can't sneak through.
+            if lowered == "zoom" { return false }                    // launcher
+            if lowered.hasPrefix("schedule meeting") { return false } // dialog
+            if lowered.hasPrefix("join meeting") { return false }     // dialog
+            return lowered.contains("zoom meeting")
+
+        case ("com.microsoft.teams2", .native), ("com.microsoft.teams", .native):
+            // Modern Teams active meeting windows always end in
+            // "| microsoft teams" AND have a meeting/call marker in the
+            // leading segment. Chat threads share the suffix but their
+            // lead is the chat subject, which can naturally contain
+            // "meeting" or "call" as a word. Use prefix/exact match,
+            // not contains, so "Sprint planning meeting" does not match.
+            // "huddle" / "breakout" are rare enough in chat titles to
+            // tolerate substring match.
+            guard lowered.hasSuffix("| microsoft teams") else { return false }
+            let lead = String(lowered.dropLast("| microsoft teams".count))
+                .trimmingCharacters(in: .whitespaces)
+            if lead.isEmpty { return false }                         // bare app chrome
+            return lead == "meeting"
+                || lead.hasPrefix("meeting in ")
+                || lead.hasPrefix("meeting with ")
+                || lead.hasPrefix("call with ")
+                || lead == "calling"
+                || lead.hasPrefix("calling ")
+                || lead.contains("huddle")
+                || lead.contains("breakout")
+
+        case ("com.cisco.webexmeetingsapp", _):
+            // Webex active meeting always contains "webex meeting".
+            // Idle is "Webex" or "Cisco Webex".
+            return lowered.contains("webex meeting")
+
+        case ("com.tinyspeck.slackmacgap", _):
+            // Slack huddles: "huddle" as a whole word, not as substring
+            // of channel name. Word-boundary regex so "team-huddles"
+            // (plural channel name) does not match: `s` after `huddle`
+            // is alphanumeric, so the trailing word boundary fails.
+            return title.range(of: #"\bhuddle\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+
+        case ("com.skype.skype", _):
+            return lowered.contains("call with") || lowered.contains("group call")
+
+        case ("com.google.meet", _):
+            return lowered.contains("google meet")
+
+        default:
+            // Unknown native bundle. The probe upstream short-circuits
+            // before reaching the recognizer for unknown shapes, so this
+            // path is dead under normal operation; kept as a safety net.
+            return false
+        }
+    }
+
+    private static func isKnownShapeApp(_ bundleID: String) -> Bool {
+        [
+            "us.zoom.xos",
+            "com.microsoft.teams2",
+            "com.microsoft.teams",
+            "com.cisco.webexmeetingsapp",
+            "com.tinyspeck.slackmacgap",
+            "com.skype.skype",
+            "com.google.meet",
+        ].contains(bundleID)
     }
 
     private static func browserWindowProbe(_ source: AppSource, fragments: [String]) -> Bool? {
