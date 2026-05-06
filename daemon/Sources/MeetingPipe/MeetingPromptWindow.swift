@@ -50,7 +50,11 @@ final class MeetingPromptWindow {
     private var dismissRemainingOnPause: TimeInterval?
 
     private static let panelWidth: CGFloat = 520
-    private static let panelHeight: CGFloat = 88
+    // Tighter than the previous 88pt: the redesign promotes "Record this
+    // meeting?" to the dominant title and demotes the app name to a
+    // small uppercase eyebrow, which is a denser hierarchy that wants
+    // less vertical air. ~30% reduction per Roadmap P4.1.
+    private static let panelHeight: CGFloat = 64
     /// Distance from the top of the visible area. Notion's pill sits ~80pt
     /// down; we match that so the two HUDs read as the same family when
     /// they appear side-by-side.
@@ -141,31 +145,48 @@ final class MeetingPromptWindow {
         let glyph = AppGlyphView(source: source)
         bg.addSubview(glyph)
 
-        // --- Stacked text: title + subline ---------------------------
-        let title = NSTextField(labelWithString: source.displayName)
-        title.font = .mpTitle()
-        title.textColor = MPColors.fg
-        title.lineBreakMode = .byTruncatingTail
-        title.translatesAutoresizingMaskIntoConstraints = false
-        bg.addSubview(title)
+        // --- Stacked text: eyebrow (app name) + question ------------
+        // Hierarchy inversion vs the prior layout: the question is the
+        // primary call-to-attention, the app name is supporting context.
+        // Reading order: glance left, see "Record this meeting?", check
+        // the eyebrow above for which app, then move right to the action
+        // cluster.
+        let eyebrow = NSTextField(labelWithString: source.displayName.uppercased())
+        eyebrow.font = .mpEyebrow()
+        eyebrow.textColor = MPColors.ink500
+        eyebrow.lineBreakMode = .byTruncatingTail
+        eyebrow.translatesAutoresizingMaskIntoConstraints = false
+        // Tracking +0.04em (mac-ish: ~0.4pt at 11pt) for that uppercase
+        // eyebrow rhythm. NSAttributedString is the only way to set
+        // tracking on an NSTextField; the styled string overrides
+        // `stringValue`.
+        eyebrow.attributedStringValue = NSAttributedString(
+            string: source.displayName.uppercased(),
+            attributes: [
+                .font: NSFont.mpEyebrow(),
+                .foregroundColor: MPColors.ink500,
+                .kern: 0.4,
+            ]
+        )
+        bg.addSubview(eyebrow)
 
         let permDenied = SystemAudioCapture.permissionState == .denied
-        let subline = HintLabel()
+        let question = HintLabel()
         if permDenied {
-            subline.stringValue = "⚠ System audio blocked — recording will be mic-only"
-            subline.textColor = MPColors.pulse500
-            subline.makeClickable {
+            question.stringValue = "⚠ System audio blocked, recording will be mic-only"
+            question.textColor = MPColors.pulse500
+            question.makeClickable {
                 SystemAudioCapture.openScreenRecordingSettings()
             }
         } else {
-            subline.stringValue = "Record this meeting?"
-            subline.textColor = MPColors.fgMuted
+            question.stringValue = "Record this meeting?"
+            question.textColor = MPColors.fg
         }
-        subline.font = .mpCaption()
-        subline.maximumNumberOfLines = 1
-        subline.lineBreakMode = .byTruncatingTail
-        subline.translatesAutoresizingMaskIntoConstraints = false
-        bg.addSubview(subline)
+        question.font = .mpTitle()
+        question.maximumNumberOfLines = 1
+        question.lineBreakMode = .byTruncatingTail
+        question.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(question)
 
         // --- Live waveform (small, between title and primary action) -
         let waveform = LiveWaveformView(frame: .zero)
@@ -198,34 +219,38 @@ final class MeetingPromptWindow {
         bg.dismissProgress = progress
 
         // --- Layout --------------------------------------------------
-        // 12pt top/bottom padding; horizontal layout flows left → right.
+        // 12pt top/bottom padding; horizontal layout flows left to right.
+        // Close (×) is now pinned to the top-left corner so the action
+        // row starts at the glyph and is no longer offset by it.
         let leftEdge: CGFloat = 14
         let rightEdge: CGFloat = 12
-        let textLeading: CGFloat = leftEdge + 22 + 10 + 32 + 10
-        // close(22) + gap(10) + glyph(32) + gap(10)
+        let textLeading: CGFloat = leftEdge + 32 + 10
+        // glyph(32) + gap(10)
 
         NSLayoutConstraint.activate([
-            // × close
-            close.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: leftEdge),
-            close.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
-            close.widthAnchor.constraint(equalToConstant: 22),
-            close.heightAnchor.constraint(equalToConstant: 22),
+            // × close: smaller (14pt) and pinned to the top-left corner of
+            // the panel padding, off the action row entirely. Muted color
+            // so it reads as chrome, not a competing CTA.
+            close.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 6),
+            close.topAnchor.constraint(equalTo: bg.topAnchor, constant: 6),
+            close.widthAnchor.constraint(equalToConstant: 14),
+            close.heightAnchor.constraint(equalToConstant: 14),
 
-            // App glyph
-            glyph.leadingAnchor.constraint(equalTo: close.trailingAnchor, constant: 10),
+            // App glyph: leads the action row; close (×) is in the corner.
+            glyph.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: leftEdge),
             glyph.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
             glyph.widthAnchor.constraint(equalToConstant: 32),
             glyph.heightAnchor.constraint(equalToConstant: 32),
 
-            // Title (top of stacked text)
-            title.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: textLeading),
-            title.topAnchor.constraint(equalTo: glyph.topAnchor, constant: -2),
-            title.trailingAnchor.constraint(lessThanOrEqualTo: waveform.leadingAnchor, constant: -8),
+            // Eyebrow (small uppercase, top of the stacked text block)
+            eyebrow.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: textLeading),
+            eyebrow.topAnchor.constraint(equalTo: glyph.topAnchor, constant: 0),
+            eyebrow.trailingAnchor.constraint(lessThanOrEqualTo: waveform.leadingAnchor, constant: -8),
 
-            // Subline (under title)
-            subline.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: textLeading),
-            subline.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 2),
-            subline.trailingAnchor.constraint(lessThanOrEqualTo: waveform.leadingAnchor, constant: -8),
+            // Question (dominant) under the eyebrow
+            question.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: textLeading),
+            question.topAnchor.constraint(equalTo: eyebrow.bottomAnchor, constant: 1),
+            question.trailingAnchor.constraint(lessThanOrEqualTo: waveform.leadingAnchor, constant: -8),
 
             // Waveform sits left of the action cluster.
             waveform.trailingAnchor.constraint(equalTo: recordBYO.leadingAnchor, constant: -10),
@@ -234,10 +259,11 @@ final class MeetingPromptWindow {
             waveform.heightAnchor.constraint(equalToConstant: 14),
 
             // Right cluster: chevron flush right; Record before it; BYO before that.
+            // Unified pill geometry: chevron is 26x26, same height as MPButton.
             chevron.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -rightEdge),
             chevron.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
-            chevron.widthAnchor.constraint(equalToConstant: 28),
-            chevron.heightAnchor.constraint(equalToConstant: 28),
+            chevron.widthAnchor.constraint(equalToConstant: 26),
+            chevron.heightAnchor.constraint(equalToConstant: 26),
 
             record.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -8),
             record.centerYAnchor.constraint(equalTo: bg.centerYAnchor),

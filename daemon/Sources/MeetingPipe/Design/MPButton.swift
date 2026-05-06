@@ -36,12 +36,13 @@ final class MPButton: NSButton {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override var intrinsicContentSize: NSSize {
-        // 28pt control height — slightly tighter than NSButton default but
-        // matches mac chrome density. Width fits text + 14pt horizontal
-        // padding either side.
+        // 26pt control height: unified pill geometry (Roadmap P4.1)
+        // shared with the chevron menu button so the prompt's right-
+        // cluster reads as one coherent control row. Width fits text
+        // plus 14pt horizontal padding either side.
         let textSize = (attributedTitle).size()
         let padX: CGFloat = mpStyle == .text ? 8 : 14
-        return NSSize(width: ceil(textSize.width) + padX * 2, height: 28)
+        return NSSize(width: ceil(textSize.width) + padX * 2, height: 26)
     }
 
     override func updateTrackingAreas() {
