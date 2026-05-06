@@ -282,10 +282,15 @@ private final class PulseDotView: NSView {
     }
 
     func startPulsing() {
+        // Opacity-axis pulse (not scale): a recording-status indicator
+        // that subtly grows and shrinks reads as a UI toggle, not as a
+        // live state. Fading-in-and-out at the same physical size feels
+        // like a heartbeat, which is the right metaphor. Design doc
+        // targets a 1.6s loop (autoreverse, so 0.8s in each direction).
         let anim = CABasicAnimation(keyPath: "opacity")
         anim.fromValue = 1.0
         anim.toValue = 0.35
-        anim.duration = 1.0
+        anim.duration = 0.8
         anim.autoreverses = true
         anim.repeatCount = .infinity
         anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
