@@ -24,6 +24,7 @@ from importlib import resources
 from pathlib import Path
 
 from .config import Config, load_secrets
+from .corrections import write_run_sidecar
 from .diarize import (
     assign_speakers,
     assign_speakers_by_channel,
@@ -243,6 +244,24 @@ def _run_all_inner(wav: Path, cfg: Config, *, force_byo: bool) -> dict:
     events.emit("pipeline", "stage_started", stage="summarize")
     s = summarize(t["md"], cfg=cfg)
     events.emit("pipeline", "stage_completed", stage="summarize", md=str(s["md"]))
+
+    # Run sidecar: snapshot of which backend + model produced this
+    # summary, plus enough metadata for the Phase 2 correction loop to
+    # round-trip the original summary without guessing. Best-effort; a
+    # write failure is logged but does not block publish.
+    try:
+        sidecar = write_run_sidecar(
+            recordings_dir=Path(t["md"]).parent,
+            stem=Path(t["md"]).stem,
+            transcript_path=Path(t["md"]),
+            transcript_chars=len(md_text),
+            summary_json_path=Path(s["json"]),
+            backend=str(s.get("backend") or ""),
+            model=str(s.get("model") or ""),
+        )
+        log.info("Wrote run sidecar: %s", sidecar)
+    except Exception as e:  # noqa: BLE001
+        log.warning("run sidecar write failed: %s", e)
 
     log.info("[3/3] publish (sinks=%s)", ",".join(cfg.output.sinks) or "none")
     events.emit("pipeline", "stage_started", stage="publish",

@@ -165,7 +165,7 @@ def summarize(
     cfg: Config | None = None,
     *,
     client: SummaryClient | None = None,
-) -> dict[str, Path]:
+) -> dict[str, Path | str]:
     """Read `<stem>.md` and write `<stem>.summary.json` + `<stem>.summary.md`.
 
     The transcript path is the speaker-segmented Markdown produced by
@@ -174,6 +174,10 @@ def summarize(
 
     Pass a custom `client` to swap the LLM provider or to inject a fake
     in tests; defaults to `AnthropicSummaryClient`.
+
+    Returns a dict with the written paths plus ``backend`` / ``model``
+    naming which path actually produced the summary. Phase 2's
+    correction loop reads those fields from the run sidecar.
     """
     cfg = cfg or Config.load()
     load_secrets()
@@ -208,8 +212,40 @@ def summarize(
     )
     md_path.write_text(_render_summary_md(summary), encoding="utf-8")
 
+    backend, model_used = _identify_backend(client, cfg)
     log.info("Wrote %s and %s", json_path, md_path)
-    return {"json": json_path, "md": md_path}
+    return {
+        "json": json_path,
+        "md": md_path,
+        "backend": backend,
+        "model": model_used,
+    }
+
+
+def _identify_backend(client: SummaryClient, cfg: Config) -> tuple[str, str]:
+    """Map the client that handled the call back to a (backend, model)
+    pair for the run sidecar.
+
+    For ``_AutoFallbackClient`` we read ``last_used_*`` which it
+    populates per call; the other clients are stable per instance so
+    we infer from type + cfg.
+    """
+    if isinstance(client, _AutoFallbackClient):
+        return (
+            client.last_used_backend or "anthropic",
+            client.last_used_model or cfg.summarization.model,
+        )
+    if isinstance(client, AnthropicSummaryClient):
+        return "anthropic", cfg.summarization.model
+    # Local backend: import lazily so non-local installs do not pay
+    # the mlx_lm import cost for an isinstance check.
+    try:
+        from .summarize_local import LocalSummaryClient
+    except Exception:
+        return "unknown", cfg.summarization.model
+    if isinstance(client, LocalSummaryClient):
+        return "local", client.model
+    return "unknown", cfg.summarization.model
 
 
 def _select_backend(cfg: Config) -> SummaryClient:
@@ -269,6 +305,10 @@ class _AutoFallbackClient:
 
     def __init__(self, cfg: Config) -> None:
         self._cfg = cfg
+        # Set per call so `_identify_backend` can attribute the run
+        # sidecar to whichever path actually answered.
+        self.last_used_backend: str | None = None
+        self.last_used_model: str | None = None
 
     def summarize(
         self,
@@ -284,10 +324,13 @@ class _AutoFallbackClient:
         if api_key:
             try:
                 primary = AnthropicSummaryClient(api_key=api_key)
-                return primary.summarize(
+                result = primary.summarize(
                     system_prompt=system_prompt, transcript=transcript,
                     model=model, max_tokens=max_tokens,
                 )
+                self.last_used_backend = "anthropic"
+                self.last_used_model = model
+                return result
             except (anthropic.APIConnectionError, anthropic.APITimeoutError,
                     anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
                 log.warning("Anthropic backend failed (%s); falling back to local", e)
@@ -296,14 +339,18 @@ class _AutoFallbackClient:
 
         from .summarize_local import LocalSummaryClient
         host, port = _parse_local_endpoint(self._cfg.summarization.local_endpoint)
+        local_model = self._cfg.summarization.local_model
         with LocalSummaryClient(
-            model=self._cfg.summarization.local_model,
+            model=local_model,
             host=host, port=port,
         ) as fallback:
-            return fallback.summarize(
+            result = fallback.summarize(
                 system_prompt=system_prompt, transcript=transcript,
                 model=model, max_tokens=max_tokens,
             )
+            self.last_used_backend = "local"
+            self.last_used_model = local_model
+            return result
 
 
 def _render_summary_md(s: MeetingSummary) -> str:

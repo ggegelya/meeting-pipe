@@ -28,6 +28,8 @@ Subcommands:
   dogfood <transcript.md>     Run Anthropic + local backends side-by-side
   dogfood --report            Aggregate scored runs into a ship-decision report
   prefetch-model <repo_id>    Pre-download a local-mode MLX model (JSONL progress)
+  corrections-stats [--dir P] [--json]
+                              Aggregate the local correction corpus (Phase 2)
 
 Globals:
   --help, -h                  Show this message
@@ -80,6 +82,9 @@ def main() -> int:
         return run(rest)
     if cmd in {"prefetch-model", "prefetch_model"}:
         from .prefetch_model import main as run
+        return run(rest)
+    if cmd in {"corrections-stats", "corrections_stats"}:
+        from .corrections import main as run
         return run(rest)
 
     print(f"unknown subcommand: {cmd}\n", file=sys.stderr)

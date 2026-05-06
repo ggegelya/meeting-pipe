@@ -99,6 +99,16 @@ class LocalSummaryClient:
         self._idle_timer: threading.Timer | None = None
         self._http = httpx.Client(timeout=httpx.Timeout(120.0, connect=5.0))
 
+    @property
+    def model(self) -> str:
+        """Repo id of the MLX model this client is pinned to.
+
+        Read by ``mp.summarize._identify_backend`` so the run sidecar
+        records the actual model that produced a summary, even when
+        Preferences swaps the configured model later.
+        """
+        return self._model
+
     # ----- Public API (SummaryClient) -----
 
     def summarize(
