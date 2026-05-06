@@ -23,6 +23,8 @@ Subcommands:
                               then publish to Notion (BYO summary mode)
   run-all <wav>               Run all three in order, fail-fast
   doctor                      Preflight check (secrets, config, live API access)
+  logs [--since 1h] [--category C] [--action A] [--json]
+                              Filter and pretty-print JSONL event streams
 
 Globals:
   --help, -h                  Show this message
@@ -66,6 +68,9 @@ def main() -> int:
         return run(rest)
     if cmd == "doctor":
         from .doctor import main as run
+        return run(rest)
+    if cmd == "logs":
+        from .logs_cmd import main as run
         return run(rest)
 
     print(f"unknown subcommand: {cmd}\n", file=sys.stderr)
