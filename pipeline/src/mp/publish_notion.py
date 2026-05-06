@@ -280,30 +280,47 @@ def _build_blocks(
     transcript_md: Path | None,
     include_transcript: bool,
 ) -> list[dict]:
+    """Compose the Notion page body.
+
+    Layout per Roadmap P4.3 ("looks deliberate, not algorithmic"):
+
+      - Summary: a single info-callout block joining the bullets with
+        line breaks. The previous bullet-list rendering felt like the
+        page was "a list of lists".
+      - Decisions: numbered list. First clause (text up to the first
+        ':' or '.') rendered bold so each item has a clear opening.
+      - Action items: to-do block with the owner styled as a coloured
+        mention pill, due date inline, and a confidence chip whose
+        color varies by level (high=blue, medium=default, low=gray).
+        Real Notion @mentions require a user-ID lookup we do not have;
+        the pill is the closest we can get without that round-trip.
+      - Open questions: collapsed toggle so the page does not lead
+        with what we don't know.
+      - Transcript: collapsed toggle (unchanged).
+    """
     blocks: list[dict] = []
 
     blocks.append(_h2("Summary"))
-    for bullet in summary.summary:
-        blocks.append(_bullet(bullet))
+    blocks.append(_callout("\n".join(summary.summary), emoji="🎯"))
 
     if summary.decisions:
         blocks.append(_h2("Decisions"))
-        for i, d in enumerate(summary.decisions, 1):
-            blocks.append(_numbered(d))
+        for d in summary.decisions:
+            blocks.append(_numbered_with_bold_opener(d))
 
     if summary.actions:
         blocks.append(_h2("Action Items"))
         for a in summary.actions:
-            owner = a.owner or "unassigned"
-            due = f" (due {a.due})" if a.due else ""
-            blocks.append(
-                _todo(f"{owner}: {a.task}{due}  [confidence: {a.confidence}]")
-            )
+            blocks.append(_action_block(
+                task=a.task,
+                owner=a.owner,
+                due=a.due,
+                confidence=a.confidence,
+            ))
 
     if summary.questions:
         blocks.append(_h2("Open Questions"))
-        for q in summary.questions:
-            blocks.append(_bullet(q))
+        blocks.append(_questions_toggle(summary.questions))
 
     if include_transcript and transcript_md and transcript_md.exists():
         blocks.append(_transcript_toggle(transcript_md.read_text(encoding="utf-8")))
@@ -343,10 +360,109 @@ def _todo(text: str) -> dict:
     }
 
 
-def _text(content: str) -> dict:
+def _text(content: str, *, bold: bool = False, color: str = "default") -> dict:
     # Notion caps a single rich_text run at 2000 chars. We rely on the caller
     # to feed short bullets; long transcripts go through _transcript_toggle.
-    return {"type": "text", "text": {"content": content[:2000]}}
+    block: dict = {"type": "text", "text": {"content": content[:2000]}}
+    annotations: dict = {}
+    if bold:
+        annotations["bold"] = True
+    if color != "default":
+        annotations["color"] = color
+    if annotations:
+        block["annotations"] = annotations
+    return block
+
+
+# ---------- Block builders for the redesigned page (P4.3) -----------
+
+def _callout(text: str, *, emoji: str = "💬") -> dict:
+    return {
+        "object": "block",
+        "type": "callout",
+        "callout": {
+            "rich_text": [_text(text)],
+            "icon": {"type": "emoji", "emoji": emoji},
+            "color": "blue_background",
+        },
+    }
+
+
+def _numbered_with_bold_opener(text: str) -> dict:
+    """Bold the opening clause of a decision so each numbered item has
+    a visible lede. Splits at the first ':' or '. ' (whichever comes
+    first); the opener is whatever comes before, the rest is plain.
+    Falls back to plain text when neither delimiter appears in the
+    first 60 chars."""
+    head, tail = _split_opening_clause(text)
+    runs: list[dict] = [_text(head, bold=True)]
+    if tail:
+        runs.append(_text(tail))
+    return {
+        "object": "block",
+        "type": "numbered_list_item",
+        "numbered_list_item": {"rich_text": runs},
+    }
+
+
+def _split_opening_clause(text: str) -> tuple[str, str]:
+    # Look for ':' first since it's the more emphatic split ("Ship: ...").
+    # Cap at 60 to avoid bolding half a paragraph.
+    cut_at = -1
+    for i, ch in enumerate(text[:60]):
+        if ch == ":":
+            cut_at = i + 1
+            break
+    if cut_at == -1:
+        for i in range(min(len(text) - 1, 60)):
+            if text[i] == "." and text[i + 1] == " ":
+                cut_at = i + 1
+                break
+    if cut_at <= 0:
+        return text, ""
+    return text[:cut_at], text[cut_at:]
+
+
+_CONFIDENCE_COLOR = {"high": "blue", "medium": "default", "low": "gray"}
+
+
+def _action_block(
+    *,
+    task: str,
+    owner: str | None,
+    due: str | None,
+    confidence: str,
+) -> dict:
+    runs: list[dict] = []
+    # Owner mention pill: bold + colored. Real Notion @mentions need a
+    # user-ID lookup we do not have without a separate config map.
+    owner_label = f"@{owner}" if owner else "@unassigned"
+    owner_color = "blue" if owner else "gray"
+    runs.append(_text(owner_label, bold=True, color=owner_color))
+    runs.append(_text(" "))
+    runs.append(_text(task))
+    if due:
+        runs.append(_text(f"  ({due})", color="brown"))
+    runs.append(_text("  "))
+    chip_color = _CONFIDENCE_COLOR.get(confidence, "default")
+    runs.append(_text(f"[{confidence}]", color=chip_color, bold=(confidence == "high")))
+    return {
+        "object": "block",
+        "type": "to_do",
+        "to_do": {"rich_text": runs, "checked": False},
+    }
+
+
+def _questions_toggle(questions: list[str]) -> dict:
+    children = [_bullet(q) for q in questions]
+    return {
+        "object": "block",
+        "type": "toggle",
+        "toggle": {
+            "rich_text": [_text(f"{len(questions)} unresolved")],
+            "children": children,
+        },
+    }
 
 
 def _transcript_toggle(transcript: str) -> dict:
