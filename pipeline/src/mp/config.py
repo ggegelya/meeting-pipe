@@ -100,7 +100,10 @@ class Summarization(BaseModel):
     # pipeline must not make any outbound HTTP request. This is the
     # combination test_regulated_local_zero_egress locks in.
     backend: Literal["anthropic", "local", "auto"] = "anthropic"
-    local_model: str = "mlx-community/Qwen2.5-14B-Instruct-4bit"
+    # Default to the 3B-4bit (~2 GB) so first-time local users do not pay
+    # a 7-8 GB download. Power users opt into a larger model in
+    # Preferences -> Pipeline (Recommended = Qwen 14B-4bit, Large = 32B-4bit).
+    local_model: str = "mlx-community/Qwen2.5-3B-Instruct-4bit"
     local_endpoint: str = "http://127.0.0.1:8765"
 
 

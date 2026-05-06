@@ -23,6 +23,16 @@ final class StatusBarController {
     /// how many meetings are still being transcribed in the background.
     private var processingCount: Int = 0
 
+    /// Last reported model-download state. Surfaced as a prefix on the
+    /// menu-bar title (so it's visible without opening the menu) plus a
+    /// dedicated header row in the menu (so the user can see the bytes
+    /// breakdown). `idle` means no downloading happening; we never show
+    /// `completed` longer than `completedDisplayDuration` to avoid a
+    /// stale "Downloaded X" line lingering forever.
+    private var modelDownload: ModelDownloadSupervisor.State = .idle
+    private var modelDownloadCompletedDisplayTimer: Timer?
+    private static let completedDisplayDuration: TimeInterval = 5
+
     init(item: NSStatusItem) {
         self.item = item
         if let button = item.button {
@@ -67,9 +77,52 @@ final class StatusBarController {
         rebuildMenu(state: lastMenuState)
     }
 
+    /// Reflect the model-prefetch lifecycle in the menu bar. The download
+    /// is asynchronous; the user is otherwise blind to it because it
+    /// happens inside a Python subprocess called from the Coordinator.
+    /// Driven by `Coordinator.modelDownload.onStateChange`.
+    func setModelDownload(_ s: ModelDownloadSupervisor.State) {
+        modelDownload = s
+        modelDownloadCompletedDisplayTimer?.invalidate()
+        modelDownloadCompletedDisplayTimer = nil
+        if case .completed = s {
+            // Keep the "Downloaded X" line up briefly so the user sees
+            // the resolution; then collapse to idle so the menu isn't
+            // perpetually advertising a now-finished download.
+            modelDownloadCompletedDisplayTimer = Timer.scheduledTimer(
+                withTimeInterval: Self.completedDisplayDuration, repeats: false
+            ) { [weak self] _ in
+                guard let self = self else { return }
+                self.modelDownload = .idle
+                self.applyTitle()
+                self.rebuildMenu(state: self.lastMenuState)
+            }
+        }
+        applyTitle()
+        rebuildMenu(state: lastMenuState)
+    }
+
     private func applyTitle() {
         let badge = processingCount > 0 ? " · Processing (\(processingCount))" : ""
-        item.button?.title = " \(baseTitle)\(badge)"
+        let download = modelDownloadTitleSuffix
+        item.button?.title = " \(baseTitle)\(badge)\(download)"
+    }
+
+    /// Compact suffix that fits in the menu-bar title alongside the
+    /// existing state label. We show only the percent (or "…" when the
+    /// total is unknown) here; full byte breakdown lives in the menu.
+    private var modelDownloadTitleSuffix: String {
+        switch modelDownload {
+        case .idle, .completed:
+            return ""
+        case .downloading(_, let progress, _, _):
+            if let pct = progress {
+                return " · ↓ \(Int(pct * 100))%"
+            }
+            return " · ↓ …"
+        case .failed:
+            return " · ↓ failed"
+        }
     }
 
     // MARK: Icons
@@ -170,6 +223,11 @@ final class StatusBarController {
         menu.addItem(header)
         menu.addItem(.separator())
 
+        if let downloadRow = modelDownloadMenuRow {
+            menu.addItem(downloadRow)
+            menu.addItem(.separator())
+        }
+
         if SystemAudioCapture.permissionState == .denied {
             let warn = NSMenuItem(
                 title: "⚠ System audio blocked — Open Screen Recording Settings…",
@@ -212,6 +270,58 @@ final class StatusBarController {
         menu.addItem(NSMenuItem(title: "Quit MeetingPipe", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
         item.menu = menu
+    }
+
+    /// Detailed model-download row, or nil when there's nothing to show.
+    /// Disabled (informational); clicking does nothing.
+    private var modelDownloadMenuRow: NSMenuItem? {
+        switch modelDownload {
+        case .idle:
+            return nil
+        case .downloading(let modelId, let progress, let downloaded, let total):
+            let head = Self.shortModelId(modelId)
+            let body: String
+            if total > 0 {
+                body = "\(Self.formatBytes(downloaded)) / \(Self.formatBytes(total))"
+                    + (progress.map { " (\(Int($0 * 100))%)" } ?? "")
+            } else {
+                body = "\(Self.formatBytes(downloaded)) downloaded"
+            }
+            let item = NSMenuItem(title: "Downloading \(head): \(body)", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            return item
+        case .completed(let modelId):
+            let item = NSMenuItem(title: "✓ Downloaded \(Self.shortModelId(modelId))", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            return item
+        case .failed(let modelId, let error):
+            let item = NSMenuItem(
+                title: "⚠ Model download failed: \(Self.shortModelId(modelId)): \(error.prefix(80))",
+                action: nil, keyEquivalent: ""
+            )
+            item.isEnabled = false
+            return item
+        }
+    }
+
+    /// Drop the `mlx-community/` prefix when present so the menu row
+    /// stays readable on a 24"+ display without truncation. The full id
+    /// is in Preferences -> Pipeline if the user wants exact-string.
+    private static func shortModelId(_ id: String) -> String {
+        if let slash = id.lastIndex(of: "/") {
+            return String(id[id.index(after: slash)...])
+        }
+        return id
+    }
+
+    private static func formatBytes(_ bytes: Int64) -> String {
+        let kb = Double(bytes) / 1024.0
+        let mb = kb / 1024.0
+        let gb = mb / 1024.0
+        if gb >= 1 { return String(format: "%.1f GB", gb) }
+        if mb >= 1 { return String(format: "%.0f MB", mb) }
+        if kb >= 1 { return String(format: "%.0f KB", kb) }
+        return "\(bytes) B"
     }
 
     private func stateLabel(_ s: AppState) -> String {

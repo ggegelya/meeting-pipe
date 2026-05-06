@@ -293,8 +293,17 @@ See [`config.example.toml`](./config.example.toml). Highlights:
   MLX, no outbound calls), or `"auto"` (try Anthropic first, fall back to
   local on network/auth failure). Switchable in Preferences → Pipeline.
 - `summarization.local_model`: MLX model id when backend is `"local"` or
-  `"auto"`. Default `mlx-community/Qwen2.5-14B-Instruct-4bit` (~9 GB on
-  first use; cached in `~/.cache/huggingface/hub`).
+  `"auto"`. Default `mlx-community/Qwen2.5-3B-Instruct-4bit` (~2 GB on
+  first use; cached in `~/.cache/huggingface/hub`). Use the preset
+  picker in Preferences → Pipeline to swap to the curated
+  Recommended (Qwen 14B-4bit, ~8 GB, slower, better quality) or Large
+  (Qwen 32B-4bit, ~18 GB, slowest, best quality) options, or pick
+  Custom and paste any HuggingFace MLX repo id. The daemon pre-fetches
+  the configured model immediately on first launch / on backend flip,
+  so the first meeting in local mode does not wait several minutes
+  for the download to finish inside `mlx_lm.server`. Progress shows
+  in the menu bar (title suffix `↓ NN%` plus a dedicated menu row
+  with the byte breakdown).
 - `summarization.local_endpoint`: where `LocalSummaryClient` will spawn
   `mlx_lm.server`. Default `http://127.0.0.1:8765`.
 - `output.sinks`: ordered list of publishers to invoke. Default `["notion"]`.

@@ -27,6 +27,7 @@ Subcommands:
                               Filter and pretty-print JSONL event streams
   dogfood <transcript.md>     Run Anthropic + local backends side-by-side
   dogfood --report            Aggregate scored runs into a ship-decision report
+  prefetch-model <repo_id>    Pre-download a local-mode MLX model (JSONL progress)
 
 Globals:
   --help, -h                  Show this message
@@ -76,6 +77,9 @@ def main() -> int:
         return run(rest)
     if cmd == "dogfood":
         from .dogfood import main as run
+        return run(rest)
+    if cmd in {"prefetch-model", "prefetch_model"}:
+        from .prefetch_model import main as run
         return run(rest)
 
     print(f"unknown subcommand: {cmd}\n", file=sys.stderr)

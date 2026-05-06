@@ -499,9 +499,31 @@ recording without a daemon restart.
   server.
 - A 5-min idle timer (configurable) shuts the server down to free
   RAM. Spawn / shutdown are serialized via a per-instance lock.
-- Default model: `mlx-community/Qwen2.5-14B-Instruct-4bit` (~9 GB).
-  14B over 70B is deliberate: 14B-4bit runs at sane speed (35-130 s
-  per meeting on M-series) versus 70B's many-minutes per call.
+- Default model: `mlx-community/Qwen2.5-3B-Instruct-4bit` (~2 GB,
+  ~10 s per meeting). Smaller-default-by-default so first-time local
+  users do not pay an 8 GB download. Preferences → Pipeline exposes
+  three curated presets (Small / Recommended / Large) that map to
+  3B-4bit / 14B-4bit / 32B-4bit, plus a Custom slot for any
+  HuggingFace MLX repo id. The picker rewrites
+  `summarization.local_model`; the picker reads it back and shows
+  "Custom" when the value is not a known preset.
+
+Pre-fetch on backend switch ([`ModelDownloadSupervisor.swift`](daemon/Sources/MeetingPipe/ModelDownloadSupervisor.swift)
++ [`mp prefetch-model`](pipeline/src/mp/prefetch_model.py)):
+
+- Whenever the configured backend becomes `"local"` or `"auto"` (on
+  Coordinator launch or whenever the user persists a Preferences
+  change), the daemon spawns `mp prefetch-model <repo_id>` if the
+  model is not already cached. This turns the multi-minute first-call
+  stall inside `mlx_lm.server` into a visible menu-bar progress state.
+- Stdout from `prefetch-model` is one JSON event per line: `started`
+  / `progress` / `complete` / `failed`. The supervisor tails the
+  stream, updates an internal `State`, and the StatusBar reflects it
+  as a title suffix (`↓ 42%`) plus a dedicated menu row showing the
+  byte breakdown.
+- Switching the configured model mid-download terminates the in-flight
+  subprocess and starts a new one for the new repo. Switching back to
+  `"anthropic"` cancels the in-flight prefetch entirely.
 
 JSON discipline (the locally-running model has no `tool_choice`
 forcing):

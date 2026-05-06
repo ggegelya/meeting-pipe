@@ -31,6 +31,13 @@ final class Coordinator: NSObject {
     /// the streamed JSON is missing or has zero segments.
     private let streamingTranscriber = StreamingTranscriber()
 
+    /// Pre-fetches the local-MLX model whenever the user picks a backend
+    /// that needs one. The first meeting in local mode otherwise pays a
+    /// 30s-3min download stall inside `mlx_lm.server`'s first call;
+    /// running the prefetch up front turns that into a visible status-bar
+    /// state instead. No-op when backend is anthropic.
+    private let modelDownload = ModelDownloadSupervisor()
+
     private var state: AppState = .idle {
         didSet {
             Log.main.info("state: \(String(describing: oldValue)) → \(String(describing: self.state))")
@@ -150,6 +157,15 @@ final class Coordinator: NSObject {
         configCancellable = configStore?.didPersist
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.handleConfigPersisted() }
+
+        // Status-bar reflects the model-download state. Wired here once
+        // so we don't have to re-subscribe when the supervisor restarts.
+        modelDownload.onStateChange = { [weak self] state in
+            self?.statusBar.setModelDownload(state)
+        }
+        // Eager prefetch on launch when the user is already in local/auto
+        // mode. No-op for backend=anthropic (the typical first-time install).
+        ensureModelPrefetchIfNeeded()
 
         // Surface the Screen Recording permission state once prewarm has had
         // a chance to settle. Without this, a denied TCC silently degrades
@@ -481,6 +497,27 @@ final class Coordinator: NSObject {
     private func handleConfigPersisted() {
         pendingDetectorRefresh = true
         applyConfigRefreshIfPossible()
+        ensureModelPrefetchIfNeeded()
+    }
+
+    /// Spawn (or skip) a background `mp prefetch-model` for the configured
+    /// local model. Idempotent and safe to call from any config-change
+    /// path; the supervisor short-circuits when the model is already
+    /// cached or already downloading.
+    private func ensureModelPrefetchIfNeeded() {
+        guard let store = configStore else { return }
+        let backend = store.summarizationBackend
+        guard backend == "local" || backend == "auto" else {
+            // Cancel any in-flight prefetch when the user reverts to
+            // anthropic; no point burning bandwidth for a model the
+            // pipeline won't load.
+            modelDownload.cancel()
+            statusBar.setModelDownload(.idle)
+            return
+        }
+        let modelId = store.summarizationLocalModel
+        guard !modelId.isEmpty else { return }
+        modelDownload.ensure(modelId: modelId)
     }
 
     /// Rebuild the Detector with the live debounce values, but only when

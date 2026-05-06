@@ -249,17 +249,31 @@ private struct PreferencesView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if store.summarizationBackend != "anthropic" {
-                    LabeledContent("Local model") {
+                    LabeledContent("Model size") {
+                        Picker("", selection: localModelPresetBinding) {
+                            ForEach(LocalModelPreset.all, id: \.id) { preset in
+                                Text(preset.label).tag(preset.id)
+                            }
+                            Text("Custom").tag(LocalModelPreset.customId)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                    }
+                    Text(localModelPresetHelp)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    LabeledContent("Model id") {
                         TextField("", text: $store.summarizationLocalModel)
                             .textFieldStyle(.roundedBorder)
                             .frame(minWidth: 280)
+                            .disabled(currentLocalModelPresetId != LocalModelPreset.customId)
                     }
                     LabeledContent("Local endpoint") {
                         TextField("", text: $store.summarizationLocalEndpoint)
                             .textFieldStyle(.roundedBorder)
                             .frame(minWidth: 280)
                     }
-                    Text("Local mode lazy-spawns mlx_lm.server on first use; the server shuts down after 5 min of idle. Models live in ~/.cache/huggingface/hub.")
+                    Text("Local mode lazy-spawns mlx_lm.server on first use; the server shuts down after 5 min of idle. Models live in ~/.cache/huggingface/hub. The daemon pre-fetches the configured model when you switch backend so the first meeting does not wait for HF.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -318,6 +332,38 @@ private struct PreferencesView: View {
         default:
             return "Calls api.anthropic.com. Requires ANTHROPIC_API_KEY in secrets.env."
         }
+    }
+
+    /// Looks up the current `summarizationLocalModel` against the preset
+    /// table; returns the matching preset's id, or `customId` if the user
+    /// has typed a model id that is not in the preset list.
+    private var currentLocalModelPresetId: String {
+        LocalModelPreset.all.first(where: { $0.modelId == store.summarizationLocalModel })?.id
+            ?? LocalModelPreset.customId
+    }
+
+    /// Two-way binding the Picker drives. Setting it to a known preset id
+    /// rewrites `summarizationLocalModel` to that preset's model id;
+    /// selecting "Custom" leaves the existing model id alone so the user
+    /// can edit it freely in the text field below.
+    private var localModelPresetBinding: Binding<String> {
+        Binding<String>(
+            get: { self.currentLocalModelPresetId },
+            set: { newID in
+                if newID != LocalModelPreset.customId,
+                   let p = LocalModelPreset.all.first(where: { $0.id == newID }) {
+                    store.summarizationLocalModel = p.modelId
+                }
+            }
+        )
+    }
+
+    private var localModelPresetHelp: String {
+        let id = currentLocalModelPresetId
+        if let p = LocalModelPreset.all.first(where: { $0.id == id }) {
+            return "\(p.diskHint) on disk, \(p.speedHint). \(p.qualityHint)"
+        }
+        return "Any HuggingFace MLX-quantised model id."
     }
 
     private var skipThresholdLabel: String {
@@ -426,4 +472,47 @@ private struct PreferencesView: View {
             store.outputDirPath = url.path
         }
     }
+}
+
+/// Curated model presets for the Pipeline tab's Picker.
+///
+/// Three sizes that span the practical sweet-spot for meeting summarization
+/// on M-series hardware. Larger models exist; users who want them pick
+/// "Custom" and paste a HuggingFace MLX repo id directly.
+struct LocalModelPreset {
+    let id: String          // Stable picker tag.
+    let label: String       // Human-readable menu entry.
+    let modelId: String     // HuggingFace repo id `mlx-community/...`.
+    let diskHint: String    // Approx download / cache footprint.
+    let speedHint: String   // Rough per-meeting latency on M-series.
+    let qualityHint: String // One-line vibes-summary of expected output quality.
+
+    static let customId = "__custom"
+
+    static let all: [LocalModelPreset] = [
+        LocalModelPreset(
+            id: "small",
+            label: "Small (Qwen 3B-4bit)",
+            modelId: "mlx-community/Qwen2.5-3B-Instruct-4bit",
+            diskHint: "~2 GB",
+            speedHint: "~10s per meeting",
+            qualityHint: "Fast first run, lower quality. Good default to try local mode."
+        ),
+        LocalModelPreset(
+            id: "recommended",
+            label: "Recommended (Qwen 14B-4bit)",
+            modelId: "mlx-community/Qwen2.5-14B-Instruct-4bit",
+            diskHint: "~8 GB",
+            speedHint: "~45-130s per meeting",
+            qualityHint: "Better decisions and action item discipline."
+        ),
+        LocalModelPreset(
+            id: "large",
+            label: "Large (Qwen 32B-4bit)",
+            modelId: "mlx-community/Qwen2.5-32B-Instruct-4bit",
+            diskHint: "~18 GB",
+            speedHint: "~2-4 min per meeting",
+            qualityHint: "Highest quality of the curated presets. Wants 32 GB+ RAM."
+        ),
+    ]
 }
