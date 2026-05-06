@@ -1,11 +1,29 @@
 # meeting-pipe
 
 Background macOS daemon that detects video meetings, captures audio locally,
-transcribes with speaker identification, generates a summary + action items via
-Claude, and publishes to Notion. Zero recurring cost beyond the Anthropic call.
-Fully on-device audio. Apple-Silicon-native ASR (MLX/Metal) + diarization
-(sherpa-onnx / CoreML). Multilingual: 99 languages via Whisper, summary
-written in the same language as the transcript. **macOS 14+ only.**
+transcribes with speaker identification, generates a summary + action items, and
+publishes to your sinks of choice. Zero recurring cost beyond the LLM call,
+and the LLM call itself is optional (a fully on-device MLX backend is
+available). Apple-Silicon-native ASR (MLX/Metal) + diarization (sherpa-onnx /
+CoreML). Multilingual: 99 languages via Whisper, summary written in the same
+language as the transcript. **macOS 14+ only.**
+
+Two privacy modes:
+
+- **Cloud (default).** Anthropic Claude does the summarization. Best quality
+  today, ~$0.05/meeting on Sonnet 4.6.
+- **Local.** Apple's MLX runs Qwen2.5-14B-Instruct-4bit on-device. Audio,
+  transcript, and summary never leave the machine. Switch in Preferences →
+  Pipeline. Pair with `regulated_mode = true` for a full zero-egress pipeline
+  (a test in `tests/test_summarize_backend.py` locks this in).
+
+Three output sinks, mix and match via `output.sinks`:
+
+- **Notion** (default): REST publish to a database, idempotent.
+- **Obsidian**: Markdown note in your vault with optional audio attachment
+  and daily-note backlink.
+- **Filesystem**: drops `<stem>.summary.md`, `<stem>.transcript.md`, and
+  `<stem>.actions.json` into a directory; for tools that watch a folder.
 
 See [`SPEC.md`](./SPEC.md) for the full design.
 
@@ -20,10 +38,13 @@ See [`SPEC.md`](./SPEC.md) for the full design.
    writes a 16 kHz mono WAV to `~/Documents/Meetings/raw/`.
 4. **Transcribes** with mlx-whisper (Apple Silicon native, all 99 Whisper
    languages) and labels speakers via sherpa-onnx diarization on CoreML.
-5. **Summarizes** with Claude Sonnet (title, decisions, action items, questions)
-   in the same language as the transcript.
-6. **Publishes** to a Notion database with idempotent updates.
-7. **Notifies** you when it's done — click to open the Notion page.
+5. **Summarizes** (title, decisions, action items, questions) in the same
+   language as the transcript. Either Claude Sonnet via the Anthropic API
+   (default) or Qwen2.5-14B-Instruct-4bit via on-device MLX, your choice.
+6. **Publishes** to every sink in `output.sinks` (Notion, Obsidian, filesystem,
+   or a combination). Each sink is idempotent and failures are isolated;
+   one sink falling over does not block the others.
+7. **Notifies** you when it's done; click to open the page.
 
 A new recording can start while a previous one is still being processed —
 processing runs in the background and you only get notified when each
@@ -173,8 +194,17 @@ mp transcribe   <wav>
 mp summarize    <transcript.md>
 mp publish-notion <summary.json>
 
-# Preflight check (validates secrets + live API access)
+# Preflight check (validates secrets + live API access + which sinks
+# are reachable + which summarization backend is selected)
 mp doctor
+
+# Filter the JSONL event streams (see Logs section)
+mp logs --since 1h --category detector
+
+# Compare Anthropic vs the local backend on one transcript; writes a
+# scorecard you fill in by hand
+mp dogfood <transcript.md>
+mp dogfood --report   # aggregate filled scorecards into a ship/no-ship
 ```
 
 ---
@@ -211,10 +241,24 @@ Everything lives under `~/Library/Logs/MeetingPipe/`:
 - `daemon.log`   — state transitions, recording start/stop, pipeline kick-off
 - `detector.log` — meeting detection events (which app/tab, debounce timing)
 - `recorder.log` — recording lifecycle, duration parity check
-- `pipeline.log` — transcription, summarization, Notion publishing
+- `pipeline.log`: transcription, summarization, publishing
+- `events.jsonl`: structured Swift-side events, one JSON object per line
+- `pipeline_events.jsonl`: structured Python-side events
 - `launchd.{out,err}.log` — daemon stdout/stderr
 
-`tail -F ~/Library/Logs/MeetingPipe/*.log` is the fastest way to debug.
+`tail -F ~/Library/Logs/MeetingPipe/*.log` is the fastest way to debug live.
+For postmortem queries against a workday's worth of detection or pipeline
+events, use `mp logs`:
+
+```bash
+mp logs --since 1h                                  # everything in the last hour
+mp logs --since 30m --category detector             # just detector events
+mp logs --since 2d --action pipeline_failed         # all pipeline failures
+mp logs --since 1d --json | jq 'select(.bundle_id=="us.zoom.xos")'
+```
+
+`--since` accepts ISO timestamps (`2026-05-06T10:00:00Z`) or short relative
+offsets (`Nh` / `Nm` / `Nd` / `Ns`).
 
 ---
 
@@ -242,10 +286,30 @@ See [`config.example.toml`](./config.example.toml). Highlights:
 - `summarization.summary_language` — `"auto"` (default; matches transcript
   language) or an ISO 639-1 code to force a specific output language.
 - `summarization.team_context` — domain string injected into the system prompt
-  so Claude doesn't extract domain terms ("validation", "QMS") as action items.
+  so the summarizer does not extract domain terms ("validation", "QMS") as
+  action items.
 - `summarization.skip_above_chars` — long-meeting guard (default 80 000).
-- `modes.regulated_mode` — when `true`, skip Notion entirely and produce only
-  a local Markdown summary. Use this for client/regulated calls.
+- `summarization.backend`: `"anthropic"` (default), `"local"` (on-device
+  MLX, no outbound calls), or `"auto"` (try Anthropic first, fall back to
+  local on network/auth failure). Switchable in Preferences → Pipeline.
+- `summarization.local_model`: MLX model id when backend is `"local"` or
+  `"auto"`. Default `mlx-community/Qwen2.5-14B-Instruct-4bit` (~9 GB on
+  first use; cached in `~/.cache/huggingface/hub`).
+- `summarization.local_endpoint`: where `LocalSummaryClient` will spawn
+  `mlx_lm.server`. Default `http://127.0.0.1:8765`.
+- `output.sinks`: ordered list of publishers to invoke. Default `["notion"]`.
+  Add `"obsidian"` and/or `"filesystem"` to fan out. Each sink fails
+  independently; one going down does not block the others.
+- `obsidian.vault_path`: required when `"obsidian"` is in `sinks`. The
+  publisher writes to `<vault>/<obsidian.folder>/<date> <slug>.md` with
+  YAML front-matter; `obsidian.attach_audio = true` copies the recording
+  into `<vault>/<obsidian.attachments_subfolder>/`. `obsidian.template_path`
+  points at a custom template (the built-in template covers the common
+  case).
+- `filesystem.output_dir`: where the filesystem sink drops the three files.
+- `modes.regulated_mode`: when `true`, the Notion sink no-ops at upsert
+  time. Pair with `summarization.backend = "local"` for full zero-egress
+  (every outbound HTTP request would assert in tests).
 
 There are no microphone or output-device settings — the daemon auto-detects
 both. Change the system default input in System Settings ▸ Sound to swap mics.
@@ -303,14 +367,59 @@ the daemon: `launchctl kickstart -k gui/$(id -u)/com.meetingpipe.daemon`.
 - 404 → the integration isn't shared with your database, or
   `notion.database_id` is wrong (use the ID, not the page slug).
 
+**The recording never ends; the daemon thinks the meeting is still going
+long after I hung up.**
+The end-detection probe scans the meeting app's window titles via
+Accessibility. If you have an unrelated window whose title contains a
+matching meeting word (e.g. a Slack channel named "team-calls", a
+Zoom "Schedule Meeting" dialog left open, a Teams chat thread named
+"Sprint planning meeting"), the per-app recognizer should reject it.
+If it doesn't, capture the offending titles with
+`swift scripts/dump_window_titles.swift <bundle_id> <state> reject`,
+add the row to `daemon/Tests/MeetingPipeTests/Fixtures/window_titles.json`,
+and the next test run shows whether `Detector.isActiveMeetingWindow`
+needs a refinement.
+
+**Local backend won't start.**
+- `mlx-lm not found`: rerun `scripts/install.sh` (or `cd pipeline && uv
+  sync`). The dep is declared in `pyproject.toml` with an Apple-Silicon
+  marker; non-arm64 hosts fall back to `backend="anthropic"` automatically.
+- `mlx_lm.server did not become healthy within 120s`: the model is being
+  downloaded for the first time (~9 GB). Check
+  `~/.cache/huggingface/hub/models--mlx-community--Qwen2.5-14B-Instruct-4bit/`
+  size growth.
+- Output looks fine but `mp doctor` still warns "regulated_mode + backend
+  = anthropic": expected. `regulated_mode` does not by itself force the
+  local backend. Set `summarization.backend = "local"` explicitly for the
+  zero-egress contract.
+
+**I uninstalled and reinstalled but macOS still says "permission denied"
+and won't re-prompt.**
+TCC caches grants/denials per bundle id. `scripts/uninstall.sh --reset-tcc`
+clears the cache so the next install behaves like a fresh install. See
+the Uninstall section above.
+
 ---
 
 ## Uninstall
 
 ```bash
-./scripts/uninstall.sh           # keeps your config
-./scripts/uninstall.sh --purge   # also removes ~/.config/meeting-pipe
+./scripts/uninstall.sh                    # keeps config + leaves TCC alone
+./scripts/uninstall.sh --purge            # also removes ~/.config/meeting-pipe
+./scripts/uninstall.sh --reset-tcc        # also resets macOS Microphone /
+                                          # ScreenCapture / Accessibility /
+                                          # AppleEvents permissions for the
+                                          # bundle id, so the next install
+                                          # re-prompts cleanly
+./scripts/uninstall.sh --all              # shorthand for --purge --reset-tcc
 ```
+
+Why `--reset-tcc` exists: macOS keys permission grants on the bundle id
+(`com.meetingpipe.daemon`). If you denied a permission once, removing the
+.app does NOT clear that denial. TCC keeps the cached state, and the next
+install silently runs without the permission instead of re-prompting. The
+flag uses `tccutil reset` to wipe the cache so a fresh install behaves
+like a fresh install.
 
 ---
 

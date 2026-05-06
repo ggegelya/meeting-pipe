@@ -154,10 +154,51 @@ so recording stays unblocked while jobs run in the background.
 - Primary: KVO on `AVCaptureDevice.default(for: .audio)?.isInUseByAnotherApplication`.
 - Fallback: poll Core Audio `kAudioDevicePropertyDeviceIsRunningSomewhere`
   every 3s across all input devices.
+- **Post-start gating** (`Detector.micInUse()`): once `hasFiredStart` is
+  true, the broad Core Audio probe is skipped. Reason: the daemon's own
+  `AVAudioEngine.inputNode` tap holds the input device while recording,
+  which would keep `kAudioDevicePropertyDeviceIsRunningSomewhere` true
+  forever and mask the meeting app releasing the mic.
+  `isInUseByAnotherApplication` excludes self by Apple's design and is
+  the correct signal for end detection.
 
-### End detection
+### Signal C: meeting window still open (end-detection only)
 
-Either signal false for ≥`debounce_end_sec` (default 10s) → STOPPING.
+A per-app window recognizer runs the AX query for the recording
+source's PID and checks each window title against
+`Detector.isActiveMeetingWindow(bundleID:, kind:, title:)`. The
+recognizer has explicit positive and negative anchors per known shape:
+
+- **Zoom** (`us.zoom.xos`): title contains `"zoom meeting"`.
+  Rejects `"Zoom"` (launcher), `"Schedule Meeting"`, `"Join Meeting"`.
+- **Teams** (`com.microsoft.teams2`, `com.microsoft.teams`): title ends
+  with `"| microsoft teams"` AND the lead segment is exactly `"meeting"`,
+  starts with `"meeting in "` / `"meeting with "` / `"call with "`,
+  equals `"calling"` / starts with `"calling "`, or contains
+  `"huddle"` / `"breakout"`. Prefix-match (not substring) so chat
+  threads with subjects like `"Sprint planning meeting"` don't
+  false-positive.
+- **Webex** (`com.cisco.webexmeetingsapp`): title contains `"webex meeting"`.
+- **Slack** (`com.tinyspeck.slackmacgap`): title matches `\bhuddle\b`
+  as a whole word. `"team-huddles"` channel name correctly fails the
+  trailing word boundary.
+- **Skype** / **Google Meet**: dedicated checks; documented in source.
+- **Unknown bundle**: probe short-circuits to `nil` (inconclusive),
+  composer treats as "still open", mic-release alone drives end.
+
+### End-detection composition
+
+`SignalDecision.decide()` in [`Detector.swift`](daemon/Sources/MeetingPipe/Detector.swift)
+runs after `hasFiredStart`:
+
+```
+shouldEnd if (mic released) OR (window recognizer says no)
+```
+
+Both signals are debounced by `debounce_end_sec` (default 5s). Mic
+release is the primary path; the window recognizer covers the few-second
+tail where the meeting app holds the input device past hangup, plus the
+case where AX permission is missing on the meeting app but not the mic.
 
 ### Manual override
 
@@ -177,56 +218,97 @@ meeting-pipe/
 ├── config.example.toml
 ├── daemon/                          Swift menu bar app
 │   ├── Package.swift
-│   └── Sources/MeetingPipe/
-│       ├── App.swift                @main, AppDelegate
-│       ├── Coordinator.swift        State machine + recorder lifecycle
-│       ├── Detector.swift           NSWorkspace + AVCaptureDevice + Accessibility
-│       ├── MeetingRecorder.swift    AVAudioEngine + AVAudioFile WAV writer
-│       ├── SystemAudioCapture.swift SCStream wrapper for system audio
-│       ├── MeetingPromptWindow.swift On-screen "Record this meeting?" panel
-│       ├── Notifier.swift           UNUserNotificationCenter + actions
-│       ├── PipelineLauncher.swift   Spawns `mp run-all`
-│       ├── StreamingTranscriber.swift  Spawns/manages `mp transcribe-stream` (Tier 2)
-│       ├── HotkeyManager.swift      Carbon-based global hotkey
-│       ├── Config.swift             Loads ~/.config/meeting-pipe/config.toml
-│       ├── ConsentStore.swift       Persisted "Always for {App}" choices
-│       ├── State.swift              Enums for the state machine
-│       ├── StatusBarController.swift
-│       ├── Logger.swift             os.Logger wrapper + file logger
-│       └── Resources/
-│           └── meeting_apps.toml
+│   ├── Sources/MeetingPipe/
+│   │   ├── App.swift                @main, AppDelegate
+│   │   ├── Coordinator.swift        State machine + recorder lifecycle + dry-run gate
+│   │   ├── Detector.swift           NSWorkspace + AVCaptureDevice + AX, 3-signal composer,
+│   │   │                            per-app window recognizer (isActiveMeetingWindow)
+│   │   ├── MeetingRecorder.swift    AVAudioEngine + AVAudioFile WAV writer
+│   │   ├── SystemAudioCapture.swift SCStream wrapper for system audio
+│   │   ├── MeetingPromptWindow.swift On-screen "Record this meeting?" panel (P4.1 redesign)
+│   │   ├── RecordingHUDWindow.swift Top-right pulse + elapsed timer + stop affordance
+│   │   ├── Notifier.swift           UNUserNotificationCenter + actions
+│   │   ├── PreferencesWindow.swift  SwiftUI tabs (Recording/Detection/Integrations/
+│   │   │                            Pipeline/Modes); backend selector lives on Pipeline
+│   │   ├── ConfigStore.swift        TOML round-trip for the UI-bound subset
+│   │   ├── PipelineLauncher.swift   Spawns `mp run-all`
+│   │   ├── StreamingTranscriber.swift  Spawns/manages `mp transcribe-stream` (Tier 2)
+│   │   ├── HotkeyManager.swift      Carbon-based global hotkey
+│   │   ├── Config.swift             Loads ~/.config/meeting-pipe/config.toml
+│   │   ├── ConsentStore.swift       Persisted "Always for {App}" choices
+│   │   ├── SecretsStore.swift       Reads ~/.config/meeting-pipe/secrets.env
+│   │   ├── State.swift              Enums for the state machine
+│   │   ├── StatusBarController.swift
+│   │   ├── DoctorRunner.swift       In-process `mp doctor` invocation
+│   │   ├── Endpoints.swift          Bundle id, paths, log subsystem constants
+│   │   ├── Logger.swift             os.Logger + tail-able text logs + JSONL events
+│   │   ├── MeetingPromptWindow.swift / RecordingHUDWindow.swift / ...
+│   │   ├── Design/                  Tokens.swift, MPButton, AppGlyphView,
+│   │   │                            DismissProgressView, LiveWaveformView, MicLevelMonitor
+│   │   └── Resources/
+│   │       └── meeting_apps.toml
+│   └── Tests/MeetingPipeTests/
+│       ├── SignalDecisionTests.swift              Composer rules (start/end semantics)
+│       ├── WindowRecognizerTests.swift            Per-app must-recognize/must-reject matrix
+│       ├── WindowRecognizerFixtureTests.swift     Audits recognizer against captured titles
+│       ├── ConfigTests.swift, ConfigStoreTests.swift, ConsentStoreTests.swift,
+│       ├── HotkeyManagerTests.swift, PipelineLauncherTests.swift, SecretsStoreTests.swift,
+│       ├── StateTests.swift
+│       └── Fixtures/
+│           └── window_titles.json   (bundle_id, state, expected, titles) per row
 ├── pipeline/
-│   ├── pyproject.toml
+│   ├── pyproject.toml               (mlx-lm declared with arm64 marker)
+│   ├── uv.lock
 │   ├── src/mp/
 │   │   ├── __init__.py
-│   │   ├── __main__.py              Subcommand dispatcher
-│   │   ├── doctor.py                `mp doctor` preflight (secrets + ML runtimes + APIs)
+│   │   ├── __main__.py              Subcommand dispatcher (run-all / transcribe /
+│   │   │                            transcribe-stream / summarize / publish-notion /
+│   │   │                            publish-from-paste / doctor / logs / dogfood)
+│   │   ├── doctor.py                Preflight (secrets + ML runtimes + APIs + sinks)
 │   │   ├── transcribe.py            mlx-whisper ASR (faster-whisper fallback)
 │   │   ├── transcribe_stream.py     Long-running streaming sidecar (Tier 2)
-│   │   ├── diarize.py               sherpa-onnx offline diarization (CoreML EP)
-│   │   │                            + StreamDiarizer for online clustering (Tier 2.5)
-│   │   ├── summarize.py             Anthropic tool-use, multilang prompt
-│   │   ├── publish_notion.py
+│   │   ├── diarize.py               sherpa-onnx offline diarization (CoreML EP) +
+│   │   │                            StreamDiarizer for online clustering (Tier 2.5)
+│   │   ├── summarize.py             Backend selector → AnthropicSummaryClient /
+│   │   │                            LocalSummaryClient / _AutoFallbackClient
+│   │   ├── summarize_local.py       MLX backend: lazy mlx_lm.server, response_format
+│   │   │                            hint, corrective retry, 3-layer JSON extractor
+│   │   ├── publish_notion.py        NotionRestPublisher (name="notion"); P4.3 page
+│   │   │                            layout (callout, bold opener, owner pill, chips)
+│   │   ├── publish_obsidian.py      ObsidianPublisher (name="obsidian"); content-hash
+│   │   │                            idempotent, optional audio attachment + daily-note
+│   │   ├── publish_fs.py            FilesystemPublisher (name="filesystem"); summary +
+│   │   │                            transcript + actions JSON
+│   │   ├── publish_router.py        fanout(): builds publishers from output.sinks,
+│   │   │                            iterates with per-sink failure isolation
 │   │   ├── publish_from_paste.py    BYO summary mode
-│   │   ├── orchestrate.py           `run-all` + long-meeting guard
-│   │   ├── config.py                Pydantic settings
+│   │   ├── orchestrate.py           `run-all` + long-meeting guard + JSONL events
+│   │   ├── events.py                pipeline_events.jsonl emitter
+│   │   ├── logs_cmd.py              `mp logs` filter / pretty-print
+│   │   ├── dogfood.py               A/B harness + ship-decision report (Anthropic vs
+│   │   │                            local; hand-graded scorecards)
+│   │   ├── config.py                Pydantic settings (incl. backend, output.sinks,
+│   │   │                            obsidian, filesystem)
 │   │   ├── schemas.py               Pydantic models for summary JSON
+│   │   ├── services.py              MeetingPublisher / SummaryClient / Diarizer protocols
+│   │   │                            (NotionPublisher kept as back-compat alias)
 │   │   └── prompts/
 │   │       ├── __init__.py
-│   │       └── meeting_summary.md
+│   │       └── meeting_summary.md   Tightened decision/action rules + worked examples
 │   └── tests/
-│       ├── test_schemas.py
-│       ├── test_transcribe.py       Renderer + speaker assignment (no ML dep)
-│       ├── test_summarize.py        Mocked Anthropic SDK + multilang directive
-│       ├── test_publish_notion.py   httpx MockTransport
-│       ├── test_publish_from_paste.py
-│       ├── test_orchestrate.py
-│       ├── test_doctor.py
-│       └── test_endpoints.py
+│       ├── test_schemas.py, test_transcribe.py, test_summarize.py,
+│       ├── test_publish_notion.py, test_publish_notion_blocks.py,
+│       ├── test_publish_obsidian.py, test_publish_fs.py, test_publish_router.py,
+│       ├── test_summarize_local.py, test_summarize_backend.py,
+│       ├── test_dogfood.py,
+│       ├── test_publish_from_paste.py, test_orchestrate.py,
+│       ├── test_doctor.py, test_endpoints.py
 ├── scripts/
 │   ├── install.sh
-│   ├── uninstall.sh
-│   └── launchd.plist.template
+│   ├── uninstall.sh                 (--purge / --reset-tcc / --all)
+│   ├── launchd.plist.template
+│   ├── gen-icon.swift
+│   └── dump_window_titles.swift     AX dump → fixture row for window_titles.json
 └── .github/
     └── workflows/
         └── ci.yml
@@ -259,8 +341,15 @@ Daemon and pipeline both source `secrets.env` on startup.
 |------------------|--------------------------------------------------------------------|--------------------------------------|
 | Microphone       | `AVAudioEngine.inputNode` — captures user voice                    | First launch prompt                  |
 | Screen Recording | `SCStream.capturesAudio` — gates system-audio capture in TCC        | System Settings → Privacy & Security |
-| Accessibility    | Reading browser window titles                                       | System Settings → Privacy & Security |
+| Accessibility    | Reads browser tab titles AND native meeting-app window titles for the per-app end-detection recognizer | System Settings → Privacy & Security |
 | Notifications    | Prompts and completion alerts                                       | First launch prompt                  |
+
+macOS TCC keys these grants on the bundle id (`com.meetingpipe.daemon`).
+A reinstall reuses the same bundle id, so a previously-denied grant
+stays denied across reinstalls. Use `scripts/uninstall.sh --reset-tcc`
+(or `--all`) to reset Microphone / ScreenCapture / Accessibility /
+AppleEvents / SystemPolicyAllFiles for the bundle so the next install
+re-prompts cleanly.
 
 ---
 
@@ -342,13 +431,17 @@ and includes the configured `team_context` so domain terms aren't misclassified.
 
 | Risk                                                          | Mitigation |
 |---------------------------------------------------------------|------------|
-| `isInUseByAnotherApplication` flakiness across macOS versions | Core Audio `DeviceIsRunningSomewhere` fallback + 3s poll. |
-| Browser tab title patterns drift                              | Patterns in TOML, not compiled. Easy to tweak. |
-| Diarization quality variance per language                     | sherpa-onnx with NeMo TitaNet generalizes well across languages, but `disable_diarization=true` is the escape hatch. |
-| Apple Silicon MLX requirement for fast path                   | Pipeline auto-falls-back to faster-whisper on non-arm64 hosts; daemon is macOS-only anyway. |
-| Long meetings burning Anthropic tokens silently                | `summarization.skip_above_chars` (default 80 000) writes a manual-processing bundle instead of calling the API. |
-| Anthropic API cost creep                                      | ≈$0.05/meeting on Sonnet 4.6 at typical 5k in / 2k out. |
-| Compliance for client/regulated calls                         | `regulated_mode=true` skips Notion entirely. |
+| `isInUseByAnotherApplication` flakiness pre-start                  | Core Audio `DeviceIsRunningSomewhere` probe runs only before `hasFiredStart` (the daemon's own input tap would mask it post-start). |
+| Native meeting-app title format drift (Teams/Zoom UI rename)        | `Tests/.../Fixtures/window_titles.json` + `WindowRecognizerFixtureTests` turn silent regressions into a red row in CI. `dump_window_titles.swift` captures fresh rows from the live app. |
+| Browser tab title patterns drift                                    | Patterns in TOML, not compiled. Easy to tweak. |
+| Diarization quality variance per language                           | sherpa-onnx with NeMo TitaNet generalizes well across languages, but `disable_diarization=true` is the escape hatch. |
+| Apple Silicon MLX requirement for fast path                         | Pipeline auto-falls-back to faster-whisper on non-arm64 hosts; daemon is macOS-only anyway. |
+| Long meetings burning Anthropic tokens silently                     | `summarization.skip_above_chars` (default 80 000) writes a manual-processing bundle instead of calling the API. |
+| Anthropic API cost creep                                            | ≈$0.05/meeting on Sonnet 4.6 at typical 5k in / 2k out. Local backend (P2) brings it to $0. |
+| Compliance for client/regulated calls                               | `regulated_mode=true` skips Notion. Pair with `summarization.backend = "local"` for full zero-egress (test_summarize_backend locks this in). |
+| Local model output drifts from JSON schema                          | 3-layer extractor in `summarize_local._extract_summary` (raw / fenced / largest balanced object) + a corrective retry that replays with the Pydantic error in-context. Failure surfaces as `LocalSummaryError`, not a silent bad summary. |
+| Local model quality varies by call                                  | `mp dogfood <transcript.md>` runs Anthropic + local side-by-side and writes a hand-fillable scorecard. `mp dogfood --report` aggregates and gates the ship decision (≥80% capture, ≤5% hallucination). Today's read on the default Qwen2.5-14B-4bit: not ship-ready (see the dogfood report). |
+| TCC permission stuck in "denied" after reinstall                    | `uninstall.sh --reset-tcc` (or `--all`) clears Microphone / ScreenCapture / Accessibility / AppleEvents per bundle id so the next install re-prompts cleanly. |
 
 ---
 
@@ -379,3 +472,159 @@ to summarize automatically. To avoid that:
 - README walks a fresh user from clone to first auto-published Notion page.
 - LaunchAgent loaded; survives logout/login.
 - Uninstall script leaves no residue when run with `--purge`.
+
+---
+
+## 13. Summarization backend selection
+
+`summarization.backend` (TOML) selects which `SummaryClient` the
+pipeline builds for the summarize stage. Three modes:
+
+| Mode | Selector returns | Network behaviour | When to use |
+|---|---|---|---|
+| `"anthropic"` | `AnthropicSummaryClient` | Calls `api.anthropic.com`. Requires `ANTHROPIC_API_KEY`. | Default. Best output today. |
+| `"local"` | `LocalSummaryClient` | Lazy-spawns `mlx_lm.server` on `http://127.0.0.1:8765`; never calls Anthropic. | Privacy-first / regulated meetings. |
+| `"auto"` | `_AutoFallbackClient` wrapper | Tries Anthropic, falls back to Local on `APIConnectionError` / `APITimeoutError` / `AuthenticationError` / `PermissionDeniedError` or missing key. | Resilience for offline laptops. |
+
+The pipeline reads the TOML fresh per `mp` invocation, so a backend
+flip via the Preferences → Pipeline tab takes effect on the next
+recording without a daemon restart.
+
+`LocalSummaryClient` lifecycle ([`summarize_local.py`](pipeline/src/mp/summarize_local.py)):
+
+- First `summarize()` call lazy-spawns `mlx_lm.server` in its own
+  process group (so a Ctrl-C in the daemon doesn't kill it before
+  cleanup), polls `/v1/models` until ready (configurable timeout),
+  forwards a chat completion. Subsequent calls reuse the running
+  server.
+- A 5-min idle timer (configurable) shuts the server down to free
+  RAM. Spawn / shutdown are serialized via a per-instance lock.
+- Default model: `mlx-community/Qwen2.5-14B-Instruct-4bit` (~9 GB).
+  14B over 70B is deliberate: 14B-4bit runs at sane speed (35-130 s
+  per meeting on M-series) versus 70B's many-minutes per call.
+
+JSON discipline (the locally-running model has no `tool_choice`
+forcing):
+
+1. `_augment_with_schema` appends the `MeetingSummary` JSON Schema
+   plus a "before you reply" reinforcement (decision-vs-intent rule,
+   per-task owner rule, questions discipline) to the system prompt.
+2. Request payload carries `response_format: { type: "json_schema",
+   strict: true }`. Newer mlx-lm builds wire this through to outlines
+   for token-level constraint; older builds ignore it.
+3. On schema-violation, the call replays once with a corrective user
+   message that includes the Pydantic error and the prior assistant
+   reply.
+4. Each attempt's body still passes through the 3-layer extractor:
+   raw → fenced → largest balanced JSON object scan (string-aware,
+   so braces inside strings don't break depth tracking).
+
+Regulated zero-egress contract: `summarization.backend = "local"` AND
+`modes.regulated_mode = true` produces a pipeline that makes no
+outbound HTTP request. Locked in by
+`tests/test_summarize_backend.py::test_regulated_local_zero_egress`,
+which patches every `httpx.Client` transport through an `EgressBlocker`
+that asserts on any non-localhost URL and poisons the `Anthropic`
+constructor for good measure.
+
+---
+
+## 14. Multi-sink output
+
+`output.sinks` (TOML) is an ordered list of publisher names. Default
+is `["notion"]` (back-compat). Each name maps to one
+`MeetingPublisher` implementation. Built once per `mp run-all`
+invocation by `publish_router.build_publishers()`; iterated
+sequentially by `publish_router.fanout()`.
+
+| Sink | Bundle | Sidecar | Idempotency |
+|---|---|---|---|
+| `notion` | `NotionRestPublisher` | `<stem>.notion.json` | Update vs create by stored `page_id`. |
+| `obsidian` | `ObsidianPublisher` | `<stem>.obsidian.json` | SHA-256 of the rendered note body; same body → no-op, no mtime touch. |
+| `filesystem` | `FilesystemPublisher` | `<stem>.filesystem.json` | SHA-256 of the (summary + transcript + actions) payload. |
+
+Failure isolation: a sink raising propagates as a `sink_failed`
+JSONL event but does not abort the others. Per-sink results land in
+`fanout()`'s `sinks: { ... }` map so the orchestrator and the doctor
+can inspect what published and what didn't.
+
+The `MeetingPublisher` protocol (renamed from `NotionPublisher` in
+P3.1; old name kept as an alias) requires a `name: str` attribute so
+two sinks can never collide on disk. Add a new sink by implementing
+the protocol and adding a branch to `publish_router._build_one`.
+
+---
+
+## 15. Event log (JSONL)
+
+Two append-only JSONL streams alongside the human-readable text logs:
+
+- `~/Library/Logs/MeetingPipe/events.jsonl`: Swift daemon
+  (`Log.event(category:, action:, attributes:)`).
+- `~/Library/Logs/MeetingPipe/pipeline_events.jsonl`: Python pipeline
+  (`mp.events.emit`).
+
+Each line is one JSON object with `ts`, `category`, `action`, plus
+free-form attributes. Categories emitted today:
+
+| Category | Actions |
+|---|---|
+| `detector` | `started`, `ended` |
+| `coordinator` | `state_change`, `prompt_shown`, `prompt_timeout`, `user_skipped`, `user_consented_always`, `auto_consent`, `recording_started`, `recording_stopped`, `pipeline_queued`, `pipeline_started`, `pipeline_succeeded`, `pipeline_failed`, `dry_run_enabled`, `dry_run_would_record` |
+| `pipeline` | `run_started`, `stage_started`, `stage_completed`, `run_completed`, `run_skipped` (`no_speech` / `byo` / `too_long`), `run_failed` |
+| `publisher` | `sink_started`, `sink_completed`, `sink_failed` |
+
+Failures during emit are swallowed: an empty event log is preferable
+to a crashed daemon or pipeline. The text logs already capture
+human-readable trail.
+
+Filter and pretty-print with `mp logs`:
+
+```bash
+mp logs --since 1h --category detector --action ended
+mp logs --since 30m --json | jq 'select(.bundle_id == "us.zoom.xos")'
+```
+
+`--since` accepts both ISO timestamps and short relative offsets
+(`1h`, `30m`, `2d`, `45s`).
+
+---
+
+## 16. Dry-run + dogfood
+
+**Dry-run mode** (`MEETING_PIPE_DRY_RUN=1`): detection, recognizer,
+state machine, and event log run end-to-end; `Coordinator.beginRecording`
+short-circuits before `MeetingRecorder.start` so no audio is captured
+and no pipeline jobs spawn. Use case: leave the daemon on through a
+normal workday and grep `events.jsonl` after the fact to verify
+detection accuracy across the real distribution of apps and call
+patterns, without producing `.wav` files. Read once at Coordinator
+init; flipping the env var requires a daemon restart.
+
+**Dogfood harness** (`mp dogfood`):
+
+```bash
+mp dogfood <transcript.md>           # writes runs/<stem>.dogfood.md
+mp dogfood --report                   # aggregates -> docs/local-llm-quality.md
+```
+
+Per-meeting comparison file holds both summaries side-by-side plus a
+hand-fillable YAML-ish scorecard:
+
+```yaml
+scores:
+  actions_capture:    # 0.0 to 1.0
+  decisions_capture:  # 0.0 to 1.0
+  hallucination_rate: # 0.0 to 1.0 (lower is better)
+notes: ""
+```
+
+`--report` walks the runs dir, parses scorecards, aggregates, and
+writes a ship/no-ship report. Ship gate matches the roadmap acceptance:
+`actions_capture ≥ 0.80`, `decisions_capture ≥ 0.80`,
+`hallucination_rate ≤ 0.05`. Exit 0 on ship, exit 1 otherwise (suitable
+for CI gating once the corpus is large enough).
+
+The grading is by hand by design: LLM-as-judge for "is the local
+model good enough to be the privacy-preserving default" is
+self-referential in a way that defeats the exercise.
