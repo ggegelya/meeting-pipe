@@ -1,0 +1,157 @@
+{
+  "_README": [
+    "Empirical title-format fixture for the end-detection window probe.",
+    "",
+    "Each entry pins one (bundle_id, state) pair to the literal window",
+    "titles AX returned for the meeting app in that state, plus the",
+    "expected recognizer outcome (`recognize` / `reject`).",
+    "",
+    "How to add real captures (Roadmap P1.1):",
+    "  1. Open the app, drive it into the named state.",
+    "  2. With Accessibility permission granted to a script, dump",
+    "     `kAXWindowsAttribute -> kAXTitleAttribute` for that PID.",
+    "  3. Drop the captured title list into a new entry below, set",
+    "     `expected` based on whether a meeting is in progress, and",
+    "     re-run `WindowRecognizerFixtureTests`.",
+    "",
+    "The current entries are seeded from `WindowRecognizerTests` and",
+    "represent expected formats, not yet field-verified captures.",
+    "Once Heorhii captures real titles, replace `seeded: true` with",
+    "`seeded: false` for that entry."
+  ],
+  "entries": [
+    {
+      "bundle_id": "us.zoom.xos",
+      "state": "in_call_with_topic",
+      "expected": "recognize",
+      "seeded": true,
+      "titles": ["Daily standup | Zoom Meeting"]
+    },
+    {
+      "bundle_id": "us.zoom.xos",
+      "state": "in_call_no_topic",
+      "expected": "recognize",
+      "seeded": true,
+      "titles": ["Zoom Meeting"]
+    },
+    {
+      "bundle_id": "us.zoom.xos",
+      "state": "idle_launcher",
+      "expected": "reject",
+      "seeded": true,
+      "titles": ["Zoom"]
+    },
+    {
+      "bundle_id": "us.zoom.xos",
+      "state": "schedule_dialog",
+      "expected": "reject",
+      "seeded": true,
+      "titles": ["Zoom", "Schedule Meeting"]
+    },
+    {
+      "bundle_id": "us.zoom.xos",
+      "state": "join_dialog",
+      "expected": "reject",
+      "seeded": true,
+      "titles": ["Zoom", "Join Meeting"]
+    },
+    {
+      "bundle_id": "com.microsoft.teams2",
+      "state": "in_meeting_bare",
+      "expected": "recognize",
+      "seeded": true,
+      "titles": ["Meeting | Microsoft Teams"]
+    },
+    {
+      "bundle_id": "com.microsoft.teams2",
+      "state": "in_meeting_in_channel",
+      "expected": "recognize",
+      "seeded": true,
+      "titles": ["Meeting in General | Microsoft Teams"]
+    },
+    {
+      "bundle_id": "com.microsoft.teams2",
+      "state": "in_meeting_with_person",
+      "expected": "recognize",
+      "seeded": true,
+      "titles": ["Meeting with Jane Doe | Microsoft Teams"]
+    },
+    {
+      "bundle_id": "com.microsoft.teams2",
+      "state": "in_call_one_on_one",
+      "expected": "recognize",
+      "seeded": true,
+      "titles": ["Call with John Doe | Microsoft Teams"]
+    },
+    {
+      "bundle_id": "com.microsoft.teams2",
+      "state": "in_breakout_room",
+      "expected": "recognize",
+      "seeded": true,
+      "titles": ["Breakout room 2 | Microsoft Teams"]
+    },
+    {
+      "bundle_id": "com.microsoft.teams2",
+      "state": "idle_app_chrome",
+      "expected": "reject",
+      "seeded": true,
+      "titles": ["Microsoft Teams"]
+    },
+    {
+      "bundle_id": "com.microsoft.teams2",
+      "state": "chat_thread_with_meeting_word",
+      "expected": "reject",
+      "seeded": true,
+      "titles": ["Sprint planning meeting | Microsoft Teams"]
+    },
+    {
+      "bundle_id": "com.microsoft.teams2",
+      "state": "chat_thread_with_call_word",
+      "expected": "reject",
+      "seeded": true,
+      "titles": ["Recall procedures | Microsoft Teams"]
+    },
+    {
+      "bundle_id": "com.microsoft.teams",
+      "state": "in_meeting_legacy_bundle",
+      "expected": "recognize",
+      "seeded": true,
+      "titles": ["Meeting | Microsoft Teams"]
+    },
+    {
+      "bundle_id": "com.cisco.webexmeetingsapp",
+      "state": "in_call",
+      "expected": "recognize",
+      "seeded": true,
+      "titles": ["Webex Meeting | Q3 Planning"]
+    },
+    {
+      "bundle_id": "com.cisco.webexmeetingsapp",
+      "state": "idle",
+      "expected": "reject",
+      "seeded": true,
+      "titles": ["Webex"]
+    },
+    {
+      "bundle_id": "com.tinyspeck.slackmacgap",
+      "state": "in_huddle",
+      "expected": "recognize",
+      "seeded": true,
+      "titles": ["general Huddle"]
+    },
+    {
+      "bundle_id": "com.tinyspeck.slackmacgap",
+      "state": "channel_named_huddles_plural",
+      "expected": "reject",
+      "seeded": true,
+      "titles": ["team-huddles - Acme - Slack"]
+    },
+    {
+      "bundle_id": "com.tinyspeck.slackmacgap",
+      "state": "regular_chat",
+      "expected": "reject",
+      "seeded": true,
+      "titles": ["general - Acme - Slack"]
+    }
+  ]
+}
