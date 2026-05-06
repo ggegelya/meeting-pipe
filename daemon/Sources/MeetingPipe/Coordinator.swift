@@ -77,6 +77,14 @@ final class Coordinator: NSObject {
     /// once per daemon launch — repeated banners would be noisy.
     private var didNotifyAboutPermissionDenial: Bool = false
 
+    /// Dry-run mode: detection + recognizer run end-to-end, all decisions
+    /// hit the JSONL event log, but `MeetingRecorder.start` is never
+    /// called. Lets the daemon ride along during a normal workday so the
+    /// user can verify detection accuracy without producing audio. Read
+    /// once at init from `MEETING_PIPE_DRY_RUN`; flipping it requires a
+    /// daemon restart, which is fine for a debug knob.
+    private let dryRun: Bool = (ProcessInfo.processInfo.environment["MEETING_PIPE_DRY_RUN"] == "1")
+
     private var configCancellable: AnyCancellable?
 
     init(
@@ -117,6 +125,12 @@ final class Coordinator: NSObject {
         notifier.requestAuthorization()
         promptWindow.delegate = self
         recordingHUD.delegate = self
+
+        if dryRun {
+            Log.main.info("MEETING_PIPE_DRY_RUN=1: detection enabled, recorder disabled")
+            Log.writeLine("daemon", "[dry-run] enabled")
+            Log.event(category: "coordinator", action: "dry_run_enabled")
+        }
 
         detector.delegate = self
         detector.start()
@@ -244,6 +258,22 @@ final class Coordinator: NSObject {
 
     private func beginRecording(source: AppSource?, summaryMode: SummaryMode) {
         cancelPromptTimeout()
+
+        if dryRun {
+            // Detection happened, consent was resolved, but we deliberately
+            // do not start the recorder, the streaming transcriber, or the
+            // HUD. Returning to .idle keeps the detector ready for the next
+            // .started event so a workday's worth of meetings can be
+            // captured in the JSONL stream as detection-only signals.
+            Log.writeLine("daemon", "[dry-run] would record (\(source?.bundleID ?? "manual"))")
+            Log.event(category: "coordinator", action: "dry_run_would_record", attributes: [
+                "bundle_id": source?.bundleID ?? "manual",
+                "summary_mode": summaryMode == .byo ? "byo" : "auto",
+            ])
+            state = .idle
+            statusBar.setIdle()
+            return
+        }
 
         do {
             let file = try recorder.start(outputDir: liveOutputDir)
