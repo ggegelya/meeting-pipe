@@ -109,15 +109,49 @@ class LocalSummaryClient:
         model: str,  # ignored; the local server pins one model per process
         max_tokens: int,
     ) -> MeetingSummary:
+        """Two-attempt loop.
+
+        Attempt 1 sends the schema-augmented system prompt and (when the
+        backend honors it) the OpenAI ``response_format: json_schema``
+        hint. Attempt 2, fired only on a schema violation from attempt
+        1, replays the call with a corrective user message that includes
+        the Pydantic validation error so the model can repair its own
+        output. Each attempt's body still passes through the 3-layer
+        extraction fallback in ``_extract_summary``.
+        """
         with self._lock:
             self._ensure_running()
             self._reset_idle_timer()
-            response_text = self._chat_completion(
-                system_prompt=self._augment_with_schema(system_prompt),
-                user_message=self._compose_user_message(transcript),
-                max_tokens=max_tokens,
+
+            messages = [
+                {"role": "system", "content": self._augment_with_schema(system_prompt)},
+                {"role": "user", "content": self._compose_user_message(transcript)},
+            ]
+            first_text = self._chat_completion(
+                messages=messages, max_tokens=max_tokens
             )
-        return self._extract_summary(response_text)
+            try:
+                return self._extract_summary(first_text)
+            except LocalSummaryError as e:
+                log.warning("attempt 1 failed schema validation; replaying with correction")
+                correction_messages = messages + [
+                    {"role": "assistant", "content": first_text},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your previous reply did not parse as a JSON object that"
+                            " validates against the schema. Error:\n\n"
+                            f"{e}\n\n"
+                            "Reply with ONLY a valid JSON object that matches the"
+                            " schema in the system message. No prose, no Markdown"
+                            " fences, no commentary."
+                        ),
+                    },
+                ]
+                second_text = self._chat_completion(
+                    messages=correction_messages, max_tokens=max_tokens
+                )
+                return self._extract_summary(second_text)
 
     def close(self) -> None:
         """Shut down the server and stop the idle timer. Idempotent."""
@@ -274,22 +308,34 @@ class LocalSummaryClient:
     def _chat_completion(
         self,
         *,
-        system_prompt: str,
-        user_message: str,
+        messages: list[dict[str, str]],
         max_tokens: int,
     ) -> str:
-        payload = {
+        payload: dict[str, Any] = {
             "model": self._model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
+            "messages": messages,
             "max_tokens": max_tokens,
             # Low temperature: structured output is the priority, not
             # creative phrasing. The model's default 0.7 was producing
             # extra prose around the JSON object often enough that
             # layer 2 of the fallback was firing on most calls.
             "temperature": 0.2,
+            # OpenAI structured-outputs hint. Newer mlx_lm.server builds
+            # honor this and constrain decoding via outlines under the
+            # hood; older builds ignore it. Either way the request
+            # remains valid OpenAI-compatible JSON, and we still defend
+            # against malformed output with the 3-layer extractor.
+            # Token-level constraint via in-process outlines requires
+            # loading the model in-process (not via HTTP), which is a
+            # separate refactor; this hint is the practical bridge.
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "meeting_summary",
+                    "schema": SUMMARY_TOOL["input_schema"],
+                    "strict": True,
+                },
+            },
         }
         try:
             r = self._http.post(f"{self.base_url}/v1/chat/completions", json=payload)

@@ -162,10 +162,11 @@ def test_summarize_no_valid_json_raises(
             )
 
 
-def test_summarize_invalid_schema_raises(
+def test_summarize_invalid_schema_after_correction_raises(
     fake_server: tuple[str, int, ThreadingHTTPServer]
 ) -> None:
-    # Valid JSON, missing required fields.
+    # Both attempts return valid JSON missing required fields, so the
+    # corrective retry also fails and the call raises.
     host, port, server = fake_server
     server.builder = lambda _: {  # type: ignore[attr-defined]
         "choices": [{"message": {"content": json.dumps({"title": "Only title"})}}]
@@ -178,6 +179,58 @@ def test_summarize_invalid_schema_raises(
                 model="ignored",
                 max_tokens=512,
             )
+
+
+def test_summarize_corrective_retry_recovers(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    # First attempt returns malformed output; second attempt (after the
+    # client replays with the validation error in-context) returns a
+    # valid summary. The client should return the recovered summary
+    # rather than raising.
+    host, port, server = fake_server
+    call_count = {"n": 0}
+
+    def builder(_: dict) -> dict:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return {"choices": [{"message": {"content": json.dumps({"title": "bad"})}}]}
+        return {"choices": [{"message": {"content": json.dumps(_valid_summary_obj())}}]}
+
+    server.builder = builder  # type: ignore[attr-defined]
+    with LocalSummaryClient(host=host, port=port, manage_subprocess=False) as c:
+        s = c.summarize(
+            system_prompt="Summarize.",
+            transcript="A: hello.",
+            model="ignored",
+            max_tokens=512,
+        )
+    assert s.title == "Standup"
+    assert call_count["n"] == 2, "expected exactly one corrective retry"
+
+
+def test_summarize_sends_response_format_hint(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    host, port, server = fake_server
+    captured: dict = {}
+
+    def builder(payload: dict) -> dict:
+        captured.update(payload)
+        return {"choices": [{"message": {"content": json.dumps(_valid_summary_obj())}}]}
+
+    server.builder = builder  # type: ignore[attr-defined]
+    with LocalSummaryClient(host=host, port=port, manage_subprocess=False) as c:
+        c.summarize(
+            system_prompt="Summarize.",
+            transcript="A: hello.",
+            model="ignored",
+            max_tokens=512,
+        )
+    rf = captured.get("response_format")
+    assert rf is not None, "response_format hint must be present in the payload"
+    assert rf.get("type") == "json_schema"
+    assert rf.get("json_schema", {}).get("strict") is True
 
 
 # ----- Lifecycle: no server reachable -----
