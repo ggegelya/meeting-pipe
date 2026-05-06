@@ -261,4 +261,7 @@ Next steps:
 
 Logs: $LOG_DIR
 Uninstall: $REPO_ROOT/scripts/uninstall.sh
+  Add --purge to also remove ~/.config/meeting-pipe.
+  Add --reset-tcc if a permission was denied and macOS won't re-prompt
+  next install (TCC caches state per bundle id). Or pass --all for both.
 EOF
