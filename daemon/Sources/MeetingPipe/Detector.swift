@@ -349,6 +349,14 @@ final class Detector {
 
     private func micInUse() -> Bool {
         if let mic = AVCaptureDevice.default(for: .audio), mic.isInUseByAnotherApplication { return true }
+        // Once we've fired .started, our own AVAudioEngine.inputNode tap
+        // holds the input device, so the broad CoreAudio probe (which
+        // checks kAudioDevicePropertyDeviceIsRunningSomewhere across all
+        // input devices and cannot exclude self) is permanently true and
+        // masks the meeting app releasing the mic. isInUseByAnotherApplication
+        // above already excludes self by design and is sufficient to detect
+        // the other app releasing, so let it carry the end signal post-start.
+        if hasFiredStart { return false }
         return Detector.coreAudioMicRunning()
     }
 
@@ -413,10 +421,12 @@ final class Detector {
     /// so the composer treats the call as still in progress — better to
     /// over-record than to false-stop on a transient probe failure.
     ///
-    /// Why this is the only end signal: while the daemon is recording,
-    /// our own AVAudioEngine mic capture keeps `micInUse()` returning
-    /// true, so the mic signal cannot fire `.ended`. The window probe is
-    /// solely responsible for ending the recording when the call hangs up.
+    /// Relationship to the mic signal: post-start, `micInUse()` skips its
+    /// broad CoreAudio fallback so `isInUseByAnotherApplication` (which
+    /// excludes self) carries the mic-release signal. The window probe
+    /// complements that by covering the few-second tail where the meeting
+    /// app keeps the input device open after hangup, and the case where
+    /// AX permission is missing on the meeting app but not the mic.
     private static func makeDefaultWindowProbe(
         browserURLFragments: [String]
     ) -> WindowProbe {
