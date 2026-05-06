@@ -108,6 +108,7 @@ def check_config() -> Config | None:
     _ok(f"loaded {CONFIG_PATH}")
     _info(f"recording.output_dir = {cfg.recording.output_dir}")
     _info(f"transcription.model = {cfg.transcription.model}, language = {cfg.transcription.language}")
+    _info(f"output.sinks = {cfg.output.sinks}")
     _info(f"summarization.model = {cfg.summarization.model}")
     _info(f"summarization.backend = {cfg.summarization.backend}")
     if cfg.summarization.backend in {"local", "auto"}:

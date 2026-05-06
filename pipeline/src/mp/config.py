@@ -110,6 +110,40 @@ class NotionCfg(BaseModel):
     include_full_transcript: bool = True
 
 
+class ObsidianCfg(BaseModel):
+    """Obsidian vault sink (P3.2). Inactive unless `obsidian` is in
+    `output.sinks`. The empty default for `vault_path` is so the
+    config file can omit the section entirely; doctor warns when the
+    sink is enabled with no path set."""
+    vault_path: str = ""
+    folder: str = "Meetings"
+    template_path: str = ""
+    attach_audio: bool = True
+    attachments_subfolder: str = "_attachments"
+    daily_note_backlink: bool = False
+
+
+class FilesystemCfg(BaseModel):
+    """Filesystem sink (P3.3). `output_dir` is the directory three
+    files (summary, transcript, actions) are dumped into per meeting.
+    Defaults to a sibling of the recordings dir so a fresh install
+    "works" without further config when the sink is enabled."""
+    output_dir: str = "~/Documents/Meetings/published"
+
+
+class OutputCfg(BaseModel):
+    """Multi-sink fan-out (P3.4). `sinks` is the ordered list of
+    publisher names to invoke after summarize. Order is execution
+    order; one sink failing logs an error but does not block the
+    others. Each sink reads its own subsection (notion / obsidian /
+    filesystem) for its own knobs.
+
+    Default is `["notion"]` to preserve current single-sink behaviour
+    for installs that do not opt into multi-sink config.
+    """
+    sinks: list[str] = Field(default_factory=lambda: ["notion"])
+
+
 class Modes(BaseModel):
     regulated_mode: bool = False
 
@@ -120,6 +154,9 @@ class Config(BaseModel):
     transcription: Transcription = Field(default_factory=Transcription)
     summarization: Summarization = Field(default_factory=Summarization)
     notion: NotionCfg = Field(default_factory=NotionCfg)
+    obsidian: ObsidianCfg = Field(default_factory=ObsidianCfg)
+    filesystem: FilesystemCfg = Field(default_factory=FilesystemCfg)
+    output: OutputCfg = Field(default_factory=OutputCfg)
     modes: Modes = Field(default_factory=Modes)
 
     @classmethod

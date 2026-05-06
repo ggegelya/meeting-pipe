@@ -47,7 +47,7 @@ def test_force_byo_skips_summarize_and_publish(tmp_path: Path, monkeypatch):
 
     with patch("mp.orchestrate.transcribe", return_value=stubbed) as t, \
          patch("mp.orchestrate.summarize", side_effect=lambda *a, **k: summarize_called.append(1) or {}), \
-         patch("mp.orchestrate.publish", side_effect=lambda *a, **k: publish_called.append(1) or {}):
+         patch("mp.orchestrate.publish_fanout", side_effect=lambda *a, **k: publish_called.append(1) or {}):
         result = run_all(wav, cfg=cfg, force_byo=True)
         assert t.called
 
@@ -73,7 +73,7 @@ def test_env_var_triggers_byo(tmp_path: Path, monkeypatch):
 
     with patch("mp.orchestrate.transcribe", return_value=stubbed), \
          patch("mp.orchestrate.summarize") as s, \
-         patch("mp.orchestrate.publish") as p:
+         patch("mp.orchestrate.publish_fanout") as p:
         result = run_all(wav, cfg=cfg)
 
     s.assert_not_called()
@@ -125,7 +125,7 @@ def test_streamed_transcript_skips_offline_transcribe(tmp_path: Path, monkeypatc
     with patch("mp.orchestrate.transcribe") as t, \
          patch("mp.orchestrate.run_diarize") as d, \
          patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
-         patch("mp.orchestrate.publish", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
         result = run_all(wav, cfg=cfg)
 
     t.assert_not_called()  # offline transcribe skipped
@@ -168,7 +168,7 @@ def test_streamed_transcript_with_speakers_skips_offline_diarize(tmp_path: Path,
     with patch("mp.orchestrate.transcribe") as t, \
          patch("mp.orchestrate.run_diarize") as d, \
          patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
-         patch("mp.orchestrate.publish", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
         result = run_all(wav, cfg=cfg)
 
     t.assert_not_called()
@@ -214,7 +214,7 @@ def test_streamed_transcript_without_speakers_runs_offline_diarize(tmp_path: Pat
     with patch("mp.orchestrate.transcribe") as t, \
          patch("mp.orchestrate.run_diarize", return_value=[]) as d, \
          patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
-         patch("mp.orchestrate.publish", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
         run_all(wav, cfg=cfg)
 
     t.assert_not_called()  # transcribe still skipped (we have segments)
@@ -240,7 +240,7 @@ def test_streamed_transcript_falls_back_when_unusable(tmp_path: Path, monkeypatc
 
     with patch("mp.orchestrate.transcribe", return_value=stubbed) as t, \
          patch("mp.orchestrate.summarize", return_value={"json": tmp_path / "x.summary.json", "md": tmp_path / "x.md"}), \
-         patch("mp.orchestrate.publish", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
         run_all(wav, cfg=cfg)
 
     t.assert_called_once()  # fell back to offline transcribe
@@ -258,7 +258,7 @@ def test_no_speech_short_circuits_before_byo_check(tmp_path: Path, monkeypatch):
 
     with patch("mp.orchestrate.transcribe", return_value=stubbed), \
          patch("mp.orchestrate.summarize") as s, \
-         patch("mp.orchestrate.publish") as p:
+         patch("mp.orchestrate.publish_fanout") as p:
         result = run_all(wav, cfg=cfg)
 
     s.assert_not_called()

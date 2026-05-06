@@ -31,7 +31,7 @@ from .diarize import (
     is_stereo_recording,
 )
 from . import events
-from .publish_notion import publish
+from .publish_router import fanout as publish_fanout
 from .summarize import summarize
 from .transcribe import render_markdown, transcribe
 
@@ -244,11 +244,17 @@ def _run_all_inner(wav: Path, cfg: Config, *, force_byo: bool) -> dict:
     s = summarize(t["md"], cfg=cfg)
     events.emit("pipeline", "stage_completed", stage="summarize", md=str(s["md"]))
 
-    log.info("[3/3] publish")
-    events.emit("pipeline", "stage_started", stage="publish")
-    pub = publish(s["json"], cfg=cfg, transcript_md=t["md"])
+    log.info("[3/3] publish (sinks=%s)", ",".join(cfg.output.sinks) or "none")
+    events.emit("pipeline", "stage_started", stage="publish",
+                sinks=list(cfg.output.sinks))
+    pub = publish_fanout(
+        summary_json=s["json"],
+        cfg=cfg,
+        transcript_md=t["md"],
+    )
     events.emit("pipeline", "stage_completed", stage="publish",
-                page_url=pub.get("page_url"))
+                page_url=pub.get("page_url"),
+                failures=[name for name, _ in pub.get("failures", [])])
 
     log.info("done: page_url=%s", pub.get("page_url"))
     events.emit("pipeline", "run_completed", wav=str(wav),
