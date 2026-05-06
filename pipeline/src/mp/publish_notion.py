@@ -31,7 +31,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 from .config import Config, load_secrets, require_env
 from .endpoints import NOTION_API_BASE, NOTION_API_VERSION, notion_page_url
 from .schemas import MeetingSummary
-from .services import NotionPublisher
+from .services import MeetingPublisher
 
 log = logging.getLogger("mp.publish_notion")
 
@@ -41,12 +41,14 @@ class NotionError(RuntimeError):
 
 
 class NotionRestPublisher:
-    """Concrete `NotionPublisher` that talks to api.notion.com directly.
+    """Concrete `MeetingPublisher` that talks to api.notion.com directly.
 
     Owns the httpx client and the create-vs-update decision, but stays
     schema-thin: property mapping and block layout live in module-level
     helpers below so they can be unit-tested in isolation.
     """
+
+    name = "notion"
 
     def __init__(self, *, token: str, cfg: Config) -> None:
         self._cfg = cfg
@@ -103,7 +105,7 @@ def publish(
     cfg: Config | None = None,
     transcript_md: Path | None = None,
     *,
-    publisher: NotionPublisher | None = None,
+    publisher: MeetingPublisher | None = None,
 ) -> dict[str, Any]:
     """Publish the summary; return {page_id, page_url, idempotent: bool}.
 

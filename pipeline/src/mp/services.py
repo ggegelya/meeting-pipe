@@ -42,12 +42,21 @@ class SummaryClient(Protocol):
 
 
 @runtime_checkable
-class NotionPublisher(Protocol):
-    """Publishes a `MeetingSummary` to whatever sink is configured.
+class MeetingPublisher(Protocol):
+    """Publishes a `MeetingSummary` to whatever sink is configured
+    (Notion, an Obsidian vault, the local filesystem, ...).
 
     Returns a dict with at least `page_id`, `page_url`, and `idempotent`
-    (or `regulated: True` when the publisher chose to no-op).
+    (or `regulated: True` when the publisher chose to no-op for
+    privacy reasons; `local: True` is also acceptable for local sinks).
+
+    `name` is a stable short identifier (e.g. "notion", "obsidian",
+    "filesystem") used to derive the sink's per-stem sidecar path
+    (`<stem>.<name>.json`). The orchestrator's multi-sink iteration
+    relies on it so two sinks cannot collide on disk.
     """
+
+    name: str
 
     def upsert(
         self,
@@ -56,6 +65,13 @@ class NotionPublisher(Protocol):
         transcript_md: Path | None,
         sidecar_path: Path,
     ) -> dict[str, Any]: ...
+
+
+# Back-compat alias: `NotionPublisher` was the original protocol name
+# when the only sink was Notion. Keep the symbol importable so an
+# external caller's `from mp.services import NotionPublisher` does
+# not break across this rename. New code should use `MeetingPublisher`.
+NotionPublisher = MeetingPublisher
 
 
 @runtime_checkable
