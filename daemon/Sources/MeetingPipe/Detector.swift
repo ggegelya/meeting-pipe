@@ -86,6 +86,15 @@ final class Detector {
     private var pollTimer: Timer?
 
     private var hasFiredStart: Bool = false
+    /// True only while the Coordinator's MeetingRecorder is actually
+    /// holding the input device. Distinct from `hasFiredStart`: the
+    /// detector fires `.started` first, the user then sits in the
+    /// prompting state for up to `prompt_timeout_sec`, and only after
+    /// they click Record does our own AVAudioEngine.inputNode tap
+    /// engage. The mic-probe gating (`micInUse`) keys off this, not
+    /// `hasFiredStart`, so the broader CoreAudio probe stays useful
+    /// during the prompt window.
+    private var recorderActive: Bool = false
     private var pendingSource: AppSource?
     /// The `AppSource` that drove the current recording. Pinned at .started
     /// so the window probe knows which app to inspect.
@@ -136,6 +145,33 @@ final class Detector {
         pollTimer = nil
         startTimer?.invalidate(); startTimer = nil
         endTimer?.invalidate(); endTimer = nil
+    }
+
+    // MARK: Recorder lifecycle hooks
+    //
+    // The Coordinator calls these when MeetingRecorder.start succeeds /
+    // when stopping flushes. They serve two purposes:
+    //   1. Gate `micInUse`'s CoreAudio probe on whether OUR tap is
+    //      actually holding the device, instead of on `hasFiredStart`
+    //      (which becomes true the moment .started fires, before the
+    //      user has even clicked Record).
+    //   2. Cancel any in-flight `endTimer` armed during the prompt
+    //      window from a transient pre-recording mic flicker. Without
+    //      this, an endTimer armed at, say, t=2s of the prompt fires
+    //      ~5s into a fresh recording and stops it within seconds.
+
+    /// Called by the Coordinator after `recorder.start` succeeds.
+    /// Threading: must be invoked on the main run loop.
+    func recorderDidStart() {
+        recorderActive = true
+        endTimer?.invalidate()
+        endTimer = nil
+    }
+
+    /// Called by the Coordinator after `recorder.stop` flushes.
+    /// Threading: must be invoked on the main run loop.
+    func recorderDidStop() {
+        recorderActive = false
     }
 
     // MARK: Wiring
@@ -255,9 +291,17 @@ final class Detector {
                 }
             }
         case .noChange:
-            // Nothing to arm; either we're already in steady state or
-            // the previous timer is still pending.
-            break
+            // Snapshot is consistent with steady state, so any debounce
+            // timer armed by a transient flicker is now stale and must
+            // be canceled. Without this, a brief mic blip pre-recording
+            // (Teams switching audio sessions when joining a call) arms
+            // a 5s endTimer that fires shortly after the user clicks
+            // Record, killing the recording within seconds.
+            startTimer?.invalidate()
+            startTimer = nil
+            endTimer?.invalidate()
+            endTimer = nil
+            pendingSource = nil
         }
     }
 
@@ -361,14 +405,20 @@ final class Detector {
 
     private func micInUse() -> Bool {
         if let mic = AVCaptureDevice.default(for: .audio), mic.isInUseByAnotherApplication { return true }
-        // Once we've fired .started, our own AVAudioEngine.inputNode tap
+        // Once OUR recorder is active, our own AVAudioEngine.inputNode tap
         // holds the input device, so the broad CoreAudio probe (which
         // checks kAudioDevicePropertyDeviceIsRunningSomewhere across all
         // input devices and cannot exclude self) is permanently true and
-        // masks the meeting app releasing the mic. isInUseByAnotherApplication
+        // masks the meeting app releasing the mic. `isInUseByAnotherApplication`
         // above already excludes self by design and is sufficient to detect
-        // the other app releasing, so let it carry the end signal post-start.
-        if hasFiredStart { return false }
+        // the other app releasing, so let it carry the end signal post-record.
+        //
+        // Important: gate on `recorderActive`, NOT `hasFiredStart`. The
+        // .started event fires the moment we detect a meeting; the user
+        // then sits in the prompt for up to `prompt_timeout_sec`. During
+        // that window, our tap is NOT yet engaged, so the CoreAudio probe
+        // stays useful as a backup for AVCapture KVO flakiness.
+        if recorderActive { return false }
         return Detector.coreAudioMicRunning()
     }
 

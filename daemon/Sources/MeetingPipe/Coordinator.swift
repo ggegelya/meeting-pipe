@@ -332,6 +332,12 @@ final class Coordinator: NSObject {
 
         do {
             let file = try recorder.start(outputDir: liveOutputDir)
+            // Tell the detector our tap is live so micInUse() switches
+            // its gating, and any endTimer armed by a pre-recording
+            // mic flicker gets cancelled immediately. Without this, a
+            // stale debounce can fire seconds into a fresh recording
+            // and stop it.
+            detector.recorderDidStart()
             state = .recording(file: file, source: source, summaryMode: summaryMode)
             statusBar.setRecording(file: file, source: source, summaryMode: summaryMode)
             recordingHUD.present(source: source, startedAt: Date())
@@ -396,6 +402,10 @@ final class Coordinator: NSObject {
             // so a hung subprocess can't pin the daemon in `.stopping`.
             await transcriber.stop()
             guard let self = self else { return }
+            // Recorder is no longer holding the input device, so
+            // `micInUse` can re-enable its CoreAudio probe and the
+            // detector resumes its normal pre-recording behaviour.
+            self.detector.recorderDidStop()
             Log.writeLine("daemon", "recording stopped → \(file.path)")
             Log.event(category: "coordinator", action: "recording_stopped", attributes: [
                 "file": file.lastPathComponent,
