@@ -157,6 +157,33 @@ def transcribe(
 # --- ASR backends -------------------------------------------------------------
 
 
+# Flags passed to every mlx-whisper invocation (offline + per-chunk
+# streaming). Together they suppress the repetition hallucination that
+# bites Whisper on long silences: the loop self-feeds because each
+# segment is conditioned on the previous one, so a single bad guess
+# during a silent gap snowballs into "Hope all the beep is open!" 30
+# times in a row. Documented as a module-level constant so a future
+# refactor cannot silently drop them.
+#
+#   condition_on_previous_text: False
+#       The big one. Without prior-text conditioning each segment is
+#       decoded independently; loops cannot self-amplify.
+#   hallucination_silence_threshold: 2.0
+#       Whisper-detected silence longer than 2 s drops any text the
+#       decoder would have produced over it.
+#   compression_ratio_threshold: 2.4 (default, made explicit)
+#       Segments whose decoded text compresses too aggressively get
+#       retried at higher temperature; the failed attempt is dropped.
+#   no_speech_threshold: 0.6 (default, made explicit)
+#       Per-segment no-speech probability above this drops the segment.
+_MLX_ANTI_LOOP_KWARGS: dict[str, Any] = {
+    "condition_on_previous_text": False,
+    "hallucination_silence_threshold": 2.0,
+    "compression_ratio_threshold": 2.4,
+    "no_speech_threshold": 0.6,
+}
+
+
 def _run_asr(wav: Path, tcfg) -> tuple[str, str, list[dict], float]:
     """Run whichever Whisper backend is available. Returns
     `(backend, language, segments, audio_seconds)`.
@@ -180,6 +207,7 @@ def _run_mlx(wav: Path, tcfg) -> tuple[str, str, list[dict], float]:
         "word_timestamps": True,
         # Disable mlx-whisper's tqdm bar (it spams pipeline.log otherwise).
         "verbose": None,
+        **_MLX_ANTI_LOOP_KWARGS,
     }
     if tcfg.language and tcfg.language.lower() != "auto":
         kwargs["language"] = tcfg.language

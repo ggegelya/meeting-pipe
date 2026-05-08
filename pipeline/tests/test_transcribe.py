@@ -396,3 +396,56 @@ def test_normalize_segment_handles_missing_word_timings():
     }
     out = _normalize_segment(raw)
     assert all(w["start"] == 1.0 and w["end"] == 2.0 for w in out["words"])
+
+
+# --- Anti-loop kwargs --------------------------------------------------------
+
+
+def test_mlx_anti_loop_kwargs_block_repetition_hallucination():
+    """Locks in the four flags that prevent the Whisper repetition
+    loop on long silences (e.g. the Teams test-call beep gaps)."""
+    from mp.transcribe import _MLX_ANTI_LOOP_KWARGS
+
+    # condition_on_previous_text=False is the load-bearing one. Without
+    # it Whisper feeds its own prior output back as context and any
+    # hallucinated phrase snowballs.
+    assert _MLX_ANTI_LOOP_KWARGS["condition_on_previous_text"] is False
+
+    # The newer dedicated knob: drop text the decoder would have
+    # produced over silent stretches longer than 2 s.
+    assert _MLX_ANTI_LOOP_KWARGS["hallucination_silence_threshold"] == 2.0
+
+    # compression_ratio + no_speech thresholds match Whisper's documented
+    # defaults; we set them explicitly so a future config change is one
+    # grep away.
+    assert _MLX_ANTI_LOOP_KWARGS["compression_ratio_threshold"] == 2.4
+    assert _MLX_ANTI_LOOP_KWARGS["no_speech_threshold"] == 0.6
+
+
+def test_mlx_call_site_forwards_anti_loop_kwargs(monkeypatch):
+    """The constant has to actually reach mlx_whisper.transcribe; if a
+    refactor drops the spread, this test catches it."""
+    import sys
+    import types
+
+    captured: dict = {}
+
+    fake = types.ModuleType("mlx_whisper")
+
+    def fake_transcribe(_audio, **kwargs):
+        captured.update(kwargs)
+        return {"language": "en", "segments": []}
+
+    fake.transcribe = fake_transcribe  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "mlx_whisper", fake)
+
+    from mp.transcribe import _MLX_ANTI_LOOP_KWARGS, _run_mlx
+
+    class _TCfg:
+        model = "mlx-community/whisper-large-v3-turbo"
+        language = "auto"
+
+    _run_mlx(Path("/tmp/fake.wav"), _TCfg())
+
+    for key, value in _MLX_ANTI_LOOP_KWARGS.items():
+        assert captured.get(key) == value, f"{key} not forwarded to mlx_whisper.transcribe"
