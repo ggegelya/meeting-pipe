@@ -82,4 +82,62 @@ final class SignalDecisionTests: XCTestCase {
             .noChange
         )
     }
+
+    // MARK: - Recorder active (post-record end semantics)
+    //
+    // Once our own AVAudioEngine.inputNode tap is engaged, Apple's
+    // `isInUseByAnotherApplication` flips false even while the meeting
+    // app still holds the device. So the mic-release signal becomes a
+    // structural false-positive during recording and the window probe
+    // alone drives end detection. These tests lock that contract.
+
+    func test_recorder_active_mic_released_window_open_does_not_end() {
+        // The bug: with recorderActive=true and window still open,
+        // micActive=false (the API quirk) used to fire .shouldEnd and
+        // killed recordings ~`debounce_end_sec` after they started.
+        XCTAssertEqual(
+            DetectorSignals(meetingAppPresent: true, micActive: false,
+                            meetingWindowOpen: true, hasFiredStart: true,
+                            recorderActive: true).decide(),
+            .noChange
+        )
+    }
+
+    func test_recorder_active_window_close_still_ends() {
+        // Window probe is the authoritative end signal post-record.
+        // It must continue to fire .shouldEnd regardless of mic state.
+        XCTAssertEqual(
+            DetectorSignals(meetingAppPresent: true, micActive: true,
+                            meetingWindowOpen: false, hasFiredStart: true,
+                            recorderActive: true).decide(),
+            .shouldEnd
+        )
+        XCTAssertEqual(
+            DetectorSignals(meetingAppPresent: true, micActive: false,
+                            meetingWindowOpen: false, hasFiredStart: true,
+                            recorderActive: true).decide(),
+            .shouldEnd
+        )
+    }
+
+    func test_recorder_active_steady_state_no_change() {
+        XCTAssertEqual(
+            DetectorSignals(meetingAppPresent: true, micActive: true,
+                            meetingWindowOpen: true, hasFiredStart: true,
+                            recorderActive: true).decide(),
+            .noChange
+        )
+    }
+
+    func test_started_but_recorder_not_yet_active_keeps_or_semantics() {
+        // .started has fired but the user is still in the prompt window;
+        // our tap is not yet engaged so the broader CoreAudio probe is
+        // reliable and mic-release should still drive .shouldEnd.
+        XCTAssertEqual(
+            DetectorSignals(meetingAppPresent: true, micActive: false,
+                            meetingWindowOpen: true, hasFiredStart: true,
+                            recorderActive: false).decide(),
+            .shouldEnd
+        )
+    }
 }

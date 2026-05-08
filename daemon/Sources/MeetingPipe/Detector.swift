@@ -33,17 +33,34 @@ struct DetectorSignals: Equatable {
     var meetingWindowOpen: Bool
     /// Have we already emitted `.started`? Determines start vs. end semantics.
     var hasFiredStart: Bool
+    /// Is the Coordinator's MeetingRecorder actively holding the input
+    /// device right now? Mutually informative with `hasFiredStart`: the
+    /// detector fires `.started` first and the user spends up to
+    /// `prompt_timeout_sec` deciding before our tap engages. Defaults to
+    /// false so existing call sites and tests covering pre-recording
+    /// semantics keep working without churn.
+    var recorderActive: Bool = false
 
     /// Decide whether the current signal snapshot should fire start or end.
     ///
     ///   - Start fires when both meeting app + mic are present.
     ///     Window state is intentionally ignored at start: many meeting
     ///     apps open the mic before any window is visible.
-    ///   - End fires when EITHER mic releases OR the window closes
-    ///     (the meeting app staying alive in the dock isn't enough to
-    ///     keep us recording — that's the regression the user hit).
+    ///   - End fires when EITHER mic releases OR the window closes,
+    ///     UNLESS our recorder is already running. Once our own
+    ///     `AVAudioEngine.inputNode` tap holds the input device, Apple's
+    ///     `AVCaptureDevice.isInUseByAnotherApplication` flips false
+    ///     even while the meeting app still holds the mic, because
+    ///     Apple stops counting the meeting app as "another app" once
+    ///     we participate in the same device. So post-record, the
+    ///     mic-release signal is a structural false-positive and the
+    ///     window probe alone drives end detection. Pre-record (during
+    ///     the prompt window) the mic signal stays live as a fast path.
     func decide() -> SignalDecision {
         if hasFiredStart {
+            if recorderActive {
+                return !meetingWindowOpen ? .shouldEnd : .noChange
+            }
             return (!micActive || !meetingWindowOpen) ? .shouldEnd : .noChange
         }
         return (meetingAppPresent && micActive) ? .shouldStart : .noChange
@@ -226,7 +243,8 @@ final class Detector {
             meetingAppPresent: app != nil,
             micActive: mic,
             meetingWindowOpen: windowOpen,
-            hasFiredStart: hasFiredStart
+            hasFiredStart: hasFiredStart,
+            recorderActive: recorderActive
         )
 
         switch signals.decide() {
@@ -273,7 +291,8 @@ final class Detector {
                         meetingAppPresent: confirmApp != nil,
                         micActive: confirmMic,
                         meetingWindowOpen: confirmWindow,
-                        hasFiredStart: true
+                        hasFiredStart: true,
+                        recorderActive: self.recorderActive
                     ).decide()
                     if reFired == .shouldEnd {
                         self.hasFiredStart = false
