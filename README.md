@@ -313,8 +313,13 @@ in Finder. Five tabs underneath:
   `<stem>.summary.json` and deletes the correction record. Notion is
   not changed automatically — republish from the Summary tab if you
   want the page in sync.
-- `Raw files` (TECH-A9) is a placeholder today; the tab shell is in
-  place so the task can drop its content in without further plumbing.
+- `Raw files` lists every sidecar in the recordings directory that
+  shares the meeting's stem (`<stem>.wav`, `<stem>.json`,
+  `<stem>.summary.json`, `<stem>.meta.json`, `<stem>.run.json`, and
+  the publish-target sidecars) with size + modification date. Each
+  row has **Reveal in Finder**, a double-click to open with the
+  default app, and a context-menu option to copy the path. The footer
+  shows the directory and an **Open folder** button.
 
 Editing the title in the header writes the new value back to
 `<stem>.summary.json` when that file exists, otherwise to

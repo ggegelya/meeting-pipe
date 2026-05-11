@@ -175,11 +175,7 @@ struct MeetingDetailView: View {
     }
 
     private var rawTab: some View {
-        TabPlaceholder(
-            icon: Tab.raw.systemImage,
-            title: "Raw files",
-            blurb: "Every sidecar in the recordings dir, with Reveal in Finder. Lands with TECH-A9."
-        )
+        RawFilesTab(meeting: meeting)
     }
 
     // MARK: Title editing
@@ -309,29 +305,6 @@ enum PublishURLs {
         guard fileComps.count > baseComps.count else { return nil }
         guard Array(fileComps.prefix(baseComps.count)) == baseComps else { return nil }
         return fileComps.suffix(from: baseComps.count).joined(separator: "/")
-    }
-}
-
-// MARK: - Placeholders
-
-private struct TabPlaceholder: View {
-    let icon: String
-    let title: String
-    let blurb: String
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 32))
-                .foregroundStyle(.tertiary)
-            Text(title).font(.headline).foregroundStyle(.secondary)
-            Text(blurb)
-                .font(.callout)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
     }
 }
 
