@@ -305,9 +305,16 @@ in Finder. Five tabs underneath:
   syncs with the Transcript tab. A segmented zoom picker (Fit / 1× /
   2× / 4× / 8×) widens the rendered track when you need to land on a
   specific second.
-- `Corrections` (TECH-A8) and `Raw files` (TECH-A9) are placeholders
-  today; the tab shell is in place so each task can drop its content
-  in without further plumbing.
+- `Corrections` shows the on-disk correction record once you've
+  edited (or graded) the meeting: verdict, timestamp, backend + model,
+  notes, and a side-by-side Original / Corrected preview. **Re-edit in
+  Summary tab** flips you back to the Summary tab; **Revert…** asks
+  for confirmation and then restores the original LLM summary to
+  `<stem>.summary.json` and deletes the correction record. Notion is
+  not changed automatically — republish from the Summary tab if you
+  want the page in sync.
+- `Raw files` (TECH-A9) is a placeholder today; the tab shell is in
+  place so the task can drop its content in without further plumbing.
 
 Editing the title in the header writes the new value back to
 `<stem>.summary.json` when that file exists, otherwise to

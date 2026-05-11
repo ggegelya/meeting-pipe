@@ -171,11 +171,7 @@ struct MeetingDetailView: View {
     }
 
     private var correctionsTab: some View {
-        TabPlaceholder(
-            icon: Tab.corrections.systemImage,
-            title: "Corrections",
-            blurb: "Renders the correction record (verdict, edits, notes). Lands with TECH-A8."
-        )
+        CorrectionsTab(meeting: meeting, selectedTab: $selectedTab)
     }
 
     private var rawTab: some View {
