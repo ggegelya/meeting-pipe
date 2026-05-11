@@ -323,41 +323,87 @@ class _GrowingWavReader:
 
     AVAudioFile (the daemon's writer) flushes PCM bytes promptly to disk
     even though the RIFF header's `data` size remains stale until close.
-    We don't trust the header — we just track byte position and read
-    raw PCM frames. Format is parsed from the header at first open.
-    """
+    We don't trust the size field; we just track byte position relative
+    to the data section start and read raw PCM frames.
 
-    HEADER_SIZE = 44  # standard WAV header for PCM payload
+    AVAudioFile does NOT emit a flat 44-byte PCM header. The on-disk
+    layout is:
+
+        RIFF descriptor (12 bytes)
+        JUNK chunk      (8 + 28  bytes; padding placeholder)
+        fmt  chunk      (8 + 16  bytes; PCM/IEEE Float format block)
+        FLLR chunk      (8 + 4008 bytes; pre-allocated filler for I/O
+                         alignment so the data chunk sits on a 4 KB boundary)
+        data chunk      (8 bytes header + growing PCM payload)
+
+    So `data` starts at byte ~4088, NOT byte 44. Treating the file as
+    if HEADER_SIZE == 44 (the previous behaviour) made the reader pick
+    fmt fields out of the JUNK chunk's zero payload, returning
+    fmt_code=0 / channels=0 / sample_rate=0; at that point
+    bytes_per_frame is 0 and read_new() short-circuits to None
+    forever. End-to-end symptom: streaming sidecar exits with
+    `segments: []` on every meeting and the orchestrator falls back
+    to offline transcribe.
+
+    We parse chunks properly here. Unknown chunks are skipped, fmt is
+    cached at first sighting, and the data section's start byte is
+    remembered for all subsequent reads.
+    """
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self.format: dict | None = None
+        self.data_start: int | None = None
         self.position: int = 0  # bytes consumed from the data section
-        self._first_open_attempted = False
 
     def _try_open_header(self) -> bool:
         if not self.path.exists():
             return False
         try:
             with self.path.open("rb") as f:
-                header = f.read(self.HEADER_SIZE)
+                if f.read(4) != b"RIFF":
+                    return False
+                f.read(4)  # RIFF size; unreliable on a growing file
+                if f.read(4) != b"WAVE":
+                    return False
+                fmt_data: bytes | None = None
+                data_start: int | None = None
+                while True:
+                    chunk_hdr = f.read(8)
+                    if len(chunk_hdr) < 8:
+                        break
+                    cid = chunk_hdr[:4]
+                    size = struct.unpack_from("<I", chunk_hdr, 4)[0]
+                    if cid == b"fmt ":
+                        fmt_data = f.read(size)
+                        # RIFF chunks are word-aligned; skip a pad byte
+                        # if the declared size is odd.
+                        if size % 2:
+                            f.read(1)
+                    elif cid == b"data":
+                        data_start = f.tell()
+                        break
+                    else:
+                        f.seek(size + (size % 2), 1)
         except OSError:
             return False
-        if len(header) < self.HEADER_SIZE:
+        if fmt_data is None or data_start is None:
             return False
-        if header[:4] != b"RIFF" or header[8:12] != b"WAVE":
+        if len(fmt_data) < 16:
             return False
-        # fmt chunk fields at canonical offsets (assuming PCM/IEEE Float WAV).
-        fmt_code = struct.unpack_from("<H", header, 20)[0]
-        channels = struct.unpack_from("<H", header, 22)[0]
-        sample_rate = struct.unpack_from("<I", header, 24)[0]
-        bits_per_sample = struct.unpack_from("<H", header, 34)[0]
+        fmt_code = struct.unpack_from("<H", fmt_data, 0)[0]
+        channels = struct.unpack_from("<H", fmt_data, 2)[0]
+        sample_rate = struct.unpack_from("<I", fmt_data, 4)[0]
+        bits_per_sample = struct.unpack_from("<H", fmt_data, 14)[0]
+        if channels == 0 or sample_rate == 0 or bits_per_sample == 0:
+            return False
         self.format = {
-            "fmt_code": fmt_code,  # 1=PCM int, 3=IEEE float
+            "fmt_code": fmt_code,
             "channels": channels,
             "sample_rate": sample_rate,
             "bits_per_sample": bits_per_sample,
         }
+        self.data_start = data_start
         return True
 
     def read_new(self) -> np.ndarray | None:
@@ -365,14 +411,14 @@ class _GrowingWavReader:
         averaged), or None if nothing's available yet. Frames are at the
         source sample rate — caller resamples to TARGET_SR.
         """
-        if self.format is None:
+        if self.format is None or self.data_start is None:
             if not self._try_open_header():
                 return None
         try:
             size = self.path.stat().st_size
         except OSError:
             return None
-        new_bytes = max(0, size - self.HEADER_SIZE - self.position)
+        new_bytes = max(0, size - self.data_start - self.position)
         if new_bytes <= 0:
             return None
         # Read in whole-frame multiples to avoid mid-frame fragments.
@@ -384,7 +430,7 @@ class _GrowingWavReader:
             return None
         try:
             with self.path.open("rb") as f:
-                f.seek(self.HEADER_SIZE + self.position)
+                f.seek(self.data_start + self.position)
                 data = f.read(new_bytes)
         except OSError:
             return None

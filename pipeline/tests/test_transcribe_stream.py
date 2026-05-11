@@ -139,6 +139,106 @@ def test_wav_reader_handles_partial_header(tmp_path: Path):
     assert reader.read_new() is None
 
 
+def _write_avaudio_style_wav(
+    buf: bytearray,
+    *,
+    channels: int,
+    sample_rate: int,
+    bps: int,
+    fmt_code: int,
+    junk_size: int = 28,
+    fllr_size: int = 4008,
+) -> None:
+    """Mirror Apple AVAudioFile's on-disk layout:
+
+        RIFF / WAVE
+        JUNK chunk (padding placeholder)
+        fmt  chunk (16-byte PCM/Float fmt body)
+        FLLR chunk (filler so data sits on a 4 KB boundary)
+        data chunk (size 0; caller appends PCM bytes after).
+
+    This is the layout that broke the previous `HEADER_SIZE = 44`
+    reader: bytes 20-44 of this layout fall inside JUNK, not fmt.
+    """
+    byte_rate = sample_rate * channels * (bps // 8)
+    block_align = channels * (bps // 8)
+    buf += b"RIFF"
+    buf += struct.pack("<I", 0)  # RIFF size; stale during growth
+    buf += b"WAVE"
+    # JUNK chunk
+    buf += b"JUNK"
+    buf += struct.pack("<I", junk_size)
+    buf += b"\x00" * junk_size
+    # fmt chunk
+    buf += b"fmt "
+    buf += struct.pack("<I", 16)
+    buf += struct.pack("<H", fmt_code)
+    buf += struct.pack("<H", channels)
+    buf += struct.pack("<I", sample_rate)
+    buf += struct.pack("<I", byte_rate)
+    buf += struct.pack("<H", block_align)
+    buf += struct.pack("<H", bps)
+    # FLLR padding chunk
+    buf += b"FLLR"
+    buf += struct.pack("<I", fllr_size)
+    buf += b"\x00" * fllr_size
+    # data chunk header (no payload yet)
+    buf += b"data"
+    buf += struct.pack("<I", 0)
+
+
+def test_wav_reader_handles_avaudio_layout(tmp_path: Path):
+    """AVAudioFile (the daemon's writer) emits RIFF / JUNK / fmt /
+    FLLR / data instead of a flat 44-byte PCM header. The reader must
+    walk chunks to find `data` rather than assuming a fixed offset;
+    otherwise it parses fmt fields out of the JUNK chunk's zeros and
+    bytes_per_frame ends up 0, which is the exact failure mode that
+    silently turned every streaming run into segments=[]."""
+    wav = tmp_path / "avaudio.wav"
+    buf = bytearray()
+    _write_avaudio_style_wav(buf, channels=1, sample_rate=48000, bps=32, fmt_code=3)
+    samples = np.linspace(-0.4, 0.4, 4800, dtype=np.float32)  # 0.1 s @ 48 kHz
+    buf += samples.astype("<f4").tobytes()
+    wav.write_bytes(buf)
+
+    reader = _GrowingWavReader(wav)
+    out = reader.read_new()
+    assert out is not None, "reader returned None on AVAudioFile layout"
+    assert out.dtype == np.float32
+    assert out.size == 4800
+    assert np.allclose(out, samples, atol=1e-5)
+    assert reader.sample_rate == 48000
+
+    # Appended frames are picked up on the next poll, same as the
+    # flat-header case but using data_start instead of HEADER_SIZE.
+    more = np.full(2400, 0.1, dtype=np.float32)
+    with wav.open("ab") as f:
+        f.write(more.astype("<f4").tobytes())
+    second = reader.read_new()
+    assert second is not None and second.size == 2400
+    assert np.allclose(second, more, atol=1e-5)
+
+
+def test_wav_reader_avaudio_layout_with_missing_data_chunk(tmp_path: Path):
+    """Mid-write the file may have JUNK + fmt + FLLR but no data chunk
+    yet (the daemon's recorder is still flushing). Reader must return
+    None and retry on next poll, not crash."""
+    wav = tmp_path / "pre-data.wav"
+    buf = bytearray()
+    # Write everything except the data chunk header.
+    byte_rate = 48000 * 1 * (32 // 8)
+    buf += b"RIFF" + struct.pack("<I", 0) + b"WAVE"
+    buf += b"JUNK" + struct.pack("<I", 28) + b"\x00" * 28
+    buf += b"fmt " + struct.pack("<I", 16)
+    buf += struct.pack("<H", 3) + struct.pack("<H", 1)
+    buf += struct.pack("<I", 48000) + struct.pack("<I", byte_rate)
+    buf += struct.pack("<H", 4) + struct.pack("<H", 32)
+    wav.write_bytes(buf)
+
+    reader = _GrowingWavReader(wav)
+    assert reader.read_new() is None
+
+
 # --- Resampling --------------------------------------------------------------
 
 
