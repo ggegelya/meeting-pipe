@@ -10,7 +10,7 @@ final class MeetingDetailViewTests: XCTestCase {
         let vault = URL(fileURLWithPath: "/Users/me/Vault")
         let note = URL(fileURLWithPath: "/Users/me/Vault/Meetings/2026/note.md")
         XCTAssertEqual(
-            MeetingDetailView.relativePath(of: note, from: vault),
+            PublishURLs.relativePath(of: note, from: vault),
             "Meetings/2026/note.md"
         )
     }
@@ -18,12 +18,12 @@ final class MeetingDetailViewTests: XCTestCase {
     func test_relativePath_returns_nil_for_unrelated_paths() {
         let vault = URL(fileURLWithPath: "/Users/me/Vault")
         let note = URL(fileURLWithPath: "/tmp/other.md")
-        XCTAssertNil(MeetingDetailView.relativePath(of: note, from: vault))
+        XCTAssertNil(PublishURLs.relativePath(of: note, from: vault))
     }
 
     func test_relativePath_returns_nil_when_file_equals_base() {
         let vault = URL(fileURLWithPath: "/Users/me/Vault")
-        XCTAssertNil(MeetingDetailView.relativePath(of: vault, from: vault))
+        XCTAssertNil(PublishURLs.relativePath(of: vault, from: vault))
     }
 
     func test_relativePath_handles_trailing_slashes() {
@@ -31,7 +31,7 @@ final class MeetingDetailViewTests: XCTestCase {
         let vault = URL(fileURLWithPath: "/Users/me/Vault/")
         let note = URL(fileURLWithPath: "/Users/me/Vault/Meetings/n.md")
         XCTAssertEqual(
-            MeetingDetailView.relativePath(of: note, from: vault),
+            PublishURLs.relativePath(of: note, from: vault),
             "Meetings/n.md"
         )
     }

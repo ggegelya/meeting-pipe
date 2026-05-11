@@ -17,6 +17,15 @@ struct MeetingDetailView: View {
     @EnvironmentObject var libraryModel: LibraryWindowModel
     let meeting: Meeting
 
+    /// Cached so the body never reads from disk synchronously. Reloaded
+    /// off-main on stem change via `.task(id:)`. Without this the body
+    /// hit `Data(contentsOf:)` on every observable change in the
+    /// library model (status, processingCount, model-download progress,
+    /// liveRecordingStem) and beach-balled the UI during recording.
+    @State private var cachedNotionURL: URL? = nil
+    @State private var cachedObsidianURL: URL? = nil
+    @State private var publishURLsLoadedForStem: String? = nil
+
     /// Persisted across launches so reopening the window keeps the user
     /// on their preferred tab. Hidden behind a stem-keyed default would
     /// be over-engineered for a personal product.
@@ -82,6 +91,7 @@ struct MeetingDetailView: View {
         .onAppear { syncEditingTitle(force: true) }
         .onChange(of: meeting.stem) { _, _ in syncEditingTitle(force: true) }
         .onChange(of: meeting.displayTitle) { _, _ in syncEditingTitle(force: false) }
+        .task(id: meeting.stem) { await reloadPublishURLs() }
     }
 
     // MARK: Header
@@ -114,7 +124,7 @@ struct MeetingDetailView: View {
     @ViewBuilder
     private var openInButtons: some View {
         HStack(spacing: 6) {
-            if let url = notionURL {
+            if let url = cachedNotionURL {
                 Button {
                     NSWorkspace.shared.open(url)
                 } label: {
@@ -122,7 +132,7 @@ struct MeetingDetailView: View {
                 }
                 .controlSize(.small)
             }
-            if let url = obsidianURL {
+            if let url = cachedObsidianURL {
                 Button {
                     NSWorkspace.shared.open(url)
                 } label: {
@@ -242,8 +252,29 @@ struct MeetingDetailView: View {
 
     // MARK: Publish-target URLs
 
-    private var notionURL: URL? {
-        let path = meeting.recordingsDir.appendingPathComponent("\(meeting.stem).notion.json")
+    @MainActor
+    private func reloadPublishURLs() async {
+        let stem = meeting.stem
+        let notionPath = meeting.recordingsDir.appendingPathComponent("\(stem).notion.json")
+        let obsidianPath = meeting.recordingsDir.appendingPathComponent("\(stem).obsidian.json")
+
+        let (notion, obsidian) = await Task.detached(priority: .userInitiated) {
+            (PublishURLs.notion(at: notionPath), PublishURLs.obsidian(at: obsidianPath))
+        }.value
+
+        if meeting.stem == stem {
+            cachedNotionURL = notion
+            cachedObsidianURL = obsidian
+            publishURLsLoadedForStem = stem
+        }
+    }
+}
+
+/// File-parsing helpers for the publish-target sidecars. Pulled out of
+/// `MeetingDetailView` so they aren't inferred as main-actor-isolated
+/// via View conformance; the loader calls them from a detached Task.
+enum PublishURLs {
+    static func notion(at path: URL) -> URL? {
         guard let data = try? Data(contentsOf: path),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let s = obj["page_url"] as? String else {
@@ -257,8 +288,7 @@ struct MeetingDetailView: View {
     /// trimming the vault prefix off the absolute note path the pipeline
     /// wrote into `<stem>.obsidian.json`. Returns nil when the sidecar
     /// doesn't exist or the vault relationship can't be resolved.
-    private var obsidianURL: URL? {
-        let path = meeting.recordingsDir.appendingPathComponent("\(meeting.stem).obsidian.json")
+    static func obsidian(at path: URL) -> URL? {
         guard let data = try? Data(contentsOf: path),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let notePath = obj["note_path"] as? String,
@@ -267,7 +297,7 @@ struct MeetingDetailView: View {
         }
         let vaultURL = URL(fileURLWithPath: vault)
         let noteURL = URL(fileURLWithPath: notePath)
-        guard let rel = Self.relativePath(of: noteURL, from: vaultURL) else { return nil }
+        guard let rel = relativePath(of: noteURL, from: vaultURL) else { return nil }
         let vaultName = vaultURL.lastPathComponent
         var comps = URLComponents()
         comps.scheme = "obsidian"

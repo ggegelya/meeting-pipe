@@ -4,9 +4,32 @@ import SwiftUI
 /// One row in the Library list. Title + source glyph + workflow chip
 /// (when present) + duration + status pill. Right-click exposes the
 /// per-row context menu (TECH-A12).
-struct MeetingRow: View {
-    @EnvironmentObject var libraryModel: LibraryWindowModel
+///
+/// Deliberately holds NO `@ObservedObject` / `@EnvironmentObject` so
+/// that broadcasts from `LibraryWindowModel` (status flips, processing
+/// queue depth, model-download progress, …) don't invalidate every row
+/// in the list. The list owns the model; it computes `isLiveRecording`
+/// per row and passes plain closures down for the context-menu
+/// actions.
+struct MeetingRow: View, Equatable {
     let meeting: Meeting
+    /// Pre-computed by the list view. The row never reads
+    /// `liveRecordingStem` itself, so changes elsewhere in the model
+    /// don't bubble through here.
+    let isLiveRecording: Bool
+    /// Plain closures so the row neither observes nor strongly retains
+    /// the library model.
+    let onRepublish: () async -> Void
+    let onRegenerate: () async -> Void
+    let onSoftDelete: () -> Void
+    let onExport: (URL) -> Result<Int, Error>
+
+    /// Equatable on value-typed fields only — closures are intentionally
+    /// excluded because they're re-allocated by the parent on every
+    /// re-render and would defeat the `.equatable()` optimization.
+    static func == (lhs: MeetingRow, rhs: MeetingRow) -> Bool {
+        lhs.meeting == rhs.meeting && lhs.isLiveRecording == rhs.isLiveRecording
+    }
 
     @State private var inFlight: InFlight? = nil
 
@@ -103,21 +126,15 @@ struct MeetingRow: View {
     @MainActor
     private func republish() async {
         inFlight = .republishing
-        let result = await libraryModel.republishMeeting(stem: meeting.stem)
+        await onRepublish()
         inFlight = nil
-        if case .failure = result {
-            // Coordinator already showed an error notification; nothing
-            // more to surface in the row UI.
-            return
-        }
     }
 
     @MainActor
     private func regenerate() async {
         inFlight = .regenerating
-        let result = await libraryModel.regenerateMeeting(stem: meeting.stem)
+        await onRegenerate()
         inFlight = nil
-        _ = result
     }
 
     private func promptExport() {
@@ -129,7 +146,7 @@ struct MeetingRow: View {
         panel.prompt = "Export here"
         panel.message = "Choose a folder for the exported bundle (summary, transcript, audio)."
         if panel.runModal() == .OK, let dest = panel.url {
-            switch libraryModel.exportMeeting(stem: meeting.stem, to: dest) {
+            switch onExport(dest) {
             case .success(let n):
                 NSWorkspace.shared.activateFileViewerSelecting([dest])
                 Log.writeLine("daemon", "exported \(meeting.stem) → \(dest.path) (\(n) files)")
@@ -150,14 +167,7 @@ struct MeetingRow: View {
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
         if alert.runModal() == .alertFirstButtonReturn {
-            switch libraryModel.softDeleteMeeting(stem: meeting.stem) {
-            case .success: break
-            case .failure(let err):
-                presentAlert(
-                    title: "Delete failed",
-                    message: err.localizedDescription
-                )
-            }
+            onSoftDelete()
         }
     }
 
@@ -171,15 +181,12 @@ struct MeetingRow: View {
     }
 
     /// The on-disk status alone can't tell "wav still being written" from
-    /// "wav done, pipeline running". When the row's stem matches the
-    /// live-recording stem the daemon publishes, escalate the pill to
-    /// `.recording` so the user sees the pulse on the actual in-flight
-    /// meeting.
+    /// "wav done, pipeline running". The list view sets `isLiveRecording`
+    /// when this row's stem matches the daemon's live-recording stem; we
+    /// escalate the pill to `.recording` so the user sees the pulse on
+    /// the actual in-flight meeting.
     private var effectiveStatus: Meeting.Status {
-        if libraryModel.liveRecordingStem == meeting.stem {
-            return .recording
-        }
-        return meeting.status
+        isLiveRecording ? .recording : meeting.status
     }
 
     @ViewBuilder

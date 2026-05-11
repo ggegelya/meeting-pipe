@@ -219,7 +219,11 @@ struct LibraryRootView: View {
     private var contentPane: some View {
         switch selection {
         case .library:
-            LibraryListView(store: model.meetingStore, selection: $meetingSelection)
+            LibraryListView(
+                store: model.meetingStore,
+                libraryModel: model,
+                selection: $meetingSelection
+            )
         case .workflows:
             WorkflowsPlaceholder()
         case .preferences:

@@ -5,6 +5,7 @@ import SwiftUI
 /// The store auto-refreshes via a directory watcher.
 struct LibraryListView: View {
     @ObservedObject var store: MeetingStore
+    @ObservedObject var libraryModel: LibraryWindowModel
     @Binding var selection: Meeting.ID?
 
     var body: some View {
@@ -27,8 +28,25 @@ struct LibraryListView: View {
             ForEach(groupedMeetings, id: \.title) { group in
                 Section(group.title) {
                     ForEach(group.meetings) { meeting in
-                        MeetingRow(meeting: meeting)
-                            .tag(Optional(meeting.id))
+                        MeetingRow(
+                            meeting: meeting,
+                            isLiveRecording: libraryModel.liveRecordingStem == meeting.stem,
+                            onRepublish: { [weak libraryModel] in
+                                _ = await libraryModel?.republishMeeting(stem: meeting.stem)
+                            },
+                            onRegenerate: { [weak libraryModel] in
+                                _ = await libraryModel?.regenerateMeeting(stem: meeting.stem)
+                            },
+                            onSoftDelete: { [weak libraryModel] in
+                                _ = libraryModel?.softDeleteMeeting(stem: meeting.stem)
+                            },
+                            onExport: { [weak libraryModel] dest in
+                                libraryModel?.exportMeeting(stem: meeting.stem, to: dest)
+                                    ?? .failure(NSError(domain: "LibraryListView", code: 1))
+                            }
+                        )
+                        .equatable()
+                        .tag(Optional(meeting.id))
                     }
                 }
             }
