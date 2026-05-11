@@ -23,6 +23,14 @@ final class Coordinator: NSObject {
     private let consent: ConsentStore
     private let launcher: PipelineDriver
     private let preferencesWindow: PreferencesWindow?
+    /// Library window — daemon's primary UI surface for browsing past
+    /// recordings. Built lazily-once; `show()` brings it forward on
+    /// every "Open Library…" click.
+    private let libraryWindow: LibraryWindow
+    /// Observable mirror of the recording state machine + processing
+    /// queue + model-download progress. The library window subscribes
+    /// to this; StatusBarController writes into it from each state setter.
+    private let libraryModel: LibraryWindowModel
     /// Long-running transcription subprocess that runs in parallel with
     /// the recorder. When the recording stops, we signal it to flush;
     /// the orchestrator then picks up its `<stem>.json` and skips the
@@ -134,7 +142,15 @@ final class Coordinator: NSObject {
         } else {
             self.preferencesWindow = nil
         }
+        let libraryModel = LibraryWindowModel()
+        self.libraryModel = libraryModel
+        self.libraryWindow = LibraryWindow(model: libraryModel)
         super.init()
+        // Wire the model back to the Coordinator so the sidebar's
+        // Start/Stop button can route through the existing menu handlers.
+        // Done post-super.init so the weak ref is valid.
+        libraryModel.coordinator = self
+        statusBar.libraryModel = libraryModel
     }
 
     func start() {
@@ -244,6 +260,10 @@ final class Coordinator: NSObject {
 
     @objc func menuPreferences() {
         preferencesWindow?.show()
+    }
+
+    @objc func menuOpenLibrary() {
+        libraryWindow.show()
     }
 
     @objc func menuOpenScreenRecordingSettings() {

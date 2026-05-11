@@ -5,6 +5,11 @@ import AppKit
 final class StatusBarController {
     private let item: NSStatusItem
     weak var coordinator: Coordinator?
+    /// Optional bridge into the SwiftUI Library window's footer. Each
+    /// state setter mirrors here so the rail's status row + record button
+    /// stay in sync with the menu bar without subscribing to private
+    /// AppKit setters.
+    var libraryModel: LibraryWindowModel?
 
     /// 18pt is the menu-bar standard. Both icons render at this size.
     private static let iconSize: CGFloat = 18
@@ -46,6 +51,7 @@ final class StatusBarController {
         baseTitle = "Idle"
         applyTitle()
         rebuildMenu(state: .idle)
+        libraryModel?.status = .idle
     }
 
     func setPrompting(_ source: AppSource) {
@@ -53,6 +59,7 @@ final class StatusBarController {
         baseTitle = "Detected \(source.displayName)"
         applyTitle()
         rebuildMenu(state: .prompting(source: source))
+        libraryModel?.status = .prompting(appName: source.displayName)
     }
 
     func setRecording(file: URL, source: AppSource?, summaryMode: SummaryMode) {
@@ -60,6 +67,7 @@ final class StatusBarController {
         baseTitle = summaryMode == .byo ? "Recording (BYO)" : "Recording"
         applyTitle()
         rebuildMenu(state: .recording(file: file, source: source, summaryMode: summaryMode))
+        libraryModel?.status = .recording(appName: source?.displayName)
     }
 
     func setStopping() {
@@ -67,6 +75,7 @@ final class StatusBarController {
         baseTitle = "Stopping…"
         applyTitle()
         rebuildMenu(state: .idle)
+        libraryModel?.status = .stopping
     }
 
     /// Update the processing-jobs badge. Called from the Coordinator
@@ -75,6 +84,7 @@ final class StatusBarController {
         processingCount = n
         applyTitle()
         rebuildMenu(state: lastMenuState)
+        libraryModel?.processingCount = n
     }
 
     /// Reflect the model-prefetch lifecycle in the menu bar. The download
@@ -96,10 +106,12 @@ final class StatusBarController {
                 self.modelDownload = .idle
                 self.applyTitle()
                 self.rebuildMenu(state: self.lastMenuState)
+                self.libraryModel?.modelDownload = .idle
             }
         }
         applyTitle()
         rebuildMenu(state: lastMenuState)
+        libraryModel?.modelDownload = s
     }
 
     private func applyTitle() {
@@ -253,6 +265,14 @@ final class StatusBarController {
         }
 
         menu.addItem(.separator())
+        let openLibrary = NSMenuItem(
+            title: "Open Library…",
+            action: #selector(Coordinator.menuOpenLibrary),
+            keyEquivalent: "l"
+        )
+        openLibrary.target = coordinator
+        menu.addItem(openLibrary)
+
         if let coordinator = coordinator,
            let recentItem = recentMeetingsMenuItem(coordinator: coordinator) {
             menu.addItem(recentItem)

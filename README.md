@@ -240,6 +240,21 @@ Set to `0` to disable.
 
 ---
 
+## Library window
+
+Click the menu bar icon → **Open Library…** to open the main window
+(900x600, restorable, hides on Cmd+W with the daemon still running).
+
+Three-pane shell today: a left rail with `Library / Workflows /
+Preferences` plus a status footer (idle / recording / processing-queue
+badge / model-download progress and a Start/Stop button), and
+placeholder content + detail panes. The list of past meetings, the
+per-meeting detail tabs, and the in-window summary editor are landing
+across TECH-A2 / A4 / A5 / A6 / A7. Selecting `Preferences` in the rail
+opens the existing standalone Preferences window.
+
+---
+
 ## Improving local quality
 
 When `summarization.backend` is `"local"`, you can grade each
