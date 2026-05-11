@@ -73,17 +73,40 @@ final class WindowRecognizerTests: XCTestCase {
             bundleID: "com.microsoft.teams2", kind: .native, title: "Microsoft Teams"))
     }
 
-    func test_teams_chat_thread_with_meeting_in_subject_rejected() {
-        // The exact failure class: prefix-not-contains is the fix here.
-        XCTAssertFalse(Detector.isActiveMeetingWindow(
-            bundleID: "com.microsoft.teams2", kind: .native, title: "Sprint planning meeting | Microsoft Teams"))
+    func test_teams_topic_only_meeting_window_recognized() {
+        // May 2026 Teams: meeting windows show just the meeting topic
+        // instead of a "Meeting in <X>" prefix. Real capture from the
+        // wild that exposed the prefix-strict recognizer as too narrow.
+        XCTAssertTrue(Detector.isActiveMeetingWindow(
+            bundleID: "com.microsoft.teams2", kind: .native, title: "Echo | Microsoft Teams"))
     }
 
-    func test_teams_chat_thread_starting_with_recall_rejected() {
-        // "Recall" contains "call" but lead is "recall procedures",
-        // not a "call with" prefix.
+    func test_teams_bare_topic_no_suffix_recognized() {
+        // Some Teams builds drop the "| Microsoft Teams" suffix on the
+        // meeting window entirely. Accept the bare topic as a candidate;
+        // the chrome blacklist still excludes "Microsoft Teams" itself.
+        XCTAssertTrue(Detector.isActiveMeetingWindow(
+            bundleID: "com.microsoft.teams2", kind: .native, title: "Echo"))
+    }
+
+    func test_teams_calendar_tab_rejected() {
         XCTAssertFalse(Detector.isActiveMeetingWindow(
-            bundleID: "com.microsoft.teams2", kind: .native, title: "Recall procedures | Microsoft Teams"))
+            bundleID: "com.microsoft.teams2", kind: .native, title: "Calendar"))
+    }
+
+    func test_teams_settings_tab_rejected() {
+        XCTAssertFalse(Detector.isActiveMeetingWindow(
+            bundleID: "com.microsoft.teams2", kind: .native, title: "Settings"))
+    }
+
+    func test_teams_topic_with_meeting_word_now_recognized() {
+        // Under the old prefix-strict recognizer this was a "chat thread"
+        // and got rejected. Real-world cost of that strictness was
+        // recordings dying mid-call when the meeting topic happened not
+        // to start with "meeting"/"call". Permissive recognizer accepts
+        // it; trade-off documented in isActiveMeetingWindow.
+        XCTAssertTrue(Detector.isActiveMeetingWindow(
+            bundleID: "com.microsoft.teams2", kind: .native, title: "Sprint planning meeting | Microsoft Teams"))
     }
 
     func test_teams_legacy_bundle_recognizer_matches() {

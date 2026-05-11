@@ -99,17 +99,31 @@
     },
     {
       "bundle_id": "com.microsoft.teams2",
-      "state": "chat_thread_with_meeting_word",
+      "state": "idle_calendar_tab",
       "expected": "reject",
       "seeded": true,
-      "titles": ["Sprint planning meeting | Microsoft Teams"]
+      "titles": ["Calendar"]
     },
     {
       "bundle_id": "com.microsoft.teams2",
-      "state": "chat_thread_with_call_word",
+      "state": "idle_settings_tab",
       "expected": "reject",
       "seeded": true,
-      "titles": ["Recall procedures | Microsoft Teams"]
+      "titles": ["Settings"]
+    },
+    {
+      "bundle_id": "com.microsoft.teams2",
+      "state": "in_meeting_topic_only",
+      "expected": "recognize",
+      "seeded": true,
+      "titles": ["Echo | Microsoft Teams"]
+    },
+    {
+      "bundle_id": "com.microsoft.teams2",
+      "state": "in_meeting_bare_topic_no_suffix",
+      "expected": "recognize",
+      "seeded": true,
+      "titles": ["Echo"]
     },
     {
       "bundle_id": "com.microsoft.teams",

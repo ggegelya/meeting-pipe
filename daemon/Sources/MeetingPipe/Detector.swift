@@ -625,9 +625,14 @@ final class Detector {
         let recognized = titles.first { title in
             isActiveMeetingWindow(bundleID: source.bundleID, kind: source.kind, title: title)
         }
+        // Wrap each title in quotes + use a separator that can't appear
+        // inside a window title. The previous " | " separator was
+        // ambiguous with " | " literally inside "<Topic> | Microsoft
+        // Teams"-style titles, making the log unparseable.
+        let titleListing = titles.map { "\"\($0)\"" }.joined(separator: " » ")
         Log.writeLine(
             "detector",
-            "windowprobe(native) app=\(source.bundleID) titles=[\(titles.joined(separator: " | "))] activeWindow=\(recognized ?? "(none)")"
+            "windowprobe(native) app=\(source.bundleID) titles=[\(titleListing)] activeWindow=\(recognized.map { "\"\($0)\"" } ?? "(none)")"
         )
         if titles.isEmpty { return false }
         return recognized != nil
@@ -658,26 +663,51 @@ final class Detector {
             return lowered.contains("zoom meeting")
 
         case ("com.microsoft.teams2", .native), ("com.microsoft.teams", .native):
-            // Modern Teams active meeting windows always end in
-            // "| microsoft teams" AND have a meeting/call marker in the
-            // leading segment. Chat threads share the suffix but their
-            // lead is the chat subject, which can naturally contain
-            // "meeting" or "call" as a word. Use prefix/exact match,
-            // not contains, so "Sprint planning meeting" does not match.
-            // "huddle" / "breakout" are rare enough in chat titles to
-            // tolerate substring match.
-            guard lowered.hasSuffix("| microsoft teams") else { return false }
-            let lead = String(lowered.dropLast("| microsoft teams".count))
-                .trimmingCharacters(in: .whitespaces)
-            if lead.isEmpty { return false }                         // bare app chrome
-            return lead == "meeting"
-                || lead.hasPrefix("meeting in ")
-                || lead.hasPrefix("meeting with ")
-                || lead.hasPrefix("call with ")
-                || lead == "calling"
-                || lead.hasPrefix("calling ")
-                || lead.contains("huddle")
-                || lead.contains("breakout")
+            // Teams (May 2026) drops the "Meeting in <X>" / "Meeting with
+            // <X>" lead in favour of just the meeting topic in the title.
+            // Examples observed in the wild:
+            //   - "Echo | Microsoft Teams"   (topic = "Echo")
+            //   - "Standup | Microsoft Teams"
+            //   - Just "Echo" with no suffix (rare; some Teams versions)
+            // The old prefix-based recognizer was too strict and rejected
+            // real meetings, leading to recordings being auto-stopped a
+            // few seconds in. The new contract favours false-positives
+            // (recording continues into a stale chat thread; user clicks
+            // stop or the silence detector catches it after 5 min) over
+            // false-negatives (recording dies mid-call, audio lost).
+            //
+            // Reject only well-known chrome / non-meeting surfaces. Both
+            // the bare "<X>" form and the "<X> | Microsoft Teams" form
+            // share the same chrome blacklist.
+            let chrome: Set<String> = [
+                "microsoft teams",
+                "teams",
+                "calendar",
+                "settings",
+                "activity",
+                "chat",
+                "files",
+                "apps",
+                "store",
+                "join meeting",
+                "schedule meeting",
+            ]
+            if chrome.contains(lowered) { return false }
+            if lowered.hasSuffix("| microsoft teams") {
+                let lead = String(lowered.dropLast("| microsoft teams".count))
+                    .trimmingCharacters(in: .whitespaces)
+                if lead.isEmpty { return false }                     // bare app chrome
+                if chrome.contains(lead) { return false }
+                return true
+            }
+            // No suffix — Teams sometimes spawns the meeting window with
+            // just the topic. We can't distinguish that from chrome by
+            // title alone, so we trust the blacklist above to filter
+            // chrome and accept everything else as a meeting candidate.
+            // An unknown / empty title is treated as inconclusive (the
+            // upstream probe ORs results across windows; this title
+            // contributes nothing rather than a misleading false).
+            return !lowered.isEmpty
 
         case ("com.cisco.webexmeetingsapp", _):
             // Webex active meeting always contains "webex meeting".
@@ -736,9 +766,10 @@ final class Detector {
         // becomes a noChange and only an actual close ends the recording.
         if let tabTitles = collectAXTabTitles(pid: pid) {
             let match = anyTitleMatchesFragment(tabTitles, fragments: fragments)
+            let tabListing = tabTitles.map { "\"\($0)\"" }.joined(separator: " » ")
             Log.writeLine(
                 "detector",
-                "windowprobe(browser) app=\(source.bundleID) tabs=[\(tabTitles.joined(separator: " | "))] fragmentMatch=\(match)"
+                "windowprobe(browser) app=\(source.bundleID) tabs=[\(tabListing)] fragmentMatch=\(match)"
             )
             // Empty tab list with a successful AX read = no tabs open
             // (last window closed, all-tabs-closed gesture). End it.
@@ -754,9 +785,10 @@ final class Detector {
         let titles = collectAXWindowTitles(pid: pid)
         guard let titles = titles else { return nil }
         let sawFragment = anyTitleMatchesFragment(titles, fragments: fragments)
+        let titleListing = titles.map { "\"\($0)\"" }.joined(separator: " » ")
         Log.writeLine(
             "detector",
-            "windowprobe(browser) app=\(source.bundleID) windowTitles=[\(titles.joined(separator: " | "))] fragmentMatch=\(sawFragment) (tab-strip unavailable)"
+            "windowprobe(browser) app=\(source.bundleID) windowTitles=[\(titleListing)] fragmentMatch=\(sawFragment) (tab-strip unavailable)"
         )
         if titles.isEmpty { return false }
         return sawFragment
