@@ -245,13 +245,25 @@ Set to `0` to disable.
 Click the menu bar icon → **Open Library…** to open the main window
 (900x600, restorable, hides on Cmd+W with the daemon still running).
 
-Three-pane shell today: a left rail with `Library / Workflows /
+Three-pane layout: a left rail with `Library / Workflows /
 Preferences` plus a status footer (idle / recording / processing-queue
-badge / model-download progress and a Start/Stop button), and
-placeholder content + detail panes. The list of past meetings, the
-per-meeting detail tabs, and the in-window summary editor are landing
-across TECH-A2 / A4 / A5 / A6 / A7. Selecting `Preferences` in the rail
-opens the existing standalone Preferences window.
+badge / model-download progress and a Start/Stop button), a middle
+column with the meetings list, and a placeholder detail column on the
+right.
+
+The list scans `~/Documents/Meetings/raw/` (or whatever is configured
+in `recording.output_dir`) and shows one row per recording, grouped
+into Today / Yesterday / This week / Last week / Earlier this month /
+older months. Each row carries the meeting title (LLM-derived when
+available, falling back to the source app + time), source-app glyph,
+duration, and a status pill (Recording / Processing / Paste pending /
+Ready). The list refreshes automatically when the pipeline writes new
+sidecars - new meetings appear within a second of the underlying file
+landing.
+
+The per-meeting detail tabs and the in-window summary editor are
+landing across TECH-A4 / A5 / A6 / A7. Selecting `Preferences` in the
+rail opens the existing standalone Preferences window.
 
 ---
 

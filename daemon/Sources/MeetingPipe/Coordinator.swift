@@ -142,7 +142,18 @@ final class Coordinator: NSObject {
         } else {
             self.preferencesWindow = nil
         }
-        let libraryModel = LibraryWindowModel()
+        // The recordings dir is read from ConfigStore at runtime so the
+        // Library list reflects edits made in Preferences. We snapshot
+        // here at init for the store's root; live-config switches require
+        // a daemon restart for the library window (acceptable since the
+        // recordings dir is rarely changed).
+        let recordingsDir: URL = {
+            if let raw = configStore?.outputDirPath {
+                return URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
+            }
+            return config.recording.outputDir
+        }()
+        let libraryModel = LibraryWindowModel(recordingsDir: recordingsDir)
         self.libraryModel = libraryModel
         self.libraryWindow = LibraryWindow(model: libraryModel)
         super.init()

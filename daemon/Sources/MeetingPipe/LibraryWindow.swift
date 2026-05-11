@@ -95,8 +95,13 @@ final class LibraryWindowModel: ObservableObject {
     /// (Start/Stop, Preferences) without creating a retain cycle.
     weak var coordinator: Coordinator?
 
-    init(coordinator: Coordinator? = nil) {
+    /// Backing store for the meetings list. Built once with the daemon's
+    /// recordings directory; the list view subscribes to it.
+    let meetingStore: MeetingStore
+
+    init(coordinator: Coordinator? = nil, recordingsDir: URL) {
         self.coordinator = coordinator
+        self.meetingStore = MeetingStore(recordingsDir: recordingsDir)
     }
 
     var isRecording: Bool {
@@ -123,11 +128,13 @@ final class LibraryWindowModel: ObservableObject {
 
 // MARK: - Root view
 
-/// Three-pane `NavigationSplitView`. Sidebar drives selection; the
-/// content and detail columns are placeholders that A2 / A4 will replace.
+/// Three-pane `NavigationSplitView`. Sidebar drives the top-level
+/// section; the content column is the meetings list, and the detail
+/// column is a placeholder until TECH-A4 lands.
 struct LibraryRootView: View {
     @ObservedObject var model: LibraryWindowModel
     @State private var selection: LibrarySidebarItem = .library
+    @State private var meetingSelection: Meeting.ID?
 
     var body: some View {
         NavigationSplitView {
@@ -138,6 +145,7 @@ struct LibraryRootView: View {
             detailPane
         }
         .navigationTitle("Library")
+        .onAppear { model.meetingStore.start() }
         .onChange(of: selection) { _, new in
             // Preferences lives in its own top-level window. Routing back
             // to .library keeps the rail's visible selection coherent with
@@ -153,7 +161,7 @@ struct LibraryRootView: View {
     private var contentPane: some View {
         switch selection {
         case .library:
-            LibraryEmptyPlaceholder()
+            LibraryListView(store: model.meetingStore, selection: $meetingSelection)
         case .workflows:
             WorkflowsPlaceholder()
         case .preferences:
@@ -168,29 +176,10 @@ struct LibraryRootView: View {
             Image(systemName: "doc.text")
                 .font(.system(size: 36))
                 .foregroundStyle(.tertiary)
-            Text("Select a meeting")
+            Text(meetingSelection == nil ? "Select a meeting" : "Detail view (TECH-A4)")
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-private struct LibraryEmptyPlaceholder: View {
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "waveform")
-                .font(.system(size: 48))
-                .foregroundStyle(.tertiary)
-            Text("No recordings yet")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-            Text("Start a meeting in Zoom / Teams / Meet / Webex / Slack,\nor press ⌃⌥M.")
-                .font(.callout)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
     }
 }
 
