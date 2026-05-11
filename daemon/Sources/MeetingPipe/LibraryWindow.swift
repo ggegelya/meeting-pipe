@@ -171,15 +171,21 @@ struct LibraryRootView: View {
         }
     }
 
+    @ViewBuilder
     private var detailPane: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "doc.text")
-                .font(.system(size: 36))
-                .foregroundStyle(.tertiary)
-            Text(meetingSelection == nil ? "Select a meeting" : "Detail view (TECH-A4)")
-                .foregroundStyle(.secondary)
+        if let selectedID = meetingSelection,
+           let meeting = model.meetingStore.meetings.first(where: { $0.id == selectedID }) {
+            MeetingDetailView(meeting: meeting)
+        } else {
+            VStack(spacing: 8) {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.tertiary)
+                Text("Select a meeting")
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

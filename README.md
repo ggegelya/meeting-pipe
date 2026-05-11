@@ -261,9 +261,26 @@ Ready). The list refreshes automatically when the pipeline writes new
 sidecars - new meetings appear within a second of the underlying file
 landing.
 
-The per-meeting detail tabs and the in-window summary editor are
-landing across TECH-A4 / A5 / A6 / A7. Selecting `Preferences` in the
-rail opens the existing standalone Preferences window.
+Select a row and the right pane fills with the per-meeting detail
+view: an editable title, the meeting's date, the workflow chip when
+present, duration, and shortcuts to open the published note in Notion
+or Obsidian (when those sidecars are on disk) or reveal the raw audio
+in Finder. Five tabs underneath:
+
+- `Summary` renders the existing `<stem>.summary.json` (read-only
+  today; the inline editor lands with TECH-A5).
+- `Transcript` (TECH-A6), `Audio` (TECH-A7), `Corrections` (TECH-A8),
+  and `Raw files` (TECH-A9) are placeholders today; the tab shell is
+  in place so each task can drop its content in without further
+  plumbing.
+
+Editing the title in the header writes the new value back to
+`<stem>.summary.json` when that file exists, otherwise to
+`<stem>.meta.json`. The list rescans on the next debounce tick and the
+new title appears in both the row and the detail header.
+
+Selecting `Preferences` in the rail opens the existing standalone
+Preferences window.
 
 ---
 

@@ -355,4 +355,12 @@ enum MeetingFormatters {
         f.dateFormat = "MMMM yyyy"
         return f
     }()
+
+    /// "Mon May 12, 2:31 PM" - the detail header's primary date stamp.
+    static let fullDateTime: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
 }

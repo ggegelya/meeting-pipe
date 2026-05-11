@@ -66,7 +66,9 @@ struct MeetingRow: View {
 
 // MARK: - Workflow chip (placeholder until TECH-B writes workflow_name)
 
-private struct WorkflowChip: View {
+/// Renders the workflow name + accent dot. Shared between the list row
+/// and the detail header so styling stays in one place.
+struct WorkflowChip: View {
     let name: String
     let colorHex: String?
 
@@ -165,7 +167,7 @@ private struct AppGlyphRepresentable: NSViewRepresentable {
 
 // MARK: - Color hex helper
 
-private extension Color {
+extension Color {
     /// "#RRGGBB" or "RRGGBB" → Color. Returns nil for malformed input so
     /// the workflow chip falls back to the neutral secondary tone.
     init?(hex: String) {
