@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import CoreGraphics
 import ScreenCaptureKit
 
 /// Captures system audio via ScreenCaptureKit. Replaces the prior
@@ -74,8 +75,43 @@ final class SystemAudioCapture: NSObject {
     /// the call throws — we swallow the error here; subsequent recording
     /// starts will retry (and re-prompt at most once per daemon lifetime
     /// per pre-warm cycle).
+    ///
+    /// On recent macOS releases, `SCShareableContent.excludingDesktopWindows`
+    /// alone does NOT reliably register the binary with TCC or surface
+    /// the permission dialog — the binary just silently fails to appear
+    /// in System Settings → Screen & System Audio Recording. We bridge
+    /// that gap with `CGRequestScreenCaptureAccess`, the CoreGraphics
+    /// API documented to add the requesting bundle to the list AND
+    /// surface the system dialog on first use. Subsequent runs are
+    /// no-ops once TCC has an entry.
     static func prewarm() async {
         if cachedContent != nil { permissionState = .granted; return }
+
+        // 1. Check the current TCC verdict without prompting. If we
+        //    already have access, skip the request call and go straight
+        //    to the SCShareableContent cache fill.
+        let alreadyTrusted = CGPreflightScreenCaptureAccess()
+        if !alreadyTrusted {
+            // 2. Actively request — this is what populates the System
+            //    Settings list and surfaces the prompt. Returns the
+            //    current verdict synchronously; the dialog itself is
+            //    async, so a false return here just means "not granted
+            //    yet" rather than "denied forever".
+            let granted = CGRequestScreenCaptureAccess()
+            Log.recorder.info("CGRequestScreenCaptureAccess: granted=\(granted)")
+            Log.writeLine("recorder", "CGRequestScreenCaptureAccess: granted=\(granted)")
+            if !granted {
+                // User hasn't granted yet (dialog may still be on
+                // screen, or they dismissed it). Don't try the
+                // SCShareableContent fetch — it will fail and flip
+                // permissionState to .denied prematurely. Leave
+                // permissionState in .unknown so the menu-bar warning
+                // doesn't pop until the next prewarm attempt (which
+                // happens at the next manual record).
+                Log.writeLine("recorder", "Screen Recording not yet granted; deferring SCShareableContent fetch")
+                return
+            }
+        }
         do {
             cachedContent = try await SCShareableContent.excludingDesktopWindows(
                 false,
