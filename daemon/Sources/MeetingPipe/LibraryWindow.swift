@@ -203,7 +203,7 @@ final class LibraryWindowModel: ObservableObject {
 struct LibraryRootView: View {
     @ObservedObject var model: LibraryWindowModel
     @State private var selection: LibrarySidebarItem = .library
-    @State private var meetingSelection: Meeting.ID?
+    @State private var meetingSelection: Set<Meeting.ID> = []
 
     var body: some View {
         NavigationSplitView {
@@ -246,9 +246,11 @@ struct LibraryRootView: View {
 
     @ViewBuilder
     private var detailPane: some View {
-        if let selectedID = meetingSelection,
-           let meeting = model.meetingStore.meetings.first(where: { $0.id == selectedID }) {
-            MeetingDetailView(meeting: meeting)
+        let selected = model.meetingStore.meetings.filter { meetingSelection.contains($0.id) }
+        if selected.count > 1 {
+            BatchActionsPane(meetings: selected, libraryModel: model)
+        } else if let only = selected.first {
+            MeetingDetailView(meeting: only)
         } else {
             VStack(spacing: 8) {
                 Image(systemName: "doc.text")

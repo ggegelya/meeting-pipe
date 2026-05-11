@@ -6,7 +6,7 @@ import SwiftUI
 struct LibraryListView: View {
     @ObservedObject var store: MeetingStore
     @ObservedObject var libraryModel: LibraryWindowModel
-    @Binding var selection: Meeting.ID?
+    @Binding var selection: Set<Meeting.ID>
 
     var body: some View {
         Group {
@@ -50,7 +50,7 @@ struct LibraryListView: View {
                             }
                         )
                         .equatable()
-                        .tag(Optional(meeting.id))
+                        .tag(meeting.id)
                     }
                 }
             }

@@ -321,6 +321,15 @@ in Finder. Five tabs underneath:
   default app, and a context-menu option to copy the path. The footer
   shows the directory and an **Open folder** button.
 
+Cmd+click (or Shift+click for a range) to select multiple rows. The
+detail pane swaps to a batch-actions panel that lists the selection
+and offers **Republish all** (loops `mp publish-notion` sequentially
+so the daemon's processing queue doesn't fan out), **Export
+markdown…** (writes one `<stem>.md` bundle per meeting into a
+chosen folder), and **Move to Trash…** (per-row soft delete with one
+confirmation up front). A linear progress strip shows
+`<done> / <total>` while a batch is in flight.
+
 Drag any library row out of the window to drop a single markdown
 bundle (summary + transcript when both exist) into Finder, Mail, or
 Slack. Drag the waveform on the Audio tab to drop the raw `<stem>.wav`
