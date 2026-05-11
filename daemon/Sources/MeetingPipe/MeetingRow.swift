@@ -72,6 +72,7 @@ struct MeetingRow: View, Equatable {
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+        .draggable(MeetingDragItem(meeting: meeting))
         .contextMenu { contextMenuItems }
     }
 

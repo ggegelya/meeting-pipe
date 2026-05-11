@@ -321,6 +321,13 @@ in Finder. Five tabs underneath:
   default app, and a context-menu option to copy the path. The footer
   shows the directory and an **Open folder** button.
 
+Drag any library row out of the window to drop a single markdown
+bundle (summary + transcript when both exist) into Finder, Mail, or
+Slack. Drag the waveform on the Audio tab to drop the raw `<stem>.wav`
+file. The markdown bundle is written under `NSTemporaryDirectory()`
+the moment the drag starts, so the drop target gets a real file path —
+not a snapshot of the editor surface.
+
 Editing the title in the header writes the new value back to
 `<stem>.summary.json` when that file exists, otherwise to
 `<stem>.meta.json`. The list rescans on the next debounce tick and the

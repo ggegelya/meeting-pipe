@@ -73,6 +73,7 @@ struct AudioTab: View {
             errorState(msg)
         case .ready(let peaks):
             WaveformContainer(peaks: peaks, zoom: zoom, playback: playback)
+                .draggable(meeting.wavURL)
         }
     }
 
