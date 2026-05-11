@@ -52,7 +52,13 @@ class Transcription(BaseModel):
     # using `fallback_model` below.
     model: str = "mlx-community/whisper-large-v3-turbo"
     fallback_model: str = "large-v3"
-    language: str = "auto"
+    # English by default. Whisper auto-detection runs on the first 30 s
+    # of audio; on accented or silence-heavy openings it misfires (a
+    # Standup with Indian-English accents was detected as Spanish in
+    # the wild). Forcing a language is more reliable when most of the
+    # user's meetings are in one language; flip to "auto" only when
+    # you actually need per-meeting detection.
+    language: str = "en"
     min_speakers: int = 1
     max_speakers: int = 8
     disable_diarization: bool = False

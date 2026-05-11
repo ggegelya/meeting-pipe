@@ -33,8 +33,14 @@ prompt_timeout_sec = 30
 model = "mlx-community/whisper-large-v3-turbo"
 # Used by the faster-whisper fallback (Linux, Intel macOS).
 fallback_model = "large-v3"
-# "auto" (recommended), or an ISO 639-1 code to skip detection: "en", "uk", "ru", "de", ...
-language = "auto"
+# ISO 639-1 code (e.g. "en", "uk", "ru", "de"). English by default; flip
+# to "auto" only if you actually need per-meeting detection. Whisper's
+# auto-detect runs on the first 30 s of audio and misfires on accented
+# speech and silence-heavy openings (Standup with Indian-English accents
+# came back as Spanish in the wild). Forcing a language is more reliable
+# when most of your meetings are in one language; the multilingual ASR
+# still handles non-native accents fine once language is locked.
+language = "en"
 min_speakers = 1
 max_speakers = 8
 # True → all segments labeled "Speaker" (skip diarization entirely).

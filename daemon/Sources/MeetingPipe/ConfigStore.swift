@@ -40,6 +40,12 @@ final class ConfigStore: ObservableObject {
     /// spawn time, so changes here take effect on the next recording
     /// without restarting the daemon.
     @Published var notionDatabaseId: String { didSet { scheduleSave() } }
+    /// Transcription language. ISO 639-1 code (e.g. "en") forces Whisper
+    /// to skip its first-30 s auto-detect (which mis-fires on accented
+    /// speech and silence-heavy openings). "auto" opts back into per-
+    /// meeting detection. Mirrors `transcription.language` in the
+    /// pipeline config.
+    @Published var transcriptionLanguage: String { didSet { scheduleSave() } }
     @Published var summaryLanguage: String { didSet { scheduleSave() } }
     @Published var summarizationSkipAboveChars: Int { didSet { scheduleSave() } }
     /// Backend selection for the summarize stage. Mirrors
@@ -81,6 +87,7 @@ final class ConfigStore: ObservableObject {
 
         let rec = doc["recording"]?.table
         let det = doc["detection"]?.table
+        let trans = doc["transcription"]?.table
         let mod = doc["modes"]?.table
         let notion = doc["notion"]?.table
         let summ = doc["summarization"]?.table
@@ -97,6 +104,7 @@ final class ConfigStore: ObservableObject {
         self.regulatedMode = mod?["regulated_mode"]?.bool ?? false
 
         self.notionDatabaseId = notion?["database_id"]?.string ?? ""
+        self.transcriptionLanguage = trans?["language"]?.string ?? "en"
         self.summaryLanguage = summ?["summary_language"]?.string ?? "auto"
         self.summarizationSkipAboveChars = summ?["skip_above_chars"]?.int ?? 80000
         self.summarizationBackend = summ?["backend"]?.string ?? "anthropic"
@@ -158,6 +166,8 @@ final class ConfigStore: ObservableObject {
         ensureTable("detection")["prompt_timeout_sec"] = promptTimeoutSec
 
         ensureTable("modes")["regulated_mode"] = regulatedMode
+
+        ensureTable("transcription")["language"] = transcriptionLanguage
 
         ensureTable("notion")["database_id"] = notionDatabaseId
         ensureTable("summarization")["summary_language"] = summaryLanguage

@@ -389,7 +389,7 @@ Streaming details:
 
 | Stage | Multilang behavior |
 |---|---|
-| ASR (mlx-whisper) | All 99 Whisper languages. `language="auto"` auto-detects from the first 30 s; an explicit ISO 639-1 code (`"en"`, `"uk"`, `"ru"`, `"de"`) skips detection. |
+| ASR (mlx-whisper) | All 99 Whisper languages. Default is `language="en"`; an explicit ISO 639-1 code (`"en"`, `"uk"`, `"ru"`, `"de"`) skips detection. `language="auto"` opts back into per-meeting detection from the first 30 s of audio. Auto is intentionally opt-in: Whisper misfires on accented speech and silence-heavy openings (a Standup with Indian-English accents was classified as Spanish in the wild). The multilingual ASR still handles non-native accents fine when language is locked. |
 | Diarization (sherpa-onnx + NeMo TitaNet) | Language-agnostic. Speaker identity is encoded in phoneme-level acoustic features that transfer across languages. No per-language model. |
 | Summarization | The Anthropic prompt detects the transcript language and writes the summary in that same language by default. `summarization.summary_language` in config can force a specific output language regardless. |
 | Notion title | Inherits the summary language (or, when present, the meeting-name sidecar from the daemon — that name lives in whatever the source app exposed). |

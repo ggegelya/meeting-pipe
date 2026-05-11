@@ -25,6 +25,25 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(store.manualHotkey, "ctrl+option+m")
         XCTAssertFalse(store.regulatedMode)
         XCTAssertTrue(store.autoConsentApps.isEmpty)
+        // Transcription language default is "en"; auto-detect is opt-in.
+        XCTAssertEqual(store.transcriptionLanguage, "en")
+    }
+
+    func test_transcription_language_round_trip() throws {
+        let url = try makeTempConfigURL()
+        try """
+        [transcription]
+        language = "uk"
+        """.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        XCTAssertEqual(store.transcriptionLanguage, "uk")
+
+        store.transcriptionLanguage = "auto"
+        try store.saveNow()
+
+        let reloaded = try ConfigStore(configURL: url)
+        XCTAssertEqual(reloaded.transcriptionLanguage, "auto")
     }
 
     func test_round_trip_persists_changes() throws {
@@ -61,10 +80,11 @@ final class ConfigStoreTests: XCTestCase {
 
     func test_preserves_unknown_pipeline_side_keys() throws {
         let url = try makeTempConfigURL()
-        // Pipeline-side keys (`transcription`, `summarization`, `notion`)
-        // are NOT modeled by ConfigStore. The whole point of the
-        // raw-document round-trip is that mutating UI-known fields
-        // doesn't strip these.
+        // Most pipeline-side keys (`transcription.model`,
+        // `transcription.min_speakers`, `summarization.team_context`,
+        // `notion.default_status`, ...) are NOT modeled by ConfigStore.
+        // The whole point of the raw-document round-trip is that
+        // mutating UI-known fields doesn't strip the unknown ones.
         try """
         [recording]
         output_dir = "~/Documents/Meetings/raw"

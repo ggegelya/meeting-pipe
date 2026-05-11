@@ -279,6 +279,28 @@ private struct PreferencesView: View {
                 }
             }
 
+            Section("Transcription language") {
+                LabeledContent("") {
+                    Picker("", selection: $store.transcriptionLanguage) {
+                        Text("English (en)").tag("en")
+                        Text("Auto-detect").tag("auto")
+                        Text("Українська (uk)").tag("uk")
+                        Text("Русский (ru)").tag("ru")
+                        Text("Deutsch (de)").tag("de")
+                        Text("Español (es)").tag("es")
+                        Text("Français (fr)").tag("fr")
+                        Text("Italiano (it)").tag("it")
+                        Text("Português (pt)").tag("pt")
+                        Text("Polski (pl)").tag("pl")
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
+                Text("English is the default. Whisper's auto-detect runs on the first 30 s of audio and misfires on accented speech and silence-heavy openings (a Standup with Indian-English accents has been classified as Spanish in the wild). Force a language when most of your meetings are in one; the multilingual ASR still handles non-native accents fine once language is locked.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Summary language") {
                 LabeledContent("") {
                     Picker("", selection: $store.summaryLanguage) {
