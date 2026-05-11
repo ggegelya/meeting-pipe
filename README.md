@@ -201,6 +201,10 @@ mp doctor
 # Filter the JSONL event streams (see Logs section)
 mp logs --since 1h --category detector
 
+# Audit detector end-signal reliability — pairs each recording with its
+# preceding `detector.ended` and surfaces sessions you had to stop manually
+mp analyze-detection --since 7d
+
 # Compare Anthropic vs the local backend on one transcript; writes a
 # scorecard you fill in by hand
 mp dogfood <transcript.md>

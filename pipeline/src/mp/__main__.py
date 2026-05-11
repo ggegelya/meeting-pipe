@@ -30,6 +30,8 @@ Subcommands:
   prefetch-model <repo_id>    Pre-download a local-mode MLX model (JSONL progress)
   corrections-stats [--dir P] [--json]
                               Aggregate the local correction corpus (Phase 2)
+  analyze-detection [--since 7d] [--source PATH] [--output FILE] [--json]
+                              Audit detector end-signal reliability
 
 Globals:
   --help, -h                  Show this message
@@ -85,6 +87,9 @@ def main() -> int:
         return run(rest)
     if cmd in {"corrections-stats", "corrections_stats"}:
         from .corrections import main as run
+        return run(rest)
+    if cmd in {"analyze-detection", "analyze_detection"}:
+        from .analyze_detection import main as run
         return run(rest)
 
     print(f"unknown subcommand: {cmd}\n", file=sys.stderr)
