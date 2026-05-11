@@ -52,6 +52,7 @@ final class StatusBarController {
         applyTitle()
         rebuildMenu(state: .idle)
         libraryModel?.status = .idle
+        libraryModel?.liveRecordingStem = nil
     }
 
     func setPrompting(_ source: AppSource) {
@@ -68,6 +69,7 @@ final class StatusBarController {
         applyTitle()
         rebuildMenu(state: .recording(file: file, source: source, summaryMode: summaryMode))
         libraryModel?.status = .recording(appName: source?.displayName)
+        libraryModel?.liveRecordingStem = file.deletingPathExtension().lastPathComponent
     }
 
     func setStopping() {
@@ -76,6 +78,8 @@ final class StatusBarController {
         applyTitle()
         rebuildMenu(state: .idle)
         libraryModel?.status = .stopping
+        // Keep liveRecordingStem until setIdle fires so the row's pulse
+        // stays visible through the flush.
     }
 
     /// Update the processing-jobs badge. Called from the Coordinator

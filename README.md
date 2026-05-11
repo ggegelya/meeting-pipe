@@ -251,15 +251,21 @@ badge / model-download progress and a Start/Stop button), a middle
 column with the meetings list, and a placeholder detail column on the
 right.
 
+If you've never recorded anything the list shows
+`No recordings yet - Start a meeting in Zoom / Teams / Meet / Webex /
+Slack, or press ⌃⌥M.` Otherwise:
+
 The list scans `~/Documents/Meetings/raw/` (or whatever is configured
 in `recording.output_dir`) and shows one row per recording, grouped
 into Today / Yesterday / This week / Last week / Earlier this month /
 older months. Each row carries the meeting title (LLM-derived when
 available, falling back to the source app + time), source-app glyph,
 duration, and a status pill (Recording / Processing / Paste pending /
-Ready). The list refreshes automatically when the pipeline writes new
-sidecars - new meetings appear within a second of the underlying file
-landing.
+Ready). Live recordings and rows whose pipeline run is still in
+flight pulse subtly so you can tell what's currently being worked on
+at a glance. The list refreshes automatically when the pipeline
+writes new sidecars - new meetings appear within a second of the
+underlying file landing.
 
 Select a row and the right pane fills with the per-meeting detail
 view: an editable title, the meeting's date, the workflow chip when

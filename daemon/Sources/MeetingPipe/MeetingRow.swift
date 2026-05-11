@@ -43,7 +43,7 @@ struct MeetingRow: View {
             if let inFlight = inFlight {
                 inFlightBadge(inFlight)
             } else {
-                StatusPill(status: meeting.status)
+                StatusPill(status: effectiveStatus)
             }
         }
         .padding(.vertical, 4)
@@ -170,6 +170,18 @@ struct MeetingRow: View {
         alert.runModal()
     }
 
+    /// The on-disk status alone can't tell "wav still being written" from
+    /// "wav done, pipeline running". When the row's stem matches the
+    /// live-recording stem the daemon publishes, escalate the pill to
+    /// `.recording` so the user sees the pulse on the actual in-flight
+    /// meeting.
+    private var effectiveStatus: Meeting.Status {
+        if libraryModel.liveRecordingStem == meeting.stem {
+            return .recording
+        }
+        return meeting.status
+    }
+
     @ViewBuilder
     private var glyph: some View {
         if let source = meeting.appSource {
@@ -239,9 +251,13 @@ private struct StatusPill: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Circle()
-                .fill(dotColor)
-                .frame(width: 6, height: 6)
+            if status == .recording || status == .processing {
+                PulsingDot(color: dotColor)
+            } else {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 6, height: 6)
+            }
             Text(label)
                 .font(.caption2)
                 .foregroundStyle(textColor)
@@ -280,6 +296,31 @@ private struct StatusPill: View {
 
     private var backgroundColor: Color {
         Color(NSColor.controlBackgroundColor).opacity(0.55)
+    }
+}
+
+// MARK: - Pulsing status dot
+
+/// Subtle infinite-pulse on the status pill's dot. Used for live
+/// recordings (recording-tint) and in-flight pipeline runs
+/// (processing-tint). The pulse mirrors the menu-bar recording dot's
+/// 1 s breath so the two surfaces feel like one device.
+private struct PulsingDot: View {
+    let color: Color
+    @State private var scale: CGFloat = 1.0
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 6, height: 6)
+            .scaleEffect(scale)
+            .onAppear {
+                withAnimation(
+                    .easeInOut(duration: 1.0).repeatForever(autoreverses: true)
+                ) {
+                    scale = 1.45
+                }
+            }
     }
 }
 

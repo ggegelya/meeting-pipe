@@ -52,10 +52,11 @@ struct LibraryEmptyState: View {
             Text("No recordings yet")
                 .font(.title3)
                 .foregroundStyle(.secondary)
-            Text("Start a meeting in Zoom / Teams / Meet / Webex / Slack,\nor press ⌃⌥M.")
+            Text("Start a meeting in Zoom / Teams / Meet / Webex / Slack, or press ⌃⌥M.")
                 .font(.callout)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)

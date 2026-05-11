@@ -91,6 +91,12 @@ final class LibraryWindowModel: ObservableObject {
     @Published var status: Status = .idle
     @Published var processingCount: Int = 0
     @Published var modelDownload: ModelDownloadSupervisor.State = .idle
+    /// Stem of the meeting currently being recorded (live wav write in
+    /// flight). The list view uses this to render the matching row with
+    /// a recording-tinted pulse — the on-disk status alone can't tell
+    /// the difference between "wav still being written" and "wav done,
+    /// pipeline running".
+    @Published var liveRecordingStem: String? = nil
 
     /// Coordinator is held weakly so the model can drive menu actions
     /// (Start/Stop, Preferences) without creating a retain cycle.
