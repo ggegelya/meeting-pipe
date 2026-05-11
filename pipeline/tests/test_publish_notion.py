@@ -308,3 +308,103 @@ def test_meta_sidecar_blank_title_falls_back(tmp_path: Path, monkeypatch):
 
     title_runs = captured[0]["properties"]["Name"]["title"]
     assert title_runs[0]["text"]["content"] == "Test meeting"  # LLM-derived
+
+
+def test_post_pages_does_not_retry_on_502(tmp_path: Path, monkeypatch):
+    """Regression: pre-2026-05-11 the @retry on _request would retry
+    POST /v1/pages after a 502. Notion's edge sometimes returns 502
+    AFTER the backend has already committed the write, so retrying
+    creates a duplicate page in the user's database. We must fail
+    loudly on the first 502 instead.
+
+    Trace from the live incident:
+        10:56:19  POST /v1/pages -> 502 Bad Gateway   (page already saved)
+        10:56:21  POST /v1/pages -> 200 OK            (second page!)
+    User opens Notion and sees two identical pages."""
+    summary_path = _write_summary(tmp_path)
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
+
+    post_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            post_calls.append(request.url.path)
+            # Always 502, never recovers; if retry-on-POST is on this
+            # will fire ~4 times and Notion-equivalent would create
+            # ~4 duplicates. The assertion below catches that.
+            return httpx.Response(502, text="Bad Gateway")
+        return httpx.Response(404, json={"message": "unexpected"})
+
+    _install_mock_transport(monkeypatch, handler)
+
+    with pytest.raises(Exception):
+        publish(summary_path, cfg=_cfg())
+
+    assert len(post_calls) == 1, (
+        f"POST /v1/pages must NOT retry on 5xx (would create duplicate pages); "
+        f"got {len(post_calls)} calls"
+    )
+
+
+def test_post_pages_does_not_retry_on_transport_error(tmp_path: Path, monkeypatch):
+    """Companion to the 502 test: a network blip mid-POST is also
+    non-recoverable for a non-idempotent verb. The first request may
+    have reached Notion's backend; retrying would re-create."""
+    summary_path = _write_summary(tmp_path)
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
+
+    post_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            post_calls.append(request.url.path)
+            raise httpx.ConnectTimeout("simulated network blip")
+        return httpx.Response(404, json={"message": "unexpected"})
+
+    _install_mock_transport(monkeypatch, handler)
+
+    with pytest.raises(Exception):
+        publish(summary_path, cfg=_cfg())
+
+    assert len(post_calls) == 1, (
+        f"POST /v1/pages must NOT retry on TransportError; got {len(post_calls)}"
+    )
+
+
+def test_patch_pages_still_retries_on_502(tmp_path: Path, monkeypatch):
+    """The retry policy split must NOT regress idempotent operations.
+    PATCH /v1/pages/{id} (property update) is idempotent and should
+    still retry through transient 5xx so the user does not see flaky
+    failures on update."""
+    summary_path = _write_summary(tmp_path)
+    # Drop a sidecar so publish() takes the update path.
+    sidecar = tmp_path / "20260428-1200.notion.json"
+    sidecar.write_text(json.dumps({"page_id": "page-existing-1", "page_url": "u"}),
+                       encoding="utf-8")
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
+
+    patch_pages_calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "PATCH" and path == "/v1/pages/page-existing-1":
+            patch_pages_calls.append(1)
+            # 502 the first attempt, succeed the second so the retry
+            # wrapper has a chance to demonstrate it kicked in.
+            if len(patch_pages_calls) == 1:
+                return httpx.Response(502, text="Bad Gateway")
+            return httpx.Response(200, json={"id": "page-existing-1", "url": "u"})
+        if request.method == "GET" and path == "/v1/blocks/page-existing-1/children":
+            return httpx.Response(200, json={"results": [], "has_more": False})
+        if request.method == "PATCH" and path == "/v1/blocks/page-existing-1/children":
+            return httpx.Response(200, json={})
+        return httpx.Response(404, json={"message": f"unexpected {request.method} {path}"})
+
+    _install_mock_transport(monkeypatch, handler)
+
+    publish(summary_path, cfg=_cfg())
+
+    assert len(patch_pages_calls) >= 2, (
+        "PATCH /v1/pages/{id} should retry on 502; "
+        f"saw {len(patch_pages_calls)} calls"
+    )

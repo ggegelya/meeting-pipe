@@ -160,21 +160,58 @@ def publish(
 _RETRYABLE = (httpx.TransportError, httpx.HTTPStatusError)
 
 
+def _do_request(client: httpx.Client, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    """One-shot HTTP call. Maps the response into either a NotionError
+    (terminal 4xx) or an HTTPStatusError / TransportError (transient,
+    safely retryable on idempotent operations). Callers wrap with
+    `_request_retrying` only when the underlying HTTP verb tolerates
+    a duplicate request."""
+    resp = client.request(method, path, **kwargs)
+    if resp.status_code >= 500 or resp.status_code == 429:
+        # Surface as HTTPStatusError so the retry wrapper (when used)
+        # can react to it. Non-idempotent callers do NOT wrap, and the
+        # exception propagates to the caller as a hard fail.
+        resp.raise_for_status()
+    if resp.status_code >= 400:
+        # 4xx other than 429 are non-retryable; surface immediately.
+        raise NotionError(f"Notion {method} {path} → {resp.status_code}: {resp.text[:500]}")
+    return resp.json()
+
+
 @retry(
     reraise=True,
     stop=stop_after_attempt(4),
     wait=wait_exponential(multiplier=1, min=1, max=15),
     retry=retry_if_exception_type(_RETRYABLE),
 )
-def _request(client: httpx.Client, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-    resp = client.request(method, path, **kwargs)
-    if resp.status_code >= 500 or resp.status_code == 429:
-        # Trigger tenacity retry.
-        resp.raise_for_status()
-    if resp.status_code >= 400:
-        # 4xx other than 429 are non-retryable; surface immediately.
-        raise NotionError(f"Notion {method} {path} → {resp.status_code}: {resp.text[:500]}")
-    return resp.json()
+def _request_retrying(client: httpx.Client, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    """Retrying wrapper for IDEMPOTENT operations (GET, DELETE, PATCH
+    to a specific resource). Safe to repeat: the server either sees a
+    new request and applies it idempotently, or the duplicate is a
+    no-op (DELETE of already-deleted, PATCH with same property values).
+    """
+    return _do_request(client, method, path, **kwargs)
+
+
+def _request_once(client: httpx.Client, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    """Non-retrying wrapper for NON-IDEMPOTENT operations:
+
+      - POST /v1/pages       → creates a new page; a retry after a
+                               502 makes a DUPLICATE.
+      - PATCH /v1/blocks/{id}/children → APPENDS blocks; a retry
+                               doubles the body content.
+
+    Failing loudly is strictly better than silently duplicating. The
+    user can re-run after a transient blip; if the original POST
+    actually committed (502 after server-side write), the user sees
+    an orphan page in Notion and deletes it manually. We'd rather
+    surface that to a human than let the pipeline create twins.
+
+    Pre-2026-05-11 behaviour wrapped this with the same retry as
+    idempotent ops, which is the root cause of the duplicate-Notion-
+    page bug observed against the 10:30 standup recording.
+    """
+    return _do_request(client, method, path, **kwargs)
 
 
 def _fetch_all_child_ids(client: httpx.Client, page_id: str) -> list[str]:
@@ -190,7 +227,7 @@ def _fetch_all_child_ids(client: httpx.Client, page_id: str) -> list[str]:
         path = f"/blocks/{page_id}/children?page_size=100"
         if start_cursor:
             path += f"&start_cursor={start_cursor}"
-        resp = _request(client, "GET", path)
+        resp = _request_retrying(client, "GET", path)
         ids.extend(b["id"] for b in resp.get("results", []))
         if not resp.get("has_more"):
             break
@@ -208,7 +245,10 @@ def _create_page(
         "properties": _properties(summary, cfg),
         "children": body,
     }
-    return _request(client, "POST", "/pages", json=payload)
+    # POST /pages is non-idempotent: Notion's edge has been observed to
+    # return 502 AFTER the backend committed the write. A retry then
+    # creates a second page (duplicate-Notion-page bug, 2026-05-11).
+    return _request_once(client, "POST", "/pages", json=payload)
 
 
 def _update_page(
@@ -218,8 +258,9 @@ def _update_page(
     cfg: Config,
     body: list[dict],
 ) -> dict[str, Any]:
-    # 1. Update properties.
-    page = _request(
+    # 1. Update properties. PATCH on a specific page is idempotent
+    #    (same body applied twice is a no-op), safe to retry.
+    page = _request_retrying(
         client,
         "PATCH",
         f"/pages/{page_id}",
@@ -228,22 +269,25 @@ def _update_page(
 
     # 2. Wipe existing children and replace. Notion has no atomic "replace
     #    children" call, so we delete and re-append. Parallelize the deletes
-    #    via a thread pool — httpx.Client is thread-safe, and a long
+    #    via a thread pool: httpx.Client is thread-safe, and a long
     #    transcript can carry 50+ blocks. 8 concurrent workers stays well
     #    below Notion's per-integration rate limit (~3 r/s sustained, with
-    #    burst headroom) while shrinking wall time roughly 8x.
+    #    burst headroom) while shrinking wall time roughly 8x. DELETE is
+    #    idempotent (already-deleted returns 404, surfaced as NotionError).
     block_ids = _fetch_all_child_ids(client, page_id)
     if block_ids:
         with ThreadPoolExecutor(max_workers=8) as ex:
             # list() forces materialization so exceptions surface.
             list(ex.map(
-                lambda bid: _request(client, "DELETE", f"/blocks/{bid}"),
+                lambda bid: _request_retrying(client, "DELETE", f"/blocks/{bid}"),
                 block_ids,
             ))
 
     # 3. Append fresh body. Notion caps each append at 100 blocks; we chunk.
+    #    PATCH /blocks/{id}/children is APPEND, not replace; retrying after
+    #    a 502 doubles the body content. Use the non-retrying helper.
     for i in range(0, len(body), 100):
-        _request(
+        _request_once(
             client,
             "PATCH",
             f"/blocks/{page_id}/children",
