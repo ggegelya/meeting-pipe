@@ -287,6 +287,15 @@ Editing the title in the header writes the new value back to
 `<stem>.meta.json`. The list rescans on the next debounce tick and the
 new title appears in both the row and the detail header.
 
+Right-click any row in the list for per-meeting actions:
+`Re-publish to Notion` (idempotent), `Regenerate summary` (re-runs
+`mp summarize` against the existing transcript then re-publishes),
+`Export…` (copies summary / transcript / audio into a chosen folder),
+`Reveal in Finder`, and `Move to Trash…` (soft-delete every sidecar
+for the stem; recoverable from the system Trash). Republish and
+regenerate run as background subprocesses; the row's status pill
+flips to a progress badge while the subprocess is in-flight.
+
 Selecting `Preferences` in the rail opens the existing standalone
 Preferences window.
 

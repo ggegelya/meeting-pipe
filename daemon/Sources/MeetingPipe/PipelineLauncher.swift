@@ -14,6 +14,9 @@ protocol PipelineDriver: AnyObject {
     /// a corrected summary on disk. Returns the Notion page URL on
     /// success (nil when regulated_mode is on).
     func publish(summaryJSON: URL, completion: @escaping (Result<URL?, Error>) -> Void)
+    /// Re-run only the summarize step against an existing transcript.
+    /// Used by the Library context menu's "Regenerate summary" action.
+    func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
 }
 
 extension PipelineDriver {
@@ -28,6 +31,14 @@ extension PipelineDriver {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "publish unsupported by this driver"]
+        )))
+    }
+
+    /// Default no-op stub for test fakes that don't model regenerate.
+    func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "summarize unsupported by this driver"]
         )))
     }
 }
@@ -279,6 +290,100 @@ final class PipelineLauncher: PipelineDriver {
             } else {
                 completion(.success(nil))
             }
+        }
+
+        do {
+            try p.run()
+        } catch {
+            watchdog.cancel()
+            completion(.failure(error))
+        }
+    }
+
+    /// Re-run the summarize stage against an existing transcript markdown.
+    /// Spawned as `mp summarize <transcript.md>` so the existing
+    /// per-stage entry point (rather than orchestrate's run-all) handles
+    /// config + secrets resolution. Overwrites `<stem>.summary.json` and
+    /// `<stem>.summary.md` in-place; downstream republish picks up the
+    /// new content from `<stem>.summary.json`.
+    func summarize(
+        transcriptMD: URL,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        guard let mpPath = Self.findMP() else {
+            completion(.failure(LaunchError.mpNotFound))
+            return
+        }
+
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: mpPath.shell)
+        p.arguments = mpPath.args + ["summarize", transcriptMD.path]
+        p.environment = Self.freshEnvironment()
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        p.standardOutput = outPipe
+        p.standardError = errPipe
+
+        let logURL = Log.logsDir.appendingPathComponent("pipeline.log")
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
+        let logHandle = (try? FileHandle(forWritingTo: logURL))
+        _ = try? logHandle?.seekToEnd()
+
+        var stderrTail = Data()
+        let stderrLimit = 4096
+
+        outPipe.fileHandleForReading.readabilityHandler = { h in
+            let d = h.availableData; if d.isEmpty { return }
+            try? logHandle?.write(contentsOf: d)
+        }
+        errPipe.fileHandleForReading.readabilityHandler = { h in
+            let d = h.availableData; if d.isEmpty { return }
+            try? logHandle?.write(contentsOf: d)
+            stderrTail.append(d)
+            if stderrTail.count > stderrLimit {
+                stderrTail.removeFirst(stderrTail.count - stderrLimit)
+            }
+        }
+
+        // Summarize is bounded by the LLM round-trip (cloud) or local
+        // model latency. 20 min wallclock covers the worst legitimate
+        // run on the curated Qwen 32B preset (~2-4 min) with generous
+        // headroom for long-meeting prompts.
+        let summarizeTimeout: TimeInterval = 20 * 60
+        let timedOut = TimeoutFlag()
+        let watchdog = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        watchdog.schedule(deadline: .now() + summarizeTimeout)
+        watchdog.setEventHandler {
+            guard p.isRunning else { return }
+            timedOut.set()
+            Log.main.warning("summarize exceeded \(Int(summarizeTimeout / 60)) min — terminating")
+            p.terminate()
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30) {
+                if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+            }
+        }
+        watchdog.resume()
+
+        p.terminationHandler = { proc in
+            watchdog.cancel()
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            try? logHandle?.close()
+
+            if timedOut.isSet {
+                completion(.failure(LaunchError.timeout(summarizeTimeout)))
+                return
+            }
+
+            if proc.terminationStatus != 0 {
+                let tail = String(data: stderrTail, encoding: .utf8) ?? ""
+                completion(.failure(LaunchError.nonZeroExit(proc.terminationStatus, tail)))
+                return
+            }
+            completion(.success(()))
         }
 
         do {

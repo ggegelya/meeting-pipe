@@ -142,6 +142,40 @@ final class LibraryWindowModel: ObservableObject {
             }
         }
     }
+
+    /// Regenerate the summary for a meeting via `mp summarize` + republish.
+    /// Same async wrapping pattern as `republishMeeting`.
+    func regenerateMeeting(stem: String) async -> Result<URL?, Error> {
+        guard let coordinator = coordinator else {
+            return .failure(NSError(
+                domain: "LibraryWindowModel", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
+            ))
+        }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Result<URL?, Error>, Never>) in
+            coordinator.regenerateMeeting(stem: stem) { result in
+                cont.resume(returning: result)
+            }
+        }
+    }
+
+    /// Move every sidecar associated with a stem to the user's Trash.
+    @discardableResult
+    func softDeleteMeeting(stem: String) -> Result<Void, Error> {
+        coordinator?.softDeleteMeeting(stem: stem) ?? .failure(NSError(
+            domain: "LibraryWindowModel", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
+        ))
+    }
+
+    /// Copy the standard human-facing artefacts for a stem into the
+    /// chosen destination folder.
+    func exportMeeting(stem: String, to destination: URL) -> Result<Int, Error> {
+        coordinator?.exportMeeting(stem: stem, to: destination) ?? .failure(NSError(
+            domain: "LibraryWindowModel", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
+        ))
+    }
 }
 
 // MARK: - Root view

@@ -277,6 +277,137 @@ final class Coordinator: NSObject {
         libraryWindow.show()
     }
 
+    /// Regenerate the summary for the given stem by re-running the
+    /// `mp summarize` stage against the existing transcript, then
+    /// re-running publish so the Notion page reflects the new summary.
+    /// Returns the resulting Notion page URL on success.
+    ///
+    /// Workflow / backend override is not yet wired (TECH-B ships the
+    /// workflow data model; backend-override env var is not piped into
+    /// `mp summarize`). For now the regenerate uses whatever the
+    /// configured backend / context resolves to at subprocess time.
+    func regenerateMeeting(
+        stem: String,
+        completion: @escaping (Result<URL?, Error>) -> Void
+    ) {
+        let dir = liveOutputDir
+        let transcriptURL = dir.appendingPathComponent("\(stem).md")
+        guard FileManager.default.fileExists(atPath: transcriptURL.path) else {
+            completion(.failure(NSError(
+                domain: "Coordinator", code: 1,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "No transcript at \(transcriptURL.lastPathComponent) — cannot regenerate"]
+            )))
+            return
+        }
+        Log.writeLine("daemon", "regenerate requested → \(stem)")
+        Log.event(category: "coordinator", action: "regenerate_started", attributes: [
+            "stem": stem,
+        ])
+        launcher.summarize(transcriptMD: transcriptURL) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result {
+                case .success:
+                    // Summarize wrote a fresh <stem>.summary.json next to
+                    // the transcript; chain into publish so the Notion
+                    // page picks up the new content too.
+                    self.republishMeeting(stem: stem, completion: completion)
+                case .failure(let err):
+                    Log.event(category: "coordinator", action: "regenerate_failed", attributes: [
+                        "stem": stem,
+                        "error": err.localizedDescription,
+                    ])
+                    self.notifier.notifyError("Regenerate failed: \(err.localizedDescription)")
+                    completion(.failure(err))
+                }
+            }
+        }
+    }
+
+    /// Move every sidecar associated with a stem (audio, transcript,
+    /// summary, run, meta, notion, obsidian, READY_FOR_MANUAL) to the
+    /// user's Trash. Recoverable from Finder until the user empties the
+    /// Trash. The recordings-dir watcher picks up the deletes and
+    /// refreshes the Library list automatically.
+    func softDeleteMeeting(stem: String) -> Result<Void, Error> {
+        let dir = liveOutputDir
+        let fm = FileManager.default
+        let entries: [URL]
+        do {
+            entries = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil, options: [])
+        } catch {
+            return .failure(error)
+        }
+        let matching = entries.filter { url in
+            MeetingStore.stem(of: url) == stem
+        }
+        guard !matching.isEmpty else {
+            return .failure(NSError(
+                domain: "Coordinator", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "No files found for \(stem)"]
+            ))
+        }
+        var firstFailure: Error?
+        for url in matching {
+            var trashedURL: NSURL?
+            do {
+                try fm.trashItem(at: url, resultingItemURL: &trashedURL)
+            } catch {
+                Log.main.warning("trashItem failed for \(url.lastPathComponent): \(error.localizedDescription)")
+                if firstFailure == nil { firstFailure = error }
+            }
+        }
+        Log.event(category: "coordinator", action: "meeting_deleted", attributes: [
+            "stem": stem,
+            "files_count": matching.count,
+        ])
+        if let err = firstFailure { return .failure(err) }
+        return .success(())
+    }
+
+    /// Copy the standard human-facing artefacts for a stem (summary
+    /// markdown, transcript markdown, summary JSON, raw audio) into a
+    /// user-chosen folder. Missing files are silently skipped — the
+    /// export is best-effort and aimed at sharing rather than archival
+    /// completeness (use Reveal in Finder + a manual copy for the
+    /// latter). Returns the count of files copied on success.
+    func exportMeeting(stem: String, to destination: URL) -> Result<Int, Error> {
+        let dir = liveOutputDir
+        let fm = FileManager.default
+        let candidates = [
+            "\(stem).summary.md",
+            "\(stem).md",
+            "\(stem).summary.json",
+            "\(stem).wav",
+            "\(stem).notion.json",
+            "\(stem).meta.json",
+        ]
+        var copied = 0
+        for name in candidates {
+            let src = dir.appendingPathComponent(name)
+            guard fm.fileExists(atPath: src.path) else { continue }
+            let dst = destination.appendingPathComponent(name)
+            // Overwrite existing destination files so a second export
+            // pass to the same folder refreshes the bundle.
+            if fm.fileExists(atPath: dst.path) {
+                _ = try? fm.removeItem(at: dst)
+            }
+            do {
+                try fm.copyItem(at: src, to: dst)
+                copied += 1
+            } catch {
+                Log.main.warning("export copy failed: \(name) → \(error.localizedDescription)")
+            }
+        }
+        Log.event(category: "coordinator", action: "meeting_exported", attributes: [
+            "stem": stem,
+            "files_copied": copied,
+            "destination": destination.lastPathComponent,
+        ])
+        return .success(copied)
+    }
+
     /// Re-run the publish step for the given meeting stem. Spawns the
     /// same `mp publish-notion` subprocess the orchestrator uses at end
     /// of pipeline, so success / failure / sidecar updates flow through
