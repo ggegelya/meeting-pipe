@@ -289,10 +289,16 @@ in Finder. Five tabs underneath:
   `mp publish-notion` so the published page in Notion picks up the
   edit; the editor stays disabled and shows a progress indicator while
   the subprocess runs.
-- `Transcript` (TECH-A6), `Audio` (TECH-A7), `Corrections` (TECH-A8),
-  and `Raw files` (TECH-A9) are placeholders today; the tab shell is
-  in place so each task can drop its content in without further
-  plumbing.
+- `Transcript` renders the diarized segments from `<stem>.json` as a
+  speaker-grouped list. Click any line to jump the audio play head to
+  that segment and start playing; the active line is highlighted as
+  playback advances. A compact play / pause / scrubber strip sits at
+  the bottom of the tab; the same audio engine is reused by the Audio
+  tab when it lands so seeking from a transcript line and switching
+  tabs keeps the same play head.
+- `Audio` (TECH-A7), `Corrections` (TECH-A8), and `Raw files`
+  (TECH-A9) are placeholders today; the tab shell is in place so each
+  task can drop its content in without further plumbing.
 
 Editing the title in the header writes the new value back to
 `<stem>.summary.json` when that file exists, otherwise to

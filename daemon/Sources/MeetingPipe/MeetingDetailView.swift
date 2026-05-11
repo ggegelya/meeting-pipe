@@ -34,6 +34,12 @@ struct MeetingDetailView: View {
     @State private var editingTitle: String = ""
     @State private var lastSyncedStem: String = ""
 
+    /// Shared between the Transcript (TECH-A6) and Audio (TECH-A7) tabs
+    /// so click-to-seek from a line keeps the same play head when the
+    /// user flips to the waveform. Re-attached to the new wav on stem
+    /// change via the transcript tab's `.task(id:)`.
+    @StateObject private var playback = AudioPlaybackController()
+
     enum Tab: String, CaseIterable {
         case summary
         case transcript
@@ -157,11 +163,7 @@ struct MeetingDetailView: View {
     }
 
     private var transcriptTab: some View {
-        TabPlaceholder(
-            icon: Tab.transcript.systemImage,
-            title: "Transcript",
-            blurb: "Speaker-labeled markdown with click-to-seek. Lands with TECH-A6."
-        )
+        TranscriptTab(playback: playback, meeting: meeting)
     }
 
     private var audioTab: some View {
