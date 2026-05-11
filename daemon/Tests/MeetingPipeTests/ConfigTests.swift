@@ -73,6 +73,30 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(cfg.detection.manualHotkey, "ctrl+option+m")
     }
 
+    func testParsesPerBundleDebounceOverrides() throws {
+        // TECH-C4: optional [detection.debounce_end_per_bundle] sub-table
+        // populates a bundle-keyed override map. Mixed int/double values
+        // are both accepted because TOML doesn't auto-coerce.
+        let url = writeTOML("""
+        [detection]
+        debounce_end_sec = 5
+
+        [detection.debounce_end_per_bundle]
+        "us.zoom.xos" = 7
+        "com.google.Chrome" = 15.5
+        """)
+        let cfg = try Config.load(from: url)
+        XCTAssertEqual(cfg.detection.debounceEndSec, 5)
+        XCTAssertEqual(cfg.detection.debounceEndPerBundle["us.zoom.xos"], 7)
+        XCTAssertEqual(cfg.detection.debounceEndPerBundle["com.google.Chrome"], 15.5)
+    }
+
+    func testMissingPerBundleDebounceIsEmpty() throws {
+        let url = writeTOML("")
+        let cfg = try Config.load(from: url)
+        XCTAssertTrue(cfg.detection.debounceEndPerBundle.isEmpty)
+    }
+
     func testIgnoresLegacyFieldsWithoutCrashing() throws {
         // Older configs may still have audio_device / capture_mode etc.
         // We don't read them anymore but parsing should silently succeed.

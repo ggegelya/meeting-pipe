@@ -24,6 +24,14 @@ debounce_end_sec = 5
 manual_hotkey = "ctrl+option+m"
 prompt_timeout_sec = 30
 
+# Per-bundle overrides for `debounce_end_sec`. Lookup precedence:
+# explicit entry → built-in browser default (12 s, because tab/window
+# state flickers more during a call) → the global `debounce_end_sec`
+# above. Keys are bundle IDs; values are seconds.
+# [detection.debounce_end_per_bundle]
+# "us.zoom.xos" = 7
+# "com.google.Chrome" = 15
+
 [transcription]
 # MLX-converted Whisper repo on HuggingFace. Default is the turbo variant
 # (best speed/quality tradeoff on Apple Silicon). Alternates:

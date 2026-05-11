@@ -88,10 +88,22 @@ final class Detector {
 
     private let debounceStartSec: Double
     private let debounceEndSec: Double
+    /// Per-bundle overrides for `debounceEndSec` (TECH-C4). Empty by
+    /// default; populated from `[detection.debounce_end_per_bundle]` in
+    /// `config.toml`. Override > built-in browser default > global.
+    private let debounceEndPerBundle: [String: Double]
     private let nativeBundles: Set<String>
     private let browserBundles: Set<String>
     private let browserURLFragments: [String]
     private let windowProbe: WindowProbe
+
+    /// Built-in end-debounce default for browser sources. Browser
+    /// meeting state (window titles, tab focus, AX snapshots) flickers
+    /// during a call more than native meeting apps, so the global 5 s
+    /// debounce produces premature stops. 12 s matches the upper end of
+    /// the 10-15 s range called out in TECH-C4. User can override per
+    /// bundle via TOML if they want shorter or longer.
+    static let browserDebounceEndDefault: Double = 12.0
 
     /// Signal A — last seen meeting app source (or nil).
     private var meetingApp: AppSource?
@@ -123,10 +135,12 @@ final class Detector {
     init(
         debounceStartSec: Double,
         debounceEndSec: Double,
+        debounceEndPerBundle: [String: Double] = [:],
         windowProbe: WindowProbe? = nil
     ) {
         self.debounceStartSec = debounceStartSec
         self.debounceEndSec = debounceEndSec
+        self.debounceEndPerBundle = debounceEndPerBundle
         let apps = Detector.loadMeetingApps()
         self.nativeBundles = apps.native
         self.browserBundles = apps.browsers
@@ -189,6 +203,30 @@ final class Detector {
     /// Threading: must be invoked on the main run loop.
     func recorderDidStop() {
         recorderActive = false
+    }
+
+    /// Resolve the end-debounce interval for the recording's source app.
+    /// Precedence: explicit per-bundle override → browser default →
+    /// global `debounceEndSec`. Static and pure so tests can pin the
+    /// precedence without constructing a Detector.
+    static func effectiveDebounceEnd(
+        for source: AppSource?,
+        globalEndSec: Double,
+        perBundle: [String: Double],
+        browserDefault: Double = Detector.browserDebounceEndDefault
+    ) -> Double {
+        guard let source = source else { return globalEndSec }
+        if let override = perBundle[source.bundleID] { return override }
+        if source.kind == .browser { return browserDefault }
+        return globalEndSec
+    }
+
+    private func effectiveDebounceEnd(for source: AppSource?) -> Double {
+        Detector.effectiveDebounceEnd(
+            for: source,
+            globalEndSec: debounceEndSec,
+            perBundle: debounceEndPerBundle
+        )
     }
 
     // MARK: Wiring
@@ -281,7 +319,8 @@ final class Detector {
             startTimer?.invalidate(); startTimer = nil
             pendingSource = nil
             if endTimer == nil {
-                endTimer = Timer.scheduledTimer(withTimeInterval: debounceEndSec, repeats: false) { [weak self] _ in
+                let interval = effectiveDebounceEnd(for: recordingSource)
+                endTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
                     guard let self = self else { return }
                     self.endTimer = nil
                     let confirmApp = self.scanMeetingApp()

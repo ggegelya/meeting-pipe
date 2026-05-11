@@ -115,7 +115,12 @@ final class Coordinator: NSObject {
         self.recordingHUD = RecordingHUDWindow()
         self.detector = Detector(
             debounceStartSec: configStore?.debounceStartSec ?? config.detection.debounceStartSec,
-            debounceEndSec: configStore?.debounceEndSec ?? config.detection.debounceEndSec
+            debounceEndSec: configStore?.debounceEndSec ?? config.detection.debounceEndSec,
+            // Per-bundle end-debounce overrides aren't surfaced in
+            // Preferences yet (TECH-C4 ships TOML support only), so we
+            // read straight from the loaded Config. Editing requires a
+            // daemon restart for now.
+            debounceEndPerBundle: config.detection.debounceEndPerBundle
         )
         self.hotkey = HotkeyManager()
         self.consent = ConsentStore()
@@ -595,7 +600,14 @@ final class Coordinator: NSObject {
         let newEnd = store.debounceEndSec
         Log.main.info("config persisted → rebuilding detector (start=\(newStart) end=\(newEnd))")
         detector.stop()
-        let fresh = Detector(debounceStartSec: newStart, debounceEndSec: newEnd)
+        let fresh = Detector(
+            debounceStartSec: newStart,
+            debounceEndSec: newEnd,
+            // Per-bundle overrides aren't writable via ConfigStore yet,
+            // so we keep the boot-time snapshot. Re-applying them here
+            // ensures the rebuilt Detector matches the constructor path.
+            debounceEndPerBundle: config.detection.debounceEndPerBundle
+        )
         fresh.delegate = self
         fresh.start()
         detector = fresh

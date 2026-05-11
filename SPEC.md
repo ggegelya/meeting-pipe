@@ -210,6 +210,13 @@ release is the primary path; the window recognizer covers the few-second
 tail where the meeting app holds the input device past hangup, plus the
 case where AX permission is missing on the meeting app but not the mic.
 
+**Per-app debounce (TECH-C4).** The end-debounce can be tuned per
+bundle ID via `[detection.debounce_end_per_bundle]` in `config.toml`.
+Browser sources without an explicit override get a built-in 12 s
+default — browser window/tab state flickers more during a call than
+native meeting apps, and the global 5 s produced premature stops.
+Lookup precedence: explicit override > browser default > global.
+
 ### Silence-based safety net
 
 When the regular end-signal misses (browser-tab meetings where the call ended

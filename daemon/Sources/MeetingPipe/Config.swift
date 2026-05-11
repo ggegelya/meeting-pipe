@@ -17,6 +17,12 @@ struct Config {
     struct Detection {
         var debounceStartSec: Double
         var debounceEndSec: Double
+        /// Per-bundle overrides for `debounceEndSec`. Looked up by
+        /// `AppSource.bundleID` at end-debounce arming time. Browser
+        /// sources without an explicit entry fall back to a built-in
+        /// 12-second default (TECH-C4) because tab/window state flickers
+        /// during a call; native apps default to the global value.
+        var debounceEndPerBundle: [String: Double]
         var manualHotkey: String
         var promptTimeoutSec: Double
     }
@@ -56,6 +62,22 @@ struct Config {
         let hotkey = det?["manual_hotkey"]?.string ?? "ctrl+option+m"
         let promptTimeout = det?["prompt_timeout_sec"]?.double ?? 30
 
+        // Optional `[detection.debounce_end_per_bundle]` sub-table:
+        //   "us.zoom.xos" = 7
+        //   "com.google.Chrome" = 15
+        // Keys are bundle IDs; values are seconds. Non-numeric entries
+        // are skipped silently so a typo in one row doesn't kill all.
+        var debounceEndPerBundle: [String: Double] = [:]
+        if let overrides = det?["debounce_end_per_bundle"]?.table {
+            for (key, value) in overrides {
+                if let d = value.double {
+                    debounceEndPerBundle[key] = d
+                } else if let i = value.int {
+                    debounceEndPerBundle[key] = Double(i)
+                }
+            }
+        }
+
         let regulated = mod?["regulated_mode"]?.bool ?? false
 
         return Config(
@@ -67,6 +89,7 @@ struct Config {
             detection: Detection(
                 debounceStartSec: debounceStart,
                 debounceEndSec: debounceEnd,
+                debounceEndPerBundle: debounceEndPerBundle,
                 manualHotkey: hotkey,
                 promptTimeoutSec: promptTimeout
             ),
@@ -85,6 +108,7 @@ struct Config {
             detection: Detection(
                 debounceStartSec: 5,
                 debounceEndSec: 5,
+                debounceEndPerBundle: [:],
                 manualHotkey: "ctrl+option+m",
                 promptTimeoutSec: 30
             ),
