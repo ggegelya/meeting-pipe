@@ -37,6 +37,10 @@ struct LibraryListView: View {
                             onRegenerate: { [weak libraryModel] in
                                 _ = await libraryModel?.regenerateMeeting(stem: meeting.stem)
                             },
+                            onRetry: { [weak libraryModel] in
+                                libraryModel?.retryMeeting(stem: meeting.stem)
+                                    ?? .failure(NSError(domain: "LibraryListView", code: 1))
+                            },
                             onSoftDelete: { [weak libraryModel] in
                                 _ = libraryModel?.softDeleteMeeting(stem: meeting.stem)
                             },

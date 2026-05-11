@@ -277,6 +277,31 @@ final class Coordinator: NSObject {
         libraryWindow.show()
     }
 
+    /// Retry the full pipeline for a meeting whose original run never
+    /// produced a summary (daemon was killed mid-transcribe, the
+    /// orchestrator crashed, etc.). Enqueues the same `mp run-all`
+    /// subprocess the normal flow uses, so progress shows up in the
+    /// status-bar processing badge and any sidecars get overwritten.
+    /// Returns failure if the wav file is missing — every other error
+    /// surfaces as a notifier banner from the existing pipeline path.
+    func retryMeeting(stem: String) -> Result<Void, Error> {
+        let dir = liveOutputDir
+        let wavURL = dir.appendingPathComponent("\(stem).wav")
+        guard FileManager.default.fileExists(atPath: wavURL.path) else {
+            return .failure(NSError(
+                domain: "Coordinator", code: 1,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "No audio at \(wavURL.lastPathComponent) - cannot retry"]
+            ))
+        }
+        Log.writeLine("daemon", "retry pipeline → \(stem)")
+        Log.event(category: "coordinator", action: "retry_requested", attributes: [
+            "stem": stem,
+        ])
+        enqueueJob(file: wavURL, summaryMode: .auto)
+        return .success(())
+    }
+
     /// Regenerate the summary for the given stem by re-running the
     /// `mp summarize` stage against the existing transcript, then
     /// re-running publish so the Notion page reflects the new summary.

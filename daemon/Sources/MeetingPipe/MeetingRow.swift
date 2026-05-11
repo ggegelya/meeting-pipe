@@ -21,6 +21,7 @@ struct MeetingRow: View, Equatable {
     /// the library model.
     let onRepublish: () async -> Void
     let onRegenerate: () async -> Void
+    let onRetry: () -> Result<Void, Error>
     let onSoftDelete: () -> Void
     let onExport: (URL) -> Result<Int, Error>
 
@@ -91,6 +92,12 @@ struct MeetingRow: View, Equatable {
         }
         .disabled(!transcriptExists || inFlight != nil)
 
+        if meeting.status == .failed {
+            Button("Retry pipeline") {
+                runRetry()
+            }
+        }
+
         Divider()
 
         Button("Export…") {
@@ -135,6 +142,14 @@ struct MeetingRow: View, Equatable {
         inFlight = .regenerating
         await onRegenerate()
         inFlight = nil
+    }
+
+    private func runRetry() {
+        switch onRetry() {
+        case .success: break
+        case .failure(let err):
+            presentAlert(title: "Retry failed", message: err.localizedDescription)
+        }
     }
 
     private func promptExport() {
@@ -258,6 +273,8 @@ private struct StatusPill: View {
 
     var body: some View {
         HStack(spacing: 4) {
+            // Only "in flight" states should pulse; .failed is terminal,
+            // not active, so it gets a static dot.
             if status == .recording || status == .processing {
                 PulsingDot(color: dotColor)
             } else {
@@ -283,6 +300,7 @@ private struct StatusPill: View {
         case .processing:       return "Processing"
         case .manualPasteReady: return "Paste pending"
         case .done:             return "Ready"
+        case .failed:           return "Failed"
         case .unknown:          return "—"
         }
     }
@@ -293,6 +311,7 @@ private struct StatusPill: View {
         case .processing:       return .yellow
         case .manualPasteReady: return .orange
         case .done:             return .green
+        case .failed:           return .red
         case .unknown:          return .secondary
         }
     }

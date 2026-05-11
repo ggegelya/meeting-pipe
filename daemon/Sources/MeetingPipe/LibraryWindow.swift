@@ -165,6 +165,17 @@ final class LibraryWindowModel: ObservableObject {
         }
     }
 
+    /// Re-enqueue the full `mp run-all` pipeline for a stalled meeting.
+    /// Used by the context menu's "Retry pipeline" action when a row
+    /// has aged into `.failed` status without ever producing a summary.
+    @discardableResult
+    func retryMeeting(stem: String) -> Result<Void, Error> {
+        coordinator?.retryMeeting(stem: stem) ?? .failure(NSError(
+            domain: "LibraryWindowModel", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
+        ))
+    }
+
     /// Move every sidecar associated with a stem to the user's Trash.
     @discardableResult
     func softDeleteMeeting(stem: String) -> Result<Void, Error> {

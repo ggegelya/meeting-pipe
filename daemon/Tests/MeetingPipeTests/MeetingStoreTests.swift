@@ -82,8 +82,9 @@ final class MeetingStoreTests: XCTestCase {
 
     func test_processing_when_only_wav_present() throws {
         let dir = try tempDir()
-        let stem = "20260511-143110"
-        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        // Use a stem within the staleness window so it stays processing.
+        let recentStem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
+        try writeFile(dir.appendingPathComponent("\(recentStem).wav"))
         let store = MeetingStore(recordingsDir: dir)
         let exp = expectation(description: "scan")
         var captured: [Meeting] = []
@@ -95,6 +96,44 @@ final class MeetingStoreTests: XCTestCase {
         wait(for: [exp], timeout: 2.0)
         cancel.cancel()
         XCTAssertEqual(captured.first?.status, .processing)
+    }
+
+    func test_failed_when_processing_older_than_staleness_threshold() throws {
+        let dir = try tempDir()
+        // Stem far in the past — exceeds staleProcessingThresholdSec (2 h)
+        // with no summary on disk.
+        let stem = "20240501-090000"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        let store = MeetingStore(recordingsDir: dir)
+        let exp = expectation(description: "scan")
+        var captured: [Meeting] = []
+        let cancel = store.$meetings.dropFirst().sink { meetings in
+            captured = meetings
+            exp.fulfill()
+        }
+        store.start()
+        wait(for: [exp], timeout: 2.0)
+        cancel.cancel()
+        XCTAssertEqual(captured.first?.status, .failed)
+    }
+
+    func test_done_overrides_staleness() throws {
+        // Even an ancient meeting stays `.done` once a summary lands.
+        let dir = try tempDir()
+        let stem = "20240501-090000"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{}")
+        let store = MeetingStore(recordingsDir: dir)
+        let exp = expectation(description: "scan")
+        var captured: [Meeting] = []
+        let cancel = store.$meetings.dropFirst().sink { meetings in
+            captured = meetings
+            exp.fulfill()
+        }
+        store.start()
+        wait(for: [exp], timeout: 2.0)
+        cancel.cancel()
+        XCTAssertEqual(captured.first?.status, .done)
     }
 
     // MARK: meta + summary parsing

@@ -16,8 +16,17 @@ struct Meeting: Identifiable, Hashable {
         case processing           // wav present, no summary yet
         case manualPasteReady     // long-meeting bundle waiting on user paste
         case done                 // summary.json on disk
+        case failed               // wav started > N hours ago and the pipeline never finished
         case unknown
     }
+
+    /// Beyond this age, a meeting that still has no summary on disk is
+    /// considered stalled (pipeline crashed / daemon was restarted
+    /// mid-transcribe / config error). The row flips from `processing`
+    /// to `failed` so the user can spot it + retry from the context
+    /// menu. Two hours is generous: even a 3 h meeting transcript +
+    /// 32B-Qwen local summary finishes inside that window.
+    static let staleProcessingThresholdSec: TimeInterval = 2 * 60 * 60
 
     let stem: String
     let startedAt: Date
@@ -260,14 +269,20 @@ final class MeetingStore: ObservableObject {
                 status = .done
             } else if pasteReadyURL != nil {
                 status = .manualPasteReady
-            } else if transcriptJSON != nil {
-                status = .processing
             } else {
-                // wav-only — could be in-flight transcription, or could be a
-                // leftover from a failed run. We treat as processing here;
-                // active-recording overlay is layered on top by the live
-                // model in `LibraryWindowModel`.
-                status = .processing
+                // Without a summary the row is either in flight, never
+                // started, or stalled. Without per-job liveness tracking
+                // we use age as a proxy: anything older than the staleness
+                // window with no summary is `.failed`; the live-recording
+                // overlay supersedes this for the actively-recording stem
+                // via `LibraryWindowModel.liveRecordingStem`.
+                let age = Date().timeIntervalSince(startedAt)
+                if age > Meeting.staleProcessingThresholdSec {
+                    status = .failed
+                } else {
+                    status = .processing
+                }
+                _ = transcriptJSON  // currently informational only
             }
 
             let sourceKindRaw = meta?["source_kind"] as? String
