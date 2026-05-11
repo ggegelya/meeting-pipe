@@ -12,6 +12,10 @@ protocol NotifierDelegate: AnyObject {
     func notifier(_ notifier: Notifier, didOpenPage url: URL)
     /// User clicked "Open Settings" on a Screen-Recording permission warning.
     func notifierDidRequestScreenRecordingSettings(_ notifier: Notifier)
+    /// User clicked the stop action on the "Still meeting?" silence
+    /// notification, or tapped the banner itself. Coordinator stops the
+    /// current recording (no-op if state is no longer `.recording`).
+    func notifierDidRequestStopRecording(_ notifier: Notifier)
     /// User clicked "Looks good" on the published-meeting notification.
     /// `recordingsDir` is the parent directory of the recording (where
     /// the run sidecar + summary JSON live).
@@ -45,6 +49,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private static let actionEditSummary = "MP_EDIT_SUMMARY"
     private static let permCategory = "MP_PERM"
     private static let actionOpenSettings = "MP_OPEN_SETTINGS"
+    private static let stillMeetingCategory = "MP_STILL_MEETING"
+    private static let actionStopRecording = "MP_STOP_RECORDING"
+    private static let stillMeetingIDPrefix = "still-meeting-"
 
     /// Per-notification state. We keep this richer than the previous
     /// id->URL map so the "Looks good" action can find the recording
@@ -140,6 +147,23 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         post(title: "MeetingPipe error", body: message)
     }
 
+    /// Posted by SilenceDetector after 90 s of unbroken silence on both
+    /// channels. The action button stops the recording immediately;
+    /// ignoring it lets the 5-minute auto-stop run on its own.
+    func notifyStillMeeting() {
+        let content = UNMutableNotificationContent()
+        content.title = "Still meeting?"
+        content.body = "Recording continues — tap to stop."
+        content.categoryIdentifier = Self.stillMeetingCategory
+        content.sound = .default
+        let req = UNNotificationRequest(
+            identifier: "\(Self.stillMeetingIDPrefix)\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(req)
+    }
+
     /// Posted at startup when Screen Recording TCC is denied. The daemon
     /// keeps running, but every recording will be mic-only until the user
     /// grants the permission. The action button opens System Settings.
@@ -228,8 +252,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             intentIdentifiers: [],
             options: []
         )
+        let stop = UNNotificationAction(identifier: Self.actionStopRecording, title: "Stop recording", options: [.foreground])
+        let stillMeeting = UNNotificationCategory(
+            identifier: Self.stillMeetingCategory,
+            actions: [stop],
+            intentIdentifiers: [],
+            options: []
+        )
         UNUserNotificationCenter.current().setNotificationCategories(
-            [done, doneCorrectable, doneCorrectableLocal, perm]
+            [done, doneCorrectable, doneCorrectableLocal, perm, stillMeeting]
         )
     }
 
@@ -286,6 +317,14 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         // "done" category, which is handled above and removed from the map.
         if id.hasPrefix("perm-"), action == Self.actionOpenSettings || isDefault {
             delegate?.notifierDidRequestScreenRecordingSettings(self)
+        }
+
+        // "Still meeting?" silence-stall notifications (TECH-C2). Both the
+        // action button and a plain tap on the banner stop the recording —
+        // the user has already confirmed the call is over.
+        if id.hasPrefix(Self.stillMeetingIDPrefix),
+           action == Self.actionStopRecording || isDefault {
+            delegate?.notifierDidRequestStopRecording(self)
         }
         completionHandler()
     }

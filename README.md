@@ -424,6 +424,12 @@ add the row to `daemon/Tests/MeetingPipeTests/Fixtures/window_titles.json`,
 and the next test run shows whether `Detector.isActiveMeetingWindow`
 needs a refinement.
 
+As a safety net, the daemon also watches the audio level. After 90 s of
+unbroken silence on both mic and system audio it surfaces a "Still meeting?"
+notification with a Stop action; after 5 min it auto-stops and emits an
+`auto_stop_silence` event. Look for that event in `events.jsonl` if a
+runaway recording stopped on its own.
+
 **Local backend won't start.**
 - `mlx-lm not found`: rerun `scripts/install.sh` (or `cd pipeline && uv
   sync`). The dep is declared in `pyproject.toml` with an Apple-Silicon

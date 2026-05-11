@@ -38,6 +38,11 @@ final class Coordinator: NSObject {
     /// state instead. No-op when backend is anthropic.
     private let modelDownload = ModelDownloadSupervisor()
 
+    /// Watches mic + system levels to surface a missed meeting end (TECH-C2).
+    /// Created at recording start, released at stop. Notifies after 90 s of
+    /// silence and auto-stops after 5 min.
+    private var silenceDetector: SilenceDetector?
+
     private var state: AppState = .idle {
         didSet {
             Log.main.info("state: \(String(describing: oldValue)) → \(String(describing: self.state))")
@@ -351,6 +356,7 @@ final class Coordinator: NSObject {
                 "bundle_id": source?.bundleID ?? "manual",
                 "summary_mode": summaryMode == .byo ? "byo" : "auto",
             ])
+            armSilenceDetector()
             // Kick off streaming transcribe so transcription runs in
             // parallel with the meeting. Best-effort — a failure here
             // (mp not installed, AVAudioFile not yet flushing) just
@@ -386,6 +392,7 @@ final class Coordinator: NSObject {
         state = .stopping(file: file, source: source, summaryMode: summaryMode)
         statusBar.setStopping()
         recordingHUD.dismiss()
+        disarmSilenceDetector()
 
         // Recorder.stop is async — runs on a background task so the UI
         // stays responsive. Once flushed, the audio is enqueued for
@@ -593,6 +600,50 @@ final class Coordinator: NSObject {
         fresh.start()
         detector = fresh
     }
+
+    // MARK: - Silence detection (TECH-C2)
+
+    private func armSilenceDetector() {
+        let detector = SilenceDetector(
+            onNotifySilence: { [weak self] in
+                self?.handleSilenceNotify()
+            },
+            onAutoStopSilence: { [weak self] in
+                self?.handleSilenceAutoStop()
+            }
+        )
+        silenceDetector = detector
+        // RMS callbacks are dispatched to main by the Recorder, so it's
+        // safe to touch the SilenceDetector directly here.
+        recorder.onMicLevel = { [weak self] db in
+            self?.silenceDetector?.observeMic(db: Double(db))
+        }
+        recorder.onSystemLevel = { [weak self] db in
+            self?.silenceDetector?.observeSystem(db: Double(db))
+        }
+    }
+
+    private func disarmSilenceDetector() {
+        recorder.onMicLevel = nil
+        recorder.onSystemLevel = nil
+        silenceDetector = nil
+    }
+
+    private func handleSilenceNotify() {
+        Log.writeLine("daemon", "silence: 90s — surfacing 'still meeting?' banner")
+        Log.event(category: "coordinator", action: "silence_notified")
+        notifier.notifyStillMeeting()
+    }
+
+    private func handleSilenceAutoStop() {
+        guard case .recording(let file, let src, let mode) = state else { return }
+        Log.writeLine("daemon", "silence: 5min — auto-stopping recording")
+        Log.event(category: "coordinator", action: "auto_stop_silence", attributes: [
+            "bundle_id": src?.bundleID ?? "manual",
+            "file": file.lastPathComponent,
+        ])
+        stopRecording(file: file, source: src, summaryMode: mode)
+    }
 }
 
 extension Coordinator: DetectorDelegate {
@@ -739,6 +790,12 @@ extension Coordinator: NotifierDelegate {
 
     func notifierDidRequestScreenRecordingSettings(_ notifier: Notifier) {
         SystemAudioCapture.openScreenRecordingSettings()
+    }
+
+    func notifierDidRequestStopRecording(_ notifier: Notifier) {
+        // Reuse `toggleManual` so the stop path is identical to the
+        // hotkey-stop and recorder-HUD-stop surfaces — one entry point.
+        if case .recording = state { toggleManual() }
     }
 }
 

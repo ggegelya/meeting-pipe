@@ -50,6 +50,21 @@ final class MeetingRecorder {
     private var micFires: UInt64 = 0
     private var systemFires: UInt64 = 0
 
+    /// Per-source RMS callbacks for the SilenceDetector (TECH-C2). Wired
+    /// by the Coordinator at recording start and cleared at stop. Fires
+    /// approximately once per second of audio per source on the main
+    /// queue. `nil` when nothing is listening so the math short-circuits.
+    var onMicLevel: ((Float) -> Void)?
+    var onSystemLevel: ((Float) -> Void)?
+
+    /// Accumulators for one-second RMS aggregation. Two pairs because
+    /// mic + system run on independent threads with different sample
+    /// rates and we don't want the math to cross.
+    private var micAccumSumSq: Double = 0
+    private var micAccumFrames: Int = 0
+    private var systemAccumSumSq: Double = 0
+    private var systemAccumFrames: Int = 0
+
     /// Snapshot of the counters at the most recent `stop()`. The Coordinator
     /// reads these to decide whether to warn the user that the recording
     /// captured mic only (because Screen Recording is denied). Reset to zero
@@ -82,6 +97,10 @@ final class MeetingRecorder {
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
         lastMicFires = 0
         lastSystemFires = 0
+        micAccumSumSq = 0
+        micAccumFrames = 0
+        systemAccumSumSq = 0
+        systemAccumFrames = 0
 
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -117,6 +136,13 @@ final class MeetingRecorder {
             } catch {
                 Log.recorder.error("mic write: \(error.localizedDescription)")
             }
+            self.accumulateAndEmit(
+                buffer: buffer,
+                sumSq: &self.micAccumSumSq,
+                frames: &self.micAccumFrames,
+                threshold: Int(micFormat.sampleRate),
+                callback: self.onMicLevel
+            )
         }
 
         do {
@@ -156,6 +182,13 @@ final class MeetingRecorder {
             } catch {
                 Log.recorder.error("system write: \(error.localizedDescription)")
             }
+            self.accumulateAndEmit(
+                buffer: pcm,
+                sumSq: &self.systemAccumSumSq,
+                frames: &self.systemAccumFrames,
+                threshold: Int(SystemAudioCapture.captureFormat.sampleRate),
+                callback: self.onSystemLevel
+            )
         }
         self.systemCapture = capture
         // Run start() off the calling thread but track the Task so stop()
@@ -249,6 +282,47 @@ final class MeetingRecorder {
         }
         Log.recorder.info("recorder stopped → \(final.path)")
         Log.writeLine("recorder", "recorder stopped → \(final.path)")
+    }
+
+    // MARK: - RMS level emission (TECH-C2)
+
+    /// Fold one PCM buffer into the running sum-of-squares for its
+    /// source. When ≥ ~1 s of audio has accumulated, compute dBFS and
+    /// hand it to the callback on the main queue. Frames are summed
+    /// across channels because the silence gate doesn't care which
+    /// channel was loud — only whether *anything* was.
+    private func accumulateAndEmit(
+        buffer: AVAudioPCMBuffer,
+        sumSq: inout Double,
+        frames: inout Int,
+        threshold: Int,
+        callback: ((Float) -> Void)?
+    ) {
+        guard let cb = callback,
+              let data = buffer.floatChannelData else { return }
+        let frameLen = Int(buffer.frameLength)
+        let channels = Int(buffer.format.channelCount)
+        guard frameLen > 0, channels > 0 else { return }
+
+        var localSum: Double = 0
+        for ch in 0..<channels {
+            let ptr = data[ch]
+            for i in 0..<frameLen {
+                let s = Double(ptr[i])
+                localSum += s * s
+            }
+        }
+        sumSq += localSum
+        frames += frameLen * channels
+
+        if frames >= max(threshold, 1) {
+            let mean = sumSq / Double(frames)
+            // log10(0) → -inf; clamp to -120 dBFS for a sane payload.
+            let db: Float = mean > 0 ? Float(10.0 * log10(mean)) : -120
+            sumSq = 0
+            frames = 0
+            DispatchQueue.main.async { cb(db) }
+        }
     }
 
     // MARK: - ffmpeg post-process

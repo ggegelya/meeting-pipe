@@ -200,6 +200,19 @@ release is the primary path; the window recognizer covers the few-second
 tail where the meeting app holds the input device past hangup, plus the
 case where AX permission is missing on the meeting app but not the mic.
 
+### Silence-based safety net
+
+When the regular end-signal misses (browser-tab meetings where the call ended
+but a leftover tab keeps the window probe firing, AX permission denied on the
+meeting app), `SilenceDetector` is a post-recording fallback. It watches the
+RMS level of mic + system audio during the recording. After 90 s of unbroken
+silence on both channels (< -50 dBFS), it surfaces a "Still meeting?"
+notification with a stop action. After 5 minutes of continuous silence it
+auto-stops the recorder and emits an `auto_stop_silence` event. If Screen
+Recording is denied the gate reduces to mic-only, which is still correct: a
+mic-only recording is just the user, and a 5-minute mic silence means they
+walked away.
+
 ### Manual override
 
 Global hotkey (default `⌃⌥M`) toggles RECORDING ↔ IDLE regardless of detector
