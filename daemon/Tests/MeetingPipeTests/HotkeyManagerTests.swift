@@ -69,4 +69,17 @@ final class HotkeyManagerTests: XCTestCase {
         XCTAssertEqual(r?.modifiers, expected)
         XCTAssertEqual(r?.keyCode, UInt32(kVK_ANSI_Z))
     }
+
+    // MARK: - TECH-C5: force-stop hotkey default parses
+
+    func testForceStopDefaultParses() {
+        // The default value in Config / config.example.toml is
+        // "ctrl+option+shift+m" — locking it in here so a future typo
+        // in the default can't ship a silently-unparseable hotkey.
+        let r = HotkeyManager.parse("ctrl+option+shift+m")
+        XCTAssertNotNil(r)
+        XCTAssertEqual(r?.keyCode, UInt32(kVK_ANSI_M))
+        XCTAssertEqual(r?.modifiers, UInt32(controlKey | optionKey | shiftKey))
+    }
+
 }

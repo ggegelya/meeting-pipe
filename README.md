@@ -67,7 +67,9 @@ If streaming fails for any reason, the pipeline falls back to the offline
 path automatically — you never lose a transcript.
 
 A global hotkey (default `⌃⌥M`) toggles recording manually if detection misses a
-meeting or you want a quick voice memo.
+meeting or you want a quick voice memo. A second hotkey (default `⌃⌥⇧M`) is a
+stop-only force-stop — it never starts a recording, so you can panic-press it
+without risking an accidental start.
 
 For meetings longer than ~1 hour, the pipeline writes the transcript to disk
 along with a paste-into-Claude-Code bundle and **does not call the Anthropic

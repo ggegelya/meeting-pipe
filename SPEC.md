@@ -232,8 +232,17 @@ walked away.
 
 ### Manual override
 
-Global hotkey (default `⌃⌥M`) toggles RECORDING ↔ IDLE regardless of detector
-state. Wins over auto.
+Two global hotkeys, both configurable in Preferences → Detection:
+
+- **Manual record (toggle)** — default `⌃⌥M`. IDLE → start, RECORDING → stop.
+  Also functions as a force-stop when the detector misses end (`hasFiredStart`
+  stays true, so the detector can't re-prompt for the same meeting; only a
+  real `.ended` resets it).
+- **Force stop (stop only)** — default `⌃⌥⇧M`. Stops a running recording;
+  is a no-op when idle. Useful as a panic button that can never accidentally
+  start a fresh recording. On PROMPTING, it dismisses the prompt and
+  transitions to SUPPRESSED so the daemon doesn't re-prompt for the same call.
+  Logged via the `coordinator.force_stop` event.
 
 ---
 

@@ -31,6 +31,10 @@ final class ConfigStore: ObservableObject {
     @Published var debounceStartSec: Double { didSet { scheduleSave() } }
     @Published var debounceEndSec: Double { didSet { scheduleSave() } }
     @Published var manualHotkey: String { didSet { scheduleSave() } }
+    /// Stop-only hotkey (TECH-C5). Same parser as `manualHotkey`; the
+    /// daemon registers it as a second Carbon binding. Default
+    /// `ctrl+option+shift+m`.
+    @Published var forceStopHotkey: String { didSet { scheduleSave() } }
     @Published var promptTimeoutSec: Double { didSet { scheduleSave() } }
 
     @Published var regulatedMode: Bool { didSet { scheduleSave() } }
@@ -99,6 +103,7 @@ final class ConfigStore: ObservableObject {
         self.debounceStartSec = det?["debounce_start_sec"]?.double ?? 5
         self.debounceEndSec = det?["debounce_end_sec"]?.double ?? 5
         self.manualHotkey = det?["manual_hotkey"]?.string ?? "ctrl+option+m"
+        self.forceStopHotkey = det?["force_stop_hotkey"]?.string ?? "ctrl+option+shift+m"
         self.promptTimeoutSec = det?["prompt_timeout_sec"]?.double ?? 30
 
         self.regulatedMode = mod?["regulated_mode"]?.bool ?? false
@@ -163,6 +168,7 @@ final class ConfigStore: ObservableObject {
         ensureTable("detection")["debounce_start_sec"] = debounceStartSec
         ensureTable("detection")["debounce_end_sec"] = debounceEndSec
         ensureTable("detection")["manual_hotkey"] = manualHotkey
+        ensureTable("detection")["force_stop_hotkey"] = forceStopHotkey
         ensureTable("detection")["prompt_timeout_sec"] = promptTimeoutSec
 
         ensureTable("modes")["regulated_mode"] = regulatedMode

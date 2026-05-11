@@ -161,6 +161,21 @@ final class Coordinator: NSObject {
             Log.main.warning("Could not parse hotkey: \(self.liveManualHotkey)")
         }
 
+        // Stop-only hotkey (TECH-C5). Distinct so a panic-press can
+        // never accidentally start a recording the way the toggle
+        // hotkey can when the daemon is idle. Logged with a different
+        // event action so the post-mortem analyzer can tell them apart.
+        if liveForceStopHotkey == liveManualHotkey {
+            Log.main.warning("Force-stop hotkey matches manual hotkey — skipping second registration")
+        } else if let parsed = HotkeyManager.parse(liveForceStopHotkey) {
+            hotkey.register(keyCode: parsed.keyCode, modifiers: parsed.modifiers) { [weak self] in
+                DispatchQueue.main.async { self?.forceStop(reason: "hotkey") }
+            }
+            Log.main.info("Force-stop hotkey registered: \(self.liveForceStopHotkey)")
+        } else {
+            Log.main.warning("Could not parse force-stop hotkey: \(self.liveForceStopHotkey)")
+        }
+
         // Refresh affected components when the user saves Preferences.
         // ConfigStore already debounces 500ms, so we don't pile up rebuilds
         // while a slider is being dragged.
@@ -300,6 +315,10 @@ final class Coordinator: NSObject {
         configStore?.manualHotkey ?? config.detection.manualHotkey
     }
 
+    private var liveForceStopHotkey: String {
+        configStore?.forceStopHotkey ?? config.detection.forceStopHotkey
+    }
+
     // MARK: State transitions
 
     private func toggleManual() {
@@ -317,6 +336,33 @@ final class Coordinator: NSObject {
             // Recorder is mid-flush; a new start would race the await.
             // Pipeline jobs no longer block this path — they live in
             // `processingJobs` and run independently.
+            break
+        }
+    }
+
+    /// Stop-only entry point used by the force-stop hotkey and any other
+    /// surface that needs an unambiguous "stop, never start" semantics
+    /// (TECH-C5). Unlike `toggleManual`, this never transitions out of
+    /// `.idle` into a recording — pressing the force-stop hotkey when
+    /// nothing is running is a logged no-op. The detector's own state
+    /// (`hasFiredStart`) is preserved so it can't re-prompt for the same
+    /// meeting; a fresh `.started` only fires after a real `.ended`.
+    private func forceStop(reason: String) {
+        Log.event(category: "coordinator", action: "force_stop", attributes: [
+            "reason": reason,
+            "state": Coordinator.stateLabel(state),
+        ])
+        switch state {
+        case .recording(let file, let src, let mode):
+            stopRecording(file: file, source: src, summaryMode: mode)
+        case .prompting(let src):
+            // Treat as "no, don't record, and don't ask again until the
+            // detector sees this meeting end" — same as clicking Skip.
+            cancelPromptTimeout()
+            promptWindow.dismiss()
+            state = .suppressed(source: src)
+            statusBar.setIdle()
+        case .idle, .suppressed, .stopping:
             break
         }
     }

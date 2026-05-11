@@ -154,6 +154,26 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertTrue(raw.contains("skip_above_chars = 0"))
     }
 
+    func test_force_stop_hotkey_round_trips() throws {
+        // TECH-C5: new field must load and persist through ConfigStore.
+        let url = try makeTempConfigURL()
+        try "".write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        // Default applies on a fresh file.
+        XCTAssertEqual(store.forceStopHotkey, "ctrl+option+shift+m")
+
+        store.forceStopHotkey = "cmd+shift+x"
+        try store.saveNow()
+
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(raw.contains("force_stop_hotkey = \"cmd+shift+x\""))
+
+        // Reload from disk and confirm the value sticks.
+        let reloaded = try ConfigStore(configURL: url)
+        XCTAssertEqual(reloaded.forceStopHotkey, "cmd+shift+x")
+    }
+
     func test_writeBack_is_pure() throws {
         let url = try makeTempConfigURL()
         try "".write(to: url, atomically: true, encoding: .utf8)

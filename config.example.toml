@@ -22,6 +22,10 @@ debounce_start_sec = 5
 # a stuttery probe without trimming the tail of speech.
 debounce_end_sec = 5
 manual_hotkey = "ctrl+option+m"
+# Stop-only hotkey (TECH-C5). Unlike `manual_hotkey`, pressing this
+# when idle is a no-op — only stops a running recording. Useful as a
+# panic button that can never accidentally start a fresh recording.
+force_stop_hotkey = "ctrl+option+shift+m"
 prompt_timeout_sec = 30
 
 # Per-bundle overrides for `debounce_end_sec`. Lookup precedence:

@@ -41,9 +41,22 @@ final class ConfigTests: XCTestCase {
         let cfg = try Config.load(from: url)
         XCTAssertEqual(cfg.recording.sampleRate, 16000)
         XCTAssertEqual(cfg.detection.manualHotkey, "ctrl+option+m")
+        XCTAssertEqual(cfg.detection.forceStopHotkey, "ctrl+option+shift+m")
         XCTAssertEqual(cfg.detection.debounceStartSec, 5)
         XCTAssertEqual(cfg.detection.debounceEndSec, 5)
         XCTAssertFalse(cfg.modes.regulatedMode)
+    }
+
+    func testParsesForceStopHotkeyOverride() throws {
+        // TECH-C5: user-provided override flows through Config.load.
+        let url = writeTOML("""
+        [detection]
+        force_stop_hotkey = "cmd+shift+x"
+        """)
+        let cfg = try Config.load(from: url)
+        XCTAssertEqual(cfg.detection.forceStopHotkey, "cmd+shift+x")
+        // Manual hotkey untouched by force-stop change.
+        XCTAssertEqual(cfg.detection.manualHotkey, "ctrl+option+m")
     }
 
     func testRegulatedModeRoundTrips() throws {

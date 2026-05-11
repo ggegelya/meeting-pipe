@@ -24,6 +24,12 @@ struct Config {
         /// during a call; native apps default to the global value.
         var debounceEndPerBundle: [String: Double]
         var manualHotkey: String
+        /// Stop-only hotkey (TECH-C5). Distinct from `manualHotkey` so
+        /// the user can muscle-memory "stop the recording right now"
+        /// without ever risking a fresh recording start the way the
+        /// toggle hotkey would when the daemon is idle. Default
+        /// `ctrl+option+shift+m`.
+        var forceStopHotkey: String
         var promptTimeoutSec: Double
     }
 
@@ -60,6 +66,7 @@ struct Config {
         let debounceStart = det?["debounce_start_sec"]?.double ?? 5
         let debounceEnd = det?["debounce_end_sec"]?.double ?? 5
         let hotkey = det?["manual_hotkey"]?.string ?? "ctrl+option+m"
+        let forceStop = det?["force_stop_hotkey"]?.string ?? "ctrl+option+shift+m"
         let promptTimeout = det?["prompt_timeout_sec"]?.double ?? 30
 
         // Optional `[detection.debounce_end_per_bundle]` sub-table:
@@ -91,6 +98,7 @@ struct Config {
                 debounceEndSec: debounceEnd,
                 debounceEndPerBundle: debounceEndPerBundle,
                 manualHotkey: hotkey,
+                forceStopHotkey: forceStop,
                 promptTimeoutSec: promptTimeout
             ),
             modes: Modes(regulatedMode: regulated)
@@ -110,6 +118,7 @@ struct Config {
                 debounceEndSec: 5,
                 debounceEndPerBundle: [:],
                 manualHotkey: "ctrl+option+m",
+                forceStopHotkey: "ctrl+option+shift+m",
                 promptTimeoutSec: 30
             ),
             modes: Modes(regulatedMode: false)

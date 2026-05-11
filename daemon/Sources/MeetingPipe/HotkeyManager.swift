@@ -5,15 +5,64 @@ import Carbon.HIToolbox
 /// AppKit's NSEvent.addGlobalMonitor only sees keystrokes when the app isn't
 /// frontmost, but doesn't let you intercept them; Carbon does. macOS still
 /// supports Carbon HotKey APIs as of macOS 14.
+///
+/// Supports multiple simultaneous registrations (TECH-C5 added the
+/// force-stop hotkey alongside the manual-toggle one). The single Carbon
+/// event handler dispatches on `EventHotKeyID.id`, so a press of one
+/// hotkey doesn't invoke the others' closures.
 final class HotkeyManager {
-    private var hotKeyRef: EventHotKeyRef?
-    private var handler: () -> Void = {}
+    private struct Slot {
+        let ref: EventHotKeyRef
+        let handler: () -> Void
+    }
+    private var slots: [UInt32: Slot] = [:]
     private var eventHandlerRef: EventHandlerRef?
+    /// Monotonic counter for the per-slot hot-key id. Carbon needs each
+    /// registered hotkey to have a distinct id so the handler can fan
+    /// out; starts at 1 because zero is sometimes treated as "unset".
+    private var nextID: UInt32 = 1
 
-    func register(keyCode: UInt32, modifiers: UInt32, handler: @escaping () -> Void) {
-        unregister()
-        self.handler = handler
+    /// Register a global hotkey and return its slot id (use with
+    /// `unregister(id:)`). Multiple calls add additional bindings; the
+    /// previous behaviour where each call replaced the only slot was
+    /// only safe with a single hotkey.
+    @discardableResult
+    func register(keyCode: UInt32, modifiers: UInt32, handler: @escaping () -> Void) -> UInt32? {
+        installEventHandlerIfNeeded()
 
+        let id = nextID
+        nextID &+= 1
+        let hotKeyID = EventHotKeyID(signature: OSType(0x4D505048) /* "MPPH" */, id: id)
+        var ref: EventHotKeyRef?
+        let status = RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &ref)
+        guard status == noErr, let ref = ref else {
+            Log.main.warning("RegisterEventHotKey failed: \(status)")
+            return nil
+        }
+        slots[id] = Slot(ref: ref, handler: handler)
+        return id
+    }
+
+    /// Drop a single registered hotkey. Safe to call with an unknown id.
+    func unregister(id: UInt32) {
+        guard let slot = slots.removeValue(forKey: id) else { return }
+        UnregisterEventHotKey(slot.ref)
+    }
+
+    /// Drop every registered hotkey and tear down the Carbon handler.
+    func unregister() {
+        for (_, slot) in slots {
+            UnregisterEventHotKey(slot.ref)
+        }
+        slots.removeAll()
+        if let h = eventHandlerRef {
+            RemoveEventHandler(h)
+            eventHandlerRef = nil
+        }
+    }
+
+    private func installEventHandlerIfNeeded() {
+        guard eventHandlerRef == nil else { return }
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                   eventKind: UInt32(kEventHotKeyPressed))
         let userData = Unmanaged.passUnretained(self).toOpaque()
@@ -33,32 +82,14 @@ final class HotkeyManager {
                 )
                 if err == noErr {
                     let me = Unmanaged<HotkeyManager>.fromOpaque(userData).takeUnretainedValue()
-                    me.handler()
+                    if let slot = me.slots[hkID.id] {
+                        slot.handler()
+                    }
                 }
                 return noErr
             },
             1, &spec, userData, &eventHandlerRef
         )
-
-        let hotKeyID = EventHotKeyID(signature: OSType(0x4D505048) /* "MPPH" */, id: 1)
-        var ref: EventHotKeyRef?
-        let status = RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &ref)
-        if status == noErr {
-            hotKeyRef = ref
-        } else {
-            Log.main.warning("RegisterEventHotKey failed: \(status)")
-        }
-    }
-
-    func unregister() {
-        if let ref = hotKeyRef {
-            UnregisterEventHotKey(ref)
-            hotKeyRef = nil
-        }
-        if let h = eventHandlerRef {
-            RemoveEventHandler(h)
-            eventHandlerRef = nil
-        }
     }
 
     /// Parse "ctrl+option+m" → (kVK_ANSI_M, controlKey|optionKey).

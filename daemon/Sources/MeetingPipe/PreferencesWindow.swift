@@ -168,12 +168,16 @@ private struct PreferencesView: View {
                     Text("\(Int(store.debounceEndSec))s").monospacedDigit().frame(width: 36, alignment: .trailing)
                 }
             }
-            Section("Hotkey") {
-                LabeledContent("Manual record") {
+            Section("Hotkeys") {
+                LabeledContent("Manual record (toggle)") {
                     TextField("ctrl+option+m", text: $store.manualHotkey)
                         .textFieldStyle(.roundedBorder)
                 }
-                Text("Format: 'ctrl+option+m', 'cmd+shift+r'. Restart MeetingPipe after changing.")
+                LabeledContent("Force stop (stop only)") {
+                    TextField("ctrl+option+shift+m", text: $store.forceStopHotkey)
+                        .textFieldStyle(.roundedBorder)
+                }
+                Text("Format: 'ctrl+option+m', 'cmd+shift+r'. The toggle hotkey starts/stops. The force-stop hotkey only stops — pressing it when idle is a no-op, so panic-pressing can never accidentally start a recording. Restart MeetingPipe after changing.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
