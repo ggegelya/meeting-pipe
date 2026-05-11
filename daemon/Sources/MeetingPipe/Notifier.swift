@@ -12,6 +12,10 @@ protocol NotifierDelegate: AnyObject {
     func notifier(_ notifier: Notifier, didOpenPage url: URL)
     /// User clicked "Open Settings" on a Screen-Recording permission warning.
     func notifierDidRequestScreenRecordingSettings(_ notifier: Notifier)
+    /// User clicked "Open Settings" on the Accessibility-permission warning.
+    /// Distinct from the Screen-Recording variant so the Coordinator
+    /// can deep-link to the correct pane.
+    func notifierDidRequestAccessibilitySettings(_ notifier: Notifier)
     /// User clicked the stop action on the "Still meeting?" silence
     /// notification, or tapped the banner itself. Coordinator stops the
     /// current recording (no-op if state is no longer `.recording`).
@@ -50,6 +54,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private static let permCategory = "MP_PERM"
     private static let actionOpenSettings = "MP_OPEN_SETTINGS"
     private static let stillMeetingCategory = "MP_STILL_MEETING"
+    /// Separate category from `permCategory` so the Open Settings button
+    /// can route to the Accessibility pane instead of Screen Recording.
+    private static let accessibilityCategory = "MP_ACCESSIBILITY"
+    private static let actionOpenAccessibilitySettings = "MP_OPEN_ACCESS_SETTINGS"
     private static let actionStopRecording = "MP_STOP_RECORDING"
     private static let stillMeetingIDPrefix = "still-meeting-"
 
@@ -164,6 +172,21 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(req)
     }
 
+    /// Posted at startup when the Accessibility TCC entry is missing.
+    /// Without it the detector's window probes degrade to nil, so native
+    /// meetings (Teams / Zoom / Webex / Slack desktop apps) never
+    /// auto-end and the user has to manually stop every recording.
+    /// Action button opens System Settings → Accessibility.
+    func notifyAccessibilityBlocked() {
+        let content = UNMutableNotificationContent()
+        content.title = "Accessibility disabled"
+        content.body = "Without it, Teams / Zoom / Webex meetings won't auto-stop when the call ends. Enable in System Settings."
+        content.categoryIdentifier = Self.accessibilityCategory
+        content.sound = .default
+        let req = UNNotificationRequest(identifier: "perm-accessibility-startup", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
     /// Posted at startup when Screen Recording TCC is denied. The daemon
     /// keeps running, but every recording will be mic-only until the user
     /// grants the permission. The action button opens System Settings.
@@ -252,6 +275,17 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             intentIdentifiers: [],
             options: []
         )
+        let openAccessibilitySettings = UNNotificationAction(
+            identifier: Self.actionOpenAccessibilitySettings,
+            title: "Open Settings",
+            options: [.foreground]
+        )
+        let accessibility = UNNotificationCategory(
+            identifier: Self.accessibilityCategory,
+            actions: [openAccessibilitySettings],
+            intentIdentifiers: [],
+            options: []
+        )
         let stop = UNNotificationAction(identifier: Self.actionStopRecording, title: "Stop recording", options: [.foreground])
         let stillMeeting = UNNotificationCategory(
             identifier: Self.stillMeetingCategory,
@@ -260,7 +294,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             options: []
         )
         UNUserNotificationCenter.current().setNotificationCategories(
-            [done, doneCorrectable, doneCorrectableLocal, perm, stillMeeting]
+            [done, doneCorrectable, doneCorrectableLocal, perm, accessibility, stillMeeting]
         )
     }
 
@@ -315,7 +349,11 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         // Permission notifications: any tap (action button or default) opens
         // System Settings. The id prefix is enough to disambiguate from the
         // "done" category, which is handled above and removed from the map.
-        if id.hasPrefix("perm-"), action == Self.actionOpenSettings || isDefault {
+        if id == "perm-accessibility-startup",
+           action == Self.actionOpenAccessibilitySettings || isDefault {
+            delegate?.notifierDidRequestAccessibilitySettings(self)
+        } else if id.hasPrefix("perm-"),
+                  action == Self.actionOpenSettings || isDefault {
             delegate?.notifierDidRequestScreenRecordingSettings(self)
         }
 

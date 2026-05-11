@@ -228,6 +228,10 @@ final class Coordinator: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
             self?.checkScreenRecordingPermissionAtStartup()
         }
+        // Accessibility is what powers native end-detection. If it's
+        // missing the window probes silently degrade and Teams/Zoom/etc.
+        // never auto-stop. Surface this once at startup with a banner.
+        checkAccessibilityPermissionAtStartup()
     }
 
     private func checkScreenRecordingPermissionAtStartup() {
@@ -236,6 +240,17 @@ final class Coordinator: NSObject {
         didNotifyAboutPermissionDenial = true
         notifier.notifySystemAudioBlocked()
         statusBar.refreshMenuForPermissionChange()
+    }
+
+    private func checkAccessibilityPermissionAtStartup() {
+        if AXIsProcessTrusted() {
+            Log.main.info("Accessibility: trusted")
+            return
+        }
+        Log.main.warning("Accessibility: NOT trusted — native meeting end-detection disabled")
+        Log.writeLine("daemon", "ACCESSIBILITY DENIED at startup — native end-detection will not fire. Enable in System Settings → Privacy & Security → Accessibility.")
+        Log.event(category: "coordinator", action: "accessibility_denied_at_startup")
+        notifier.notifyAccessibilityBlocked()
     }
 
     func shutdown() {
@@ -1083,6 +1098,19 @@ extension Coordinator: NotifierDelegate {
 
     func notifierDidRequestScreenRecordingSettings(_ notifier: Notifier) {
         SystemAudioCapture.openScreenRecordingSettings()
+    }
+
+    func notifierDidRequestAccessibilitySettings(_ notifier: Notifier) {
+        // `Privacy_Accessibility` is the documented anchor for the
+        // Accessibility pane in System Settings (Ventura+); the legacy
+        // panel URL is the macOS 12 fallback. NSWorkspace.open returns
+        // false if the URL can't resolve, so try the modern one first
+        // and fall back.
+        let modern = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+        if !NSWorkspace.shared.open(modern) {
+            let legacy = URL(string: "x-apple.systempreferences:com.apple.preference.universalaccess")!
+            NSWorkspace.shared.open(legacy)
+        }
     }
 
     func notifierDidRequestStopRecording(_ notifier: Notifier) {

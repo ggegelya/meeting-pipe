@@ -3,6 +3,37 @@ import AVFoundation
 import ApplicationServices
 import CoreAudio
 import Foundation
+
+/// Rate-limited log emitter for the "Accessibility permission missing"
+/// failure mode. The window probes fire many times per second; we don't
+/// want a million identical lines in detector.log. One line per
+/// `cooldown` seconds per call-site key is enough to make the cause
+/// obvious without drowning the rest of the log.
+enum AXTrustWarning {
+    /// 60 s is loud enough to be unmissable on a single Teams meeting,
+    /// quiet enough that an hour-long deny state isn't pages of noise.
+    static let cooldown: TimeInterval = 60
+    nonisolated(unsafe) private static var lastFire: [String: Date] = [:]
+    private static let lock = NSLock()
+
+    static func logIfDue(_ key: String) {
+        lock.lock()
+        let now = Date()
+        if let last = lastFire[key], now.timeIntervalSince(last) < cooldown {
+            lock.unlock()
+            return
+        }
+        lastFire[key] = now
+        lock.unlock()
+        Log.writeLine(
+            "detector",
+            "ACCESSIBILITY DENIED — window probe (\(key)) disabled; native meeting end-detection won't fire until granted. System Settings → Privacy & Security → Accessibility → MeetingPipe."
+        )
+        Log.event(category: "detector", action: "accessibility_denied", attributes: [
+            "probe": key,
+        ])
+    }
+}
 import TOMLKit
 
 protocol DetectorDelegate: AnyObject {
@@ -560,7 +591,16 @@ final class Detector {
     }
 
     private static func nativeWindowProbe(_ source: AppSource) -> Bool? {
-        guard AXIsProcessTrusted() else { return nil }
+        guard AXIsProcessTrusted() else {
+            // The only way end-detection works for native apps (Teams,
+            // Zoom, Webex, Slack) is by reading their window titles via
+            // AX. Without trust the probe degrades to nil, the composer
+            // defaults to "window open", and the meeting never auto-ends.
+            // Log this loudly + rate-limited so the user sees the cause
+            // in detector.log without us flooding it.
+            AXTrustWarning.logIfDue("native:\(source.bundleID)")
+            return nil
+        }
         guard let pid = pidFor(bundleID: source.bundleID) else {
             Log.writeLine("detector", "windowprobe(native) app=\(source.bundleID) NOT_RUNNING → ended")
             return false
@@ -678,7 +718,10 @@ final class Detector {
     }
 
     private static func browserWindowProbe(_ source: AppSource, fragments: [String]) -> Bool? {
-        guard AXIsProcessTrusted() else { return nil }
+        guard AXIsProcessTrusted() else {
+            AXTrustWarning.logIfDue("browser:\(source.bundleID)")
+            return nil
+        }
         guard let pid = pidFor(bundleID: source.bundleID) else {
             Log.writeLine("detector", "windowprobe(browser) app=\(source.bundleID) NOT_RUNNING → ended")
             return false

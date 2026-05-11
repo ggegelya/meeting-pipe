@@ -157,7 +157,13 @@ The installer can't do these for you:
 3. **Grant macOS permissions** when prompted on first launch:
    - **Microphone** — `AVAudioEngine` reads from the system default input.
    - **Screen Recording** — gates `SCStream.capturesAudio` in TCC.
-   - **Accessibility** — reads browser tab titles to detect Meet/Teams Web.
+   - **Accessibility** — reads window titles to detect when a meeting
+     ends (Teams / Zoom / Webex / Slack desktop AND browser tabs). Without
+     this, native apps will record fine but the call won't auto-stop -
+     the daemon falls back to manual hotkey / silence-based stop, which
+     can mean an extra 5 minutes of wav file. The daemon emits a startup
+     banner + a rate-limited `ACCESSIBILITY DENIED` line in
+     `~/Library/Logs/MeetingPipe/detector.log` if it's missing.
    - **Notifications** — record/skip prompts and completion alerts.
 
    No audio devices to set up. The daemon captures whatever your system
