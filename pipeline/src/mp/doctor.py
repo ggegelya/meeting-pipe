@@ -30,9 +30,6 @@ from .endpoints import (
     NOTION_API_BASE,
     NOTION_API_VERSION,
     NOTION_INTEGRATIONS_URL,
-    PYANNOTE_GATED_REPOS,
-    hf_model_api_url,
-    hf_model_page_url,
 )
 
 

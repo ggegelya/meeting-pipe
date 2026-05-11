@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from mp.publish_obsidian import ObsidianPublisher, _slugify, _yaml_str
 from mp.schemas import ActionItem, MeetingSummary

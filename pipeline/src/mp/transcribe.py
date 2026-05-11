@@ -33,7 +33,6 @@ from typing import Any
 from .config import Config, load_secrets
 from .diarize import (
     DiarizationSegment,
-    USER_SPEAKER,
     assign_speakers,
     assign_speakers_by_channel,
     diarize,

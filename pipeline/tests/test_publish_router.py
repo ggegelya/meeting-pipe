@@ -12,7 +12,7 @@ from mp.publish_router import (
     build_publishers,
     fanout,
 )
-from mp.schemas import ActionItem, MeetingSummary
+from mp.schemas import MeetingSummary
 
 
 def _summary() -> MeetingSummary:

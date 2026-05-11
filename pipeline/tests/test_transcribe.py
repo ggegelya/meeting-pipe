@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import struct
 
 import numpy as np
 import soundfile as sf
