@@ -267,8 +267,16 @@ present, duration, and shortcuts to open the published note in Notion
 or Obsidian (when those sidecars are on disk) or reveal the raw audio
 in Finder. Five tabs underneath:
 
-- `Summary` renders the existing `<stem>.summary.json` (read-only
-  today; the inline editor lands with TECH-A5).
+- `Summary` renders `<stem>.summary.md` as Markdown and exposes an
+  `Edit` button. The editor reuses the same field set as the
+  standalone correction window: title, summary bullets, decisions,
+  action items, open questions, attendees, language, notes. Saving
+  writes a correction record (verdict=edited) and overwrites
+  `<stem>.summary.json` so the list and Markdown views immediately
+  reflect the new content. `Save & Republish` additionally re-runs
+  `mp publish-notion` so the published page in Notion picks up the
+  edit; the editor stays disabled and shows a progress indicator while
+  the subprocess runs.
 - `Transcript` (TECH-A6), `Audio` (TECH-A7), `Corrections` (TECH-A8),
   and `Raw files` (TECH-A9) are placeholders today; the tab shell is
   in place so each task can drop its content in without further

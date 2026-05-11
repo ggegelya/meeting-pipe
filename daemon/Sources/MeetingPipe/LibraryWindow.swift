@@ -25,6 +25,7 @@ final class LibraryWindow {
         }
 
         let view = LibraryRootView(model: model)
+            .environmentObject(model)
         let host = NSHostingController(rootView: view)
         let w = NSWindow(contentViewController: host)
         w.title = "MeetingPipe Library"
@@ -123,6 +124,23 @@ final class LibraryWindowModel: ObservableObject {
 
     func openPreferences() {
         coordinator?.menuPreferences()
+    }
+
+    /// Republish a meeting via the standard `mp publish-notion` subprocess.
+    /// Wraps the Coordinator's callback in a Swift `async` shape so the
+    /// SwiftUI editor can `await` the result and update its UI state.
+    func republishMeeting(stem: String) async -> Result<URL?, Error> {
+        guard let coordinator = coordinator else {
+            return .failure(NSError(
+                domain: "LibraryWindowModel", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
+            ))
+        }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Result<URL?, Error>, Never>) in
+            coordinator.republishMeeting(stem: stem) { result in
+                cont.resume(returning: result)
+            }
+        }
     }
 }
 

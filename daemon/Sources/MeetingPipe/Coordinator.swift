@@ -277,6 +277,54 @@ final class Coordinator: NSObject {
         libraryWindow.show()
     }
 
+    /// Re-run the publish step for the given meeting stem. Spawns the
+    /// same `mp publish-notion` subprocess the orchestrator uses at end
+    /// of pipeline, so success / failure / sidecar updates flow through
+    /// the same code path. Returns the resulting Notion page URL via the
+    /// completion handler — nil under regulated_mode or when the page
+    /// link is not in the sidecar.
+    ///
+    /// Used by the Library window's summary-edit flow (TECH-A5). The
+    /// caller is expected to have already written the corrected summary
+    /// to `<stem>.summary.json` before invoking this.
+    func republishMeeting(
+        stem: String,
+        completion: @escaping (Result<URL?, Error>) -> Void
+    ) {
+        let dir = liveOutputDir
+        let summaryURL = dir.appendingPathComponent("\(stem).summary.json")
+        guard FileManager.default.fileExists(atPath: summaryURL.path) else {
+            completion(.failure(NSError(
+                domain: "Coordinator", code: 1,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "No summary.json for \(stem) — corrected summary must be written before republish"]
+            )))
+            return
+        }
+        Log.writeLine("daemon", "republish requested → \(stem)")
+        Log.event(category: "coordinator", action: "republish_started", attributes: [
+            "stem": stem,
+        ])
+        launcher.publish(summaryJSON: summaryURL) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let url):
+                    Log.event(category: "coordinator", action: "republish_succeeded", attributes: [
+                        "stem": stem,
+                        "page_url": url?.absoluteString ?? NSNull(),
+                    ])
+                case .failure(let err):
+                    Log.event(category: "coordinator", action: "republish_failed", attributes: [
+                        "stem": stem,
+                        "error": err.localizedDescription,
+                    ])
+                    self?.notifier.notifyError("Republish failed: \(err.localizedDescription)")
+                }
+                completion(result)
+            }
+        }
+    }
+
     @objc func menuOpenScreenRecordingSettings() {
         SystemAudioCapture.openScreenRecordingSettings()
     }

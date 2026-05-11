@@ -2,17 +2,19 @@ import AppKit
 import SwiftUI
 
 /// Right-pane detail view: header (editable title, date, workflow chip,
-/// publish-target shortcuts) plus five tabs. TECH-A4 ships the shell;
-/// each tab's real content lands in a later A-task.
+/// publish-target shortcuts) plus five tabs.
 ///
-///   - Summary: A5 swaps in the inline-editable view (current placeholder
-///     renders the read-only summary fields if a `<stem>.summary.json`
-///     exists).
+///   - Summary: renders `<stem>.summary.md` as Markdown read-only, with
+///     an "Edit" toggle that swaps in the shared `CorrectionEditorBody`
+///     (TECH-A5). Save writes a correction record AND overwrites the
+///     summary on disk; "Save & Republish" additionally re-runs
+///     `mp publish-notion` so the published page reflects the edit.
 ///   - Transcript: A6 wires speaker-labeled markdown + audio sync.
 ///   - Audio: A7 renders the stereo waveform.
 ///   - Corrections: A8 renders the correction record.
 ///   - Raw files: A9 lists every `<stem>.*` file in the recordings dir.
 struct MeetingDetailView: View {
+    @EnvironmentObject var libraryModel: LibraryWindowModel
     let meeting: Meeting
 
     /// Persisted across launches so reopening the window keeps the user
@@ -140,7 +142,8 @@ struct MeetingDetailView: View {
     // MARK: Tabs (placeholders — replaced by A5 / A6 / A7 / A8 / A9)
 
     private var summaryTab: some View {
-        SummaryReadOnlyPlaceholder(meeting: meeting)
+        SummaryTab(meeting: meeting)
+            .environmentObject(libraryModel)
     }
 
     private var transcriptTab: some View {
@@ -308,104 +311,288 @@ private struct TabPlaceholder: View {
     }
 }
 
-/// Bare read-only render of the existing summary.json so TECH-A4 has a
-/// useful default before A5 wires the inline editor. Shows only the
-/// bullet-form fields that the pipeline already emits.
-private struct SummaryReadOnlyPlaceholder: View {
+// MARK: - Summary tab (TECH-A5)
+
+/// Summary tab. Read-only by default — renders the pipeline's
+/// `<stem>.summary.md` as Markdown via `AttributedString`. The "Edit"
+/// button swaps in the shared `CorrectionEditorBody` so the inline
+/// editor shares its field surface with the standalone correction
+/// window.
+///
+/// Save persists a correction record (verdict = edited) AND overwrites
+/// `<stem>.summary.json` so the next read of the row sees the new
+/// content. "Save & Republish" additionally spawns `mp publish-notion`
+/// so the published Notion page reflects the edit; the editor stays
+/// disabled while the subprocess is running.
+struct SummaryTab: View {
+    @EnvironmentObject var libraryModel: LibraryWindowModel
     let meeting: Meeting
 
-    @State private var loaded: [String: Any]? = nil
+    /// Toggle between rendered Markdown and the editor form.
+    @State private var isEditing = false
+    /// Holds the in-flight editor model so isEditing changes can
+    /// dispose / recreate it cleanly.
+    @State private var editorModel: CorrectionViewModel? = nil
+    /// Republish state for the footer button + status label.
+    @State private var republishing = false
+    @State private var lastRepublishResult: RepublishResult? = nil
+
+    enum RepublishResult: Equatable {
+        case success(URL?)
+        case failure(String)
+    }
 
     var body: some View {
-        ScrollView {
-            if let summary = loaded {
-                renderedSummary(summary)
-            } else if meeting.summaryTitle == nil {
-                Text("No summary yet.\nIt appears here once the pipeline finishes.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(40)
+        Group {
+            if isEditing, let model = editorModel {
+                editorBody(model: model)
             } else {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(40)
+                readOnlyBody
             }
         }
-        .onAppear { reload() }
-        .onChange(of: meeting.stem) { _, _ in reload() }
-    }
-
-    @ViewBuilder
-    private func renderedSummary(_ summary: [String: Any]) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
-            section("Summary", items: stringList(summary["summary"]))
-            section("Decisions", items: stringList(summary["decisions"]))
-            actionsSection(summary["actions"])
-            section("Open questions", items: stringList(summary["questions"]))
-            section("Attendees", items: stringList(summary["attendees"]))
+        .onChange(of: meeting.stem) { _, _ in
+            // Switching meetings discards in-flight edits — saving with
+            // unsubmitted changes would be a footgun (the user expects
+            // a fresh row, not their old edits applied to it).
+            isEditing = false
+            editorModel = nil
+            lastRepublishResult = nil
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder
-    private func section(_ title: String, items: [String]) -> some View {
-        if !items.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                ForEach(items, id: \.self) { item in
-                    HStack(alignment: .top, spacing: 6) {
-                        Text("·").foregroundStyle(.tertiary)
-                        Text(item).font(.body)
-                    }
+    // MARK: Read-only render
+
+    private var readOnlyBody: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
+                if let attributed = renderedMarkdown {
+                    Text(attributed)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(20)
+                } else if meeting.status == .done {
+                    Text("Summary markdown not on disk yet.")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(40)
+                } else {
+                    Text("No summary yet.\nIt appears here once the pipeline finishes.")
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(40)
                 }
             }
+            Divider()
+            HStack {
+                if let result = lastRepublishResult {
+                    statusBadge(for: result)
+                }
+                Spacer()
+                Button("Edit") {
+                    beginEditing()
+                }
+                .disabled(!hasSummaryOnDisk)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
         }
     }
 
     @ViewBuilder
-    private func actionsSection(_ raw: Any?) -> some View {
-        if let arr = raw as? [[String: Any]], !arr.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Action items")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                ForEach(arr.indices, id: \.self) { i in
-                    let item = arr[i]
-                    HStack(alignment: .top, spacing: 6) {
-                        Text("·").foregroundStyle(.tertiary)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text((item["task"] as? String) ?? "").font(.body)
-                            HStack(spacing: 6) {
-                                if let owner = item["owner"] as? String, !owner.isEmpty {
-                                    Text(owner).font(.caption).foregroundStyle(.secondary)
-                                }
-                                if let due = item["due"] as? String, !due.isEmpty {
-                                    Text("due \(due)").font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
+    private func statusBadge(for result: RepublishResult) -> some View {
+        switch result {
+        case .success(let url):
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                if let url = url {
+                    Button("Republished — view in Notion") {
+                        NSWorkspace.shared.open(url)
                     }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                } else {
+                    Text("Republished")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+            }
+        case .failure(let err):
+            HStack(spacing: 4) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text("Republish failed: \(err)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
     }
 
-    private func stringList(_ raw: Any?) -> [String] {
-        guard let arr = raw as? [Any] else { return [] }
-        return arr.compactMap { ($0 as? String) }
+    private var hasSummaryOnDisk: Bool {
+        FileManager.default.fileExists(atPath: summaryJsonURL.path)
     }
 
-    private func reload() {
-        let path = meeting.recordingsDir.appendingPathComponent("\(meeting.stem).summary.json")
-        guard let data = try? Data(contentsOf: path),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            loaded = nil
+    private var summaryJsonURL: URL {
+        meeting.recordingsDir.appendingPathComponent("\(meeting.stem).summary.json")
+    }
+
+    private var summaryMarkdownURL: URL {
+        meeting.recordingsDir.appendingPathComponent("\(meeting.stem).summary.md")
+    }
+
+    private var renderedMarkdown: AttributedString? {
+        guard let raw = try? String(contentsOf: summaryMarkdownURL, encoding: .utf8) else {
+            return nil
+        }
+        // `inlineOnlyPreservingWhitespace: true` keeps the line breaks
+        // the pipeline writes (headings + bullets + horizontal rules) so
+        // the rendered Text view looks the same as Notion's render of
+        // the underlying Markdown.
+        let opts = AttributedString.MarkdownParsingOptions(
+            allowsExtendedAttributes: false,
+            interpretedSyntax: .full,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+        return try? AttributedString(markdown: raw, options: opts)
+    }
+
+    // MARK: Editor flow
+
+    private func beginEditing() {
+        guard let summary = loadSummaryJSON() else {
             return
         }
-        loaded = obj
+        let model = CorrectionViewModel(
+            stem: meeting.stem,
+            recordingsDir: meeting.recordingsDir,
+            runMeta: loadRunSidecar() ?? [:],
+            originalSummary: summary
+        )
+        editorModel = model
+        isEditing = true
+    }
+
+    private func editorBody(model: CorrectionViewModel) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            CorrectionEditorBody(model: model, contentPadding: 16, showsNotesField: true)
+            Divider()
+            footer(model: model)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+        }
+        .disabled(republishing)
+        .overlay(alignment: .top) {
+            if republishing {
+                ProgressView("Republishing…")
+                    .progressViewStyle(.linear)
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color(NSColor.controlBackgroundColor))
+                    )
+                    .padding(8)
+            }
+        }
+    }
+
+    private func footer(model: CorrectionViewModel) -> some View {
+        HStack(spacing: 8) {
+            Button("Cancel") {
+                isEditing = false
+                editorModel = nil
+            }
+            Spacer()
+            Button("Save") {
+                _ = persistEdit(model: model)
+                isEditing = false
+            }
+            Button("Save & Republish") {
+                Task {
+                    if persistEdit(model: model) {
+                        await runRepublish(stem: model.stem)
+                        isEditing = false
+                    }
+                }
+            }
+            .keyboardShortcut(.defaultAction)
+            .disabled(libraryModel.coordinator == nil)
+        }
+    }
+
+    /// Writes a correction record (verdict=edited) AND overwrites
+    /// `<stem>.summary.json` with the corrected payload so subsequent
+    /// reads (and republish) see the new content. Returns true on
+    /// success; false (with a logged warning) on disk-write failure.
+    private func persistEdit(model: CorrectionViewModel) -> Bool {
+        let corrected = model.makeCorrectedSummary()
+
+        // 1. Correction record. Reuses the exact path the standalone
+        //    correction window uses so the LoRA training set sees both
+        //    surfaces identically.
+        do {
+            try CorrectionStore.write(
+                stem: model.stem,
+                transcriptPath: model.transcriptPath,
+                summaryJsonPath: model.summaryJsonPath,
+                modelId: model.modelId,
+                backend: model.backend,
+                verdict: .edited,
+                originalSummary: model.originalSummary,
+                correctedSummary: corrected,
+                notes: model.notes.isEmpty ? nil : model.notes
+            )
+            Log.event(category: "library", action: "summary_edited", attributes: [
+                "stem": model.stem,
+            ])
+        } catch {
+            Log.main.warning("CorrectionStore.write failed: \(error.localizedDescription)")
+            return false
+        }
+
+        // 2. Overwrite the live summary so the row + Markdown render +
+        //    any future republish all see the corrected version. The
+        //    correction record preserves the original.
+        if JSONSerialization.isValidJSONObject(corrected),
+           let data = try? JSONSerialization.data(
+               withJSONObject: corrected,
+               options: [.prettyPrinted, .sortedKeys]
+           ) {
+            try? data.write(to: summaryJsonURL, options: .atomic)
+        }
+        return true
+    }
+
+    private func runRepublish(stem: String) async {
+        republishing = true
+        let result = await libraryModel.republishMeeting(stem: stem)
+        republishing = false
+        switch result {
+        case .success(let url):
+            lastRepublishResult = .success(url)
+        case .failure(let err):
+            lastRepublishResult = .failure(err.localizedDescription)
+        }
+    }
+
+    // MARK: Disk helpers
+
+    private func loadSummaryJSON() -> [String: Any]? {
+        guard let data = try? Data(contentsOf: summaryJsonURL),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return obj
+    }
+
+    private func loadRunSidecar() -> [String: Any]? {
+        let url = meeting.recordingsDir.appendingPathComponent("\(meeting.stem).run.json")
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return obj
     }
 }

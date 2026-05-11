@@ -9,12 +9,26 @@ import Foundation
 /// `MP_FORCE_BYO=1` through the subprocess environment.
 protocol PipelineDriver: AnyObject {
     func runAll(wav: URL, summaryMode: SummaryMode, completion: @escaping (Result<URL?, Error>) -> Void)
+    /// Re-run the publish step against an existing `<stem>.summary.json`.
+    /// Used by the Library's summary-edit flow after the user persists
+    /// a corrected summary on disk. Returns the Notion page URL on
+    /// success (nil when regulated_mode is on).
+    func publish(summaryJSON: URL, completion: @escaping (Result<URL?, Error>) -> Void)
 }
 
 extension PipelineDriver {
     /// Convenience for callers that don't care about summary mode (auto).
     func runAll(wav: URL, completion: @escaping (Result<URL?, Error>) -> Void) {
         runAll(wav: wav, summaryMode: .auto, completion: completion)
+    }
+
+    /// Default no-op stub for test fakes that don't model republish.
+    /// Production code (`PipelineLauncher`) overrides this.
+    func publish(summaryJSON: URL, completion: @escaping (Result<URL?, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "publish unsupported by this driver"]
+        )))
     }
 }
 
@@ -151,6 +165,112 @@ final class PipelineLauncher: PipelineDriver {
             // Side-channel: orchestrator writes <wav-stem>.notion.json with page_url.
             let stem = wav.deletingPathExtension().lastPathComponent
             let sidecar = wav.deletingLastPathComponent().appendingPathComponent("\(stem).notion.json")
+            if let data = try? Data(contentsOf: sidecar),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let urlStr = obj["page_url"] as? String,
+               let url = URL(string: urlStr) {
+                completion(.success(url))
+            } else {
+                completion(.success(nil))
+            }
+        }
+
+        do {
+            try p.run()
+        } catch {
+            watchdog.cancel()
+            completion(.failure(error))
+        }
+    }
+
+    /// Spawn `mp publish-notion <summary.json>` and surface the resulting
+    /// page URL (from `<stem>.notion.json`) via the completion handler.
+    /// Reuses the same secrets read + watchdog scaffolding as runAll so
+    /// stale tokens, hung subprocesses, and non-zero exits behave the
+    /// same here as in the main pipeline path. Runs without `MP_FORCE_BYO`
+    /// — the publish step is identical regardless of how the summary
+    /// was produced (auto, paste, or correction-edit).
+    func publish(
+        summaryJSON: URL,
+        completion: @escaping (Result<URL?, Error>) -> Void
+    ) {
+        guard let mpPath = Self.findMP() else {
+            completion(.failure(LaunchError.mpNotFound))
+            return
+        }
+
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: mpPath.shell)
+        p.arguments = mpPath.args + ["publish-notion", summaryJSON.path]
+        p.environment = Self.freshEnvironment()
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        p.standardOutput = outPipe
+        p.standardError = errPipe
+
+        let logURL = Log.logsDir.appendingPathComponent("pipeline.log")
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
+        let logHandle = (try? FileHandle(forWritingTo: logURL))
+        _ = try? logHandle?.seekToEnd()
+
+        var stderrTail = Data()
+        let stderrLimit = 4096
+
+        outPipe.fileHandleForReading.readabilityHandler = { h in
+            let d = h.availableData; if d.isEmpty { return }
+            try? logHandle?.write(contentsOf: d)
+        }
+        errPipe.fileHandleForReading.readabilityHandler = { h in
+            let d = h.availableData; if d.isEmpty { return }
+            try? logHandle?.write(contentsOf: d)
+            stderrTail.append(d)
+            if stderrTail.count > stderrLimit {
+                stderrTail.removeFirst(stderrTail.count - stderrLimit)
+            }
+        }
+
+        // Publish is far quicker than transcribe + summarize; a 10-min
+        // wallclock is generous headroom for Notion's API on a slow link.
+        let publishTimeout: TimeInterval = 10 * 60
+        let timedOut = TimeoutFlag()
+        let watchdog = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        watchdog.schedule(deadline: .now() + publishTimeout)
+        watchdog.setEventHandler {
+            guard p.isRunning else { return }
+            timedOut.set()
+            Log.main.warning("publish-notion exceeded \(Int(publishTimeout / 60)) min — terminating")
+            p.terminate()
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 15) {
+                if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+            }
+        }
+        watchdog.resume()
+
+        p.terminationHandler = { proc in
+            watchdog.cancel()
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            try? logHandle?.close()
+
+            if timedOut.isSet {
+                completion(.failure(LaunchError.timeout(publishTimeout)))
+                return
+            }
+
+            if proc.terminationStatus != 0 {
+                let tail = String(data: stderrTail, encoding: .utf8) ?? ""
+                completion(.failure(LaunchError.nonZeroExit(proc.terminationStatus, tail)))
+                return
+            }
+
+            let stem = summaryJSON.lastPathComponent.replacingOccurrences(
+                of: ".summary.json", with: ""
+            )
+            let sidecar = summaryJSON.deletingLastPathComponent()
+                .appendingPathComponent("\(stem).notion.json")
             if let data = try? Data(contentsOf: sidecar),
                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let urlStr = obj["page_url"] as? String,
