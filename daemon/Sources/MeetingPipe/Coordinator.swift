@@ -243,13 +243,26 @@ final class Coordinator: NSObject {
     }
 
     private func checkAccessibilityPermissionAtStartup() {
-        if AXIsProcessTrusted() {
+        // `AXIsProcessTrusted()` only reads the current state - it never
+        // surfaces the macOS "App wants to control your Mac" dialog.
+        // `AXIsProcessTrustedWithOptions` with `kAXTrustedCheckOptionPrompt
+        // = true` is the documented way to actively request the
+        // permission, which adds the app to the Accessibility list in
+        // System Settings and shows the prompt the user expects on
+        // first launch.
+        let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue()
+        let opts: CFDictionary = [promptKey: true] as CFDictionary
+        let trusted = AXIsProcessTrustedWithOptions(opts)
+        if trusted {
             Log.main.info("Accessibility: trusted")
             return
         }
-        Log.main.warning("Accessibility: NOT trusted — native meeting end-detection disabled")
-        Log.writeLine("daemon", "ACCESSIBILITY DENIED at startup — native end-detection will not fire. Enable in System Settings → Privacy & Security → Accessibility.")
+        Log.main.warning("Accessibility: NOT trusted - native meeting end-detection disabled")
+        Log.writeLine("daemon", "ACCESSIBILITY DENIED at startup - native end-detection will not fire. macOS prompted; enable MeetingPipe in System Settings → Privacy & Security → Accessibility.")
         Log.event(category: "coordinator", action: "accessibility_denied_at_startup")
+        // Banner is the fallback surface in case the user dismisses the
+        // system prompt without granting (or doesn't see it because the
+        // daemon was already trusted previously and then revoked).
         notifier.notifyAccessibilityBlocked()
     }
 
