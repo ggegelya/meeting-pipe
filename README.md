@@ -296,9 +296,18 @@ in Finder. Five tabs underneath:
   the bottom of the tab; the same audio engine is reused by the Audio
   tab when it lands so seeking from a transcript line and switching
   tabs keeps the same play head.
-- `Audio` (TECH-A7), `Corrections` (TECH-A8), and `Raw files`
-  (TECH-A9) are placeholders today; the tab shell is in place so each
-  task can drop its content in without further plumbing.
+- `Audio` shows a two-channel waveform (mic on top, system audio on
+  the bottom) backed by downsampled peaks. The cache lives under
+  `~/Library/Caches/MeetingPipe/waveforms/<stem>.peaks` and is keyed
+  on the wav's size + modification time, so any change to the
+  recording (re-record, repair, replace) invalidates the cache on the
+  next open. Click anywhere in the waveform to seek; the play head
+  syncs with the Transcript tab. A segmented zoom picker (Fit / 1× /
+  2× / 4× / 8×) widens the rendered track when you need to land on a
+  specific second.
+- `Corrections` (TECH-A8) and `Raw files` (TECH-A9) are placeholders
+  today; the tab shell is in place so each task can drop its content
+  in without further plumbing.
 
 Editing the title in the header writes the new value back to
 `<stem>.summary.json` when that file exists, otherwise to

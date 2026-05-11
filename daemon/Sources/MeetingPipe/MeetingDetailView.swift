@@ -167,11 +167,7 @@ struct MeetingDetailView: View {
     }
 
     private var audioTab: some View {
-        TabPlaceholder(
-            icon: Tab.audio.systemImage,
-            title: "Audio",
-            blurb: "Stereo mic + system waveform with scrub + zoom. Lands with TECH-A7."
-        )
+        AudioTab(playback: playback, meeting: meeting)
     }
 
     private var correctionsTab: some View {
