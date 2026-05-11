@@ -106,12 +106,17 @@ struct MeetingGroup {
             } else {
                 // Group older meetings by their month label so a year
                 // of history stays browsable without a flat older list.
-                // Negative ordinal so months sort newest-first under
-                // the standard buckets.
+                // ord = 5 + monthsAgo so older buckets sort AFTER the
+                // fixed 0..4 buckets, and newer months sort before
+                // older ones within the older-months tail.
                 let monthAnchor = cal.date(
                     from: cal.dateComponents([.year, .month], from: ts)
                 ) ?? ts
-                let ord = -Int(monthAnchor.timeIntervalSince1970 / 60)
+                let monthsAgo = max(
+                    1,
+                    cal.dateComponents([.month], from: monthAnchor, to: thisMonthStart).month ?? 1
+                )
+                let ord = 5 + monthsAgo
                 key = (ord, MeetingFormatters.monthYear.string(from: ts))
             }
             buckets[key.0, default: (title: key.1, meetings: [])].meetings.append(meeting)

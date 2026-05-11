@@ -205,6 +205,37 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertTrue(titles.last?.contains("2026") ?? false)
     }
 
+    func test_group_orders_older_months_after_fixed_buckets_newest_first() {
+        let now = makeDate(year: 2026, month: 5, day: 12, hour: 12, minute: 0)
+        let cal = Calendar.current
+        let today = cal.date(byAdding: .hour, value: -2, to: now)!
+        let april = makeDate(year: 2026, month: 4, day: 15, hour: 10, minute: 0)
+        let march = makeDate(year: 2026, month: 3, day: 20, hour: 10, minute: 0)
+        let february = makeDate(year: 2026, month: 2, day: 5, hour: 10, minute: 0)
+
+        let meetings = [
+            makeMeeting("d", at: today),
+            makeMeeting("c", at: april),
+            makeMeeting("b", at: march),
+            makeMeeting("a", at: february),
+        ]
+        let groups = MeetingGroup.group(meetings, now: now)
+        let titles = groups.map(\.title)
+        // Today must be first; older months follow in reverse-chrono order.
+        XCTAssertEqual(titles.first, "Today")
+        let monthTitles = titles.dropFirst()
+        XCTAssertTrue(
+            monthTitles.contains(where: { $0.contains("April") }),
+            "got \(titles)"
+        )
+        // April should come BEFORE March, March before February.
+        let aprilIdx = titles.firstIndex(where: { $0.contains("April") })!
+        let marchIdx = titles.firstIndex(where: { $0.contains("March") })!
+        let febIdx = titles.firstIndex(where: { $0.contains("February") })!
+        XCTAssertLessThan(aprilIdx, marchIdx)
+        XCTAssertLessThan(marchIdx, febIdx)
+    }
+
     func test_group_drops_empty_buckets() {
         let now = makeDate(year: 2026, month: 5, day: 12, hour: 12, minute: 0)
         let cal = Calendar.current
