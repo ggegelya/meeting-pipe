@@ -313,11 +313,13 @@ private struct TabPlaceholder: View {
 
 // MARK: - Summary tab (TECH-A5)
 
-/// Summary tab. Read-only by default — renders the pipeline's
-/// `<stem>.summary.md` as Markdown via `AttributedString`. The "Edit"
-/// button swaps in the shared `CorrectionEditorBody` so the inline
-/// editor shares its field surface with the standalone correction
-/// window.
+/// Summary tab. Read-only by default — renders the structured
+/// `<stem>.summary.json` as proper SwiftUI sections (Summary,
+/// Decisions, Actions, Open Questions, Attendees). Inline markdown
+/// inside individual bullets is preserved via `AttributedString`. The
+/// "Edit" button swaps in the shared `CorrectionEditorBody` so the
+/// inline editor shares its field surface with the standalone
+/// correction window.
 ///
 /// Save persists a correction record (verdict = edited) AND overwrites
 /// `<stem>.summary.json` so the next read of the row sees the new
@@ -328,7 +330,14 @@ struct SummaryTab: View {
     @EnvironmentObject var libraryModel: LibraryWindowModel
     let meeting: Meeting
 
-    /// Toggle between rendered Markdown and the editor form.
+    /// Cached summary payload — loaded asynchronously on stem change so
+    /// the view body never reads from disk synchronously. SwiftUI calls
+    /// body any time an observed object changes; doing IO there pinned
+    /// the main thread during recording.
+    @State private var loadedSummary: [String: Any]? = nil
+    @State private var loadedForStem: String? = nil
+
+    /// Toggle between rendered summary and the editor form.
     @State private var isEditing = false
     /// Holds the in-flight editor model so isEditing changes can
     /// dispose / recreate it cleanly.
@@ -350,6 +359,9 @@ struct SummaryTab: View {
                 readOnlyBody
             }
         }
+        .task(id: meeting.stem) {
+            await reloadSummary()
+        }
         .onChange(of: meeting.stem) { _, _ in
             // Switching meetings discards in-flight edits — saving with
             // unsubmitted changes would be a footgun (the user expects
@@ -365,20 +377,14 @@ struct SummaryTab: View {
     private var readOnlyBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
-                if let attributed = renderedMarkdown {
-                    Text(attributed)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(20)
-                } else if meeting.status == .done {
-                    Text("Summary markdown not on disk yet.")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(40)
+                if let summary = loadedSummary {
+                    SummaryRenderedView(summary: summary)
+                } else if loadedForStem == meeting.stem {
+                    // We loaded for this stem and got nothing back.
+                    emptyState
                 } else {
-                    Text("No summary yet.\nIt appears here once the pipeline finishes.")
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.secondary)
+                    // Initial / cross-meeting load still in flight.
+                    ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(40)
                 }
@@ -397,6 +403,22 @@ struct SummaryTab: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
+        }
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        if meeting.status == .done {
+            Text("Summary not on disk yet.")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(40)
+        } else {
+            Text("No summary yet.\nIt appears here once the pipeline finishes.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(40)
         }
     }
 
@@ -443,20 +465,25 @@ struct SummaryTab: View {
         meeting.recordingsDir.appendingPathComponent("\(meeting.stem).summary.md")
     }
 
-    private var renderedMarkdown: AttributedString? {
-        guard let raw = try? String(contentsOf: summaryMarkdownURL, encoding: .utf8) else {
-            return nil
+    /// Off-main load of the structured summary, called via `.task(id:)`.
+    /// Done off-main because a busy daemon may have us body-evaluating
+    /// many times per second; reading from disk on body would beach-ball.
+    @MainActor
+    private func reloadSummary() async {
+        let stem = meeting.stem
+        let url = summaryJsonURL
+        let parsed: [String: Any]? = await Task.detached(priority: .userInitiated) {
+            guard let data = try? Data(contentsOf: url),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return nil
+            }
+            return obj
+        }.value
+        // Stem may have changed mid-load; only commit if still relevant.
+        if meeting.stem == stem {
+            loadedSummary = parsed
+            loadedForStem = stem
         }
-        // `inlineOnlyPreservingWhitespace: true` keeps the line breaks
-        // the pipeline writes (headings + bullets + horizontal rules) so
-        // the rendered Text view looks the same as Notion's render of
-        // the underlying Markdown.
-        let opts = AttributedString.MarkdownParsingOptions(
-            allowsExtendedAttributes: false,
-            interpretedSyntax: .full,
-            failurePolicy: .returnPartiallyParsedIfPossible
-        )
-        return try? AttributedString(markdown: raw, options: opts)
     }
 
     // MARK: Editor flow
@@ -594,5 +621,251 @@ struct SummaryTab: View {
             return nil
         }
         return obj
+    }
+}
+
+// MARK: - Structured renderer
+
+/// Renders a parsed `<stem>.summary.json` as proper SwiftUI sections.
+/// Replaces the earlier `AttributedString(markdown:)` rendering, which
+/// only supports inline syntax and collapsed everything to one
+/// paragraph. Inline emphasis / code / links inside individual bullets
+/// is still honoured by per-bullet `AttributedString` parsing.
+struct SummaryRenderedView: View {
+    let summary: [String: Any]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            if !summaryBullets.isEmpty {
+                section(title: "Summary", systemImage: "doc.text") {
+                    bulletList(summaryBullets, numbered: false)
+                }
+            }
+            if !decisions.isEmpty {
+                section(title: "Decisions", systemImage: "checkmark.seal") {
+                    bulletList(decisions, numbered: true)
+                }
+            }
+            if !actions.isEmpty {
+                section(title: "Action items", systemImage: "checklist") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(actions.enumerated()), id: \.offset) { _, a in
+                            ActionItemRow(action: a)
+                        }
+                    }
+                }
+            }
+            if !questions.isEmpty {
+                section(title: "Open questions", systemImage: "questionmark.bubble") {
+                    bulletList(questions, numbered: false)
+                }
+            }
+            if !attendees.isEmpty {
+                section(title: "Attendees", systemImage: "person.2") {
+                    AttendeeChips(names: attendees)
+                }
+            }
+            if let lang = detectedLanguage, !lang.isEmpty {
+                Text("Detected language: \(lang)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
+    }
+
+    // MARK: Field accessors
+
+    private var summaryBullets: [String] { stringList(summary["summary"]) }
+    private var decisions: [String]      { stringList(summary["decisions"]) }
+    private var questions: [String]      { stringList(summary["questions"]) }
+    private var attendees: [String]      { stringList(summary["attendees"]) }
+    private var detectedLanguage: String? {
+        (summary["detected_language"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+    private var actions: [ActionItemRow.Action] {
+        guard let arr = summary["actions"] as? [[String: Any]] else { return [] }
+        return arr.map { dict in
+            ActionItemRow.Action(
+                task: (dict["task"] as? String) ?? "",
+                owner: (dict["owner"] as? String) ?? "",
+                due: (dict["due"] as? String) ?? "",
+                confidence: (dict["confidence"] as? String) ?? "medium"
+            )
+        }.filter { !$0.task.isEmpty }
+    }
+
+    private func stringList(_ raw: Any?) -> [String] {
+        guard let arr = raw as? [Any] else { return [] }
+        return arr.compactMap { ($0 as? String) }.filter { !$0.isEmpty }
+    }
+
+    // MARK: Section + bullet helpers
+
+    @ViewBuilder
+    private func section<C: View>(
+        title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> C
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+            }
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private func bulletList(_ items: [String], numbered: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(numbered ? "\(idx + 1)." : "•")
+                        .foregroundStyle(.tertiary)
+                        .font(.callout.monospacedDigit())
+                        .frame(minWidth: 16, alignment: .trailing)
+                    Text(inlineMarkdown(item))
+                        .font(.body)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    /// Per-bullet inline-markdown parsing. Headings + block-level lists
+    /// don't apply here because each bullet is one paragraph already; we
+    /// just want **bold**, *italic*, `code`, and [links](url) to render.
+    private func inlineMarkdown(_ s: String) -> AttributedString {
+        let opts = AttributedString.MarkdownParsingOptions(
+            allowsExtendedAttributes: false,
+            interpretedSyntax: .inlineOnly,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+        return (try? AttributedString(markdown: s, options: opts)) ?? AttributedString(s)
+    }
+}
+
+private struct ActionItemRow: View {
+    struct Action {
+        var task: String
+        var owner: String
+        var due: String
+        var confidence: String
+    }
+
+    let action: Action
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "circle")
+                    .foregroundStyle(.tertiary)
+                    .font(.caption)
+                Text(taskAttributed)
+                    .font(.body)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !chipRow.isEmpty {
+                HStack(spacing: 6) {
+                    Spacer().frame(width: 16)
+                    ForEach(chipRow, id: \.text) { chip in
+                        Self.chip(chip)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var taskAttributed: AttributedString {
+        let opts = AttributedString.MarkdownParsingOptions(
+            allowsExtendedAttributes: false,
+            interpretedSyntax: .inlineOnly,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+        return (try? AttributedString(markdown: action.task, options: opts))
+            ?? AttributedString(action.task)
+    }
+
+    struct Chip: Hashable {
+        let text: String
+        let systemImage: String?
+        let tint: Color
+    }
+
+    private var chipRow: [Chip] {
+        var chips: [Chip] = []
+        if !action.owner.isEmpty {
+            chips.append(Chip(text: action.owner, systemImage: "person", tint: .accentColor))
+        }
+        if !action.due.isEmpty {
+            chips.append(Chip(text: action.due, systemImage: "calendar", tint: .orange))
+        }
+        if !action.confidence.isEmpty, action.confidence != "medium" {
+            chips.append(Chip(
+                text: action.confidence,
+                systemImage: "gauge",
+                tint: action.confidence == "high" ? .green : .secondary
+            ))
+        }
+        return chips
+    }
+
+    @ViewBuilder
+    static func chip(_ chip: Chip) -> some View {
+        HStack(spacing: 3) {
+            if let img = chip.systemImage {
+                Image(systemName: img).font(.caption2)
+            }
+            Text(chip.text).font(.caption2)
+        }
+        .foregroundStyle(chip.tint)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(chip.tint.opacity(0.12))
+        )
+    }
+}
+
+private struct AttendeeChips: View {
+    let names: [String]
+
+    private let columns = [GridItem(.adaptive(minimum: 100), spacing: 6)]
+
+    var body: some View {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+            ForEach(names, id: \.self) { name in
+                HStack(spacing: 4) {
+                    Image(systemName: "person.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(name)
+                        .font(.caption)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(NSColor.controlBackgroundColor).opacity(0.6))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.secondary.opacity(0.15))
+                )
+            }
+        }
     }
 }
