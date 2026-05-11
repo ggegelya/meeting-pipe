@@ -186,6 +186,16 @@ recognizer has explicit positive and negative anchors per known shape:
 - **Unknown bundle**: probe short-circuits to `nil` (inconclusive),
   composer treats as "still open", mic-release alone drives end.
 
+For **browser** sources, the probe walks each window's AX subtree to
+locate the tab strip (`AXTabGroup`) and collects every open tab's title.
+Switching tabs in the same window therefore doesn't end the meeting:
+the Meet tab stays detectable in the background. Only closing the tab
+(no fragment match across any window's tab list) ends the recording.
+If the tab strip can't be located (Safari multi-window layouts, Edge
+PWAs without tabs), the probe falls back to window titles — losing the
+in-window tab-switch fidelity but still catching the "last browser
+window closed" case.
+
 ### End-detection composition
 
 `SignalDecision.decide()` in [`Detector.swift`](daemon/Sources/MeetingPipe/Detector.swift)

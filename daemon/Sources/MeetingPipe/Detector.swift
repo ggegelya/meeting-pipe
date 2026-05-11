@@ -644,23 +644,119 @@ final class Detector {
             Log.writeLine("detector", "windowprobe(browser) app=\(source.bundleID) NOT_RUNNING → ended")
             return false
         }
+
+        // Inspect the tab strip first (TECH-C3). Window titles alone
+        // expose only the focused tab; if the user clicks another tab in
+        // the same window, the title changes and the window probe can no
+        // longer tell "tab still open in background" apart from "tab
+        // closed". Tab-level AX gives each open tab its own title, so the
+        // Meet tab stays detectable while unfocused — switching tabs
+        // becomes a noChange and only an actual close ends the recording.
+        if let tabTitles = collectAXTabTitles(pid: pid) {
+            let match = anyTitleMatchesFragment(tabTitles, fragments: fragments)
+            Log.writeLine(
+                "detector",
+                "windowprobe(browser) app=\(source.bundleID) tabs=[\(tabTitles.joined(separator: " | "))] fragmentMatch=\(match)"
+            )
+            // Empty tab list with a successful AX read = no tabs open
+            // (last window closed, all-tabs-closed gesture). End it.
+            if tabTitles.isEmpty { return false }
+            return match
+        }
+
+        // AX tab traversal failed (Safari multi-window layouts that hide
+        // the AXTabGroup, Edge PWAs with no tab strip, transient AX read
+        // failures). Fall back to window titles so a closed last window
+        // still ends the recording — we lose the in-window tab-switch
+        // fidelity, which is acceptable for these niche cases.
         let titles = collectAXWindowTitles(pid: pid)
         guard let titles = titles else { return nil }
-
-        var sawFragment = false
-        for title in titles {
-            let lowered = title.lowercased()
-            if fragments.contains(where: { lowered.contains($0) }) {
-                sawFragment = true
-                break
-            }
-        }
+        let sawFragment = anyTitleMatchesFragment(titles, fragments: fragments)
         Log.writeLine(
             "detector",
-            "windowprobe(browser) app=\(source.bundleID) titles=[\(titles.joined(separator: " | "))] fragmentMatch=\(sawFragment) anyVisible=\(!titles.isEmpty)"
+            "windowprobe(browser) app=\(source.bundleID) windowTitles=[\(titles.joined(separator: " | "))] fragmentMatch=\(sawFragment) (tab-strip unavailable)"
         )
         if titles.isEmpty { return false }
-        return sawFragment ? true : false
+        return sawFragment
+    }
+
+    /// Pure-string matcher lifted out so it can be unit-tested without AX.
+    /// Returns true when any title contains any fragment, case-insensitive.
+    static func anyTitleMatchesFragment(_ titles: [String], fragments: [String]) -> Bool {
+        let lowered = fragments.map { $0.lowercased() }
+        for t in titles {
+            let lt = t.lowercased()
+            if lowered.contains(where: { lt.contains($0) }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Walk the AX hierarchy of every top-level browser window for `pid`
+    /// and return the title of every open tab. Returns `nil` when AX
+    /// reads fail outright (Accessibility permission revoked mid-session,
+    /// process gone, etc.) — distinct from "found zero tabs", which
+    /// returns an empty array and means "no tabs open".
+    ///
+    /// Chrome / Edge expose tabs as children of the window's `AXTabGroup`
+    /// (typically `AXRadioButton` items, each with the tab title as
+    /// `AXTitle`). Safari uses the same role with `AXTab` items. The
+    /// recursive scan bottoms out at the first `AXTabGroup` it finds in
+    /// each subtree, so the traversal stays cheap.
+    private static func collectAXTabTitles(pid: pid_t) -> [String]? {
+        let axApp = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else {
+            return nil
+        }
+        var titles: [String] = []
+        var foundAnyTabGroup = false
+        for win in windows {
+            findTabTitles(in: win, into: &titles, foundTabGroup: &foundAnyTabGroup, depth: 0)
+        }
+        // If we walked every window and never even saw a tab strip, the
+        // browser layout doesn't expose tabs this way — kick to the
+        // window-title fallback by returning nil rather than misreporting
+        // "empty tab list" (which would falsely end the recording).
+        return foundAnyTabGroup ? titles : nil
+    }
+
+    private static let maxTabScanDepth = 8
+
+    private static func findTabTitles(
+        in element: AXUIElement,
+        into titles: inout [String],
+        foundTabGroup: inout Bool,
+        depth: Int
+    ) {
+        guard depth < maxTabScanDepth else { return }
+        var roleRef: CFTypeRef?
+        _ = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+        let role = roleRef as? String
+        if role == (kAXTabGroupRole as String) {
+            foundTabGroup = true
+            var childrenRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+               let children = childrenRef as? [AXUIElement] {
+                for child in children {
+                    var titleRef: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(child, kAXTitleAttribute as CFString, &titleRef) == .success,
+                       let title = titleRef as? String, !title.isEmpty {
+                        titles.append(title)
+                    }
+                }
+            }
+            return  // don't recurse into the tab strip itself
+        }
+        var childrenRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+           let children = childrenRef as? [AXUIElement] {
+            for child in children {
+                findTabTitles(in: child, into: &titles, foundTabGroup: &foundTabGroup, depth: depth + 1)
+            }
+        }
     }
 
     /// Helpers shared by both probe variants. Extracted so the two paths
