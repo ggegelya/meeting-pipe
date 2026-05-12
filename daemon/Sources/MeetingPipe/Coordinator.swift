@@ -104,6 +104,19 @@ final class Coordinator: NSObject {
     /// once per daemon launch — repeated banners would be noisy.
     private var didNotifyAboutPermissionDenial: Bool = false
 
+    /// Workflow resolved at the start of the current recording (TECH-B3).
+    /// Nil between meetings. Read by `writeMetaSidecar` so the pipeline
+    /// picks up the workflow's context prompt + backend + sinks; cleared
+    /// when the recorder finishes flushing.
+    private var activeWorkflow: Workflow?
+
+    /// Explicit override from the prompt window's chevron menu (TECH-B5).
+    /// Set when the user picks a non-default workflow before clicking
+    /// Record; consumed (and cleared) by the next `beginRecording`. The
+    /// matcher's precedence rules treat this as the highest-specificity
+    /// signal so it always wins over rule matches.
+    private var pendingWorkflowOverride: UUID?
+
     /// Dry-run mode: detection + recognizer run end-to-end, all decisions
     /// hit the JSONL event log, but `MeetingRecorder.start` is never
     /// called. Lets the daemon ride along during a normal workday so the
@@ -690,6 +703,32 @@ final class Coordinator: NSObject {
         }
     }
 
+    /// Public setter used by the prompt window's chevron menu (TECH-B5)
+    /// to pin the next recording to a specific workflow. The override is
+    /// consumed by the next `beginRecording`; if the user dismisses the
+    /// prompt without recording, the override is cleared when the
+    /// prompt times out so a stale pick can't leak into the next call.
+    func setPendingWorkflowOverride(_ id: UUID?) {
+        pendingWorkflowOverride = id
+    }
+
+    /// Active workflow (if any) for the in-flight recording. Surfaced so
+    /// the HUD and status-bar UI can paint the workflow's color/chip
+    /// without holding a reference to the matcher.
+    var currentActiveWorkflow: Workflow? { activeWorkflow }
+
+    /// Resolve the workflow that would apply to a given source right
+    /// now. Used by the prompt window to render its chip ahead of the
+    /// Record click. Returns the default workflow when no source / no
+    /// rule matches.
+    func workflowForPrompt(source: AppSource?) -> Workflow? {
+        return WorkflowMatcher.resolve(
+            source: source,
+            overrideID: pendingWorkflowOverride,
+            workflows: workflowStore.workflows
+        )
+    }
+
     private func beginRecording(source: AppSource?, summaryMode: SummaryMode) {
         cancelPromptTimeout()
 
@@ -733,6 +772,19 @@ final class Coordinator: NSObject {
             return
         }
 
+        // Resolve the workflow that controls this meeting's context
+        // prompt / backend / sinks (TECH-B3). The lookup is deterministic
+        // and uses the explicit override the prompt window may have set,
+        // then falls through to rule matches, then to the default. After
+        // resolution we clear the override so it can't leak into the
+        // next meeting.
+        let resolvedWorkflow = WorkflowMatcher.resolve(
+            source: source,
+            overrideID: pendingWorkflowOverride,
+            workflows: workflowStore.workflows
+        )
+        pendingWorkflowOverride = nil
+
         do {
             let file = try recorder.start(outputDir: liveOutputDir)
             // Tell the detector our tap is live so micInUse() switches
@@ -741,18 +793,21 @@ final class Coordinator: NSObject {
             // stale debounce can fire seconds into a fresh recording
             // and stop it.
             detector.recorderDidStart()
+            activeWorkflow = resolvedWorkflow
             state = .recording(file: file, source: source, summaryMode: summaryMode)
             statusBar.setRecording(file: file, source: source, summaryMode: summaryMode)
             recordingHUD.present(source: source, startedAt: Date())
             notifier.notifyRecordingStarted(file: file)
             Log.writeLine(
                 "daemon",
-                "recording started → \(file.path) source=\(source?.bundleID ?? "manual") mode=\(summaryMode == .byo ? "byo" : "auto")"
+                "recording started → \(file.path) source=\(source?.bundleID ?? "manual") mode=\(summaryMode == .byo ? "byo" : "auto") workflow=\(resolvedWorkflow?.name ?? "(none)")"
             )
             Log.event(category: "coordinator", action: "recording_started", attributes: [
                 "file": file.lastPathComponent,
                 "bundle_id": source?.bundleID ?? "manual",
                 "summary_mode": summaryMode == .byo ? "byo" : "auto",
+                "workflow_id": resolvedWorkflow?.id.uuidString ?? NSNull(),
+                "workflow_name": resolvedWorkflow?.name ?? NSNull(),
             ])
             armSilenceDetector()
             // Kick off streaming transcribe so transcription runs in
@@ -835,6 +890,10 @@ final class Coordinator: NSObject {
             self.writeMetaSidecar(file: file, source: source)
             self.notifier.notifyProcessing(file: file)
             self.enqueueJob(file: file, summaryMode: summaryMode)
+            // Drop the workflow attribution after the sidecar lands so it
+            // can't bleed into the next meeting; a fresh resolve runs at
+            // the start of the next `beginRecording`.
+            self.activeWorkflow = nil
             self.state = .idle
             self.statusBar.setIdle()
         }
