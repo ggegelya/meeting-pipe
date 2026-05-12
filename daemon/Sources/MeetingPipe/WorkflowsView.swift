@@ -234,6 +234,11 @@ private struct SinkSelection: Equatable {
 struct WorkflowEditor: View {
     let workflow: Workflow
     @ObservedObject var store: WorkflowStore
+    /// Per-workflow Notion DB dropdown source (TECH-B8). Held at the
+    /// editor level so the picker is populated whenever the user opens
+    /// the workflows tab, not just when they explicitly toggle Notion
+    /// on; refresh runs once per editor instance.
+    @StateObject private var notionDBs = NotionDatabaseList()
 
     @State private var name: String = ""
     @State private var color: String = ""
@@ -388,11 +393,7 @@ struct WorkflowEditor: View {
         Section("Sinks") {
             Toggle(isOn: $sinks.notionEnabled) { Text("Notion") }
             if sinks.notionEnabled {
-                LabeledContent("Database id") {
-                    TextField("32-char hex from your DB URL", text: $sinks.notionDatabaseID)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                }
+                notionDBPicker
             }
             Toggle(isOn: $sinks.obsidianEnabled) { Text("Obsidian") }
             Toggle(isOn: $sinks.filesystemEnabled) { Text("Filesystem (local Markdown only)") }
@@ -401,6 +402,88 @@ struct WorkflowEditor: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
+        }
+    }
+
+    /// Per-workflow Notion DB picker (TECH-B8). Three modes:
+    ///   - Cache populated → segmented row with a Picker over the
+    ///     cached entries plus a "Refresh" affordance.
+    ///   - Cache empty + not loading → "Fetch databases" button + raw
+    ///     TextField fallback so the user can still paste an id by
+    ///     hand even before the first sync.
+    ///   - Loading / failed → status row alongside the same fallback.
+    @ViewBuilder
+    private var notionDBPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !notionDBs.entries.isEmpty {
+                Picker("Database", selection: $sinks.notionDatabaseID) {
+                    Text("(none)").tag("")
+                    ForEach(notionDBs.entries) { db in
+                        Text(db.title).tag(db.id)
+                    }
+                    // Preserve a manually-pasted id that isn't in the
+                    // cache yet (e.g. a freshly-created DB the user
+                    // wants to point at before refreshing). Without
+                    // this clause, SwiftUI's Picker silently snaps the
+                    // selection back to (none) and the user's input
+                    // would vanish on the next render.
+                    if !sinks.notionDatabaseID.isEmpty,
+                       !notionDBs.entries.contains(where: { $0.id == sinks.notionDatabaseID }) {
+                        Text("Custom · \(sinks.notionDatabaseID.prefix(8))…")
+                            .tag(sinks.notionDatabaseID)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+            HStack {
+                if notionDBs.entries.isEmpty || sinks.notionDatabaseID.isEmpty {
+                    TextField("paste DB id", text: $sinks.notionDatabaseID)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(minWidth: 220)
+                }
+                Spacer(minLength: 0)
+                refreshButton
+            }
+            statusLabel
+        }
+    }
+
+    @ViewBuilder
+    private var refreshButton: some View {
+        Button {
+            notionDBs.refresh()
+        } label: {
+            Label(
+                notionDBs.entries.isEmpty ? "Fetch databases" : "Refresh",
+                systemImage: "arrow.clockwise"
+            )
+        }
+        .buttonStyle(.borderless)
+        .disabled(notionDBs.state == .loading)
+    }
+
+    @ViewBuilder
+    private var statusLabel: some View {
+        switch notionDBs.state {
+        case .idle:
+            EmptyView()
+        case .loading:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.small)
+                Text("Fetching databases…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .loaded(let list):
+            Text("\(list.count) database\(list.count == 1 ? "" : "s") cached")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        case .failed(let err):
+            Text(err)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .lineLimit(2)
         }
     }
 
