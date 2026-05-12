@@ -40,6 +40,18 @@ enum MPColors {
     static let pulse500 = NSColor(srgbRed: 0xF5/255.0, green: 0x59/255.0, blue: 0x5E/255.0, alpha: 1)
     static let pulse100 = NSColor(srgbRed: 0xFF/255.0, green: 0xE4/255.0, blue: 0xE4/255.0, alpha: 1)
 
+    // MARK: Semantic states (mirror `--mp-success-*` / `--mp-warning-*` /
+    // `--mp-danger-*` from `colors_and_type.css`). Surfaced as
+    // foreground tints on status pills and inline status rows only —
+    // never as backgrounds for an entire toast (per the design system
+    // guide's "Semantic states appear only in inline status rows").
+    static let success600 = NSColor(srgbRed: 0x1F/255.0, green: 0x8F/255.0, blue: 0x4E/255.0, alpha: 1)
+    static let success100 = NSColor(srgbRed: 0xDC/255.0, green: 0xF1/255.0, blue: 0xE2/255.0, alpha: 1)
+    static let warning600 = NSColor(srgbRed: 0xB2/255.0, green: 0x73/255.0, blue: 0x00/255.0, alpha: 1)
+    static let warning100 = NSColor(srgbRed: 0xFF/255.0, green: 0xF1/255.0, blue: 0xCC/255.0, alpha: 1)
+    static let danger600  = NSColor(srgbRed: 0xC9/255.0, green: 0x2A/255.0, blue: 0x2A/255.0, alpha: 1)
+    static let danger100  = NSColor(srgbRed: 0xFC/255.0, green: 0xE4/255.0, blue: 0xE4/255.0, alpha: 1)
+
     // MARK: Semantic — auto-flip on appearance.
     /// Foreground text. Maps to `--mp-fg` / dark `#F0F1F3`.
     static let fg = NSColor(name: "mp.fg") { appearance in

@@ -447,4 +447,21 @@ enum MeetingFormatters {
         f.timeStyle = .short
         return f
     }()
+
+    /// "Mon" / "Tue" — short weekday, used by the row's trailing
+    /// day/time stack for meetings between two and seven days old.
+    static let shortWeekday: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEE"
+        return f
+    }()
+
+    /// "May 8" — short month + day, used for meetings older than a
+    /// week. We don't show the year inline; the date group header
+    /// above the row already carries that context.
+    static let shortMonthDay: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d"
+        return f
+    }()
 }

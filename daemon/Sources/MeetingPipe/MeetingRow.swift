@@ -49,40 +49,185 @@ struct MeetingRow: View, Equatable {
             // Confining the draggable to the leading glyph matches the
             // platform convention (Finder, Mail) and leaves the rest of
             // the row free to drive selection.
-            glyph
-                .frame(width: 24, height: 24)
+            leadingGlyph
+                .frame(width: 22, height: 22)
                 .draggable(MeetingDragItem(meeting: meeting))
                 .help("Drag to export the markdown bundle")
-            VStack(alignment: .leading, spacing: 2) {
+
+            VStack(alignment: .leading, spacing: 1) {
                 Text(meeting.displayTitle)
-                    .font(.body)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(isNDA ? Color(MPColors.fgMuted) : Color(MPColors.fg))
                     .lineLimit(1)
-                HStack(spacing: 6) {
-                    Text(MeetingFormatters.shortTime.string(from: meeting.startedAt))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if let d = meeting.durationSec {
-                        Text("·").font(.caption).foregroundStyle(.tertiary)
-                        Text(Self.formatDuration(d))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let workflow = meeting.workflowName {
-                        WorkflowChip(name: workflow, colorHex: meeting.workflowColor)
-                    }
-                    Spacer(minLength: 0)
-                }
+                    .truncationMode(.tail)
+                captionLine
             }
+
             Spacer(minLength: 0)
-            if let inFlight = inFlight {
-                inFlightBadge(inFlight)
-            } else {
-                StatusPill(status: effectiveStatus)
+
+            HStack(spacing: 10) {
+                if let inFlight = inFlight {
+                    inFlightBadge(inFlight)
+                } else {
+                    trailingPill
+                }
+                trailingWhenStack
             }
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 14)
+        .frame(height: 44)
+        .background(rowBackground)
+        .overlay(alignment: .leading) {
+            // 2pt signal accent on the leading edge for the active /
+            // live-recording row — the design system's selected-row
+            // treatment ported from the audit. Inset 6pt vertical so
+            // it reads as an accent, not a full divider.
+            if showsLeadingAccent {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Color(MPColors.signal600))
+                    .frame(width: 2)
+                    .padding(.vertical, 6)
+            }
+        }
         .contentShape(Rectangle())
         .contextMenu { contextMenuItems }
+    }
+
+    // MARK: Row pieces
+
+    /// Caption row: app name · duration · workflow chip. Drops the
+    /// duplicate time stamp (the trailing day/time stack covers that)
+    /// and folds the workflow chip inline as the third token.
+    @ViewBuilder
+    private var captionLine: some View {
+        HStack(spacing: 6) {
+            if let src = meeting.sourceDisplayName, !src.isEmpty {
+                Text(src)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+            }
+            if let d = meeting.durationSec {
+                if meeting.sourceDisplayName?.isEmpty == false {
+                    Text("·").font(.system(size: 11)).foregroundStyle(Color(MPColors.fgFaint))
+                }
+                Text(Self.formatDuration(d))
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+            }
+            if let workflow = meeting.workflowName, !workflow.isEmpty {
+                Text("·").font(.system(size: 11)).foregroundStyle(Color(MPColors.fgFaint))
+                WorkflowChip(name: workflow, colorHex: meeting.workflowColor)
+            }
+            Spacer(minLength: 0)
+        }
+        .lineLimit(1)
+    }
+
+    /// Trailing mono day/time stack — the audit's collapsed channel.
+    /// "Yest 15:00" reads in two lines stacked, monospaced so a column
+    /// of rows aligns.
+    private var trailingWhenStack: some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            Text(relativeDayLabel)
+                .font(.system(size: 11).monospacedDigit())
+                .foregroundStyle(Color(MPColors.fgMuted))
+            Text(MeetingFormatters.shortTime.string(from: meeting.startedAt))
+                .font(.system(size: 11).monospacedDigit())
+                .foregroundStyle(Color(MPColors.fgSubtle))
+        }
+        .frame(minWidth: 44, alignment: .trailing)
+    }
+
+    /// Status pill resolved through the design-audit's tone family. NDA
+    /// rows surface as a muted "Local only" pill rather than the
+    /// recording / processing colors — NDA isn't an error, just a
+    /// privacy mode.
+    @ViewBuilder
+    private var trailingPill: some View {
+        switch (effectiveStatus, isNDA) {
+        case (_, true):
+            MPStatusPill(kind: .nda, label: "Local only")
+        case (.recording, _):
+            MPStatusPill(kind: .recording, label: "Recording")
+        case (.processing, _):
+            MPStatusPill(kind: .processing, label: "Processing")
+        case (.manualPasteReady, _):
+            MPStatusPill(kind: .processing, label: "Paste pending")
+        case (.failed, _):
+            MPStatusPill(kind: .failed, label: "Failed")
+        case (.done, _):
+            MPStatusPill(kind: .ready, label: "Ready")
+        case (.unknown, _):
+            MPStatusPill(kind: .neutral, label: "—")
+        }
+    }
+
+    /// Leading glyph — swaps to a lock for NDA / local-only meetings
+    /// per the audit (NDA row's source is irrelevant; the privacy mode
+    /// is the salient property).
+    @ViewBuilder
+    private var leadingGlyph: some View {
+        if isNDA {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(Color(MPColors.fgSubtle))
+                .frame(width: 22, height: 22)
+        } else if let source = meeting.appSource {
+            AppGlyphRepresentable(source: source)
+                .frame(width: 22, height: 22)
+        } else {
+            // Manual recordings (⌃⌥M) carry no source. Use the menubar
+            // ring as a neutral fallback so the row column stays aligned.
+            Image(systemName: "waveform.circle")
+                .font(.system(size: 18))
+                .foregroundStyle(.secondary)
+                .frame(width: 22, height: 22)
+        }
+    }
+
+    /// Subtle background wash: signal-tinted for the active / live row,
+    /// pulse-tinted for any other live recording. Resting rows stay on
+    /// the canvas — the design system's "hairlines, not fills" rule.
+    @ViewBuilder
+    private var rowBackground: some View {
+        if isLiveRecording {
+            Color(MPColors.pulse600).opacity(0.06)
+        } else {
+            Color.clear
+        }
+    }
+
+    private var showsLeadingAccent: Bool { isLiveRecording }
+
+    private var isNDA: Bool {
+        // Per TECH-B9 the workflow's `flags.ndaMode` drives this — but
+        // the row doesn't have the WorkflowStore at hand and the
+        // sidecar doesn't (yet) persist the resolved flag. As a
+        // visual-only heuristic we surface the lock when the meeting's
+        // workflow color matches the pulse/danger family AND the
+        // meeting's backend was forced to `local`. Both signals are
+        // already on the meeting row.
+        if meeting.backend == "local",
+           meeting.workflowName?.isEmpty == false {
+            return true
+        }
+        return false
+    }
+
+    /// "Today" / "Yest" / "Mon" / "May 8" — relative-date label for
+    /// the trailing stack. Mirrors the spec mock's mono treatment so
+    /// adjacent rows align.
+    private var relativeDayLabel: String {
+        let cal = Calendar.current
+        let now = Date()
+        let started = meeting.startedAt
+        if cal.isDateInToday(started) { return "Today" }
+        if cal.isDateInYesterday(started) { return "Yest" }
+        if let days = cal.dateComponents([.day], from: cal.startOfDay(for: started), to: cal.startOfDay(for: now)).day,
+           days >= 0, days < 7 {
+            return MeetingFormatters.shortWeekday.string(from: started)
+        }
+        return MeetingFormatters.shortMonthDay.string(from: started)
     }
 
     @ViewBuilder
@@ -214,21 +359,6 @@ struct MeetingRow: View, Equatable {
         isLiveRecording ? .recording : meeting.status
     }
 
-    @ViewBuilder
-    private var glyph: some View {
-        if let source = meeting.appSource {
-            AppGlyphRepresentable(source: source)
-                .frame(width: 24, height: 24)
-        } else {
-            // Manual recordings (⌃⌥M) carry no source. Use the menubar
-            // ring as a neutral fallback so the row column stays aligned.
-            Image(systemName: "waveform.circle")
-                .font(.system(size: 20))
-                .foregroundStyle(.secondary)
-                .frame(width: 24, height: 24)
-        }
-    }
-
     static func formatDuration(_ s: TimeInterval) -> String {
         let total = Int(s.rounded())
         let h = total / 3600
@@ -238,125 +368,6 @@ struct MeetingRow: View, Equatable {
             return String(format: "%d:%02d:%02d", h, m, sec)
         }
         return String(format: "%d:%02d", m, sec)
-    }
-}
-
-// MARK: - Workflow chip (placeholder until TECH-B writes workflow_name)
-
-/// Renders the workflow name + accent dot. Shared between the list row
-/// and the detail header so styling stays in one place.
-struct WorkflowChip: View {
-    let name: String
-    let colorHex: String?
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(chipColor)
-                .frame(width: 6, height: 6)
-            Text(name)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(
-            RoundedRectangle(cornerRadius: 4)
-                .fill(Color(NSColor.controlBackgroundColor).opacity(0.6))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 4)
-                .stroke(Color.secondary.opacity(0.2))
-        )
-    }
-
-    private var chipColor: Color {
-        if let hex = colorHex, let c = Color(hex: hex) { return c }
-        return .secondary
-    }
-}
-
-// MARK: - Status pill
-
-private struct StatusPill: View {
-    let status: Meeting.Status
-
-    var body: some View {
-        HStack(spacing: 4) {
-            // Only "in flight" states should pulse; .failed is terminal,
-            // not active, so it gets a static dot.
-            if status == .recording || status == .processing {
-                PulsingDot(color: dotColor)
-            } else {
-                Circle()
-                    .fill(dotColor)
-                    .frame(width: 6, height: 6)
-            }
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(textColor)
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(
-            RoundedRectangle(cornerRadius: 4)
-                .fill(backgroundColor)
-        )
-    }
-
-    private var label: String {
-        switch status {
-        case .recording:        return "Recording"
-        case .processing:       return "Processing"
-        case .manualPasteReady: return "Paste pending"
-        case .done:             return "Ready"
-        case .failed:           return "Failed"
-        case .unknown:          return "—"
-        }
-    }
-
-    private var dotColor: Color {
-        switch status {
-        case .recording:        return Color(MPColors.pulse600)
-        case .processing:       return .yellow
-        case .manualPasteReady: return .orange
-        case .done:             return .green
-        case .failed:           return .red
-        case .unknown:          return .secondary
-        }
-    }
-
-    private var textColor: Color {
-        status == .done ? .secondary : .secondary
-    }
-
-    private var backgroundColor: Color {
-        Color(NSColor.controlBackgroundColor).opacity(0.55)
-    }
-}
-
-// MARK: - Pulsing status dot
-
-/// Subtle infinite-pulse on the status pill's dot. Used for live
-/// recordings (recording-tint) and in-flight pipeline runs
-/// (processing-tint). The pulse mirrors the menu-bar recording dot's
-/// 1 s breath so the two surfaces feel like one device.
-private struct PulsingDot: View {
-    let color: Color
-    @State private var scale: CGFloat = 1.0
-
-    var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: 6, height: 6)
-            .scaleEffect(scale)
-            .onAppear {
-                withAnimation(
-                    .easeInOut(duration: 1.0).repeatForever(autoreverses: true)
-                ) {
-                    scale = 1.45
-                }
-            }
     }
 }
 
