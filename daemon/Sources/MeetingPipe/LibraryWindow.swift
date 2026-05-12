@@ -79,13 +79,28 @@ private final class LibraryWindowDelegate: NSObject, NSWindowDelegate {
 
 // MARK: - Observable bridge
 
+/// High-frequency processing-queue counter, split off from
+/// `LibraryWindowModel` so a 10-job burst doesn't cascade re-renders
+/// into the rail, list, and detail. Only the toolbar observes this.
+///
+/// `ObservableObject` rather than a property on the parent because
+/// SwiftUI tracks subscriptions per-`ObservableObject`: any `@Published`
+/// on the parent triggers re-renders in every parent subscriber, which
+/// is the pathology we're avoiding.
+final class ProcessingTracker: ObservableObject {
+    @Published var count: Int = 0
+}
+
 /// Mirrors the recording state machine into a SwiftUI-observable shape
-/// so the Library's sidebar footer can show "Idle / Recording" + the
-/// processing-queue badge + model-download progress without subscribing
+/// so the toolbar can render the state pill without subscribing
 /// directly to AppKit setters.
 ///
-/// All mutations run on the main queue (matches Coordinator threading
-/// — every public method on the Coordinator must already run on main).
+/// Threading: all mutations run on the main queue (matches Coordinator
+/// threading — every public method on the Coordinator must already run
+/// on main). Properties stay narrow on purpose; rapidly-changing values
+/// like the processing-queue size live on the sibling
+/// `ProcessingTracker` so they don't pull the whole window through a
+/// re-render every tick.
 final class LibraryWindowModel: ObservableObject {
 
     /// Display-only summary of `AppState`. We don't expose the full state
@@ -98,14 +113,17 @@ final class LibraryWindowModel: ObservableObject {
     }
 
     @Published var status: Status = .idle
-    @Published var processingCount: Int = 0
-    @Published var modelDownload: ModelDownloadSupervisor.State = .idle
     /// Stem of the meeting currently being recorded (live wav write in
     /// flight). The list view uses this to render the matching row with
     /// a recording-tinted pulse — the on-disk status alone can't tell
     /// the difference between "wav still being written" and "wav done,
     /// pipeline running".
     @Published var liveRecordingStem: String? = nil
+
+    /// Held as a non-`@Published` constant so reads from the toolbar
+    /// don't trigger a republish of the parent model. The toolbar
+    /// observes `processing` directly via its own `@ObservedObject`.
+    let processing = ProcessingTracker()
 
     /// Coordinator is held weakly so the model can drive menu actions
     /// (Start/Stop, Preferences) without creating a retain cycle.
@@ -223,6 +241,7 @@ final class LibraryWindowModel: ObservableObject {
 /// and a workflow-scope selection promotes a third inspector column.
 struct LibraryRootView: View {
     @ObservedObject var model: LibraryWindowModel
+    @ObservedObject var meetingStore: MeetingStore
     @State private var scope: LibraryScope = .allMeetings
     @State private var meetingSelection: Set<Meeting.ID> = []
     /// Drives the workflow editor sheet. Set non-nil to edit; cleared
@@ -233,12 +252,31 @@ struct LibraryRootView: View {
     /// initialise a stub Workflow lazily inside the sheet builder —
     /// keeping the rail's button stateless.
     @State private var isCreatingWorkflow: Bool = false
+    /// Memoized rail counts. Recomputed only when `meetingStore.revision`
+    /// or the workflow list actually changes. Without this the rail's
+    /// O(meetings × scopes) bucketing ran on every body re-execution,
+    /// which fired for unrelated reasons (status / processing ticks
+    /// before the model split, animation timeline ticks, etc.).
+    @State private var cachedCounts: ScopeCounts = .zero
+    /// Fingerprint paired with `cachedCounts`. (`revision`, workflow ids).
+    @State private var lastCountsKey: CountsKey = .empty
+
+    /// Initialiser captures the store explicitly so SwiftUI tracks it as
+    /// an `@ObservedObject` dependency — passing it in from the parent
+    /// rather than reaching through `model.meetingStore` lets us
+    /// re-render the root precisely on `revision` bumps instead of on
+    /// every property of the parent model.
+    init(model: LibraryWindowModel) {
+        self.model = model
+        self.meetingStore = model.meetingStore
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             if let store = model.workflowStore {
                 LibraryToolbar(
                     model: model,
+                    processing: model.processing,
                     workflowStore: store,
                     selection: $scope,
                     onEditWorkflow: { wf in editingWorkflow = wf }
@@ -247,7 +285,20 @@ struct LibraryRootView: View {
             split
         }
         .frame(minWidth: 760)
-        .onAppear { model.meetingStore.start() }
+        .onAppear {
+            meetingStore.start()
+            recomputeCounts()
+        }
+        .onDisappear {
+            // Suspend the directory watcher while the window is hidden.
+            // The window outlives the view via isReleasedWhenClosed=false,
+            // and without this a closed Library would keep rescanning
+            // every time the pipeline wrote a new sidecar — re-firing
+            // the @Published on `meetings` into a tree nobody could see.
+            meetingStore.stop()
+        }
+        .onChange(of: meetingStore.revision) { _, _ in recomputeCounts() }
+        .onChange(of: model.workflowStore?.workflows.count ?? 0) { _, _ in recomputeCounts() }
         .sheet(item: $editingWorkflow, onDismiss: { editingWorkflow = nil }) { wf in
             if let store = model.workflowStore {
                 WorkflowEditorSheet(workflow: wf, store: store) {
@@ -274,14 +325,13 @@ struct LibraryRootView: View {
             NavigationSplitView {
                 LibrarySidebar(
                     selection: $scope,
-                    model: model,
                     workflowStore: store,
-                    counts: scopeCounts(workflows: store.workflows),
+                    counts: cachedCounts,
                     onCreateWorkflow: { isCreatingWorkflow = true }
                 )
             } content: {
                 LibraryListView(
-                    store: model.meetingStore,
+                    store: meetingStore,
                     libraryModel: model,
                     scope: scope,
                     workflows: store.workflows,
@@ -295,13 +345,37 @@ struct LibraryRootView: View {
             // been wired in by the Coordinator. The rail can't render
             // without a store; fall back to a sidebar-less list.
             LibraryListView(
-                store: model.meetingStore,
+                store: meetingStore,
                 libraryModel: model,
                 scope: .allMeetings,
                 workflows: [],
                 selection: $meetingSelection
             )
         }
+    }
+
+    /// Rebuild the rail's counts. Cheap-fingerprint guard so we don't
+    /// rebuild when nothing the rail cares about changed — for example,
+    /// adding a workflow updates `workflows.count`, but tweaking a
+    /// workflow's name does not (and shouldn't trigger a rail recount).
+    private func recomputeCounts() {
+        let workflows = model.workflowStore?.workflows ?? []
+        let key = CountsKey(
+            storeRevision: meetingStore.revision,
+            workflowIDs: workflows.map(\.id)
+        )
+        if key == lastCountsKey { return }
+        cachedCounts = ScopeCounts.build(
+            meetings: meetingStore.meetings,
+            workflows: workflows
+        )
+        lastCountsKey = key
+    }
+
+    private struct CountsKey: Equatable {
+        let storeRevision: Int
+        let workflowIDs: [Workflow.ID]
+        static let empty = CountsKey(storeRevision: -1, workflowIDs: [])
     }
 
     /// Detail column is context-aware:
@@ -344,12 +418,6 @@ struct LibraryRootView: View {
             .map { $0 }
     }
 
-    /// Per-scope counts for the rail. Recomputed every render — cheap
-    /// at our scale (a few hundred rows max) and free of any
-    /// subscription plumbing.
-    private func scopeCounts(workflows: [Workflow]) -> ScopeCounts {
-        ScopeCounts.build(meetings: model.meetingStore.meetings, workflows: workflows)
-    }
 }
 
 // MARK: - Workflow editor sheets

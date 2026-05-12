@@ -110,17 +110,29 @@ final class StatusBarController {
 
     /// Update the processing-jobs badge. Called from the Coordinator
     /// whenever the queue grows or shrinks; independent of recording state.
+    ///
+    /// Writes into `LibraryWindowModel.processing` (a sibling
+    /// `ObservableObject`) rather than a `@Published` on the parent
+    /// model so the rail / list / detail don't re-render every tick.
+    /// Only the toolbar observes `processing`.
     func setProcessingCount(_ n: Int) {
         processingCount = n
         applyTitle()
         rebuildMenu(state: lastMenuState)
-        libraryModel?.processingCount = n
+        libraryModel?.processing.count = n
     }
 
     /// Reflect the model-prefetch lifecycle in the menu bar. The download
     /// is asynchronous; the user is otherwise blind to it because it
     /// happens inside a Python subprocess called from the Coordinator.
     /// Driven by `Coordinator.modelDownload.onStateChange`.
+    ///
+    /// Note: this used to also write into a `@Published modelDownload`
+    /// on `LibraryWindowModel`, but nothing in the Library window
+    /// renders it any more (the rail's old footer was the only reader
+    /// and it was dropped in the IA re-architecture). Keeping the
+    /// state on this controller alone removes a major source of
+    /// re-renders during heavy model fetches.
     func setModelDownload(_ s: ModelDownloadSupervisor.State) {
         modelDownload = s
         modelDownloadCompletedDisplayTimer?.invalidate()
@@ -136,12 +148,10 @@ final class StatusBarController {
                 self.modelDownload = .idle
                 self.applyTitle()
                 self.rebuildMenu(state: self.lastMenuState)
-                self.libraryModel?.modelDownload = .idle
             }
         }
         applyTitle()
         rebuildMenu(state: lastMenuState)
-        libraryModel?.modelDownload = s
     }
 
     private func applyTitle() {

@@ -17,6 +17,10 @@ import SwiftUI
 /// hosts itself, matching the prototype's height + hairline.
 struct LibraryToolbar: View {
     @ObservedObject var model: LibraryWindowModel
+    /// High-frequency processing-queue counter, observed separately so
+    /// the rail / list / detail never get pulled through a re-render
+    /// when a job ticks. Wired by the root from `model.processing`.
+    @ObservedObject var processing: ProcessingTracker
     @ObservedObject var workflowStore: WorkflowStore
     @Binding var selection: LibraryScope
     /// Pull-down menu trigger for editing the currently-scoped workflow.
@@ -43,7 +47,7 @@ struct LibraryToolbar: View {
 
             StatePill(
                 status: model.status,
-                processingCount: model.processingCount,
+                processingCount: processing.count,
                 workflow: activeWorkflow
             )
 

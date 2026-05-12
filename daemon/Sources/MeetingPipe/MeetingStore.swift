@@ -105,6 +105,15 @@ final class MeetingStore: ObservableObject {
     /// the list doesn't flash to "loading" each time a file lands.
     @Published private(set) var hasLoadedOnce: Bool = false
 
+    /// Monotonically-increasing counter bumped on every successful
+    /// rescan. Views that derive heavy values from `meetings` (counts,
+    /// facets, groups) cache by this fingerprint instead of comparing
+    /// arrays — comparing two 200-Meeting arrays each render defeats
+    /// the memoization. The counter changes iff the list actually
+    /// re-published, including the case where a meeting in the middle
+    /// flipped status (the whole array is replaced wholesale).
+    @Published private(set) var revision: Int = 0
+
     private let recordingsDir: URL
     private let scanQueue = DispatchQueue(
         label: "com.meetingpipe.MeetingStore.scan",
@@ -155,6 +164,7 @@ final class MeetingStore: ObservableObject {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.meetings = result
+                self.revision &+= 1
                 if !self.hasLoadedOnce { self.hasLoadedOnce = true }
                 self.scanRunning = false
                 if self.pendingRescan {
@@ -163,6 +173,17 @@ final class MeetingStore: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Tear down the directory watcher. Paired with `start()` so the
+    /// LibraryWindow can suspend scanning while it's hidden — closing
+    /// the window doesn't release the model (isReleasedWhenClosed=false),
+    /// and without this the watcher kept firing rescans into a tree
+    /// that nobody could see, dragging the main queue along.
+    func stop() {
+        detachWatcher()
+        debounceWork?.cancel()
+        debounceWork = nil
     }
 
     // MARK: Watcher

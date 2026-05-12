@@ -9,7 +9,6 @@ import SwiftUI
 /// width is spent on navigation rather than chrome.
 struct LibrarySidebar: View {
     @Binding var selection: LibraryScope
-    @ObservedObject var model: LibraryWindowModel
     /// Optional — non-nil only when `LibraryWindowModel.workflowStore`
     /// has been wired. The rail degrades to library-only scopes when
     /// nil (e.g. headless tests or the very first launch before the

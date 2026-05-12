@@ -18,6 +18,14 @@ struct LibraryListView: View {
     @Binding var selection: Set<Meeting.ID>
     @State private var filter: MeetingFilter = MeetingFilter()
 
+    /// Cached derived list state. Recomputed only when the
+    /// `(store.revision, scope, workflows.count, filter)` fingerprint
+    /// actually changes — before this caching pass, every body
+    /// re-execution ran six O(n) walks over the meeting array
+    /// (scope filter, chip filter, facets, grouping, twice each).
+    @State private var derived: DerivedList = .empty
+    @State private var lastDerivedKey: DerivedKey = .empty
+
     var body: some View {
         Group {
             if !store.hasLoadedOnce {
@@ -31,12 +39,12 @@ struct LibraryListView: View {
                     Divider()
                     FilterBarView(
                         filter: $filter,
-                        facets: MeetingFacets.build(from: scopedMeetings),
-                        matchCount: filteredMeetings.count,
-                        totalCount: scopedMeetings.count
+                        facets: derived.facets,
+                        matchCount: derived.filtered.count,
+                        totalCount: derived.scoped.count
                     )
                     Divider()
-                    if filteredMeetings.isEmpty {
+                    if derived.filtered.isEmpty {
                         noMatchesState
                     } else {
                         listBody
@@ -46,6 +54,11 @@ struct LibraryListView: View {
         }
         .frame(minWidth: 320)
         .navigationSplitViewColumnWidth(min: 280, ideal: 380)
+        .onAppear { recomputeDerived() }
+        .onChange(of: store.revision) { _, _ in recomputeDerived() }
+        .onChange(of: scope) { _, _ in recomputeDerived() }
+        .onChange(of: workflows.count) { _, _ in recomputeDerived() }
+        .onChange(of: filter) { _, _ in recomputeDerived() }
     }
 
     /// Scope header — title + count, mirroring the prototype's
@@ -53,7 +66,7 @@ struct LibraryListView: View {
     /// workflow scopes by looking the workflow up in the snapshot.
     @ViewBuilder
     private var scopeHeader: some View {
-        let count = filteredMeetings.count
+        let count = derived.filtered.count
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(scopeTitle)
@@ -77,14 +90,59 @@ struct LibraryListView: View {
         return scope.title
     }
 
-    /// Meetings narrowed by the rail scope. The chip filter runs on top.
-    private var scopedMeetings: [Meeting] {
-        if case .allMeetings = scope { return store.meetings }
-        return store.meetings.filter { scope.includes($0, workflows: workflows) }
+    /// Recompute the derived list state, guarded by the cheap
+    /// fingerprint so unrelated re-renders (status pill flips, etc.)
+    /// don't drag the whole filter/group chain along.
+    private func recomputeDerived() {
+        let key = DerivedKey(
+            storeRevision: store.revision,
+            scope: scope,
+            workflowsCount: workflows.count,
+            filter: filter
+        )
+        if key == lastDerivedKey { return }
+        lastDerivedKey = key
+
+        let scoped: [Meeting]
+        if case .allMeetings = scope {
+            scoped = store.meetings
+        } else {
+            scoped = store.meetings.filter { scope.includes($0, workflows: workflows) }
+        }
+        let filtered = MeetingFilterEngine.apply(filter, to: scoped)
+        let facets = MeetingFacets.build(from: scoped)
+        let groups = MeetingGroup.group(filtered, now: Date())
+        derived = DerivedList(
+            scoped: scoped,
+            filtered: filtered,
+            facets: facets,
+            groups: groups
+        )
     }
 
-    private var filteredMeetings: [Meeting] {
-        MeetingFilterEngine.apply(filter, to: scopedMeetings)
+    private struct DerivedList {
+        var scoped: [Meeting]
+        var filtered: [Meeting]
+        var facets: MeetingFacets
+        var groups: [MeetingGroup]
+        static let empty = DerivedList(
+            scoped: [], filtered: [],
+            facets: MeetingFacets(workflows: [], sources: []),
+            groups: []
+        )
+    }
+
+    private struct DerivedKey: Equatable {
+        let storeRevision: Int
+        let scope: LibraryScope
+        let workflowsCount: Int
+        let filter: MeetingFilter
+        static let empty = DerivedKey(
+            storeRevision: -1,
+            scope: .allMeetings,
+            workflowsCount: 0,
+            filter: MeetingFilter()
+        )
     }
 
     private var noMatchesState: some View {
@@ -104,7 +162,7 @@ struct LibraryListView: View {
 
     private var listBody: some View {
         List(selection: $selection) {
-            ForEach(groupedMeetings, id: \.title) { group in
+            ForEach(derived.groups, id: \.title) { group in
                 Section(group.title) {
                     ForEach(group.meetings) { meeting in
                         MeetingRow(
@@ -137,9 +195,6 @@ struct LibraryListView: View {
         .listStyle(.inset)
     }
 
-    private var groupedMeetings: [MeetingGroup] {
-        MeetingGroup.group(filteredMeetings, now: Date())
-    }
 }
 
 // MARK: - Empty state
