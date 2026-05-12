@@ -91,7 +91,8 @@ final class MeetingDragItemTests: XCTestCase {
             sourceBundleID: nil, sourceDisplayName: nil, sourceKind: nil,
             workflowName: nil, workflowColor: nil,
             durationSec: nil, backend: nil, modelId: nil,
-            status: .done
+            status: .done,
+            searchableText: ""
         )
         let item = MeetingDragItem(meeting: meeting)
         let url = try item.writeBundleToTemp()

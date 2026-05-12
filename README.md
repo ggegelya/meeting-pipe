@@ -321,6 +321,18 @@ in Finder. Five tabs underneath:
   default app, and a context-menu option to copy the path. The footer
   shows the directory and an **Open folder** button.
 
+A filter bar sits above the list with a search field plus chips for
+workflow, source app, status, and date range (today / last 7 days /
+last 30 days / this year). Search is in-memory across titles, summary
+bullets, decisions, action tasks, and open questions — built from the
+`<stem>.summary.json` sidecar during scan. Multiple words are ANDed
+together; matching is case-insensitive. The chips show the active
+value inline (e.g. "App: Zoom"); **Clear** wipes every filter. The
+match-count line ("N of M meetings") only appears while a filter is
+applied. Full-transcript search via SQLite FTS5 is the deferred
+upgrade path (see backlog TECH-A3); the in-memory implementation
+covers everyday volume.
+
 Cmd+click (or Shift+click for a range) to select multiple rows. The
 detail pane swaps to a batch-actions panel that lists the selection
 and offers **Republish all** (loops `mp publish-notion` sequentially

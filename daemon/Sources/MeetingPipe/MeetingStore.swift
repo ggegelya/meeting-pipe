@@ -52,6 +52,14 @@ struct Meeting: Identifiable, Hashable {
 
     let status: Status
 
+    /// Lowercased corpus used by the in-memory filter bar (TECH-A14):
+    /// display title + summary bullets + decisions + action tasks.
+    /// Built once during scan so the filter loop never re-reads JSON.
+    /// Transcripts are deliberately excluded to keep the corpus
+    /// bounded — full-transcript search is the FTS5 upgrade path
+    /// (TECH-A3).
+    let searchableText: String
+
     /// Stable identity. Stems are unique per recording (datetime-derived).
     var id: String { stem }
 
@@ -293,6 +301,12 @@ final class MeetingStore: ObservableObject {
             default:        kind = nil
             }
 
+            let searchable = MeetingStore.buildSearchableText(
+                summaryTitle: summary?["title"] as? String,
+                meetingTitle: meta?["meeting_title"] as? String,
+                sourceDisplayName: meta?["source_display_name"] as? String,
+                summary: summary
+            )
             out.append(Meeting(
                 stem: stem,
                 startedAt: startedAt,
@@ -308,7 +322,8 @@ final class MeetingStore: ObservableObject {
                 durationSec: duration,
                 backend: (run?["backend"] as? String),
                 modelId: (run?["model"] as? String),
-                status: status
+                status: status,
+                searchableText: searchable
             ))
         }
         // Newest first. Equal starts (rare) fall back to stem so order is
@@ -318,6 +333,39 @@ final class MeetingStore: ObservableObject {
             return lhs.stem > rhs.stem
         }
         return out
+    }
+
+    /// Build the lowercased haystack the filter bar searches against.
+    /// Concatenates the user-visible fields (titles, source app,
+    /// summary bullets, decisions, action tasks) into a single string.
+    /// Internal so tests can drive it directly.
+    static func buildSearchableText(
+        summaryTitle: String?,
+        meetingTitle: String?,
+        sourceDisplayName: String?,
+        summary: [String: Any]?
+    ) -> String {
+        var parts: [String] = []
+        if let s = summaryTitle, !s.isEmpty { parts.append(s) }
+        if let s = meetingTitle, !s.isEmpty { parts.append(s) }
+        if let s = sourceDisplayName, !s.isEmpty { parts.append(s) }
+        if let s = summary {
+            if let arr = s["summary"] as? [Any] {
+                for v in arr { if let str = v as? String { parts.append(str) } }
+            }
+            if let arr = s["decisions"] as? [Any] {
+                for v in arr { if let str = v as? String { parts.append(str) } }
+            }
+            if let arr = s["questions"] as? [Any] {
+                for v in arr { if let str = v as? String { parts.append(str) } }
+            }
+            if let arr = s["actions"] as? [[String: Any]] {
+                for a in arr {
+                    if let task = a["task"] as? String { parts.append(task) }
+                }
+            }
+        }
+        return parts.joined(separator: " \n ").lowercased()
     }
 
     static func stem(of url: URL) -> String {

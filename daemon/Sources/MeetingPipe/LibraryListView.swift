@@ -7,6 +7,7 @@ struct LibraryListView: View {
     @ObservedObject var store: MeetingStore
     @ObservedObject var libraryModel: LibraryWindowModel
     @Binding var selection: Set<Meeting.ID>
+    @State private var filter: MeetingFilter = MeetingFilter()
 
     var body: some View {
         Group {
@@ -16,11 +17,43 @@ struct LibraryListView: View {
             } else if store.meetings.isEmpty {
                 LibraryEmptyState()
             } else {
-                listBody
+                VStack(spacing: 0) {
+                    FilterBarView(
+                        filter: $filter,
+                        facets: MeetingFacets.build(from: store.meetings),
+                        matchCount: filteredMeetings.count,
+                        totalCount: store.meetings.count
+                    )
+                    Divider()
+                    if filteredMeetings.isEmpty {
+                        noMatchesState
+                    } else {
+                        listBody
+                    }
+                }
             }
         }
         .frame(minWidth: 320)
         .navigationSplitViewColumnWidth(min: 280, ideal: 360)
+    }
+
+    private var filteredMeetings: [Meeting] {
+        MeetingFilterEngine.apply(filter, to: store.meetings)
+    }
+
+    private var noMatchesState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .font(.system(size: 32))
+                .foregroundStyle(.tertiary)
+            Text("No meetings match this filter")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Button("Clear filter") { filter = MeetingFilter() }
+                .controlSize(.small)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(40)
     }
 
     private var listBody: some View {
@@ -59,7 +92,7 @@ struct LibraryListView: View {
     }
 
     private var groupedMeetings: [MeetingGroup] {
-        MeetingGroup.group(store.meetings, now: Date())
+        MeetingGroup.group(filteredMeetings, now: Date())
     }
 }
 

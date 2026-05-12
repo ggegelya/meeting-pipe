@@ -310,7 +310,8 @@ final class MeetingStoreTests: XCTestCase {
             durationSec: nil,
             backend: nil,
             modelId: nil,
-            status: .done
+            status: .done,
+            searchableText: ""
         )
     }
 }
