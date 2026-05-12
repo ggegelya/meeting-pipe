@@ -276,13 +276,33 @@ Set to `0` to disable.
 ## Library window
 
 Click the menu bar icon → **Open Library…** to open the main window
-(900x600, restorable, hides on Cmd+W with the daemon still running).
+(900×600, restorable, hides on Cmd+W with the daemon still running).
 
-Three-pane layout: a left rail with `Library / Workflows /
-Preferences` plus a status footer (idle / recording / processing-queue
-badge / model-download progress and a Start/Stop button), a middle
-column with the meetings list, and a placeholder detail column on the
-right.
+The window is a smart-folder rail + scoped list + context-aware detail
+pane, with a custom toolbar across the top:
+
+- **Toolbar** — breadcrumb (`Library` → scope name), an optional
+  `Edit workflow` button that appears only when a workflow scope is
+  selected, the always-visible **state pill** (Idle / Processing / live
+  Recording with workflow tint and timer), a Record/Stop button, and a
+  gear that opens Preferences.
+- **Rail** — under a `LIBRARY` header: `All meetings`, `Today`, `Last 7
+  days`, `Last 30 days`, `NDA only`, `Untagged`. Under a `WORKFLOWS`
+  header: one row per workflow (colored dot + name + meeting count;
+  the default workflow is labelled inline). A `+ New workflow` row
+  opens an editor sheet. Workflows are filter scopes here, not a
+  separate destination — selecting one narrows the list AND surfaces
+  the workflow inspector in the right column.
+- **List** — the scoped meetings list with the existing filter chips
+  (App / Status / Date) layered on top.
+- **Detail pane** — single meeting selected → the meeting detail
+  (Summary / Transcript / Audio / Corrections / Raw); multiple
+  selected → batch actions; no meeting but a workflow scope active →
+  workflow inspector (Trigger / Modes / Output / Backend + Recent
+  meetings + Edit workflow); otherwise the empty-state nudge.
+
+Preferences is no longer a rail item — it lives on the toolbar's gear
+icon. Workflows are no longer a top-level tab — they're rail scopes.
 
 If you've never recorded anything the list shows
 `No recordings yet - Start a meeting in Zoom / Teams / Meet / Webex /
@@ -393,7 +413,7 @@ for the stem; recoverable from the system Trash). Republish and
 regenerate run as background subprocesses; the row's status pill
 flips to a progress badge while the subprocess is in-flight.
 
-Selecting `Preferences` in the rail opens the existing standalone
+The Preferences gear in the toolbar opens the existing standalone
 Preferences window.
 
 ---
@@ -408,9 +428,12 @@ global config for every client.
 
 The daemon ships with one **General** workflow seeded from your
 existing `summarization.team_context` + `notion.database_id`, marked as
-default. Until you add a second one, the library's Workflows tab shows
-a one-paragraph onboarding and the prompt panel renders no chip - the
-existing single-routing behaviour stays unchanged.
+default. Until you add a second one, the library rail still shows the
+single `● General · default` row under `WORKFLOWS` and the prompt panel
+renders no chip — the existing single-routing behaviour stays
+unchanged. Edits live in the workflow editor sheet, opened from the
+rail's `+ New workflow` row, the toolbar's `Edit workflow` button when
+a workflow scope is active, or the inspector's `Edit workflow`.
 
 Each workflow lives as one TOML file under
 `~/.config/meeting-pipe/workflows/<uuid>.toml`. Edit through the UI or

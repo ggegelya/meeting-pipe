@@ -1,200 +1,229 @@
 import SwiftUI
 
-/// Top-level sections of the Library window's left rail.
-enum LibrarySidebarItem: Hashable, Identifiable, CaseIterable {
-    case library
-    case workflows
-    case preferences
+/// Smart-folder rail: scopes on top, workflows below. Drives
+/// `LibraryScope` selection in the root view.
+///
+/// Workflows are scopes here (not destinations) — selecting one filters
+/// the list and reveals an Edit affordance + inspector pane. The state
+/// pill and record button live in the toolbar, not here, so the rail's
+/// width is spent on navigation rather than chrome.
+struct LibrarySidebar: View {
+    @Binding var selection: LibraryScope
+    @ObservedObject var model: LibraryWindowModel
+    /// Optional — non-nil only when `LibraryWindowModel.workflowStore`
+    /// has been wired. The rail degrades to library-only scopes when
+    /// nil (e.g. headless tests or the very first launch before the
+    /// store is bound).
+    @ObservedObject var workflowStore: WorkflowStore
 
-    var id: Self { self }
+    /// Per-row counts. Recomputed by `LibraryRootView` whenever the
+    /// meeting store or the workflow store publishes a change.
+    let counts: ScopeCounts
 
-    var title: String {
-        switch self {
-        case .library: return "Library"
-        case .workflows: return "Workflows"
-        case .preferences: return "Preferences"
+    /// Called when the user clicks "+ New workflow" or any of the
+    /// workflow rows' edit affordances. The root hosts the editor
+    /// sheet so the sidebar doesn't need its own modal state.
+    let onCreateWorkflow: () -> Void
+
+    var body: some View {
+        List(selection: $selection) {
+            Section {
+                ForEach(LibrarySidebar.librarySections, id: \.self) { scope in
+                    LibraryScopeRow(
+                        scope: scope,
+                        count: counts.count(for: scope),
+                        isSelected: scope == selection
+                    )
+                    .tag(scope)
+                }
+            } header: {
+                Text("Library")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.08 * 10)
+                    .textCase(.uppercase)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                ForEach(workflowStore.workflows.sorted(by: workflowOrder)) { wf in
+                    WorkflowScopeRow(
+                        workflow: wf,
+                        count: counts.workflowCount(for: wf.id)
+                    )
+                    .tag(LibraryScope.workflow(wf.id))
+                }
+                Button(action: onCreateWorkflow) {
+                    Label {
+                        Text("New workflow")
+                            .foregroundStyle(.secondary)
+                    } icon: {
+                        Image(systemName: "plus")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+            } header: {
+                Text("Workflows")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.08 * 10)
+                    .textCase(.uppercase)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .listStyle(.sidebar)
+        .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
+    }
+
+    /// Static set of non-workflow scopes that always render in the
+    /// rail's Library section, in display order.
+    static let librarySections: [LibraryScope] = [
+        .allMeetings, .today, .last7Days, .last30Days, .ndaOnly, .untagged,
+    ]
+}
+
+/// Plain-data bag handed in from the parent so the sidebar doesn't have
+/// to know how to filter the meeting store itself. The parent owns the
+/// MeetingStore subscription and recomputes whenever its `meetings`
+/// array changes — keeps the rail's render cheap.
+struct ScopeCounts: Equatable {
+    let total: Int
+    let today: Int
+    let last7: Int
+    let last30: Int
+    let nda: Int
+    let untagged: Int
+    /// Per-workflow row counts, keyed by workflow id. Workflows missing
+    /// from the dict render as zero rather than hiding the row, so the
+    /// rail stays self-teaching for newly-created workflows.
+    let perWorkflow: [Workflow.ID: Int]
+
+    static let zero = ScopeCounts(
+        total: 0, today: 0, last7: 0, last30: 0, nda: 0, untagged: 0, perWorkflow: [:]
+    )
+
+    func count(for scope: LibraryScope) -> Int {
+        switch scope {
+        case .allMeetings: return total
+        case .today:       return today
+        case .last7Days:   return last7
+        case .last30Days:  return last30
+        case .ndaOnly:     return nda
+        case .untagged:    return untagged
+        case .workflow(let id): return perWorkflow[id] ?? 0
         }
     }
 
-    var systemImage: String {
-        switch self {
-        case .library: return "tray.full"
-        case .workflows: return "square.stack.3d.up"
-        case .preferences: return "gearshape"
+    func workflowCount(for id: Workflow.ID) -> Int {
+        perWorkflow[id] ?? 0
+    }
+
+    /// Walk the meeting list once and bucket every row into every scope
+    /// it satisfies. O(n × scopes) but n is at most a few hundred in
+    /// regular use; building once per store mutation is cheap enough
+    /// that we don't bother memoizing partial sums.
+    static func build(meetings: [Meeting], workflows: [Workflow], now: Date = Date()) -> ScopeCounts {
+        var today = 0, last7 = 0, last30 = 0, nda = 0, untagged = 0
+        var perWf: [Workflow.ID: Int] = [:]
+        let scopes: [LibraryScope] = [.today, .last7Days, .last30Days, .ndaOnly, .untagged]
+        for m in meetings {
+            for s in scopes {
+                guard s.includes(m, workflows: workflows, now: now) else { continue }
+                switch s {
+                case .today:      today += 1
+                case .last7Days:  last7 += 1
+                case .last30Days: last30 += 1
+                case .ndaOnly:    nda += 1
+                case .untagged:   untagged += 1
+                default: break
+                }
+            }
+            // Per-workflow bucketing is independent of the date / NDA
+            // scopes above; an NDA meeting also counts toward its
+            // workflow's own row.
+            if let name = m.workflowName, !name.isEmpty,
+               let wf = workflows.first(where: { $0.name == name }) {
+                perWf[wf.id, default: 0] += 1
+            }
+        }
+        return ScopeCounts(
+            total: meetings.count,
+            today: today, last7: last7, last30: last30,
+            nda: nda, untagged: untagged,
+            perWorkflow: perWf
+        )
+    }
+}
+
+// MARK: - Row views
+
+private struct LibraryScopeRow: View {
+    let scope: LibraryScope
+    let count: Int
+    let isSelected: Bool
+
+    var body: some View {
+        Label {
+            HStack(spacing: 6) {
+                Text(scope.title)
+                Spacer(minLength: 0)
+                Text(count.formatted(.number))
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(isSelected ? .primary : .tertiary)
+            }
+        } icon: {
+            if let img = scope.systemImage {
+                Image(systemName: img)
+            }
         }
     }
 }
 
-/// Left rail: nav list on top, daemon-state footer on the bottom. The
-/// footer is the only surface (besides the menu bar) where the user can
-/// always see whether the daemon is recording right now, so it doubles
-/// as a manual record button.
-struct LibrarySidebar: View {
-    @Binding var selection: LibrarySidebarItem
-    @ObservedObject var model: LibraryWindowModel
+private struct WorkflowScopeRow: View {
+    let workflow: Workflow
+    let count: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            List(selection: $selection) {
-                ForEach(LibrarySidebarItem.allCases) { item in
-                    Label(item.title, systemImage: item.systemImage)
-                        .tag(item)
-                }
-            }
-            .listStyle(.sidebar)
-
-            Divider()
-
-            footer
-                .padding(12)
-        }
-        .frame(minWidth: 180, idealWidth: 200, maxWidth: 240)
-        .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 240)
-    }
-
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            statusRow
-            recordButton
-            modelDownloadRow
-        }
-    }
-
-    // MARK: Status row
-
-    private var statusRow: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(badgeColor)
-                .frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(statusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                if model.processingCount > 0 {
-                    Text("Processing \(model.processingCount)")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-    }
-
-    private var statusText: String {
-        switch model.status {
-        case .idle: return "Idle"
-        case .prompting(let name): return "Detected \(name)"
-        case .recording(let name?): return "Recording — \(name)"
-        case .recording(nil): return "Recording"
-        case .stopping: return "Stopping…"
-        }
-    }
-
-    private var badgeColor: Color {
-        switch model.status {
-        case .idle: return Color.secondary.opacity(0.6)
-        case .prompting: return Color.yellow
-        case .recording: return Color(MPColors.pulse600)
-        case .stopping: return Color.secondary
-        }
-    }
-
-    // MARK: Record button
-
-    private var recordButton: some View {
-        Button {
-            model.toggleRecording()
-        } label: {
+        Label {
             HStack(spacing: 6) {
-                Image(systemName: model.isRecording ? "stop.circle.fill" : "record.circle")
-                Text(model.isRecording ? "Stop recording" : "Start recording")
+                HStack(spacing: 4) {
+                    if let emoji = workflow.emoji, !emoji.isEmpty {
+                        Text(emoji).font(.system(size: 11))
+                    }
+                    Text(workflow.name)
+                    if workflow.isDefault {
+                        Text("· default")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
                 Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.regular)
-        .disabled(!model.canToggleRecording)
-    }
-
-    // MARK: Model download
-
-    @ViewBuilder
-    private var modelDownloadRow: some View {
-        switch model.modelDownload {
-        case .idle:
-            EmptyView()
-        case .downloading(let modelId, let progress, let downloaded, let total):
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.down.circle")
-                        .font(.caption)
-                    Text(Self.shortModelId(modelId))
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                if let p = progress {
-                    ProgressView(value: p)
-                        .progressViewStyle(.linear)
-                        .controlSize(.small)
-                } else {
-                    ProgressView()
-                        .progressViewStyle(.linear)
-                        .controlSize(.small)
-                }
-                if total > 0 {
-                    Text("\(Self.formatBytes(downloaded)) / \(Self.formatBytes(total))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-            }
-        case .completed(let modelId):
-            HStack(spacing: 4) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.caption)
-                Text("Downloaded \(Self.shortModelId(modelId))")
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        case .failed(let modelId, let err):
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                        .font(.caption)
-                    Text("Model failed: \(Self.shortModelId(modelId))")
-                        .font(.caption)
-                        .lineLimit(1)
-                }
-                Text(err)
-                    .font(.caption2)
+                Text(count.formatted(.number))
+                    .font(.system(size: 11).monospacedDigit())
                     .foregroundStyle(.tertiary)
-                    .lineLimit(2)
             }
+        } icon: {
+            // Filled dot, workflow color. 8pt to read at the rail's
+            // density without dominating the label.
+            Circle()
+                .fill(swiftUIColor(forHex: workflow.color))
+                .frame(width: 8, height: 8)
         }
     }
+}
 
-    private static func shortModelId(_ id: String) -> String {
-        if let slash = id.lastIndex(of: "/") {
-            return String(id[id.index(after: slash)...])
-        }
-        return id
-    }
+/// Convert a workflow's hex string to a SwiftUI color. Falls back to
+/// secondary if the hex doesn't parse — the editor validates on save,
+/// but legacy TOML rows imported from older builds may carry odd values.
+private func swiftUIColor(forHex hex: String) -> Color {
+    if let ns = HexColor.parse(hex) { return Color(ns) }
+    return Color.secondary
+}
 
-    private static func formatBytes(_ bytes: Int64) -> String {
-        let kb = Double(bytes) / 1024.0
-        let mb = kb / 1024.0
-        let gb = mb / 1024.0
-        if gb >= 1 { return String(format: "%.1f GB", gb) }
-        if mb >= 1 { return String(format: "%.0f MB", mb) }
-        if kb >= 1 { return String(format: "%.0f KB", kb) }
-        return "\(bytes) B"
-    }
+/// Match `WorkflowStore`'s internal ordering: order field first, then
+/// case-insensitive name as the tie-breaker. Kept here as a free
+/// function rather than a static on `WorkflowStore` so the store stays
+/// free of view-layer churn.
+private func workflowOrder(_ a: Workflow, _ b: Workflow) -> Bool {
+    if a.order != b.order { return a.order < b.order }
+    return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
 }

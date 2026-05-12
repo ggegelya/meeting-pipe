@@ -213,89 +213,115 @@ final class LibraryWindowModel: ObservableObject {
 
 // MARK: - Root view
 
-/// Three-pane `NavigationSplitView`. Sidebar drives the top-level
-/// section; the content column is the meetings list, and the detail
-/// column is a placeholder until TECH-A4 lands.
+/// Library window root. Smart-folder rail + scoped list + context-aware
+/// detail pane, with a custom toolbar across the top hosting state
+/// pill, record button, and preferences gear.
+///
+/// IA derived from the design bundle's "Pattern B + a borrowed piece of
+/// C" winner: Workflows are filter scopes (not destinations), the
+/// previously-hidden recording state lives in the persistent toolbar,
+/// and a workflow-scope selection promotes a third inspector column.
 struct LibraryRootView: View {
     @ObservedObject var model: LibraryWindowModel
-    @State private var selection: LibrarySidebarItem = .library
+    @State private var scope: LibraryScope = .allMeetings
     @State private var meetingSelection: Set<Meeting.ID> = []
-    /// Workflow selection lives at the root so switching back from
-    /// Workflows → Library → Workflows keeps the user on the workflow
-    /// they were editing, instead of resetting to "Select a workflow".
-    @State private var workflowSelection: Workflow.ID? = nil
+    /// Drives the workflow editor sheet. Set non-nil to edit; cleared
+    /// when the sheet dismisses.
+    @State private var editingWorkflow: Workflow? = nil
+    /// Drives the "+ New workflow" sheet. We branch on a separate flag
+    /// rather than overloading `editingWorkflow` so the sheet can
+    /// initialise a stub Workflow lazily inside the sheet builder —
+    /// keeping the rail's button stateless.
+    @State private var isCreatingWorkflow: Bool = false
 
     var body: some View {
-        NavigationSplitView {
-            LibrarySidebar(selection: $selection, model: model)
-        } content: {
-            contentPane
-        } detail: {
-            detailPane
+        VStack(spacing: 0) {
+            if let store = model.workflowStore {
+                LibraryToolbar(
+                    model: model,
+                    workflowStore: store,
+                    selection: $scope,
+                    onEditWorkflow: { wf in editingWorkflow = wf }
+                )
+            }
+            split
         }
-        .navigationTitle("Library")
+        .frame(minWidth: 760)
         .onAppear { model.meetingStore.start() }
-        .onChange(of: selection) { _, new in
-            // Preferences lives in its own top-level window. Routing back
-            // to .library keeps the rail's visible selection coherent with
-            // the actual focused surface.
-            if new == .preferences {
-                model.openPreferences()
-                DispatchQueue.main.async { selection = .library }
+        .sheet(item: $editingWorkflow, onDismiss: { editingWorkflow = nil }) { wf in
+            if let store = model.workflowStore {
+                WorkflowEditorSheet(workflow: wf, store: store) {
+                    editingWorkflow = nil
+                }
+            }
+        }
+        .sheet(isPresented: $isCreatingWorkflow) {
+            if let store = model.workflowStore {
+                NewWorkflowSheet(store: store) { newID in
+                    isCreatingWorkflow = false
+                    // After creating, jump straight to the new workflow's
+                    // scope so the rail confirms the action visually and
+                    // the inspector lights up on the right.
+                    if let id = newID { scope = .workflow(id) }
+                }
             }
         }
     }
 
     @ViewBuilder
-    private var contentPane: some View {
-        switch selection {
-        case .library:
+    private var split: some View {
+        if let store = model.workflowStore {
+            NavigationSplitView {
+                LibrarySidebar(
+                    selection: $scope,
+                    model: model,
+                    workflowStore: store,
+                    counts: scopeCounts(workflows: store.workflows),
+                    onCreateWorkflow: { isCreatingWorkflow = true }
+                )
+            } content: {
+                LibraryListView(
+                    store: model.meetingStore,
+                    libraryModel: model,
+                    scope: scope,
+                    workflows: store.workflows,
+                    selection: $meetingSelection
+                )
+            } detail: {
+                detailPane(workflowStore: store)
+            }
+        } else {
+            // Headless / first-run path before the WorkflowStore has
+            // been wired in by the Coordinator. The rail can't render
+            // without a store; fall back to a sidebar-less list.
             LibraryListView(
                 store: model.meetingStore,
                 libraryModel: model,
+                scope: .allMeetings,
+                workflows: [],
                 selection: $meetingSelection
             )
-        case .workflows:
-            if let store = model.workflowStore {
-                WorkflowsListColumn(store: store, selection: $workflowSelection)
-            } else {
-                WorkflowsPlaceholder()
-            }
-        case .preferences:
-            // Selection bounces back to .library via `onChange`; this view
-            // flashes for one runloop tick and is never seen in practice.
-            Color.clear
         }
     }
 
-    /// Detail column now branches on `selection` so switching sidebar
-    /// items can't leave a stale Library detail visible behind the
-    /// Workflows list (the bug observed after TECH-B6 shipped: clicking
-    /// Workflows kept the previously-selected meeting in the right
-    /// pane, then later clicking back into Library "rediscovered" it).
+    /// Detail column is context-aware:
+    ///   • Multiple meetings selected → batch-actions pane.
+    ///   • Single meeting selected    → MeetingDetailView (today's behaviour).
+    ///   • No meeting, workflow scope → WorkflowInspector.
+    ///   • Otherwise                  → empty-state ("Select a meeting").
     @ViewBuilder
-    private var detailPane: some View {
-        switch selection {
-        case .library:
-            libraryDetail
-        case .workflows:
-            if let store = model.workflowStore {
-                WorkflowsDetailColumn(store: store, selection: $workflowSelection)
-            } else {
-                Color.clear
-            }
-        case .preferences:
-            Color.clear
-        }
-    }
-
-    @ViewBuilder
-    private var libraryDetail: some View {
+    private func detailPane(workflowStore store: WorkflowStore) -> some View {
         let selected = model.meetingStore.meetings.filter { meetingSelection.contains($0.id) }
         if selected.count > 1 {
             BatchActionsPane(meetings: selected, libraryModel: model)
         } else if let only = selected.first {
             MeetingDetailView(meeting: only)
+        } else if case .workflow(let id) = scope, let wf = store.workflow(id: id) {
+            WorkflowInspector(
+                workflow: wf,
+                recentMeetings: recentMeetings(for: wf, workflows: store.workflows),
+                onEdit: { editingWorkflow = wf }
+            )
         } else {
             VStack(spacing: 8) {
                 Image(systemName: "doc.text")
@@ -307,23 +333,95 @@ struct LibraryRootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
+
+    /// Newest five meetings carrying this workflow's name. Shared
+    /// helper so the inspector doesn't duplicate the filter logic
+    /// already in `MeetingStore`.
+    private func recentMeetings(for workflow: Workflow, workflows: [Workflow]) -> [Meeting] {
+        model.meetingStore.meetings
+            .filter { ($0.workflowName == workflow.name) }
+            .prefix(5)
+            .map { $0 }
+    }
+
+    /// Per-scope counts for the rail. Recomputed every render — cheap
+    /// at our scale (a few hundred rows max) and free of any
+    /// subscription plumbing.
+    private func scopeCounts(workflows: [Workflow]) -> ScopeCounts {
+        ScopeCounts.build(meetings: model.meetingStore.meetings, workflows: workflows)
+    }
 }
 
-private struct WorkflowsPlaceholder: View {
+// MARK: - Workflow editor sheets
+
+/// Wraps `WorkflowEditor` in a sheet shell so the existing list-column
+/// editor can be re-used as a modal. The new IA invokes it from the
+/// toolbar's "Edit workflow" button and from the inspector pane.
+private struct WorkflowEditorSheet: View {
+    let workflow: Workflow
+    @ObservedObject var store: WorkflowStore
+    let onClose: () -> Void
+
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "square.stack.3d.up")
-                .font(.system(size: 48))
-                .foregroundStyle(.tertiary)
-            Text("Workflows")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-            Text("Per-context routing rules. Wiring lands with TECH-B.")
-                .font(.callout)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
+        VStack(spacing: 0) {
+            HStack {
+                Text(workflow.name)
+                    .font(.headline)
+                Spacer()
+                Button("Done", action: onClose)
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 12)
+            Divider()
+            WorkflowEditor(workflow: workflow, store: store)
+                .padding(20)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
+        .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 640)
+    }
+}
+
+/// "+ New workflow" sheet — inserts a stub, hands the resulting id to
+/// the caller so the rail can route to the newly-created scope.
+private struct NewWorkflowSheet: View {
+    @ObservedObject var store: WorkflowStore
+    let onClose: (Workflow.ID?) -> Void
+    @State private var stub: Workflow? = nil
+
+    var body: some View {
+        Group {
+            if let s = stub {
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("New workflow")
+                            .font(.headline)
+                        Spacer()
+                        Button("Done") { onClose(s.id) }
+                            .keyboardShortcut(.defaultAction)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                    Divider()
+                    WorkflowEditor(workflow: s, store: store)
+                        .padding(20)
+                }
+            } else {
+                ProgressView()
+                    .frame(width: 640, height: 520)
+            }
+        }
+        .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 640)
+        .onAppear {
+            let next = Workflow(
+                name: "Untitled workflow",
+                color: "#3478F6",
+                sinks: [.notion(databaseId: "")],
+                backend: .anthropic,
+                isDefault: store.workflows.isEmpty,
+                order: store.workflows.count
+            )
+            try? store.upsert(next)
+            stub = next
+        }
     }
 }

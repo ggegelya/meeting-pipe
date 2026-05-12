@@ -1,11 +1,20 @@
 import SwiftUI
 
-/// Chronological list of every meeting in the recordings dir. Grouped
-/// by relative date (Today / Yesterday / This week / Last week / Month).
-/// The store auto-refreshes via a directory watcher.
+/// Chronological list of every meeting in the recordings dir, narrowed
+/// by the rail's smart-folder scope and the in-list filter chips.
+/// Grouped by relative date (Today / Yesterday / This week / Last week
+/// / Month). The store auto-refreshes via a directory watcher.
 struct LibraryListView: View {
     @ObservedObject var store: MeetingStore
     @ObservedObject var libraryModel: LibraryWindowModel
+    /// Smart-folder scope driven by the rail. Applied *before* the
+    /// in-list filter chips, so the two compose: e.g. scope = "Client
+    /// work", chips = "App: Zoom" → only Client-work meetings recorded
+    /// from Zoom.
+    let scope: LibraryScope
+    /// Current workflow snapshot. Needed by the scope predicate so the
+    /// NDA / workflow scopes can resolve a meeting's workflow → flags.
+    let workflows: [Workflow]
     @Binding var selection: Set<Meeting.ID>
     @State private var filter: MeetingFilter = MeetingFilter()
 
@@ -18,11 +27,13 @@ struct LibraryListView: View {
                 LibraryEmptyState()
             } else {
                 VStack(spacing: 0) {
+                    scopeHeader
+                    Divider()
                     FilterBarView(
                         filter: $filter,
-                        facets: MeetingFacets.build(from: store.meetings),
+                        facets: MeetingFacets.build(from: scopedMeetings),
                         matchCount: filteredMeetings.count,
-                        totalCount: store.meetings.count
+                        totalCount: scopedMeetings.count
                     )
                     Divider()
                     if filteredMeetings.isEmpty {
@@ -34,11 +45,46 @@ struct LibraryListView: View {
             }
         }
         .frame(minWidth: 320)
-        .navigationSplitViewColumnWidth(min: 280, ideal: 360)
+        .navigationSplitViewColumnWidth(min: 280, ideal: 380)
+    }
+
+    /// Scope header — title + count, mirroring the prototype's
+    /// "All meetings / 42 meetings" treatment. Resolves the title for
+    /// workflow scopes by looking the workflow up in the snapshot.
+    @ViewBuilder
+    private var scopeHeader: some View {
+        let count = filteredMeetings.count
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(scopeTitle)
+                    .font(.system(size: 17, weight: .semibold))
+                Text("\(count) meeting\(count == 1 ? "" : "s")")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
+    }
+
+    private var scopeTitle: String {
+        if case .workflow(let id) = scope,
+           let wf = workflows.first(where: { $0.id == id }) {
+            return wf.name
+        }
+        return scope.title
+    }
+
+    /// Meetings narrowed by the rail scope. The chip filter runs on top.
+    private var scopedMeetings: [Meeting] {
+        if case .allMeetings = scope { return store.meetings }
+        return store.meetings.filter { scope.includes($0, workflows: workflows) }
     }
 
     private var filteredMeetings: [Meeting] {
-        MeetingFilterEngine.apply(filter, to: store.meetings)
+        MeetingFilterEngine.apply(filter, to: scopedMeetings)
     }
 
     private var noMatchesState: some View {
