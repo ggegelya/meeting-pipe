@@ -355,12 +355,15 @@ chosen folder), and **Move to Trash…** (per-row soft delete with one
 confirmation up front). A linear progress strip shows
 `<done> / <total>` while a batch is in flight.
 
-Drag any library row out of the window to drop a single markdown
-bundle (summary + transcript when both exist) into Finder, Mail, or
-Slack. Drag the waveform on the Audio tab to drop the raw `<stem>.wav`
-file. The markdown bundle is written under `NSTemporaryDirectory()`
-the moment the drag starts, so the drop target gets a real file path —
-not a snapshot of the editor surface.
+Drag the **leading glyph** of any library row out of the window to
+drop a single markdown bundle (summary + transcript when both exist)
+into Finder, Mail, or Slack. The drag handle is confined to the glyph
+so the rest of the row stays free for selection — putting `.draggable`
+on the whole row breaks tap-to-select on macOS. Drag the waveform on
+the Audio tab to drop the raw `<stem>.wav` file. The markdown bundle
+is written under `NSTemporaryDirectory()` the moment the drag starts,
+so the drop target gets a real file path — not a snapshot of the
+editor surface.
 
 Editing the title in the header writes the new value back to
 `<stem>.summary.json` when that file exists, otherwise to

@@ -41,8 +41,18 @@ struct MeetingRow: View, Equatable {
 
     var body: some View {
         HStack(spacing: 10) {
+            // Drag handle. `.draggable` attached to the *whole* row body
+            // poisons SwiftUI's hit-test on macOS: NSTableView's
+            // tap-to-select gesture loses to the row-wide drag gesture,
+            // and clicks anywhere inside the row content fall through
+            // (only the thin strips between rows still register).
+            // Confining the draggable to the leading glyph matches the
+            // platform convention (Finder, Mail) and leaves the rest of
+            // the row free to drive selection.
             glyph
                 .frame(width: 24, height: 24)
+                .draggable(MeetingDragItem(meeting: meeting))
+                .help("Drag to export the markdown bundle")
             VStack(alignment: .leading, spacing: 2) {
                 Text(meeting.displayTitle)
                     .font(.body)
@@ -72,7 +82,6 @@ struct MeetingRow: View, Equatable {
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
-        .draggable(MeetingDragItem(meeting: meeting))
         .contextMenu { contextMenuItems }
     }
 
