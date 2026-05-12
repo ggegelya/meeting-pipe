@@ -154,17 +154,30 @@ The installer can't do these for you:
    - Optionally tune `transcription.diarize_cluster_threshold` if speaker
      splitting looks off (higher → fewer speakers, lower → more).
 
-3. **Grant macOS permissions** when prompted on first launch:
+3. **Grant macOS permissions** when prompted on first launch. The
+   daemon fires every TCC dialog in one ordered sequence within the
+   first few seconds, instead of dribbling them out across the first
+   recording:
+   - **Notifications** — record/skip prompts and completion alerts.
    - **Microphone** — `AVAudioEngine` reads from the system default input.
    - **Screen Recording** — gates `SCStream.capturesAudio` in TCC.
    - **Accessibility** — reads window titles to detect when a meeting
-     ends (Teams / Zoom / Webex / Slack desktop AND browser tabs). Without
-     this, native apps will record fine but the call won't auto-stop -
-     the daemon falls back to manual hotkey / silence-based stop, which
-     can mean an extra 5 minutes of wav file. The daemon emits a startup
-     banner + a rate-limited `ACCESSIBILITY DENIED` line in
-     `~/Library/Logs/MeetingPipe/detector.log` if it's missing.
-   - **Notifications** — record/skip prompts and completion alerts.
+     ends (Teams / Zoom / Webex / Slack desktop AND browser tabs).
+     Without this, native apps will record fine but the call won't
+     auto-stop — the daemon falls back to manual hotkey / silence-based
+     stop, which can mean an extra 5 minutes of wav file. **Granting
+     Accessibility requires a daemon restart** for the new trust
+     verdict to propagate (macOS caches AX trust per-process at
+     launch); the detector re-evaluates immediately on restart so a
+     meeting that's still in progress is picked up automatically.
+
+   The **Preferences ▸ Permissions** tab shows the live status of all
+   four with **Request** (when never determined) or **Open Settings**
+   (when denied) buttons; the menu bar surfaces a "⚠ Permissions need
+   attention" row whenever any of mic / Screen Recording /
+   Accessibility is missing. Recording is gated on Microphone — if
+   it's missing, the daemon refuses to start the recording and routes
+   you to the Permissions tab rather than producing a silent wav.
 
    No audio devices to set up. The daemon captures whatever your system
    audio is currently playing (regardless of output device — speakers,

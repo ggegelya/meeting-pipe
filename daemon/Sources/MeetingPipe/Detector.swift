@@ -198,6 +198,16 @@ final class Detector {
         reevaluate()
     }
 
+    /// Kick a fresh signal pass. The Coordinator calls this from the
+    /// permission-grant subscription so an in-progress meeting that
+    /// was invisible while Mic / Accessibility were missing becomes
+    /// visible the moment the user grants. Also exposed for tests
+    /// that need to re-trigger the state machine without waiting on
+    /// the 3 s poll.
+    func refreshNow() {
+        reevaluate()
+    }
+
     func stop() {
         for o in nsObservers { NSWorkspace.shared.notificationCenter.removeObserver(o) }
         nsObservers.removeAll()

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 /// Owns the NSStatusItem and its menu. Phase 0 just shows "Idle"; later phases
 /// flip this to "Recording" and add Start/Stop entries.
@@ -38,12 +39,24 @@ final class StatusBarController {
     private var modelDownloadCompletedDisplayTimer: Timer?
     private static let completedDisplayDuration: TimeInterval = 5
 
+    /// Re-render the menu whenever any permission flips so the
+    /// aggregate warning row appears / disappears without waiting for
+    /// the next recording state change. Subscribed once at init.
+    private var permissionsCancellable: AnyCancellable?
+
     init(item: NSStatusItem) {
         self.item = item
         if let button = item.button {
             button.image = idleIcon
             button.imagePosition = .imageLeft
         }
+        permissionsCancellable = PermissionsCenter.shared.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                // objectWillChange fires *before* the value flips. Hop
+                // one runloop so the menu sees the new state.
+                DispatchQueue.main.async { self?.refreshMenuForPermissionChange() }
+            }
     }
 
     func setIdle() {
@@ -230,6 +243,24 @@ final class StatusBarController {
         rebuildMenu(state: lastMenuState)
     }
 
+    /// Aggregated "any required permission is missing" check used by
+    /// the menu's warning row. Screen Recording's `.unknown` state is
+    /// excluded — it's transient (prewarm hasn't finished) and would
+    /// flash the warning at every cold launch.
+    private func hasPendingPermissionIssue() -> Bool {
+        let center = PermissionsCenter.shared
+        if center.microphone == .denied || center.microphone == .notDetermined {
+            return true
+        }
+        if center.screenRecording == .denied {
+            return true
+        }
+        if center.accessibility == .denied {
+            return true
+        }
+        return false
+    }
+
     private func rebuildMenu(state: AppState) {
         lastMenuState = state
         let menu = NSMenu()
@@ -244,14 +275,28 @@ final class StatusBarController {
             menu.addItem(.separator())
         }
 
-        if SystemAudioCapture.permissionState == .denied {
+        // Aggregate permission warning. Any of mic / screen recording /
+        // accessibility being non-granted surfaces a single row that
+        // routes to the new Permissions tab in Preferences (TECH-E3).
+        // The legacy Screen-Recording-only row is preserved as a
+        // shortcut to Settings when that's the specific problem.
+        if hasPendingPermissionIssue() {
             let warn = NSMenuItem(
-                title: "⚠ System audio blocked — Open Screen Recording Settings…",
-                action: #selector(Coordinator.menuOpenScreenRecordingSettings),
+                title: "⚠ Permissions need attention — Open Preferences…",
+                action: #selector(Coordinator.menuPreferences),
                 keyEquivalent: ""
             )
             warn.target = coordinator
             menu.addItem(warn)
+            if SystemAudioCapture.permissionState == .denied {
+                let scrShortcut = NSMenuItem(
+                    title: "Open Screen Recording Settings…",
+                    action: #selector(Coordinator.menuOpenScreenRecordingSettings),
+                    keyEquivalent: ""
+                )
+                scrShortcut.target = coordinator
+                menu.addItem(scrShortcut)
+            }
             menu.addItem(.separator())
         }
 

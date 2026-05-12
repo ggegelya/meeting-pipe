@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Combine
 import Foundation
 
@@ -106,6 +107,7 @@ final class Coordinator: NSObject {
     private let dryRun: Bool = (ProcessInfo.processInfo.environment["MEETING_PIPE_DRY_RUN"] == "1")
 
     private var configCancellable: AnyCancellable?
+    private var permissionGrantedCancellable: AnyCancellable?
 
     init(
         config: Config,
@@ -166,9 +168,17 @@ final class Coordinator: NSObject {
 
     func start() {
         notifier.delegate = self
-        notifier.requestAuthorization()
         promptWindow.delegate = self
         recordingHUD.delegate = self
+
+        // Funnel every TCC dialog through PermissionsCenter so the
+        // Preferences "Permissions" tab and the startup sequence both
+        // read from the same published state. macOS still serializes
+        // the actual prompts (notifications first, then mic, then
+        // screen recording, then accessibility), but they now all
+        // surface within the first few seconds of launch instead of
+        // dribbling out across the first recording.
+        requestPermissionsAtStartup()
 
         if dryRun {
             Log.main.info("MEETING_PIPE_DRY_RUN=1: detection enabled, recorder disabled")
@@ -219,19 +229,54 @@ final class Coordinator: NSObject {
         // mode. No-op for backend=anthropic (the typical first-time install).
         ensureModelPrefetchIfNeeded()
 
-        // Surface the Screen Recording permission state once prewarm has had
-        // a chance to settle. Without this, a denied TCC silently degrades
-        // every recording to mic-only — and the user only finds out at
-        // playback. 2.5s is enough for the prewarm Task to complete on a
-        // cold launch; if it's still .unknown after that we don't bug the
-        // user (the menu-bar warning catches it once the state resolves).
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
-            self?.checkScreenRecordingPermissionAtStartup()
+        // Subscribe to permission grants so the detector picks up an
+        // in-progress meeting the moment Mic / Accessibility flip on.
+        // Without this, a user who restarts the daemon mid-meeting (the
+        // typical Accessibility-grant flow) waits for the next Workspace
+        // notification before detection kicks in, by which point the
+        // meeting may have started silently.
+        permissionGrantedCancellable = PermissionsCenter.shared.permissionGranted
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] kind in
+                guard let self = self else { return }
+                Log.main.info("permission granted: \(kind.displayName) — re-evaluating detector")
+                Log.event(category: "coordinator", action: "permission_granted", attributes: [
+                    "kind": kind.rawValue,
+                ])
+                self.detector.refreshNow()
+                self.statusBar.refreshMenuForPermissionChange()
+            }
+    }
+
+    /// Fire every TCC dialog the daemon needs in a single ordered
+    /// sequence at startup. macOS serializes prompts internally (the
+    /// second dialog only paints once the first is dismissed) but they
+    /// all surface within the first few seconds, instead of dribbling
+    /// out across the first recording. The Permissions tab in
+    /// Preferences is the canonical surface for re-prompting later.
+    private func requestPermissionsAtStartup() {
+        Task { @MainActor in
+            // 1. Notifications — silent prompt; non-blocking either way.
+            await PermissionsCenter.shared.requestNotifications()
+            // 2. Microphone — used to be implicit (KVO on AVCaptureDevice),
+            //    which fired the dialog a couple of seconds after launch.
+            //    Explicit request keeps it next to its siblings.
+            await PermissionsCenter.shared.requestMic()
+            // 3. Screen Recording — CGRequestScreenCaptureAccess +
+            //    SCShareableContent prewarm. prewarm() was already
+            //    triggered from App.swift; this re-runs it through the
+            //    Permissions center so the published state is current.
+            await PermissionsCenter.shared.requestScreenRecording()
+            // 4. Accessibility — surfaces the "App wants to control your
+            //    Mac" prompt + adds MeetingPipe to System Settings.
+            //    Granting requires a daemon restart for AX trust to
+            //    propagate; the notifier banner explains that.
+            _ = PermissionsCenter.shared.requestAccessibility()
+            // Surface follow-ups (banner + menu refresh) once the dust
+            // has settled.
+            checkScreenRecordingPermissionAtStartup()
+            checkAccessibilityPermissionAtStartup()
         }
-        // Accessibility is what powers native end-detection. If it's
-        // missing the window probes silently degrade and Teams/Zoom/etc.
-        // never auto-stop. Surface this once at startup with a banner.
-        checkAccessibilityPermissionAtStartup()
     }
 
     private func checkScreenRecordingPermissionAtStartup() {
@@ -243,26 +288,19 @@ final class Coordinator: NSObject {
     }
 
     private func checkAccessibilityPermissionAtStartup() {
-        // `AXIsProcessTrusted()` only reads the current state - it never
-        // surfaces the macOS "App wants to control your Mac" dialog.
-        // `AXIsProcessTrustedWithOptions` with `kAXTrustedCheckOptionPrompt
-        // = true` is the documented way to actively request the
-        // permission, which adds the app to the Accessibility list in
-        // System Settings and shows the prompt the user expects on
-        // first launch.
-        let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue()
-        let opts: CFDictionary = [promptKey: true] as CFDictionary
-        let trusted = AXIsProcessTrustedWithOptions(opts)
-        if trusted {
+        // PermissionsCenter.requestAccessibility() has already surfaced
+        // the system prompt by the time this runs. Here we only fan out
+        // the side effects: log the verdict, raise the fallback banner
+        // when still untrusted (the user dismissed the dialog without
+        // granting, or revoked previously and needs a restart for the
+        // change to propagate).
+        if AXIsProcessTrusted() {
             Log.main.info("Accessibility: trusted")
             return
         }
         Log.main.warning("Accessibility: NOT trusted - native meeting end-detection disabled")
-        Log.writeLine("daemon", "ACCESSIBILITY DENIED at startup - native end-detection will not fire. macOS prompted; enable MeetingPipe in System Settings → Privacy & Security → Accessibility.")
+        Log.writeLine("daemon", "ACCESSIBILITY DENIED at startup - native end-detection will not fire. Enable MeetingPipe in Preferences → Permissions, or in System Settings → Privacy & Security → Accessibility.")
         Log.event(category: "coordinator", action: "accessibility_denied_at_startup")
-        // Banner is the fallback surface in case the user dismisses the
-        // system prompt without granting (or doesn't see it because the
-        // daemon was already trusted previously and then revoked).
         notifier.notifyAccessibilityBlocked()
     }
 
@@ -632,6 +670,30 @@ final class Coordinator: NSObject {
 
     private func beginRecording(source: AppSource?, summaryMode: SummaryMode) {
         cancelPromptTimeout()
+
+        // Pre-record gate. Mic is non-negotiable — without it the
+        // recording is silent and the pipeline produces empty
+        // transcripts. Screen Recording stays optional (mic-only is a
+        // documented fallback). We re-probe synchronously here so a
+        // permission the user just granted via Preferences is reflected
+        // without a daemon restart.
+        let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        if micStatus != .authorized {
+            Log.main.warning("beginRecording aborted: microphone permission missing")
+            Log.event(category: "coordinator", action: "recording_blocked", attributes: [
+                "reason": "mic_permission",
+                "status": "\(micStatus.rawValue)",
+            ])
+            notifier.notifyError("Microphone permission is required. Grant it in Preferences → Permissions, then try again.")
+            // Pop the Preferences window so the user can act without
+            // hunting for the menu item. The Preferences tab order
+            // surfaces Permissions; the existing menu menuPreferences
+            // handler activates the right window.
+            menuPreferences()
+            state = .idle
+            statusBar.setIdle()
+            return
+        }
 
         if dryRun {
             // Detection happened, consent was resolved, but we deliberately

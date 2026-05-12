@@ -76,6 +76,9 @@ private struct PreferencesView: View {
 
             modesTab
                 .tabItem { Label("Modes", systemImage: "lock.shield") }
+
+            PermissionsTab()
+                .tabItem { Label("Permissions", systemImage: "lock.fill") }
         }
         .padding(20)
         .frame(minWidth: 520, minHeight: 580)
