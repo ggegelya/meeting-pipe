@@ -35,6 +35,7 @@ from tenacity import (
 from .config import Config, load_secrets, require_env
 from .schemas import SUMMARY_TOOL, MeetingSummary
 from .services import SummaryClient
+from .workflow import apply_overrides as apply_workflow_overrides
 
 log = logging.getLogger("mp.summarize")
 
@@ -180,6 +181,11 @@ def summarize(
     correction loop reads those fields from the run sidecar.
     """
     cfg = cfg or Config.load()
+    # Workflow overlay (TECH-B4). Apply when the daemon wrote a meta
+    # sidecar for this stem so the standalone `mp summarize` (used by
+    # the Library's "Regenerate" action) honours the same per-meeting
+    # context / backend overrides that `run-all` would.
+    cfg = apply_workflow_overrides(cfg, transcript_md)
     load_secrets()
 
     transcript = transcript_md.read_text(encoding="utf-8")

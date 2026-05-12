@@ -29,6 +29,7 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from .config import Config, load_secrets, require_env
+from .workflow import apply_overrides as apply_workflow_overrides
 from .endpoints import NOTION_API_BASE, NOTION_API_VERSION, notion_page_url
 from .schemas import MeetingSummary
 from .services import MeetingPublisher
@@ -114,6 +115,10 @@ def publish(
     by short-circuiting before any publisher is instantiated.
     """
     cfg = cfg or Config.load()
+    # Workflow overlay (TECH-B4). `apply_overrides` derives the stem
+    # from any per-meeting filename, so passing the summary JSON path
+    # directly resolves to the same `<stem>.meta.json` the daemon wrote.
+    cfg = apply_workflow_overrides(cfg, summary_json)
     load_secrets()
 
     if cfg.modes.regulated_mode:

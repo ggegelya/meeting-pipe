@@ -35,6 +35,7 @@ from . import events
 from .publish_router import fanout as publish_fanout
 from .summarize import summarize
 from .transcribe import render_markdown, transcribe
+from .workflow import apply_overrides as apply_workflow_overrides
 
 log = logging.getLogger("mp.run_all")
 
@@ -136,6 +137,11 @@ def run_all(
     so the Swift launcher can opt in per-meeting without flag plumbing.
     """
     cfg = cfg or Config.load()
+    # Apply per-meeting workflow overrides from the daemon-written meta
+    # sidecar (TECH-B4). No-op for shell-invoked `mp run-all` against
+    # wavs that have no sidecar; otherwise replaces team_context /
+    # backend / sinks / notion DB for this single run.
+    cfg = apply_workflow_overrides(cfg, wav)
     load_secrets()
 
     if force_byo is None:
