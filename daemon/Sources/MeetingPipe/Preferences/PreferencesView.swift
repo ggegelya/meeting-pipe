@@ -615,6 +615,13 @@ struct PermissionsSectionView: View {
             SettingsSectionHeader("Permissions",
                 caption: "The four TCC permissions the daemon needs. None of these send anything off your machine.") {
                 Button {
+                    // Re-check both refreshes status AND clears any
+                    // lingering "toggle on, then re-check" hints, since
+                    // the user is signalling they have come back from
+                    // Settings.
+                    for kind in PermissionsCenter.Kind.allCases {
+                        center.clearDeferredHint(kind)
+                    }
                     Task { await center.refreshAll() }
                 } label: {
                     Label("Re-check", systemImage: "arrow.clockwise")
@@ -628,6 +635,7 @@ struct PermissionsSectionView: View {
                         status: center.status(kind),
                         isWorking: workingKind == kind,
                         isFirst: index == 0,
+                        showsDeferredHint: center.deferredToSettings.contains(kind),
                         onRequest: { perform(action: .request, on: kind) },
                         onOpenSettings: { perform(action: .openSettings, on: kind) }
                     )
@@ -696,6 +704,7 @@ private struct PermissionsCardRow: View {
     let status: PermissionsCenter.Status
     let isWorking: Bool
     let isFirst: Bool
+    let showsDeferredHint: Bool
     let onRequest: () -> Void
     let onOpenSettings: () -> Void
 
@@ -730,6 +739,12 @@ private struct PermissionsCardRow: View {
                         .foregroundStyle(.secondary)
                         .lineSpacing(1)
                         .fixedSize(horizontal: false, vertical: true)
+                    if showsDeferredHint {
+                        Text("Toggle MeetingPipe on in System Settings, then click Re-check.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color(MPColors.signal600))
+                            .padding(.top, 2)
+                    }
                 }
                 Spacer(minLength: 8)
                 actionButton

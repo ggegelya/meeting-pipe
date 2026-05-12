@@ -68,6 +68,13 @@ final class PermissionsCenter: ObservableObject {
     @Published private(set) var accessibility: Status = .unknown
     @Published private(set) var notifications: Status = .unknown
 
+    /// Kinds whose last `request*` call could not actually prompt and
+    /// instead fell through to opening System Settings. The Permissions
+    /// tab reads this to show an inline "toggle MeetingPipe on, then
+    /// click Re-check" hint. Cleared when the kind transitions to
+    /// `.granted` or the user clicks Re-check.
+    @Published private(set) var deferredToSettings: Set<Kind> = []
+
     /// Re-evaluates fired into this stream every time a probe lifts a
     /// permission from a non-`.granted` state to `.granted`. Coordinator
     /// subscribes so the detector picks up an in-progress meeting after
@@ -188,6 +195,13 @@ final class PermissionsCenter: ObservableObject {
     /// Surface the Screen Recording dialog (CoreGraphics path — the
     /// only API that actually adds the bundle to System Settings and
     /// pops the system prompt on a fresh install).
+    ///
+    /// macOS 15 only prompts the *first* time CGRequestScreenCaptureAccess
+    /// runs for a given (bundle, cdhash). Reinstalls produce a new cdhash
+    /// (adhoc/linker-signed binaries content-hash on rebuild) so the
+    /// re-request usually no-ops and we have to route the user to System
+    /// Settings to flip the toggle for the new identity. Without this
+    /// fallback the Request button silently does nothing.
     @discardableResult
     func requestScreenRecording() async -> Status {
         // Re-use prewarm so we ride the same code path that the daemon
@@ -195,6 +209,9 @@ final class PermissionsCenter: ObservableObject {
         // CGRequestScreenCaptureAccess + SCShareableContent fetch.
         await SystemAudioCapture.prewarm()
         refreshScreenRecording()
+        if screenRecording != .granted {
+            markDeferredAndOpenSettings(.screenRecording)
+        }
         return screenRecording
     }
 
@@ -211,12 +228,43 @@ final class PermissionsCenter: ObservableObject {
         return accessibility
     }
 
+    /// Notifications behave like a one-shot prompt: macOS only surfaces
+    /// the system dialog the first time `requestAuthorization` runs.
+    /// Subsequent calls (post-decision, post-`tccutil reset` since
+    /// tccutil doesn't manage Notifications at all) return silently
+    /// with the prior verdict. Detect that case up front and route to
+    /// System Settings so the button always does something visible.
     @discardableResult
     func requestNotifications() async -> Status {
         let center = UNUserNotificationCenter.current()
-        _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
-        await refreshNotifications()
+        let current = await center.notificationSettings().authorizationStatus
+        if current == .notDetermined {
+            _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
+            await refreshNotifications()
+            if notifications != .granted {
+                markDeferredAndOpenSettings(.notifications)
+            }
+        } else {
+            await refreshNotifications()
+            if notifications != .granted {
+                markDeferredAndOpenSettings(.notifications)
+            }
+        }
         return notifications
+    }
+
+    /// Clear any "fell through to Settings" hint the UI is showing for
+    /// this kind. Called by the Re-check button so a stale hint doesn't
+    /// linger after the user has visited Settings and come back.
+    func clearDeferredHint(_ kind: Kind) {
+        if deferredToSettings.contains(kind) {
+            deferredToSettings.remove(kind)
+        }
+    }
+
+    private func markDeferredAndOpenSettings(_ kind: Kind) {
+        deferredToSettings.insert(kind)
+        openSystemSettings(for: kind)
     }
 
     // MARK: System Settings deep links
@@ -260,6 +308,12 @@ final class PermissionsCenter: ObservableObject {
         // notification.
         if status == .granted && prev != .granted {
             permissionGranted.send(kind)
+            // Hint becomes irrelevant once the kind actually flipped on;
+            // drop it so the UI doesn't keep the "toggle on, then
+            // re-check" line under a green row.
+            if deferredToSettings.contains(kind) {
+                deferredToSettings.remove(kind)
+            }
         }
     }
 

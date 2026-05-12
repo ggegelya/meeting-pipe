@@ -8,11 +8,15 @@
 # Flags:
 #   --purge        also remove ~/.config/meeting-pipe (config + secrets)
 #   --reset-tcc    also reset macOS TCC permissions for the bundle ID
-#                  (Microphone, ScreenCapture, Accessibility, AppleEvents).
+#                  (Microphone, ScreenCapture, Accessibility, AppleEvents,
+#                  plus `tccutil reset All` as a belt-and-suspenders).
 #                  Use this when a permission was denied and macOS now
 #                  refuses to re-prompt on the next install. Without it,
 #                  TCC keeps the old (often denied) state per bundle ID
 #                  even after the .app is gone.
+#                  Note: macOS Notifications are NOT under TCC and cannot
+#                  be reset from the command line; the script prints a
+#                  pointer to the System Settings pane instead.
 #   --all          shorthand for --purge --reset-tcc
 
 set -euo pipefail
@@ -71,19 +75,39 @@ rm -rf "$APP_BUNDLE"
 echo "Removed venv, logs, app support, and ~/Applications/MeetingPipe.app."
 
 if (( RESET_TCC )); then
+    # Order matters here: if the daemon is still running, its in-process
+    # TCC verdict cache will be the last thing macOS sees, and a subsequent
+    # `tccutil reset` for ScreenCapture may not actually drop the prior
+    # "granted/denied" because the live process keeps re-asserting it.
+    # SIGKILL first, then reset. The earlier `pkill` above used SIGTERM,
+    # which can leave the daemon mid-shutdown.
+    BUNDLE_ID="com.meetingpipe.daemon"
+    pkill -KILL -f "MeetingPipe.app/Contents/MacOS/MeetingPipe" 2>/dev/null || true
+
     # tccutil reset takes (service, bundle_id). The services map to the
     # entitlements declared in install.sh's Info.plist plus any TCC
     # category the daemon's runtime touches. Listing each one explicitly
-    # rather than `tccutil reset All <bundle>` so an unfamiliar reader
-    # can see exactly what is being reset.
-    BUNDLE_ID="com.meetingpipe.daemon"
+    # before the catch-all so an unfamiliar reader can see exactly which
+    # services the daemon talks to; `reset All` after is belt-and-suspenders
+    # for anything macOS may have added that we don't track.
     for service in Microphone ScreenCapture Accessibility AppleEvents \
                     SystemPolicyAllFiles; do
         if tccutil reset "$service" "$BUNDLE_ID" 2>/dev/null; then
             echo "  reset TCC: $service for $BUNDLE_ID"
         fi
     done
+    tccutil reset All "$BUNDLE_ID" >/dev/null 2>&1 || true
     echo "Reset TCC permissions for $BUNDLE_ID."
+
+    # Notifications are not in TCC; they live in a separate authorization
+    # store managed by usernoted and cannot be scripted reliably. Tell
+    # the user instead of failing silently.
+    echo
+    echo "Note: macOS Notifications are stored outside TCC and cannot be"
+    echo "reset from the command line. To clear MeetingPipe's notification"
+    echo "decision, open:"
+    echo "    System Settings → Notifications → MeetingPipe → Allow Notifications"
+    echo
     echo "Next install will re-prompt for Microphone / Screen Recording / Accessibility."
 fi
 

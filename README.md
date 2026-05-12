@@ -179,6 +179,20 @@ The installer can't do these for you:
    it's missing, the daemon refuses to start the recording and routes
    you to the Permissions tab rather than producing a silent wav.
 
+   **One quirk worth knowing: reinstalls and the cdhash.** The daemon is
+   adhoc/linker-signed (no Apple Developer ID — out of scope for personal
+   use). macOS TCC keys grants on `(bundle id, code-signing hash)`, and
+   `swift build` produces a fresh cdhash every time, so a reinstall
+   orphans whatever you previously granted. System Settings will still
+   show MeetingPipe in the Screen Recording list with the toggle on, but
+   the daemon will get `granted=false` from CoreGraphics because the new
+   cdhash isn't actually authorized. The Permissions tab's **Request**
+   button detects this and routes you to System Settings with a
+   "toggle on, then click Re-check" hint; toggling once for the new
+   cdhash is enough until the next rebuild. Run
+   `scripts/uninstall.sh --reset-tcc` if you want the slate fully
+   cleared before reinstalling.
+
    No audio devices to set up. The daemon captures whatever your system
    audio is currently playing (regardless of output device — speakers,
    wired headphones, AirPods, anything) and the mic that macOS treats as
@@ -661,9 +675,16 @@ runaway recording stopped on its own.
 
 **I uninstalled and reinstalled but macOS still says "permission denied"
 and won't re-prompt.**
-TCC caches grants/denials per bundle id. `scripts/uninstall.sh --reset-tcc`
-clears the cache so the next install behaves like a fresh install. See
-the Uninstall section above.
+TCC caches grants/denials per `(bundle id, cdhash)`. Two things bite:
+- `scripts/uninstall.sh --reset-tcc` clears the TCC cache. Note that
+  macOS Notifications live outside TCC and must be reset manually in
+  System Settings → Notifications → MeetingPipe.
+- Rebuilds change the cdhash (adhoc/linker-signed binaries content-hash
+  on rebuild), so even after a fresh grant the *next* rebuild orphans
+  it again. macOS no longer re-prompts in that case — the entry stays
+  in System Settings but no longer applies. Open the Permissions tab,
+  click Request: it routes you to System Settings with a "toggle on,
+  then Re-check" hint, and you toggle once more for the new cdhash.
 
 ---
 
@@ -684,8 +705,12 @@ Why `--reset-tcc` exists: macOS keys permission grants on the bundle id
 (`com.meetingpipe.daemon`). If you denied a permission once, removing the
 .app does NOT clear that denial. TCC keeps the cached state, and the next
 install silently runs without the permission instead of re-prompting. The
-flag uses `tccutil reset` to wipe the cache so a fresh install behaves
-like a fresh install.
+flag SIGKILLs any running daemon (so its in-process verdict cache can't
+write itself back), then runs `tccutil reset` for every service the
+daemon touches plus `reset All` as a catch-all. Notifications are NOT
+under TCC — they live in a separate authorization store managed by
+`usernoted` and have to be cleared manually from
+System Settings → Notifications → MeetingPipe.
 
 ---
 
