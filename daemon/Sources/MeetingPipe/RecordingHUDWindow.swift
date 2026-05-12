@@ -32,7 +32,12 @@ final class RecordingHUDWindow {
     private var startedAt: Date?
 
     private static let panelWidth: CGFloat = 60
-    private static let panelHeight: CGFloat = 132
+    // 132 → 146 to fit the workflow attribution line under the elapsed
+    // timer (TECH-B9). The line is only rendered when a workflow is
+    // resolved, but the extra 14pt is allocated unconditionally so a
+    // panel transition between workflowed and un-workflowed meetings
+    // doesn't change the HUD's geometry.
+    private static let panelHeight: CGFloat = 146
     private static let edgeInset: CGFloat = 16
 
     func present(source: AppSource?, workflow: Workflow? = nil, startedAt: Date) {
@@ -149,6 +154,16 @@ final class RecordingHUDWindow {
         bg.addSubview(elapsed)
         self.elapsedLabel = elapsed
 
+        // Workflow attribution line (TECH-B9). Renders the workflow name
+        // when one is resolved and marks NDA mode with a coral suffix so
+        // the user can spot a sensitive routing at a glance. Hidden but
+        // still present in the view tree when no workflow is set, so the
+        // panel's vertical rhythm doesn't shift between workflowed and
+        // un-workflowed meetings.
+        let workflowLabel = HUDWorkflowLabel(workflow: workflow)
+        workflowLabel.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(workflowLabel)
+
         let stop = StopButton(target: bg, action: #selector(HUDBackgroundView.didClickStop))
         stop.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(stop)
@@ -167,6 +182,11 @@ final class RecordingHUDWindow {
             elapsed.leadingAnchor.constraint(equalTo: bg.leadingAnchor),
             elapsed.trailingAnchor.constraint(equalTo: bg.trailingAnchor),
             elapsed.topAnchor.constraint(equalTo: dot.bottomAnchor, constant: 4),
+
+            workflowLabel.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 4),
+            workflowLabel.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -4),
+            workflowLabel.topAnchor.constraint(equalTo: elapsed.bottomAnchor, constant: 2),
+            workflowLabel.heightAnchor.constraint(equalToConstant: 14),
 
             stop.centerXAnchor.constraint(equalTo: bg.centerXAnchor),
             stop.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -10),
@@ -369,3 +389,55 @@ private final class StopButton: NSButton {
         addCursorRect(bounds, cursor: .pointingHand)
     }
 }
+
+/// Single-line workflow attribution on the recording HUD (TECH-B9).
+/// Truncates tail-side; NDA mode appends a coral "NDA" suffix so the
+/// user can spot a sensitive routing before they say something they'd
+/// regret hearing back in a non-NDA summary.
+private final class HUDWorkflowLabel: NSView {
+    private let nameLabel = NSTextField(labelWithString: "")
+    private let ndaLabel = NSTextField(labelWithString: "NDA")
+
+    init(workflow: Workflow?) {
+        super.init(frame: .zero)
+        wantsLayer = true
+
+        nameLabel.font = .systemFont(ofSize: 10, weight: .medium)
+        nameLabel.textColor = MPColors.fgMuted
+        nameLabel.alignment = .center
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.maximumNumberOfLines = 1
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(nameLabel)
+
+        ndaLabel.font = .systemFont(ofSize: 9, weight: .semibold)
+        ndaLabel.textColor = MPColors.pulse600
+        ndaLabel.alignment = .center
+        ndaLabel.translatesAutoresizingMaskIntoConstraints = false
+        ndaLabel.isHidden = true
+        addSubview(ndaLabel)
+
+        NSLayoutConstraint.activate([
+            nameLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
+            nameLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
+            nameLabel.topAnchor.constraint(equalTo: topAnchor),
+            ndaLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            ndaLabel.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        apply(workflow)
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    private func apply(_ workflow: Workflow?) {
+        guard let wf = workflow else {
+            nameLabel.stringValue = ""
+            ndaLabel.isHidden = true
+            isHidden = true
+            return
+        }
+        isHidden = false
+        nameLabel.stringValue = wf.name
+        ndaLabel.isHidden = !wf.flags.ndaMode
+    }
+}
+

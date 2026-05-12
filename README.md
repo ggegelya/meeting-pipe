@@ -384,6 +384,76 @@ Preferences window.
 
 ---
 
+## Workflows
+
+A **workflow** is a per-context bundle of routing rules: which Notion
+DB to publish to, which Obsidian vault, which summarization backend,
+what extra system-prompt seasoning to use, and a handful of behavioural
+flags like NDA mode. Switch on a per-meeting basis instead of editing
+global config for every client.
+
+The daemon ships with one **General** workflow seeded from your
+existing `summarization.team_context` + `notion.database_id`, marked as
+default. Until you add a second one, the library's Workflows tab shows
+a one-paragraph onboarding and the prompt panel renders no chip - the
+existing single-routing behaviour stays unchanged.
+
+Each workflow lives as one TOML file under
+`~/.config/meeting-pipe/workflows/<uuid>.toml`. Edit through the UI or
+hand-edit on disk; the file format is small enough to read.
+
+**Matching.** At the start of every recording the daemon resolves a
+workflow via `WorkflowMatcher`. Precedence, highest specificity first:
+
+1. Explicit override - you picked one from the prompt panel's chip
+   dropdown.
+2. Matching rule - the workflow carries `[[matching_rules]]` entries
+   that compare `bundle_id` and/or a case-insensitive `title_regex`
+   against the detected meeting. Bundle + title wins over bundle-only
+   wins over title-only.
+3. Default - the workflow flagged `is_default`. Always exists.
+
+Ties on score break by the workflow's `order` (ascending). Manual
+recordings (`Ctrl+Opt+M` with no detected source) always fall to the
+default.
+
+**Where it shows up.**
+- The **prompt panel** sprouts a chip next to the action buttons with
+  the resolved workflow's color/emoji + name. Click it to pick a
+  different workflow before clicking Record.
+- The **recording HUD** tints its pulse dot to the workflow's color
+  and shows the name + an "NDA" tag (when applicable) below the
+  elapsed timer.
+- The **menu-bar title** reads `Recording - {Workflow}` with a
+  trailing `· NDA` when NDA mode is on.
+
+**Sidecar contract.** When a recording finishes the daemon writes
+`<stem>.meta.json` with `workflow_id`, `workflow_name`,
+`workflow_context_prompt`, `workflow_backend`, `workflow_sinks`,
+`workflow_notion_database_id`, and `workflow_nda_mode`. The pipeline's
+`mp.workflow.apply_overrides` reads that sidecar and patches the
+in-memory `Config` before summarize + publish, so every workflow knob
+takes effect on a single run without changing global state.
+
+**NDA mode.** A behavioural flag with one effect: forces
+`backend = local` and `sinks = ["filesystem"]` regardless of what else
+the workflow says. Belt-and-braces - the pipeline re-enforces the
+override at run time so even a misconfigured workflow can't leak audio
+to the cloud. The HUD shows a coral `NDA` tag and the menu-bar title
+appends `· NDA`.
+
+**Per-workflow Notion DB.** When a workflow enables the Notion sink
+the editor fetches your databases via the Notion API
+(`https://api.notion.com/v1/search`, filtered to `object=database`)
+and caches the list at
+`~/Library/Caches/MeetingPipe/notion-databases.json`. The picker reads
+from that cache; **Refresh** re-fetches. If you paste a DB id that
+isn't in the cache yet (newly created database, for instance) the
+picker preserves it as a "Custom" row so the selection doesn't snap
+back to none on the next render.
+
+---
+
 ## Improving local quality
 
 When `summarization.backend` is `"local"`, you can grade each

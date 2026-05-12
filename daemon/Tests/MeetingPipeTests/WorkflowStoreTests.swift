@@ -142,6 +142,23 @@ final class WorkflowStoreTests: XCTestCase {
         XCTAssertEqual(wf.effectiveSinkTypeNames, ["filesystem"])
     }
 
+    func test_nda_mode_round_trips_through_toml() throws {
+        // The flag is persisted via the [flags] sub-table; a round-trip
+        // through TOMLKit must preserve it so a daemon restart can't
+        // silently demote an NDA workflow back to cloud routing.
+        let dir = try makeTempDir()
+        let store = WorkflowStore(directory: dir)
+        var wf = Workflow(name: "Confidential", isDefault: true)
+        wf.flags.ndaMode = true
+        try store.upsert(wf)
+
+        let reloaded = WorkflowStore(directory: dir)
+        reloaded.load()
+        XCTAssertEqual(reloaded.workflows.count, 1)
+        XCTAssertTrue(reloaded.workflows[0].flags.ndaMode)
+        XCTAssertEqual(reloaded.workflows[0].effectiveBackend, .local)
+    }
+
     func test_unreadable_workflow_file_is_skipped() throws {
         // A malformed TOML file under the workflows dir should not block
         // loading the rest of the set.
