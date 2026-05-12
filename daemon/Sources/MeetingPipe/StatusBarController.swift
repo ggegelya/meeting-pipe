@@ -76,9 +76,22 @@ final class StatusBarController {
         libraryModel?.status = .prompting(appName: source.displayName)
     }
 
-    func setRecording(file: URL, source: AppSource?, summaryMode: SummaryMode) {
+    func setRecording(
+        file: URL,
+        source: AppSource?,
+        summaryMode: SummaryMode,
+        workflow: Workflow? = nil
+    ) {
         item.button?.image = recordingIcon
-        baseTitle = summaryMode == .byo ? "Recording (BYO)" : "Recording"
+        var label = summaryMode == .byo ? "Recording (BYO)" : "Recording"
+        if let wf = workflow {
+            // TECH-B5: status-bar title now includes the active workflow
+            // so the user can confirm at a glance that they're recording
+            // to e.g. the "Client work" Notion DB and not their personal
+            // one. NDA mode gets a coral marker.
+            label += " — \(wf.name)\(wf.flags.ndaMode ? " · NDA" : "")"
+        }
+        baseTitle = label
         applyTitle()
         rebuildMenu(state: .recording(file: file, source: source, summaryMode: summaryMode))
         libraryModel?.status = .recording(appName: source?.displayName)

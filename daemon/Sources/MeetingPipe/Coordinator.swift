@@ -795,8 +795,8 @@ final class Coordinator: NSObject {
             detector.recorderDidStart()
             activeWorkflow = resolvedWorkflow
             state = .recording(file: file, source: source, summaryMode: summaryMode)
-            statusBar.setRecording(file: file, source: source, summaryMode: summaryMode)
-            recordingHUD.present(source: source, startedAt: Date())
+            statusBar.setRecording(file: file, source: source, summaryMode: summaryMode, workflow: resolvedWorkflow)
+            recordingHUD.present(source: source, workflow: resolvedWorkflow, startedAt: Date())
             notifier.notifyRecordingStarted(file: file)
             Log.writeLine(
                 "daemon",
@@ -1140,7 +1140,17 @@ extension Coordinator: DetectorDelegate {
         // the panel doesn't get suppressed under Focus modes and is harder
         // to miss. If the user wants OS-level persistence too, flip the
         // notifier call back on here.
-        promptWindow.present(source: source, autoDismissAfter: livePromptTimeoutSec)
+        //
+        // TECH-B5: pass the resolved workflow + the full set so the chip
+        // can render the current match and the popup menu can show every
+        // workflow as an override option.
+        let promptWorkflow = workflowForPrompt(source: source)
+        promptWindow.present(
+            source: source,
+            workflow: promptWorkflow,
+            availableWorkflows: workflowStore.workflows,
+            autoDismissAfter: livePromptTimeoutSec
+        )
         startPromptTimeout(for: source)
         Log.writeLine("daemon", "meeting detected → prompting (\(source.bundleID))")
         Log.event(category: "coordinator", action: "prompt_shown", attributes: [
@@ -1291,6 +1301,17 @@ extension Coordinator: MeetingPromptDelegate {
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecordBYO source: AppSource) {
         guard case .prompting(let pending) = state, pending == source else { return }
         beginRecording(source: source, summaryMode: .byo)
+    }
+
+    func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseWorkflow id: UUID?) {
+        // Stash the override so the next beginRecording's matcher call
+        // resolves to the user's pick. Cleared after consumption inside
+        // beginRecording so a dismissed prompt can't leak a stale pick
+        // into the next meeting.
+        setPendingWorkflowOverride(id)
+        Log.event(category: "workflow", action: "override_picked", attributes: [
+            "workflow_id": id?.uuidString ?? NSNull(),
+        ])
     }
 }
 

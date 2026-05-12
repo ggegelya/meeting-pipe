@@ -35,11 +35,11 @@ final class RecordingHUDWindow {
     private static let panelHeight: CGFloat = 132
     private static let edgeInset: CGFloat = 16
 
-    func present(source: AppSource?, startedAt: Date) {
+    func present(source: AppSource?, workflow: Workflow? = nil, startedAt: Date) {
         dismiss(animated: false)
         self.startedAt = startedAt
 
-        let panel = makePanel(source: source)
+        let panel = makePanel(source: source, workflow: workflow)
         self.panel = panel
         positionPanel(panel)
 
@@ -86,7 +86,7 @@ final class RecordingHUDWindow {
 
     // MARK: Panel construction
 
-    private func makePanel(source: AppSource?) -> NSPanel {
+    private func makePanel(source: AppSource?, workflow: Workflow?) -> NSPanel {
         let rect = NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight)
         let panel = NSPanel(
             contentRect: rect,
@@ -104,11 +104,11 @@ final class RecordingHUDWindow {
         panel.backgroundColor = .clear
         panel.isOpaque = false
 
-        panel.contentView = makeContentView(source: source)
+        panel.contentView = makeContentView(source: source, workflow: workflow)
         return panel
     }
 
-    private func makeContentView(source: AppSource?) -> NSView {
+    private func makeContentView(source: AppSource?, workflow: Workflow?) -> NSView {
         let bg = HUDBackgroundView(frame: NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight))
         bg.cornerRadius = MPRadius.lg
         bg.host = self
@@ -130,6 +130,14 @@ final class RecordingHUDWindow {
 
         let dot = PulseDotView(frame: .zero)
         dot.translatesAutoresizingMaskIntoConstraints = false
+        // TECH-B5: tint the pulse to the workflow's color so the user
+        // can confirm-by-glance which routing is live. NDA mode keeps
+        // the recording-coral so the "this is sensitive" signal isn't
+        // diluted by a softer accent color.
+        if let wf = workflow, !wf.flags.ndaMode,
+           let color = HexColor.parse(wf.color) {
+            dot.tintColor = color
+        }
         bg.addSubview(dot)
         self.pulseDot = dot
 
@@ -262,11 +270,17 @@ private final class HUDBackgroundView: NSView {
 private final class PulseDotView: NSView {
     private let dot = CALayer()
 
+    /// Workflow-driven tint (TECH-B5). Defaults to recording-coral so
+    /// manual / unworkflowed recordings keep the original signal.
+    var tintColor: NSColor = MPColors.pulse600 {
+        didSet { dot.backgroundColor = tintColor.cgColor }
+    }
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.addSublayer(dot)
-        dot.backgroundColor = MPColors.pulse600.cgColor
+        dot.backgroundColor = tintColor.cgColor
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 

@@ -32,6 +32,10 @@ protocol MeetingPromptDelegate: AnyObject {
     /// User chose "Record (BYO)" — the recording proceeds normally, but the
     /// pipeline writes a manual-paste bundle instead of calling Anthropic.
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecordBYO source: AppSource)
+    /// User picked a workflow from the chip's popup. The prompt stays
+    /// open; the Coordinator stashes the choice as the pending override
+    /// so the next `beginRecording` matcher call returns this workflow.
+    func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseWorkflow id: UUID?)
 }
 
 /// Threading: every public method must run on the main queue.
@@ -42,6 +46,16 @@ final class MeetingPromptWindow {
     private var currentSource: AppSource?
     private weak var liveWaveform: LiveWaveformView?
     private weak var dismissProgress: DismissProgressView?
+    private weak var workflowChip: WorkflowChipView?
+    /// Snapshot of the workflows available for the override popup.
+    /// Frozen at `present` time so the user picks from a stable list
+    /// (a workflow added mid-prompt wouldn't show up here, which is
+    /// fine — it'd show up on the next meeting).
+    private var availableWorkflows: [Workflow] = []
+    /// Workflow currently displayed on the chip. Updated after the user
+    /// picks from the override popup so the chip reflects the choice
+    /// without a full panel rebuild.
+    private var currentWorkflow: Workflow?
     private let levelMonitor = MicLevelMonitor()
 
     /// Auto-dismiss timer; paused on hover.
@@ -49,7 +63,11 @@ final class MeetingPromptWindow {
     private var dismissDeadline: Date?
     private var dismissRemainingOnPause: TimeInterval?
 
-    private static let panelWidth: CGFloat = 520
+    // Width grew from 520 → 600 to make room for the workflow chip
+    // (TECH-B5) without crowding the existing action cluster. The
+    // visual rhythm of glyph / text / waveform / chip / actions stays
+    // intact at the wider size.
+    private static let panelWidth: CGFloat = 600
     // Tighter than the previous 88pt: the redesign promotes "Record this
     // meeting?" to the dominant title and demotes the app name to a
     // small uppercase eyebrow, which is a denser hierarchy that wants
@@ -60,9 +78,16 @@ final class MeetingPromptWindow {
     /// they appear side-by-side.
     private static let topInset: CGFloat = 80
 
-    func present(source: AppSource, autoDismissAfter seconds: TimeInterval) {
+    func present(
+        source: AppSource,
+        workflow: Workflow? = nil,
+        availableWorkflows: [Workflow] = [],
+        autoDismissAfter seconds: TimeInterval
+    ) {
         dismiss(animated: false)
         currentSource = source
+        currentWorkflow = workflow
+        self.availableWorkflows = availableWorkflows
 
         let panel = makePanel(source: source, timeoutSec: seconds)
         self.panel = panel
@@ -194,6 +219,27 @@ final class MeetingPromptWindow {
         bg.addSubview(waveform)
         self.liveWaveform = waveform
 
+        // --- Workflow chip (TECH-B5) ---------------------------------
+        // Renders the workflow the matcher resolved for this meeting.
+        // Tap opens an NSMenu of all workflows; picking one forwards to
+        // the delegate so the Coordinator can stash the override before
+        // Record is clicked. Hidden entirely when no workflow exists
+        // (rare — fresh install before migration, or store deleted by
+        // hand) so a noisy "(none)" pill doesn't pollute the prompt.
+        let chip = WorkflowChipView()
+        chip.onClick = { [weak self, weak bg] in
+            guard let self = self, let host = bg else { return }
+            self.showWorkflowMenu(from: host)
+        }
+        bg.addSubview(chip)
+        if let wf = currentWorkflow {
+            applyWorkflow(wf, to: chip)
+            chip.isHidden = false
+        } else {
+            chip.isHidden = true
+        }
+        self.workflowChip = chip
+
         // --- Right-cluster: Record (BYO) + Record + ⌄ ----------------
         let recordBYO = MPButton(title: "Record (BYO)", style: .ghost,
                                  target: bg, action: #selector(RoundedBackgroundView.didClickRecordBYO))
@@ -252,11 +298,20 @@ final class MeetingPromptWindow {
             question.topAnchor.constraint(equalTo: eyebrow.bottomAnchor, constant: 1),
             question.trailingAnchor.constraint(lessThanOrEqualTo: waveform.leadingAnchor, constant: -8),
 
-            // Waveform sits left of the action cluster.
-            waveform.trailingAnchor.constraint(equalTo: recordBYO.leadingAnchor, constant: -10),
+            // Waveform sits left of the chip + action cluster. When the
+            // chip is hidden the trailing edge falls back through the
+            // chip to recordBYO via the chip's leading constraint.
+            waveform.trailingAnchor.constraint(equalTo: chip.leadingAnchor, constant: -8),
             waveform.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
             waveform.widthAnchor.constraint(equalToConstant: LiveWaveformView.intrinsicWidth),
             waveform.heightAnchor.constraint(equalToConstant: 14),
+
+            // Workflow chip flush against recordBYO. Max width keeps
+            // even a long workflow name from pushing the action cluster
+            // off-canvas; the title label truncates internally.
+            chip.trailingAnchor.constraint(equalTo: recordBYO.leadingAnchor, constant: -10),
+            chip.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
+            chip.widthAnchor.constraint(lessThanOrEqualToConstant: 160),
 
             // Right cluster: chevron flush right; Record before it; BYO before that.
             // Unified pill geometry: chevron is 26x26, same height as MPButton.
@@ -374,6 +429,53 @@ final class MeetingPromptWindow {
     }
 
     fileprivate func handleClose() { handleSkip() }
+
+    // MARK: - Workflow chip (TECH-B5)
+
+    private func applyWorkflow(_ wf: Workflow, to chip: WorkflowChipView) {
+        chip.workflowName = wf.flags.ndaMode ? "\(wf.name) · NDA" : wf.name
+        chip.emoji = wf.emoji
+        if let color = HexColor.parse(wf.color) {
+            chip.workflowColor = color
+        }
+    }
+
+    /// Pop up the override menu under the chip. Each row carries the
+    /// workflow's id as its representedObject so the delegate gets the
+    /// pick without a name-lookup round-trip.
+    fileprivate func showWorkflowMenu(from host: NSView) {
+        guard let chip = workflowChip, !availableWorkflows.isEmpty else { return }
+        let menu = NSMenu()
+        for wf in availableWorkflows.sorted(by: { lhs, rhs in
+            if lhs.order != rhs.order { return lhs.order < rhs.order }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }) {
+            let item = NSMenuItem(
+                title: wf.name + (wf.isDefault ? " (default)" : ""),
+                action: #selector(menuPickWorkflow(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = wf.id
+            if let current = currentWorkflow, current.id == wf.id {
+                item.state = .on
+            }
+            menu.addItem(item)
+        }
+        let origin = NSPoint(x: 0, y: chip.bounds.height + 4)
+        menu.popUp(positioning: nil, at: origin, in: host)
+    }
+
+    @objc private func menuPickWorkflow(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        delegate?.meetingPrompt(self, didChooseWorkflow: id)
+        if let wf = availableWorkflows.first(where: { $0.id == id }) {
+            currentWorkflow = wf
+            if let chip = workflowChip {
+                applyWorkflow(wf, to: chip)
+            }
+        }
+    }
 }
 
 // MARK: - Background
