@@ -243,7 +243,11 @@ struct LibraryRootView: View {
                 selection: $meetingSelection
             )
         case .workflows:
-            WorkflowsPlaceholder()
+            if let store = model.workflowStore {
+                WorkflowsView(store: store)
+            } else {
+                WorkflowsPlaceholder()
+            }
         case .preferences:
             // Selection bounces back to .library via `onChange`; this view
             // flashes for one runloop tick and is never seen in practice.
