@@ -168,8 +168,16 @@ final class Coordinator: NSObject {
         // TOML files under `~/.config/meeting-pipe/workflows/`. Loaded
         // synchronously so the matcher (TECH-B3) and Workflows tab see
         // a populated store on the first detection / window open.
+        // TECH-B2: if the store is empty we seed a "General" workflow
+        // from the legacy `summarization.team_context` so the pipeline's
+        // observable behaviour doesn't change for existing installs.
         let workflowStore = WorkflowStore()
         workflowStore.load()
+        WorkflowMigrator.runIfNeeded(
+            store: workflowStore,
+            configStore: configStore,
+            config: config
+        )
         self.workflowStore = workflowStore
         libraryModel.workflowStore = workflowStore
         super.init()
