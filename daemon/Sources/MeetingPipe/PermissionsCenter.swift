@@ -233,7 +233,11 @@ final class PermissionsCenter: ObservableObject {
         case .accessibility:
             urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
         case .notifications:
-            urlString = "x-apple.systempreferences:com.apple.preference.notifications"
+            // macOS Ventura+ moved Notifications under the new System
+            // Settings extension surface. The legacy
+            // `com.apple.preference.notifications` URL silently fails on
+            // 13+ (System Settings opens, the deep link does nothing).
+            urlString = "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
         }
         if let url = URL(string: urlString) {
             NSWorkspace.shared.open(url)

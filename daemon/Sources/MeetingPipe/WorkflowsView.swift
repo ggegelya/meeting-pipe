@@ -1,63 +1,39 @@
 import AppKit
 import SwiftUI
 
-/// Library window's "Workflows" tab.
+/// Library window's "Workflows" tab — split across the
+/// NavigationSplitView's content + detail columns so it fits the same
+/// shape as the Library section instead of carrying its own internal
+/// HStack.
 ///
-/// Two-pane: list of workflows on the left with drag-reorder, full
-/// editor on the right. The editor doubles as the "New workflow
-/// wizard" (TECH-B7) — both creation and edit share the same form;
-/// when the user clicks `+ New Workflow` we insert a stub and route
-/// straight to the editor.
+/// `WorkflowsListColumn` is the content column (list with drag-reorder
+/// and the New button). `WorkflowsDetailColumn` is the detail column
+/// (the editor or an empty-state). Selection is lifted into
+/// `LibraryRootView` so switching sidebar items doesn't leak the
+/// previous tab's detail (the bug observed when toggling Library ⇄
+/// Workflows with a meeting still selected).
 ///
-/// Drives `WorkflowStore` directly. Every mutation persists through
-/// the store's upsert/delete/reorder APIs so reordering or renaming
-/// hits disk before the next list-render runs.
-struct WorkflowsView: View {
+/// Both columns share the same `WorkflowStore` and a `@Binding`
+/// `Workflow.ID?` selection. Drives `WorkflowStore` directly so every
+/// mutation persists through upsert/delete/reorder before the next
+/// list-render runs.
+struct WorkflowsListColumn: View {
     @ObservedObject var store: WorkflowStore
-    @State private var selection: Workflow.ID?
-    @State private var showAdvanced: Bool = false
-
-    /// "Show advanced" gate (per TECH-B6 spec). With only the seeded
-    /// default present, the list collapses to a one-row explainer to
-    /// avoid overwhelming users who never wanted per-context routing in
-    /// the first place. The toggle is sticky — once flipped it stays on
-    /// for the session so reorderings during an editing pass don't
-    /// thrash the UI.
-    private var showsList: Bool {
-        showAdvanced || store.workflows.count > 1
-    }
+    @Binding var selection: Workflow.ID?
 
     var body: some View {
-        Group {
-            if showsList {
-                splitView
-            } else {
-                singleWorkflowOnboarding
-            }
-        }
-        .navigationTitle("Workflows")
-    }
-
-    // MARK: - Split list + editor
-
-    private var splitView: some View {
-        HStack(spacing: 0) {
-            list
-                .frame(minWidth: 240, idealWidth: 280, maxWidth: 320)
-            Divider()
-            editor
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    private var list: some View {
         VStack(spacing: 0) {
-            List(selection: $selection) {
-                ForEach(store.workflows) { wf in
-                    WorkflowRow(workflow: wf)
-                        .tag(wf.id as Workflow.ID?)
+            if store.workflows.isEmpty {
+                emptyState
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(selection: $selection) {
+                    ForEach(store.workflows) { wf in
+                        WorkflowRow(workflow: wf)
+                            .tag(wf.id as Workflow.ID?)
+                    }
+                    .onMove(perform: handleReorder)
                 }
-                .onMove(perform: handleReorder)
             }
             Divider()
             HStack {
@@ -68,33 +44,22 @@ struct WorkflowsView: View {
                 }
                 .buttonStyle(.borderless)
                 Spacer()
-                if showAdvanced && store.workflows.count <= 1 {
-                    Button("Hide advanced") { showAdvanced = false }
-                        .buttonStyle(.borderless)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
             .padding(8)
         }
-        .background(Color(NSColor.controlBackgroundColor))
     }
 
-    @ViewBuilder
-    private var editor: some View {
-        if let id = selection, let wf = store.workflow(id: id) {
-            WorkflowEditor(workflow: wf, store: store)
-                .padding(20)
-        } else {
-            VStack(spacing: 8) {
-                Image(systemName: "square.stack.3d.up")
-                    .font(.system(size: 36))
-                    .foregroundStyle(.tertiary)
-                Text("Select a workflow")
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "square.stack.3d.up")
+                .font(.system(size: 36))
+                .foregroundStyle(.tertiary)
+            Text("No workflows yet")
+                .foregroundStyle(.secondary)
+            Button("Add workflow") { addWorkflow() }
+                .buttonStyle(.borderedProminent)
         }
+        .padding(20)
     }
 
     private func handleReorder(from source: IndexSet, to destination: Int) {
@@ -115,38 +80,45 @@ struct WorkflowsView: View {
         try? store.upsert(next)
         selection = next.id
     }
+}
 
-    // MARK: - Onboarding
+/// Detail column for the Workflows tab. Renders the editor when a
+/// workflow is selected; otherwise an empty-state that suggests
+/// picking or creating one. Held separately from the list column so
+/// the NavigationSplitView can drive both panes naturally.
+struct WorkflowsDetailColumn: View {
+    @ObservedObject var store: WorkflowStore
+    @Binding var selection: Workflow.ID?
 
-    /// Surface when only the seeded "General" workflow exists. Tells the
-    /// user the feature is there without forcing them through a list /
-    /// editor surface they don't need yet.
-    private var singleWorkflowOnboarding: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "square.stack.3d.up")
-                .font(.system(size: 44))
-                .foregroundStyle(.tertiary)
-            Text("One workflow active")
-                .font(.title3)
-            Text("All meetings route through the default workflow. Add more to send different meetings to different Notion DBs, contexts, or backends.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 360)
-            HStack(spacing: 10) {
-                Button("Edit default") {
-                    showAdvanced = true
-                    selection = store.workflows.first?.id
-                }
-                Button("Add workflow") {
-                    showAdvanced = true
-                    addWorkflow()
-                }
-                .buttonStyle(.borderedProminent)
+    var body: some View {
+        if let id = selection, let wf = store.workflow(id: id) {
+            WorkflowEditor(workflow: wf, store: store)
+                .padding(20)
+        } else if store.workflows.isEmpty {
+            // Empty-state nudge that mirrors the list column's CTA so
+            // the user has a path forward regardless of which column
+            // they're looking at first.
+            VStack(spacing: 10) {
+                Image(systemName: "square.stack.3d.up")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.tertiary)
+                Text("Create a workflow to route meetings by context")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 320)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            VStack(spacing: 8) {
+                Image(systemName: "square.stack.3d.up")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.tertiary)
+                Text("Select a workflow")
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
     }
 }
 

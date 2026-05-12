@@ -17,8 +17,10 @@ final class PreferencesWindow {
 
     func show() {
         if let w = window {
+            let wasHidden = !w.isVisible
             w.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            if wasHidden { WindowActivationManager.shared.didShowWindow() }
             return
         }
 
@@ -34,6 +36,7 @@ final class PreferencesWindow {
         // delegate target is held weakly.
         let delegate = PreferencesWindowDelegate { [weak self] in
             self?.window = nil
+            WindowActivationManager.shared.didCloseWindow()
         }
         objc_setAssociatedObject(w, &Self.delegateKey, delegate, .OBJC_ASSOCIATION_RETAIN)
         w.delegate = delegate
@@ -41,6 +44,7 @@ final class PreferencesWindow {
         self.window = w
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        WindowActivationManager.shared.didShowWindow()
     }
 
     private static var delegateKey: UInt8 = 0

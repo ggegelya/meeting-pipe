@@ -19,8 +19,15 @@ final class LibraryWindow {
 
     func show() {
         if let w = window {
+            // Re-show counts as a fresh open from the activation
+            // manager's perspective only if the window was hidden
+            // (not visible). Without this guard a second click on
+            // "Open Library..." while the window is already up would
+            // bump the counter past the real open-window count.
+            let wasHidden = !w.isVisible
             w.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            if wasHidden { WindowActivationManager.shared.didShowWindow() }
             return
         }
 
@@ -50,6 +57,7 @@ final class LibraryWindow {
             // the same configured frame, and a freshly-built NSWindow would
             // lose any selection or scroll state once A2 / A4 land.
             _ = self
+            WindowActivationManager.shared.didCloseWindow()
         }
         objc_setAssociatedObject(w, &Self.delegateKey, delegate, .OBJC_ASSOCIATION_RETAIN)
         w.delegate = delegate
@@ -57,6 +65,7 @@ final class LibraryWindow {
         self.window = w
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        WindowActivationManager.shared.didShowWindow()
     }
 
     private static var delegateKey: UInt8 = 0
@@ -211,6 +220,10 @@ struct LibraryRootView: View {
     @ObservedObject var model: LibraryWindowModel
     @State private var selection: LibrarySidebarItem = .library
     @State private var meetingSelection: Set<Meeting.ID> = []
+    /// Workflow selection lives at the root so switching back from
+    /// Workflows → Library → Workflows keeps the user on the workflow
+    /// they were editing, instead of resetting to "Select a workflow".
+    @State private var workflowSelection: Workflow.ID? = nil
 
     var body: some View {
         NavigationSplitView {
@@ -244,7 +257,7 @@ struct LibraryRootView: View {
             )
         case .workflows:
             if let store = model.workflowStore {
-                WorkflowsView(store: store)
+                WorkflowsListColumn(store: store, selection: $workflowSelection)
             } else {
                 WorkflowsPlaceholder()
             }
@@ -255,8 +268,29 @@ struct LibraryRootView: View {
         }
     }
 
+    /// Detail column now branches on `selection` so switching sidebar
+    /// items can't leave a stale Library detail visible behind the
+    /// Workflows list (the bug observed after TECH-B6 shipped: clicking
+    /// Workflows kept the previously-selected meeting in the right
+    /// pane, then later clicking back into Library "rediscovered" it).
     @ViewBuilder
     private var detailPane: some View {
+        switch selection {
+        case .library:
+            libraryDetail
+        case .workflows:
+            if let store = model.workflowStore {
+                WorkflowsDetailColumn(store: store, selection: $workflowSelection)
+            } else {
+                Color.clear
+            }
+        case .preferences:
+            Color.clear
+        }
+    }
+
+    @ViewBuilder
+    private var libraryDetail: some View {
         let selected = model.meetingStore.meetings.filter { meetingSelection.contains($0.id) }
         if selected.count > 1 {
             BatchActionsPane(meetings: selected, libraryModel: model)
