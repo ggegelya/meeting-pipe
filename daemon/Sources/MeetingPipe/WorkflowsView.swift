@@ -3,12 +3,11 @@ import SwiftUI
 
 /// Library window's "Workflows" tab.
 ///
-/// Two-pane: list of workflows on the left with drag-reorder, basic
-/// metadata editor on the right. The wizard surface (full sinks /
-/// backend / matching-rules / NDA toggles) lands with TECH-B7; until
-/// then the inspector here is deliberately minimal — name + emoji +
-/// color + default flag + delete. The wizard reuses the same editor
-/// types behind the scenes.
+/// Two-pane: list of workflows on the left with drag-reorder, full
+/// editor on the right. The editor doubles as the "New workflow
+/// wizard" (TECH-B7) — both creation and edit share the same form;
+/// when the user clicks `+ New Workflow` we insert a stub and route
+/// straight to the editor.
 ///
 /// Drives `WorkflowStore` directly. Every mutation persists through
 /// the store's upsert/delete/reorder APIs so reordering or renaming
@@ -189,12 +188,49 @@ struct WorkflowRow: View {
     }
 }
 
-// MARK: - Inline editor (B6 minimum)
+// MARK: - Editor (TECH-B7 wizard surface)
 
-/// Inline editor for the selected workflow. B6 ships the basics —
-/// name, color, emoji, default flag, delete. B7 will extend this with
-/// the full wizard form (matching rules, sinks, backend, behavioural
-/// flags). The store is the source of truth; every edit upserts.
+/// One row in the sinks checklist. Per-sink config (Notion DB id) lives
+/// inline so the user doesn't need to descend into a sub-sheet to wire
+/// up a workflow's destination.
+private struct SinkSelection: Equatable {
+    var notionEnabled: Bool = false
+    var notionDatabaseID: String = ""
+    var obsidianEnabled: Bool = false
+    var filesystemEnabled: Bool = false
+
+    /// Reconstruct the typed array `Workflow.sinks` consumes from the
+    /// checkbox state. Order follows the form's row order so the
+    /// pipeline's fanout runs Notion → Obsidian → Filesystem.
+    func toWorkflowSinks() -> [WorkflowSink] {
+        var out: [WorkflowSink] = []
+        if notionEnabled { out.append(.notion(databaseId: notionDatabaseID)) }
+        if obsidianEnabled { out.append(.obsidian) }
+        if filesystemEnabled { out.append(.filesystem) }
+        return out
+    }
+
+    static func from(_ sinks: [WorkflowSink]) -> SinkSelection {
+        var s = SinkSelection()
+        for sink in sinks {
+            switch sink {
+            case .notion(let dbId):
+                s.notionEnabled = true
+                s.notionDatabaseID = dbId
+            case .obsidian:
+                s.obsidianEnabled = true
+            case .filesystem:
+                s.filesystemEnabled = true
+            }
+        }
+        return s
+    }
+}
+
+/// Full workflow editor / wizard. Same surface drives "New workflow"
+/// (after the list inserts a stub and routes here) and "edit existing
+/// workflow" — there's no separate modal because the inline form is
+/// already the form the wizard would render.
 struct WorkflowEditor: View {
     let workflow: Workflow
     @ObservedObject var store: WorkflowStore
@@ -204,6 +240,10 @@ struct WorkflowEditor: View {
     @State private var emoji: String = ""
     @State private var contextPrompt: String = ""
     @State private var isDefault: Bool = false
+    @State private var matchingRules: [WorkflowMatchingRule] = []
+    @State private var sinks = SinkSelection()
+    @State private var backend: WorkflowBackend = .anthropic
+    @State private var ndaMode: Bool = false
     @State private var pendingDeleteAlert: Bool = false
     @State private var saveError: String?
 
@@ -212,43 +252,13 @@ struct WorkflowEditor: View {
             VStack(alignment: .leading, spacing: 16) {
                 header
                 Form {
-                    Section("Identity") {
-                        LabeledContent("Name") {
-                            TextField("", text: $name)
-                                .textFieldStyle(.roundedBorder)
-                                .onSubmit(save)
-                        }
-                        LabeledContent("Color") {
-                            HStack {
-                                TextField("#RRGGBB", text: $color)
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(width: 110)
-                                    .font(.system(.body, design: .monospaced))
-                                if let parsed = HexColor.parse(color) {
-                                    Circle().fill(Color(parsed)).frame(width: 16, height: 16)
-                                }
-                                Spacer()
-                            }
-                        }
-                        LabeledContent("Emoji") {
-                            TextField("optional", text: $emoji)
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 80)
-                        }
-                    }
-                    Section("Context prompt") {
-                        TextEditor(text: $contextPrompt)
-                            .font(.system(.body, design: .monospaced))
-                            .frame(minHeight: 120, maxHeight: 240)
-                            .border(Color.secondary.opacity(0.2))
-                    }
-                    Section("Default") {
-                        Toggle("Use as default", isOn: $isDefault)
-                            .disabled(workflow.isDefault)
-                        Text("The default workflow matches any meeting that no other workflow's rules pick up. Toggle on a different workflow here to switch the default.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    identitySection
+                    matchingRulesSection
+                    contextSection
+                    sinksSection
+                    backendSection
+                    flagsSection
+                    defaultSection
                 }
                 .formStyle(.grouped)
                 if let err = saveError {
@@ -256,17 +266,7 @@ struct WorkflowEditor: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
-                HStack {
-                    Button("Save", action: save)
-                        .keyboardShortcut(.defaultAction)
-                    Spacer()
-                    Button(role: .destructive) {
-                        pendingDeleteAlert = true
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                    .disabled(workflow.isDefault)
-                }
+                actionsRow
             }
             .padding(.vertical, 4)
         }
@@ -282,12 +282,12 @@ struct WorkflowEditor: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            if let emoji = workflow.emoji, !emoji.isEmpty {
+            if !emoji.isEmpty {
                 Text(emoji).font(.title2)
-            } else if let color = HexColor.parse(workflow.color) {
-                Circle().fill(Color(color)).frame(width: 16, height: 16)
+            } else if let parsed = HexColor.parse(color) {
+                Circle().fill(Color(parsed)).frame(width: 16, height: 16)
             }
-            Text(workflow.name).font(.title3)
+            Text(name.isEmpty ? "(unnamed)" : name).font(.title3)
             if workflow.isDefault {
                 Text("default")
                     .font(.caption)
@@ -298,12 +298,175 @@ struct WorkflowEditor: View {
         }
     }
 
+    // MARK: Sections
+
+    private var identitySection: some View {
+        Section("Identity") {
+            LabeledContent("Name") {
+                TextField("", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(save)
+            }
+            LabeledContent("Color") {
+                HStack {
+                    TextField("#RRGGBB", text: $color)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 110)
+                        .font(.system(.body, design: .monospaced))
+                    if let parsed = HexColor.parse(color) {
+                        Circle().fill(Color(parsed)).frame(width: 16, height: 16)
+                    }
+                    Spacer()
+                }
+            }
+            LabeledContent("Emoji") {
+                TextField("optional", text: $emoji)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 80)
+            }
+        }
+    }
+
+    private var matchingRulesSection: some View {
+        Section("Matching rules") {
+            if matchingRules.isEmpty {
+                Text("No rules — this workflow matches only when used as the default.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach($matchingRules) { $rule in
+                    matchingRuleRow($rule: $rule)
+                }
+                .onDelete { offsets in
+                    matchingRules.remove(atOffsets: offsets)
+                }
+            }
+            Button {
+                matchingRules.append(WorkflowMatchingRule())
+            } label: {
+                Label("Add rule", systemImage: "plus")
+            }
+            .buttonStyle(.borderless)
+            Text("Bundle id matches the meeting app (e.g. `us.zoom.xos`, `com.microsoft.teams2`). Title regex is case-insensitive and tests the window title; useful to split a single browser into per-tab workflows.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func matchingRuleRow(@Binding rule: WorkflowMatchingRule) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(spacing: 4) {
+                TextField("bundle id", text: $rule.bundleID)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                TextField("title regex (optional)", text: $rule.titleRegex)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+            }
+            Button(role: .destructive) {
+                matchingRules.removeAll { $0.id == rule.id }
+            } label: {
+                Image(systemName: "minus.circle")
+            }
+            .buttonStyle(.borderless)
+        }
+    }
+
+    private var contextSection: some View {
+        Section("Context prompt") {
+            TextEditor(text: $contextPrompt)
+                .font(.system(.body, design: .monospaced))
+                .frame(minHeight: 120, maxHeight: 240)
+                .border(Color.secondary.opacity(0.2))
+            Text("Seasoning the LLM sees for every meeting matched by this workflow. Example: \"Confidential client meeting; redact names; FDA 21 CFR Part 11 context.\"")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var sinksSection: some View {
+        Section("Sinks") {
+            Toggle(isOn: $sinks.notionEnabled) { Text("Notion") }
+            if sinks.notionEnabled {
+                LabeledContent("Database id") {
+                    TextField("32-char hex from your DB URL", text: $sinks.notionDatabaseID)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                }
+            }
+            Toggle(isOn: $sinks.obsidianEnabled) { Text("Obsidian") }
+            Toggle(isOn: $sinks.filesystemEnabled) { Text("Filesystem (local Markdown only)") }
+            if ndaMode {
+                Text("NDA mode forces filesystem-only; toggles above are ignored at run time.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private var backendSection: some View {
+        Section("Backend") {
+            Picker("", selection: $backend) {
+                Text("Anthropic (cloud)").tag(WorkflowBackend.anthropic)
+                Text("Local MLX").tag(WorkflowBackend.local)
+                Text("Auto (cloud, fall back to local)").tag(WorkflowBackend.auto)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .disabled(ndaMode)
+            if ndaMode {
+                Text("NDA mode forces the local backend; the picker is disabled.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private var flagsSection: some View {
+        Section("Flags") {
+            Toggle("NDA mode (force local backend, filesystem only)", isOn: $ndaMode)
+            Text("Surfaces in the HUD and the menu-bar title so a misroute is visible before the meeting starts.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var defaultSection: some View {
+        Section("Default") {
+            Toggle("Use as default", isOn: $isDefault)
+                .disabled(workflow.isDefault)
+            Text("The default workflow matches any meeting that no other workflow's rules pick up. Toggle on a different workflow here to switch the default.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var actionsRow: some View {
+        HStack {
+            Button("Save", action: save)
+                .keyboardShortcut(.defaultAction)
+            Spacer()
+            Button(role: .destructive) {
+                pendingDeleteAlert = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .disabled(workflow.isDefault)
+        }
+    }
+
+    // MARK: Form state
+
     private func hydrate() {
         name = workflow.name
         color = workflow.color
         emoji = workflow.emoji ?? ""
         contextPrompt = workflow.contextPrompt
         isDefault = workflow.isDefault
+        matchingRules = workflow.matchingRules
+        sinks = SinkSelection.from(workflow.sinks)
+        backend = workflow.backend
+        ndaMode = workflow.flags.ndaMode
         saveError = nil
     }
 
@@ -319,6 +482,10 @@ struct WorkflowEditor: View {
         clone.emoji = emoji.isEmpty ? nil : emoji
         clone.contextPrompt = contextPrompt
         clone.isDefault = isDefault
+        clone.matchingRules = matchingRules
+        clone.sinks = sinks.toWorkflowSinks()
+        clone.backend = backend
+        clone.flags.ndaMode = ndaMode
         do {
             try store.upsert(clone)
             saveError = nil
