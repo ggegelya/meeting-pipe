@@ -44,19 +44,44 @@ final class StatusBarController {
     /// the next recording state change. Subscribed once at init.
     private var permissionsCancellable: AnyCancellable?
 
+    /// Snapshot of every permission status, used by the combined
+    /// publisher so we can `removeDuplicates` on the *actual* values
+    /// rather than rebuilding the menu on every `objectWillChange`
+    /// (which fires per-property and at 2s poll cadence). Equatable for
+    /// the dedupe.
+    private struct PermissionsSnapshot: Equatable {
+        let microphone: PermissionsCenter.Status
+        let screenRecording: PermissionsCenter.Status
+        let accessibility: PermissionsCenter.Status
+        let notifications: PermissionsCenter.Status
+    }
+
     init(item: NSStatusItem) {
         self.item = item
         if let button = item.button {
             button.image = idleIcon
             button.imagePosition = .imageLeft
         }
-        permissionsCancellable = PermissionsCenter.shared.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                // objectWillChange fires *before* the value flips. Hop
-                // one runloop so the menu sees the new state.
-                DispatchQueue.main.async { self?.refreshMenuForPermissionChange() }
-            }
+        let center = PermissionsCenter.shared
+        // Subscribe to a derived stream of permission snapshots,
+        // collapsed via `removeDuplicates` so the menu only rebuilds on
+        // a real value change. The previous wiring subscribed to
+        // `objectWillChange`, which fires per-property — and the
+        // 2-second permissions polling timer in `PermissionsCenter`
+        // emits 4+ commits per tick (one per @Published). That meant
+        // the NSMenu was being rebuilt roughly twice a second whenever
+        // the Permissions tab was open, even when nothing changed.
+        permissionsCancellable = Publishers.CombineLatest4(
+            center.$microphone,
+            center.$screenRecording,
+            center.$accessibility,
+            center.$notifications
+        )
+        .map(PermissionsSnapshot.init(microphone:screenRecording:accessibility:notifications:))
+        .removeDuplicates()
+        .dropFirst()   // skip the initial snapshot — menu is built lazily on first state setter
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _ in self?.refreshMenuForPermissionChange() }
     }
 
     func setIdle() {

@@ -264,24 +264,40 @@ struct StatePill: View {
 /// Soft 1.6s pulse on the recording dot — opacity only, per the design
 /// system's motion notes ("scale pulses read as urgent; the dot should
 /// feel steady").
+///
+/// Driven by `TimelineView(.animation)` rather than the previous
+/// `@State` + `withAnimation(...).repeatForever(...)` pattern. The old
+/// pattern restarted the animation every time the parent re-rendered
+/// (toolbar status flips, processing ticks before the model split,
+/// etc.), which manifested as a ~1s stutter on the dot. `TimelineView`
+/// reads from a free-running clock and re-evaluates this subtree only;
+/// it never invalidates the parent.
 private struct PulseDot: View {
-    @State private var phase: Double = 1
+    /// One full opacity cycle (fade-out + fade-in). Matches the legacy
+    /// `easeInOut(duration: 1.6).autoreverses` envelope.
+    private static let periodSec: Double = 1.6
 
     var body: some View {
-        ZStack {
-            Circle()
-                .fill(Color(MPColors.pulse600).opacity(0.35))
-                .frame(width: 14, height: 14)
-                .opacity(2 - phase)   // 0.35 .. 0.0 across the loop
-            Circle()
-                .fill(Color(MPColors.pulse600))
-                .frame(width: 8, height: 8)
-        }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
-                phase = 0
+        TimelineView(.animation) { context in
+            // Phase ∈ [0, 1) repeats every `periodSec`. A cosine maps
+            // it to a symmetric 0..1..0 envelope without the
+            // `withAnimation` machinery; opacity then drops from 0.35
+            // (at phase 0) toward 0 (at phase 0.5) and back.
+            let t = context.date.timeIntervalSinceReferenceDate
+            let phase = (t.truncatingRemainder(dividingBy: Self.periodSec)) / Self.periodSec
+            let envelope = 0.5 + 0.5 * cos(phase * 2 * .pi)   // 0..1..0
+            ZStack {
+                Circle()
+                    .fill(Color(MPColors.pulse600).opacity(0.35 * envelope))
+                    .frame(width: 14, height: 14)
+                Circle()
+                    .fill(Color(MPColors.pulse600))
+                    .frame(width: 8, height: 8)
             }
         }
+        // 8pt is the visible dot; the 14pt aura around it pulses. Pin
+        // the frame to the aura so adjacent layout doesn't shimmy.
+        .frame(width: 14, height: 14)
     }
 }
 
