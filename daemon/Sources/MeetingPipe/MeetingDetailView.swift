@@ -71,27 +71,12 @@ struct MeetingDetailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-                .padding(.horizontal, 20)
-                .padding(.vertical, 14)
-            Divider()
-            TabView(selection: $selectedTab) {
-                summaryTab
-                    .tabItem { Label(Tab.summary.label, systemImage: Tab.summary.systemImage) }
-                    .tag(Tab.summary.rawValue)
-                transcriptTab
-                    .tabItem { Label(Tab.transcript.label, systemImage: Tab.transcript.systemImage) }
-                    .tag(Tab.transcript.rawValue)
-                audioTab
-                    .tabItem { Label(Tab.audio.label, systemImage: Tab.audio.systemImage) }
-                    .tag(Tab.audio.rawValue)
-                correctionsTab
-                    .tabItem { Label(Tab.corrections.label, systemImage: Tab.corrections.systemImage) }
-                    .tag(Tab.corrections.rawValue)
-                rawTab
-                    .tabItem { Label(Tab.raw.label, systemImage: Tab.raw.systemImage) }
-                    .tag(Tab.raw.rawValue)
-            }
-            .padding(12)
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 12)
+            tabStrip
+            Divider().overlay(Color(MPColors.borderFaint))
+            tabContent
         }
         .frame(minWidth: 360)
         .onAppear { syncEditingTitle(force: true) }
@@ -100,58 +85,136 @@ struct MeetingDetailView: View {
         .task(id: meeting.stem) { await reloadPublishURLs() }
     }
 
-    // MARK: Header
+    // MARK: Header (polished — display title + caption + ghost shortcuts)
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
+            titleRow
             TextField("Untitled meeting", text: $editingTitle, onCommit: commitTitle)
                 .textFieldStyle(.plain)
-                .font(.title2.weight(.semibold))
-            HStack(alignment: .center, spacing: 12) {
-                Text(MeetingFormatters.fullDateTime.string(from: meeting.startedAt))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let workflow = meeting.workflowName {
+                .font(.system(size: 19, weight: .semibold))
+                .lineLimit(2)
+            captionRow
+        }
+    }
+
+    /// Topline above the title — workflow chip pinned to the leading
+    /// edge, ghost-icon shortcuts on the trailing edge. Empty topline
+    /// (no workflow, no publish URLs) collapses to zero height so the
+    /// title rises to the top of the pane.
+    @ViewBuilder
+    private var titleRow: some View {
+        let hasTopline = (meeting.workflowName?.isEmpty == false)
+            || cachedNotionURL != nil
+            || cachedObsidianURL != nil
+        if hasTopline {
+            HStack(spacing: 8) {
+                if let workflow = meeting.workflowName, !workflow.isEmpty {
                     WorkflowChip(name: workflow, colorHex: meeting.workflowColor)
                 }
-                if let d = meeting.durationSec {
-                    Text("·").foregroundStyle(.tertiary)
-                    Label(MeetingRow.formatDuration(d), systemImage: "clock")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .labelStyle(.titleAndIcon)
-                }
-                Spacer()
-                openInButtons
+                Spacer(minLength: 0)
+                ghostShortcuts
+            }
+            .frame(minHeight: 18)
+        }
+    }
+
+    /// 11pt caption row: full date · duration · source app. Date sits
+    /// in fg-subtle, separators in fg-faint, duration in mono — same
+    /// hierarchy as the row caption so the two surfaces feel paired.
+    private var captionRow: some View {
+        HStack(spacing: 6) {
+            Text(MeetingFormatters.fullDateTime.string(from: meeting.startedAt))
+                .font(.system(size: 11))
+                .foregroundStyle(Color(MPColors.fgSubtle))
+            if let d = meeting.durationSec {
+                Text("·").font(.system(size: 11)).foregroundStyle(Color(MPColors.fgFaint))
+                Text(MeetingRow.formatDuration(d))
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+            }
+            if let src = meeting.sourceDisplayName, !src.isEmpty {
+                Text("·").font(.system(size: 11)).foregroundStyle(Color(MPColors.fgFaint))
+                Text(src)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(MPColors.fgSubtle))
             }
         }
     }
 
+    /// Trailing ghost-icon shortcuts: Notion / Obsidian / Reveal-in-Finder.
+    /// Each is a 26pt hover-tint button (no labels — `.help(...)` is the
+    /// affordance carrier). Order chosen so the most common action
+    /// (Reveal) sits closest to the edge a user's pointer travels to.
     @ViewBuilder
-    private var openInButtons: some View {
-        HStack(spacing: 6) {
+    private var ghostShortcuts: some View {
+        HStack(spacing: 2) {
             if let url = cachedNotionURL {
-                Button {
-                    NSWorkspace.shared.open(url)
-                } label: {
-                    Label("Open in Notion", systemImage: "arrow.up.right.square")
-                }
-                .controlSize(.small)
+                MPGhostIconButton(
+                    systemImage: "arrow.up.right.square",
+                    help: "Open in Notion"
+                ) { NSWorkspace.shared.open(url) }
             }
             if let url = cachedObsidianURL {
-                Button {
-                    NSWorkspace.shared.open(url)
-                } label: {
-                    Label("Open in Obsidian", systemImage: "arrow.up.right.square")
-                }
-                .controlSize(.small)
+                MPGhostIconButton(
+                    systemImage: "book.closed",
+                    help: "Open in Obsidian"
+                ) { NSWorkspace.shared.open(url) }
             }
-            Button {
-                NSWorkspace.shared.activateFileViewerSelecting([meeting.wavURL])
-            } label: {
-                Label("Reveal in Finder", systemImage: "folder")
+            MPGhostIconButton(
+                systemImage: "folder",
+                help: "Reveal raw audio in Finder"
+            ) { NSWorkspace.shared.activateFileViewerSelecting([meeting.wavURL]) }
+        }
+    }
+
+    // MARK: Tab strip (text-only labels, 1.5pt signal underline)
+
+    /// Replaces SwiftUI's stock segmented `TabView` with a custom strip
+    /// to match the design system's restraint — text labels at 12pt
+    /// medium, no segmented bezel, active tab carries a 1.5pt
+    /// signal-blue underline anchored to the bottom hairline.
+    private var tabStrip: some View {
+        HStack(spacing: 0) {
+            ForEach(Tab.allCases, id: \.rawValue) { tab in
+                tabButton(tab)
             }
-            .controlSize(.small)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func tabButton(_ tab: Tab) -> some View {
+        let isActive = selectedTab == tab.rawValue
+        return Button {
+            selectedTab = tab.rawValue
+        } label: {
+            VStack(spacing: 0) {
+                Text(tab.label)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(isActive ? Color(MPColors.fg) : Color(MPColors.fgMuted))
+                    .padding(.vertical, 9)
+                Rectangle()
+                    .fill(isActive ? Color(MPColors.signal600) : Color.clear)
+                    .frame(height: 1.5)
+                    .cornerRadius(0.75)
+            }
+            .padding(.horizontal, 0)
+            .padding(.trailing, 16)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch selectedTab {
+        case Tab.summary.rawValue:     summaryTab
+        case Tab.transcript.rawValue:  transcriptTab
+        case Tab.audio.rawValue:       audioTab
+        case Tab.corrections.rawValue: correctionsTab
+        case Tab.raw.rawValue:         rawTab
+        default:                       summaryTab
         }
     }
 
