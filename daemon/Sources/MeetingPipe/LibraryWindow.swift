@@ -106,6 +106,13 @@ final class LibraryWindowModel: ObservableObject {
     /// recordings directory; the list view subscribes to it.
     let meetingStore: MeetingStore
 
+    /// Per-context routing rules (TECH-B). Assigned by the Coordinator
+    /// after it builds the store so the Workflows tab can ForEach over
+    /// `workflows` without holding a separate Combine subscription.
+    /// Nil-able so headless tests + the initial-state path don't need to
+    /// thread the store through.
+    weak var workflowStore: WorkflowStore?
+
     init(coordinator: Coordinator? = nil, recordingsDir: URL) {
         self.coordinator = coordinator
         self.meetingStore = MeetingStore(recordingsDir: recordingsDir)

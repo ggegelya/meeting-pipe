@@ -47,6 +47,12 @@ final class Coordinator: NSObject {
     /// state instead. No-op when backend is anthropic.
     private let modelDownload = ModelDownloadSupervisor()
 
+    /// Per-context routing rules (TECH-B). Workflows live as TOML files
+    /// under `~/.config/meeting-pipe/workflows/`. Held as a published
+    /// store so the Workflows tab + the prompt window's chip can both
+    /// subscribe directly.
+    let workflowStore: WorkflowStore
+
     /// Watches mic + system levels to surface a missed meeting end (TECH-C2).
     /// Created at recording start, released at stop. Notifies after 90 s of
     /// silence and auto-stops after 5 min.
@@ -158,6 +164,14 @@ final class Coordinator: NSObject {
         let libraryModel = LibraryWindowModel(recordingsDir: recordingsDir)
         self.libraryModel = libraryModel
         self.libraryWindow = LibraryWindow(model: libraryModel)
+        // Workflow store (TECH-B1): per-context routing rules live as
+        // TOML files under `~/.config/meeting-pipe/workflows/`. Loaded
+        // synchronously so the matcher (TECH-B3) and Workflows tab see
+        // a populated store on the first detection / window open.
+        let workflowStore = WorkflowStore()
+        workflowStore.load()
+        self.workflowStore = workflowStore
+        libraryModel.workflowStore = workflowStore
         super.init()
         // Wire the model back to the Coordinator so the sidebar's
         // Start/Stop button can route through the existing menu handlers.
