@@ -786,7 +786,10 @@ final class Coordinator: NSObject {
         pendingWorkflowOverride = nil
 
         do {
-            let file = try recorder.start(outputDir: liveOutputDir)
+            let file = try recorder.start(
+                outputDir: liveOutputDir,
+                voiceProcessing: config.recording.voiceProcessing
+            )
             // Tell the detector our tap is live so micInUse() switches
             // its gating, and any endTimer armed by a pre-recording
             // mic flicker gets cancelled immediately. Without this, a

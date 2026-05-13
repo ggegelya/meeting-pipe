@@ -8,6 +8,12 @@ output_dir = "~/Documents/Meetings/raw"
 sample_rate = 16000
 # Bundle IDs that auto-start recording without a prompt, e.g. ["us.zoom.xos"].
 auto_consent_apps = []
+# When true, AVAudioEngine's voice-processing chain runs on the mic
+# capture: noise suppression (same ML model as macOS Voice Isolation),
+# echo cancellation, and AGC. Filters keyboard / typing / fan / room
+# noise out of the recorded mic.wav. Flip to false for raw audio (e.g.
+# if you're recording music or want archival-grade un-processed input).
+voice_processing = true
 
 # No microphone or output-device fields here — the daemon captures system
 # audio via ScreenCaptureKit (regardless of which output device you use)

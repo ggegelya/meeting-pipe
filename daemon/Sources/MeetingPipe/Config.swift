@@ -12,6 +12,17 @@ struct Config {
         var outputDir: URL
         var sampleRate: Int
         var autoConsentApps: [String]
+        /// Enable `AVAudioInputNode.setVoiceProcessingEnabled(true)` on
+        /// the mic capture path. Turns on Apple's built-in VoIP DSP:
+        /// noise suppression (the same ML model that backs the system
+        /// "Voice Isolation" mic mode), echo cancellation, and AGC.
+        /// Removes the typing / keyboard / fan / room ambient that the
+        /// raw mic otherwise captures, at the cost of AGC flattening
+        /// dynamic range and the path being mono-only. Default true
+        /// because a meeting recorder is fundamentally a voice-chat
+        /// use case; flip to false in `config.toml` if you'd rather
+        /// have raw audio.
+        var voiceProcessing: Bool
     }
 
     struct Detection {
@@ -62,6 +73,7 @@ struct Config {
         let outputDirRaw = rec?["output_dir"]?.string ?? "~/Documents/Meetings/raw"
         let sampleRate = rec?["sample_rate"]?.int ?? 16000
         let consent = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string }) ?? []
+        let voiceProcessing = rec?["voice_processing"]?.bool ?? true
 
         let debounceStart = det?["debounce_start_sec"]?.double ?? 5
         let debounceEnd = det?["debounce_end_sec"]?.double ?? 5
@@ -91,7 +103,8 @@ struct Config {
             recording: Recording(
                 outputDir: expandTilde(outputDirRaw),
                 sampleRate: sampleRate,
-                autoConsentApps: consent
+                autoConsentApps: consent,
+                voiceProcessing: voiceProcessing
             ),
             detection: Detection(
                 debounceStartSec: debounceStart,
@@ -111,7 +124,8 @@ struct Config {
             recording: Recording(
                 outputDir: expandTilde("~/Documents/Meetings/raw"),
                 sampleRate: 16000,
-                autoConsentApps: []
+                autoConsentApps: [],
+                voiceProcessing: true
             ),
             detection: Detection(
                 debounceStartSec: 5,

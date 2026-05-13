@@ -92,7 +92,13 @@ final class MeetingRecorder {
     /// won't exist until `stop()` finishes the merge. Intermediate
     /// `.mic.wav` and `.system.wav` files appear next to it during
     /// the recording.
-    func start(outputDir: URL) throws -> URL {
+    ///
+    /// `voiceProcessing` toggles `AVAudioInputNode.setVoiceProcessingEnabled`
+    /// on the mic path. When true, Apple's VoIP DSP chain (noise
+    /// suppression, echo cancellation, AGC) runs at capture time and
+    /// the mic.wav we write is already cleaned up. Default true; flip
+    /// to false in `config.toml` if raw audio is needed for archival.
+    func start(outputDir: URL, voiceProcessing: Bool = true) throws -> URL {
         if isRecording { throw RecorderError.alreadyRecording }
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
         lastMicFires = 0
@@ -109,7 +115,32 @@ final class MeetingRecorder {
         let micURL = outputDir.appendingPathComponent("\(stamp).mic.wav")
         let systemURL = outputDir.appendingPathComponent("\(stamp).system.wav")
 
-        Log.writeLine("recorder", "start: final=\(finalURL.lastPathComponent) mic=\(micURL.lastPathComponent) system=\(systemURL.lastPathComponent)")
+        Log.writeLine("recorder", "start: final=\(finalURL.lastPathComponent) mic=\(micURL.lastPathComponent) system=\(systemURL.lastPathComponent) voiceProcessing=\(voiceProcessing)")
+
+        // --- Voice processing toggle --------------------------------------
+        //
+        // Must be set BEFORE we read inputNode.outputFormat below — voice
+        // processing changes the node's output format (mono 16/24/48 kHz
+        // depending on the platform's VoIP pipeline). Reading the format
+        // first and then flipping the flag would have us write a file
+        // whose declared format doesn't match the tap buffers.
+        //
+        // Apple's API throws if the engine has already started in a
+        // configuration incompatible with voice processing — but we
+        // haven't started yet, and the SPM target deploys to macOS 14+,
+        // where the call is well-supported. A throw here falls back to
+        // raw capture (the docs note it's "best effort").
+        if voiceProcessing {
+            do {
+                try engine.inputNode.setVoiceProcessingEnabled(true)
+                Log.writeLine("recorder", "voice processing enabled on inputNode")
+            } catch {
+                Log.writeLine(
+                    "recorder",
+                    "WARN: setVoiceProcessingEnabled failed: \(error.localizedDescription) — falling back to raw mic"
+                )
+            }
+        }
 
         // --- Mic via AVAudioEngine.inputNode (self-pumping) ---------------
         let micFormat = engine.inputNode.outputFormat(forBus: 0)
