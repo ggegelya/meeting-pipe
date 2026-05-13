@@ -163,6 +163,37 @@ final class Detector {
     private var nsObservers: [NSObjectProtocol] = []
     private var avObservation: NSKeyValueObservation?
 
+    /// Background queue for the AX / Core Audio / NSWorkspace probes.
+    /// AX cross-process calls (`AXUIElementCopyAttributeValue`) can take
+    /// tens to hundreds of milliseconds per call when other apps are
+    /// busy; running them on main pinned the main thread on every
+    /// workspace activation notification, which Cmd+Tab fires twice
+    /// (deactivate + activate) per swap. Moving the scans off-main
+    /// keeps the UI responsive; the decision is applied back on main
+    /// because timer arming + delegate callbacks must run there.
+    private let scanQueue = DispatchQueue(
+        label: "com.meetingpipe.Detector.scan",
+        qos: .userInitiated
+    )
+
+    /// Coalesces bursts of workspace notifications (and the AVCapture
+    /// KVO + 3s poll) into a single scan. Cmd+Tab fires both
+    /// `didDeactivate` and `didActivate` in quick succession; without
+    /// coalescing each ran a full AX walk. The window is short enough
+    /// that real signal flips still feel instant.
+    private var coalesceWork: DispatchWorkItem?
+    private static let coalesceWindow: TimeInterval = 0.08
+
+    /// Snapshot fed into `apply(_:)` from the background scan. Keeps the
+    /// off-main code purely functional; everything that mutates state
+    /// (timers, hasFiredStart, recordingSource, delegate calls) stays
+    /// on main inside `apply`.
+    private struct ScanResult {
+        let app: AppSource?
+        let mic: Bool
+        let windowOpen: Bool
+    }
+
     init(
         debounceStartSec: Double,
         debounceEndSec: Double,
@@ -217,6 +248,8 @@ final class Detector {
         pollTimer = nil
         startTimer?.invalidate(); startTimer = nil
         endTimer?.invalidate(); endTimer = nil
+        coalesceWork?.cancel()
+        coalesceWork = nil
     }
 
     // MARK: Recorder lifecycle hooks
@@ -281,8 +314,16 @@ final class Detector {
             NSWorkspace.didDeactivateApplicationNotification
         ]
         for name in names {
-            let obs = nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                self?.reevaluate()
+            let obs = nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                // Fast-exit: if neither the meeting state nor the
+                // triggering app is interesting, the heavy AX/CoreAudio
+                // scan would just confirm "nothing changed". Skipping
+                // here is what eliminates the Cmd+Tab hang between two
+                // unrelated apps. AVCapture KVO + the 3s poll cover
+                // the rare case where signal flips without a
+                // workspace notification on a candidate bundle.
+                let bid = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
+                self?.scheduleReevaluate(triggerBundle: bid)
             }
             nsObservers.append(obs)
         }
@@ -296,24 +337,75 @@ final class Detector {
         if let mic = AVCaptureDevice.default(for: .audio) {
             avObservation = mic.observe(\.isInUseByAnotherApplication, options: [.new, .initial]) { [weak self] _, _ in
                 DispatchQueue.main.async {
-                    self?.reevaluate()
+                    // KVO never has a triggering bundle id; bypass
+                    // the fast-exit by passing nil so the scan always
+                    // runs when the mic state flips.
+                    self?.scheduleReevaluate(triggerBundle: nil)
                 }
             }
         }
     }
 
+    /// Workspace-notification entry point. Skips the scan entirely
+    /// when nothing of interest is happening (no in-flight meeting AND
+    /// the triggering app isn't a known meeting / browser bundle), and
+    /// otherwise debounces onto a single `reevaluate()` per
+    /// `coalesceWindow` so Cmd+Tab's deactivate+activate pair collapses
+    /// to one scan.
+    ///
+    /// Caller must be on the main run loop.
+    private func scheduleReevaluate(triggerBundle: String?) {
+        if !hasFiredStart, let bid = triggerBundle,
+           !nativeBundles.contains(bid),
+           !browserBundles.contains(bid) {
+            return
+        }
+        coalesceWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.reevaluate() }
+        coalesceWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.coalesceWindow, execute: work)
+    }
+
     // MARK: Evaluation
 
     private func reevaluate() {
-        // Refresh signals.
-        let app = scanMeetingApp()
-        let mic = micInUse()
-        // Only run the AX window probe once we've fired .started — before
-        // that, `decide()` ignores `meetingWindowOpen` (start fires on
-        // app+mic alone) and the AX traversal is wasted work on the main
-        // run loop. Pass `true` (the safe "still open" default) so the
-        // composer's start path stays unaffected.
-        let windowOpen = hasFiredStart ? currentWindowOpen(app: app) : true
+        // Snapshot state that lives on main so the off-main scan stays
+        // purely functional. `recorderActive` gates the CoreAudio probe;
+        // `hasFiredStart` decides whether the window probe runs at all;
+        // `recordingSource` is the AX target post-start.
+        let snapshotRecorderActive = recorderActive
+        let snapshotHasFiredStart = hasFiredStart
+        let snapshotRecordingSource = recordingSource
+
+        scanQueue.async { [weak self] in
+            guard let self = self else { return }
+            let app = self.scanMeetingApp()
+            let mic = self.micInUse(recorderActive: snapshotRecorderActive)
+            // Only run the AX window probe once we've fired .started —
+            // before that, `decide()` ignores `meetingWindowOpen` (start
+            // fires on app+mic alone) and the AX traversal is wasted
+            // work. Pass `true` (the safe "still open" default) so the
+            // composer's start path stays unaffected.
+            let windowOpen = snapshotHasFiredStart
+                ? self.currentWindowOpen(app: snapshotRecordingSource ?? app)
+                : true
+            // Weak again on the inner hop: Coordinator can swap the
+            // Detector on config refresh, and a scan result that lands
+            // on a stopped Detector would arm timers that fire into a
+            // detached state machine.
+            DispatchQueue.main.async { [weak self] in
+                self?.apply(ScanResult(app: app, mic: mic, windowOpen: windowOpen))
+            }
+        }
+    }
+
+    /// Apply a scan snapshot on the main run loop. All state mutation
+    /// (timers, hasFiredStart, recordingSource, delegate calls) lives
+    /// here so the off-main scan never races with the state machine.
+    private func apply(_ result: ScanResult) {
+        let app = result.app
+        let mic = result.mic
+        let windowOpen = result.windowOpen
 
         meetingApp = app
         micActive = mic
@@ -366,7 +458,13 @@ final class Detector {
                     self.endTimer = nil
                     let confirmApp = self.scanMeetingApp()
                     let confirmMic = self.micInUse()
-                    let confirmWindow = self.currentWindowOpen(app: confirmApp)
+                    // Probe against the pinned recording source (set at
+                    // .started) when present, falling back to whatever
+                    // the current scan returns. Mirrors the pre-refactor
+                    // `recordingSource ?? confirmApp` precedence that
+                    // `currentWindowOpen` used to do internally.
+                    let probeTarget = self.recordingSource ?? confirmApp
+                    let confirmWindow = self.currentWindowOpen(app: probeTarget)
                     let reFired = DetectorSignals(
                         meetingAppPresent: confirmApp != nil,
                         micActive: confirmMic,
@@ -408,9 +506,13 @@ final class Detector {
     /// `true` when there's no app to inspect or the probe can't tell —
     /// the composer treats unknown as "still open" so we never stop
     /// recording on an inconclusive signal.
+    ///
+    /// Safe to call from any queue: `windowProbe` is the immutable
+    /// closure set at init, and AX APIs are documented thread-safe.
+    /// The caller is responsible for resolving `recordingSource` ?? app
+    /// before calling so we never read mutable state off-main.
     private func currentWindowOpen(app: AppSource?) -> Bool {
-        let target = recordingSource ?? app
-        guard let target = target else { return true }
+        guard let target = app else { return true }
         return windowProbe(target) ?? true
     }
 
@@ -502,21 +604,33 @@ final class Detector {
 
     // MARK: Signal B
 
+    /// Main-thread convenience: reads the live `recorderActive` field.
+    /// Used by the start/end debounce timer fires which already run on
+    /// main. Off-main callers (the background scan queue) must use
+    /// `micInUse(recorderActive:)` with a snapshot.
     private func micInUse() -> Bool {
+        return micInUse(recorderActive: recorderActive)
+    }
+
+    /// Pure probe used by the background scan queue. Takes
+    /// `recorderActive` as a parameter so the off-main scan doesn't
+    /// race with the main-thread setter.
+    ///
+    /// Once OUR recorder is active, our own AVAudioEngine.inputNode tap
+    /// holds the input device, so the broad CoreAudio probe (which
+    /// checks kAudioDevicePropertyDeviceIsRunningSomewhere across all
+    /// input devices and cannot exclude self) is permanently true and
+    /// masks the meeting app releasing the mic. `isInUseByAnotherApplication`
+    /// already excludes self by design and is sufficient to detect the
+    /// other app releasing, so let it carry the end signal post-record.
+    ///
+    /// Important: gate on `recorderActive`, NOT `hasFiredStart`. The
+    /// .started event fires the moment we detect a meeting; the user
+    /// then sits in the prompt for up to `prompt_timeout_sec`. During
+    /// that window, our tap is NOT yet engaged, so the CoreAudio probe
+    /// stays useful as a backup for AVCapture KVO flakiness.
+    private func micInUse(recorderActive: Bool) -> Bool {
         if let mic = AVCaptureDevice.default(for: .audio), mic.isInUseByAnotherApplication { return true }
-        // Once OUR recorder is active, our own AVAudioEngine.inputNode tap
-        // holds the input device, so the broad CoreAudio probe (which
-        // checks kAudioDevicePropertyDeviceIsRunningSomewhere across all
-        // input devices and cannot exclude self) is permanently true and
-        // masks the meeting app releasing the mic. `isInUseByAnotherApplication`
-        // above already excludes self by design and is sufficient to detect
-        // the other app releasing, so let it carry the end signal post-record.
-        //
-        // Important: gate on `recorderActive`, NOT `hasFiredStart`. The
-        // .started event fires the moment we detect a meeting; the user
-        // then sits in the prompt for up to `prompt_timeout_sec`. During
-        // that window, our tap is NOT yet engaged, so the CoreAudio probe
-        // stays useful as a backup for AVCapture KVO flakiness.
         if recorderActive { return false }
         return Detector.coreAudioMicRunning()
     }
