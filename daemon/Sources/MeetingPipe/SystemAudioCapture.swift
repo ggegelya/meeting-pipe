@@ -88,10 +88,10 @@ final class SystemAudioCapture: NSObject {
         if cachedContent != nil { permissionState = .granted; return }
 
         // 1. Check the current TCC verdict without prompting. If we
-        //    already have access, skip the request call and go straight
-        //    to the SCShareableContent cache fill.
+        //    already have access, skip the request call and go
+        //    straight to SCShareableContent — that call is safe to
+        //    make when access is confirmed (no second prompt).
         let alreadyTrusted = CGPreflightScreenCaptureAccess()
-        var requestReturnedFalse = false
         if !alreadyTrusted {
             // 2. Actively request — this is what populates the System
             //    Settings list and surfaces the prompt. Returns the
@@ -102,21 +102,22 @@ final class SystemAudioCapture: NSObject {
             Log.recorder.info("CGRequestScreenCaptureAccess: granted=\(granted)")
             Log.writeLine("recorder", "CGRequestScreenCaptureAccess: granted=\(granted)")
             if !granted {
-                requestReturnedFalse = true
-                // DO NOT bail early. We used to: the reasoning was that
-                // SCShareableContent would fail and flip
-                // permissionState to .denied prematurely (the dialog
-                // might still be on screen). The cost of bailing,
-                // though, is that we never detect the
-                // "stale-cdhash-but-effectively-granted" state: a user
-                // who reinstalls and toggles the System Settings switch
-                // gets `CGPreflight=false` (cdhash mismatch) AND
-                // `CGRequest=false` (already-decided cache),
-                // permissionState stays .unknown, and the UI shows
-                // "Needed" while access actually works. Always try
-                // SCShareableContent; on failure we still avoid
-                // flipping to .denied when the request returned false
-                // (the "still deciding" case below).
+                // Bail without calling SCShareableContent. On macOS
+                // 14.4+ — and definitely on macOS 26 — `SCShareable
+                // Content.excludingDesktopWindows(...)` surfaces a
+                // second TCC dialog when access has just been denied,
+                // because Apple's "give the user another chance"
+                // policy fires inside the SC framework too. Calling
+                // it after a known-false CGRequest just doubles the
+                // dialog count from a single user-initiated prewarm,
+                // and (when wired into a polling refresh, which we
+                // no longer do) compounds into the prompt loop the
+                // user reported. The cost of bailing is that the
+                // stale-cdhash-effectively-granted edge case isn't
+                // self-healed automatically — the user has to click
+                // Request explicitly to re-probe, which is acceptable.
+                Log.writeLine("recorder", "CGRequest denied; skipping SCShareableContent probe to avoid double-prompt")
+                return
             }
         }
         do {
@@ -128,18 +129,9 @@ final class SystemAudioCapture: NSObject {
             Log.recorder.info("SCShareableContent prewarmed (\(cachedContent?.displays.count ?? 0) displays)")
             Log.writeLine("recorder", "SCShareableContent prewarmed")
         } catch {
-            if requestReturnedFalse {
-                // User may still be deciding (dialog on screen) or
-                // the bundle isn't yet in the TCC list. Leave state
-                // as .unknown so the UI doesn't surface a false
-                // "denied" before the user has actually decided.
-                Log.recorder.info("SCShareableContent unavailable (request pending): \(error.localizedDescription)")
-                Log.writeLine("recorder", "SCShareableContent unavailable (request pending)")
-            } else {
-                permissionState = .denied
-                Log.recorder.warning("SCShareableContent prewarm failed: \(error.localizedDescription)")
-                Log.writeLine("recorder", "WARN: SCShareableContent prewarm failed: \(error.localizedDescription)")
-            }
+            permissionState = .denied
+            Log.recorder.warning("SCShareableContent prewarm failed: \(error.localizedDescription)")
+            Log.writeLine("recorder", "WARN: SCShareableContent prewarm failed: \(error.localizedDescription)")
         }
     }
 

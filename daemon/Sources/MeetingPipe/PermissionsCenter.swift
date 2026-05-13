@@ -97,10 +97,13 @@ final class PermissionsCenter: ObservableObject {
 
     /// Re-read every permission state from TCC. Cheap; called at startup,
     /// when the Preferences window opens, and on a 2 s timer while that
-    /// window is visible.
+    /// window is visible. **Read-only** — must never call any API that
+    /// can surface a TCC dialog (CGRequest*, SCShareableContent on
+    /// macOS 14.4+, requestAuthorization, etc.). The polling refresh
+    /// rides on this.
     func refreshAll() async {
         await refreshMic()
-        await refreshScreenRecording()
+        refreshScreenRecording()
         refreshAccessibility()
         await refreshNotifications()
     }
@@ -130,22 +133,28 @@ final class PermissionsCenter: ObservableObject {
         commit(\.microphone, kind: .microphone, status: new)
     }
 
-    func refreshScreenRecording() async {
-        // Re-probe SCShareableContent rather than trusting the cached
-        // verdict — the cached state is fine at app launch, but the
-        // "Re-check" button (and the Permissions tab's 2 s poll) needs
-        // to pick up changes the user made in System Settings since
-        // launch. Without this, toggling MeetingPipe on in Settings →
-        // Screen Recording wouldn't lift our reported status until the
-        // next recording or daemon restart.
-        await SystemAudioCapture.reprobeAccess()
+    func refreshScreenRecording() {
+        // Read-only. `CGPreflightScreenCaptureAccess` reflects TCC
+        // state changes immediately — once the user toggles the
+        // System Settings switch, the next call returns the new
+        // verdict without us having to do anything else.
+        //
+        // We deliberately do NOT call `SCShareableContent` here. On
+        // macOS 14.4+ (and certainly on the user's macOS 26)
+        // `SCShareableContent` surfaces the TCC dialog when access
+        // is denied — Apple's "give the user another chance" policy.
+        // Calling it on a 2 s polling tick would re-pop the prompt
+        // indefinitely, which is exactly the regression we're
+        // chasing.
+        //
+        // `permissionState` is the last verdict from the explicit
+        // `prewarm()` path (initial app launch + Request button +
+        // recorder start). When that path saw success, we fold its
+        // verdict in so a fresh launch with cached `.granted` doesn't
+        // briefly flash `.notDetermined` while CGPreflight catches up.
         let preflight = CGPreflightScreenCaptureAccess()
         let new: Status
         if preflight || SystemAudioCapture.permissionState == .granted {
-            // Effective access — either preflight returned true (the
-            // grant has a fresh cdhash record) or the SCShareableContent
-            // probe succeeded (typical of the stale-cdhash case where
-            // the user toggled the switch after a reinstall).
             new = .granted
         } else if SystemAudioCapture.permissionState == .denied {
             new = .denied
@@ -215,7 +224,7 @@ final class PermissionsCenter: ObservableObject {
         // already trusts at startup. prewarm() handles the
         // CGRequestScreenCaptureAccess + SCShareableContent fetch.
         await SystemAudioCapture.prewarm()
-        await refreshScreenRecording()
+        refreshScreenRecording()
         if screenRecording != .granted {
             markDeferredAndOpenSettings(.screenRecording)
         }
