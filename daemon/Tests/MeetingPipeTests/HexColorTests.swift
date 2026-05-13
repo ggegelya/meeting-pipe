@@ -9,7 +9,7 @@ final class HexColorTests: XCTestCase {
         return (c.redComponent, c.greenComponent, c.blueComponent)
     }
 
-    func test_parses_uppercase_hex() {
+    func test_parses_uppercase_hex() throws {
         let color = try XCTUnwrap(HexColor.parse("#FF6B6B"))
         let (r, g, b) = srgbChannels(color)
         XCTAssertEqual(r, 1.0, accuracy: 0.01)

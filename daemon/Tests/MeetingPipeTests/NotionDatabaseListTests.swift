@@ -1,6 +1,12 @@
 import XCTest
 @testable import MeetingPipe
 
+// `@MainActor` because `NotionDatabaseList.parse` is main-actor isolated
+// (it lives next to UI-driven Notion picker state). Swift 6's strict
+// concurrency surfaces this when Xcode 26+ compiles the tests; the
+// declared annotation matches the runtime isolation that's been true
+// since the class was introduced.
+@MainActor
 final class NotionDatabaseListTests: XCTestCase {
 
     private func payload(_ raw: String) -> Data {
