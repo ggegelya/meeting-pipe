@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(swift build:*)",
+      "Bash(swift test:*)",
+      "Bash(cd /Users/userinverita96/Documents/Projects/GIT/meeting-pipe/daemon && swift build:*)",
+      "Bash(cd /Users/userinverita96/Documents/Projects/GIT/meeting-pipe/daemon && swift test:*)",
+      "Bash(cd /Users/userinverita96/Documents/Projects/GIT/meeting-pipe/pipeline && uv run --extra dev ruff check:*)",
+      "Bash(cd /Users/userinverita96/Documents/Projects/GIT/meeting-pipe/pipeline && uv run --extra dev pytest:*)",
+      "Bash(uv run --extra dev ruff check:*)",
+      "Bash(uv run --extra dev pytest:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git blame:*)",
+      "Bash(afinfo:*)",
+      "Bash(ls:*)",
+      "Bash(cat /Users/userinverita96/Library/Logs/MeetingPipe/*)",
+      "Bash(tail /Users/userinverita96/Library/Logs/MeetingPipe/*)",
+      "Bash(scripts/tail-events.sh:*)",
+      "Bash(./scripts/tail-events.sh:*)",
+      "Bash(/Users/userinverita96/Documents/Projects/GIT/meeting-pipe/scripts/tail-events.sh:*)"
+    ]
+  }
+}
