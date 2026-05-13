@@ -26,18 +26,35 @@ final class AppGlyphView: NSImageView {
 
     // MARK: Glyph resolution
 
+    /// Process-wide cache of decoded glyphs, keyed by filename. The
+    /// library list re-creates `AppGlyphView` instances every time a row
+    /// scrolls back into view, and re-reading the same `zoom.svg` /
+    /// `teams.svg` from the bundle (Bundle URL lookup + NSImage decode)
+    /// per row was the dominant per-row main-thread cost. Loading from
+    /// the cache turns the row glyph into an NSImage retain.
+    ///
+    /// Threading: all access happens from the main run loop. AppGlyphView
+    /// is constructed by NSViewRepresentable.makeNSView (main-actor) and
+    /// directly by AppKit code on main; no other reader exists today.
+    /// If a non-main caller is added later, swap to an NSCache.
+    nonisolated(unsafe) private static var glyphCache: [String: NSImage] = [:]
+
     /// Bundle-ID first (stable), display-name second (handles browsers and
     /// odd capitalizations), `_fallback.svg` last.
     private static func loadGlyph(for source: AppSource) -> NSImage? {
         let name = filename(for: source)
+        if let cached = glyphCache[name] { return cached }
         if let url = Bundle.module.url(forResource: name, withExtension: "svg", subdirectory: "AppGlyphs"),
            let img = NSImage(contentsOf: url) {
+            glyphCache[name] = img
             return img
         }
         // Fallback path — should always exist; if it doesn't, NSImageView
         // just renders blank, which is a graceful degradation.
+        if let cached = glyphCache["_fallback"] { return cached }
         if let url = Bundle.module.url(forResource: "_fallback", withExtension: "svg", subdirectory: "AppGlyphs"),
            let img = NSImage(contentsOf: url) {
+            glyphCache["_fallback"] = img
             return img
         }
         return nil
