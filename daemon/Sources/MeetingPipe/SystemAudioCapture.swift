@@ -144,14 +144,40 @@ final class SystemAudioCapture: NSObject {
     }
 
     /// Drop the cached `SCShareableContent` + permission verdict and
-    /// re-probe from scratch. Used by the Permissions tab's "Re-check"
-    /// button so the user gets an accurate signal right after they
-    /// toggled the System Settings switch — without this, the cached
-    /// verdict from app launch would persist until the next recording.
+    /// re-probe via `SCShareableContent` only — NEVER calls
+    /// `CGRequestScreenCaptureAccess`. The request API surfaces the
+    /// system dialog every time it's called for an ungranted bundle;
+    /// invoking it on the Permissions tab's 2 s polling loop would
+    /// re-pop the prompt indefinitely.
+    ///
+    /// Used by `PermissionsCenter.refreshScreenRecording` (polling and
+    /// Re-check). The explicit Request button still goes through
+    /// `prewarm()`, which is the only path allowed to surface the
+    /// dialog.
     static func reprobeAccess() async {
         cachedContent = nil
         permissionState = .unknown
-        await prewarm()
+        let alreadyTrusted = CGPreflightScreenCaptureAccess()
+        do {
+            cachedContent = try await SCShareableContent.excludingDesktopWindows(
+                false,
+                onScreenWindowsOnly: true
+            )
+            permissionState = .granted
+        } catch {
+            // CGPreflight true + SC fail: TCC says granted but the
+            // call refused — a real denial / transient failure. Set
+            // .denied.
+            // CGPreflight false + SC fail: user hasn't granted yet,
+            // or stale cdhash with no effective access. Keep
+            // .unknown so the UI doesn't fabricate a "denied"
+            // verdict on a polling tick.
+            if alreadyTrusted {
+                permissionState = .denied
+            } else {
+                permissionState = .unknown
+            }
+        }
     }
 
     /// Start capturing system audio. The "filter" must reference a real
