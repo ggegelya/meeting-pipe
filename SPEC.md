@@ -217,6 +217,47 @@ default — browser window/tab state flickers more during a call than
 native meeting apps, and the global 5 s produced premature stops.
 Lookup precedence: explicit override > browser default > global.
 
+### Re-prompt cooldown after a recording ends
+
+When a recording for app X finishes (or its prompt is skipped / times
+out), the Coordinator arms a per-bundle cooldown via `RepromptCooldown`.
+Detector-driven `.started` events for the same bundle within
+`reprompt_cooldown_sec` (default 60 s) are dropped with a
+`prompt_suppressed_cooldown` event and never reach the prompt window.
+
+The cooldown catches the post-call surface that Teams (and similar
+clients) keep open after the meeting window dies — a chat tab that
+briefly re-acquires the audio session is enough to make
+`AVCaptureDevice.isInUseByAnotherApplication` flip true, producing a
+stray "Record this meeting?" prompt 2-3 s after the previous stop.
+
+The manual hotkey (`toggleManual`) and "Always for {App}" consent both
+clear the cooldown entry so an explicit user-start is never blocked.
+
+### Mute-aware mic capture
+
+`MeetingMuteProbe` polls the active recording's meeting window once
+per second and reads the client's mute control via Accessibility. The
+recognised state flips `MeetingRecorder.micPaused`:
+
+- `.muted` → recorder drops mic frames (`mic.wav` records silence for
+  that interval); `mic_paused_due_to_mute` logged.
+- `.unmuted` → recorder resumes writing; `mic_resumed` logged.
+- `.unknown` → no change, last state is preserved.
+
+This is needed because `AVAudioEngine.inputNode` taps the OS-level
+microphone, which is independent of any meeting client's mute UI.
+Without the probe, meeting-pipe captured the user's voice into the
+transcript even while Teams said they were muted — surfaced in the
+2026-05-13 17:25 test recording. Per-bundle predicates live in
+`MeetingMuteProbe.recognize` (Teams, Zoom, Slack today). System-audio
+capture is unaffected: the system mix continues to be recorded so the
+transcript still contains everything the other participants said.
+
+Opt-out via `recording.honor_app_mute = false` in `config.toml`. AX
+denied / unrecognised label / browser sources keep the legacy
+behaviour (record everything) without further configuration.
+
 ### Silence-based safety net
 
 When the regular end-signal misses (browser-tab meetings where the call ended

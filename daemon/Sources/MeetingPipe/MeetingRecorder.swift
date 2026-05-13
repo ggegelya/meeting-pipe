@@ -57,6 +57,16 @@ final class MeetingRecorder {
     var onMicLevel: ((Float) -> Void)?
     var onSystemLevel: ((Float) -> Void)?
 
+    /// When true, the mic tap drops incoming buffers instead of writing
+    /// them to `mic.wav`. The Coordinator flips this in response to
+    /// `MeetingMuteProbe` so a Teams / Zoom / Slack mute is honoured —
+    /// otherwise the OS-level mic tap would happily capture the user's
+    /// voice into the transcript even though it never reached the call.
+    /// Single writer (main thread) / single reader (audio render
+    /// thread); a momentary stale read is fine because the next tap
+    /// callback re-reads the flag a few ms later.
+    var micPaused: Bool = false
+
     /// Accumulators for one-second RMS aggregation. Two pairs because
     /// mic + system run on independent threads with different sample
     /// rates and we don't want the math to cross.
@@ -107,6 +117,9 @@ final class MeetingRecorder {
         micAccumFrames = 0
         systemAccumSumSq = 0
         systemAccumFrames = 0
+        // Always start unpaused so a stale flag from a prior session
+        // can't keep the mic file silent on the first buffer.
+        micPaused = false
 
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -162,10 +175,19 @@ final class MeetingRecorder {
             if self.micFires == 1 {
                 Log.writeLine("recorder", "mic tap first fired: frames=\(buffer.frameLength)")
             }
-            do {
-                try file.write(from: buffer)
-            } catch {
-                Log.recorder.error("mic write: \(error.localizedDescription)")
+            // Honour the Coordinator-driven mute gate. The frame is
+            // still counted (so `lastMicFires` doesn't trip the "no
+            // mic activity" warning at stop) and RMS still emits (so
+            // the silence detector sees the real input level — long
+            // mute periods are fine because the system-audio side
+            // keeps the silence timer fed). We just don't persist the
+            // bytes.
+            if !self.micPaused {
+                do {
+                    try file.write(from: buffer)
+                } catch {
+                    Log.recorder.error("mic write: \(error.localizedDescription)")
+                }
             }
             self.accumulateAndEmit(
                 buffer: buffer,

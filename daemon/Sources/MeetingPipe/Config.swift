@@ -23,6 +23,14 @@ struct Config {
         /// use case; flip to false in `config.toml` if you'd rather
         /// have raw audio.
         var voiceProcessing: Bool
+        /// When true, the recorder pauses mic capture while the user
+        /// is muted in the active meeting client (Teams / Zoom /
+        /// Slack). Detected via Accessibility on the meeting window
+        /// the recording was attributed to — best-effort, so if AX is
+        /// denied or the client's mute control isn't recognised we
+        /// keep recording (current behaviour). Default true because
+        /// the mic-tap-bypasses-app-mute surprise is widely reported.
+        var honorAppMute: Bool
     }
 
     struct Detection {
@@ -82,6 +90,7 @@ struct Config {
         let sampleRate = rec?["sample_rate"]?.int ?? 16000
         let consent = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string }) ?? []
         let voiceProcessing = rec?["voice_processing"]?.bool ?? true
+        let honorAppMute = rec?["honor_app_mute"]?.bool ?? true
 
         let debounceStart = det?["debounce_start_sec"]?.double ?? 5
         let debounceEnd = det?["debounce_end_sec"]?.double ?? 5
@@ -113,7 +122,8 @@ struct Config {
                 outputDir: expandTilde(outputDirRaw),
                 sampleRate: sampleRate,
                 autoConsentApps: consent,
-                voiceProcessing: voiceProcessing
+                voiceProcessing: voiceProcessing,
+                honorAppMute: honorAppMute
             ),
             detection: Detection(
                 debounceStartSec: debounceStart,
@@ -135,7 +145,8 @@ struct Config {
                 outputDir: expandTilde("~/Documents/Meetings/raw"),
                 sampleRate: 16000,
                 autoConsentApps: [],
-                voiceProcessing: true
+                voiceProcessing: true,
+                honorAppMute: true
             ),
             detection: Detection(
                 debounceStartSec: 5,

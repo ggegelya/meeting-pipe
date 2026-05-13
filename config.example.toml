@@ -14,6 +14,14 @@ auto_consent_apps = []
 # noise out of the recorded mic.wav. Flip to false for raw audio (e.g.
 # if you're recording music or want archival-grade un-processed input).
 voice_processing = true
+# When true, the recorder pauses local mic capture while the user is
+# muted in the active meeting client (Teams / Zoom / Slack huddle).
+# Detected via Accessibility on the meeting window the recording was
+# attributed to. Best-effort: if AX is denied or the client's mute
+# control isn't recognised, the recorder keeps capturing everything
+# (current behaviour). Flip to false if you want the mic to always
+# record regardless of in-app mute (e.g. archival use cases).
+honor_app_mute = true
 
 # No microphone or output-device fields here — the daemon captures system
 # audio via ScreenCaptureKit (regardless of which output device you use)

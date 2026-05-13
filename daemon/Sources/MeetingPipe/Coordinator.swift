@@ -91,6 +91,26 @@ final class Coordinator: NSObject {
     /// cooldown. See `RepromptCooldown` for the why.
     private var repromptCooldown = RepromptCooldown()
 
+    /// AX handle to the active recording's meeting window. Captured
+    /// when `beginRecording` arms a recording for a native source, used
+    /// by the `MeetingMuteProbe` poll to read the client's mute state.
+    /// `nil` for manual / browser recordings, AX-denied sessions, or
+    /// when no window matched at capture time — in any of those cases
+    /// the mute probe stays off and the recorder behaves as before.
+    private var recordingWindow: MeetingWindowHandle?
+
+    /// 1 Hz timer that polls `MeetingMuteProbe.evaluate` while
+    /// recording. Toggles `recorder.micPaused` on transitions and
+    /// emits `mic_paused_due_to_mute` / `mic_resumed` events to the
+    /// jsonl. Armed in `armMuteProbe`, disarmed in `disarmMuteProbe`.
+    private var muteProbeTimer: Timer?
+
+    /// Last mute state we observed (or `.unknown` before the first
+    /// successful probe). Stored so we only emit transition events
+    /// when the state actually flips — otherwise the events log would
+    /// fill with one redundant line per poll.
+    private var lastMuteState: MeetingMuteProbe.State = .unknown
+
     /// FIFO queue of pipeline jobs spawned after recordings flush. The
     /// queue is sequential (one whisper.cpp at a time) but the recording
     /// side of the state machine runs in parallel, so the user can start
@@ -657,6 +677,14 @@ final class Coordinator: NSObject {
         configStore?.repromptCooldownSec ?? config.detection.repromptCooldownSec
     }
 
+    private var liveHonorAppMute: Bool {
+        // `Recording.honorAppMute` isn't wired through ConfigStore's
+        // SwiftUI surface yet (the Preferences tab doesn't expose a
+        // toggle for it). Read straight from the Config snapshot so
+        // editing the TOML still works for the personal-tool case.
+        config.recording.honorAppMute
+    }
+
     private var liveManualHotkey: String {
         configStore?.manualHotkey ?? config.detection.manualHotkey
     }
@@ -827,6 +855,7 @@ final class Coordinator: NSObject {
                 "workflow_name": resolvedWorkflow?.name ?? NSNull(),
             ])
             armSilenceDetector()
+            armMuteProbe(source: source)
             // Kick off streaming transcribe so transcription runs in
             // parallel with the meeting. Best-effort — a failure here
             // (mp not installed, AVAudioFile not yet flushing) just
@@ -863,6 +892,7 @@ final class Coordinator: NSObject {
         statusBar.setStopping()
         recordingHUD.dismiss()
         disarmSilenceDetector()
+        disarmMuteProbe()
 
         // Recorder.stop is async — runs on a background task so the UI
         // stays responsive. Once flushed, the audio is enqueued for
@@ -1135,6 +1165,89 @@ final class Coordinator: NSObject {
             "file": file.lastPathComponent,
         ])
         stopRecording(file: file, source: src, summaryMode: mode)
+    }
+
+    // MARK: - Mute probe (honor app-level mute)
+
+    /// Capture the meeting window for a native source and start the 1 Hz
+    /// poll that gates `recorder.micPaused` on the client's mute state.
+    /// No-op when the probe is disabled by config, when the source is
+    /// browser / manual (no native AX window to inspect), or when AX
+    /// permission is missing (the capture returns nil and the recorder
+    /// behaves as before).
+    private func armMuteProbe(source: AppSource?) {
+        muteProbeTimer?.invalidate()
+        muteProbeTimer = nil
+        recordingWindow = nil
+        lastMuteState = .unknown
+        guard liveHonorAppMute else { return }
+        guard let source = source, source.kind == .native else { return }
+        guard let handle = MeetingWindowProbe.capture(source: source) else {
+            Log.writeLine(
+                "daemon",
+                "mute probe disabled: no AX window handle for \(source.bundleID)"
+            )
+            return
+        }
+        recordingWindow = handle
+        Log.writeLine("daemon", "mute probe armed for \(source.bundleID)")
+        Log.event(category: "coordinator", action: "mute_probe_armed", attributes: [
+            "bundle_id": source.bundleID,
+        ])
+        // 1 Hz is responsive enough that a few hundred ms of speech
+        // after toggling mute is the worst-case spillover. Faster
+        // polling burns AX RPCs without meaningful UX benefit.
+        muteProbeTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.tickMuteProbe()
+        }
+    }
+
+    private func disarmMuteProbe() {
+        muteProbeTimer?.invalidate()
+        muteProbeTimer = nil
+        recordingWindow = nil
+        // Leave `recorder.micPaused` alone — the recorder resets it on
+        // its next `start()`. Resetting here would race the stop flush
+        // which is still draining buffered mic frames.
+        if lastMuteState != .unknown {
+            Log.event(category: "coordinator", action: "mute_probe_disarmed", attributes: [
+                "last_state": Coordinator.muteLabel(lastMuteState),
+            ])
+        }
+        lastMuteState = .unknown
+    }
+
+    private func tickMuteProbe() {
+        guard let handle = recordingWindow else { return }
+        guard case .recording = state else { return }
+        let state = MeetingMuteProbe.evaluate(handle)
+        if state == lastMuteState || state == .unknown { return }
+        // Confirmed transition. Flip the recorder and log.
+        switch state {
+        case .muted:
+            recorder.micPaused = true
+            Log.writeLine("daemon", "mute probe: user muted → pausing mic capture")
+            Log.event(category: "coordinator", action: "mic_paused_due_to_mute", attributes: [
+                "bundle_id": handle.bundleID,
+            ])
+        case .unmuted:
+            recorder.micPaused = false
+            Log.writeLine("daemon", "mute probe: user unmuted → resuming mic capture")
+            Log.event(category: "coordinator", action: "mic_resumed", attributes: [
+                "bundle_id": handle.bundleID,
+            ])
+        case .unknown:
+            return
+        }
+        lastMuteState = state
+    }
+
+    private static func muteLabel(_ state: MeetingMuteProbe.State) -> String {
+        switch state {
+        case .muted: return "muted"
+        case .unmuted: return "unmuted"
+        case .unknown: return "unknown"
+        }
     }
 }
 
