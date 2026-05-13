@@ -195,7 +195,25 @@ final class ConfigStore: ObservableObject {
 
     /// Render `rawDocument` and replace `configURL` atomically.
     private func persistToDisk() throws {
-        let toml = rawDocument.convert(to: .toml)
+        // Pass a FormatOptions set WITHOUT `.allowLiteralStrings` so all
+        // strings round-trip with double quotes (`key = "value"`) rather
+        // than TOML's literal-string single-quote form (`key = 'value'`).
+        // Other tools (vim TOML highlighters, external linters, our own
+        // tests) all expect the canonical basic-string output, and the
+        // single-quote form was breaking ConfigStore round-trip
+        // assertions under Xcode 26.5 / Swift 6 once TOMLKit started
+        // preferring literal strings for value-only payloads.
+        let toml = rawDocument.convert(
+            to: .toml,
+            options: [
+                .allowMultilineStrings,
+                .allowUnicodeStrings,
+                .allowBinaryIntegers,
+                .allowOctalIntegers,
+                .allowHexadecimalIntegers,
+                .indentations,
+            ]
+        )
         try FileManager.default.createDirectory(
             at: configURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -215,15 +233,48 @@ final class ConfigStore: ObservableObject {
     }
 
     /// Get-or-create a top-level table in `rawDocument`.
+    ///
+    /// CRITICAL: TOMLKit's subscript SET on `TOMLTable` (the underlying
+    /// `tableReplaceOrInsertNode` C call) COPIES the source node into
+    /// the parent's backing store. After `rawDocument[key] = new`, the
+    /// local `new` is detached from the persisted document — any
+    /// subscript assignment on it goes to an orphan table that nobody
+    /// renders. The symptom is silent: the FIRST assignment per
+    /// fresh top-level table (e.g. `notion.database_id` when the user
+    /// has no `[notion]` block yet) is dropped on save while every
+    /// subsequent assignment lands.
+    ///
+    /// Re-fetching the table from `rawDocument` after insertion gives
+    /// us a Swift wrapper around the SAME C-level pointer that
+    /// `persistToDisk` will serialize, so subsequent assignments
+    /// persist correctly.
     private func ensureTable(_ key: String) -> TOMLTable {
         if let existing = rawDocument[key]?.table { return existing }
+        rawDocument[key] = TOMLTable()
+        // Re-fetch: the value we just stored is a detached copy.
+        // `rawDocument[key]?.table` wraps the live pointer.
+        if let live = rawDocument[key]?.table { return live }
+        // Defensive fallback (shouldn't happen — we just inserted).
         let new = TOMLTable()
         rawDocument[key] = new
         return new
     }
 
     /// Render the current document as a TOML string. Visible to tests.
+    /// Mirrors `persistToDisk`'s format options so test assertions see
+    /// the same canonical basic-string output that actually lands on
+    /// disk.
     func currentTOML() -> String {
-        rawDocument.convert(to: .toml)
+        rawDocument.convert(
+            to: .toml,
+            options: [
+                .allowMultilineStrings,
+                .allowUnicodeStrings,
+                .allowBinaryIntegers,
+                .allowOctalIntegers,
+                .allowHexadecimalIntegers,
+                .indentations,
+            ]
+        )
     }
 }

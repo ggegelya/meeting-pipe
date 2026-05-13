@@ -400,7 +400,14 @@ final class MeetingStore: ObservableObject {
     /// Parse "YYYYMMDD-HHmmss" → Date in the user's local time. Returns
     /// nil for stems that don't match the expected pattern (the daemon
     /// only emits this form, so a miss means the file is unrelated).
+    ///
+    /// Length check guards against `DateFormatter`'s lenient behaviour
+    /// on empty / short inputs, where newer SDKs return a Date anchored
+    /// at the format's start-of-epoch rather than failing. The
+    /// daemon's stem format is exactly 15 chars ("yyyyMMdd-HHmmss")
+    /// so anything shorter can't be a real stem.
     static func parseStem(_ stem: String) -> Date? {
+        guard stem.count == 15 else { return nil }
         return MeetingFormatters.stem.date(from: stem)
     }
 
