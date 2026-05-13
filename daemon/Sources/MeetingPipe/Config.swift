@@ -89,7 +89,12 @@ struct Config {
         let outputDirRaw = rec?["output_dir"]?.string ?? "~/Documents/Meetings/raw"
         let sampleRate = rec?["sample_rate"]?.int ?? 16000
         let consent = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string }) ?? []
-        let voiceProcessing = rec?["voice_processing"]?.bool ?? true
+        // Default OFF — VPIO's AGC degrades the HAL device's gain
+        // system-wide while the engine is running, so every other app
+        // that shares the mic (Teams, Zoom, FaceTime) hears the user
+        // as extremely quiet for the duration of the recording. Opt in
+        // via TOML when the recording happens in isolation.
+        let voiceProcessing = rec?["voice_processing"]?.bool ?? false
         let honorAppMute = rec?["honor_app_mute"]?.bool ?? true
 
         let debounceStart = det?["debounce_start_sec"]?.double ?? 5
@@ -145,7 +150,7 @@ struct Config {
                 outputDir: expandTilde("~/Documents/Meetings/raw"),
                 sampleRate: 16000,
                 autoConsentApps: [],
-                voiceProcessing: true,
+                voiceProcessing: false,
                 honorAppMute: true
             ),
             detection: Detection(

@@ -11,9 +11,17 @@ auto_consent_apps = []
 # When true, AVAudioEngine's voice-processing chain runs on the mic
 # capture: noise suppression (same ML model as macOS Voice Isolation),
 # echo cancellation, and AGC. Filters keyboard / typing / fan / room
-# noise out of the recorded mic.wav. Flip to false for raw audio (e.g.
-# if you're recording music or want archival-grade un-processed input).
-voice_processing = true
+# noise out of the recorded mic.wav.
+#
+# DEFAULT OFF. The macOS Voice Processing IO unit (kAudioUnitSubType_
+# VoiceProcessingIO) drags the HAL device's gain DOWN system-wide
+# while the engine is running, so other apps sharing the same mic
+# (Teams, Zoom, FaceTime) hear the user as extremely quiet for the
+# duration of the recording. Only flip true when meeting-pipe is the
+# sole consumer of the mic (e.g. a solo voice memo, NOT a recorded
+# call). The recorder reverts the VP unit on stop, but the live
+# degradation while recording is unavoidable.
+voice_processing = false
 # When true, the recorder pauses local mic capture while the user is
 # muted in the active meeting client (Teams / Zoom / Slack huddle).
 # Detected via Accessibility on the meeting window the recording was

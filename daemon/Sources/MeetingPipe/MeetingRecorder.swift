@@ -67,6 +67,16 @@ final class MeetingRecorder {
     /// callback re-reads the flag a few ms later.
     var micPaused: Bool = false
 
+    /// True when we successfully enabled `setVoiceProcessingEnabled(true)`
+    /// on the input node for the current session. The Voice Processing
+    /// IO audio unit applies system-wide AGC / noise suppression that
+    /// macOS does NOT auto-revert when the engine stops — the HAL
+    /// device is left in a degraded "everything is quiet" state that
+    /// other audio clients (Teams, Zoom, FaceTime) see as the user
+    /// being barely audible. We track the enabled state explicitly so
+    /// `stop()` can flip it back off and release the HAL config.
+    private var voiceProcessingEnabledForSession: Bool = false
+
     /// Accumulators for one-second RMS aggregation. Two pairs because
     /// mic + system run on independent threads with different sample
     /// rates and we don't want the math to cross.
@@ -106,9 +116,14 @@ final class MeetingRecorder {
     /// `voiceProcessing` toggles `AVAudioInputNode.setVoiceProcessingEnabled`
     /// on the mic path. When true, Apple's VoIP DSP chain (noise
     /// suppression, echo cancellation, AGC) runs at capture time and
-    /// the mic.wav we write is already cleaned up. Default true; flip
-    /// to false in `config.toml` if raw audio is needed for archival.
-    func start(outputDir: URL, voiceProcessing: Bool = true) throws -> URL {
+    /// the mic.wav we write is already cleaned up. Default **false**
+    /// because the VPIO unit's AGC tugs the HAL device's gain down
+    /// system-wide while the engine is running, and other apps that
+    /// share the mic (Teams, Zoom, FaceTime) hear the user as
+    /// extremely quiet for the duration of the recording. Flip to true
+    /// in `config.toml` only if your call client isn't going to be
+    /// using the same physical mic concurrently.
+    func start(outputDir: URL, voiceProcessing: Bool = false) throws -> URL {
         if isRecording { throw RecorderError.alreadyRecording }
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
         lastMicFires = 0
@@ -143,9 +158,11 @@ final class MeetingRecorder {
         // haven't started yet, and the SPM target deploys to macOS 14+,
         // where the call is well-supported. A throw here falls back to
         // raw capture (the docs note it's "best effort").
+        voiceProcessingEnabledForSession = false
         if voiceProcessing {
             do {
                 try engine.inputNode.setVoiceProcessingEnabled(true)
+                voiceProcessingEnabledForSession = true
                 Log.writeLine("recorder", "voice processing enabled on inputNode")
             } catch {
                 Log.writeLine(
@@ -204,6 +221,14 @@ final class MeetingRecorder {
             engine.inputNode.removeTap(onBus: 0)
             self.micFile = nil
             try? FileManager.default.removeItem(at: micURL)
+            // engine.start() failed AFTER we may have enabled VP. Flip
+            // it back off so the HAL device isn't stranded in
+            // voice-processing mode with a degraded gain that affects
+            // every other app on the box.
+            if voiceProcessingEnabledForSession {
+                try? engine.inputNode.setVoiceProcessingEnabled(false)
+                voiceProcessingEnabledForSession = false
+            }
             throw RecorderError.engineStartFailed(error.localizedDescription)
         }
         Log.writeLine("recorder", "engine started")
@@ -300,6 +325,30 @@ final class MeetingRecorder {
         systemCapture = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+
+        // CRITICAL: revert the Voice Processing IO unit if we enabled
+        // it on this session. macOS does not auto-disable VPIO when
+        // the engine stops — the HAL device retains the
+        // voice-processing config and other audio clients (Teams,
+        // Zoom, FaceTime) keep hearing the user at a drastically
+        // reduced gain until the process exits. Symptom seen on
+        // 2026-05-13: "when I hit record my mic becomes EXTREMELY
+        // low, nobody can hear me, until I restart meetingpipe".
+        // `setVoiceProcessingEnabled(false)` releases the audio unit
+        // and the next mic consumer gets the device back at its
+        // default gain.
+        if voiceProcessingEnabledForSession {
+            do {
+                try engine.inputNode.setVoiceProcessingEnabled(false)
+                Log.writeLine("recorder", "voice processing disabled on inputNode")
+            } catch {
+                Log.writeLine(
+                    "recorder",
+                    "WARN: setVoiceProcessingEnabled(false) failed: \(error.localizedDescription) — system mic may stay degraded until app restart"
+                )
+            }
+            voiceProcessingEnabledForSession = false
+        }
 
         // Closing the AVAudioFiles flushes their headers. ARC handles it
         // when we drop the references — set to nil explicitly to be sure
