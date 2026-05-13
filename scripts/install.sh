@@ -154,6 +154,77 @@ rm -rf "$APP"
 ditto "$APP_BUILD" "$APP"
 mdimport "$APP" >/dev/null 2>&1 || true
 
+# Re-sign the assembled bundle with a stable signing identifier and
+# bind the Info.plist into the signature.
+#
+# swift-build's release output is linker-signed adhoc with
+# `Identifier=<SPM-target-name>` (so `Identifier=MeetingPipe`) and
+# `Info.plist=not bound`. The bundle id in Info.plist is
+# `com.meetingpipe.daemon`. TCC keys grants on `(bundle_id, signing
+# identifier, cdhash)` — when the identifier disagrees with the
+# bundle id AND the Info.plist isn't sealed, reinstall flows silently
+# drop the prior grants (Screen Recording shows "Needed" while the
+# System Settings toggle is on; Notifications won't accept
+# requestAuthorization because the bundle identity isn't trusted).
+#
+# Plain adhoc re-sign with `--identifier` set to the bundle id binds
+# the Info.plist, seals the resources, and gives TCC a stable identity
+# pair across rebuilds. The cdhash still changes per rebuild (we don't
+# have a paid Developer ID to stabilise it), but `(bundle_id,
+# identifier)` is now consistent, which is enough for macOS to honor
+# the user's grant after they toggle the switch.
+#
+# Two-pass signing: SPM ships the resource bundle as a directory with
+# the `.bundle` suffix but no Info.plist — codesign refuses to treat
+# it as a valid macOS bundle. We write a minimal Info.plist into it,
+# sign it first with its own identifier, then sign the outer .app.
+say "Re-signing app bundle with stable identifier"
+
+# Make the SPM resource bundle codesign-compliant (it lacks an Info.plist).
+RESOURCE_BUNDLE="$APP/Contents/MacOS/MeetingPipe_MeetingPipe.bundle"
+if [[ -d "$RESOURCE_BUNDLE" && ! -f "$RESOURCE_BUNDLE/Info.plist" ]]; then
+    cat >"$RESOURCE_BUNDLE/Info.plist" <<'BUNDLE_PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.meetingpipe.daemon.resources</string>
+    <key>CFBundleName</key>
+    <string>MeetingPipe_MeetingPipe</string>
+    <key>CFBundlePackageType</key>
+    <string>BNDL</string>
+    <key>CFBundleSupportedPlatforms</key>
+    <array>
+        <string>MacOSX</string>
+    </array>
+</dict>
+</plist>
+BUNDLE_PLIST
+fi
+
+if [[ -d "$RESOURCE_BUNDLE" ]]; then
+    codesign --force --sign - \
+        --identifier com.meetingpipe.daemon.resources \
+        "$RESOURCE_BUNDLE"
+fi
+
+codesign --force --sign - \
+    --identifier com.meetingpipe.daemon \
+    "$APP"
+
+# Sanity-check the result so a future codesign incompatibility surfaces
+# at install time, not at the next reinstall when the user wonders why
+# permissions broke again. `Info.plist=bound` and a stable Identifier
+# are the two properties we care about for TCC stability.
+SIGN_INFO=$(codesign -dvv "$APP" 2>&1)
+if ! grep -q "Identifier=com.meetingpipe.daemon$" <<<"$SIGN_INFO"; then
+    warn "codesign Identifier mismatch — permissions may not survive reinstall"
+fi
+if ! grep -q "Info.plist entries=" <<<"$SIGN_INFO"; then
+    warn "codesign Info.plist not bound — permissions may not survive reinstall"
+fi
+
 # Re-point DAEMON_BIN at the installed bundle so the LaunchAgent points
 # at the long-lived ~/Applications copy, not the .build/release one
 # (which gets blown away on every clean build).
