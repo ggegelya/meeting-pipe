@@ -159,6 +159,15 @@ final class Detector {
     /// The `AppSource` that drove the current recording. Pinned at .started
     /// so the window probe knows which app to inspect.
     private var recordingSource: AppSource?
+    /// AX handle to the specific meeting window captured at `.started`.
+    /// Lets end-detection check "is THIS window still a meeting" rather
+    /// than "do any windows look meeting-shaped" — the permissive
+    /// recogniser made the latter OR-across-windows form too sticky for
+    /// Teams users, who always have non-meeting chat / channel windows
+    /// open whose titles pass. nil when AX is denied, no window matched
+    /// at start-fire time, or the source is a browser (browser tabs are
+    /// not native AX elements).
+    private var recordingWindow: MeetingWindowHandle?
 
     private var nsObservers: [NSObjectProtocol] = []
     private var avObservation: NSKeyValueObservation?
@@ -250,6 +259,7 @@ final class Detector {
         endTimer?.invalidate(); endTimer = nil
         coalesceWork?.cancel()
         coalesceWork = nil
+        recordingWindow = nil
     }
 
     // MARK: Recorder lifecycle hooks
@@ -372,10 +382,12 @@ final class Detector {
         // Snapshot state that lives on main so the off-main scan stays
         // purely functional. `recorderActive` gates the CoreAudio probe;
         // `hasFiredStart` decides whether the window probe runs at all;
-        // `recordingSource` is the AX target post-start.
+        // `recordingSource` is the AX target post-start;
+        // `recordingWindow` is the locked-on AX handle.
         let snapshotRecorderActive = recorderActive
         let snapshotHasFiredStart = hasFiredStart
         let snapshotRecordingSource = recordingSource
+        let snapshotRecordingWindow = recordingWindow
 
         scanQueue.async { [weak self] in
             guard let self = self else { return }
@@ -387,7 +399,7 @@ final class Detector {
             // work. Pass `true` (the safe "still open" default) so the
             // composer's start path stays unaffected.
             let windowOpen = snapshotHasFiredStart
-                ? self.currentWindowOpen(app: snapshotRecordingSource ?? app)
+                ? self.currentWindowOpen(app: snapshotRecordingSource ?? app, handle: snapshotRecordingWindow)
                 : true
             // Weak again on the inner hop: Coordinator can swap the
             // Detector on config refresh, and a scan result that lands
@@ -436,13 +448,23 @@ final class Detector {
                         let enriched = self.enrichWithMeetingTitle(src)
                         self.hasFiredStart = true
                         self.recordingSource = enriched
+                        // Lock onto the specific meeting window so end-
+                        // detection can ask "is THIS window still a
+                        // meeting" instead of OR-scanning every window's
+                        // title. Best-effort: nil means we fall back to
+                        // the legacy title-scan recogniser, no harm.
+                        self.recordingWindow = MeetingWindowProbe.capture(source: enriched)
                         Log.detector.info("→ started: \(enriched.bundleID)")
-                        Log.writeLine("detector", "started bundle=\(enriched.bundleID) name=\(enriched.displayName) title=\(enriched.meetingTitle ?? "(none)")")
+                        Log.writeLine(
+                            "detector",
+                            "started bundle=\(enriched.bundleID) name=\(enriched.displayName) title=\(enriched.meetingTitle ?? "(none)") window_handle=\(self.recordingWindow != nil ? "captured" : "unavailable")"
+                        )
                         Log.event(category: "detector", action: "started", attributes: [
                             "bundle_id": enriched.bundleID,
                             "display_name": enriched.displayName,
                             "kind": enriched.kind == .browser ? "browser" : "native",
                             "meeting_title": enriched.meetingTitle ?? NSNull(),
+                            "window_handle": self.recordingWindow != nil ? "captured" : "unavailable",
                         ])
                         self.delegate?.detector(self, event: .started(enriched))
                     }
@@ -464,7 +486,7 @@ final class Detector {
                     // `recordingSource ?? confirmApp` precedence that
                     // `currentWindowOpen` used to do internally.
                     let probeTarget = self.recordingSource ?? confirmApp
-                    let confirmWindow = self.currentWindowOpen(app: probeTarget)
+                    let confirmWindow = self.currentWindowOpen(app: probeTarget, handle: self.recordingWindow)
                     let reFired = DetectorSignals(
                         meetingAppPresent: confirmApp != nil,
                         micActive: confirmMic,
@@ -476,6 +498,10 @@ final class Detector {
                         self.hasFiredStart = false
                         let endedSource = self.recordingSource
                         self.recordingSource = nil
+                        // Drop the captured AX handle. ARC releases the
+                        // CF ref. A new handle will be captured at the
+                        // next `.started` fire.
+                        self.recordingWindow = nil
                         Log.detector.info("→ ended (mic=\(confirmMic) window=\(confirmWindow))")
                         Log.writeLine("detector", "ended mic=\(confirmMic) window=\(confirmWindow)")
                         Log.event(category: "detector", action: "ended", attributes: [
@@ -507,11 +533,38 @@ final class Detector {
     /// the composer treats unknown as "still open" so we never stop
     /// recording on an inconclusive signal.
     ///
+    /// Two paths:
+    ///   1. If a locked-on `MeetingWindowHandle` is present (captured
+    ///      at `.started` for native sources), ask
+    ///      `MeetingWindowProbe.evaluate` whether that specific window
+    ///      is still alive and still hosting a Leave control. This is
+    ///      the primary signal for natives because the legacy title
+    ///      scan is over-permissive (any chat / channel window's
+    ///      title passes for Teams, so the OR-across-windows form
+    ///      never fires end).
+    ///   2. Otherwise fall back to the per-app title-scan recogniser.
+    ///      Covers browsers, sources whose capture failed (AX denied
+    ///      mid-meeting, pid gone at capture time), and apps without
+    ///      a recogniser entry.
+    ///
     /// Safe to call from any queue: `windowProbe` is the immutable
     /// closure set at init, and AX APIs are documented thread-safe.
     /// The caller is responsible for resolving `recordingSource` ?? app
     /// before calling so we never read mutable state off-main.
-    private func currentWindowOpen(app: AppSource?) -> Bool {
+    private func currentWindowOpen(app: AppSource?, handle: MeetingWindowHandle?) -> Bool {
+        if let handle = handle {
+            let status = MeetingWindowProbe.evaluate(handle)
+            Log.writeLine(
+                "detector",
+                "windowprobe(lockon) app=\(handle.bundleID) status=\(status)"
+            )
+            switch status {
+            case .stillOpen:    return true
+            case .closed:       return false
+            case .leftMeeting:  return false
+            case .inconclusive: return true
+            }
+        }
         guard let target = app else { return true }
         return windowProbe(target) ?? true
     }
