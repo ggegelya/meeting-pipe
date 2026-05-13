@@ -36,6 +36,14 @@ final class ConfigStore: ObservableObject {
     /// `ctrl+option+shift+m`.
     @Published var forceStopHotkey: String { didSet { scheduleSave() } }
     @Published var promptTimeoutSec: Double { didSet { scheduleSave() } }
+    /// Per-bundle re-prompt cooldown (seconds). After a recording for
+    /// a bundle ends, or its prompt is skipped/timed out, the detector
+    /// can keep firing fresh `.started` events from the post-call
+    /// surface (Teams chat reclaiming the mic for a second, Zoom's
+    /// post-meeting toast holding the audio session, etc.). Suppress
+    /// new prompts for the same bundle for this long. Manual hotkey
+    /// always bypasses the cooldown.
+    @Published var repromptCooldownSec: Double { didSet { scheduleSave() } }
 
     @Published var regulatedMode: Bool { didSet { scheduleSave() } }
 
@@ -105,6 +113,7 @@ final class ConfigStore: ObservableObject {
         self.manualHotkey = det?["manual_hotkey"]?.string ?? "ctrl+option+m"
         self.forceStopHotkey = det?["force_stop_hotkey"]?.string ?? "ctrl+option+shift+m"
         self.promptTimeoutSec = det?["prompt_timeout_sec"]?.double ?? 30
+        self.repromptCooldownSec = det?["reprompt_cooldown_sec"]?.double ?? 60
 
         self.regulatedMode = mod?["regulated_mode"]?.bool ?? false
 
@@ -170,6 +179,7 @@ final class ConfigStore: ObservableObject {
         ensureTable("detection")["manual_hotkey"] = manualHotkey
         ensureTable("detection")["force_stop_hotkey"] = forceStopHotkey
         ensureTable("detection")["prompt_timeout_sec"] = promptTimeoutSec
+        ensureTable("detection")["reprompt_cooldown_sec"] = repromptCooldownSec
 
         ensureTable("modes")["regulated_mode"] = regulatedMode
 

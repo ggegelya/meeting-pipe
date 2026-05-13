@@ -42,6 +42,14 @@ struct Config {
         /// `ctrl+option+shift+m`.
         var forceStopHotkey: String
         var promptTimeoutSec: Double
+        /// After a recording for a bundle ends (or its prompt is
+        /// skipped/timed out), suppress fresh detector-driven prompts
+        /// for the same bundle for this many seconds. Catches the
+        /// "Teams chat surface briefly re-acquires the mic right after
+        /// the call ends and triggers a new prompt" case. The manual
+        /// hotkey always bypasses the cooldown so the user can force a
+        /// fresh recording in the same app at any time.
+        var repromptCooldownSec: Double
     }
 
     struct Modes {
@@ -80,6 +88,7 @@ struct Config {
         let hotkey = det?["manual_hotkey"]?.string ?? "ctrl+option+m"
         let forceStop = det?["force_stop_hotkey"]?.string ?? "ctrl+option+shift+m"
         let promptTimeout = det?["prompt_timeout_sec"]?.double ?? 30
+        let repromptCooldown = det?["reprompt_cooldown_sec"]?.double ?? 60
 
         // Optional `[detection.debounce_end_per_bundle]` sub-table:
         //   "us.zoom.xos" = 7
@@ -112,7 +121,8 @@ struct Config {
                 debounceEndPerBundle: debounceEndPerBundle,
                 manualHotkey: hotkey,
                 forceStopHotkey: forceStop,
-                promptTimeoutSec: promptTimeout
+                promptTimeoutSec: promptTimeout,
+                repromptCooldownSec: repromptCooldown
             ),
             modes: Modes(regulatedMode: regulated)
         )
@@ -133,7 +143,8 @@ struct Config {
                 debounceEndPerBundle: [:],
                 manualHotkey: "ctrl+option+m",
                 forceStopHotkey: "ctrl+option+shift+m",
-                promptTimeoutSec: 30
+                promptTimeoutSec: 30,
+                repromptCooldownSec: 60
             ),
             modes: Modes(regulatedMode: false)
         )

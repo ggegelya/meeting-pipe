@@ -85,6 +85,12 @@ final class Coordinator: NSObject {
     /// Auto-skip timer when the user ignores a prompt. Spec §7 prompt_timeout_sec.
     private var promptTimeoutTimer: Timer?
 
+    /// Per-bundle re-prompt suppression. Recorded on every end-of-
+    /// recording / skip / timeout transition so the next detector-
+    /// driven `.started` for the same bundle is gated by the
+    /// cooldown. See `RepromptCooldown` for the why.
+    private var repromptCooldown = RepromptCooldown()
+
     /// FIFO queue of pipeline jobs spawned after recordings flush. The
     /// queue is sequential (one whisper.cpp at a time) but the recording
     /// side of the state machine runs in parallel, so the user can start
@@ -647,6 +653,10 @@ final class Coordinator: NSObject {
         configStore?.promptTimeoutSec ?? config.detection.promptTimeoutSec
     }
 
+    private var liveRepromptCooldownSec: Double {
+        configStore?.repromptCooldownSec ?? config.detection.repromptCooldownSec
+    }
+
     private var liveManualHotkey: String {
         configStore?.manualHotkey ?? config.detection.manualHotkey
     }
@@ -665,6 +675,10 @@ final class Coordinator: NSObject {
             // Preserve meeting attribution when the user overrides via hotkey
             // — without this, "Always for {App}" would never see the source.
             promptWindow.dismiss()
+            // Manual override is an explicit "start now" signal; drop
+            // any cooldown entry for this bundle so the next detector-
+            // driven detection isn't suppressed by a stale skip/end.
+            repromptCooldown.clear(bundleID: src.bundleID)
             beginRecording(source: src, summaryMode: .auto)
         case .recording(let file, let src, let mode):
             stopRecording(file: file, source: src, summaryMode: mode)
@@ -897,6 +911,13 @@ final class Coordinator: NSObject {
             // can't bleed into the next meeting; a fresh resolve runs at
             // the start of the next `beginRecording`.
             self.activeWorkflow = nil
+            // Arm the re-prompt cooldown for this bundle so the post-
+            // call surface (Teams chat reclaiming the mic, Zoom's
+            // teardown toast) can't trigger a fresh "Record this
+            // meeting?" prompt within seconds of the stop flush.
+            if let bid = source?.bundleID {
+                self.repromptCooldown.recordEnd(bundleID: bid)
+            }
             self.state = .idle
             self.statusBar.setIdle()
         }
@@ -1002,6 +1023,11 @@ final class Coordinator: NSObject {
                     ])
                     self.promptWindow.dismiss()
                     self.state = .suppressed(source: source)
+                    // Same reasoning as the explicit-skip path: the
+                    // user's silence is a "don't pester me for this
+                    // call" signal, so arm the cooldown to absorb
+                    // post-call mic flickers after suppression lifts.
+                    self.repromptCooldown.recordEnd(bundleID: source.bundleID)
                     self.statusBar.setIdle()
                 }
             }
@@ -1136,6 +1162,26 @@ extension Coordinator: DetectorDelegate {
             return
         }
 
+        // Re-prompt cooldown gate. After a recording / skipped prompt
+        // for this bundle, post-call surfaces (Teams chat reclaiming
+        // mic, Zoom's teardown audio session) regularly trigger a
+        // fresh `.started` within seconds of the previous end. Drop
+        // the prompt for the cooldown window. Manual hotkey path
+        // clears the entry so the user can still force a fresh
+        // recording in the same app immediately.
+        let cooldown = liveRepromptCooldownSec
+        if repromptCooldown.isCoolingDown(bundleID: source.bundleID, cooldownSec: cooldown) {
+            Log.writeLine(
+                "daemon",
+                "prompt suppressed (cooldown) → \(source.bundleID) (\(Int(cooldown))s window)"
+            )
+            Log.event(category: "coordinator", action: "prompt_suppressed_cooldown", attributes: [
+                "bundle_id": source.bundleID,
+                "cooldown_sec": cooldown,
+            ])
+            return
+        }
+
         state = .prompting(source: source)
         statusBar.setPrompting(source)
         // On-screen panel is the primary surface (Notion-style top-right
@@ -1189,6 +1235,12 @@ extension Coordinator: NotifierDelegate {
         cancelPromptTimeout()
         state = .suppressed(source: source)
         statusBar.setIdle()
+        // Skip is a "don't ask again about this call" signal, so we
+        // also gate near-future detections of the same bundle. The
+        // `suppressed` state already covers the current call (until
+        // the detector reports `.ended`), but post-call mic flickers
+        // can fire a fresh `.started` after the suppression lifts.
+        repromptCooldown.recordEnd(bundleID: source.bundleID)
         Log.writeLine("daemon", "user skipped (\(source.bundleID))")
         Log.event(category: "coordinator", action: "user_skipped", attributes: [
             "bundle_id": source.bundleID,
@@ -1201,6 +1253,11 @@ extension Coordinator: NotifierDelegate {
         Log.event(category: "coordinator", action: "user_consented_always", attributes: [
             "bundle_id": source.bundleID,
         ])
+        // Drop the cooldown entry for the same reason as the manual
+        // hotkey path: an explicit "yes, record this and the next one
+        // too" mustn't be blocked by a stale skip/end from earlier in
+        // the session.
+        repromptCooldown.clear(bundleID: source.bundleID)
         beginRecording(source: source, summaryMode: .auto)
     }
 

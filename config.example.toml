@@ -33,6 +33,13 @@ manual_hotkey = "ctrl+option+m"
 # panic button that can never accidentally start a fresh recording.
 force_stop_hotkey = "ctrl+option+shift+m"
 prompt_timeout_sec = 30
+# After a recording for a bundle ends (or its prompt is skipped /
+# timed out), suppress detector-driven prompts for the same bundle for
+# this many seconds. Catches the post-call "Teams chat surface
+# reclaims the mic" case where a fresh prompt would otherwise pop up
+# 2-3 seconds after a stop flush. The manual hotkey always bypasses
+# the cooldown. Set to 0 to disable.
+reprompt_cooldown_sec = 60
 
 # Per-bundle overrides for `debounce_end_sec`. Lookup precedence:
 # explicit entry → built-in browser default (12 s, because tab/window
