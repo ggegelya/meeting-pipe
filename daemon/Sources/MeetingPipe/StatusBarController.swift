@@ -39,6 +39,13 @@ final class StatusBarController {
     private var modelDownloadCompletedDisplayTimer: Timer?
     private static let completedDisplayDuration: TimeInterval = 5
 
+    /// Retained NSMenuDelegate for the "Recent meetings…" submenu. The
+    /// submenu populates on `menuNeedsUpdate(_:)` rather than on every
+    /// `rebuildMenu` so a stop click / state change doesn't pay a
+    /// synchronous directory scan + per-entry mtime read for a submenu
+    /// the user almost never opens.
+    private var recentMeetingsDelegate: RecentMeetingsMenuDelegate?
+
     /// Re-render the menu whenever any permission flips so the
     /// aggregate warning row appears / disappears without waiting for
     /// the next recording state change. Subscribed once at init.
@@ -394,25 +401,26 @@ final class StatusBarController {
         item.menu = menu
     }
 
-    /// "Recent meetings…" submenu containing the last 10 meetings with
-    /// a run sidecar on disk. Each child opens the correction sheet for
-    /// that stem. Returns nil when no eligible meetings exist so the
-    /// menu does not advertise an empty submenu.
+    /// "Recent meetings…" submenu placeholder. The submenu populates
+    /// lazily via `NSMenuDelegate.menuNeedsUpdate(_:)` so opening the
+    /// menu bar pays the directory scan once, not on every state change.
+    /// Returns nil only when there's no Coordinator to reach into; the
+    /// "no recent meetings" empty-list case is rendered as a single
+    /// disabled row inside the submenu so users get an obvious answer
+    /// when they open it.
     private func recentMeetingsMenuItem(coordinator: Coordinator) -> NSMenuItem? {
-        let entries = coordinator.recentCorrectableMeetings(limit: 10)
-        if entries.isEmpty { return nil }
         let parent = NSMenuItem(title: "Recent meetings…", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
-        for entry in entries {
-            let item = NSMenuItem(
-                title: entry.displayName,
-                action: #selector(Coordinator.menuRecentMeeting(_:)),
-                keyEquivalent: ""
-            )
-            item.target = coordinator
-            item.representedObject = entry.stem
-            submenu.addItem(item)
-        }
+        let delegate = recentMeetingsDelegate ?? RecentMeetingsMenuDelegate(coordinator: coordinator)
+        delegate.coordinator = coordinator
+        submenu.delegate = delegate
+        recentMeetingsDelegate = delegate
+        // Placeholder so the submenu has at least one child while
+        // unopened. macOS only triggers `menuNeedsUpdate` on submenus
+        // that are about to display; we replace this row at that point.
+        let placeholder = NSMenuItem(title: "Loading…", action: nil, keyEquivalent: "")
+        placeholder.isEnabled = false
+        submenu.addItem(placeholder)
         parent.submenu = submenu
         return parent
     }
@@ -477,6 +485,48 @@ final class StatusBarController {
         case .suppressed(let src): return "MeetingPipe: Suppressed (\(src.displayName))\(suffix)"
         case .recording: return "MeetingPipe: Recording\(suffix)"
         case .stopping: return "MeetingPipe: Stopping…\(suffix)"
+        }
+    }
+}
+
+/// Populates the "Recent meetings…" submenu only when the user is about
+/// to open it. Each open re-scans the recordings dir for fresh state;
+/// the cost is paid once per click instead of on every menu rebuild.
+///
+/// `coordinator` is held weakly so the controller's lifetime owns the
+/// delegate cleanly. The submenu is rebuilt in place (clear + add) so
+/// stale items from a prior open never linger.
+private final class RecentMeetingsMenuDelegate: NSObject, NSMenuDelegate {
+    weak var coordinator: Coordinator?
+
+    init(coordinator: Coordinator) {
+        self.coordinator = coordinator
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        guard let coordinator = coordinator else {
+            let row = NSMenuItem(title: "Coordinator unavailable", action: nil, keyEquivalent: "")
+            row.isEnabled = false
+            menu.addItem(row)
+            return
+        }
+        let entries = coordinator.recentCorrectableMeetings(limit: 10)
+        if entries.isEmpty {
+            let row = NSMenuItem(title: "No recent meetings", action: nil, keyEquivalent: "")
+            row.isEnabled = false
+            menu.addItem(row)
+            return
+        }
+        for entry in entries {
+            let item = NSMenuItem(
+                title: entry.displayName,
+                action: #selector(Coordinator.menuRecentMeeting(_:)),
+                keyEquivalent: ""
+            )
+            item.target = coordinator
+            item.representedObject = entry.stem
+            menu.addItem(item)
         }
     }
 }
