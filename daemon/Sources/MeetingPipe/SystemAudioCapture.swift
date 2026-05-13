@@ -91,6 +91,7 @@ final class SystemAudioCapture: NSObject {
         //    already have access, skip the request call and go straight
         //    to the SCShareableContent cache fill.
         let alreadyTrusted = CGPreflightScreenCaptureAccess()
+        var requestReturnedFalse = false
         if !alreadyTrusted {
             // 2. Actively request — this is what populates the System
             //    Settings list and surfaces the prompt. Returns the
@@ -101,15 +102,21 @@ final class SystemAudioCapture: NSObject {
             Log.recorder.info("CGRequestScreenCaptureAccess: granted=\(granted)")
             Log.writeLine("recorder", "CGRequestScreenCaptureAccess: granted=\(granted)")
             if !granted {
-                // User hasn't granted yet (dialog may still be on
-                // screen, or they dismissed it). Don't try the
-                // SCShareableContent fetch — it will fail and flip
-                // permissionState to .denied prematurely. Leave
-                // permissionState in .unknown so the menu-bar warning
-                // doesn't pop until the next prewarm attempt (which
-                // happens at the next manual record).
-                Log.writeLine("recorder", "Screen Recording not yet granted; deferring SCShareableContent fetch")
-                return
+                requestReturnedFalse = true
+                // DO NOT bail early. We used to: the reasoning was that
+                // SCShareableContent would fail and flip
+                // permissionState to .denied prematurely (the dialog
+                // might still be on screen). The cost of bailing,
+                // though, is that we never detect the
+                // "stale-cdhash-but-effectively-granted" state: a user
+                // who reinstalls and toggles the System Settings switch
+                // gets `CGPreflight=false` (cdhash mismatch) AND
+                // `CGRequest=false` (already-decided cache),
+                // permissionState stays .unknown, and the UI shows
+                // "Needed" while access actually works. Always try
+                // SCShareableContent; on failure we still avoid
+                // flipping to .denied when the request returned false
+                // (the "still deciding" case below).
             }
         }
         do {
@@ -121,10 +128,30 @@ final class SystemAudioCapture: NSObject {
             Log.recorder.info("SCShareableContent prewarmed (\(cachedContent?.displays.count ?? 0) displays)")
             Log.writeLine("recorder", "SCShareableContent prewarmed")
         } catch {
-            permissionState = .denied
-            Log.recorder.warning("SCShareableContent prewarm failed: \(error.localizedDescription)")
-            Log.writeLine("recorder", "WARN: SCShareableContent prewarm failed: \(error.localizedDescription)")
+            if requestReturnedFalse {
+                // User may still be deciding (dialog on screen) or
+                // the bundle isn't yet in the TCC list. Leave state
+                // as .unknown so the UI doesn't surface a false
+                // "denied" before the user has actually decided.
+                Log.recorder.info("SCShareableContent unavailable (request pending): \(error.localizedDescription)")
+                Log.writeLine("recorder", "SCShareableContent unavailable (request pending)")
+            } else {
+                permissionState = .denied
+                Log.recorder.warning("SCShareableContent prewarm failed: \(error.localizedDescription)")
+                Log.writeLine("recorder", "WARN: SCShareableContent prewarm failed: \(error.localizedDescription)")
+            }
         }
+    }
+
+    /// Drop the cached `SCShareableContent` + permission verdict and
+    /// re-probe from scratch. Used by the Permissions tab's "Re-check"
+    /// button so the user gets an accurate signal right after they
+    /// toggled the System Settings switch — without this, the cached
+    /// verdict from app launch would persist until the next recording.
+    static func reprobeAccess() async {
+        cachedContent = nil
+        permissionState = .unknown
+        await prewarm()
     }
 
     /// Start capturing system audio. The "filter" must reference a real

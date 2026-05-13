@@ -100,7 +100,7 @@ final class PermissionsCenter: ObservableObject {
     /// window is visible.
     func refreshAll() async {
         await refreshMic()
-        refreshScreenRecording()
+        await refreshScreenRecording()
         refreshAccessibility()
         await refreshNotifications()
     }
@@ -130,15 +130,22 @@ final class PermissionsCenter: ObservableObject {
         commit(\.microphone, kind: .microphone, status: new)
     }
 
-    func refreshScreenRecording() {
-        // CGPreflightScreenCaptureAccess is the documented read-only
-        // probe — never prompts. It returns true once TCC has an
-        // entry; we also fold in SystemAudioCapture's last-known
-        // verdict because a successful SCStream proves access even
-        // before TCC's cache has updated.
+    func refreshScreenRecording() async {
+        // Re-probe SCShareableContent rather than trusting the cached
+        // verdict — the cached state is fine at app launch, but the
+        // "Re-check" button (and the Permissions tab's 2 s poll) needs
+        // to pick up changes the user made in System Settings since
+        // launch. Without this, toggling MeetingPipe on in Settings →
+        // Screen Recording wouldn't lift our reported status until the
+        // next recording or daemon restart.
+        await SystemAudioCapture.reprobeAccess()
         let preflight = CGPreflightScreenCaptureAccess()
         let new: Status
         if preflight || SystemAudioCapture.permissionState == .granted {
+            // Effective access — either preflight returned true (the
+            // grant has a fresh cdhash record) or the SCShareableContent
+            // probe succeeded (typical of the stale-cdhash case where
+            // the user toggled the switch after a reinstall).
             new = .granted
         } else if SystemAudioCapture.permissionState == .denied {
             new = .denied
@@ -208,7 +215,7 @@ final class PermissionsCenter: ObservableObject {
         // already trusts at startup. prewarm() handles the
         // CGRequestScreenCaptureAccess + SCShareableContent fetch.
         await SystemAudioCapture.prewarm()
-        refreshScreenRecording()
+        await refreshScreenRecording()
         if screenRecording != .granted {
             markDeferredAndOpenSettings(.screenRecording)
         }
