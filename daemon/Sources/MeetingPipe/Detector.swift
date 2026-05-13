@@ -387,7 +387,14 @@ final class Detector {
         let snapshotRecorderActive = recorderActive
         let snapshotHasFiredStart = hasFiredStart
         let snapshotRecordingSource = recordingSource
-        let snapshotRecordingWindow = recordingWindow
+        // Only consult the locked-on handle while we're actually
+        // recording. During prompting the user hasn't clicked Join yet,
+        // so Teams' pre-join lobby is on screen — no "Leave" button in
+        // the subtree, lockon would return `leftMeeting` and false-end
+        // the prompt every ~5 s, looping the popup. Once `beginRecording`
+        // arms the recorder, the meeting controls are rendered and
+        // lockon's signal is meaningful.
+        let snapshotRecordingWindow = snapshotRecorderActive ? recordingWindow : nil
 
         scanQueue.async { [weak self] in
             guard let self = self else { return }
@@ -485,8 +492,15 @@ final class Detector {
                     // the current scan returns. Mirrors the pre-refactor
                     // `recordingSource ?? confirmApp` precedence that
                     // `currentWindowOpen` used to do internally.
+                    //
+                    // Lockon handle is consulted only while we're
+                    // actually recording — see `reevaluate()` for the
+                    // pre-join lobby reasoning.
                     let probeTarget = self.recordingSource ?? confirmApp
-                    let confirmWindow = self.currentWindowOpen(app: probeTarget, handle: self.recordingWindow)
+                    let confirmWindow = self.currentWindowOpen(
+                        app: probeTarget,
+                        handle: self.recorderActive ? self.recordingWindow : nil
+                    )
                     let reFired = DetectorSignals(
                         meetingAppPresent: confirmApp != nil,
                         micActive: confirmMic,
@@ -559,10 +573,29 @@ final class Detector {
                 "windowprobe(lockon) app=\(handle.bundleID) status=\(status)"
             )
             switch status {
-            case .stillOpen:    return true
-            case .closed:       return false
-            case .leftMeeting:  return false
-            case .inconclusive: return true
+            case .stillOpen:
+                return true
+            case .closed:
+                // Window destroyed — strongest end signal we have.
+                // The user clicked Leave (or otherwise dismissed the
+                // meeting window) and the underlying NSWindow is gone.
+                return false
+            case .leftMeeting:
+                // The subtree walk didn't find a Leave button. This is
+                // a weaker signal than `.closed`: could mean the user
+                // really left and Teams transformed the window into a
+                // post-call surface, OR Teams updated its UI and our
+                // matcher misses the new control, OR the user's locale
+                // exposes the button with a non-English label. Don't
+                // end on this alone — fall back to the legacy
+                // title-scan probe. If legacy also says "not a meeting
+                // window" the recording ends; if legacy says "still
+                // open" we keep recording and let either the validity
+                // probe (.closed above) or the silence detector close
+                // it out.
+                break
+            case .inconclusive:
+                return true
             }
         }
         guard let target = app else { return true }
