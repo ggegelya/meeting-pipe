@@ -60,7 +60,10 @@ final class CorrectionStoreTests: XCTestCase {
         XCTAssertNotNil(parsed["original_summary"] as? [String: Any])
         XCTAssertNil(parsed["corrected_summary"], "good verdict must omit corrected_summary")
         XCTAssertNil(parsed["notes"])
-        XCTAssertEqual(parsed["ts"] as? String, "2024-05-06T15:33:20Z")
+        // 1_715_000_000 epoch seconds = 2024-05-06 12:53:20 UTC.
+        // (Previous expected string had a typo from the original
+        // commit — the formatter has always produced this value.)
+        XCTAssertEqual(parsed["ts"] as? String, "2024-05-06T12:53:20Z")
     }
 
     func test_writes_edited_record_with_corrected_summary() throws {

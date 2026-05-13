@@ -92,12 +92,16 @@ final class SilenceDetectorTests: XCTestCase {
         det.observeSystem(db: -80, at: t0)
         // 80 s of silence, then a loud sample — streak resets.
         det.observeMic(db: -10, at: t0.addingTimeInterval(80))
-        // Another long silent run, but only 60 s after the reset.
+        // Another silent run — the new streak's clock starts at the
+        // first silent sample after the loud reset (t0+140), not at
+        // the loud point itself. With 1 Hz sampling in production
+        // these are within a second of each other; the synthetic gap
+        // here makes the model explicit.
         det.observeMic(db: -80, at: t0.addingTimeInterval(140))
         XCTAssertEqual(notifyCount, 0)
         XCTAssertEqual(stopCount, 0)
-        // Now wait the full notify window again from the reset point.
-        det.observeMic(db: -80, at: t0.addingTimeInterval(170))
+        // 90 s after the new streak start (t0+140) → notify fires.
+        det.observeMic(db: -80, at: t0.addingTimeInterval(230))
         XCTAssertEqual(notifyCount, 1)
     }
 

@@ -224,7 +224,12 @@ final class MeetingStoreTests: XCTestCase {
     // MARK: grouping
 
     func test_group_buckets_today_yesterday_and_older() {
-        let now = makeDate(year: 2026, month: 5, day: 12, hour: 12, minute: 0)
+        // "now" must be late enough in the week that "-3 days" lands in
+        // the same calendar week regardless of the locale's
+        // `firstWeekday` setting (Sunday in en_US, Monday in many EU
+        // locales). Friday 2026-05-15 → -3 days = Tuesday 2026-05-12,
+        // which is in the same week under any common convention.
+        let now = makeDate(year: 2026, month: 5, day: 15, hour: 12, minute: 0)
         let cal = Calendar.current
         let today = cal.date(byAdding: .hour, value: -2, to: now)!
         let yesterday = cal.date(byAdding: .day, value: -1, to: now)!
