@@ -36,6 +36,13 @@ final class ConfigStore: ObservableObject {
     /// `ctrl+option+shift+m`.
     @Published var forceStopHotkey: String { didSet { scheduleSave() } }
     @Published var promptTimeoutSec: Double { didSet { scheduleSave() } }
+    /// What the prompt panel does when the user ignores it for
+    /// `promptTimeoutSec`. Default `"skip"` keeps the historical
+    /// behaviour (state goes to `.suppressed`, no recording). `"record"`
+    /// auto-starts an auto-summary recording; `"byo"` auto-starts a
+    /// BYO recording (manual-paste bundle). Anything else falls back to
+    /// `"skip"`. Mirrors `[detection.default_prompt_action]`.
+    @Published var defaultPromptAction: String { didSet { scheduleSave() } }
     /// Per-bundle re-prompt cooldown (seconds). After a recording for
     /// a bundle ends, or its prompt is skipped/timed out, the detector
     /// can keep firing fresh `.started` events from the post-call
@@ -113,6 +120,7 @@ final class ConfigStore: ObservableObject {
         self.manualHotkey = det?["manual_hotkey"]?.string ?? "ctrl+option+m"
         self.forceStopHotkey = det?["force_stop_hotkey"]?.string ?? "ctrl+option+shift+m"
         self.promptTimeoutSec = det?["prompt_timeout_sec"]?.double ?? 30
+        self.defaultPromptAction = det?["default_prompt_action"]?.string ?? "skip"
         self.repromptCooldownSec = det?["reprompt_cooldown_sec"]?.double ?? 60
 
         self.regulatedMode = mod?["regulated_mode"]?.bool ?? false
@@ -179,6 +187,7 @@ final class ConfigStore: ObservableObject {
         ensureTable("detection")["manual_hotkey"] = manualHotkey
         ensureTable("detection")["force_stop_hotkey"] = forceStopHotkey
         ensureTable("detection")["prompt_timeout_sec"] = promptTimeoutSec
+        ensureTable("detection")["default_prompt_action"] = defaultPromptAction
         ensureTable("detection")["reprompt_cooldown_sec"] = repromptCooldownSec
 
         ensureTable("modes")["regulated_mode"] = regulatedMode

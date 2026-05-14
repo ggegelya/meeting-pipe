@@ -558,6 +558,11 @@ See [`config.example.toml`](./config.example.toml). Highlights:
   (e.g. `["us.zoom.xos"]`).
 - `detection.manual_hotkey` — global hotkey for manual record (default
   `ctrl+option+m`).
+- `detection.default_prompt_action` — what the prompt panel does when
+  the user ignores it for `prompt_timeout_sec`. `"skip"` (default)
+  suppresses the call, `"record"` auto-starts an auto-summary
+  recording, `"byo"` auto-starts a BYO (manual-paste) recording.
+  Surfaced as a segmented control in Preferences → Prompt.
 - `transcription.model` — MLX Whisper repo. Default `mlx-community/whisper-large-v3-turbo`.
 - `transcription.language` — `"auto"` or an ISO 639-1 code (`"en"`, `"uk"`,
   `"ru"`, `"de"`, ...) to skip detection.

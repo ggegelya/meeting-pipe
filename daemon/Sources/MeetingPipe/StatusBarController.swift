@@ -15,8 +15,23 @@ final class StatusBarController {
     /// 18pt is the menu-bar standard. Both icons render at this size.
     private static let iconSize: CGFloat = 18
 
-    private lazy var idleIcon: NSImage = Self.makeIdleIcon(size: Self.iconSize)
-    private lazy var recordingIcon: NSImage = Self.makeRecordingIcon(size: Self.iconSize)
+    private var idleIcon: NSImage = StatusBarController.makeIdleIcon(
+        size: StatusBarController.iconSize,
+        style: UISettings.shared.menuBarIconStyle
+    )
+    private var recordingIcon: NSImage = StatusBarController.makeRecordingIcon(size: StatusBarController.iconSize)
+
+    /// Live regulated-mode flag for the lock-glyph badge. Driven by
+    /// `Coordinator` whenever `ConfigStore` changes (or at startup).
+    /// Pair this with `UISettings.shared.showRegulatedBadge` — both
+    /// must be true for the glyph to appear.
+    private var regulatedMode: Bool = false
+
+    /// Combine subscriptions for live UI-setting changes (icon style +
+    /// regulated badge toggle). Held so the menu bar updates without
+    /// the user re-opening the menu.
+    private var iconStyleCancellable: AnyCancellable?
+    private var regulatedBadgeCancellable: AnyCancellable?
 
     /// Last state we built a menu for, so `refreshMenuForPermissionChange`
     /// can rebuild without callers having to remember which state we're in.
@@ -89,6 +104,43 @@ final class StatusBarController {
         .dropFirst()   // skip the initial snapshot — menu is built lazily on first state setter
         .receive(on: DispatchQueue.main)
         .sink { [weak self] _ in self?.refreshMenuForPermissionChange() }
+
+        // Live icon-style swap: when the user flips Outline ↔ Filled in
+        // Preferences, rebuild the cached idle icon and reflect it on
+        // the button. The recording icon variant is style-independent
+        // (it always pairs ring + coral dot) and stays as-is.
+        iconStyleCancellable = UISettings.shared.$menuBarIconStyle
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] style in
+                guard let self = self else { return }
+                self.idleIcon = Self.makeIdleIcon(size: Self.iconSize, style: style)
+                if !self.isShowingRecordingIcon { self.item.button?.image = self.idleIcon }
+            }
+
+        // The regulated-badge toggle is purely visual — recompute the
+        // title suffix whenever it flips so the lock glyph appears /
+        // disappears immediately without the user clicking around.
+        regulatedBadgeCancellable = UISettings.shared.$showRegulatedBadge
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.applyTitle() }
+    }
+
+    /// True when the recording icon (coral dot) is currently shown on
+    /// the menu-bar button. Used by the icon-style live-swap so we don't
+    /// stomp a recording icon back to the idle variant mid-session.
+    private var isShowingRecordingIcon: Bool {
+        item.button?.image === recordingIcon
+    }
+
+    /// Reflect a global `regulatedMode` change. Called by the
+    /// Coordinator on startup and whenever the persisted config flips.
+    /// The actual glyph rendering happens in `applyTitle()` so it
+    /// stays in sync with whatever base title the current state holds.
+    func setRegulatedMode(_ on: Bool) {
+        regulatedMode = on
+        applyTitle()
     }
 
     func setIdle() {
@@ -189,7 +241,8 @@ final class StatusBarController {
     private func applyTitle() {
         let badge = processingCount > 0 ? " · Processing (\(processingCount))" : ""
         let download = modelDownloadTitleSuffix
-        item.button?.title = " \(baseTitle)\(badge)\(download)"
+        let lock = (regulatedMode && UISettings.shared.showRegulatedBadge) ? " \u{1F512}" : ""
+        item.button?.title = " \(baseTitle)\(badge)\(download)\(lock)"
     }
 
     /// Compact suffix that fits in the menu-bar title alongside the
@@ -223,19 +276,25 @@ final class StatusBarController {
     // The SVGs in Resources/ remain the source of truth for the design;
     // these renderers reproduce the same shapes pixel-for-pixel.
 
-    private static func makeIdleIcon(size: CGFloat) -> NSImage {
+    private static func makeIdleIcon(size: CGFloat, style: UISettings.MenuBarIconStyle = .outline) -> NSImage {
         let img = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             let s = rect.width / 18.0  // SVG viewBox is 18×18
 
-            // Ring: cx=9 cy=9 r=7.5 stroke-width=1.4
-            let ringRect = NSRect(
-                x: (9 - 7.5) * s, y: (9 - 7.5) * s,
-                width: 15 * s, height: 15 * s
-            )
-            let ring = NSBezierPath(ovalIn: ringRect.insetBy(dx: 0.7 * s, dy: 0.7 * s))
-            ring.lineWidth = 1.4 * s
-            NSColor.black.setStroke()
-            ring.stroke()
+            // Outline variant keeps the chrome ring around the bars. The
+            // filled variant drops the ring entirely (heavier-feeling
+            // bars alone), so users on a busy menu bar can pick the
+            // chunkier glyph if the thin ring disappears into other
+            // status icons.
+            if style == .outline {
+                let ringRect = NSRect(
+                    x: (9 - 7.5) * s, y: (9 - 7.5) * s,
+                    width: 15 * s, height: 15 * s
+                )
+                let ring = NSBezierPath(ovalIn: ringRect.insetBy(dx: 0.7 * s, dy: 0.7 * s))
+                ring.lineWidth = 1.4 * s
+                NSColor.black.setStroke()
+                ring.stroke()
+            }
 
             // Waveform bars (5): same x-stride 2.1, varying heights, all rx=0.7
             let bars: [(x: CGFloat, y: CGFloat, h: CGFloat)] = [
@@ -245,10 +304,14 @@ final class StatusBarController {
                 (10.8, 6.8,  4.4),
                 (12.9, 8.0,  2.0),
             ]
+            // Filled variant widens the bars so dropping the ring
+            // doesn't shrink the perceived footprint.
+            let barWidth: CGFloat = style == .filled ? 2.0 : 1.4
+            let barRadius: CGFloat = style == .filled ? 1.0 : 0.7
             NSColor.black.setFill()
             for bar in bars {
-                let r = NSRect(x: bar.x * s, y: bar.y * s, width: 1.4 * s, height: bar.h * s)
-                NSBezierPath(roundedRect: r, xRadius: 0.7 * s, yRadius: 0.7 * s).fill()
+                let r = NSRect(x: bar.x * s, y: bar.y * s, width: barWidth * s, height: bar.h * s)
+                NSBezierPath(roundedRect: r, xRadius: barRadius * s, yRadius: barRadius * s).fill()
             }
             return true
         }

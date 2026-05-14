@@ -174,6 +174,27 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.forceStopHotkey, "cmd+shift+x")
     }
 
+    func test_default_prompt_action_round_trips() throws {
+        // TECH-E5: prompt-timeout no longer auto-suppresses; the default
+        // action is configurable. Verify the new field loads, mutates,
+        // and survives a round-trip through TOML, and that the default
+        // is "skip" on a fresh file (preserves historical behaviour).
+        let url = try makeTempConfigURL()
+        try "".write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        XCTAssertEqual(store.defaultPromptAction, "skip")
+
+        store.defaultPromptAction = "record"
+        try store.saveNow()
+
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(raw.contains("default_prompt_action = \"record\""))
+
+        let reloaded = try ConfigStore(configURL: url)
+        XCTAssertEqual(reloaded.defaultPromptAction, "record")
+    }
+
     func test_writeBack_is_pure() throws {
         let url = try makeTempConfigURL()
         try "".write(to: url, atomically: true, encoding: .utf8)

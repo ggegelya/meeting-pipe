@@ -194,11 +194,57 @@ private struct PreferencesSidebar: View {
 
 private struct GeneralSectionView: View {
     @ObservedObject var store: ConfigStore
+    @ObservedObject private var ui = UISettings.shared
+    @State private var launchAtLogin: Bool = LaunchAtLoginService.isEnabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsSectionHeader("General",
-                caption: "Global hotkeys that work even when MeetingPipe isn't focused.")
+                caption: "Global hotkeys, appearance, and startup behaviour.")
+
+            SettingsGroup("Appearance") {
+                SettingsRow("Theme",
+                    sublabel: "Override the system appearance. SwiftUI windows and the recording HUD follow this choice.",
+                    showsDivider: false) {
+                    SettingsSegmented(
+                        selection: $ui.theme,
+                        options: [
+                            (.light,  "Light"),
+                            (.system, "System"),
+                            (.dark,   "Dark"),
+                        ]
+                    )
+                    Spacer(minLength: 0)
+                }
+                SettingsRow("Menu-bar icon",
+                    sublabel: "Outline keeps the ring around the waveform; filled drops the ring for a chunkier glyph.") {
+                    SettingsSegmented(
+                        selection: $ui.menuBarIconStyle,
+                        options: [
+                            (.outline, "Outline"),
+                            (.filled,  "Filled"),
+                        ]
+                    )
+                    Spacer(minLength: 0)
+                }
+            }
+
+            SettingsGroup("Startup") {
+                SettingsRow("Launch at login",
+                    sublabel: launchAtLoginSublabel,
+                    showsDivider: false) {
+                    Toggle("", isOn: launchAtLoginBinding)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                    Spacer(minLength: 0)
+                }
+            } footer: {
+                if LaunchAtLoginService.requiresApproval {
+                    Text("macOS has marked this login item as needing approval. Open System Settings → General → Login Items and re-enable MeetingPipe.")
+                } else {
+                    Text("Registers MeetingPipe with macOS via SMAppService. Listed under System Settings → General → Login Items.")
+                }
+            }
 
             SettingsGroup("Hotkeys") {
                 SettingsRow("Manual toggle",
@@ -222,6 +268,29 @@ private struct GeneralSectionView: View {
                 Text("Format: \"ctrl+option+m\", \"cmd+shift+r\". The toggle hotkey starts/stops. The force-stop hotkey only stops — pressing it when idle is a no-op, so panic-pressing can never accidentally start a recording. Restart MeetingPipe after changing.")
             }
         }
+    }
+
+    private var launchAtLoginSublabel: String {
+        if LaunchAtLoginService.requiresApproval {
+            return "Needs approval in System Settings → Login Items."
+        }
+        return launchAtLogin
+            ? "MeetingPipe will start automatically when you log in."
+            : "MeetingPipe only starts when you launch it manually."
+    }
+
+    /// Two-way binding that calls into SMAppService on change and
+    /// re-reads the real status afterwards. Without the re-read, a
+    /// `requiresApproval` state would leave the toggle wedged "on"
+    /// visually while SMAppService refuses the registration.
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { launchAtLogin },
+            set: { newValue in
+                LaunchAtLoginService.set(enabled: newValue)
+                launchAtLogin = LaunchAtLoginService.isEnabled
+            }
+        )
     }
 }
 
@@ -347,6 +416,7 @@ private struct RecordingSectionView: View {
 
 private struct PromptSectionView: View {
     @ObservedObject var store: ConfigStore
+    @ObservedObject private var ui = UISettings.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -362,8 +432,20 @@ private struct PromptSectionView: View {
                         format: { "\(Int($0)) s" }
                     )
                 }
+                SettingsRow("Default action",
+                    sublabel: defaultActionSublabel) {
+                    SettingsSegmented(
+                        selection: $store.defaultPromptAction,
+                        options: [
+                            ("skip",   "Skip"),
+                            ("record", "Record"),
+                            ("byo",    "Record (BYO)"),
+                        ]
+                    )
+                    Spacer(minLength: 0)
+                }
             } footer: {
-                Text("The floating prompt panel asks whether to record. If you don't respond, it dismisses on its own after the timeout.")
+                Text("The floating prompt panel asks whether to record. If you don't respond, the default action above fires when the timeout elapses.")
             }
 
             SettingsGroup("Regulated mode") {
@@ -377,9 +459,28 @@ private struct PromptSectionView: View {
                         .toggleStyle(.switch)
                     Spacer(minLength: 0)
                 }
+                SettingsRow("Show menu-bar lock",
+                    sublabel: "Append a lock glyph to the status-bar title whenever regulated mode is on.") {
+                    Toggle("", isOn: $ui.showRegulatedBadge)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .disabled(!store.regulatedMode)
+                    Spacer(minLength: 0)
+                }
             } footer: {
                 Text("Use for client / regulated meetings. The pipeline writes summaries to disk only — no transcript or summary is uploaded to Notion.")
             }
+        }
+    }
+
+    private var defaultActionSublabel: String {
+        switch store.defaultPromptAction {
+        case "record":
+            return "Auto-start an auto-summary recording when the prompt times out."
+        case "byo":
+            return "Auto-start a BYO recording (no Anthropic call; paste bundle on stop)."
+        default:
+            return "Suppress the call (no recording) when the prompt times out."
         }
     }
 }
@@ -825,6 +926,8 @@ private struct PermissionsCardRow: View {
 // MARK: - Advanced
 
 private struct AdvancedSectionView: View {
+    @ObservedObject private var ui = UISettings.shared
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsSectionHeader("Advanced",
@@ -849,6 +952,19 @@ private struct AdvancedSectionView: View {
                     }
                     Spacer(minLength: 0)
                 }
+            }
+
+            SettingsGroup("Diagnostics") {
+                SettingsRow("Verbose logging",
+                    sublabel: "Emit extra detail to the unified log and pass MP_VERBOSE=1 to pipeline subprocesses.",
+                    showsDivider: false) {
+                    Toggle("", isOn: $ui.verboseLogging)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                    Spacer(minLength: 0)
+                }
+            } footer: {
+                Text("Takes effect after restarting MeetingPipe — the env var is set at daemon launch and inherited by every subprocess spawned afterwards.")
             }
 
             Text("MeetingPipe — config lives in `~/.config/meeting-pipe/`. Workflows live in `~/.config/meeting-pipe/workflows/`. Both are plain TOML — safe to edit by hand if you know what you're doing.")

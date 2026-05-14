@@ -250,6 +250,11 @@ final class Coordinator: NSObject {
         detector.delegate = self
         detector.start()
 
+        // Seed the status bar with the initial regulated-mode flag so
+        // the lock glyph (if the user has it enabled) shows from boot
+        // rather than appearing only after the first config save.
+        statusBar.setRegulatedMode(configStore?.regulatedMode ?? false)
+
         if let parsed = HotkeyManager.parse(liveManualHotkey) {
             hotkey.register(keyCode: parsed.keyCode, modifiers: parsed.modifiers) { [weak self] in
                 DispatchQueue.main.async { self?.toggleManual() }
@@ -1046,12 +1051,22 @@ final class Coordinator: NSObject {
         promptTimeoutTimer = Timer.scheduledTimer(withTimeInterval: livePromptTimeoutSec, repeats: false) { [weak self] _ in
             guard let self = self else { return }
             DispatchQueue.main.async {
-                if case .prompting(let src) = self.state, src == source {
+                guard case .prompting(let src) = self.state, src == source else { return }
+                let action = (self.configStore?.defaultPromptAction ?? "skip").lowercased()
+                self.promptWindow.dismiss()
+                Log.event(category: "coordinator", action: "prompt_timeout", attributes: [
+                    "bundle_id": source.bundleID,
+                    "default_action": action,
+                ])
+                switch action {
+                case "record":
+                    Log.writeLine("daemon", "prompt timed out → auto-record (\(source.bundleID))")
+                    self.beginRecording(source: source, summaryMode: .auto)
+                case "byo":
+                    Log.writeLine("daemon", "prompt timed out → auto-record byo (\(source.bundleID))")
+                    self.beginRecording(source: source, summaryMode: .byo)
+                default:
                     Log.writeLine("daemon", "prompt timed out → suppressed (\(source.bundleID))")
-                    Log.event(category: "coordinator", action: "prompt_timeout", attributes: [
-                        "bundle_id": source.bundleID,
-                    ])
-                    self.promptWindow.dismiss()
                     self.state = .suppressed(source: source)
                     // Same reasoning as the explicit-skip path: the
                     // user's silence is a "don't pester me for this
@@ -1075,6 +1090,7 @@ final class Coordinator: NSObject {
         pendingDetectorRefresh = true
         applyConfigRefreshIfPossible()
         ensureModelPrefetchIfNeeded()
+        statusBar.setRegulatedMode(configStore?.regulatedMode ?? false)
     }
 
     /// Spawn (or skip) a background `mp prefetch-model` for the configured

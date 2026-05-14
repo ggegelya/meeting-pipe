@@ -25,6 +25,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.main.info("MeetingPipe starting")
 
+        // Apply the user's theme override before any window is created
+        // so the first paint already matches their choice (otherwise the
+        // Library/Preferences windows briefly flash the system
+        // appearance). The recording HUD + prompt panel also read
+        // `NSApp.effectiveAppearance`, so this propagates everywhere.
+        UISettings.shared.applyTheme()
+
+        // Verbose logging is plumbed at startup: log its state to the
+        // unified log so the user can grep for it, and export
+        // `MP_VERBOSE=1` so spawned pipeline subprocesses pick it up via
+        // env without us threading another argv flag through. Toggling
+        // requires a daemon restart to flip the env for new subprocesses.
+        if UISettings.shared.verboseLogging {
+            Log.main.info("verbose logging: ON")
+            setenv("MP_VERBOSE", "1", 1)
+        } else {
+            Log.main.debug("verbose logging: off")
+        }
+
         let config: Config
         do {
             config = try Config.load()
