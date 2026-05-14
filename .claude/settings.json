@@ -16,13 +16,23 @@
       "Bash(git show:*)",
       "Bash(git branch:*)",
       "Bash(git blame:*)",
+      "Bash(git add:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find . *)",
+      "Bash(find pipeline *)",
+      "Bash(find daemon *)",
+      "Bash(find scripts *)",
+      "Bash(wc *)",
+      "Bash(head:*)",
       "Bash(afinfo:*)",
       "Bash(ls:*)",
       "Bash(cat /Users/userinverita96/Library/Logs/MeetingPipe/*)",
       "Bash(tail /Users/userinverita96/Library/Logs/MeetingPipe/*)",
       "Bash(scripts/tail-events.sh:*)",
       "Bash(./scripts/tail-events.sh:*)",
-      "Bash(/Users/userinverita96/Documents/Projects/GIT/meeting-pipe/scripts/tail-events.sh:*)"
+      "Bash(/Users/userinverita96/Documents/Projects/GIT/meeting-pipe/scripts/tail-events.sh:*)",
+      "Bash(bash -n scripts/*)"
     ]
   }
 }
