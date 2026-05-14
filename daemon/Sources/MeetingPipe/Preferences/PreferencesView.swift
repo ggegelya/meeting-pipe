@@ -250,22 +250,16 @@ private struct GeneralSectionView: View {
                 SettingsRow("Manual toggle",
                     sublabel: "Start or stop a recording from anywhere.",
                     showsDivider: false) {
-                    TextField("ctrl+option+m", text: $store.manualHotkey)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(maxWidth: 200)
+                    SettingsHotkeyField(text: $store.manualHotkey)
                     Spacer(minLength: 0)
                 }
                 SettingsRow("Force stop",
                     sublabel: "Stop immediately, even if detection still thinks a meeting is live.") {
-                    TextField("ctrl+option+shift+m", text: $store.forceStopHotkey)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(maxWidth: 200)
+                    SettingsHotkeyField(text: $store.forceStopHotkey)
                     Spacer(minLength: 0)
                 }
             } footer: {
-                Text("Format: \"ctrl+option+m\", \"cmd+shift+r\". The toggle hotkey starts/stops. The force-stop hotkey only stops — pressing it when idle is a no-op, so panic-pressing can never accidentally start a recording. Restart MeetingPipe after changing.")
+                Text("Click a field, then press the chord you want to bind (one or more of ⌃⌥⇧⌘ plus a letter). The toggle hotkey starts/stops; the force-stop hotkey only stops, so panic-pressing can never accidentally start a recording. Restart MeetingPipe after changing.")
             }
         }
     }

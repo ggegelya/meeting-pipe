@@ -299,6 +299,142 @@ struct SettingsSlider: View {
     }
 }
 
+// MARK: - HotkeyField
+
+/// Click-to-record hotkey input. Renders the current chord using the
+/// canonical ⌃⌥⇧⌘ glyphs; clicking switches into "press keys…" capture
+/// mode; the next valid chord (modifier(s) + a letter) is parsed,
+/// rendered back into the `ctrl+option+m` text format that
+/// `HotkeyManager.parse` accepts, and committed via the binding. Escape
+/// cancels without changing the value.
+///
+/// Only letter keys are accepted, matching `HotkeyManager.keyCodeFor` —
+/// the parser doesn't handle digits or function keys today, so allowing
+/// the user to "capture" one would silently produce an unbindable
+/// hotkey at daemon start. A non-letter press is ignored and capture
+/// stays armed.
+struct SettingsHotkeyField: View {
+    @Binding var text: String
+    @State private var isCapturing: Bool = false
+    @State private var monitor: Any?
+
+    private static let letters: Set<Character> = Set("abcdefghijklmnopqrstuvwxyz")
+
+    var body: some View {
+        Button(action: startCapture) {
+            HStack(spacing: 6) {
+                if isCapturing {
+                    Text("Press keys…")
+                        .foregroundStyle(Color(MPColors.signal600))
+                        .font(.system(size: 12))
+                } else if text.isEmpty {
+                    Text("Not set")
+                        .foregroundStyle(.secondary)
+                        .font(.system(size: 12))
+                } else {
+                    Text(Self.renderGlyphs(text))
+                        .font(.system(size: 13, design: .monospaced))
+                }
+                Spacer(minLength: 0)
+                if isCapturing {
+                    Image(systemName: "command")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .frame(width: 200, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color(NSColor.textBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(
+                        isCapturing
+                            ? Color(MPColors.signal600)
+                            : Color.secondary.opacity(0.3),
+                        lineWidth: isCapturing ? 1.5 : 1
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .onDisappear { stopCapture() }
+    }
+
+    private func startCapture() {
+        guard !isCapturing else { return }
+        isCapturing = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            handle(event: event)
+        }
+    }
+
+    private func stopCapture() {
+        isCapturing = false
+        if let m = monitor {
+            NSEvent.removeMonitor(m)
+            monitor = nil
+        }
+    }
+
+    /// Drop the event when it produces a complete chord. Returns nil to
+    /// swallow the keystroke so the letter doesn't end up typed into
+    /// whatever field is behind us in the responder chain.
+    private func handle(event: NSEvent) -> NSEvent? {
+        // Escape cancels without writing.
+        if event.keyCode == 53 {
+            stopCapture()
+            return nil
+        }
+        guard let chars = event.charactersIgnoringModifiers?.lowercased(),
+              let ch = chars.first,
+              Self.letters.contains(ch) else {
+            return nil  // ignore non-letter keys, stay in capture mode
+        }
+        let flags = event.modifierFlags
+        var parts: [String] = []
+        if flags.contains(.control) { parts.append("ctrl") }
+        if flags.contains(.option)  { parts.append("option") }
+        if flags.contains(.shift)   { parts.append("shift") }
+        if flags.contains(.command) { parts.append("cmd") }
+        guard !parts.isEmpty else {
+            // A bare letter would be a global hotkey that steals the
+            // letter from every app. Reject and wait for a modifier.
+            return nil
+        }
+        parts.append(String(ch))
+        text = parts.joined(separator: "+")
+        stopCapture()
+        return nil
+    }
+
+    /// Render the stored canonical text ("ctrl+option+m") as the macOS
+    /// modifier glyph sequence (⌃⌥M). Falls back to the raw text if the
+    /// string doesn't parse — useful while the user edits the TOML file
+    /// directly with an unusual chord.
+    static func renderGlyphs(_ raw: String) -> String {
+        let parts = raw.lowercased().split(separator: "+").map { $0.trimmingCharacters(in: .whitespaces) }
+        var prefix = ""
+        var key = ""
+        for part in parts {
+            switch part {
+            case "ctrl", "control": prefix += "\u{2303}"  // ⌃
+            case "option", "opt", "alt": prefix += "\u{2325}"  // ⌥
+            case "shift": prefix += "\u{21E7}"  // ⇧
+            case "cmd", "command": prefix += "\u{2318}"  // ⌘
+            default:
+                if part.count == 1, let c = part.first, c.isLetter {
+                    key = String(c).uppercased()
+                }
+            }
+        }
+        guard !key.isEmpty else { return raw }
+        return prefix + key
+    }
+}
+
 // MARK: - SecretInput
 
 /// Password-style field with an eye toggle to reveal. Used for the two
