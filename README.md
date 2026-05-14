@@ -129,6 +129,14 @@ in Finder → Open, confirm once, and macOS remembers the decision. The
 LaunchAgent path runs the binary directly so it's not subject to that
 dialog after the first manual approval.
 
+**Rebuild loop for local edits.** Once `install.sh` has run once,
+`scripts/rebuild.sh` is the one-command fast path: `swift build -c
+release` → drop the new binary into the installed `.app` → re-sign with
+the stable identifier → `launchctl kickstart -k` to respawn the
+LaunchAgent without waiting on the 10 s throttle. Skips pipeline venv,
+model pre-fetch, and config staging. Target end-to-end is under 30 s on
+incremental builds.
+
 ### One-time manual steps
 
 The installer can't do these for you:
