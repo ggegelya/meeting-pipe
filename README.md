@@ -1,31 +1,35 @@
 # meeting-pipe
 
-Background macOS daemon that detects video meetings, captures audio locally,
-transcribes with speaker identification, generates a summary + action items, and
-publishes to your sinks of choice. Zero recurring cost beyond the LLM call,
-and the LLM call itself is optional (a fully on-device MLX backend is
-available). Apple-Silicon-native ASR (MLX/Metal) + diarization (sherpa-onnx /
-CoreML). Multilingual: 99 languages via Whisper, summary written in the same
-language as the transcript. **macOS 14+ only.**
+A macOS menu-bar app that records your video meetings, transcribes them with
+speaker labels, and publishes a summary to Notion, Obsidian, or your
+filesystem. Personal-use, single-Mac, no cloud database. **macOS 14+, Apple
+Silicon.**
 
-Two privacy modes:
+## Why
 
-- **Cloud (default).** Anthropic Claude does the summarization. Best quality
-  today, ~$0.05/meeting on Sonnet 4.6.
-- **Local.** Apple's MLX runs Qwen2.5-14B-Instruct-4bit on-device. Audio,
-  transcript, and summary never leave the machine. Switch in Preferences →
-  Pipeline. Pair with `regulated_mode = true` for a full zero-egress pipeline
-  (a test in `tests/test_summarize_backend.py` locks this in).
+1. **On-device by default.** Audio, transcript, and diarization stay on your
+   Mac. Summarization is the only step that leaves the machine, and only when
+   you keep the Anthropic backend on. Flip `summarization.backend = "local"`
+   for a fully zero-egress pipeline (MLX-Qwen on Metal, no outbound calls).
+2. **Hands-off recording.** Detects Zoom, Teams, Meet, Webex, and Slack
+   huddles across native apps and browser tabs, pops a prompt before each
+   call, and auto-stops when the meeting ends. Transcription runs in parallel
+   with the call, so the wait after Stop is roughly 10 to 30 seconds.
+3. **Owns nothing.** Recordings live in `~/Documents/Meetings/raw/`. Output
+   is plain Markdown. Notion, Obsidian, and filesystem sinks fan out
+   independently, and one going down doesn't block the others.
 
-Three output sinks, mix and match via `output.sinks`:
+## Quickstart
 
-- **Notion** (default): REST publish to a database, idempotent.
-- **Obsidian**: Markdown note in your vault with optional audio attachment
-  and daily-note backlink.
-- **Filesystem**: drops `<stem>.summary.md`, `<stem>.transcript.md`, and
-  `<stem>.actions.json` into a directory; for tools that watch a folder.
+```bash
+git clone https://github.com/<you>/meeting-pipe.git
+cd meeting-pipe
+./scripts/install.sh
+```
 
-See [`SPEC.md`](./SPEC.md) for the full design.
+Then `⌃⌥M` to record manually, or join any meeting and answer the prompt.
+Detailed install steps, requirements, and the configuration reference live
+below. Architecture rationale is in [`SPEC.md`](./SPEC.md).
 
 ---
 
