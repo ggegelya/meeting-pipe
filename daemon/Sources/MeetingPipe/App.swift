@@ -5,6 +5,13 @@ import Combine
 final class App {
     static func main() {
         Secrets.loadIfPresent()
+        // CLI subcommands intercept before NSApplication boots so the
+        // menu-bar surface and LaunchAgent path stay separate from
+        // one-shot diagnostic invocations.
+        let args = CommandLine.arguments
+        if args.count > 1, args[1] == "doctor" {
+            exit(DoctorCommand.run())
+        }
         let app = NSApplication.shared
         // Accessory: we live in the menu bar with no Dock icon, no main window.
         app.setActivationPolicy(.accessory)

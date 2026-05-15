@@ -1,4 +1,4 @@
-# Test coverage — Coordinator + Coordination/
+# Test coverage - Coordinator + Coordination/
 
 TECH-H4 audit of the unit-test surface for `Coordinator.swift` and its three
 post-extraction subordinates (`DetectionStateMachine`, `MuteProbeSubsystem`,
@@ -7,10 +7,10 @@ reason when something is deferred.
 
 Status legend:
 
-- `✓` — at least one happy-path and one failure-path test exist.
-- `⊝` — deferred; rationale stated. Re-evaluate when the constraint that makes
+- `✓` - at least one happy-path and one failure-path test exist.
+- `⊝` - deferred; rationale stated. Re-evaluate when the constraint that makes
   it integration-heavy moves (TECH-G-MIC, TECH-C13, TECH-P4).
-- `✗` — gap. Not deferred; should be filled.
+- `✗` - gap. Not deferred; should be filled.
 
 Suite runtime budget (per `acceptance: CI runs in under five minutes`):
 `swift test` on macos-14 currently completes in ~30 s for 305 tests. No
@@ -21,7 +21,7 @@ file-system fixtures over 1 MB.
 ## DetectionStateMachine
 
 [`Sources/MeetingPipe/Coordination/DetectionStateMachine.swift`](../daemon/Sources/MeetingPipe/Coordination/DetectionStateMachine.swift)
-— tests in [`DetectionStateMachineTests.swift`](../daemon/Tests/MeetingPipeTests/DetectionStateMachineTests.swift) (10 cases).
+- tests in [`DetectionStateMachineTests.swift`](../daemon/Tests/MeetingPipeTests/DetectionStateMachineTests.swift) (10 cases).
 
 | Seam | Status | Tests |
 |---|---|---|
@@ -41,7 +41,7 @@ No outstanding gaps.
 ## MuteProbeSubsystem
 
 [`Sources/MeetingPipe/Coordination/MuteProbeSubsystem.swift`](../daemon/Sources/MeetingPipe/Coordination/MuteProbeSubsystem.swift)
-— tests in [`MuteProbeSubsystemTests.swift`](../daemon/Tests/MeetingPipeTests/MuteProbeSubsystemTests.swift) (8 cases).
+- tests in [`MuteProbeSubsystemTests.swift`](../daemon/Tests/MeetingPipeTests/MuteProbeSubsystemTests.swift) (8 cases).
 
 The AX `evaluator` and `windowCapture` are closure-typed and injectable, so
 no AX trust or real meeting client is needed at test time.
@@ -64,7 +64,7 @@ caching logic; the integration tier verifies the AX subtree mapping.
 ## SinkDispatcher
 
 [`Sources/MeetingPipe/Coordination/SinkDispatcher.swift`](../daemon/Sources/MeetingPipe/Coordination/SinkDispatcher.swift)
-— tests in [`SinkDispatcherTests.swift`](../daemon/Tests/MeetingPipeTests/SinkDispatcherTests.swift) (5 cases).
+- tests in [`SinkDispatcherTests.swift`](../daemon/Tests/MeetingPipeTests/SinkDispatcherTests.swift) (5 cases).
 
 | Seam | Status | Tests |
 |---|---|---|
@@ -78,7 +78,7 @@ caching logic; the integration tier verifies the AX subtree mapping.
 ## Coordinator
 
 [`Sources/MeetingPipe/Coordinator.swift`](../daemon/Sources/MeetingPipe/Coordinator.swift)
-— no dedicated unit-test file. Each delegate / subsystem invariant the
+- no dedicated unit-test file. Each delegate / subsystem invariant the
 Coordinator orchestrates is covered through the type it owns.
 
 | Seam | Status | Reason / fixture |
