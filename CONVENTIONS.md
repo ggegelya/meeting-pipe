@@ -19,6 +19,11 @@ Don't write what the code does (the names already do that). Don't reference the 
 
 Use hyphens, commas, or rewrite. Applies to code, commit messages, docs, PR bodies, anything you produce here.
 
+Two enforcement points, both diff-based (existing em-dashes in untouched lines aren't flagged, only newly added ones):
+
+- CI: the `conventions` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) fails the build on any em-dash introduced in a PR or push.
+- Pre-commit (optional, local): [`scripts/pre-commit`](scripts/pre-commit) fires the same check on `git commit`. Install once with `ln -sf ../../scripts/pre-commit .git/hooks/pre-commit`.
+
 ### Commits
 
 ```
@@ -33,6 +38,28 @@ test: <summary>                # test-only changes
 One logical change per commit. Subject line is enough for most commits; add a body only when *why* isn't obvious from the subject. Body lines wrap at ~72 chars.
 
 Git identity for this repo: `Georgy <g.gegelya@icloud.com>`. Use `git -c user.name=Georgy -c user.email=g.gegelya@icloud.com commit …` if your default identity differs.
+
+### Logging: `Log.event` vs `Log.writeLine`
+
+Two functions, two purposes. Don't mix them up.
+
+| Use | When | Consumers |
+|---|---|---|
+| `Log.event(category:action:attributes:)` | Anything a script will grep — state transitions, lifecycle, errors with structured context. snake_case action names. | `events.jsonl`, `mp logs`, `mp analyze-detection`, the dogfood scripts. |
+| `Log.writeLine(_:_:)` | Free-form narrative for a human tailing the file. Sentences, not key-value pairs. | The per-category text logs in `~/Library/Logs/MeetingPipe/<category>.log`. |
+| `Log.main.info` / `.warning` / `.error` | os.Logger for the unified system log. Use sparingly; the jsonl + writeLine surfaces are usually enough. | Console.app, `log stream`. |
+
+Most start/stop/error sites pair an event line (structured) with a writeLine (readable). Pipeline-side uses `mp.events.emit(...)` from `events.py`, same split.
+
+### Error propagation
+
+Throwing functions for in-module calls, `Result<T, Error>` at protocol/API boundaries. Each subsystem declares its own nested `enum X: Error, LocalizedError` (see `MeetingRecorder.RecorderError`, `PipelineLauncher.LaunchError`, `StreamingTranscriber.LaunchError`). There is no unified `MeetingPipeError`. `LocalizedError.errorDescription` is what the notifier surfaces, so write user-facing strings there.
+
+### Test file naming
+
+`<TypeUnderTest>Tests.swift` in `daemon/Tests/MeetingPipeTests/`. One test file per production type that has logic worth unit-testing. Suite class is `final class <TypeUnderTest>Tests: XCTestCase`. Pure-logic tests don't import AVFoundation / NSWorkspace — see the "Testability via clock and decision injection" pattern in Swift section.
+
+Pipeline-side: `test_<module>.py` next to the module under `pipeline/tests/`.
 
 ### Dependencies
 

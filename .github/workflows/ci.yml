@@ -7,6 +7,41 @@ on:
     branches: [main]
 
 jobs:
+  conventions:
+    name: Conventions (em-dash lint)
+    # The em-dash rule from CONVENTIONS.md ("Use hyphens, commas, or
+    # rewrite"). Diff-based on purpose: historical content predates the
+    # rule and isn't worth a mass-rewrite. We only fail on em-dashes
+    # introduced in this PR / push so a backslide is caught at the gate.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan for em-dashes in added lines
+        env:
+          BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -e
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "No base SHA (first push / shallow clone) - skipping diff check."
+            exit 0
+          fi
+          # `git diff --unified=0` plus added-line filter (`^+` but not
+          # `^+++`) gives just the lines this PR introduces.
+          added=$(git diff --unified=0 "$BEFORE"...HEAD -- \
+            ':!**/Package.resolved' \
+            ':!**/uv.lock' \
+            ':!CONVENTIONS.md' \
+            ':!.github/workflows/ci.yml' \
+            | grep -E '^\+' | grep -v '^\+\+\+' || true)
+          if echo "$added" | grep -P '—' >/dev/null; then
+            echo "::error::CONVENTIONS.md em-dash rule violated in this change. Use hyphen, comma, or rewrite."
+            echo "$added" | grep -nP '—'
+            exit 1
+          fi
+          echo "No newly-introduced em-dashes."
+
   pipeline:
     name: Pipeline (pytest)
     # Pure-Python tests — runs everywhere. The transcribe step's heavy deps
