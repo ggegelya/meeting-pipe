@@ -181,6 +181,51 @@ def test_streamed_transcript_with_speakers_skips_offline_diarize(tmp_path: Path,
     assert data["segments"][0]["speaker"] == "speaker_0"
 
 
+def test_fluidaudio_sidecar_skips_offline_transcribe_and_diarize(tmp_path: Path, monkeypatch):
+    """The Group P daemon writes `<stem>.json` with `backend: "fluidaudio"`
+    and `streaming: false` after recording stops. The orchestrator must
+    treat that as authoritative ASR + diarization output and skip both
+    the offline transcribe AND the offline diarize stage."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    wav = tmp_path / "20260516-0900.wav"
+    wav.write_bytes(b"")
+    json_path = tmp_path / "20260516-0900.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "language": "en",
+                "segments": [
+                    {"start": 0.0, "end": 1.0, "text": "Hi.", "speaker": "speaker_0"},
+                    {"start": 1.0, "end": 2.0, "text": "World.", "speaker": "speaker_1"},
+                ],
+                "audio_path": str(wav),
+                "audio_seconds": 2.0,
+                "model": "parakeet-tdt-0.6b-v3",
+                "backend": "fluidaudio",
+                "diarization": True,
+                "diarization_failed": False,
+                "streaming": False,
+                "finalized": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = Config()
+    summary_json = tmp_path / "20260516-0900.summary.json"
+    summary_json.write_text("{}", encoding="utf-8")
+
+    with patch("mp.orchestrate.transcribe") as t, \
+         patch("mp.orchestrate.run_diarize") as d, \
+         patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
+         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+        result = run_all(wav, cfg=cfg)
+
+    t.assert_not_called()  # FluidAudio already transcribed
+    d.assert_not_called()  # FluidAudio already diarized
+    assert result["page_id"] == "p"
+
+
 def test_streamed_transcript_without_speakers_runs_offline_diarize(tmp_path: Path, monkeypatch):
     """When streaming was on but the diarizer was disabled (or
     erroreda), the streamed JSON has no speaker labels. The orchestrator

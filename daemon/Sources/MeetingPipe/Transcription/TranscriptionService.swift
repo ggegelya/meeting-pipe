@@ -1,43 +1,64 @@
 import Foundation
 
+/// Stable identifiers for the `[transcription] backend` config field.
+/// Centralising them here means callers don't sprinkle string literals
+/// and the normalize helper is the only place that decides what
+/// unrecognised input falls back to.
+enum TranscriptionBackend {
+    /// Swift-native Parakeet TDT + pyannote on the Apple Neural Engine.
+    /// Daemon-owned: writes `<stem>.json` directly before invoking the
+    /// Python pipeline subprocess, which then skips its own ASR.
+    static let fluidaudio = "fluidaudio"
+
+    /// Legacy path: the Python `mp` subprocess runs MLX-Whisper +
+    /// sherpa-onnx end-to-end. Kept around as a fallback while the
+    /// FluidAudio path is being dogfooded.
+    static let pipeline = "pipeline"
+
+    /// Returns `fluidaudio` for any unrecognised input. The default
+    /// route is FluidAudio; `nil` from the TOML loader means the user
+    /// is on a fresh install and gets the new default.
+    static func normalize(_ raw: String?) -> String {
+        let candidate = raw?.lowercased().trimmingCharacters(in: .whitespaces) ?? ""
+        switch candidate {
+        case fluidaudio, "fluid", "parakeet": return fluidaudio
+        case pipeline, "mlx", "whisper", "mlx-whisper": return pipeline
+        default: return fluidaudio
+        }
+    }
+}
+
 /// Routing seam between the Coordinator and the per-engine
-/// `TranscriptionRunner` instances. The default route still goes through
-/// the existing Python pipeline subprocess — `defaultRunner()` returns
-/// `nil` and the caller falls through to `PipelineLauncher.runAll(...)`.
-///
-/// Group P (TECH-P2 onward) flips the default to FluidAudio after the
-/// ANE residency + sidecar parity acceptance pass against a real recording.
-/// The build-time flag `MP_USE_FLUIDAUDIO` (declared via `swiftSettings`
-/// on the executable target) flips that default for the user / test build
-/// without code changes; the runtime setter (`overrideRunnerForTesting`)
-/// is what the unit tests use to exercise both routes.
+/// `TranscriptionRunner` instances. `makeRunner(for:)` returns the
+/// runner the daemon should drive (running it before queueing the
+/// Python subprocess), or `nil` if the legacy Python pipeline should
+/// own transcription itself.
 enum TranscriptionService {
 
-    /// Returns the runner that should produce the transcript sidecar for a
-    /// fresh recording, or `nil` if the legacy Python pipeline path should
-    /// keep handling transcription. `nil` is the current default until the
-    /// FluidAudio path is validated end-to-end.
-    static func defaultRunner() -> TranscriptionRunner? {
+    /// Build a runner for the given backend identifier. Returns `nil`
+    /// for the legacy pipeline path so the Coordinator skips the
+    /// pre-pipeline transcription step and lets `mp run-all` handle ASR.
+    static func makeRunner(for backend: String) -> TranscriptionRunner? {
         if let override = testingOverride { return override }
-        return featureEnabled ? FluidAudioRunner() : nil
-    }
-
-    /// True iff the `MP_USE_FLUIDAUDIO` build flag is set. Compile-time
-    /// gate so a release build can opt in without touching code paths
-    /// users haven't seen yet.
-    static var featureEnabled: Bool {
-        #if MP_USE_FLUIDAUDIO
-        return true
-        #else
-        return false
-        #endif
+        switch backend {
+        case TranscriptionBackend.fluidaudio:
+            return FluidAudioRunner()
+        case TranscriptionBackend.pipeline:
+            return nil
+        default:
+            // Defensive: TranscriptionBackend.normalize already collapses
+            // unknown values to fluidaudio. If a caller passed an unfiltered
+            // string anyway, treat it as the legacy path so we don't silently
+            // run an unexpected engine.
+            return nil
+        }
     }
 
     // MARK: - Test seam
 
     private static var testingOverride: TranscriptionRunner?
 
-    /// Inject a fake runner from tests. Always set back to nil in tearDown.
+    /// Inject a fake runner from tests. Tests must reset to nil in tearDown.
     static func overrideRunnerForTesting(_ runner: TranscriptionRunner?) {
         testingOverride = runner
     }

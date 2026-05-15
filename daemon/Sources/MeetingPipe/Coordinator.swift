@@ -120,7 +120,30 @@ final class Coordinator: NSObject {
         self.consent = ConsentStore()
         let resolvedLauncher = launcher ?? PipelineLauncher()
         self.launcher = resolvedLauncher
-        self.sinkDispatcher = SinkDispatcher(launcher: resolvedLauncher)
+        // Resolve the in-process transcription engine from the live store
+        // when present (so a freshly-edited backend choice in Preferences
+        // is honoured on next launch) and fall back to the loaded Config.
+        // The runner is cached for the daemon's lifetime — switching
+        // backends requires a restart, matching the hotkey / output_dir
+        // pattern. nil here means the legacy Python ASR path stays in
+        // charge.
+        let backend = TranscriptionBackend.normalize(
+            configStore?.transcriptionBackend ?? config.transcription.backend
+        )
+        let runner = TranscriptionService.makeRunner(for: backend)
+        if let runner = runner {
+            Log.event(category: "transcription", action: "engine_resolved", attributes: [
+                "engine": runner.backendName,
+            ])
+        } else {
+            Log.event(category: "transcription", action: "engine_resolved", attributes: [
+                "engine": "pipeline",
+            ])
+        }
+        self.sinkDispatcher = SinkDispatcher(
+            launcher: resolvedLauncher,
+            transcriptionRunner: runner
+        )
         // PreferencesWindow needs both stores. When the daemon was
         // launched with neither (test fixtures, headless smoke runs)
         // the menu item is wired through this guard; clicking it

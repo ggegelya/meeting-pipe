@@ -161,16 +161,19 @@ def run_all(
 
 
 def _run_all_inner(wav: Path, cfg: Config, *, force_byo: bool) -> dict:
-    # Streaming-transcribe path: when the daemon's StreamingTranscriber
-    # ran during recording, the transcript JSON + Markdown are already on
-    # disk. We pick up where the streamer left off — assign speakers via
-    # diarization and proceed straight to summarize + publish. Falls back
-    # to a fresh full transcribe if the streamed output is missing or
-    # looks broken (zero segments, malformed JSON).
-    streamed = _existing_streamed_transcript(wav)
+    # Daemon-produced transcript path: when the Swift daemon produced
+    # `<stem>.json` before invoking us (streaming subprocess during
+    # recording, or the FluidAudio in-process runner after stop), we pick
+    # up where the daemon left off. Speaker labels may already be attached
+    # (FluidAudio runs pyannote inline; the streaming diarizer can also
+    # populate them) — `_finalize_streamed_transcript` checks and skips
+    # the offline diarize step accordingly. Falls back to a fresh full
+    # transcribe if the daemon output is missing or looks broken.
+    streamed = _existing_daemon_transcript(wav)
     if streamed is not None:
-        log.info("[1/3] transcribe (streamed during recording, finalizing)")
-        events.emit("pipeline", "stage_started", stage="transcribe", source="streamed")
+        source = streamed.get("backend") or ("streamed" if streamed.get("streaming") else "daemon")
+        log.info("[1/3] transcribe (produced by daemon: %s)", source)
+        events.emit("pipeline", "stage_started", stage="transcribe", source=source)
         t = _finalize_streamed_transcript(wav, streamed, cfg)
     else:
         log.info("[1/3] transcribe")
@@ -293,13 +296,21 @@ def _run_all_inner(wav: Path, cfg: Config, *, force_byo: bool) -> dict:
     }
 
 
-def _existing_streamed_transcript(wav: Path) -> dict | None:
-    """Return the structured JSON the daemon's StreamingTranscriber wrote
-    during recording, or None if it doesn't exist / is unusable.
+_DAEMON_BACKENDS = frozenset({"fluidaudio"})
 
-    A "usable" streamed transcript is one with at least one segment AND
-    the `streaming: true` marker (so we don't accidentally pick up a
-    stale offline transcript from a previous run).
+
+def _existing_daemon_transcript(wav: Path) -> dict | None:
+    """Return the structured JSON the daemon wrote, or None if it doesn't
+    exist / is unusable.
+
+    Two daemon-side producers count as "the daemon wrote it":
+    - the streaming subprocess (legacy path; `streaming: true`)
+    - the in-process FluidAudio runner (Group P; `backend: "fluidaudio"`,
+      `streaming: false`, `finalized: true`)
+
+    Both write the same schema (`segments`, `language`, `audio_seconds`,
+    etc.). We accept either provenance and reject a stale Python-side
+    offline transcript from a previous run (no daemon marker present).
     """
     json_path = wav.parent / f"{wav.stem}.json"
     if not json_path.exists():
@@ -310,10 +321,12 @@ def _existing_streamed_transcript(wav: Path) -> dict | None:
         return None
     if not isinstance(data, dict):
         return None
-    if not data.get("streaming"):
+    is_streamed = bool(data.get("streaming"))
+    is_daemon_backend = str(data.get("backend") or "") in _DAEMON_BACKENDS
+    if not (is_streamed or is_daemon_backend):
         return None
     if not data.get("segments"):
-        log.warning("Streamed transcript has zero segments — falling back to offline transcribe")
+        log.warning("Daemon transcript has zero segments — falling back to offline transcribe")
         return None
     return data
 

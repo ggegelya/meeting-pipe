@@ -66,8 +66,20 @@ reprompt_cooldown_sec = 60
 # "com.google.Chrome" = 15
 
 [transcription]
-# MLX-converted Whisper repo on HuggingFace. Default is the turbo variant
-# (best speed/quality tradeoff on Apple Silicon). Alternates:
+# Which engine produces the per-recording transcript.
+#   "fluidaudio" (default): Swift-native Parakeet TDT v3 + pyannote on the
+#     Apple Neural Engine, run by the daemon before the Python pipeline.
+#     Fastest path, multilingual. Models live in
+#     ~/Library/Application Support/FluidAudio/Models (auto-downloaded on
+#     first recording).
+#   "pipeline": legacy path. The Python `mp` subprocess runs MLX-Whisper +
+#     sherpa-onnx end-to-end. Heavier; kept as a fallback while the new
+#     engine is being dogfooded. Flip via Preferences → Pipeline and
+#     restart MeetingPipe.
+backend = "fluidaudio"
+# MLX-converted Whisper repo on HuggingFace, read only when backend =
+# "pipeline". Default is the turbo variant (best speed/quality tradeoff
+# on Apple Silicon). Alternates:
 #   mlx-community/whisper-large-v3-mlx   (slightly slower, slightly more accurate)
 #   mlx-community/whisper-medium         (faster, mid-quality)
 # On non-Apple-Silicon hosts the pipeline auto-falls-back to faster-whisper.

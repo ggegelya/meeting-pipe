@@ -5,17 +5,23 @@
 #
 # Steps:
 #   1. Verify macOS + brew + uv + ffmpeg.
-#   2. Build the daemon (swift build -c release).
-#   3. Install the pipeline venv at ~/.local/share/meeting-pipe/venv.
-#   4. Pre-fetch sherpa-onnx diarization models (~32 MB, public).
+#   2. Build the daemon (swift build -c release). Fetches FluidAudio
+#      Swift package (Parakeet TDT + pyannote on Apple Neural Engine).
+#   3. Install the pipeline venv at ~/.local/share/meeting-pipe/venv as
+#      a fallback ASR path (active when the user flips
+#      `[transcription] backend = "pipeline"` in config.toml).
+#   4. Pre-fetch sherpa-onnx diarization models (~32 MB, public) so the
+#      pipeline fallback works offline on day one.
 #   5. Stage config files at ~/.config/meeting-pipe/.
 #   6. Install LaunchAgent for autostart.
 #
-# Tier-1 transcription stack: mlx-whisper for ASR (Apple Silicon native,
-# ~5-10× faster than faster-whisper-CPU) + sherpa-onnx for diarization
-# (CoreML-accelerated, no HuggingFace TOS gate). HF_TOKEN is no longer
+# Default transcription stack: FluidAudio runs Parakeet TDT v3 + pyannote
+# Community-1 in-process on the Apple Neural Engine. Models live in
+# ~/Library/Application Support/FluidAudio/Models and download lazily on
+# first recording (~600 MB Parakeet + ~30 MB diarizer). Fallback stack:
+# mlx-whisper + sherpa-onnx via the Python subprocess. HF_TOKEN is not
 # required — kept in secrets.env only for users who deliberately opt
-# back into a pyannote workflow.
+# back into a pyannote-token workflow.
 
 set -euo pipefail
 
@@ -272,11 +278,16 @@ except Exception as e:
     sys.exit(1)
 PY
 
-# ASR models (mlx-whisper) are large (~1.5 GB for whisper-large-v3-turbo).
-# We don't pre-fetch them — first recording downloads them, after which
-# they live in ~/.cache/huggingface/hub. Pre-fetching adds ~3 minutes to
-# install time and most users tolerate the one-time first-recording wait.
-say "Note: Whisper model (~1.5 GB) downloads on first recording"
+# FluidAudio models (Parakeet TDT v3 ~600 MB + pyannote diarizer ~30 MB)
+# download lazily on the first recording into
+# ~/Library/Application Support/FluidAudio/Models. We do not pre-fetch
+# here: install stays fast, and the user pays the one-time download only
+# when they actually run a meeting.
+#
+# MLX-Whisper (~1.5 GB) downloads to ~/.cache/huggingface/hub only if the
+# user flips `[transcription] backend = "pipeline"` in config.toml.
+say "Note: FluidAudio models (~630 MB) download on first recording"
+say "      MLX-Whisper (~1.5 GB) downloads only if [transcription] backend = \"pipeline\""
 
 # 5. Config staging --------------------------------------------------------
 

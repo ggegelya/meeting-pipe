@@ -64,9 +64,23 @@ struct Config {
         var regulatedMode: Bool
     }
 
+    struct Transcription {
+        /// Which engine produces `<stem>.json` for new recordings.
+        /// - `"fluidaudio"` (default): Swift-native Parakeet TDT + pyannote
+        ///   on the Apple Neural Engine, written directly by the daemon
+        ///   after recording stops. The Python pipeline reads the sidecar
+        ///   and skips its own ASR.
+        /// - `"pipeline"`: legacy path; the Python `mp` subprocess runs
+        ///   MLX-Whisper + sherpa-onnx as before. Useful as a fallback
+        ///   while the FluidAudio path is being dogfooded; flip via
+        ///   Preferences if a recording transcribes poorly.
+        var backend: String
+    }
+
     var recording: Recording
     var detection: Detection
     var modes: Modes
+    var transcription: Transcription
 
     static let defaultPath: URL = {
         FileManager.default.homeDirectoryForCurrentUser
@@ -85,6 +99,7 @@ struct Config {
         let rec = toml["recording"]?.table
         let det = toml["detection"]?.table
         let mod = toml["modes"]?.table
+        let trans = toml["transcription"]?.table
 
         let outputDirRaw = rec?["output_dir"]?.string ?? "~/Documents/Meetings/raw"
         let sampleRate = rec?["sample_rate"]?.int ?? 16000
@@ -122,6 +137,8 @@ struct Config {
 
         let regulated = mod?["regulated_mode"]?.bool ?? false
 
+        let backend = TranscriptionBackend.normalize(trans?["backend"]?.string)
+
         return Config(
             recording: Recording(
                 outputDir: expandTilde(outputDirRaw),
@@ -139,7 +156,8 @@ struct Config {
                 promptTimeoutSec: promptTimeout,
                 repromptCooldownSec: repromptCooldown
             ),
-            modes: Modes(regulatedMode: regulated)
+            modes: Modes(regulatedMode: regulated),
+            transcription: Transcription(backend: backend)
         )
     }
 
@@ -162,7 +180,8 @@ struct Config {
                 promptTimeoutSec: 30,
                 repromptCooldownSec: 60
             ),
-            modes: Modes(regulatedMode: false)
+            modes: Modes(regulatedMode: false),
+            transcription: Transcription(backend: TranscriptionBackend.fluidaudio)
         )
     }
 

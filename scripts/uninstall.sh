@@ -48,6 +48,15 @@ LAUNCHAGENTS="$HOME/Library/LaunchAgents"
 LAUNCHD_LABEL="com.meetingpipe.daemon"
 LOG_DIR="$HOME/Library/Logs/MeetingPipe"
 APP_SUPPORT="$HOME/Library/Application Support/MeetingPipe"
+# FluidAudio (Parakeet TDT + pyannote) caches its CoreML models under
+# Application Support. The path is owned by the FluidAudio SDK, not by
+# MeetingPipe; we remove it on uninstall because nothing else on a user
+# Mac touches it. Symbol: ~630 MB on disk per Parakeet v3 install.
+FLUID_AUDIO_SUPPORT="$HOME/Library/Application Support/FluidAudio"
+# sherpa-onnx (the pipeline fallback's diarization stack) caches under
+# the user's home; kept on uninstall by default because it's small and
+# the user may re-install soon.
+SHERPA_CACHE="$HOME/.cache/meeting-pipe"
 APP_BUNDLE="$HOME/Applications/MeetingPipe.app"
 
 PLIST="$LAUNCHAGENTS/${LAUNCHD_LABEL}.plist"
@@ -71,8 +80,12 @@ pkill -f "MeetingPipe.app/Contents/MacOS/MeetingPipe" 2>/dev/null || true
 rm -rf "$DATA_DIR"
 rm -rf "$LOG_DIR"
 rm -rf "$APP_SUPPORT"
+rm -rf "$FLUID_AUDIO_SUPPORT"
 rm -rf "$APP_BUNDLE"
-echo "Removed venv, logs, app support, and ~/Applications/MeetingPipe.app."
+echo "Removed venv, logs, app support, FluidAudio model cache, and ~/Applications/MeetingPipe.app."
+if [[ -d "$SHERPA_CACHE" ]]; then
+    echo "Kept $SHERPA_CACHE (sherpa-onnx fallback models). rm -rf manually if you also want them gone."
+fi
 
 if (( RESET_TCC )); then
     # Order matters here: if the daemon is still running, its in-process

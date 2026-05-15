@@ -27,6 +27,37 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertTrue(store.autoConsentApps.isEmpty)
         // Transcription language default is "en"; auto-detect is opt-in.
         XCTAssertEqual(store.transcriptionLanguage, "en")
+        // Default engine is FluidAudio so a fresh install runs Parakeet
+        // on ANE without the user editing the config.
+        XCTAssertEqual(store.transcriptionBackend, TranscriptionBackend.fluidaudio)
+    }
+
+    func test_transcription_backend_round_trip() throws {
+        let url = try makeTempConfigURL()
+        try """
+        [transcription]
+        backend = "pipeline"
+        """.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        XCTAssertEqual(store.transcriptionBackend, TranscriptionBackend.pipeline)
+
+        store.transcriptionBackend = TranscriptionBackend.fluidaudio
+        try store.saveNow()
+
+        let reloaded = try ConfigStore(configURL: url)
+        XCTAssertEqual(reloaded.transcriptionBackend, TranscriptionBackend.fluidaudio)
+    }
+
+    func test_unknown_backend_value_normalises_to_fluidaudio() throws {
+        let url = try makeTempConfigURL()
+        try """
+        [transcription]
+        backend = "magic-engine"
+        """.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        XCTAssertEqual(store.transcriptionBackend, TranscriptionBackend.fluidaudio)
     }
 
     func test_transcription_language_round_trip() throws {
