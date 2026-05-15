@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import MeetingPipe
 
@@ -73,6 +74,61 @@ final class TranscriptionSidecarTests: XCTestCase {
         let decoded = try JSONDecoder().decode(TranscriptSidecar.self, from: data)
         XCTAssertEqual(decoded.language, "uk")
         XCTAssertEqual(decoded.diarizationFailureReason, "skipped: no segments")
+    }
+}
+
+final class FluidAudioRunnerAudioMixdownTests: XCTestCase {
+    /// Locks in the stereo→mono downmix. Regression case for the
+    /// "transcript only contains the mic side of the call" symptom: an
+    /// unconfigured AVAudioConverter on macOS can silently fall through
+    /// to channel-0 only when downmixing stereo, which loses the entire
+    /// system-audio side of our (mic-L, system-R) recordings. The runner
+    /// computes the mix in Swift instead and this test pins (L+R)/2.
+    func test_stereo_mixdown_averages_both_channels() throws {
+        let format = try XCTUnwrap(
+            AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: 16_000,
+                channels: 2,
+                interleaved: false
+            )
+        )
+        let frameCount: AVAudioFrameCount = 4
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount))
+        buffer.frameLength = frameCount
+
+        let left = try XCTUnwrap(buffer.floatChannelData?[0])
+        let right = try XCTUnwrap(buffer.floatChannelData?[1])
+        // L: 1.0, 0.0, 0.5, -0.5     R: 0.0, 1.0, -0.5, 0.5
+        // expected mono: 0.5, 0.5, 0.0, 0.0
+        left[0]  = 1.0;  right[0]  = 0.0
+        left[1]  = 0.0;  right[1]  = 1.0
+        left[2]  = 0.5;  right[2]  = -0.5
+        left[3]  = -0.5; right[3]  = 0.5
+
+        let mono = FluidAudioRunner.mixDownToMono(buffer)
+        XCTAssertEqual(mono.count, 4)
+        XCTAssertEqual(mono[0], 0.5, accuracy: 1e-6)
+        XCTAssertEqual(mono[1], 0.5, accuracy: 1e-6)
+        XCTAssertEqual(mono[2], 0.0, accuracy: 1e-6)
+        XCTAssertEqual(mono[3], 0.0, accuracy: 1e-6)
+    }
+
+    func test_mono_input_passes_through_unchanged() throws {
+        let format = try XCTUnwrap(
+            AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: 16_000,
+                channels: 1,
+                interleaved: false
+            )
+        )
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 3))
+        buffer.frameLength = 3
+        let ch = try XCTUnwrap(buffer.floatChannelData?[0])
+        ch[0] = 0.1; ch[1] = -0.2; ch[2] = 0.3
+        let mono = FluidAudioRunner.mixDownToMono(buffer)
+        XCTAssertEqual(mono, [0.1, -0.2, 0.3])
     }
 }
 

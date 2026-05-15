@@ -39,23 +39,32 @@ final class FluidAudioRunner: TranscriptionRunner {
     ) async throws -> TranscriptSidecar {
         let asr = try await ensureAsr()
         let language = Self.resolveLanguage(hint: languageHint)
-        var decoderState = TdtDecoderState.make()
-        let asrResult: ASRResult
-        do {
-            asrResult = try await asr.transcribe(
-                wavURL,
-                decoderState: &decoderState,
-                language: language
-            )
-        } catch let error as ASRError {
-            throw TranscriptionError.inferenceFailed(error.localizedDescription)
-        }
 
+        // Critical: read + downmix the WAV ourselves rather than letting
+        // FluidAudio's AVAudioConverter-based loader handle stereo. Apple's
+        // AVAudioConverter does NOT reliably downmix stereo to mono when
+        // the source's channel layout isn't explicitly tagged — it can
+        // silently fall through to channel-0-only. Our WAVs are
+        // (mic-L, system-R), so that path would drop the entire remote
+        // side of the call out of the transcript. We compute (L+R)/2 in
+        // Swift and hand the resulting [Float] to both ASR + diarization.
         let samples: [Float]
         do {
             samples = try Self.readMonoFloat32(from: wavURL)
         } catch {
             throw TranscriptionError.audioReadFailed(wavURL, underlying: error)
+        }
+
+        var decoderState = TdtDecoderState.make()
+        let asrResult: ASRResult
+        do {
+            asrResult = try await asr.transcribe(
+                samples,
+                decoderState: &decoderState,
+                language: language
+            )
+        } catch let error as ASRError {
+            throw TranscriptionError.inferenceFailed(error.localizedDescription)
         }
 
         var speakers: [SpeakerSpan] = []
@@ -167,59 +176,128 @@ final class FluidAudioRunner: TranscriptionRunner {
         }
     }
 
-    /// Loads a WAV (any sample-rate, any channel count) and returns it as
-    /// mono 16 kHz Float32 — FluidAudio's diarizer expects that shape.
-    /// Stereo files (mic-L, system-R) are mixed down to mono for diarization;
-    /// the on-disk WAV is untouched.
+    /// Loads a WAV and returns it as 16 kHz mono Float32 with both
+    /// channels averaged into the mono stream. Stereo files (mic-L,
+    /// system-R) get an explicit per-frame `(L+R)/2` mix; FluidAudio's
+    /// own loader uses AVAudioConverter for the channel reduction and
+    /// that path is unreliable on macOS when the source WAV has no
+    /// tagged channel layout (it can silently drop to channel 0 only,
+    /// losing the entire system-audio side of the recording).
+    ///
+    /// The on-disk WAV is never modified — we only build an in-memory
+    /// mono copy for ASR + diarization inputs.
     static func readMonoFloat32(from url: URL) throws -> [Float] {
         let file = try AVAudioFile(forReading: url)
-        let target = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: 16_000,
-            channels: 1,
-            interleaved: false
-        )
-        guard let target = target,
-              let converter = AVAudioConverter(from: file.processingFormat, to: target)
-        else {
+        let format = file.processingFormat
+        let frameCount = AVAudioFrameCount(file.length)
+        guard frameCount > 0 else { return [] }
+
+        guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
             throw TranscriptionError.audioReadFailed(
                 url,
                 underlying: NSError(
                     domain: "FluidAudioRunner",
                     code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "audio format conversion unavailable"]
-                )
-            )
-        }
-
-        let frameCapacity = AVAudioFrameCount(file.length)
-        guard let inputBuffer = AVAudioPCMBuffer(
-            pcmFormat: file.processingFormat,
-            frameCapacity: frameCapacity
-        ) else {
-            throw TranscriptionError.audioReadFailed(
-                url,
-                underlying: NSError(
-                    domain: "FluidAudioRunner",
-                    code: 2,
                     userInfo: [NSLocalizedDescriptionKey: "could not allocate input buffer"]
                 )
             )
         }
         try file.read(into: inputBuffer)
 
-        let ratio = target.sampleRate / file.processingFormat.sampleRate
-        let outCapacity = AVAudioFrameCount(Double(inputBuffer.frameLength) * ratio + 1024)
-        guard let outBuffer = AVAudioPCMBuffer(
-            pcmFormat: target,
-            frameCapacity: outCapacity
-        ) else {
+        // Downmix every channel into mono by simple average. This works
+        // for any channel count (1, 2, 4, ...) and never silently drops
+        // a channel the way an unconfigured AVAudioConverter mixer can.
+        let mono = mixDownToMono(inputBuffer)
+
+        // Resample to 16 kHz if the source isn't already there.
+        // Mono → mono via AVAudioConverter is safe (no channel layout
+        // ambiguity), so reuse it for the rate change.
+        if format.sampleRate == 16_000 {
+            return mono
+        }
+        return try resampleMono(mono, from: format.sampleRate, to: 16_000, url: url)
+    }
+
+    /// Visible for tests so we can lock in (L+R)/2 against a synthesized
+    /// stereo buffer. Production callers go through `readMonoFloat32`.
+    static func mixDownToMono(_ buffer: AVAudioPCMBuffer) -> [Float] {
+        let frameCount = Int(buffer.frameLength)
+        guard frameCount > 0, let channels = buffer.floatChannelData else { return [] }
+        let channelCount = Int(buffer.format.channelCount)
+
+        if channelCount == 1 {
+            return Array(UnsafeBufferPointer(start: channels[0], count: frameCount))
+        }
+
+        var result = [Float](repeating: 0, count: frameCount)
+        let scale = 1.0 / Float(channelCount)
+        for c in 0..<channelCount {
+            let ptr = channels[c]
+            for i in 0..<frameCount {
+                result[i] += ptr[i] * scale
+            }
+        }
+        return result
+    }
+
+    private static func resampleMono(
+        _ samples: [Float],
+        from inputRate: Double,
+        to outputRate: Double,
+        url: URL
+    ) throws -> [Float] {
+        guard
+            let inputFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: inputRate,
+                channels: 1,
+                interleaved: false
+            ),
+            let outputFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: outputRate,
+                channels: 1,
+                interleaved: false
+            ),
+            let converter = AVAudioConverter(from: inputFormat, to: outputFormat)
+        else {
             throw TranscriptionError.audioReadFailed(
                 url,
                 underlying: NSError(
-                    domain: "FluidAudioRunner",
-                    code: 3,
-                    userInfo: [NSLocalizedDescriptionKey: "could not allocate output buffer"]
+                    domain: "FluidAudioRunner", code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "resampler unavailable"]
+                )
+            )
+        }
+        guard
+            let inputBuffer = AVAudioPCMBuffer(
+                pcmFormat: inputFormat,
+                frameCapacity: AVAudioFrameCount(samples.count)
+            )
+        else {
+            throw TranscriptionError.audioReadFailed(
+                url,
+                underlying: NSError(
+                    domain: "FluidAudioRunner", code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "resampler input alloc failed"]
+                )
+            )
+        }
+        inputBuffer.frameLength = AVAudioFrameCount(samples.count)
+        if let dst = inputBuffer.floatChannelData?[0] {
+            samples.withUnsafeBufferPointer { src in
+                dst.update(from: src.baseAddress!, count: samples.count)
+            }
+        }
+
+        let ratio = outputRate / inputRate
+        let outCapacity = AVAudioFrameCount(Double(samples.count) * ratio + 1024)
+        guard let outBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: outCapacity) else {
+            throw TranscriptionError.audioReadFailed(
+                url,
+                underlying: NSError(
+                    domain: "FluidAudioRunner", code: 4,
+                    userInfo: [NSLocalizedDescriptionKey: "resampler output alloc failed"]
                 )
             )
         }
@@ -235,7 +313,6 @@ final class FluidAudioRunner: TranscriptionRunner {
             outStatus.pointee = .haveData
             return inputBuffer
         }
-
         if status == .error, let err = convertError {
             throw TranscriptionError.audioReadFailed(url, underlying: err)
         }
