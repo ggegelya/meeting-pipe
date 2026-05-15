@@ -32,13 +32,20 @@ final class Coordinator: NSObject {
     /// queue + model-download progress. The library window subscribes
     /// to this; StatusBarController writes into it from each state setter.
     private let libraryModel: LibraryWindowModel
-    /// Long-running transcription subprocess that runs in parallel with
-    /// the recorder. When the recording stops, we signal it to flush;
-    /// the orchestrator then picks up its `<stem>.json` and skips the
-    /// offline ASR stage. Best-effort: a failure here is recoverable —
-    /// the orchestrator falls back to a fresh offline transcribe when
-    /// the streamed JSON is missing or has zero segments.
-    private let streamingTranscriber = StreamingTranscriber()
+    /// Recording-side state machine + per-bundle cooldown + prompt
+    /// timeout timer. Owns every `AppState` transition; the Coordinator
+    /// drives surfaces (status bar, prompt window, HUD) off of it.
+    private let stateMachine = DetectionStateMachine()
+
+    /// Pipeline-job queue + streaming transcriber subprocess. The
+    /// Coordinator routes start/stop transitions through here; per-job
+    /// completion flows back via `onJobCompleted` so the notifier and
+    /// status bar stay in one place.
+    private let sinkDispatcher: SinkDispatcher
+
+    /// 1 Hz AX poll that gates `recorder.micPaused` on the meeting
+    /// client's mute UI. Replaced event-driven by TECH-G-MIC.
+    private let muteProbe = MuteProbeSubsystem()
 
     /// Pre-fetches the local-MLX model whenever the user picks a backend
     /// that needs one. The first meeting in local mode otherwise pays a
@@ -57,74 +64,6 @@ final class Coordinator: NSObject {
     /// Created at recording start, released at stop. Notifies after 90 s of
     /// silence and auto-stops after 5 min.
     private var silenceDetector: SilenceDetector?
-
-    private var state: AppState = .idle {
-        didSet {
-            Log.main.info("state: \(String(describing: oldValue)) → \(String(describing: self.state))")
-            Log.event(category: "coordinator", action: "state_change", attributes: [
-                "from": Coordinator.stateLabel(oldValue),
-                "to": Coordinator.stateLabel(state),
-            ])
-            // Mid-recording config edits get deferred (see
-            // applyConfigRefreshIfPossible) — apply them when we transition
-            // back to idle so the next meeting picks up the new values.
-            if case .idle = state { applyConfigRefreshIfPossible() }
-        }
-    }
-
-    private static func stateLabel(_ s: AppState) -> String {
-        switch s {
-        case .idle: return "idle"
-        case .prompting: return "prompting"
-        case .suppressed: return "suppressed"
-        case .recording: return "recording"
-        case .stopping: return "stopping"
-        }
-    }
-
-    /// Auto-skip timer when the user ignores a prompt. Spec §7 prompt_timeout_sec.
-    private var promptTimeoutTimer: Timer?
-
-    /// Per-bundle re-prompt suppression. Recorded on every end-of-
-    /// recording / skip / timeout transition so the next detector-
-    /// driven `.started` for the same bundle is gated by the
-    /// cooldown. See `RepromptCooldown` for the why.
-    private var repromptCooldown = RepromptCooldown()
-
-    /// AX handle to the active recording's meeting window. Captured
-    /// when `beginRecording` arms a recording for a native source, used
-    /// by the `MeetingMuteProbe` poll to read the client's mute state.
-    /// `nil` for manual / browser recordings, AX-denied sessions, or
-    /// when no window matched at capture time — in any of those cases
-    /// the mute probe stays off and the recorder behaves as before.
-    private var recordingWindow: MeetingWindowHandle?
-
-    /// 1 Hz timer that polls `MeetingMuteProbe.evaluate` while
-    /// recording. Toggles `recorder.micPaused` on transitions and
-    /// emits `mic_paused_due_to_mute` / `mic_resumed` events to the
-    /// jsonl. Armed in `armMuteProbe`, disarmed in `disarmMuteProbe`.
-    private var muteProbeTimer: Timer?
-
-    /// Last mute state we observed (or `.unknown` before the first
-    /// successful probe). Stored so we only emit transition events
-    /// when the state actually flips — otherwise the events log would
-    /// fill with one redundant line per poll.
-    private var lastMuteState: MeetingMuteProbe.State = .unknown
-
-    /// FIFO queue of pipeline jobs spawned after recordings flush. The
-    /// queue is sequential (one whisper.cpp at a time) but the recording
-    /// side of the state machine runs in parallel, so the user can start
-    /// a new meeting while older recordings are still being transcribed.
-    private var processingJobs: [ProcessingJob] = []
-    /// Job whose subprocess is currently running (head of the queue).
-    /// `nil` between jobs and when the queue is empty.
-    private var activeJob: ProcessingJob?
-
-    /// Set when ConfigStore persists while we're mid-recording. We can't
-    /// rebuild the Detector live without losing its `hasFiredStart`
-    /// bookkeeping (the new instance would never fire `.ended` for the
-    /// in-flight meeting). Apply on next `.idle` instead.
-    private var pendingDetectorRefresh: Bool = false
 
     /// Show the "Screen Recording disabled" startup notification at most
     /// once per daemon launch — repeated banners would be noisy.
@@ -179,7 +118,9 @@ final class Coordinator: NSObject {
         )
         self.hotkey = HotkeyManager()
         self.consent = ConsentStore()
-        self.launcher = launcher ?? PipelineLauncher()
+        let resolvedLauncher = launcher ?? PipelineLauncher()
+        self.launcher = resolvedLauncher
+        self.sinkDispatcher = SinkDispatcher(launcher: resolvedLauncher)
         // PreferencesWindow needs both stores. When the daemon was
         // launched with neither (test fixtures, headless smoke runs)
         // the menu item is wired through this guard; clicking it
@@ -225,6 +166,45 @@ final class Coordinator: NSObject {
         // Done post-super.init so the weak ref is valid.
         libraryModel.coordinator = self
         statusBar.libraryModel = libraryModel
+        wireSubsystems()
+    }
+
+    /// Bind the three Coordination subordinates back to the Coordinator
+    /// (state-machine callbacks, sink-dispatcher per-job results, mute
+    /// probe transitions). Done after `super.init` so `self` is valid.
+    private func wireSubsystems() {
+        stateMachine.onIdleTransition = { [weak self] in
+            // Mid-recording config edits get deferred — apply them when
+            // we land back in idle so the next meeting picks up the new
+            // values.
+            self?.applyConfigRefreshIfPossible()
+        }
+        sinkDispatcher.onQueueDepthChanged = { [weak self] depth in
+            self?.statusBar.setProcessingCount(depth)
+        }
+        sinkDispatcher.onJobCompleted = { [weak self] job, result in
+            guard let self = self else { return }
+            switch result {
+            case .success(let pageURL):
+                let stem = job.file.deletingPathExtension().lastPathComponent
+                let recordingsDir = job.file.deletingLastPathComponent()
+                self.notifier.notifyDone(
+                    stem: stem,
+                    recordingsDir: recordingsDir,
+                    pageURL: pageURL
+                )
+            case .failure(let err):
+                self.notifier.notifyError("Pipeline failed: \(err.localizedDescription)")
+            }
+        }
+        muteProbe.onTransition = { [weak self] transition in
+            // Preserve the existing `recorder.micPaused` seam exactly —
+            // TECH-G-MIC will replace it with a per-buffer apply.
+            switch transition {
+            case .paused: self?.recorder.micPaused = true
+            case .resumed: self?.recorder.micPaused = false
+            }
+        }
     }
 
     func start() {
@@ -378,10 +358,11 @@ final class Coordinator: NSObject {
             // Best-effort flush; we don't want orphan recording state.
             // Streaming transcriber is signaled in parallel — its hard
             // SIGKILL escalation makes sure we can't sit here forever.
-            let transcriber = self.streamingTranscriber
+            let recorder = self.recorder
+            let dispatcher = self.sinkDispatcher
             Task {
                 await recorder.stop()
-                await transcriber.stop()
+                await dispatcher.stopStreaming()
             }
         }
     }
@@ -430,7 +411,7 @@ final class Coordinator: NSObject {
         Log.event(category: "coordinator", action: "retry_requested", attributes: [
             "stem": stem,
         ])
-        enqueueJob(file: wavURL, summaryMode: .auto)
+        sinkDispatcher.enqueue(file: wavURL, summaryMode: .auto)
         return .success(())
     }
 
@@ -701,7 +682,7 @@ final class Coordinator: NSObject {
     // MARK: State transitions
 
     private func toggleManual() {
-        switch state {
+        switch stateMachine.current {
         case .idle:
             beginRecording(source: nil, summaryMode: .auto)
         case .prompting(let src), .suppressed(let src):
@@ -711,14 +692,13 @@ final class Coordinator: NSObject {
             // Manual override is an explicit "start now" signal; drop
             // any cooldown entry for this bundle so the next detector-
             // driven detection isn't suppressed by a stale skip/end.
-            repromptCooldown.clear(bundleID: src.bundleID)
+            stateMachine.clearCooldown(bundleID: src.bundleID)
             beginRecording(source: src, summaryMode: .auto)
         case .recording(let file, let src, let mode):
             stopRecording(file: file, source: src, summaryMode: mode)
         case .stopping:
             // Recorder is mid-flush; a new start would race the await.
-            // Pipeline jobs no longer block this path — they live in
-            // `processingJobs` and run independently.
+            // Pipeline jobs run in their own queue inside the dispatcher.
             break
         }
     }
@@ -733,17 +713,17 @@ final class Coordinator: NSObject {
     private func forceStop(reason: String) {
         Log.event(category: "coordinator", action: "force_stop", attributes: [
             "reason": reason,
-            "state": Coordinator.stateLabel(state),
+            "state": DetectionStateMachine.label(stateMachine.current),
         ])
-        switch state {
+        switch stateMachine.current {
         case .recording(let file, let src, let mode):
             stopRecording(file: file, source: src, summaryMode: mode)
         case .prompting(let src):
             // Treat as "no, don't record, and don't ask again until the
             // detector sees this meeting end" — same as clicking Skip.
-            cancelPromptTimeout()
+            stateMachine.cancelPromptTimeout()
             promptWindow.dismiss()
-            state = .suppressed(source: src)
+            stateMachine.setSuppressed(source: src)
             statusBar.setIdle()
         case .idle, .suppressed, .stopping:
             break
@@ -777,7 +757,7 @@ final class Coordinator: NSObject {
     }
 
     private func beginRecording(source: AppSource?, summaryMode: SummaryMode) {
-        cancelPromptTimeout()
+        stateMachine.cancelPromptTimeout()
 
         // Pre-record gate. Mic is non-negotiable — without it the
         // recording is silent and the pipeline produces empty
@@ -798,7 +778,7 @@ final class Coordinator: NSObject {
             // surfaces Permissions; the existing menu menuPreferences
             // handler activates the right window.
             menuPreferences()
-            state = .idle
+            stateMachine.setIdle()
             statusBar.setIdle()
             return
         }
@@ -814,7 +794,7 @@ final class Coordinator: NSObject {
                 "bundle_id": source?.bundleID ?? "manual",
                 "summary_mode": summaryMode == .byo ? "byo" : "auto",
             ])
-            state = .idle
+            stateMachine.setIdle()
             statusBar.setIdle()
             return
         }
@@ -844,7 +824,7 @@ final class Coordinator: NSObject {
             // and stop it.
             detector.recorderDidStart()
             activeWorkflow = resolvedWorkflow
-            state = .recording(file: file, source: source, summaryMode: summaryMode)
+            stateMachine.setRecording(file: file, source: source, summaryMode: summaryMode)
             statusBar.setRecording(file: file, source: source, summaryMode: summaryMode, workflow: resolvedWorkflow)
             recordingHUD.present(source: source, workflow: resolvedWorkflow, startedAt: Date())
             notifier.notifyRecordingStarted(file: file)
@@ -872,39 +852,34 @@ final class Coordinator: NSObject {
                let micURL = recorder.micURL {
                 let stem = file.deletingPathExtension().lastPathComponent
                 let outputDir = file.deletingLastPathComponent()
-                do {
-                    try streamingTranscriber.start(
-                        stem: stem,
-                        outputDir: outputDir,
-                        micURL: micURL,
-                        systemURL: recorder.systemURL,
-                        language: nil  // pipeline reads its own config
-                    )
-                } catch {
-                    Log.main.warning("Streaming transcriber failed to start (\(error.localizedDescription)) — offline transcribe will run at stop")
-                }
+                sinkDispatcher.startStreaming(
+                    stem: stem,
+                    outputDir: outputDir,
+                    micURL: micURL,
+                    systemURL: recorder.systemURL
+                )
             }
         } catch {
             Log.main.error("failed to start recorder: \(error.localizedDescription)")
             notifier.notifyError("Could not start recording: \(error.localizedDescription)")
-            state = .idle
+            stateMachine.setIdle()
             statusBar.setIdle()
         }
     }
 
     private func stopRecording(file: URL, source: AppSource?, summaryMode: SummaryMode) {
-        state = .stopping(file: file, source: source, summaryMode: summaryMode)
+        stateMachine.setStopping(file: file, source: source, summaryMode: summaryMode)
         statusBar.setStopping()
         recordingHUD.dismiss()
         disarmSilenceDetector()
-        disarmMuteProbe()
+        muteProbe.disarm()
 
         // Recorder.stop is async — runs on a background task so the UI
         // stays responsive. Once flushed, the audio is enqueued for
         // pipeline processing and the recording-side state returns to
         // .idle so the user can record another meeting immediately.
         let recorder = self.recorder
-        let transcriber = self.streamingTranscriber
+        let dispatcher = self.sinkDispatcher
         Task { @MainActor [weak self] in
             await recorder.stop()
             // Tell the streaming transcriber to drain its remaining
@@ -912,7 +887,7 @@ final class Coordinator: NSObject {
             // skips the offline ASR stage. We bound the wait inside
             // StreamingTranscriber.stop (SIGTERM → 60 s grace → SIGKILL)
             // so a hung subprocess can't pin the daemon in `.stopping`.
-            await transcriber.stop()
+            await dispatcher.stopStreaming()
             guard let self = self else { return }
             // Recorder is no longer holding the input device, so
             // `micInUse` can re-enable its CoreAudio probe and the
@@ -941,7 +916,7 @@ final class Coordinator: NSObject {
             }
             self.writeMetaSidecar(file: file, source: source)
             self.notifier.notifyProcessing(file: file)
-            self.enqueueJob(file: file, summaryMode: summaryMode)
+            self.sinkDispatcher.enqueue(file: file, summaryMode: summaryMode)
             // Drop the workflow attribution after the sidecar lands so it
             // can't bleed into the next meeting; a fresh resolve runs at
             // the start of the next `beginRecording`.
@@ -951,9 +926,9 @@ final class Coordinator: NSObject {
             // teardown toast) can't trigger a fresh "Record this
             // meeting?" prompt within seconds of the stop flush.
             if let bid = source?.bundleID {
-                self.repromptCooldown.recordEnd(bundleID: bid)
+                self.stateMachine.recordCooldownEnd(bundleID: bid)
             }
-            self.state = .idle
+            self.stateMachine.setIdle()
             self.statusBar.setIdle()
         }
     }
@@ -985,109 +960,42 @@ final class Coordinator: NSObject {
         }
     }
 
-    /// Append a freshly-flushed recording to the pipeline queue and start
-    /// the runner if nothing is currently being processed.
-    private func enqueueJob(file: URL, summaryMode: SummaryMode) {
-        let job = ProcessingJob(id: UUID(), file: file, summaryMode: summaryMode, startedAt: Date())
-        processingJobs.append(job)
-        statusBar.setProcessingCount(processingJobs.count)
-        Log.writeLine("daemon", "pipeline queued → \(file.lastPathComponent) (queue=\(processingJobs.count))")
-        Log.event(category: "coordinator", action: "pipeline_queued", attributes: [
-            "file": file.lastPathComponent,
-            "queue_depth": processingJobs.count,
-            "summary_mode": summaryMode == .byo ? "byo" : "auto",
-        ])
-        startNextJobIfNeeded()
-    }
-
-    /// Run the head of the queue. Sequential by design: two whisper.cpp
-    /// processes at once would just thrash the CPU and slow both runs.
-    /// Recording is unaffected — the user can start a new meeting at any
-    /// time even while jobs are queued or running.
-    private func startNextJobIfNeeded() {
-        guard activeJob == nil, let next = processingJobs.first else { return }
-        activeJob = next
-        Log.writeLine("daemon", "pipeline starting → \(next.file.lastPathComponent)")
-        Log.event(category: "coordinator", action: "pipeline_started", attributes: [
-            "file": next.file.lastPathComponent,
-        ])
-        launcher.runAll(wav: next.file, summaryMode: next.summaryMode) { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                switch result {
-                case .success(let pageURL):
-                    let stem = next.file.deletingPathExtension().lastPathComponent
-                    let recordingsDir = next.file.deletingLastPathComponent()
-                    self.notifier.notifyDone(
-                        stem: stem,
-                        recordingsDir: recordingsDir,
-                        pageURL: pageURL
-                    )
-                    Log.writeLine("daemon", "pipeline OK → \(pageURL?.absoluteString ?? "(local-only)")")
-                    Log.event(category: "coordinator", action: "pipeline_succeeded", attributes: [
-                        "file": next.file.lastPathComponent,
-                        "page_url": pageURL?.absoluteString ?? NSNull(),
-                    ])
-                case .failure(let err):
-                    self.notifier.notifyError("Pipeline failed: \(err.localizedDescription)")
-                    Log.writeLine("daemon", "pipeline FAIL → \(err.localizedDescription)")
-                    Log.event(category: "coordinator", action: "pipeline_failed", attributes: [
-                        "file": next.file.lastPathComponent,
-                        "error": err.localizedDescription,
-                    ])
-                }
-                self.activeJob = nil
-                if let head = self.processingJobs.first, head.id == next.id {
-                    self.processingJobs.removeFirst()
-                }
-                self.statusBar.setProcessingCount(self.processingJobs.count)
-                self.startNextJobIfNeeded()
-            }
-        }
-    }
-
     private func startPromptTimeout(for source: AppSource) {
-        cancelPromptTimeout()
-        promptTimeoutTimer = Timer.scheduledTimer(withTimeInterval: livePromptTimeoutSec, repeats: false) { [weak self] _ in
+        stateMachine.startPromptTimeout(
+            for: source,
+            timeoutSec: livePromptTimeoutSec
+        ) { [weak self] in
             guard let self = self else { return }
-            DispatchQueue.main.async {
-                guard case .prompting(let src) = self.state, src == source else { return }
-                let action = (self.configStore?.defaultPromptAction ?? "skip").lowercased()
-                self.promptWindow.dismiss()
-                Log.event(category: "coordinator", action: "prompt_timeout", attributes: [
-                    "bundle_id": source.bundleID,
-                    "default_action": action,
-                ])
-                switch action {
-                case "record":
-                    Log.writeLine("daemon", "prompt timed out → auto-record (\(source.bundleID))")
-                    self.beginRecording(source: source, summaryMode: .auto)
-                case "byo":
-                    Log.writeLine("daemon", "prompt timed out → auto-record byo (\(source.bundleID))")
-                    self.beginRecording(source: source, summaryMode: .byo)
-                default:
-                    Log.writeLine("daemon", "prompt timed out → suppressed (\(source.bundleID))")
-                    self.state = .suppressed(source: source)
-                    // Same reasoning as the explicit-skip path: the
-                    // user's silence is a "don't pester me for this
-                    // call" signal, so arm the cooldown to absorb
-                    // post-call mic flickers after suppression lifts.
-                    self.repromptCooldown.recordEnd(bundleID: source.bundleID)
-                    self.statusBar.setIdle()
-                }
+            let action = (self.configStore?.defaultPromptAction ?? "skip").lowercased()
+            self.promptWindow.dismiss()
+            Log.event(category: "coordinator", action: "prompt_timeout", attributes: [
+                "bundle_id": source.bundleID,
+                "default_action": action,
+            ])
+            switch action {
+            case "record":
+                Log.writeLine("daemon", "prompt timed out → auto-record (\(source.bundleID))")
+                self.beginRecording(source: source, summaryMode: .auto)
+            case "byo":
+                Log.writeLine("daemon", "prompt timed out → auto-record byo (\(source.bundleID))")
+                self.beginRecording(source: source, summaryMode: .byo)
+            default:
+                Log.writeLine("daemon", "prompt timed out → suppressed (\(source.bundleID))")
+                self.stateMachine.setSuppressed(source: source)
+                // Same reasoning as the explicit-skip path: the user's
+                // silence is a "don't pester me for this call" signal,
+                // so arm the cooldown to absorb post-call mic flickers
+                // after suppression lifts.
+                self.stateMachine.recordCooldownEnd(bundleID: source.bundleID)
+                self.statusBar.setIdle()
             }
         }
-    }
-
-    private func cancelPromptTimeout() {
-        promptTimeoutTimer?.invalidate()
-        promptTimeoutTimer = nil
     }
 
     // MARK: Config refresh
 
     private func handleConfigPersisted() {
-        pendingDetectorRefresh = true
+        stateMachine.markConfigRefreshPending()
         applyConfigRefreshIfPossible()
         ensureModelPrefetchIfNeeded()
         statusBar.setRegulatedMode(configStore?.regulatedMode ?? false)
@@ -1119,8 +1027,7 @@ final class Coordinator: NSObject {
     /// fire `.ended`. Anything stashed gets applied on the next idle
     /// transition (see `state.didSet`).
     private func applyConfigRefreshIfPossible() {
-        guard pendingDetectorRefresh, case .idle = state, let store = configStore else { return }
-        pendingDetectorRefresh = false
+        guard stateMachine.consumePendingConfigRefreshIfIdle(), let store = configStore else { return }
 
         let newStart = store.debounceStartSec
         let newEnd = store.debounceEndSec
@@ -1174,7 +1081,7 @@ final class Coordinator: NSObject {
     }
 
     private func handleSilenceAutoStop() {
-        guard case .recording(let file, let src, let mode) = state else { return }
+        guard case .recording(let file, let src, let mode) = stateMachine.current else { return }
         Log.writeLine("daemon", "silence: 5min — auto-stopping recording")
         Log.event(category: "coordinator", action: "auto_stop_silence", attributes: [
             "bundle_id": src?.bundleID ?? "manual",
@@ -1185,85 +1092,12 @@ final class Coordinator: NSObject {
 
     // MARK: - Mute probe (honor app-level mute)
 
-    /// Capture the meeting window for a native source and start the 1 Hz
-    /// poll that gates `recorder.micPaused` on the client's mute state.
-    /// No-op when the probe is disabled by config, when the source is
-    /// browser / manual (no native AX window to inspect), or when AX
-    /// permission is missing (the capture returns nil and the recorder
-    /// behaves as before).
+    /// Forward the captured source through the mute-probe subsystem.
+    /// The subsystem owns the timer and the AX handle; the Coordinator
+    /// only flips `recorder.micPaused` via the wired transition callback
+    /// (see `wireSubsystems`).
     private func armMuteProbe(source: AppSource?) {
-        muteProbeTimer?.invalidate()
-        muteProbeTimer = nil
-        recordingWindow = nil
-        lastMuteState = .unknown
-        guard liveHonorAppMute else { return }
-        guard let source = source, source.kind == .native else { return }
-        guard let handle = MeetingWindowProbe.capture(source: source) else {
-            Log.writeLine(
-                "daemon",
-                "mute probe disabled: no AX window handle for \(source.bundleID)"
-            )
-            return
-        }
-        recordingWindow = handle
-        Log.writeLine("daemon", "mute probe armed for \(source.bundleID)")
-        Log.event(category: "coordinator", action: "mute_probe_armed", attributes: [
-            "bundle_id": source.bundleID,
-        ])
-        // 1 Hz is responsive enough that a few hundred ms of speech
-        // after toggling mute is the worst-case spillover. Faster
-        // polling burns AX RPCs without meaningful UX benefit.
-        muteProbeTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.tickMuteProbe()
-        }
-    }
-
-    private func disarmMuteProbe() {
-        muteProbeTimer?.invalidate()
-        muteProbeTimer = nil
-        recordingWindow = nil
-        // Leave `recorder.micPaused` alone — the recorder resets it on
-        // its next `start()`. Resetting here would race the stop flush
-        // which is still draining buffered mic frames.
-        if lastMuteState != .unknown {
-            Log.event(category: "coordinator", action: "mute_probe_disarmed", attributes: [
-                "last_state": Coordinator.muteLabel(lastMuteState),
-            ])
-        }
-        lastMuteState = .unknown
-    }
-
-    private func tickMuteProbe() {
-        guard let handle = recordingWindow else { return }
-        guard case .recording = state else { return }
-        let state = MeetingMuteProbe.evaluate(handle)
-        if state == lastMuteState || state == .unknown { return }
-        // Confirmed transition. Flip the recorder and log.
-        switch state {
-        case .muted:
-            recorder.micPaused = true
-            Log.writeLine("daemon", "mute probe: user muted → pausing mic capture")
-            Log.event(category: "coordinator", action: "mic_paused_due_to_mute", attributes: [
-                "bundle_id": handle.bundleID,
-            ])
-        case .unmuted:
-            recorder.micPaused = false
-            Log.writeLine("daemon", "mute probe: user unmuted → resuming mic capture")
-            Log.event(category: "coordinator", action: "mic_resumed", attributes: [
-                "bundle_id": handle.bundleID,
-            ])
-        case .unknown:
-            return
-        }
-        lastMuteState = state
-    }
-
-    private static func muteLabel(_ state: MeetingMuteProbe.State) -> String {
-        switch state {
-        case .muted: return "muted"
-        case .unmuted: return "unmuted"
-        case .unknown: return "unknown"
-        }
+        muteProbe.arm(source: source, enabled: liveHonorAppMute)
     }
 }
 
@@ -1278,7 +1112,7 @@ extension Coordinator: DetectorDelegate {
     }
 
     private func handleMeetingStarted(source: AppSource) {
-        guard state.isAcceptingPrompts else { return }
+        guard stateMachine.isAcceptingPrompts else { return }
 
         // Auto-consent (config or persisted "Always").
         if liveAutoConsentApps.contains(source.bundleID) ||
@@ -1299,7 +1133,7 @@ extension Coordinator: DetectorDelegate {
         // clears the entry so the user can still force a fresh
         // recording in the same app immediately.
         let cooldown = liveRepromptCooldownSec
-        if repromptCooldown.isCoolingDown(bundleID: source.bundleID, cooldownSec: cooldown) {
+        if stateMachine.isCoolingDown(bundleID: source.bundleID, cooldownSec: cooldown) {
             Log.writeLine(
                 "daemon",
                 "prompt suppressed (cooldown) → \(source.bundleID) (\(Int(cooldown))s window)"
@@ -1311,7 +1145,7 @@ extension Coordinator: DetectorDelegate {
             return
         }
 
-        state = .prompting(source: source)
+        stateMachine.setPrompting(source: source)
         statusBar.setPrompting(source)
         // On-screen panel is the primary surface (Notion-style top-right
         // floating window). Banner notification stays disabled by default —
@@ -1339,13 +1173,13 @@ extension Coordinator: DetectorDelegate {
     }
 
     private func handleMeetingEnded() {
-        switch state {
+        switch stateMachine.current {
         case .recording(let file, let src, let mode):
             stopRecording(file: file, source: src, summaryMode: mode)
         case .prompting, .suppressed:
-            cancelPromptTimeout()
+            stateMachine.cancelPromptTimeout()
             promptWindow.dismiss()
-            state = .idle
+            stateMachine.setIdle()
             statusBar.setIdle()
         default:
             break
@@ -1355,21 +1189,21 @@ extension Coordinator: DetectorDelegate {
 
 extension Coordinator: NotifierDelegate {
     func notifier(_ notifier: Notifier, didChooseRecord source: AppSource) {
-        guard case .prompting(let pending) = state, pending == source else { return }
+        guard case .prompting(let pending) = stateMachine.current, pending == source else { return }
         beginRecording(source: source, summaryMode: .auto)
     }
 
     func notifier(_ notifier: Notifier, didChooseSkip source: AppSource) {
-        guard case .prompting(let pending) = state, pending == source else { return }
-        cancelPromptTimeout()
-        state = .suppressed(source: source)
+        guard case .prompting(let pending) = stateMachine.current, pending == source else { return }
+        stateMachine.cancelPromptTimeout()
+        stateMachine.setSuppressed(source: source)
         statusBar.setIdle()
         // Skip is a "don't ask again about this call" signal, so we
         // also gate near-future detections of the same bundle. The
         // `suppressed` state already covers the current call (until
         // the detector reports `.ended`), but post-call mic flickers
         // can fire a fresh `.started` after the suppression lifts.
-        repromptCooldown.recordEnd(bundleID: source.bundleID)
+        stateMachine.recordCooldownEnd(bundleID: source.bundleID)
         Log.writeLine("daemon", "user skipped (\(source.bundleID))")
         Log.event(category: "coordinator", action: "user_skipped", attributes: [
             "bundle_id": source.bundleID,
@@ -1386,7 +1220,7 @@ extension Coordinator: NotifierDelegate {
         // hotkey path: an explicit "yes, record this and the next one
         // too" mustn't be blocked by a stale skip/end from earlier in
         // the session.
-        repromptCooldown.clear(bundleID: source.bundleID)
+        stateMachine.clearCooldown(bundleID: source.bundleID)
         beginRecording(source: source, summaryMode: .auto)
     }
 
@@ -1470,7 +1304,7 @@ extension Coordinator: NotifierDelegate {
     func notifierDidRequestStopRecording(_ notifier: Notifier) {
         // Reuse `toggleManual` so the stop path is identical to the
         // hotkey-stop and recorder-HUD-stop surfaces — one entry point.
-        if case .recording = state { toggleManual() }
+        if case .recording = stateMachine.current { toggleManual() }
     }
 }
 
@@ -1488,7 +1322,7 @@ extension Coordinator: MeetingPromptDelegate {
         notifier(notifier, didChooseAlways: source)
     }
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecordBYO source: AppSource) {
-        guard case .prompting(let pending) = state, pending == source else { return }
+        guard case .prompting(let pending) = stateMachine.current, pending == source else { return }
         beginRecording(source: source, summaryMode: .byo)
     }
 
