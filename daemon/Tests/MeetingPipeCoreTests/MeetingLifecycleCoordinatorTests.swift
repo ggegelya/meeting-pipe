@@ -81,6 +81,159 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         XCTAssertEqual(halBus.activeSubscriptionCount, 0)
         XCTAssertEqual(axBus.activeSubscriptionCount, 0)
     }
+
+    // MARK: - Adapter integration
+
+    func test_engage_routes_signals_through_engine_to_verdict_stream() throws {
+        let fake = FakeAdapter()
+        let scheduler = ManualScheduler()
+        let log = RecordingEventLog()
+        var now = Date(timeIntervalSince1970: 0)
+        let coordinator = MeetingLifecycleCoordinator(
+            eventLog: log,
+            adapters: [fake],
+            scheduler: scheduler.scheduler(),
+            clock: { now }
+        )
+
+        try coordinator.engage(
+            context: teamsContext,
+            handle: LifecycleAdapterHandle()
+        )
+
+        fake.emit(.init(
+            kind: .shareableContentWindow,
+            state: .live,
+            timestamp: now,
+            context: teamsContext
+        ))
+        flushEngine(coordinator)
+        XCTAssertEqual(coordinator.current, .inMeeting(context: teamsContext))
+
+        now = Date(timeIntervalSince1970: 1)
+        fake.emit(.init(
+            kind: .shareableContentWindow,
+            state: .ended,
+            timestamp: now,
+            context: teamsContext
+        ))
+        flushEngine(coordinator)
+        XCTAssertEqual(
+            coordinator.current,
+            .endingProvisional(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "shareable_content_window_gone")
+            )
+        )
+
+        now = Date(timeIntervalSince1970: 4)
+        coordinator.tick()
+        flushEngine(coordinator)
+        XCTAssertEqual(
+            coordinator.current,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "shareable_content_window_gone")
+            )
+        )
+    }
+
+    func test_disengage_resets_engine_and_publishes_idle() throws {
+        let fake = FakeAdapter()
+        let scheduler = ManualScheduler()
+        let coordinator = MeetingLifecycleCoordinator(
+            adapters: [fake],
+            scheduler: scheduler.scheduler()
+        )
+
+        try coordinator.engage(
+            context: teamsContext,
+            handle: LifecycleAdapterHandle()
+        )
+        fake.emit(.init(
+            kind: .shareableContentWindow,
+            state: .live,
+            timestamp: Date(timeIntervalSince1970: 0),
+            context: teamsContext
+        ))
+        flushEngine(coordinator)
+        XCTAssertEqual(coordinator.current, .inMeeting(context: teamsContext))
+
+        coordinator.disengage()
+        XCTAssertTrue(fake.didStop)
+        XCTAssertEqual(coordinator.current, .idle)
+    }
+
+    func test_engage_without_matching_adapter_logs_and_no_ops() throws {
+        let log = RecordingEventLog()
+        let scheduler = ManualScheduler()
+        let coordinator = MeetingLifecycleCoordinator(
+            eventLog: log,
+            adapters: [FakeAdapter(bundleIDs: ["other.bundle"])],
+            scheduler: scheduler.scheduler()
+        )
+
+        try coordinator.engage(
+            context: teamsContext,
+            handle: LifecycleAdapterHandle()
+        )
+        XCTAssertTrue(log.entries.contains { $0.action == "no_adapter_for_context" })
+    }
+
+    private func flushEngine(_ coordinator: MeetingLifecycleCoordinator) {
+        let expectation = expectation(description: "engine drain")
+        coordinator.tick()
+        DispatchQueue.main.async { expectation.fulfill() }
+        wait(for: [expectation], timeout: 1.0)
+        // Two flushes: first ensures engine ingestion is processed; the
+        // second wraps the tick we just scheduled.
+        let second = self.expectation(description: "engine drain 2")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { second.fulfill() }
+        wait(for: [second], timeout: 1.0)
+    }
+}
+
+private final class FakeAdapter: LifecycleAdapter {
+    let bundleIDs: Set<String>
+    let kind: MeetingLifecycleContext.Kind
+    private(set) var didStop = false
+    private var sink: ((PrimarySignalEvent) -> Void)?
+
+    init(
+        bundleIDs: Set<String> = ["com.microsoft.teams2"],
+        kind: MeetingLifecycleContext.Kind = .native
+    ) {
+        self.bundleIDs = bundleIDs
+        self.kind = kind
+    }
+
+    func start(
+        context: MeetingLifecycleContext,
+        handle: LifecycleAdapterHandle,
+        sink: @escaping (PrimarySignalEvent) -> Void
+    ) throws {
+        self.sink = sink
+        didStop = false
+    }
+
+    func stop() {
+        sink = nil
+        didStop = true
+    }
+
+    func emit(_ event: PrimarySignalEvent) {
+        sink?(event)
+    }
+}
+
+private final class ManualScheduler {
+    var tick: (() -> Void)?
+    func scheduler() -> MeetingLifecycleCoordinator.Scheduler {
+        return { _, action in
+            self.tick = action
+            return { self.tick = nil }
+        }
+    }
 }
 
 /// Drains the cold `AsyncStream` returned by the coordinator into a
