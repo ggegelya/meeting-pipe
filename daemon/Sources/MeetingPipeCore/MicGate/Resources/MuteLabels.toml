@@ -1,0 +1,48 @@
+# MicGate localised mute-button label catalogue (TECH-G-MIC step 2).
+#
+# Schema: [<app>.<locale>] tables with four optional arrays of
+# strings. Matching is case-insensitive substring against the
+# button's AX title / help / description blob.
+#
+# action_unmute  -> label visible when the user is currently muted
+#                   (clicking the button would unmute)
+# action_mute    -> label visible when the user is currently unmuted
+# status_muted   -> explicit status string for "muted" (most specific)
+# status_unmuted -> explicit status string for "unmuted"
+#
+# Initial coverage: Teams, Zoom, Slack in en + de (the user's
+# confirmed need cases). Webex, Meet, plus es/fr/ja/pt/ru land in
+# TECH-G-MIC step 6 once the validator is exercised against live AX
+# trees.
+
+[teams.en]
+action_unmute = ["Unmute"]
+action_mute = ["Mute"]
+status_muted = ["Mic muted", "Microphone muted", "Microphone is muted"]
+status_unmuted = ["Mic unmuted", "Microphone unmuted", "Microphone is unmuted"]
+
+[teams.de]
+action_unmute = ["Stummschaltung aufheben"]
+action_mute = ["Stummschalten"]
+status_muted = ["Mikrofon stummgeschaltet"]
+status_unmuted = ["Mikrofon aktiviert"]
+
+[zoom.en]
+action_unmute = ["Unmute my microphone", "Unmute"]
+action_mute = ["Mute my microphone", "Mute"]
+status_muted = ["Microphone is muted"]
+status_unmuted = ["Microphone is unmuted"]
+
+[zoom.de]
+action_unmute = ["Audio einschalten", "Stummschaltung aufheben"]
+action_mute = ["Audio stummschalten", "Stummschalten"]
+
+[slack.en]
+action_unmute = ["Unmute"]
+action_mute = ["Mute"]
+status_muted = ["Mic muted"]
+status_unmuted = ["Mic unmuted"]
+
+[slack.de]
+action_unmute = ["Stummschaltung aufheben"]
+action_mute = ["Stummschalten"]

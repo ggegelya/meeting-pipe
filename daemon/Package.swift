@@ -23,9 +23,13 @@ let package = Package(
         // Shared lifecycle + gate infrastructure (TECH-C13, TECH-G-MIC).
         // Kept independent of the executable so the verdict-fusion code
         // can be unit-tested without dragging in AppKit / FluidAudio.
+        // TOMLKit is the only third-party dep, used to parse the
+        // MicGate MuteLabels catalogue.
         .target(
             name: "MeetingPipeCore",
-            path: "Sources/MeetingPipeCore"
+            dependencies: [.product(name: "TOMLKit", package: "TOMLKit")],
+            path: "Sources/MeetingPipeCore",
+            resources: [.process("MicGate/Resources")]
         ),
         .executableTarget(
             name: "MeetingPipe",
