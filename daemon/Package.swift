@@ -7,7 +7,8 @@ let package = Package(
     // (added in 13.3 but easier to bump than gate per-call).
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "MeetingPipe", targets: ["MeetingPipe"])
+        .executable(name: "MeetingPipe", targets: ["MeetingPipe"]),
+        .library(name: "MeetingPipeCore", targets: ["MeetingPipeCore"])
     ],
     dependencies: [
         .package(url: "https://github.com/LebJe/TOMLKit", from: "0.6.0"),
@@ -19,9 +20,17 @@ let package = Package(
         .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.4")
     ],
     targets: [
+        // Shared lifecycle + gate infrastructure (TECH-C13, TECH-G-MIC).
+        // Kept independent of the executable so the verdict-fusion code
+        // can be unit-tested without dragging in AppKit / FluidAudio.
+        .target(
+            name: "MeetingPipeCore",
+            path: "Sources/MeetingPipeCore"
+        ),
         .executableTarget(
             name: "MeetingPipe",
             dependencies: [
+                "MeetingPipeCore",
                 .product(name: "TOMLKit", package: "TOMLKit"),
                 .product(name: "FluidAudio", package: "FluidAudio")
             ],
@@ -37,6 +46,11 @@ let package = Package(
             resources: [
                 .process("Fixtures")
             ]
+        ),
+        .testTarget(
+            name: "MeetingPipeCoreTests",
+            dependencies: ["MeetingPipeCore"],
+            path: "Tests/MeetingPipeCoreTests"
         )
     ]
 )
