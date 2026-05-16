@@ -26,20 +26,10 @@ dependencies = [
     "faster-whisper>=1.0.3",
     "soundfile>=0.12.1",
     "numpy>=1.26",
-    # Diarization. sherpa-onnx runs offline speaker diarization on CoreML
-    # (Apple Neural Engine) — language-agnostic, no torch/pyannote pin
-    # pain, ~5-10× faster than pyannote-CPU. ONNX Runtime is bundled.
-    # Pin under 1.13 — 1.13.0 ships a Python wheel whose .so references
-    # libonnxruntime.1.24.4.dylib but the wheel doesn't bundle that dylib,
-    # so import fails at load time. 1.12.x bundles correctly via the
-    # sister `sherpa-onnx-core` package.
-    "sherpa-onnx>=1.10.30,<1.13",
-    # Explicit because 1.12.x split the C++ dylibs into a separate
-    # package. sherpa-onnx itself doesn't pin this with == in its
-    # METADATA, so `uv sync` has been observed to drop it across
-    # subsequent re-syncs, leaving sherpa_onnx importable but failing
-    # at first use with "Library not loaded: libonnxruntime.1.24.4.dylib".
-    "sherpa-onnx-core>=1.10.30,<1.13",
+    # Diarization runs in Swift via FluidAudio (Parakeet TDT + pyannote
+    # on the Apple Neural Engine). The Python fallback only does
+    # channel-aware labelling on stereo recordings, with no embedding
+    # step and no ONNX runtime needed.
     # Notion + auth + retries.
     "tenacity>=8.2.0",
 ]

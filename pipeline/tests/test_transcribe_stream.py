@@ -386,32 +386,6 @@ def test_absorb_segments_drops_overlap_duplicates():
 # --- Output finalization -----------------------------------------------------
 
 
-def test_write_outputs_with_streaming_diarization_attaches_speakers(tmp_path: Path):
-    """When the StreamDiarizer ran, _write_outputs should stamp speaker
-    labels onto each transcript segment before writing JSON. The
-    orchestrator uses these labels to decide whether to skip the offline
-    diarize stage entirely."""
-    from mp.diarize import DiarizationSegment
-
-    state = _state()
-    state.out_dir = tmp_path
-    state.detected_language = "en"
-    state.segments = [
-        {"start": 0.0, "end": 1.5, "text": "Hi."},
-        {"start": 1.5, "end": 3.0, "text": "Hello."},
-    ]
-    state.diarization_segments = [
-        DiarizationSegment(start=0.0, end=1.5, speaker="speaker_0"),
-        DiarizationSegment(start=1.5, end=3.0, speaker="speaker_1"),
-    ]
-    _write_outputs(state)
-
-    data = json.loads((tmp_path / f"{state.stem}.json").read_text(encoding="utf-8"))
-    assert data["diarization"] is True
-    assert data["segments"][0]["speaker"] == "speaker_0"
-    assert data["segments"][1]["speaker"] == "speaker_1"
-
-
 def test_write_outputs_emits_streaming_marker(tmp_path: Path):
     """The orchestrator distinguishes a streaming transcript from a
     pre-streaming offline one by the `streaming: true` field. Without

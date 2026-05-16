@@ -2,8 +2,8 @@
 
 Concrete implementations live alongside their use sites
 (`AnthropicSummaryClient` in `summarize.py`, `NotionRestPublisher` in
-`publish_notion.py`, `PyannoteDiarizer` in `transcribe.py`). The protocols
-exist so callers depend on contracts, not vendor SDKs, which:
+`publish_notion.py`). The protocols exist so callers depend on
+contracts, not vendor SDKs, which:
 
   - lets tests inject in-memory fakes instead of mocking httpx / anthropic
   - lets us swap providers (a different LLM, a non-Notion sink) without
@@ -72,20 +72,3 @@ class MeetingPublisher(Protocol):
 # external caller's `from mp.services import NotionPublisher` does
 # not break across this rename. New code should use `MeetingPublisher`.
 NotionPublisher = MeetingPublisher
-
-
-@runtime_checkable
-class Diarizer(Protocol):
-    """Speaker-diarize a WAV. Returns a list of objects each having
-    `start: float`, `end: float`, `speaker: str`. Implementations can
-    use any backend (sherpa-onnx, pyannote, an in-memory fake) so long
-    as they respect that contract.
-    """
-
-    def diarize(
-        self,
-        wav: Path,
-        *,
-        min_speakers: int,
-        max_speakers: int,
-    ) -> list: ...

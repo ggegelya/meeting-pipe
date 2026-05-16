@@ -123,21 +123,19 @@ def test_streamed_transcript_skips_offline_transcribe(tmp_path: Path, monkeypatc
     summary_json.write_text("{}", encoding="utf-8")
 
     with patch("mp.orchestrate.transcribe") as t, \
-         patch("mp.orchestrate.run_diarize") as d, \
          patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
          patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
         result = run_all(wav, cfg=cfg)
 
     t.assert_not_called()  # offline transcribe skipped
-    d.assert_not_called()  # diarization disabled by config in this test
     assert result["page_id"] == "p"
 
 
 def test_streamed_transcript_with_speakers_skips_offline_diarize(tmp_path: Path, monkeypatch):
-    """When the StreamDiarizer ran during recording and most segments
-    already have a speaker label, the orchestrator must skip the offline
-    diarize stage entirely (Tier 2.5 — the whole point is to avoid the
-    re-run at finalization)."""
+    """When the daemon-side path already labelled most segments, the
+    orchestrator must skip the channel-aware finalize step entirely.
+    Predates the FluidAudio default; covered for the legacy Python
+    streaming path that still produces pre-labelled segments."""
     monkeypatch.delenv("MP_FORCE_BYO", raising=False)
     wav = tmp_path / "20260430-1500.wav"
     wav.write_bytes(b"")
@@ -166,16 +164,14 @@ def test_streamed_transcript_with_speakers_skips_offline_diarize(tmp_path: Path,
     summary_json.write_text("{}", encoding="utf-8")
 
     with patch("mp.orchestrate.transcribe") as t, \
-         patch("mp.orchestrate.run_diarize") as d, \
          patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
          patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
         result = run_all(wav, cfg=cfg)
 
     t.assert_not_called()
-    d.assert_not_called()
     assert result["page_id"] == "p"
 
-    # The finalized JSON should retain the streaming-diarizer labels.
+    # The finalized JSON should retain the upstream speaker labels.
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data.get("finalized") is True
     assert data["segments"][0]["speaker"] == "speaker_0"
@@ -216,20 +212,18 @@ def test_fluidaudio_sidecar_skips_offline_transcribe_and_diarize(tmp_path: Path,
     summary_json.write_text("{}", encoding="utf-8")
 
     with patch("mp.orchestrate.transcribe") as t, \
-         patch("mp.orchestrate.run_diarize") as d, \
          patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
          patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
         result = run_all(wav, cfg=cfg)
 
-    t.assert_not_called()  # FluidAudio already transcribed
-    d.assert_not_called()  # FluidAudio already diarized
+    t.assert_not_called()  # FluidAudio already transcribed + diarized
     assert result["page_id"] == "p"
 
 
-def test_streamed_transcript_without_speakers_runs_offline_diarize(tmp_path: Path, monkeypatch):
-    """When streaming was on but the diarizer was disabled (or
-    erroreda), the streamed JSON has no speaker labels. The orchestrator
-    must fall back to offline diarize at finalization."""
+def test_streamed_transcript_without_speakers_runs_finalize(tmp_path: Path, monkeypatch):
+    """When streaming was on but no speaker labels landed, the
+    orchestrator's finalize step labels by channel against the stereo
+    WAV (no embedding diarization in Python anymore)."""
     monkeypatch.delenv("MP_FORCE_BYO", raising=False)
     wav = tmp_path / "20260430-1500.wav"
     wav.write_bytes(b"")
@@ -257,13 +251,16 @@ def test_streamed_transcript_without_speakers_runs_offline_diarize(tmp_path: Pat
     summary_json.write_text("{}", encoding="utf-8")
 
     with patch("mp.orchestrate.transcribe") as t, \
-         patch("mp.orchestrate.run_diarize", return_value=[]) as d, \
+         patch("mp.orchestrate.is_stereo_recording", return_value=False), \
          patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
          patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
         run_all(wav, cfg=cfg)
 
     t.assert_not_called()  # transcribe still skipped (we have segments)
-    d.assert_called_once()  # but diarize now runs
+    # Mono WAV → finalize marks diarization_failed and stamps Speaker?.
+    data = json.loads((tmp_path / "20260430-1500.json").read_text(encoding="utf-8"))
+    assert data["diarization_failed"] is True
+    assert data["segments"][0]["speaker"] == "Speaker?"
 
 
 def test_streamed_transcript_falls_back_when_unusable(tmp_path: Path, monkeypatch):

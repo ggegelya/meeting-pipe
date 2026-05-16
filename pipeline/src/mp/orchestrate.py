@@ -25,12 +25,7 @@ from pathlib import Path
 
 from .config import Config, load_secrets
 from .corrections import write_run_sidecar
-from .diarize import (
-    assign_speakers,
-    assign_speakers_by_channel,
-    diarize as run_diarize,
-    is_stereo_recording,
-)
+from .diarize import assign_speakers_by_channel, is_stereo_recording
 from . import events
 from .publish_router import fanout as publish_fanout
 from .summarize import summarize
@@ -165,10 +160,10 @@ def _run_all_inner(wav: Path, cfg: Config, *, force_byo: bool) -> dict:
     # `<stem>.json` before invoking us (streaming subprocess during
     # recording, or the FluidAudio in-process runner after stop), we pick
     # up where the daemon left off. Speaker labels may already be attached
-    # (FluidAudio runs pyannote inline; the streaming diarizer can also
-    # populate them) — `_finalize_streamed_transcript` checks and skips
-    # the offline diarize step accordingly. Falls back to a fresh full
-    # transcribe if the daemon output is missing or looks broken.
+    # (FluidAudio runs pyannote inline), in which case
+    # `_finalize_streamed_transcript` checks and finalizes accordingly.
+    # Falls back to a fresh full transcribe if the daemon output is
+    # missing or looks broken.
     streamed = _existing_daemon_transcript(wav)
     if streamed is not None:
         source = streamed.get("backend") or ("streamed" if streamed.get("streaming") else "daemon")
@@ -332,10 +327,11 @@ def _existing_daemon_transcript(wav: Path) -> dict | None:
 
 
 def _streamed_segments_have_speakers(streamed: dict) -> bool:
-    """The streaming sidecar may have already attached speaker labels via
-    the online diarizer (Tier 2.5). When at least half the segments have
-    a real speaker label (not None / not the `Speaker?` fallback), trust
-    the streamed diarization and skip the offline at-stop step entirely."""
+    """The daemon sidecar may have already attached speaker labels (the
+    FluidAudio in-process runner does; the legacy Python streamer no
+    longer does). When at least half the segments have a real speaker
+    label (not None / not the `Speaker?` fallback), trust them and skip
+    the channel-aware finalize step entirely."""
     segs = streamed.get("segments") or []
     if not segs:
         return False
@@ -348,11 +344,12 @@ def _finalize_streamed_transcript(wav: Path, streamed: dict, cfg: Config) -> dic
     `<stem>.json` + `<stem>.md`.
 
     Two paths:
-      - Streaming diarizer already labelled most segments → trust it,
-        rewrite only the `finalized: true` marker. No offline diarize run.
-      - Speaker labels are missing or sparse → run offline diarize on
-        the canonical merged WAV (slower, but produces a correct
-        labelling that the streaming pass missed).
+      - Streamed segments already carry speaker labels (FluidAudio sidecar,
+        or a legacy pre-labelled producer) → trust them and rewrite only
+        the `finalized: true` marker.
+      - Speaker labels are missing or sparse → label by channel against
+        the merged stereo WAV (mic-L, system-R). Mono inputs degrade to
+        Speaker? since embedding diarization runs in FluidAudio only.
     """
     json_path = wav.parent / f"{wav.stem}.json"
     md_path = wav.parent / f"{wav.stem}.md"
@@ -367,47 +364,21 @@ def _finalize_streamed_transcript(wav: Path, streamed: dict, cfg: Config) -> dic
 
     diarization_failed = False
     diarization_failure_reason: str | None = None
-    diar_segments: list = []
-
-    audio_seconds = streamed.get("audio_seconds") or 0.0
-    audio_minutes = audio_seconds / 60.0
-    skip_for_length = (
-        tcfg.max_diarization_minutes
-        and audio_minutes > tcfg.max_diarization_minutes
-    )
-
     used_channel_aware = False
+
     if tcfg.disable_diarization:
         log.info("Diarization disabled by config")
-    elif skip_for_length:
-        log.warning(
-            "Audio is %.1f min — exceeds max_diarization_minutes=%d. Skipping.",
-            audio_minutes, tcfg.max_diarization_minutes,
-        )
-        diarization_failed = True
-        diarization_failure_reason = (
-            f"audio length {audio_minutes:.0f} min > max={tcfg.max_diarization_minutes}"
-        )
     elif is_stereo_recording(wav):
         log.info("Stereo recording — channel-aware speaker labelling at finalization")
         used_channel_aware = True
     else:
-        try:
-            diar_segments = run_diarize(
-                wav,
-                min_speakers=tcfg.min_speakers,
-                max_speakers=tcfg.max_speakers,
-                cluster_threshold=tcfg.diarize_cluster_threshold,
-            )
-        except Exception as e:  # noqa: BLE001
-            diarization_failed = True
-            diarization_failure_reason = f"{type(e).__name__}: {e}"
-            log.error("Diarization failed: %s", e)
+        diarization_failed = True
+        diarization_failure_reason = (
+            "mono input on Python fallback; embedding diarization runs in FluidAudio only"
+        )
 
     if used_channel_aware:
         labelled = assign_speakers_by_channel(streamed["segments"], wav)
-    elif diar_segments:
-        labelled = assign_speakers(streamed["segments"], diar_segments)
     elif diarization_failed:
         labelled = [{**s, "speaker": "Speaker?"} for s in streamed["segments"]]
     else:
@@ -416,7 +387,7 @@ def _finalize_streamed_transcript(wav: Path, streamed: dict, cfg: Config) -> dic
     structured = {
         **streamed,
         "segments": labelled,
-        "diarization": not tcfg.disable_diarization and not skip_for_length,
+        "diarization": not tcfg.disable_diarization,
         "diarization_failed": diarization_failed,
         "diarization_failure_reason": diarization_failure_reason,
         "streaming": True,

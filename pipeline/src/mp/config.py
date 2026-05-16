@@ -59,25 +59,15 @@ class Transcription(BaseModel):
     # user's meetings are in one language; flip to "auto" only when
     # you actually need per-meeting detection.
     language: str = "en"
-    min_speakers: int = 1
-    max_speakers: int = 8
     disable_diarization: bool = False
-    # Diarization runs offline on sherpa-onnx (CoreML on Apple Silicon).
-    # Roughly 0.05-0.3× realtime — multi-hour recordings finish in
-    # minutes rather than the multi-hour pyannote-CPU runs we used to see.
-    # Keep a generous safety guard: 0 disables it.
-    max_diarization_minutes: int = 240
-    # sherpa-onnx FastClustering merge threshold (cosine distance).
-    # Higher = merge more aggressively = fewer speakers.
-    # 0.7-0.85 is a reasonable range for English/EU-language meetings.
-    # Tune up if you see one person split across N speaker labels;
-    # tune down if multiple participants get collapsed into one.
-    diarize_cluster_threshold: float = 0.85
-    # StreamDiarizer (online clustering) threshold. Different scale than
-    # the offline FastClustering threshold — this one is direct cosine
-    # distance against a running centroid table, evaluated per chunk
-    # boundary. 0.6-0.75 produces speaker counts comparable to offline.
-    stream_diarize_threshold: float = 0.7
+
+    # Tolerate legacy diarization knobs (min_speakers / max_speakers /
+    # max_diarization_minutes / diarize_cluster_threshold /
+    # stream_diarize_threshold) lingering in older config.toml files.
+    # Diarization runs in Swift via FluidAudio; these no longer steer
+    # behaviour and silently ignoring them avoids a pydantic
+    # ValidationError on existing installs.
+    model_config = {"extra": "ignore"}
 
 
 class Summarization(BaseModel):

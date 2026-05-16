@@ -14,7 +14,7 @@ CI runs ruff strictly — any F401 unused import fails the pipeline job. Run loc
 ## Patterns to match
 
 - **Stdlib first.** Reach for `pathlib`, `dataclasses`, `argparse`, `subprocess`, `json` before adding a dep. The dependency surface here is deliberately small.
-- **Lazy heavy imports — inside the function, not at module top.** `torch`, `whisperx`, `mlx_whisper`, `mlx_lm`, `sherpa_onnx` are slow to import. `mp --help` and `mp logs` shouldn't pay that cost, and CI installs only light deps. The contract is: top-level imports are stdlib + pydantic + httpx + anthropic; everything else lives inside the function that uses it.
+- **Lazy heavy imports - inside the function, not at module top.** `torch`, `whisperx`, `mlx_whisper`, `mlx_lm` are slow to import. `mp --help` and `mp logs` shouldn't pay that cost, and CI installs only light deps. The contract is: top-level imports are stdlib + pydantic + httpx + anthropic; everything else lives inside the function that uses it.
 - **One subcommand per module.** `pipeline/src/mp/<name>.py` exposing `def main(argv: list[str]) -> int`. Register in `__main__.py` with both the dash form and the snake_case alias:
   ```python
   if cmd in {"my-cmd", "my_cmd"}:

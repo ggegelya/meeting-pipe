@@ -53,10 +53,10 @@ APP_SUPPORT="$HOME/Library/Application Support/MeetingPipe"
 # MeetingPipe; we remove it on uninstall because nothing else on a user
 # Mac touches it. Symbol: ~630 MB on disk per Parakeet v3 install.
 FLUID_AUDIO_SUPPORT="$HOME/Library/Application Support/FluidAudio"
-# sherpa-onnx (the pipeline fallback's diarization stack) caches under
-# the user's home; kept on uninstall by default because it's small and
-# the user may re-install soon.
-SHERPA_CACHE="$HOME/.cache/meeting-pipe"
+# Legacy sherpa-onnx ONNX models from pre-FluidAudio installs; kept on
+# uninstall by default because they're small and the user may re-install
+# soon. Safe to delete manually if you don't need them.
+LEGACY_DIAR_CACHE="$HOME/.cache/meeting-pipe"
 APP_BUNDLE="$HOME/Applications/MeetingPipe.app"
 
 PLIST="$LAUNCHAGENTS/${LAUNCHD_LABEL}.plist"
@@ -83,8 +83,8 @@ rm -rf "$APP_SUPPORT"
 rm -rf "$FLUID_AUDIO_SUPPORT"
 rm -rf "$APP_BUNDLE"
 echo "Removed venv, logs, app support, FluidAudio model cache, and ~/Applications/MeetingPipe.app."
-if [[ -d "$SHERPA_CACHE" ]]; then
-    echo "Kept $SHERPA_CACHE (sherpa-onnx fallback models). rm -rf manually if you also want them gone."
+if [[ -d "$LEGACY_DIAR_CACHE" ]]; then
+    echo "Kept $LEGACY_DIAR_CACHE (legacy sherpa-onnx models). rm -rf manually if you also want them gone."
 fi
 
 if (( RESET_TCC )); then

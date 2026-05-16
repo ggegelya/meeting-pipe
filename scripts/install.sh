@@ -10,7 +10,7 @@
 #   3. Install the pipeline venv at ~/.local/share/meeting-pipe/venv as
 #      a fallback ASR path (active when the user flips
 #      `[transcription] backend = "pipeline"` in config.toml).
-#   4. Pre-fetch sherpa-onnx diarization models (~32 MB, public) so the
+#   4. Pre-fetch FluidAudio CoreML models so the
 #      pipeline fallback works offline on day one.
 #   4b. Pre-fetch FluidAudio CoreML models (~630 MB) so the first real
 #      recording with the default backend doesn't pay download latency.
@@ -21,9 +21,10 @@
 # Community-1 in-process on the Apple Neural Engine. Models live in
 # ~/Library/Application Support/FluidAudio/Models and download lazily on
 # first recording (~600 MB Parakeet + ~30 MB diarizer). Fallback stack:
-# mlx-whisper + sherpa-onnx via the Python subprocess. HF_TOKEN is not
-# required — kept in secrets.env only for users who deliberately opt
-# back into a pyannote-token workflow.
+# mlx-whisper via the Python subprocess, with channel-aware speaker
+# labelling on the stereo merged WAV. HF_TOKEN is not required; it is
+# kept in secrets.env only for users who deliberately opt back into a
+# pyannote-token workflow.
 
 set -euo pipefail
 
@@ -253,33 +254,8 @@ mkdir -p "$DATA_DIR"
 )
 [[ -x "$DATA_DIR/venv/bin/mp" ]] || die "mp launcher not at $DATA_DIR/venv/bin/mp"
 
-# 4. Diarization models ----------------------------------------------------
+# 4. Diarization + ASR models ---------------------------------------------
 #
-# sherpa-onnx pulls two ONNX models on first use (~32 MB combined):
-# pyannote-segmentation-3.0 and NeMo TitaNet-small. Both live on
-# k2-fsa's GitHub Releases — no auth, no TOS gate. Pre-fetching them
-# here means the first real recording doesn't pay the download latency.
-
-say "Pre-fetching sherpa-onnx diarization models (~34 MB total)"
-"$DATA_DIR/venv/bin/python" - <<'PY' || warn "Model pre-fetch failed; will retry at first run"
-import sys
-try:
-    from mp.diarize import (
-        _ensure_segmentation_model,
-        _ensure_embedding_model,
-        _ensure_silero_vad,
-    )
-    seg = _ensure_segmentation_model()
-    emb = _ensure_embedding_model()
-    vad = _ensure_silero_vad()
-    print(f"  ✓ segmentation: {seg.name}")
-    print(f"  ✓ embedding:    {emb.name}")
-    print(f"  ✓ vad:          {vad.name}")
-except Exception as e:
-    print(f"  ✗ pre-fetch failed: {e}", file=sys.stderr)
-    sys.exit(1)
-PY
-
 # Pre-fetch the FluidAudio CoreML models (Parakeet TDT v3 ~600 MB +
 # pyannote diarizer ~30 MB) into ~/Library/Application Support/FluidAudio
 # so the user's first recording isn't a multi-minute download wait.
@@ -309,8 +285,8 @@ if [[ ! -f "$CONFIG_DIR/secrets.env" ]]; then
 # Required secrets for meeting-pipe.
 ANTHROPIC_API_KEY=
 NOTION_TOKEN=
-# Optional. Only needed if you opt back into pyannote diarization.
-# The default sherpa-onnx pipeline does not touch Hugging Face.
+# Optional. Only needed if you opt back into a pyannote-token workflow.
+# The default FluidAudio pipeline does not touch Hugging Face for auth.
 HF_TOKEN=
 EOF
     chmod 600 "$CONFIG_DIR/secrets.env"

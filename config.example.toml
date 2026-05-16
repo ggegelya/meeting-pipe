@@ -72,10 +72,10 @@ reprompt_cooldown_sec = 60
 #     Fastest path, multilingual. Models live in
 #     ~/Library/Application Support/FluidAudio/Models (auto-downloaded on
 #     first recording).
-#   "pipeline": legacy path. The Python `mp` subprocess runs MLX-Whisper +
-#     sherpa-onnx end-to-end. Heavier; kept as a fallback while the new
-#     engine is being dogfooded. Flip via Preferences → Pipeline and
-#     restart MeetingPipe.
+#   "pipeline": legacy path. The Python `mp` subprocess runs MLX-Whisper
+#     and labels speakers by channel against the stereo WAV. Heavier;
+#     kept as a fallback while the FluidAudio engine is being dogfooded.
+#     Flip via Preferences → Pipeline and restart MeetingPipe.
 backend = "fluidaudio"
 # MLX-converted Whisper repo on HuggingFace, read only when backend =
 # "pipeline". Default is the turbo variant (best speed/quality tradeoff
@@ -94,20 +94,10 @@ fallback_model = "large-v3"
 # when most of your meetings are in one language; the multilingual ASR
 # still handles non-native accents fine once language is locked.
 language = "en"
-min_speakers = 1
-max_speakers = 8
 # True → all segments labeled "Speaker" (skip diarization entirely).
+# Diarization itself runs in Swift (FluidAudio) for `backend = "fluidaudio"`
+# and is channel-aware on stereo recordings for `backend = "pipeline"`.
 disable_diarization = false
-# Diarization safety guard. sherpa-onnx runs at ~0.05-0.3× realtime so
-# the historical 60-min cap is overconservative. 0 disables.
-max_diarization_minutes = 240
-# Offline diarize FastClustering threshold (cosine distance). Raise to
-# merge more aggressively (fewer speakers); lower for more granular.
-diarize_cluster_threshold = 0.85
-# Streaming (online) diarize threshold. Different algorithm than the
-# offline knob, different scale. Used by the `mp transcribe-stream`
-# sidecar that runs during recording.
-stream_diarize_threshold = 0.7
 
 [summarization]
 # Latest Sonnet at time of writing. Bump deliberately.

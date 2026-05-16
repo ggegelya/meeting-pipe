@@ -56,9 +56,10 @@ def check_secrets_file() -> dict[str, bool]:
     declares the required keys. Returns {name: present-and-non-empty}.
 
     HF_TOKEN was required when diarization ran on pyannote (HF-gated TOS).
-    The current pipeline uses sherpa-onnx, whose models live on a public
-    GitHub Release, so HF_TOKEN is now optional. Still surfaced if present
-    so existing setups don't get a confusing missing-secret warning.
+    Diarization now runs in Swift via FluidAudio, whose models live on a
+    public HuggingFace mirror that doesn't require auth. HF_TOKEN remains
+    optional and is surfaced when present so existing setups don't get a
+    confusing missing-secret warning.
     """
     print(f"\n== secrets file ==  ({SECRETS_PATH})")
     required = ("ANTHROPIC_API_KEY", "NOTION_TOKEN")
@@ -208,10 +209,10 @@ def check_notion(present: bool, cfg: Config | None) -> None:
 # ---------- ML runtimes ----------------------------------------------------
 
 def check_ml_runtimes() -> None:
-    """Verify the ASR + diarization stacks resolve, and report which backend
-    will actually be used. mlx-whisper is Apple-Silicon-only; faster-whisper
-    is the cross-platform fallback. sherpa-onnx must always import cleanly
-    or diarization is dead in the water.
+    """Verify the ASR stack resolves and report which backend will actually
+    be used by the Python fallback path. mlx-whisper is Apple-Silicon-only;
+    faster-whisper is the cross-platform fallback. Diarization runs in
+    Swift via FluidAudio and is not probed here.
     """
     import platform
     import sys as _sys
@@ -238,13 +239,6 @@ def check_ml_runtimes() -> None:
         else:
             _fail(f"faster-whisper not importable: {e}")
 
-    try:
-        import sherpa_onnx  # type: ignore  # noqa: F401
-        _ok("sherpa-onnx importable (offline diarization)")
-    except ImportError as e:
-        _fail(f"sherpa-onnx not importable — diarization will fail: {e}")
-        _info("install with: uv pip install 'sherpa-onnx>=1.10.30,<1.13'")
-
 
 def check_huggingface(present: bool) -> None:
     """Optional HF_TOKEN check. Kept for users who deliberately opt back
@@ -253,7 +247,7 @@ def check_huggingface(present: bool) -> None:
     """
     print("\n== HuggingFace (optional — only used if you opt back into pyannote) ==")
     if not present:
-        _info("HF_TOKEN not set — fine for the default sherpa-onnx pipeline")
+        _info("HF_TOKEN not set; the default FluidAudio pipeline does not need it")
         _info(f"create a Read token at {HF_TOKENS_URL} only if you re-enable pyannote")
         return
     token = os.environ["HF_TOKEN"]

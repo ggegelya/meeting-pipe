@@ -1,19 +1,16 @@
-"""Whisper transcription on MLX (Apple Silicon native) + sherpa-onnx
-diarization, with a faster-whisper-CPU fallback for non-Apple-Silicon
-hosts.
+"""Whisper transcription on MLX (Apple Silicon native), with a
+faster-whisper-CPU fallback for non-Apple-Silicon hosts.
 
 Output:
   <stem>.json   structured transcript ({language, segments[], …})
   <stem>.md     speaker-segmented Markdown
 
-The pre-MLX implementation used whisperx (faster-whisper + wav2vec2
-alignment + pyannote diarization) on CPU and ran at ~2× realtime
-end-to-end. mlx-whisper is ~5-10× faster than faster-whisper-CPU on
-M-series hardware and emits word-level timestamps directly, so the
-wav2vec2 alignment step (which downloaded a per-language ~360 MB model
-on every new language) is no longer needed. Diarization moves to
-sherpa-onnx (`mp.diarize`) which runs on CoreML / Apple Neural Engine
-and is language-agnostic.
+This is the Python fallback path (`[transcription] backend = "pipeline"`).
+The default backend is Swift-native FluidAudio (Parakeet TDT + pyannote
+on the Apple Neural Engine), which writes the same sidecar schema from
+the daemon before this subprocess is spawned. When the fallback runs,
+diarization is channel-aware on stereo recordings (the daemon's normal
+output: mic-L, system-R) and is skipped on mono inputs.
 
 Multilang: mlx-whisper covers all 99 Whisper languages out of the box.
 `config.transcription.language = "auto"` (default) lets the model pick;
@@ -31,13 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config, load_secrets
-from .diarize import (
-    DiarizationSegment,
-    assign_speakers,
-    assign_speakers_by_channel,
-    diarize,
-    is_stereo_recording,
-)
+from .diarize import assign_speakers_by_channel, is_stereo_recording
 
 log = logging.getLogger("mp.transcribe")
 
@@ -75,61 +66,27 @@ def transcribe(
     log.info("ASR done: backend=%s lang=%s segments=%d duration=%.1fs",
              backend, language, len(segments), audio_seconds)
 
-    # 2. Diarization.
+    # 2. Diarization. The Python fallback labels by channel when the
+    # daemon wrote a stereo WAV (mic-L, system-R). Mono inputs (rare;
+    # hand-imported files) get a Speaker?-only transcript; embedding
+    # diarization lives in the Swift FluidAudio path.
     diarization_failed = False
     diarization_failure_reason: str | None = None
-    diarization_segments: list[DiarizationSegment] = []
     used_channel_aware = False
-
-    audio_minutes = audio_seconds / 60.0
-    skip_for_length = (
-        tcfg.max_diarization_minutes
-        and audio_minutes > tcfg.max_diarization_minutes
-    )
 
     if not segments:
         log.info("Skipping diarization (no segments)")
     elif tcfg.disable_diarization:
         log.info("Diarization disabled by config")
-    elif skip_for_length:
-        log.warning(
-            "Audio is %.1f min — exceeds max_diarization_minutes=%d. Skipping.",
-            audio_minutes, tcfg.max_diarization_minutes,
-        )
-        diarization_failed = True
-        diarization_failure_reason = (
-            f"audio length {audio_minutes:.0f} min "
-            f"> max_diarization_minutes={tcfg.max_diarization_minutes}"
-        )
     elif is_stereo_recording(wav):
-        # Daemon now writes stereo (mic-L, system-R) on a successful
-        # mic+system recording. Channel-aware labelling is much more
-        # accurate than embedding clustering for the 1:1 call case
-        # (and ~free CPU-wise — just per-segment RMS comparisons).
         log.info("Stereo recording detected — using channel-aware speaker labelling")
         segments = assign_speakers_by_channel(segments, wav)
         used_channel_aware = True
     else:
-        try:
-            diarization_segments = diarize(
-                wav,
-                min_speakers=tcfg.min_speakers,
-                max_speakers=tcfg.max_speakers,
-                cluster_threshold=tcfg.diarize_cluster_threshold,
-            )
-        except Exception as e:  # noqa: BLE001
-            diarization_failed = True
-            diarization_failure_reason = f"{type(e).__name__}: {e}"
-            log.error("Diarization failed: %s", e)
-
-    # 3. Assign speakers to each transcript segment (skip when
-    # channel-aware already labelled them above).
-    if used_channel_aware:
-        pass
-    elif diarization_segments:
-        segments = assign_speakers(segments, diarization_segments)
-    elif diarization_failed:
-        # Mark everything as unknown so the failure surfaces in the MD banner.
+        diarization_failed = True
+        diarization_failure_reason = (
+            "mono input on Python fallback; embedding diarization runs in FluidAudio only"
+        )
         segments = [{**s, "speaker": _UNKNOWN_SPEAKER} for s in segments]
 
     structured: dict[str, Any] = {
@@ -139,10 +96,10 @@ def transcribe(
         "audio_seconds": audio_seconds,
         "model": tcfg.model if backend == "mlx" else tcfg.fallback_model,
         "backend": backend,
-        "diarization": not tcfg.disable_diarization and not skip_for_length,
+        "diarization": not tcfg.disable_diarization,
         "diarization_failed": diarization_failed,
         "diarization_failure_reason": diarization_failure_reason,
-        "diarization_method": "channel-aware" if used_channel_aware else "embedding",
+        "diarization_method": "channel-aware" if used_channel_aware else "none",
     }
     json_path.write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
 
