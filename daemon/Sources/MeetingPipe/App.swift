@@ -12,6 +12,9 @@ final class App {
         if args.count > 1, args[1] == "doctor" {
             exit(DoctorCommand.run())
         }
+        if args.count > 1, args[1] == "prefetch-models" {
+            exit(PrefetchModelsCommand.run())
+        }
         let app = NSApplication.shared
         // Accessory: we live in the menu bar with no Dock icon, no main window.
         app.setActivationPolicy(.accessory)

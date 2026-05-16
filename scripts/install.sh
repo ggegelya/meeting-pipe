@@ -12,6 +12,8 @@
 #      `[transcription] backend = "pipeline"` in config.toml).
 #   4. Pre-fetch sherpa-onnx diarization models (~32 MB, public) so the
 #      pipeline fallback works offline on day one.
+#   4b. Pre-fetch FluidAudio CoreML models (~630 MB) so the first real
+#      recording with the default backend doesn't pay download latency.
 #   5. Stage config files at ~/.config/meeting-pipe/.
 #   6. Install LaunchAgent for autostart.
 #
@@ -278,16 +280,22 @@ except Exception as e:
     sys.exit(1)
 PY
 
-# FluidAudio models (Parakeet TDT v3 ~600 MB + pyannote diarizer ~30 MB)
-# download lazily on the first recording into
-# ~/Library/Application Support/FluidAudio/Models. We do not pre-fetch
-# here: install stays fast, and the user pays the one-time download only
-# when they actually run a meeting.
+# Pre-fetch the FluidAudio CoreML models (Parakeet TDT v3 ~600 MB +
+# pyannote diarizer ~30 MB) into ~/Library/Application Support/FluidAudio
+# so the user's first recording isn't a multi-minute download wait.
+# Idempotent: the SDK skips re-downloading already-cached files.
+# Non-fatal: a flaky network here just falls back to the existing
+# lazy-load path on first recording.
 #
 # MLX-Whisper (~1.5 GB) downloads to ~/.cache/huggingface/hub only if the
-# user flips `[transcription] backend = "pipeline"` in config.toml.
-say "Note: FluidAudio models (~630 MB) download on first recording"
-say "      MLX-Whisper (~1.5 GB) downloads only if [transcription] backend = \"pipeline\""
+# user flips `[transcription] backend = "pipeline"` in config.toml — not
+# pre-fetched.
+say "Pre-fetching FluidAudio models (~630 MB total) → ~/Library/Application Support/FluidAudio"
+if "$DAEMON_BIN" prefetch-models; then
+    say "FluidAudio models cached."
+else
+    warn "FluidAudio prefetch failed; the daemon will retry lazily on first recording"
+fi
 
 # 5. Config staging --------------------------------------------------------
 
