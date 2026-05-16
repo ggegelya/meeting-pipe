@@ -1,55 +1,75 @@
 """Tests for the orchestrator's short-circuit paths.
 
-We don't run the real transcribe/summarize/publish stages here — those
-are covered by their own modules. What's worth covering at this layer
-is the BYO short-circuit (transcript exists, but we skip stages 2-3
-and write the manual-paste bundle instead) and the long-meeting guard.
+ASR + diarization run in Swift (FluidAudio) before `run_all` is invoked,
+so every test pre-writes a `<stem>.json` sidecar with `backend:
+"fluidaudio"`. We exercise: the FluidAudio short-circuit (skip the
+finalize fallback when segments are already labelled), the BYO toggle,
+the long-meeting guard, the no-speech short-circuit, and the
+missing-sidecar error path.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Iterable
 from unittest.mock import patch
+
+import pytest
 
 from mp.config import Config
 from mp.orchestrate import run_all
 
 
-def _stub_transcribe_output(tmp_path: Path, *, segments: int, char_count: int) -> dict:
-    """Write the JSON + MD that `transcribe()` would produce, then return
-    the dict shape `transcribe()` returns. Lets `run_all` short-circuit
-    paths execute without invoking whisperx."""
-    stem = "20260430-1500"
+def _write_fluidaudio_sidecar(
+    tmp_path: Path,
+    *,
+    stem: str = "20260516-0900",
+    segments: Iterable[dict] | None = None,
+    diarization: bool = True,
+    diarization_failed: bool = False,
+) -> Path:
+    """Write a FluidAudio-style sidecar at `<tmp_path>/<stem>.json` so the
+    orchestrator's daemon-transcript path is followed without spinning up
+    any real ASR."""
+    segs = list(segments) if segments is not None else [
+        {"start": 0.0, "end": 1.0, "text": "Hi.", "speaker": "speaker_0"},
+        {"start": 1.0, "end": 2.0, "text": "World.", "speaker": "speaker_1"},
+    ]
     json_path = tmp_path / f"{stem}.json"
-    md_path = tmp_path / f"{stem}.md"
     json_path.write_text(
-        json.dumps({
-            "segments": [{"text": "x"}] * segments,
-            "language": "en",
-            "diarization": True,
-        }),
+        json.dumps(
+            {
+                "language": "en",
+                "segments": segs,
+                "audio_path": str(tmp_path / f"{stem}.wav"),
+                "audio_seconds": 2.0,
+                "model": "parakeet-tdt-0.6b-v3",
+                "backend": "fluidaudio",
+                "diarization": diarization,
+                "diarization_failed": diarization_failed,
+                "streaming": False,
+                "finalized": True,
+            }
+        ),
         encoding="utf-8",
     )
-    md_path.write_text("x" * char_count, encoding="utf-8")
-    return {"json": json_path, "md": md_path}
+    return json_path
 
 
 def test_force_byo_skips_summarize_and_publish(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("MP_FORCE_BYO", raising=False)
-    wav = tmp_path / "x.wav"
-    wav.write_bytes(b"")  # presence only
+    stem = "20260430-1500"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)
     cfg = Config()
-
-    stubbed = _stub_transcribe_output(tmp_path, segments=3, char_count=500)
 
     summarize_called = []
     publish_called = []
 
-    with patch("mp.orchestrate.transcribe", return_value=stubbed) as t, \
-         patch("mp.orchestrate.summarize", side_effect=lambda *a, **k: summarize_called.append(1) or {}), \
+    with patch("mp.orchestrate.summarize", side_effect=lambda *a, **k: summarize_called.append(1) or {}), \
          patch("mp.orchestrate.publish_fanout", side_effect=lambda *a, **k: publish_called.append(1) or {}):
         result = run_all(wav, cfg=cfg, force_byo=True)
-        assert t.called
 
     assert summarize_called == []
     assert publish_called == []
@@ -65,14 +85,13 @@ def test_env_var_triggers_byo(tmp_path: Path, monkeypatch):
     """MP_FORCE_BYO=1 in the environment is equivalent to force_byo=True.
     That's how the Swift launcher signals the per-meeting toggle."""
     monkeypatch.setenv("MP_FORCE_BYO", "1")
-    wav = tmp_path / "x.wav"
+    stem = "20260430-1500"
+    wav = tmp_path / f"{stem}.wav"
     wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)
     cfg = Config()
 
-    stubbed = _stub_transcribe_output(tmp_path, segments=3, char_count=500)
-
-    with patch("mp.orchestrate.transcribe", return_value=stubbed), \
-         patch("mp.orchestrate.summarize") as s, \
+    with patch("mp.orchestrate.summarize") as s, \
          patch("mp.orchestrate.publish_fanout") as p:
         result = run_all(wav, cfg=cfg)
 
@@ -81,228 +100,127 @@ def test_env_var_triggers_byo(tmp_path: Path, monkeypatch):
     assert result["skipped"] == "byo"
 
 
-def _streamed_transcript(tmp_path: Path) -> Path:
-    """Write a `<stem>.json` with the `streaming: true` marker the
-    daemon's StreamingTranscriber leaves on disk during recording."""
-    stem = "20260430-1500"
-    json_path = tmp_path / f"{stem}.json"
-    json_path.write_text(
-        json.dumps(
-            {
-                "language": "en",
-                "segments": [
-                    {"start": 0.0, "end": 1.0, "text": "Hi.", "words": []},
-                    {"start": 1.0, "end": 2.0, "text": "World.", "words": []},
-                ],
-                "audio_path": str(tmp_path / f"{stem}.wav"),
-                "audio_seconds": 2.0,
-                "model": "mlx-community/whisper-large-v3-turbo",
-                "backend": "mlx-stream",
-                "streaming": True,
-            }
-        ),
-        encoding="utf-8",
-    )
-    return json_path
-
-
-def test_streamed_transcript_skips_offline_transcribe(tmp_path: Path, monkeypatch):
-    """When the daemon's streaming transcriber already wrote a
-    `<stem>.json` with `streaming: true`, the orchestrator must NOT
-    invoke the offline mlx-whisper path again — it should just diarize,
-    summarize, and publish."""
+def test_fluidaudio_sidecar_skips_finalize_diarization(tmp_path: Path, monkeypatch):
+    """The daemon writes `<stem>.json` with FluidAudio segments already
+    speaker-labelled. The orchestrator should trust those labels and
+    write `finalized: true` without touching the channel-aware fallback."""
     monkeypatch.delenv("MP_FORCE_BYO", raising=False)
-    wav = tmp_path / "20260430-1500.wav"
+    stem = "20260516-0900"
+    wav = tmp_path / f"{stem}.wav"
     wav.write_bytes(b"")
-    _streamed_transcript(tmp_path)
+    json_path = _write_fluidaudio_sidecar(tmp_path, stem=stem)
 
     cfg = Config()
-    cfg.transcription.disable_diarization = True  # skip diarize work in this test
-
-    summary_json = tmp_path / "20260430-1500.summary.json"
+    summary_json = tmp_path / f"{stem}.summary.json"
     summary_json.write_text("{}", encoding="utf-8")
 
-    with patch("mp.orchestrate.transcribe") as t, \
-         patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
+    with patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
          patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
         result = run_all(wav, cfg=cfg)
 
-    t.assert_not_called()  # offline transcribe skipped
     assert result["page_id"] == "p"
 
-
-def test_streamed_transcript_with_speakers_skips_offline_diarize(tmp_path: Path, monkeypatch):
-    """When the daemon-side path already labelled most segments, the
-    orchestrator must skip the channel-aware finalize step entirely.
-    Predates the FluidAudio default; covered for the legacy Python
-    streaming path that still produces pre-labelled segments."""
-    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
-    wav = tmp_path / "20260430-1500.wav"
-    wav.write_bytes(b"")
-    json_path = tmp_path / "20260430-1500.json"
-    json_path.write_text(
-        json.dumps(
-            {
-                "language": "en",
-                "segments": [
-                    {"start": 0.0, "end": 1.0, "text": "Hi.", "speaker": "speaker_0"},
-                    {"start": 1.0, "end": 2.0, "text": "Hello.", "speaker": "speaker_1"},
-                ],
-                "audio_path": str(wav),
-                "audio_seconds": 2.0,
-                "model": "mlx-community/whisper-large-v3-turbo",
-                "backend": "mlx-stream",
-                "diarization": True,
-                "streaming": True,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    cfg = Config()
-    summary_json = tmp_path / "20260430-1500.summary.json"
-    summary_json.write_text("{}", encoding="utf-8")
-
-    with patch("mp.orchestrate.transcribe") as t, \
-         patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
-         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
-        result = run_all(wav, cfg=cfg)
-
-    t.assert_not_called()
-    assert result["page_id"] == "p"
-
-    # The finalized JSON should retain the upstream speaker labels.
     data = json.loads(json_path.read_text(encoding="utf-8"))
-    assert data.get("finalized") is True
+    assert data["finalized"] is True
     assert data["segments"][0]["speaker"] == "speaker_0"
 
 
-def test_fluidaudio_sidecar_skips_offline_transcribe_and_diarize(tmp_path: Path, monkeypatch):
-    """The Group P daemon writes `<stem>.json` with `backend: "fluidaudio"`
-    and `streaming: false` after recording stops. The orchestrator must
-    treat that as authoritative ASR + diarization output and skip both
-    the offline transcribe AND the offline diarize stage."""
+def test_finalize_falls_back_to_channel_aware_when_labels_missing(tmp_path: Path, monkeypatch):
+    """If FluidAudio diarization didn't land (no speaker labels on the
+    segments), the orchestrator's finalize step labels by channel against
+    the stereo WAV. We patch is_stereo_recording to True so we don't have
+    to write a real WAV; assign_speakers_by_channel is patched to a
+    deterministic stub."""
     monkeypatch.delenv("MP_FORCE_BYO", raising=False)
-    wav = tmp_path / "20260516-0900.wav"
+    stem = "20260430-1500"
+    wav = tmp_path / f"{stem}.wav"
     wav.write_bytes(b"")
-    json_path = tmp_path / "20260516-0900.json"
-    json_path.write_text(
-        json.dumps(
-            {
-                "language": "en",
-                "segments": [
-                    {"start": 0.0, "end": 1.0, "text": "Hi.", "speaker": "speaker_0"},
-                    {"start": 1.0, "end": 2.0, "text": "World.", "speaker": "speaker_1"},
-                ],
-                "audio_path": str(wav),
-                "audio_seconds": 2.0,
-                "model": "parakeet-tdt-0.6b-v3",
-                "backend": "fluidaudio",
-                "diarization": True,
-                "diarization_failed": False,
-                "streaming": False,
-                "finalized": True,
-            }
-        ),
-        encoding="utf-8",
+    json_path = _write_fluidaudio_sidecar(
+        tmp_path,
+        stem=stem,
+        segments=[
+            {"start": 0.0, "end": 1.0, "text": "Hi."},
+            {"start": 1.0, "end": 2.0, "text": "Hello."},
+        ],
     )
 
     cfg = Config()
-    summary_json = tmp_path / "20260516-0900.summary.json"
+    summary_json = tmp_path / f"{stem}.summary.json"
     summary_json.write_text("{}", encoding="utf-8")
 
-    with patch("mp.orchestrate.transcribe") as t, \
-         patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
-         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
-        result = run_all(wav, cfg=cfg)
+    def fake_label_by_channel(segs, _wav):
+        return [{**s, "speaker": "speaker_user"} for s in segs]
 
-    t.assert_not_called()  # FluidAudio already transcribed + diarized
-    assert result["page_id"] == "p"
-
-
-def test_streamed_transcript_without_speakers_runs_finalize(tmp_path: Path, monkeypatch):
-    """When streaming was on but no speaker labels landed, the
-    orchestrator's finalize step labels by channel against the stereo
-    WAV (no embedding diarization in Python anymore)."""
-    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
-    wav = tmp_path / "20260430-1500.wav"
-    wav.write_bytes(b"")
-    (tmp_path / "20260430-1500.json").write_text(
-        json.dumps(
-            {
-                "language": "en",
-                "segments": [
-                    {"start": 0.0, "end": 1.0, "text": "Hi."},  # no speaker
-                    {"start": 1.0, "end": 2.0, "text": "Hello."},
-                ],
-                "audio_path": str(wav),
-                "audio_seconds": 2.0,
-                "model": "mlx-community/whisper-large-v3-turbo",
-                "backend": "mlx-stream",
-                "diarization": False,
-                "streaming": True,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    cfg = Config()
-    summary_json = tmp_path / "20260430-1500.summary.json"
-    summary_json.write_text("{}", encoding="utf-8")
-
-    with patch("mp.orchestrate.transcribe") as t, \
-         patch("mp.orchestrate.is_stereo_recording", return_value=False), \
+    with patch("mp.orchestrate.is_stereo_recording", return_value=True), \
+         patch("mp.orchestrate.assign_speakers_by_channel", side_effect=fake_label_by_channel), \
          patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
          patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
         run_all(wav, cfg=cfg)
 
-    t.assert_not_called()  # transcribe still skipped (we have segments)
-    # Mono WAV → finalize marks diarization_failed and stamps Speaker?.
-    data = json.loads((tmp_path / "20260430-1500.json").read_text(encoding="utf-8"))
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["finalized"] is True
+    assert data["diarization"] is True
+    assert data["diarization_failed"] is False
+    assert all(s["speaker"] == "speaker_user" for s in data["segments"])
+
+
+def test_finalize_marks_failed_when_mono_and_unlabelled(tmp_path: Path, monkeypatch):
+    """Mono WAV with no FluidAudio labels: the finalize step has no way
+    to assign speakers, so it surfaces the failure in the sidecar and
+    stamps `Speaker?` on every segment."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    stem = "20260430-1500"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    json_path = _write_fluidaudio_sidecar(
+        tmp_path,
+        stem=stem,
+        segments=[
+            {"start": 0.0, "end": 1.0, "text": "Hi."},
+        ],
+    )
+
+    cfg = Config()
+    summary_json = tmp_path / f"{stem}.summary.json"
+    summary_json.write_text("{}", encoding="utf-8")
+
+    with patch("mp.orchestrate.is_stereo_recording", return_value=False), \
+         patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
+         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+        run_all(wav, cfg=cfg)
+
+    data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["diarization_failed"] is True
     assert data["segments"][0]["speaker"] == "Speaker?"
 
 
-def test_streamed_transcript_falls_back_when_unusable(tmp_path: Path, monkeypatch):
-    """A streamed JSON with zero segments (e.g. SIGKILL mid-recording)
-    must fall back to the offline transcribe path so the user still
-    gets a transcript at the end."""
+def test_missing_sidecar_raises(tmp_path: Path, monkeypatch):
+    """The Python pipeline no longer carries ASR. If the daemon didn't
+    produce `<stem>.json`, `run_all` must fail loudly rather than
+    silently falling back to something that doesn't exist."""
     monkeypatch.delenv("MP_FORCE_BYO", raising=False)
     wav = tmp_path / "20260430-1500.wav"
     wav.write_bytes(b"")
-
-    # Streaming JSON with no segments — the orchestrator should ignore it.
-    (tmp_path / "20260430-1500.json").write_text(
-        json.dumps({"streaming": True, "segments": [], "language": "en"}),
-        encoding="utf-8",
-    )
-
     cfg = Config()
-    stubbed = _stub_transcribe_output(tmp_path, segments=2, char_count=200)
 
-    with patch("mp.orchestrate.transcribe", return_value=stubbed) as t, \
-         patch("mp.orchestrate.summarize", return_value={"json": tmp_path / "x.summary.json", "md": tmp_path / "x.md"}), \
-         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+    with pytest.raises(RuntimeError) as exc:
         run_all(wav, cfg=cfg)
+    assert "FluidAudio" in str(exc.value)
 
-    t.assert_called_once()  # fell back to offline transcribe
 
-
-def test_no_speech_short_circuits_before_byo_check(tmp_path: Path, monkeypatch):
-    """Empty transcript path takes precedence — don't even bother with
-    the BYO bundle if there's nothing to summarise."""
+def test_no_speech_short_circuits_before_byo(tmp_path: Path, monkeypatch):
+    """Empty transcript short-circuits to `skipped: no_speech`. Doesn't
+    even bother with the BYO bundle if there is nothing to summarise."""
     monkeypatch.setenv("MP_FORCE_BYO", "1")
-    wav = tmp_path / "x.wav"
+    stem = "20260430-1500"
+    wav = tmp_path / f"{stem}.wav"
     wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem, segments=[])
     cfg = Config()
 
-    stubbed = _stub_transcribe_output(tmp_path, segments=0, char_count=0)
-
-    with patch("mp.orchestrate.transcribe", return_value=stubbed), \
-         patch("mp.orchestrate.summarize") as s, \
+    with patch("mp.orchestrate.summarize") as s, \
          patch("mp.orchestrate.publish_fanout") as p:
         result = run_all(wav, cfg=cfg)
-
     s.assert_not_called()
     p.assert_not_called()
     assert result["skipped"] == "no_speech"

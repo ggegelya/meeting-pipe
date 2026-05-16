@@ -132,27 +132,6 @@ final class FluidAudioRunnerAudioMixdownTests: XCTestCase {
     }
 }
 
-final class TranscriptionBackendNormalizeTests: XCTestCase {
-    func test_nil_returns_fluidaudio_default() {
-        XCTAssertEqual(TranscriptionBackend.normalize(nil), TranscriptionBackend.fluidaudio)
-    }
-
-    func test_recognised_canonical_values_pass_through() {
-        XCTAssertEqual(TranscriptionBackend.normalize("fluidaudio"), TranscriptionBackend.fluidaudio)
-        XCTAssertEqual(TranscriptionBackend.normalize("pipeline"), TranscriptionBackend.pipeline)
-    }
-
-    func test_aliases_are_accepted() {
-        XCTAssertEqual(TranscriptionBackend.normalize("parakeet"), TranscriptionBackend.fluidaudio)
-        XCTAssertEqual(TranscriptionBackend.normalize("MLX"), TranscriptionBackend.pipeline)
-        XCTAssertEqual(TranscriptionBackend.normalize("  whisper "), TranscriptionBackend.pipeline)
-    }
-
-    func test_unknown_string_falls_back_to_fluidaudio() {
-        XCTAssertEqual(TranscriptionBackend.normalize("turbocharged"), TranscriptionBackend.fluidaudio)
-    }
-}
-
 final class TranscriptionServiceRoutingTests: XCTestCase {
 
     private final class StubRunner: TranscriptionRunner {
@@ -179,18 +158,14 @@ final class TranscriptionServiceRoutingTests: XCTestCase {
         super.tearDown()
     }
 
-    func test_fluidaudio_resolves_to_runner() throws {
-        let runner = try XCTUnwrap(TranscriptionService.makeRunner(for: TranscriptionBackend.fluidaudio))
-        XCTAssertEqual(runner.backendName, TranscriptionBackend.fluidaudio)
+    func test_default_resolves_to_fluidaudio_runner() {
+        let runner = TranscriptionService.makeRunner()
+        XCTAssertEqual(runner.backendName, "fluidaudio")
     }
 
-    func test_pipeline_resolves_to_nil() {
-        XCTAssertNil(TranscriptionService.makeRunner(for: TranscriptionBackend.pipeline))
-    }
-
-    func test_override_wins_over_backend_string() {
+    func test_override_wins() {
         TranscriptionService.overrideRunnerForTesting(StubRunner())
-        let runner = TranscriptionService.makeRunner(for: TranscriptionBackend.pipeline)
-        XCTAssertEqual(runner?.backendName, "stub")
+        let runner = TranscriptionService.makeRunner()
+        XCTAssertEqual(runner.backendName, "stub")
     }
 }

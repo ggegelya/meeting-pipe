@@ -105,7 +105,6 @@ def check_config() -> Config | None:
         return None
     _ok(f"loaded {CONFIG_PATH}")
     _info(f"recording.output_dir = {cfg.recording.output_dir}")
-    _info(f"transcription.model = {cfg.transcription.model}, language = {cfg.transcription.language}")
     _info(f"output.sinks = {cfg.output.sinks}")
     _info(f"summarization.model = {cfg.summarization.model}")
     _info(f"summarization.backend = {cfg.summarization.backend}")
@@ -209,35 +208,13 @@ def check_notion(present: bool, cfg: Config | None) -> None:
 # ---------- ML runtimes ----------------------------------------------------
 
 def check_ml_runtimes() -> None:
-    """Verify the ASR stack resolves and report which backend will actually
-    be used by the Python fallback path. mlx-whisper is Apple-Silicon-only;
-    faster-whisper is the cross-platform fallback. Diarization runs in
-    Swift via FluidAudio and is not probed here.
+    """ASR + diarization run in Swift (FluidAudio); the Python pipeline
+    only summarizes and publishes. Nothing to probe here beyond the
+    Apple Silicon presence check that surfaces in other doctor sections.
     """
-    import platform
-    import sys as _sys
-
     print("\n== ML runtimes ==")
-
-    on_apple_silicon = _sys.platform == "darwin" and platform.machine() == "arm64"
-    if on_apple_silicon:
-        try:
-            import mlx_whisper  # type: ignore  # noqa: F401
-            _ok("mlx-whisper importable (Apple Silicon — Metal/MLX-accelerated ASR)")
-        except ImportError as e:
-            _fail(f"mlx-whisper not importable: {e}")
-            _info("install with: uv pip install mlx-whisper")
-    else:
-        _info(f"non-Apple-Silicon host ({platform.machine()}) — using faster-whisper fallback")
-
-    try:
-        import faster_whisper  # type: ignore  # noqa: F401
-        _ok("faster-whisper importable (CPU fallback)")
-    except ImportError as e:
-        if on_apple_silicon:
-            _info(f"faster-whisper missing (optional on Apple Silicon): {e}")
-        else:
-            _fail(f"faster-whisper not importable: {e}")
+    _info("ASR + diarization handled by the Swift daemon (FluidAudio).")
+    _info("Python pipeline runs summarize + publish only; no MLX deps here.")
 
 
 def check_huggingface(present: bool) -> None:

@@ -13,15 +13,15 @@ mp — meeting-pipe pipeline
 usage: mp <subcommand> [args...]
 
 Subcommands:
-  transcribe <wav>            Transcribe + diarize → <stem>.json + <stem>.md
-  transcribe-stream ...       Long-running streaming transcribe (daemon-spawned)
-  summarize <transcript.md>   Anthropic summarization → <stem>.summary.json/.md
+  summarize <transcript.md>   Anthropic summarization -> <stem>.summary.json/.md
   publish-notion <summary.json>
                               Publish summary to Notion (idempotent)
   publish-from-paste <transcript.md>
                               Parse <stem>.summary.md you wrote by hand,
                               then publish to Notion (BYO summary mode)
-  run-all <wav>               Run all three in order, fail-fast
+  run-all <wav>               Run summarize + publish on the daemon-produced
+                              `<stem>.json`. ASR + diarization live in Swift
+                              (FluidAudio) and are NOT invoked here.
   doctor                      Preflight check (secrets, config, live API access)
   logs [--since 1h] [--category C] [--action A] [--json]
                               Filter and pretty-print JSONL event streams
@@ -53,14 +53,9 @@ def main() -> int:
 
     cmd, rest = argv[0], argv[1:]
 
-    # Lazy imports — `mp --help` and `mp --version` shouldn't pay the
-    # transcription dependency cost (torch + whisperx are heavy).
-    if cmd == "transcribe":
-        from .transcribe import main as run
-        return run(rest)
-    if cmd in {"transcribe-stream", "transcribe_stream"}:
-        from .transcribe_stream import main as run
-        return run(rest)
+    # Lazy imports: keep `mp --help` and `mp --version` cheap; the
+    # summarize / publish stages pull in anthropic + httpx + pydantic
+    # only when actually invoked.
     if cmd == "summarize":
         from .summarize import main as run
         return run(rest)

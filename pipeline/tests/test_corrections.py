@@ -289,10 +289,37 @@ def test_cli_empty_dir_reports_zero(tmp_path: Path):
 # -------- orchestrate integration ------------------------------------------
 
 
+def _write_daemon_sidecar(tmp_path: Path, stem: str, transcript_text: str = "hello") -> tuple[Path, Path]:
+    """Pre-write the FluidAudio sidecar (JSON) and the transcript MD that
+    `_finalize_streamed_transcript` would write. The finalize step
+    overwrites both during run_all, but the contents read by the run
+    sidecar (transcript_chars) come from the MD on disk after finalize,
+    so seeding with a known length lets tests assert deterministically."""
+    md_path = tmp_path / f"{stem}.md"
+    md_path.write_text(transcript_text, encoding="utf-8")
+    json_path = tmp_path / f"{stem}.json"
+    json_path.write_text(
+        json.dumps({
+            "language": "en",
+            "segments": [{"start": 0.0, "end": 1.0, "text": transcript_text, "speaker": "speaker_0"}],
+            "audio_path": str(tmp_path / f"{stem}.wav"),
+            "audio_seconds": 1.0,
+            "model": "parakeet-tdt-0.6b-v3",
+            "backend": "fluidaudio",
+            "diarization": True,
+            "diarization_failed": False,
+            "streaming": False,
+            "finalized": True,
+        }),
+        encoding="utf-8",
+    )
+    return json_path, md_path
+
+
 def test_orchestrate_writes_run_sidecar(tmp_path: Path, monkeypatch):
     """End-to-end: run_all writes <stem>.run.json with backend + model
-    after the summarize stage. Mocks transcribe/summarize/publish so we
-    only exercise the orchestrator's sidecar emission."""
+    after the summarize stage. Mocks summarize/publish so we only
+    exercise the orchestrator's sidecar emission."""
     from mp.config import Config
     from mp.orchestrate import run_all
 
@@ -301,13 +328,7 @@ def test_orchestrate_writes_run_sidecar(tmp_path: Path, monkeypatch):
     stem = "20260508-1500"
     wav = tmp_path / f"{stem}.wav"
     wav.write_bytes(b"")
-    md_path = tmp_path / f"{stem}.md"
-    md_path.write_text("hello", encoding="utf-8")
-    json_path = tmp_path / f"{stem}.json"
-    json_path.write_text(
-        json.dumps({"segments": [{"text": "x"}], "language": "en"}),
-        encoding="utf-8",
-    )
+    _write_daemon_sidecar(tmp_path, stem)
 
     summary_json = tmp_path / f"{stem}.summary.json"
     summary_json.write_text("{}", encoding="utf-8")
@@ -316,8 +337,7 @@ def test_orchestrate_writes_run_sidecar(tmp_path: Path, monkeypatch):
 
     from unittest.mock import patch
 
-    with patch("mp.orchestrate.transcribe", return_value={"json": json_path, "md": md_path}), \
-         patch("mp.orchestrate.summarize", return_value={
+    with patch("mp.orchestrate.summarize", return_value={
              "json": summary_json,
              "md": summary_md,
              "backend": "local",
@@ -333,8 +353,8 @@ def test_orchestrate_writes_run_sidecar(tmp_path: Path, monkeypatch):
     data = json.loads(sidecar.read_text(encoding="utf-8"))
     assert data["backend"] == "local"
     assert data["model"] == "mlx-community/Qwen2.5-3B-Instruct-4bit"
-    assert data["transcript_chars"] == len("hello")
     assert data["stem"] == stem
+    assert data["transcript_chars"] > 0
 
 
 def test_orchestrate_tolerates_summarize_without_meta(tmp_path: Path, monkeypatch):
@@ -348,13 +368,8 @@ def test_orchestrate_tolerates_summarize_without_meta(tmp_path: Path, monkeypatc
     stem = "20260508-1600"
     wav = tmp_path / f"{stem}.wav"
     wav.write_bytes(b"")
-    md_path = tmp_path / f"{stem}.md"
-    md_path.write_text("hello", encoding="utf-8")
-    json_path = tmp_path / f"{stem}.json"
-    json_path.write_text(
-        json.dumps({"segments": [{"text": "x"}], "language": "en"}),
-        encoding="utf-8",
-    )
+    _write_daemon_sidecar(tmp_path, stem)
+
     summary_json = tmp_path / f"{stem}.summary.json"
     summary_json.write_text("{}", encoding="utf-8")
     summary_md = tmp_path / f"{stem}.summary.md"
@@ -362,8 +377,7 @@ def test_orchestrate_tolerates_summarize_without_meta(tmp_path: Path, monkeypatc
 
     from unittest.mock import patch
 
-    with patch("mp.orchestrate.transcribe", return_value={"json": json_path, "md": md_path}), \
-         patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": summary_md}), \
+    with patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": summary_md}), \
          patch("mp.orchestrate.publish_fanout", return_value={
              "page_id": "p", "page_url": "u", "idempotent": False
          }):

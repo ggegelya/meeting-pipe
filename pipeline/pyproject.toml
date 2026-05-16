@@ -13,23 +13,19 @@ dependencies = [
     "pydantic>=2.7.0",
     "pydantic-settings>=2.4.0",
     "tomli>=2.0.1; python_version < '3.11'",
-    # ASR. mlx-whisper is the Apple-Silicon-native MLX/Metal backend; it
-    # outperforms faster-whisper-on-CPU by ~5-10× on M-series and supports
-    # all 99 Whisper languages with word-level timestamps. faster-whisper
-    # stays in the dep list as a graceful fallback for non-Apple-Silicon
-    # environments (CI, Linux).
-    "mlx-whisper>=0.4.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    # Local-LLM summarization (P2). LocalSummaryClient lazy-spawns
-    # mlx_lm.server when summarization.backend = "local" or "auto".
-    # Apple Silicon only; fall back to backend="anthropic" elsewhere.
+    # ASR + diarization run in Swift (FluidAudio: Parakeet TDT + pyannote
+    # on the Apple Neural Engine). The Python pipeline only summarizes
+    # and publishes; it reads the daemon-produced sidecar JSON.
+    #
+    # Local-LLM summarization. LocalSummaryClient lazy-spawns mlx_lm.server
+    # when summarization.backend = "local" or "auto". Apple Silicon only;
+    # fall back to backend="anthropic" elsewhere.
     "mlx-lm>=0.20; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "faster-whisper>=1.0.3",
+    # soundfile + numpy power the channel-aware speaker labelling fallback
+    # used when FluidAudio diarization fails (rare; surfaced via
+    # `diarization_failed: true` in the sidecar).
     "soundfile>=0.12.1",
     "numpy>=1.26",
-    # Diarization runs in Swift via FluidAudio (Parakeet TDT + pyannote
-    # on the Apple Neural Engine). The Python fallback only does
-    # channel-aware labelling on stereo recordings, with no embedding
-    # step and no ONNX runtime needed.
     # Notion + auth + retries.
     "tenacity>=8.2.0",
 ]

@@ -120,26 +120,13 @@ final class Coordinator: NSObject {
         self.consent = ConsentStore()
         let resolvedLauncher = launcher ?? PipelineLauncher()
         self.launcher = resolvedLauncher
-        // Resolve the in-process transcription engine from the live store
-        // when present (so a freshly-edited backend choice in Preferences
-        // is honoured on next launch) and fall back to the loaded Config.
-        // The runner is cached for the daemon's lifetime — switching
-        // backends requires a restart, matching the hotkey / output_dir
-        // pattern. nil here means the legacy Python ASR path stays in
-        // charge.
-        let backend = TranscriptionBackend.normalize(
-            configStore?.transcriptionBackend ?? config.transcription.backend
-        )
-        let runner = TranscriptionService.makeRunner(for: backend)
-        if let runner = runner {
-            Log.event(category: "transcription", action: "engine_resolved", attributes: [
-                "engine": runner.backendName,
-            ])
-        } else {
-            Log.event(category: "transcription", action: "engine_resolved", attributes: [
-                "engine": "pipeline",
-            ])
-        }
+        // FluidAudio is the only ASR path: the daemon owns transcription
+        // in-process via Parakeet TDT + pyannote on the Apple Neural
+        // Engine. The Python pipeline runs summarize + publish only.
+        let runner = TranscriptionService.makeRunner()
+        Log.event(category: "transcription", action: "engine_resolved", attributes: [
+            "engine": runner.backendName,
+        ])
         self.sinkDispatcher = SinkDispatcher(
             launcher: resolvedLauncher,
             transcriptionRunner: runner
@@ -379,14 +366,8 @@ final class Coordinator: NSObject {
         hotkey.unregister()
         if recorder.isRecording {
             // Best-effort flush; we don't want orphan recording state.
-            // Streaming transcriber is signaled in parallel — its hard
-            // SIGKILL escalation makes sure we can't sit here forever.
             let recorder = self.recorder
-            let dispatcher = self.sinkDispatcher
-            Task {
-                await recorder.stop()
-                await dispatcher.stopStreaming()
-            }
+            Task { await recorder.stop() }
         }
     }
 
@@ -864,24 +845,6 @@ final class Coordinator: NSObject {
             ])
             armSilenceDetector()
             armMuteProbe(source: source)
-            // Kick off streaming transcribe so transcription runs in
-            // parallel with the meeting. Best-effort — a failure here
-            // (mp not installed, AVAudioFile not yet flushing) just
-            // means the orchestrator's offline path picks up at stop.
-            // BYO mode skips streaming because the orchestrator short-
-            // circuits before transcribe anyway, so spawning would be
-            // wasted work.
-            if summaryMode != .byo,
-               let micURL = recorder.micURL {
-                let stem = file.deletingPathExtension().lastPathComponent
-                let outputDir = file.deletingLastPathComponent()
-                sinkDispatcher.startStreaming(
-                    stem: stem,
-                    outputDir: outputDir,
-                    micURL: micURL,
-                    systemURL: recorder.systemURL
-                )
-            }
         } catch {
             Log.main.error("failed to start recorder: \(error.localizedDescription)")
             notifier.notifyError("Could not start recording: \(error.localizedDescription)")
@@ -897,20 +860,13 @@ final class Coordinator: NSObject {
         disarmSilenceDetector()
         muteProbe.disarm()
 
-        // Recorder.stop is async — runs on a background task so the UI
+        // Recorder.stop is async; runs on a background task so the UI
         // stays responsive. Once flushed, the audio is enqueued for
         // pipeline processing and the recording-side state returns to
         // .idle so the user can record another meeting immediately.
         let recorder = self.recorder
-        let dispatcher = self.sinkDispatcher
         Task { @MainActor [weak self] in
             await recorder.stop()
-            // Tell the streaming transcriber to drain its remaining
-            // buffer and finalize <stem>.json. The orchestrator then
-            // skips the offline ASR stage. We bound the wait inside
-            // StreamingTranscriber.stop (SIGTERM → 60 s grace → SIGKILL)
-            // so a hung subprocess can't pin the daemon in `.stopping`.
-            await dispatcher.stopStreaming()
             guard let self = self else { return }
             // Recorder is no longer holding the input device, so
             // `micInUse` can re-enable its CoreAudio probe and the

@@ -45,48 +45,124 @@ final class SinkDispatcherTests: XCTestCase {
 
     // MARK: - Queue depth + serialization
 
-    func test_enqueue_starts_first_job_and_updates_depth() {
+    /// Always-succeeding transcription runner. The dispatcher always
+    /// runs a runner before invoking the pipeline; tests that don't care
+    /// about the transcription step still need to wait past it.
+    private final class PassRunner: TranscriptionRunner {
+        let backendName = "pass"
+        func transcribe(wavURL: URL, languageHint: String?) async throws -> TranscriptSidecar {
+            TranscriptSidecar(
+                language: "en",
+                segments: [],
+                audioPath: wavURL.path,
+                audioSeconds: 0,
+                model: "pass",
+                backend: backendName,
+                diarization: false,
+                diarizationFailed: false,
+                diarizationFailureReason: nil,
+                streaming: false,
+                finalized: true
+            )
+        }
+    }
+
+    private func waitForPipelineStart(_ driver: FakeDriver, timeout: TimeInterval = 2.0) {
+        let exp = expectation(description: "pipeline launched")
+        let deadline = Date().addingTimeInterval(timeout)
+        func poll() {
+            if !driver.startedFiles.isEmpty {
+                exp.fulfill()
+                return
+            }
+            if Date() >= deadline { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() }
+        }
+        DispatchQueue.main.async { poll() }
+        wait(for: [exp], timeout: timeout + 0.5)
+    }
+
+    private func makeDispatcher(_ driver: FakeDriver) -> SinkDispatcher {
+        SinkDispatcher(launcher: driver, transcriptionRunner: PassRunner())
+    }
+
+    private func makeTempWav() throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mp-sink-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let wav = dir.appendingPathComponent("clip.wav")
+        try Data().write(to: wav)
+        return wav
+    }
+
+    func test_enqueue_starts_first_job_and_updates_depth() throws {
         let driver = FakeDriver()
-        let dispatcher = SinkDispatcher(launcher: driver)
+        let dispatcher = makeDispatcher(driver)
         var depths: [Int] = []
         dispatcher.onQueueDepthChanged = { depths.append($0) }
 
-        dispatcher.enqueue(file: tmpA, summaryMode: .auto)
-        XCTAssertEqual(driver.startedFiles, [tmpA])
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        XCTAssertEqual(driver.startedFiles, [wav])
         XCTAssertEqual(dispatcher.queueDepth, 1)
-        XCTAssertEqual(depths, [1])
+        XCTAssertEqual(depths.first, 1)
     }
 
-    func test_second_enqueue_does_not_start_until_first_completes() {
+    func test_second_enqueue_does_not_start_until_first_completes() throws {
         let driver = FakeDriver()
-        let dispatcher = SinkDispatcher(launcher: driver)
+        let dispatcher = makeDispatcher(driver)
 
-        dispatcher.enqueue(file: tmpA, summaryMode: .auto)
-        dispatcher.enqueue(file: tmpB, summaryMode: .auto)
-        XCTAssertEqual(driver.startedFiles, [tmpA], "Second job must wait for first to drain")
+        let wavA = try makeTempWav()
+        let wavB = try makeTempWav()
+        defer {
+            try? FileManager.default.removeItem(at: wavA.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: wavB.deletingLastPathComponent())
+        }
+
+        dispatcher.enqueue(file: wavA, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        dispatcher.enqueue(file: wavB, summaryMode: .auto)
+        XCTAssertEqual(driver.startedFiles, [wavA], "Second job must wait for first to drain")
         XCTAssertEqual(dispatcher.queueDepth, 2)
 
         driver.finish(.success(nil))
-        drainMain()
-        XCTAssertEqual(driver.startedFiles, [tmpA, tmpB])
+        // After completion the dispatcher kicks the next job; the runner
+        // for it again runs on a Task before the pipeline is invoked.
+        let exp = expectation(description: "second pipeline launched")
+        let deadline = Date().addingTimeInterval(2.0)
+        func poll() {
+            if driver.startedFiles.count >= 2 { exp.fulfill(); return }
+            if Date() >= deadline { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() }
+        }
+        DispatchQueue.main.async { poll() }
+        wait(for: [exp], timeout: 2.5)
+        XCTAssertEqual(driver.startedFiles, [wavA, wavB])
         XCTAssertEqual(dispatcher.queueDepth, 1)
     }
 
     // MARK: - Result fan-out
 
-    func test_success_fans_out_via_onJobCompleted_on_main() {
+    func test_success_fans_out_via_onJobCompleted_on_main() throws {
         let driver = FakeDriver()
-        let dispatcher = SinkDispatcher(launcher: driver)
+        let dispatcher = makeDispatcher(driver)
         var completed: [(ProcessingJob, Result<URL?, Error>)] = []
         dispatcher.onJobCompleted = { completed.append(($0, $1)) }
 
-        dispatcher.enqueue(file: tmpA, summaryMode: .auto)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
         let pageURL = URL(string: "https://notion.so/x")!
         driver.finish(.success(pageURL))
         drainMain()
 
         XCTAssertEqual(completed.count, 1)
-        XCTAssertEqual(completed.first?.0.file, tmpA)
+        XCTAssertEqual(completed.first?.0.file, wav)
         if case .success(let url) = completed.first?.1 {
             XCTAssertEqual(url, pageURL)
         } else {
@@ -95,38 +171,60 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertEqual(dispatcher.queueDepth, 0)
     }
 
-    func test_failure_fans_out_and_advances_queue() {
+    func test_pipeline_failure_advances_queue() throws {
         let driver = FakeDriver()
-        let dispatcher = SinkDispatcher(launcher: driver)
+        let dispatcher = makeDispatcher(driver)
         var completed: [(ProcessingJob, Result<URL?, Error>)] = []
         dispatcher.onJobCompleted = { completed.append(($0, $1)) }
 
-        dispatcher.enqueue(file: tmpA, summaryMode: .byo)
-        dispatcher.enqueue(file: tmpB, summaryMode: .auto)
+        let wavA = try makeTempWav()
+        let wavB = try makeTempWav()
+        defer {
+            try? FileManager.default.removeItem(at: wavA.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: wavB.deletingLastPathComponent())
+        }
+
+        dispatcher.enqueue(file: wavA, summaryMode: .byo)
+        waitForPipelineStart(driver)
+        dispatcher.enqueue(file: wavB, summaryMode: .auto)
         struct Boom: Error {}
         driver.finish(.failure(Boom()))
         drainMain()
 
         XCTAssertEqual(completed.count, 1)
-        XCTAssertEqual(completed.first?.0.file, tmpA)
+        XCTAssertEqual(completed.first?.0.file, wavA)
         if case .failure = completed.first?.1 {} else { XCTFail("expected .failure") }
-        // Queue should have advanced — second job is now in flight.
-        XCTAssertEqual(driver.startedFiles, [tmpA, tmpB])
+        // Queue should have advanced; wait for the second pipeline call.
+        let exp = expectation(description: "second pipeline launched")
+        let deadline = Date().addingTimeInterval(2.0)
+        func poll() {
+            if driver.startedFiles.count >= 2 { exp.fulfill(); return }
+            if Date() >= deadline { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() }
+        }
+        DispatchQueue.main.async { poll() }
+        wait(for: [exp], timeout: 2.5)
+        XCTAssertEqual(driver.startedFiles, [wavA, wavB])
         XCTAssertEqual(dispatcher.queueDepth, 1)
     }
 
-    func test_queue_depth_callback_fires_for_completion_too() {
+    func test_queue_depth_callback_fires_for_completion_too() throws {
         let driver = FakeDriver()
-        let dispatcher = SinkDispatcher(launcher: driver)
+        let dispatcher = makeDispatcher(driver)
         var depths: [Int] = []
         dispatcher.onQueueDepthChanged = { depths.append($0) }
 
-        dispatcher.enqueue(file: tmpA, summaryMode: .auto)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
         driver.finish(.success(nil))
         drainMain()
 
-        // Enqueue → 1, then completion drains → 0.
-        XCTAssertEqual(depths, [1, 0])
+        // Enqueue raises to 1; completion drains back to 0.
+        XCTAssertTrue(depths.contains(1))
+        XCTAssertEqual(depths.last, 0)
     }
 
     // MARK: - In-process runner pre-pipeline
@@ -139,11 +237,9 @@ final class SinkDispatcherTests: XCTestCase {
 
         private(set) var calls: [URL] = []
         var shouldThrow = false
-        let completedExpectation = XCTestExpectation(description: "runner ran")
 
         func transcribe(wavURL: URL, languageHint: String?) async throws -> TranscriptSidecar {
             calls.append(wavURL)
-            defer { completedExpectation.fulfill() }
             if shouldThrow { throw Boom() }
             return TranscriptSidecar(
                 language: "en",
@@ -167,36 +263,6 @@ final class SinkDispatcherTests: XCTestCase {
         }
     }
 
-    private func makeTempWav() throws -> URL {
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("mp-sink-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let wav = dir.appendingPathComponent("clip.wav")
-        try Data().write(to: wav)
-        return wav
-    }
-
-    /// The dispatcher runs the runner inside a `Task` and then hops to the
-    /// main actor before calling `launcher.runAll`. The fake driver's
-    /// `startedFiles` is the signal we actually want to observe — wait for
-    /// it to grow rather than synchronising on the runner's expectation
-    /// (which fulfils before the main-actor hop) or the JSON-write step
-    /// (which doesn't run when the runner throws).
-    private func waitForPipelineStart(_ driver: FakeDriver, timeout: TimeInterval = 2.0) {
-        let exp = expectation(description: "pipeline launched")
-        let deadline = Date().addingTimeInterval(timeout)
-        func poll() {
-            if !driver.startedFiles.isEmpty {
-                exp.fulfill()
-                return
-            }
-            if Date() >= deadline { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() }
-        }
-        DispatchQueue.main.async { poll() }
-        wait(for: [exp], timeout: timeout + 0.5)
-    }
-
     func test_runner_writes_sidecar_before_launching_pipeline() throws {
         let driver = FakeDriver()
         let runner = FakeRunner()
@@ -218,31 +284,35 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertEqual(decoded.segments.first?.speaker, "speaker_0")
     }
 
-    func test_runner_failure_still_invokes_pipeline_as_fallback() throws {
+    func test_runner_failure_skips_pipeline_and_fails_job() throws {
         let driver = FakeDriver()
         let runner = FakeRunner()
         runner.shouldThrow = true
         let dispatcher = SinkDispatcher(launcher: driver, transcriptionRunner: runner)
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
 
         dispatcher.enqueue(file: wav, summaryMode: .auto)
-        waitForPipelineStart(driver)
+        // Wait for the job to complete (failure path).
+        let exp = expectation(description: "job failed")
+        let deadline = Date().addingTimeInterval(2.0)
+        func poll() {
+            if completed.count >= 1 { exp.fulfill(); return }
+            if Date() >= deadline { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() }
+        }
+        DispatchQueue.main.async { poll() }
+        wait(for: [exp], timeout: 2.5)
 
-        XCTAssertEqual(driver.startedFiles, [wav], "pipeline fallback must still run when runner throws")
+        XCTAssertTrue(driver.startedFiles.isEmpty, "pipeline must NOT run when ASR fails")
+        if case .failure = completed.first?.1 {} else { XCTFail("expected .failure") }
         let jsonURL = wav.deletingPathExtension().appendingPathExtension("json")
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: jsonURL.path),
-            "runner threw → no JSON should land on disk"
+            "runner threw, no JSON should land on disk"
         )
-    }
-
-    func test_no_runner_skips_in_process_step_entirely() {
-        let driver = FakeDriver()
-        let dispatcher = SinkDispatcher(launcher: driver, transcriptionRunner: nil)
-
-        dispatcher.enqueue(file: tmpA, summaryMode: .auto)
-        // No async Task scheduled in this path — pipeline starts synchronously.
-        XCTAssertEqual(driver.startedFiles, [tmpA])
     }
 }

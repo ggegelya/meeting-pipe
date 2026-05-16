@@ -43,30 +43,12 @@ class Detection(BaseModel):
 
 
 class Transcription(BaseModel):
-    # MLX-converted Whisper repo on Hugging Face. Defaults to the turbo
-    # variant — best speed/quality tradeoff on Apple Silicon, ~5-10× faster
-    # than faster-whisper-CPU at near-equal WER. Pre-converted alternates:
-    #   mlx-community/whisper-large-v3-mlx
-    #   mlx-community/whisper-medium
-    # On non-Apple-Silicon hosts the pipeline falls back to faster-whisper
-    # using `fallback_model` below.
-    model: str = "mlx-community/whisper-large-v3-turbo"
-    fallback_model: str = "large-v3"
-    # English by default. Whisper auto-detection runs on the first 30 s
-    # of audio; on accented or silence-heavy openings it misfires (a
-    # Standup with Indian-English accents was detected as Spanish in
-    # the wild). Forcing a language is more reliable when most of the
-    # user's meetings are in one language; flip to "auto" only when
-    # you actually need per-meeting detection.
-    language: str = "en"
-    disable_diarization: bool = False
+    """Empty placeholder so legacy `[transcription]` TOML sections still
+    load. ASR + diarization run in Swift (FluidAudio); nothing in this
+    section steers behaviour anymore. `extra="ignore"` swallows whatever
+    fields older configs carry (model, fallback_model, language,
+    disable_diarization, min_speakers, max_speakers, etc.)."""
 
-    # Tolerate legacy diarization knobs (min_speakers / max_speakers /
-    # max_diarization_minutes / diarize_cluster_threshold /
-    # stream_diarize_threshold) lingering in older config.toml files.
-    # Diarization runs in Swift via FluidAudio; these no longer steer
-    # behaviour and silently ignoring them avoids a pydantic
-    # ValidationError on existing installs.
     model_config = {"extra": "ignore"}
 
 

@@ -65,11 +65,6 @@ final class ConfigStore: ObservableObject {
     /// meeting detection. Mirrors `transcription.language` in the
     /// pipeline config.
     @Published var transcriptionLanguage: String { didSet { scheduleSave() } }
-    /// Transcription engine. `"fluidaudio"` (default) runs Parakeet TDT +
-    /// pyannote on ANE inside the daemon; `"pipeline"` falls back to the
-    /// legacy Python MLX-Whisper + sherpa-onnx path. Mirrors
-    /// `[transcription] backend` in the TOML.
-    @Published var transcriptionBackend: String { didSet { scheduleSave() } }
     @Published var summaryLanguage: String { didSet { scheduleSave() } }
     @Published var summarizationSkipAboveChars: Int { didSet { scheduleSave() } }
     /// Backend selection for the summarize stage. Mirrors
@@ -132,7 +127,6 @@ final class ConfigStore: ObservableObject {
 
         self.notionDatabaseId = notion?["database_id"]?.string ?? ""
         self.transcriptionLanguage = trans?["language"]?.string ?? "en"
-        self.transcriptionBackend = TranscriptionBackend.normalize(trans?["backend"]?.string)
         self.summaryLanguage = summ?["summary_language"]?.string ?? "auto"
         self.summarizationSkipAboveChars = summ?["skip_above_chars"]?.int ?? 80000
         self.summarizationBackend = summ?["backend"]?.string ?? "anthropic"
@@ -199,7 +193,6 @@ final class ConfigStore: ObservableObject {
         ensureTable("modes")["regulated_mode"] = regulatedMode
 
         ensureTable("transcription")["language"] = transcriptionLanguage
-        ensureTable("transcription")["backend"] = transcriptionBackend
 
         ensureTable("notion")["database_id"] = notionDatabaseId
         ensureTable("summarization")["summary_language"] = summaryLanguage

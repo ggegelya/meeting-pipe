@@ -65,40 +65,6 @@ reprompt_cooldown_sec = 60
 # "us.zoom.xos" = 7
 # "com.google.Chrome" = 15
 
-[transcription]
-# Which engine produces the per-recording transcript.
-#   "fluidaudio" (default): Swift-native Parakeet TDT v3 + pyannote on the
-#     Apple Neural Engine, run by the daemon before the Python pipeline.
-#     Fastest path, multilingual. Models live in
-#     ~/Library/Application Support/FluidAudio/Models (auto-downloaded on
-#     first recording).
-#   "pipeline": legacy path. The Python `mp` subprocess runs MLX-Whisper
-#     and labels speakers by channel against the stereo WAV. Heavier;
-#     kept as a fallback while the FluidAudio engine is being dogfooded.
-#     Flip via Preferences → Pipeline and restart MeetingPipe.
-backend = "fluidaudio"
-# MLX-converted Whisper repo on HuggingFace, read only when backend =
-# "pipeline". Default is the turbo variant (best speed/quality tradeoff
-# on Apple Silicon). Alternates:
-#   mlx-community/whisper-large-v3-mlx   (slightly slower, slightly more accurate)
-#   mlx-community/whisper-medium         (faster, mid-quality)
-# On non-Apple-Silicon hosts the pipeline auto-falls-back to faster-whisper.
-model = "mlx-community/whisper-large-v3-turbo"
-# Used by the faster-whisper fallback (Linux, Intel macOS).
-fallback_model = "large-v3"
-# ISO 639-1 code (e.g. "en", "uk", "ru", "de"). English by default; flip
-# to "auto" only if you actually need per-meeting detection. Whisper's
-# auto-detect runs on the first 30 s of audio and misfires on accented
-# speech and silence-heavy openings (Standup with Indian-English accents
-# came back as Spanish in the wild). Forcing a language is more reliable
-# when most of your meetings are in one language; the multilingual ASR
-# still handles non-native accents fine once language is locked.
-language = "en"
-# True → all segments labeled "Speaker" (skip diarization entirely).
-# Diarization itself runs in Swift (FluidAudio) for `backend = "fluidaudio"`
-# and is channel-aware on stereo recordings for `backend = "pipeline"`.
-disable_diarization = false
-
 [summarization]
 # Latest Sonnet at time of writing. Bump deliberately.
 model = "claude-sonnet-4-6"

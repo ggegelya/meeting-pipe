@@ -10,7 +10,7 @@ import SwiftUI
 ///                    model: "how a meeting becomes a recording").
 ///   - Prompt       — prompt timeout + regulated mode (pulled from the
 ///                    old Modes tab into the moment-of-detection context).
-///   - Pipeline     — backend, model, languages, long-meeting threshold.
+///   - Pipeline     - summarization backend, languages, long-meeting threshold.
 ///   - Integrations — Anthropic, Notion, mp doctor button.
 ///   - Permissions  — the four TCC rows from TECH-E3, restyled to the
 ///                    new card chrome.
@@ -487,24 +487,7 @@ private struct PipelineSectionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsSectionHeader("Pipeline",
-                caption: "What runs after the recording stops — transcription, summarization, languages.")
-
-            SettingsGroup("Transcription") {
-                SettingsRow("Engine",
-                    sublabel: transcriptionEngineSublabel,
-                    showsDivider: false) {
-                    SettingsSegmented(
-                        selection: $store.transcriptionBackend,
-                        options: [
-                            (TranscriptionBackend.fluidaudio, "FluidAudio"),
-                            (TranscriptionBackend.pipeline,   "MLX-Whisper"),
-                        ]
-                    )
-                    Spacer(minLength: 0)
-                }
-            } footer: {
-                Text("FluidAudio runs Parakeet TDT + pyannote diarization on the Apple Neural Engine in-process. MLX-Whisper is the legacy Python path (mlx-whisper + sherpa-onnx). Switch and restart MeetingPipe if a recording transcribes poorly.")
-            }
+                caption: "What runs after the recording stops: summarization and languages. Transcription is in-process (FluidAudio).")
 
             SettingsGroup("Summarization") {
                 SettingsRow("Backend", showsDivider: false) {
@@ -581,17 +564,6 @@ private struct PipelineSectionView: View {
             } footer: {
                 Text("When the transcript exceeds this size, the pipeline writes a paste-into-Claude bundle instead of calling the Anthropic API. 0 disables the guard. ~80,000 chars ≈ 1 hour of speech.")
             }
-        }
-    }
-
-    private var transcriptionEngineSublabel: String {
-        switch store.transcriptionBackend {
-        case TranscriptionBackend.fluidaudio:
-            return "Parakeet TDT v3 + pyannote on the Apple Neural Engine. Multilingual."
-        case TranscriptionBackend.pipeline:
-            return "Legacy MLX-Whisper + sherpa-onnx, run by the Python subprocess."
-        default:
-            return ""
         }
     }
 

@@ -27,9 +27,9 @@ from .config import Config, load_secrets
 from .corrections import write_run_sidecar
 from .diarize import assign_speakers_by_channel, is_stereo_recording
 from . import events
+from .markdown import render_markdown
 from .publish_router import fanout as publish_fanout
 from .summarize import summarize
-from .transcribe import render_markdown, transcribe
 from .workflow import apply_overrides as apply_workflow_overrides
 
 log = logging.getLogger("mp.run_all")
@@ -124,12 +124,14 @@ def run_all(
     *,
     force_byo: bool | None = None,
 ) -> dict:
-    """Run transcribe → summarize → publish. Raises on first failure.
+    """Run finalize -> summarize -> publish. Raises on first failure.
+    ASR + diarization happen in Swift (FluidAudio) before this is
+    invoked; the daemon writes `<stem>.json` and we read it.
 
     `force_byo=True` short-circuits to the manual-paste bundle after
-    transcription, even when the transcript is short enough to auto-
-    summarize. Defaults to reading `MP_FORCE_BYO=1` from the environment
-    so the Swift launcher can opt in per-meeting without flag plumbing.
+    finalize, even when the transcript is short enough to auto-summarize.
+    Defaults to reading `MP_FORCE_BYO=1` from the environment so the
+    Swift launcher can opt in per-meeting without flag plumbing.
     """
     cfg = cfg or Config.load()
     # Apply per-meeting workflow overrides from the daemon-written meta
@@ -156,25 +158,24 @@ def run_all(
 
 
 def _run_all_inner(wav: Path, cfg: Config, *, force_byo: bool) -> dict:
-    # Daemon-produced transcript path: when the Swift daemon produced
-    # `<stem>.json` before invoking us (streaming subprocess during
-    # recording, or the FluidAudio in-process runner after stop), we pick
-    # up where the daemon left off. Speaker labels may already be attached
-    # (FluidAudio runs pyannote inline), in which case
-    # `_finalize_streamed_transcript` checks and finalizes accordingly.
-    # Falls back to a fresh full transcribe if the daemon output is
-    # missing or looks broken.
+    # The Swift daemon writes `<stem>.json` with FluidAudio's transcript
+    # before invoking us. We finalize it (channel-aware speaker labels
+    # fallback if FluidAudio diarization failed) and continue with
+    # summarize + publish. No Python-side ASR exists anymore.
     streamed = _existing_daemon_transcript(wav)
-    if streamed is not None:
-        source = streamed.get("backend") or ("streamed" if streamed.get("streaming") else "daemon")
-        log.info("[1/3] transcribe (produced by daemon: %s)", source)
-        events.emit("pipeline", "stage_started", stage="transcribe", source=source)
-        t = _finalize_streamed_transcript(wav, streamed, cfg)
-    else:
-        log.info("[1/3] transcribe")
-        events.emit("pipeline", "stage_started", stage="transcribe", source="offline")
-        t = transcribe(wav, cfg=cfg)
-    events.emit("pipeline", "stage_completed", stage="transcribe", md=str(t["md"]))
+    if streamed is None:
+        events.emit("pipeline", "run_failed", wav=str(wav),
+                    error="no daemon transcript", error_type="MissingSidecar")
+        raise RuntimeError(
+            f"No daemon transcript at {wav.with_suffix('.json')}. "
+            "FluidAudio must produce the sidecar before the Python "
+            "pipeline runs."
+        )
+    source = streamed.get("backend") or ("streamed" if streamed.get("streaming") else "daemon")
+    log.info("[1/3] finalize (produced by daemon: %s)", source)
+    events.emit("pipeline", "stage_started", stage="finalize", source=source)
+    t = _finalize_streamed_transcript(wav, streamed)
+    events.emit("pipeline", "stage_completed", stage="finalize", md=str(t["md"]))
 
     # Short-circuit #1: empty transcript (silent audio, broken capture).
     # Don't burn Anthropic tokens summarizing nothing. Read the structured
@@ -296,16 +297,10 @@ _DAEMON_BACKENDS = frozenset({"fluidaudio"})
 
 def _existing_daemon_transcript(wav: Path) -> dict | None:
     """Return the structured JSON the daemon wrote, or None if it doesn't
-    exist / is unusable.
-
-    Two daemon-side producers count as "the daemon wrote it":
-    - the streaming subprocess (legacy path; `streaming: true`)
-    - the in-process FluidAudio runner (Group P; `backend: "fluidaudio"`,
-      `streaming: false`, `finalized: true`)
-
-    Both write the same schema (`segments`, `language`, `audio_seconds`,
-    etc.). We accept either provenance and reject a stale Python-side
-    offline transcript from a previous run (no daemon marker present).
+    exist / is unusable. The daemon's FluidAudio runner writes `<stem>.json`
+    with `backend: "fluidaudio"`, `streaming: false`, `finalized: true`.
+    Empty-segments sidecars are accepted; the no-speech short-circuit in
+    `_run_all_inner` handles them.
     """
     json_path = wav.parent / f"{wav.stem}.json"
     if not json_path.exists():
@@ -316,22 +311,15 @@ def _existing_daemon_transcript(wav: Path) -> dict | None:
         return None
     if not isinstance(data, dict):
         return None
-    is_streamed = bool(data.get("streaming"))
-    is_daemon_backend = str(data.get("backend") or "") in _DAEMON_BACKENDS
-    if not (is_streamed or is_daemon_backend):
-        return None
-    if not data.get("segments"):
-        log.warning("Daemon transcript has zero segments — falling back to offline transcribe")
+    if str(data.get("backend") or "") not in _DAEMON_BACKENDS:
         return None
     return data
 
 
 def _streamed_segments_have_speakers(streamed: dict) -> bool:
-    """The daemon sidecar may have already attached speaker labels (the
-    FluidAudio in-process runner does; the legacy Python streamer no
-    longer does). When at least half the segments have a real speaker
-    label (not None / not the `Speaker?` fallback), trust them and skip
-    the channel-aware finalize step entirely."""
+    """FluidAudio writes speaker labels inline. When at least half the
+    segments carry a real label (not None / not `Speaker?`), trust them
+    and skip the channel-aware finalize step entirely."""
     segs = streamed.get("segments") or []
     if not segs:
         return False
@@ -339,25 +327,18 @@ def _streamed_segments_have_speakers(streamed: dict) -> bool:
     return labelled >= max(1, len(segs) // 2)
 
 
-def _finalize_streamed_transcript(wav: Path, streamed: dict, cfg: Config) -> dict[str, Path]:
-    """Finish the streamed transcript so downstream stages see a clean
-    `<stem>.json` + `<stem>.md`.
-
-    Two paths:
-      - Streamed segments already carry speaker labels (FluidAudio sidecar,
-        or a legacy pre-labelled producer) → trust them and rewrite only
-        the `finalized: true` marker.
-      - Speaker labels are missing or sparse → label by channel against
-        the merged stereo WAV (mic-L, system-R). Mono inputs degrade to
-        Speaker? since embedding diarization runs in FluidAudio only.
+def _finalize_streamed_transcript(wav: Path, streamed: dict) -> dict[str, Path]:
+    """Finalize the daemon transcript so downstream stages see clean
+    `<stem>.json` + `<stem>.md`. FluidAudio normally provides speaker
+    labels; when it didn't (diarization failed), fall back to a channel-
+    aware pass over the stereo WAV.
     """
     json_path = wav.parent / f"{wav.stem}.json"
     md_path = wav.parent / f"{wav.stem}.md"
-    tcfg = cfg.transcription
 
     if _streamed_segments_have_speakers(streamed):
-        log.info("Streaming diarizer already labelled segments — skipping offline diarize")
-        structured = {**streamed, "streaming": True, "finalized": True}
+        log.info("FluidAudio sidecar already labelled segments; finalizing as-is")
+        structured = {**streamed, "finalized": True}
         json_path.write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
         md_path.write_text(render_markdown(structured), encoding="utf-8")
         return {"json": json_path, "md": md_path}
@@ -366,15 +347,13 @@ def _finalize_streamed_transcript(wav: Path, streamed: dict, cfg: Config) -> dic
     diarization_failure_reason: str | None = None
     used_channel_aware = False
 
-    if tcfg.disable_diarization:
-        log.info("Diarization disabled by config")
-    elif is_stereo_recording(wav):
-        log.info("Stereo recording — channel-aware speaker labelling at finalization")
+    if is_stereo_recording(wav):
+        log.info("Stereo recording; channel-aware speaker labelling at finalization")
         used_channel_aware = True
     else:
         diarization_failed = True
         diarization_failure_reason = (
-            "mono input on Python fallback; embedding diarization runs in FluidAudio only"
+            "FluidAudio diarization missing and mono input; cannot label speakers"
         )
 
     if used_channel_aware:
@@ -387,15 +366,14 @@ def _finalize_streamed_transcript(wav: Path, streamed: dict, cfg: Config) -> dic
     structured = {
         **streamed,
         "segments": labelled,
-        "diarization": not tcfg.disable_diarization,
+        "diarization": not diarization_failed,
         "diarization_failed": diarization_failed,
         "diarization_failure_reason": diarization_failure_reason,
-        "streaming": True,
         "finalized": True,
     }
     json_path.write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(render_markdown(structured), encoding="utf-8")
-    log.info("Finalized streamed transcript: %s", json_path)
+    log.info("Finalized transcript: %s", json_path)
     return {"json": json_path, "md": md_path}
 
 
