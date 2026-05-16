@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "description": "Detection regression corpus (TECH-C6). Each trace replays a recorded scenario through PromotionEngine + MicGate.decide and asserts the produced verdict sequence matches the captured expectation. Real user-dogfood traces land in Phase 2; the synthetic entries below lock in the format and the most-load-bearing scenarios so a regression in PromotionEngine / MicGate is caught by CI.",
+  "scenarios": [
+    "teams_native_clean_leave_en.json",
+    "teams_native_post_call_chat_grab_en.json",
+    "zoom_native_clean_leave_en.json",
+    "webex_ultrasound_retention_en.json",
+    "google_meet_browser_clean_leave.json",
+    "micgate_teams_mute_unmute_de.json",
+    "micgate_hardware_mute_wins.json",
+    "micgate_silent_by_rms_default.json"
+  ]
+}

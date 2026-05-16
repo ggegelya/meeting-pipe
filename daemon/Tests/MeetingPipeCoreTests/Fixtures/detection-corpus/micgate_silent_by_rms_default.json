@@ -1,0 +1,19 @@
+{
+  "scenario": "micgate_silent_by_rms_default",
+  "description": "Default startup: no AX adapter resolves, HAL VAD reports inactive, RMS gate is closed. Verdict is silentByRMS, not uncertain, because RMS state is definitive (closed) even without other probes.",
+  "engine": "micgate",
+  "states": [
+    {
+      "label": "silent_default",
+      "state": {
+        "hal_system_mute": false,
+        "ax_mute": null,
+        "hal_vad": false,
+        "rms_state": "closed",
+        "rms_close_dwell_millis": 400
+      },
+      "expected_verdict": "silent_by_rms",
+      "expected_dwell": 400
+    }
+  ]
+}

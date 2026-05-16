@@ -1,0 +1,22 @@
+{
+  "scenario": "webex_ultrasound_retention_en",
+  "description": "Webex post-call ultrasound retention: ProcessAudio stays live (Cisco holds the mic for device discovery), so the leading signal is ShareableContent and the confirming signal is AX Leave button invalidation. Process_audio_is_running_input_false would never confirm; the debounce expires and ended fires with only ax_leave_button_invalid as the confirming signal.",
+  "engine": "promotion",
+  "debounce_seconds": 2.0,
+  "context": {
+    "bundle_id": "com.cisco.spark",
+    "kind": "native",
+    "pid": 9012
+  },
+  "events": [
+    {"t": 0.0, "kind": "shareable_content_window", "state": "live"},
+    {"t": 0.5, "kind": "ax_leave_button", "state": "live"},
+    {"t": 40.0, "kind": "shareable_content_window", "state": "ended"},
+    {"t": 40.2, "kind": "ax_leave_button", "state": "ended"}
+  ],
+  "expected_verdicts": [
+    {"after": "events[0]", "verdict": "in_meeting"},
+    {"after": "events[2]", "verdict": "ending_provisional", "leading": "shareable_content_window_gone"},
+    {"after": "events[3]", "verdict": "ended", "leading": "shareable_content_window_gone", "confirmed_by": ["ax_leave_button_invalid"]}
+  ]
+}

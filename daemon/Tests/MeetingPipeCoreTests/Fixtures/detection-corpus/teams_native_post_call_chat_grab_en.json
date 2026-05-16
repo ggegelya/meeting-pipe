@@ -1,0 +1,24 @@
+{
+  "scenario": "teams_native_post_call_chat_grab_en",
+  "description": "Teams 2.x English; after Leave the post-call chat surface grabs the mic for ~1.2s. ShareableContent flips ended, ProcessAudio flips ended for ~1.2s then back to live. The 2.0s debounce absorbs this without promoting to ended; once the chat surface releases the mic, debounce expires and ended fires with the leading-only signal.",
+  "engine": "promotion",
+  "debounce_seconds": 2.0,
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 4321
+  },
+  "events": [
+    {"t": 0.0, "kind": "shareable_content_window", "state": "live"},
+    {"t": 0.1, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 30.0, "kind": "shareable_content_window", "state": "ended"},
+    {"t": 30.3, "kind": "process_audio_is_running_input_false", "state": "ended"},
+    {"t": 31.5, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 33.0, "kind": "tick"}
+  ],
+  "expected_verdicts": [
+    {"after": "events[0]", "verdict": "in_meeting"},
+    {"after": "events[2]", "verdict": "ending_provisional", "leading": "shareable_content_window_gone"},
+    {"after": "events[3]", "verdict": "ended", "leading": "shareable_content_window_gone", "confirmed_by": ["process_audio_is_running_input_false"]}
+  ]
+}

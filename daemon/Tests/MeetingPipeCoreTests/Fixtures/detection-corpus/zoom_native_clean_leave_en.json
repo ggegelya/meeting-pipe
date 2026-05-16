@@ -1,0 +1,22 @@
+{
+  "scenario": "zoom_native_clean_leave_en",
+  "description": "Zoom native English; clean leave with both PRIMARY signals confirming.",
+  "engine": "promotion",
+  "debounce_seconds": 2.0,
+  "context": {
+    "bundle_id": "us.zoom.xos",
+    "kind": "native",
+    "pid": 5678
+  },
+  "events": [
+    {"t": 0.0, "kind": "shareable_content_window", "state": "live"},
+    {"t": 0.05, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 45.0, "kind": "shareable_content_window", "state": "ended"},
+    {"t": 45.4, "kind": "process_audio_is_running_input_false", "state": "ended"}
+  ],
+  "expected_verdicts": [
+    {"after": "events[0]", "verdict": "in_meeting"},
+    {"after": "events[2]", "verdict": "ending_provisional", "leading": "shareable_content_window_gone"},
+    {"after": "events[3]", "verdict": "ended", "leading": "shareable_content_window_gone", "confirmed_by": ["process_audio_is_running_input_false"]}
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "scenario": "micgate_teams_mute_unmute_de",
+  "description": "Teams German locale; user toggles mute. MicGate.decide should report mutedByApp with the German label and locale, then hot once unmuted with vad active.",
+  "engine": "micgate",
+  "states": [
+    {
+      "label": "muted",
+      "state": {
+        "hal_system_mute": false,
+        "ax_mute": "muted",
+        "ax_label": "Stummschaltung aufheben",
+        "ax_locale": "de",
+        "hal_vad": false,
+        "rms_state": "closed"
+      },
+      "expected_verdict": "muted_by_app",
+      "expected_label": "Stummschaltung aufheben",
+      "expected_locale": "de"
+    },
+    {
+      "label": "hot_vad",
+      "state": {
+        "hal_system_mute": false,
+        "ax_mute": "unmuted",
+        "ax_label": "Stummschalten",
+        "ax_locale": "de",
+        "hal_vad": true,
+        "rms_state": "open"
+      },
+      "expected_verdict": "hot",
+      "expected_reason": "vad_active"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "scenario": "micgate_hardware_mute_wins",
+  "description": "Control Center mute engaged while VAD reports active and the AX label says unmuted. Hardware mute has the highest precedence.",
+  "engine": "micgate",
+  "states": [
+    {
+      "label": "hardware_mute_dominates",
+      "state": {
+        "hal_system_mute": true,
+        "ax_mute": "unmuted",
+        "ax_label": "Mute",
+        "ax_locale": "en",
+        "hal_vad": true,
+        "rms_state": "open"
+      },
+      "expected_verdict": "muted_by_hardware"
+    }
+  ]
+}
