@@ -11,7 +11,7 @@ final class MuteLabelsLoaderTests: XCTestCase {
         XCTAssertNotNil(catalogue.entry(app: "zoom", locale: "de"))
         XCTAssertNotNil(catalogue.entry(app: "slack", locale: "en"))
         XCTAssertNotNil(catalogue.entry(app: "slack", locale: "de"))
-        XCTAssertNil(catalogue.entry(app: "webex", locale: "en"), "Webex lands in step 6")
+        XCTAssertNotNil(catalogue.entry(app: "webex", locale: "en"), "Webex landed in step 6")
     }
 
     func test_recognise_teams_unmute_label_en_returns_muted() throws {

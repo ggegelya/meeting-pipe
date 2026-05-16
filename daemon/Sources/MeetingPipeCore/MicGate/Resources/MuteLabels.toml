@@ -1,4 +1,4 @@
-# MicGate localised mute-button label catalogue (TECH-G-MIC step 2).
+# MicGate localised mute-button label catalogue (TECH-G-MIC).
 #
 # Schema: [<app>.<locale>] tables with four optional arrays of
 # strings. Matching is case-insensitive substring against the
@@ -10,10 +10,13 @@
 # status_muted   -> explicit status string for "muted" (most specific)
 # status_unmuted -> explicit status string for "unmuted"
 #
-# Initial coverage: Teams, Zoom, Slack in en + de (the user's
-# confirmed need cases). Webex, Meet, plus es/fr/ja/pt/ru land in
-# TECH-G-MIC step 6 once the validator is exercised against live AX
-# trees.
+# Coverage: Teams, Zoom, Slack, Webex in en, de, es, fr, ja, pt, ru
+# (the seven locales named in the TECH-G-MIC spec). Best-effort labels
+# from public documentation and live AX scrapes; MuteLabelsValidator
+# runs in CI against installed apps in each locale and flags drift for
+# TOML updates.
+
+# ===== Teams =====
 
 [teams.en]
 action_unmute = ["Unmute"]
@@ -27,6 +30,28 @@ action_mute = ["Stummschalten"]
 status_muted = ["Mikrofon stummgeschaltet"]
 status_unmuted = ["Mikrofon aktiviert"]
 
+[teams.es]
+action_unmute = ["Activar micrófono"]
+action_mute = ["Silenciar micrófono"]
+
+[teams.fr]
+action_unmute = ["Activer le micro", "Réactiver le micro"]
+action_mute = ["Couper le micro"]
+
+[teams.ja]
+action_unmute = ["ミュート解除"]
+action_mute = ["ミュート"]
+
+[teams.pt]
+action_unmute = ["Ativar microfone"]
+action_mute = ["Silenciar microfone"]
+
+[teams.ru]
+action_unmute = ["Включить микрофон"]
+action_mute = ["Выключить микрофон"]
+
+# ===== Zoom =====
+
 [zoom.en]
 action_unmute = ["Unmute my microphone", "Unmute"]
 action_mute = ["Mute my microphone", "Mute"]
@@ -37,6 +62,28 @@ status_unmuted = ["Microphone is unmuted"]
 action_unmute = ["Audio einschalten", "Stummschaltung aufheben"]
 action_mute = ["Audio stummschalten", "Stummschalten"]
 
+[zoom.es]
+action_unmute = ["Activar audio"]
+action_mute = ["Silenciar"]
+
+[zoom.fr]
+action_unmute = ["Activer le son"]
+action_mute = ["Désactiver le son"]
+
+[zoom.ja]
+action_unmute = ["ミュート解除"]
+action_mute = ["ミュート"]
+
+[zoom.pt]
+action_unmute = ["Ativar áudio"]
+action_mute = ["Silenciar"]
+
+[zoom.ru]
+action_unmute = ["Включить звук"]
+action_mute = ["Выключить звук"]
+
+# ===== Slack =====
+
 [slack.en]
 action_unmute = ["Unmute"]
 action_mute = ["Mute"]
@@ -46,3 +93,55 @@ status_unmuted = ["Mic unmuted"]
 [slack.de]
 action_unmute = ["Stummschaltung aufheben"]
 action_mute = ["Stummschalten"]
+
+[slack.es]
+action_unmute = ["Reactivar audio"]
+action_mute = ["Silenciar"]
+
+[slack.fr]
+action_unmute = ["Réactiver le son"]
+action_mute = ["Couper le son"]
+
+[slack.ja]
+action_unmute = ["ミュート解除"]
+action_mute = ["ミュート"]
+
+[slack.pt]
+action_unmute = ["Reativar áudio"]
+action_mute = ["Silenciar"]
+
+[slack.ru]
+action_unmute = ["Включить микрофон"]
+action_mute = ["Отключить микрофон"]
+
+# ===== Webex =====
+
+[webex.en]
+action_unmute = ["Unmute"]
+action_mute = ["Mute"]
+status_muted = ["You are muted"]
+status_unmuted = ["You are unmuted"]
+
+[webex.de]
+action_unmute = ["Stummschaltung aufheben"]
+action_mute = ["Stummschalten"]
+
+[webex.es]
+action_unmute = ["Anular silencio"]
+action_mute = ["Silenciar"]
+
+[webex.fr]
+action_unmute = ["Réactiver le son"]
+action_mute = ["Couper le son"]
+
+[webex.ja]
+action_unmute = ["ミュート解除"]
+action_mute = ["ミュート"]
+
+[webex.pt]
+action_unmute = ["Cancelar silenciar"]
+action_mute = ["Silenciar"]
+
+[webex.ru]
+action_unmute = ["Включить микрофон"]
+action_mute = ["Отключить микрофон"]
