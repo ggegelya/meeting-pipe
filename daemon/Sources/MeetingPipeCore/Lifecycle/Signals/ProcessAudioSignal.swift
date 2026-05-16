@@ -1,0 +1,176 @@
+import CoreAudio
+import Foundation
+
+/// Per-process `kAudioProcessPropertyIsRunningInput` PRIMARY signal.
+///
+/// Subscribes via `CoreAudioHALBus` to the meeting-app process's
+/// AudioObject so a HAL property listener fires the moment the process
+/// starts or stops capturing input. The listener is supplemented by a
+/// 1 Hz polling fallback: macOS Sequoia has been observed to drop
+/// property-listener notifications silently, so the poll guarantees an
+/// upper bound on the gap between the OS event and the verdict
+/// promotion. Webex specifically excludes this signal from PRIMARY
+/// (per `WebexLifecycleAdapter`) because Cisco documents that Webex
+/// holds the microphone open after meetings for ultrasound discovery.
+///
+/// The signal is testable through two injection points:
+///   - `Probe`: closure returning the current `isRunningInput` value
+///     for a given context. Production wires a CoreAudio readback;
+///     tests inject canned values.
+///   - `Scheduler`: closure that schedules a repeating tick. Production
+///     uses `Timer.scheduledTimer`; tests inject a manual driver.
+///
+/// Threading: `start` and `stop` must run on the main queue. Probe
+/// invocations and `onChange` callbacks fire on the bus's serial queue
+/// (HAL listener) or the timer's queue (poll); subscribers should hop
+/// to main themselves if they touch AppKit.
+public final class ProcessAudioSignal {
+
+    /// Closure returning the current `isRunningInput` reading for the
+    /// given context. Returns nil when the AudioObject can't be
+    /// resolved (PID quit, unknown-property error); the signal stays
+    /// in its prior state on nil rather than flapping.
+    public typealias Probe = (MeetingLifecycleContext) -> Bool?
+
+    /// Schedules a repeating tick. Returns a cancellation closure.
+    /// Default uses `Timer.scheduledTimer` on the main runloop.
+    public typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
+
+    public var onChange: ((Bool) -> Void)?
+
+    /// Last reading we forwarded. nil means we haven't read yet (no
+    /// transition emitted on first probe; the initial value is yielded
+    /// directly so downstream gets a baseline).
+    public private(set) var lastValue: Bool?
+
+    public static let defaultPollInterval: TimeInterval = 1.0
+
+    private let halBus: CoreAudioHALBus
+    private let eventLog: EventLog
+    private let probe: Probe
+    private let scheduler: Scheduler
+    private let pollInterval: TimeInterval
+
+    private var context: MeetingLifecycleContext?
+    private var halToken: CoreAudioHALBus.Token?
+    private var cancelPoll: (() -> Void)?
+
+    public init(
+        halBus: CoreAudioHALBus,
+        eventLog: EventLog = NoopEventLog(),
+        probe: @escaping Probe = ProcessAudioSignal.defaultProbe,
+        scheduler: @escaping Scheduler = ProcessAudioSignal.defaultScheduler,
+        pollInterval: TimeInterval = ProcessAudioSignal.defaultPollInterval
+    ) {
+        self.halBus = halBus
+        self.eventLog = eventLog
+        self.probe = probe
+        self.scheduler = scheduler
+        self.pollInterval = pollInterval
+    }
+
+    public func start(context: MeetingLifecycleContext) throws {
+        stop()
+        self.context = context
+        // Resolve the AudioObject via the probe + subscribe to the HAL
+        // property. The address is keyed by the AudioObjectID the probe
+        // implementation chose; subscribers using the default probe can
+        // expect kAudioProcessPropertyIsRunningInput on the process
+        // object.
+        let address = CoreAudioHALBus.Address(
+            objectID: AudioObjectID(context.pid),
+            selector: kAudioProcessPropertyIsRunningInput,
+            scope: kAudioObjectPropertyScopeGlobal,
+            element: kAudioObjectPropertyElementMain
+        )
+        halToken = try halBus.subscribe(address) { [weak self] in
+            self?.evaluate(reason: "listener")
+        }
+        cancelPoll = scheduler(pollInterval) { [weak self] in
+            self?.evaluate(reason: "poll")
+        }
+        evaluate(reason: "initial")
+    }
+
+    public func stop() {
+        if let token = halToken { halBus.unsubscribe(token); halToken = nil }
+        cancelPoll?(); cancelPoll = nil
+        context = nil
+        lastValue = nil
+    }
+
+    /// Re-read the probe + emit a change event if the value flipped.
+    /// Exposed `internal` so tests can drive the evaluator without
+    /// running the scheduler.
+    func evaluate(reason: String) {
+        guard let context = context else { return }
+        guard let value = probe(context) else {
+            eventLog.emit(category: "signal", action: "process_audio_unresolved", attributes: [
+                "bundle_id": context.bundleID,
+                "pid": Int(context.pid),
+                "reason": reason
+            ])
+            return
+        }
+        if lastValue == value { return }
+        let previous = lastValue
+        lastValue = value
+        eventLog.emit(category: "signal", action: "process_audio_is_running_input", attributes: [
+            "bundle_id": context.bundleID,
+            "pid": Int(context.pid),
+            "value": value,
+            "reason": reason,
+            "previous": previous as Any
+        ])
+        onChange?(value)
+    }
+
+    // MARK: - Default seams
+
+    public static let defaultScheduler: Scheduler = { interval, action in
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+            action()
+        }
+        return { timer.invalidate() }
+    }
+
+    /// Default probe: resolve the meeting-app PID to an AudioObjectID
+    /// and read `kAudioProcessPropertyIsRunningInput`. Returns nil for
+    /// any failure (unknown property, dead PID, missing entitlement),
+    /// matching the contract that the signal stays steady on
+    /// inconclusive reads rather than flapping.
+    public static let defaultProbe: Probe = { context in
+        guard let processID = translatePIDToProcessObject(context.pid) else { return nil }
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyIsRunningInput,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var running: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(processID, &addr, 0, nil, &size, &running)
+        guard status == noErr else { return nil }
+        return running != 0
+    }
+
+    private static func translatePIDToProcessObject(_ pid: pid_t) -> AudioObjectID? {
+        var pidVar = pid
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var processID = AudioObjectID(0)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &addr,
+            UInt32(MemoryLayout<pid_t>.size),
+            &pidVar,
+            &size,
+            &processID
+        )
+        guard status == noErr, processID != 0 else { return nil }
+        return processID
+    }
+}
