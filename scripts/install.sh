@@ -183,24 +183,30 @@ mdimport "$APP" >/dev/null 2>&1 || true
 # identifier)` is now consistent, which is enough for macOS to honor
 # the user's grant after they toggle the switch.
 #
-# Two-pass signing: SPM ships the resource bundle as a directory with
-# the `.bundle` suffix but no Info.plist — codesign refuses to treat
-# it as a valid macOS bundle. We write a minimal Info.plist into it,
-# sign it first with its own identifier, then sign the outer .app.
+# Two-pass signing: SPM ships each target's resource bundle as a
+# directory with the `.bundle` suffix but no Info.plist, and codesign
+# refuses to treat it as a valid macOS bundle. We write a minimal
+# Info.plist into each one, sign each with its own identifier, then
+# sign the outer .app. Loops because the package now produces one
+# bundle per target with resources (MeetingPipe_MeetingPipe.bundle
+# for the SVG glyphs + meeting_apps.toml, and
+# MeetingPipe_MeetingPipeCore.bundle for the MicGate MuteLabels.toml).
 say "Re-signing app bundle with stable identifier"
 
-# Make the SPM resource bundle codesign-compliant (it lacks an Info.plist).
-RESOURCE_BUNDLE="$APP/Contents/MacOS/MeetingPipe_MeetingPipe.bundle"
-if [[ -d "$RESOURCE_BUNDLE" && ! -f "$RESOURCE_BUNDLE/Info.plist" ]]; then
-    cat >"$RESOURCE_BUNDLE/Info.plist" <<'BUNDLE_PLIST'
+for RESOURCE_BUNDLE in "$APP/Contents/MacOS/"*.bundle; do
+    [[ -d "$RESOURCE_BUNDLE" ]] || continue
+    BUNDLE_NAME="$(basename "$RESOURCE_BUNDLE" .bundle)"
+    BUNDLE_ID="com.meetingpipe.daemon.resources.$(tr '[:upper:]' '[:lower:]' <<<"$BUNDLE_NAME")"
+    if [[ ! -f "$RESOURCE_BUNDLE/Info.plist" ]]; then
+        cat >"$RESOURCE_BUNDLE/Info.plist" <<BUNDLE_PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.meetingpipe.daemon.resources</string>
+    <string>$BUNDLE_ID</string>
     <key>CFBundleName</key>
-    <string>MeetingPipe_MeetingPipe</string>
+    <string>$BUNDLE_NAME</string>
     <key>CFBundlePackageType</key>
     <string>BNDL</string>
     <key>CFBundleSupportedPlatforms</key>
@@ -210,13 +216,9 @@ if [[ -d "$RESOURCE_BUNDLE" && ! -f "$RESOURCE_BUNDLE/Info.plist" ]]; then
 </dict>
 </plist>
 BUNDLE_PLIST
-fi
-
-if [[ -d "$RESOURCE_BUNDLE" ]]; then
-    codesign --force --sign - \
-        --identifier com.meetingpipe.daemon.resources \
-        "$RESOURCE_BUNDLE"
-fi
+    fi
+    codesign --force --sign - --identifier "$BUNDLE_ID" "$RESOURCE_BUNDLE"
+done
 
 codesign --force --sign - \
     --identifier com.meetingpipe.daemon \
