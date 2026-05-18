@@ -7,24 +7,21 @@
 #   1. Verify macOS + brew + uv + ffmpeg.
 #   2. Build the daemon (swift build -c release). Fetches FluidAudio
 #      Swift package (Parakeet TDT + pyannote on Apple Neural Engine).
-#   3. Install the pipeline venv at ~/.local/share/meeting-pipe/venv as
-#      a fallback ASR path (active when the user flips
-#      `[transcription] backend = "pipeline"` in config.toml).
-#   4. Pre-fetch FluidAudio CoreML models so the
-#      pipeline fallback works offline on day one.
-#   4b. Pre-fetch FluidAudio CoreML models (~630 MB) so the first real
-#      recording with the default backend doesn't pay download latency.
+#   3. Install the pipeline venv at ~/.local/share/meeting-pipe/venv.
+#      Per ADR 0007 the Python pipeline is summarize + publish only;
+#      ASR + diarization run in-process via FluidAudio.
+#   4. Pre-fetch FluidAudio CoreML models (~630 MB) so the first real
+#      recording does not pay download latency.
 #   5. Stage config files at ~/.config/meeting-pipe/.
 #   6. Install LaunchAgent for autostart.
 #
-# Default transcription stack: FluidAudio runs Parakeet TDT v3 + pyannote
+# Transcription stack: FluidAudio runs Parakeet TDT v3 + pyannote
 # Community-1 in-process on the Apple Neural Engine. Models live in
 # ~/Library/Application Support/FluidAudio/Models and download lazily on
-# first recording (~600 MB Parakeet + ~30 MB diarizer). Fallback stack:
-# mlx-whisper via the Python subprocess, with channel-aware speaker
-# labelling on the stereo merged WAV. HF_TOKEN is not required; it is
-# kept in secrets.env only for users who deliberately opt back into a
-# pyannote-token workflow.
+# first recording (~600 MB Parakeet + ~30 MB diarizer). No Python ASR
+# fallback; a FluidAudio failure fails the pipeline job loudly. HF_TOKEN
+# is not required; it is kept in secrets.env only for users who
+# deliberately opt back into a pyannote-token workflow.
 
 set -euo pipefail
 
@@ -54,9 +51,10 @@ if ! command -v brew >/dev/null 2>&1; then
     die "Homebrew not found. Install from https://brew.sh first."
 fi
 
-# ffmpeg is used by WhisperX (pipeline) to load audio. The daemon itself
-# records natively via ScreenCaptureKit + AVAudioEngine — no external tools.
-# uv manages the Python venv.
+# ffmpeg merges the daemon's mic + system WAVs into the final stereo
+# recording (MeetingRecorder.mergeViaFFmpeg). The daemon captures natively
+# via ScreenCaptureKit + AVAudioEngine; ffmpeg is only invoked at stop
+# time for the merge. uv manages the Python venv.
 for tool in ffmpeg uv; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         say "Installing $tool via brew"
@@ -263,11 +261,8 @@ mkdir -p "$DATA_DIR"
 # so the user's first recording isn't a multi-minute download wait.
 # Idempotent: the SDK skips re-downloading already-cached files.
 # Non-fatal: a flaky network here just falls back to the existing
-# lazy-load path on first recording.
-#
-# MLX-Whisper (~1.5 GB) downloads to ~/.cache/huggingface/hub only if the
-# user flips `[transcription] backend = "pipeline"` in config.toml — not
-# pre-fetched.
+# lazy-load path on first recording. FluidAudio is the only ASR path
+# (no Python fallback, per ADR 0007).
 say "Pre-fetching FluidAudio models (~630 MB total) → ~/Library/Application Support/FluidAudio"
 if "$DAEMON_BIN" prefetch-models; then
     say "FluidAudio models cached."
