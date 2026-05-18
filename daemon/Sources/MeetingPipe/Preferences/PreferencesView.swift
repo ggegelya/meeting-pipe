@@ -328,6 +328,26 @@ private struct RecordingSectionView: View {
                 }
             }
 
+            SettingsGroup("Microphone") {
+                SettingsRow("Pause mic when muted",
+                    sublabel: "Pauses mic capture while you're muted in Teams / Zoom / Slack / Webex. Uses the locale catalogue (en, uk, de, es, fr, ja, pt, ru).",
+                    showsDivider: false) {
+                    Toggle("", isOn: $store.honorAppMute)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                    Spacer(minLength: 0)
+                }
+                SettingsRow("Voice processing",
+                    sublabel: "Apple's noise-suppression + AGC. Drops your mic gain system-wide while recording, so other apps hear you quietly. Off by default; flip on only for solo voice memos.") {
+                    Toggle("", isOn: $store.voiceProcessing)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                    Spacer(minLength: 0)
+                }
+            } footer: {
+                Text("Voice processing takes effect on the next recording. Mute pausing applies to every meeting.")
+            }
+
             SettingsGroup("Detection") {
                 SettingsRow("Start debounce", showsDivider: false) {
                     SettingsSlider(
@@ -438,8 +458,32 @@ private struct PromptSectionView: View {
                     )
                     Spacer(minLength: 0)
                 }
+                SettingsRow("Re-prompt cooldown",
+                    sublabel: "After a recording or skip, suppress new prompts for the same app for this many seconds. Catches post-call mic flickers from Teams/Zoom.") {
+                    SettingsSlider(
+                        value: $store.repromptCooldownSec,
+                        range: 0...300,
+                        step: 5,
+                        format: { "\(Int($0)) s" }
+                    )
+                }
             } footer: {
                 Text("The floating prompt panel asks whether to record. If you don't respond, the default action above fires when the timeout elapses.")
+            }
+
+            SettingsGroup("Stop conditions") {
+                SettingsRow("Mic-only silence backstop",
+                    sublabel: "Auto-stop if your mic is silent AND no system audio plays for this many seconds. Catches the 'everyone else left and I forgot to stop' case.",
+                    showsDivider: false) {
+                    SettingsSlider(
+                        value: $store.micOnlySilenceSec,
+                        range: 60...1800,
+                        step: 30,
+                        format: { Self.formatMinutesOrSeconds(Int($0)) }
+                    )
+                }
+            } footer: {
+                Text("Independent of the existing 5-minute silence auto-stop, which triggers when BOTH mic and system audio go silent.")
             }
 
             SettingsGroup("Regulated mode") {
@@ -476,6 +520,14 @@ private struct PromptSectionView: View {
         default:
             return "Suppress the call (no recording) when the prompt times out."
         }
+    }
+
+    /// Show round-minute values as "N min", everything else as raw
+    /// seconds. Keeps the silence-backstop slider readable across its
+    /// 1-to-30-minute range without confusing the user with mixed units.
+    private static func formatMinutesOrSeconds(_ seconds: Int) -> String {
+        if seconds % 60 == 0 { return "\(seconds / 60) min" }
+        return "\(seconds) s"
     }
 }
 

@@ -27,6 +27,17 @@ final class ConfigStore: ObservableObject {
     @Published var outputDirPath: String { didSet { scheduleSave() } }
     @Published var sampleRate: Int { didSet { scheduleSave() } }
     @Published var autoConsentApps: [String] { didSet { scheduleSave() } }
+    /// Apple's VoIP DSP chain (noise suppression, AGC, echo cancel) on
+    /// the mic capture path. Off by default because VPIO drops the HAL
+    /// device gain system-wide while the engine runs, so Teams / Zoom /
+    /// FaceTime hear the user quietly for the duration of the recording.
+    /// Takes effect on the next recording (Recorder binds it at start).
+    @Published var voiceProcessing: Bool { didSet { scheduleSave() } }
+    /// When true, MicGate's per-buffer apply zeroes mic frames whenever
+    /// the meeting client reports the user as muted (Teams / Zoom /
+    /// Slack / Webex AX scrape) or the system input mute is engaged.
+    /// Off keeps the mic recording even while you appear muted in-app.
+    @Published var honorAppMute: Bool { didSet { scheduleSave() } }
 
     @Published var debounceStartSec: Double { didSet { scheduleSave() } }
     @Published var debounceEndSec: Double { didSet { scheduleSave() } }
@@ -120,6 +131,8 @@ final class ConfigStore: ObservableObject {
         self.outputDirPath = rec?["output_dir"]?.string ?? "~/Documents/Meetings/raw"
         self.sampleRate = rec?["sample_rate"]?.int ?? 16000
         self.autoConsentApps = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string }) ?? []
+        self.voiceProcessing = rec?["voice_processing"]?.bool ?? false
+        self.honorAppMute = rec?["honor_app_mute"]?.bool ?? true
 
         self.debounceStartSec = det?["debounce_start_sec"]?.double ?? 5
         self.debounceEndSec = det?["debounce_end_sec"]?.double ?? 5
@@ -190,6 +203,8 @@ final class ConfigStore: ObservableObject {
         ensureTable("recording")["output_dir"] = outputDirPath
         ensureTable("recording")["sample_rate"] = sampleRate
         ensureTable("recording")["auto_consent_apps"] = autoConsentApps
+        ensureTable("recording")["voice_processing"] = voiceProcessing
+        ensureTable("recording")["honor_app_mute"] = honorAppMute
 
         ensureTable("detection")["debounce_start_sec"] = debounceStartSec
         ensureTable("detection")["debounce_end_sec"] = debounceEndSec

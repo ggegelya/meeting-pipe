@@ -27,6 +27,32 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertTrue(store.autoConsentApps.isEmpty)
         // Transcription language default is "en"; auto-detect is opt-in.
         XCTAssertEqual(store.transcriptionLanguage, "en")
+        // Recording / detection knobs surfaced in Preferences.
+        XCTAssertFalse(store.voiceProcessing, "voice_processing defaults off; VPIO drops mic gain system-wide")
+        XCTAssertTrue(store.honorAppMute, "honor_app_mute defaults on; MicGate zeroes mic when in-app muted")
+        XCTAssertEqual(store.repromptCooldownSec, 60)
+        XCTAssertEqual(store.micOnlySilenceSec, 480)
+    }
+
+    func test_voice_processing_and_honor_app_mute_round_trip() throws {
+        let url = try makeTempConfigURL()
+        try """
+        [recording]
+        voice_processing = true
+        honor_app_mute = false
+        """.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        XCTAssertTrue(store.voiceProcessing)
+        XCTAssertFalse(store.honorAppMute)
+
+        store.voiceProcessing = false
+        store.honorAppMute = true
+        try store.saveNow()
+
+        let reloaded = try ConfigStore(configURL: url)
+        XCTAssertFalse(reloaded.voiceProcessing)
+        XCTAssertTrue(reloaded.honorAppMute)
     }
 
     func test_transcription_language_round_trip() throws {

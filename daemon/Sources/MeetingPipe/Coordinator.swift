@@ -801,11 +801,14 @@ final class Coordinator: NSObject {
     }
 
     private var liveHonorAppMute: Bool {
-        // `Recording.honorAppMute` isn't wired through ConfigStore's
-        // SwiftUI surface yet (the Preferences tab doesn't expose a
-        // toggle for it). Read straight from the Config snapshot so
-        // editing the TOML still works for the personal-tool case.
-        config.recording.honorAppMute
+        configStore?.honorAppMute ?? config.recording.honorAppMute
+    }
+
+    private var liveVoiceProcessing: Bool {
+        // Recorder binds this at start time, so live edits only take
+        // effect on the next recording. The Preferences sublabel
+        // documents that.
+        configStore?.voiceProcessing ?? config.recording.voiceProcessing
     }
 
     private var liveManualHotkey: String {
@@ -952,7 +955,7 @@ final class Coordinator: NSObject {
         do {
             let file = try recorder.start(
                 outputDir: liveOutputDir,
-                voiceProcessing: config.recording.voiceProcessing
+                voiceProcessing: liveVoiceProcessing
             )
             // Tell the detector our tap is live so micInUse() switches
             // its gating, and any endTimer armed by a pre-recording
