@@ -58,6 +58,11 @@ struct Config {
         /// hotkey always bypasses the cooldown so the user can force a
         /// fresh recording in the same app at any time.
         var repromptCooldownSec: Double
+        /// Window (seconds) for the MicOnlySilenceBackstop (TECH-C7).
+        /// Force-stops a recording after this many seconds of pure
+        /// mic-side silence while the system-audio side is also
+        /// silent. Default 480 (8 minutes).
+        var micOnlySilenceSec: TimeInterval
     }
 
     struct Modes {
@@ -103,6 +108,15 @@ struct Config {
         let forceStop = det?["force_stop_hotkey"]?.string ?? "ctrl+option+shift+m"
         let promptTimeout = det?["prompt_timeout_sec"]?.double ?? 30
         let repromptCooldown = det?["reprompt_cooldown_sec"]?.double ?? 60
+        // Accept both integer and double TOML literals so `= 120` and
+        // `= 120.0` both parse; the other detection knobs above only
+        // accept .double because their TOML defaults are written as
+        // doubles.
+        let micOnlySilenceSec: Double = {
+            if let d = det?["mic_only_silence_seconds"]?.double { return d }
+            if let i = det?["mic_only_silence_seconds"]?.int { return Double(i) }
+            return 480
+        }()
 
         // Optional `[detection.debounce_end_per_bundle]` sub-table:
         //   "us.zoom.xos" = 7
@@ -137,7 +151,8 @@ struct Config {
                 manualHotkey: hotkey,
                 forceStopHotkey: forceStop,
                 promptTimeoutSec: promptTimeout,
-                repromptCooldownSec: repromptCooldown
+                repromptCooldownSec: repromptCooldown,
+                micOnlySilenceSec: micOnlySilenceSec
             ),
             modes: Modes(regulatedMode: regulated)
         )
@@ -160,7 +175,8 @@ struct Config {
                 manualHotkey: "ctrl+option+m",
                 forceStopHotkey: "ctrl+option+shift+m",
                 promptTimeoutSec: 30,
-                repromptCooldownSec: 60
+                repromptCooldownSec: 60,
+                micOnlySilenceSec: 480
             ),
             modes: Modes(regulatedMode: false)
         )

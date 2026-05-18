@@ -248,9 +248,11 @@ final class Coordinator: NSObject {
                 BrowserMuteAdapter(eventLog: logAdapter),
             ]
         )
-        // Commit 1 hard-codes the default; the TECH-C7 commit replaces
-        // the literal with `config.detection.micOnlySilenceSec`.
-        self.silenceBackstop = MicOnlySilenceBackstop()
+        // Window read from the TOML knob (TECH-C7). Live edits in
+        // Preferences only take effect on the next meeting because the
+        // backstop is constructed once at Coordinator init.
+        let micOnlySilenceSec = configStore?.micOnlySilenceSec ?? config.detection.micOnlySilenceSec
+        self.silenceBackstop = MicOnlySilenceBackstop(windowSeconds: micOnlySilenceSec)
 
         super.init()
         // Wire the model back to the Coordinator so the sidebar's

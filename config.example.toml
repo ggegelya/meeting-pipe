@@ -56,6 +56,11 @@ prompt_timeout_sec = 30
 # 2-3 seconds after a stop flush. The manual hotkey always bypasses
 # the cooldown. Set to 0 to disable.
 reprompt_cooldown_sec = 60
+# Stop recording after this many seconds of pure mic-side silence
+# while the system-audio side is also silent. Catches the case where
+# the user joins a meeting, every other participant drops, and the
+# user forgets to stop. Default 480 (8 minutes).
+mic_only_silence_seconds = 480
 
 # Per-bundle overrides for `debounce_end_sec`. Lookup precedence:
 # explicit entry → built-in browser default (12 s, because tab/window

@@ -51,6 +51,12 @@ final class ConfigStore: ObservableObject {
     /// new prompts for the same bundle for this long. Manual hotkey
     /// always bypasses the cooldown.
     @Published var repromptCooldownSec: Double { didSet { scheduleSave() } }
+    /// Window (seconds) for the MicOnlySilenceBackstop (TECH-C7).
+    /// Force-stops the recording after this many seconds of mic-only
+    /// silence while the system audio channel is also silent. Default
+    /// 480 (8 minutes). Catches the "everyone else left and the user
+    /// forgot to stop" case.
+    @Published var micOnlySilenceSec: Double { didSet { scheduleSave() } }
 
     @Published var regulatedMode: Bool { didSet { scheduleSave() } }
 
@@ -122,6 +128,9 @@ final class ConfigStore: ObservableObject {
         self.promptTimeoutSec = det?["prompt_timeout_sec"]?.double ?? 30
         self.defaultPromptAction = det?["default_prompt_action"]?.string ?? "skip"
         self.repromptCooldownSec = det?["reprompt_cooldown_sec"]?.double ?? 60
+        self.micOnlySilenceSec = det?["mic_only_silence_seconds"]?.double
+            ?? det?["mic_only_silence_seconds"]?.int.map(Double.init)
+            ?? 480
 
         self.regulatedMode = mod?["regulated_mode"]?.bool ?? false
 
@@ -189,6 +198,7 @@ final class ConfigStore: ObservableObject {
         ensureTable("detection")["prompt_timeout_sec"] = promptTimeoutSec
         ensureTable("detection")["default_prompt_action"] = defaultPromptAction
         ensureTable("detection")["reprompt_cooldown_sec"] = repromptCooldownSec
+        ensureTable("detection")["mic_only_silence_seconds"] = micOnlySilenceSec
 
         ensureTable("modes")["regulated_mode"] = regulatedMode
 
