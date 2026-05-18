@@ -32,6 +32,25 @@ final class MuteLabelsLoaderTests: XCTestCase {
         XCTAssertEqual(state, .unmuted)
     }
 
+    func test_uk_locale_covers_teams_zoom_slack_webex() throws {
+        let catalogue = try MuteLabelsLoader.loadDefault()
+        for app in ["teams", "zoom", "slack", "webex"] {
+            XCTAssertNotNil(
+                catalogue.entry(app: app, locale: "uk"),
+                "missing \(app).uk entry"
+            )
+        }
+    }
+
+    func test_recognise_teams_unmute_label_uk_returns_muted() throws {
+        let catalogue = try MuteLabelsLoader.loadDefault()
+        let state = catalogue.recognize(
+            app: "teams", locale: "uk",
+            title: "Увімкнути мікрофон", help: nil, description: nil
+        )
+        XCTAssertEqual(state, .muted)
+    }
+
     func test_recognise_unknown_app_returns_unknown() throws {
         let catalogue = try MuteLabelsLoader.loadDefault()
         let state = catalogue.recognize(

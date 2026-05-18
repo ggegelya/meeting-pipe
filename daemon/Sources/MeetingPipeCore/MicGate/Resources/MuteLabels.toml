@@ -10,11 +10,12 @@
 # status_muted   -> explicit status string for "muted" (most specific)
 # status_unmuted -> explicit status string for "unmuted"
 #
-# Coverage: Teams, Zoom, Slack, Webex in en, de, es, fr, ja, pt, ru
-# (the seven locales named in the TECH-G-MIC spec). Best-effort labels
-# from public documentation and live AX scrapes; MuteLabelsValidator
-# runs in CI against installed apps in each locale and flags drift for
-# TOML updates.
+# Coverage: Teams, Zoom, Slack, Webex in en, de, es, fr, ja, pt, ru, uk.
+# (en/de/es/fr/ja/pt/ru shipped 2026-05-17 alongside MicGate; uk added
+# 2026-05-18 to cover the primary dogfood user's locale.) Best-effort
+# labels from public documentation and live AX scrapes;
+# MuteLabelsValidator runs in CI against installed apps in each locale
+# and flags drift for TOML updates.
 
 # ===== Teams =====
 
@@ -50,6 +51,12 @@ action_mute = ["Silenciar microfone"]
 action_unmute = ["Включить микрофон"]
 action_mute = ["Выключить микрофон"]
 
+[teams.uk]
+action_unmute = ["Увімкнути мікрофон", "Увімкнути звук"]
+action_mute = ["Вимкнути мікрофон", "Вимкнути звук"]
+status_muted = ["Мікрофон вимкнено"]
+status_unmuted = ["Мікрофон увімкнено"]
+
 # ===== Zoom =====
 
 [zoom.en]
@@ -81,6 +88,12 @@ action_mute = ["Silenciar"]
 [zoom.ru]
 action_unmute = ["Включить звук"]
 action_mute = ["Выключить звук"]
+
+[zoom.uk]
+action_unmute = ["Увімкнути звук", "Увімкнути мікрофон", "Зняти вимкнення мікрофона"]
+action_mute = ["Вимкнути звук", "Вимкнути мікрофон"]
+status_muted = ["Мікрофон вимкнено"]
+status_unmuted = ["Мікрофон увімкнено"]
 
 # ===== Slack =====
 
@@ -114,6 +127,12 @@ action_mute = ["Silenciar"]
 action_unmute = ["Включить микрофон"]
 action_mute = ["Отключить микрофон"]
 
+[slack.uk]
+action_unmute = ["Увімкнути мікрофон", "Увімкнути звук"]
+action_mute = ["Вимкнути мікрофон", "Вимкнути звук"]
+status_muted = ["Мікрофон вимкнено"]
+status_unmuted = ["Мікрофон увімкнено"]
+
 # ===== Webex =====
 
 [webex.en]
@@ -145,3 +164,9 @@ action_mute = ["Silenciar"]
 [webex.ru]
 action_unmute = ["Включить микрофон"]
 action_mute = ["Отключить микрофон"]
+
+[webex.uk]
+action_unmute = ["Увімкнути мікрофон", "Увімкнути звук"]
+action_mute = ["Вимкнути мікрофон", "Вимкнути звук"]
+status_muted = ["Ви вимкнули звук", "Мікрофон вимкнено"]
+status_unmuted = ["Мікрофон увімкнено"]
