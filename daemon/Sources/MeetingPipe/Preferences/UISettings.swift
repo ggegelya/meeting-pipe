@@ -58,11 +58,21 @@ final class UISettings: ObservableObject {
         didSet { UserDefaults.standard.set(verboseLogging, forKey: Keys.verboseLogging) }
     }
 
+    /// Library playback channel handling. Default mono mixdown matches
+    /// the dominant headphone-review case (input + output in both ears);
+    /// see ADR 0009.
+    @Published var playbackChannelMode: PlaybackChannelMode {
+        didSet {
+            UserDefaults.standard.set(playbackChannelMode.rawValue, forKey: Keys.playbackChannelMode)
+        }
+    }
+
     private enum Keys {
         static let theme = "mp.ui.theme"
         static let menuBarIconStyle = "mp.ui.menuBarIconStyle"
         static let showRegulatedBadge = "mp.ui.showRegulatedBadge"
         static let verboseLogging = "mp.ui.verboseLogging"
+        static let playbackChannelMode = "mp.ui.playbackChannelMode"
     }
 
     private init() {
@@ -75,6 +85,9 @@ final class UISettings: ObservableObject {
         // "persisted false" (respect the user's choice).
         self.showRegulatedBadge = d.object(forKey: Keys.showRegulatedBadge) as? Bool ?? true
         self.verboseLogging = d.bool(forKey: Keys.verboseLogging)
+        self.playbackChannelMode = PlaybackChannelMode(
+            rawValue: d.string(forKey: Keys.playbackChannelMode) ?? ""
+        ) ?? .default
     }
 
     /// Apply the user's theme choice to `NSApp.appearance`. Called on

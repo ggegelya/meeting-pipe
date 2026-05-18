@@ -102,6 +102,18 @@ struct AudioTab: View {
 
             Spacer()
 
+            Picker("Channels", selection: $playback.channelMode) {
+                Text("Mono").tag(PlaybackChannelMode.monoMixdown)
+                Text("Stereo").tag(PlaybackChannelMode.stereoOriginal)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 120)
+            .help(
+                "Mono mixes the mic (left) and system audio (right) into both ears. "
+                + "Stereo plays the original channels. The on-disk WAV is never modified."
+            )
+
             Picker("Zoom", selection: $zoom) {
                 ForEach(ZoomLevel.allCases) { z in
                     Text(z.label).tag(z)
