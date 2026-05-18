@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Combine
 import Foundation
+import MeetingPipeCore
 
 /// Top-level state owner. Detector and HotkeyManager push events in;
 /// Coordinator drives the state machine and tells MeetingRecorder /
@@ -43,9 +44,35 @@ final class Coordinator: NSObject {
     /// status bar stay in one place.
     private let sinkDispatcher: SinkDispatcher
 
-    /// 1 Hz AX poll that gates `recorder.micPaused` on the meeting
-    /// client's mute UI. Replaced event-driven by TECH-G-MIC.
-    private let muteProbe = MuteProbeSubsystem()
+    /// Event-driven MicGate + Lifecycle stack (TECH-G-MIC + TECH-C13).
+    /// Replaces the 1 Hz `MuteProbeSubsystem` poll: `MicGate` fuses AX
+    /// mute observations, HAL system-input mute, HAL VAD, and per-buffer
+    /// RMS into a single verdict stream that the recorder's writer
+    /// applies in place. `MeetingLifecycleCoordinator` runs alongside
+    /// for the per-meeting AX subscription lifecycle (its `.ended`
+    /// verdict-fusion path is wired in a follow-up TECH-C13 step).
+    private let halBus: CoreAudioHALBus
+    private let axBus: AXObserverBus
+    private let muteLabels: MuteLabels
+    private let lifecycleCoord: MeetingLifecycleCoordinator
+    private let micGate: MicGate
+    /// Mic-only-silence backstop (TECH-C7). Force-stops the recording
+    /// after `windowSeconds` of continuous non-`.hot` MicGate verdicts
+    /// while the system audio channel is also silent: catches the
+    /// "everyone else left and the user forgot" failure mode.
+    private let silenceBackstop: MicOnlySilenceBackstop
+
+    /// Latest system-audio level in dBFS, updated on the main queue from
+    /// the existing `recorder.onSystemLevel` callback. Read by the
+    /// verdict-consumer Task to decide whether the system channel still
+    /// carries audible content for the silence backstop. `-120` is the
+    /// "no audio observed yet" sentinel used by `accumulateAndEmit`.
+    private var latestSystemLevelDb: Float = -120
+
+    /// Consumes `micGate.verdicts`. Launched in `start()` once; cancelled
+    /// at shutdown. Each verdict is forwarded to the recorder's writer
+    /// and the silence backstop on the main actor.
+    private var verdictConsumerTask: Task<Void, Never>?
 
     /// Pre-fetches the local-MLX model whenever the user picks a backend
     /// that needs one. The first meeting in local mode otherwise pays a
@@ -170,6 +197,61 @@ final class Coordinator: NSObject {
         )
         self.workflowStore = workflowStore
         libraryModel.workflowStore = workflowStore
+
+        // MicGate + Lifecycle stack (TECH-G-MIC + TECH-C13). The shared
+        // buses centralise CoreAudio HAL + AX observer registrations;
+        // adapters live in MeetingPipeCore and dispatch per-bundle. The
+        // EventLog bridge forwards `MeetingPipeCore` telemetry into the
+        // daemon's existing events.jsonl stream via `Log.event`.
+        let logAdapter = LogEventAdapter()
+        let halBus = CoreAudioHALBus(backend: RealCoreAudioBackend(), eventLog: logAdapter)
+        let axBus = AXObserverBus(backend: RealAXBackend(), eventLog: logAdapter)
+        let muteLabels: MuteLabels
+        do {
+            muteLabels = try MuteLabelsLoader.loadDefault()
+        } catch {
+            // Bundle resource missing or malformed: keep the daemon
+            // running with an empty catalogue. AX mute matching becomes
+            // a no-op; HAL VAD + RMS still drive the gate.
+            Log.main.warning("MuteLabels.loadDefault failed: \(error.localizedDescription), using empty catalogue")
+            Log.event(category: "coordinator", action: "mute_labels_load_failed", attributes: [
+                "error": error.localizedDescription,
+            ])
+            muteLabels = MuteLabels(entries: [:])
+        }
+        self.halBus = halBus
+        self.axBus = axBus
+        self.muteLabels = muteLabels
+        self.lifecycleCoord = MeetingLifecycleCoordinator(
+            halBus: halBus,
+            axBus: axBus,
+            eventLog: logAdapter,
+            adapters: [
+                TeamsLifecycleAdapter(halBus: halBus, axBus: axBus, eventLog: logAdapter),
+                ZoomLifecycleAdapter(halBus: halBus, axBus: axBus, eventLog: logAdapter),
+                WebexLifecycleAdapter(axBus: axBus, eventLog: logAdapter),
+                SlackLifecycleAdapter(axBus: axBus, eventLog: logAdapter),
+                BrowserMeetingLifecycleAdapter(eventLog: logAdapter),
+            ]
+        )
+        self.micGate = MicGate(
+            catalogue: muteLabels,
+            halBus: halBus,
+            axBus: axBus,
+            eventLog: logAdapter,
+            adapters: [
+                TeamsMuteAdapter(axBus: axBus, catalogue: muteLabels, eventLog: logAdapter),
+                ZoomMuteAdapter(axBus: axBus, catalogue: muteLabels, eventLog: logAdapter),
+                WebexMuteAdapter(axBus: axBus, catalogue: muteLabels, eventLog: logAdapter),
+                SlackMuteAdapter(axBus: axBus, catalogue: muteLabels, eventLog: logAdapter),
+                MeetMuteAdapter(eventLog: logAdapter),
+                BrowserMuteAdapter(eventLog: logAdapter),
+            ]
+        )
+        // Commit 1 hard-codes the default; the TECH-C7 commit replaces
+        // the literal with `config.detection.micOnlySilenceSec`.
+        self.silenceBackstop = MicOnlySilenceBackstop()
+
         super.init()
         // Wire the model back to the Coordinator so the sidebar's
         // Start/Stop button can route through the existing menu handlers.
@@ -207,12 +289,18 @@ final class Coordinator: NSObject {
                 self.notifier.notifyError("Pipeline failed: \(err.localizedDescription)")
             }
         }
-        muteProbe.onTransition = { [weak self] transition in
-            // Preserve the existing `recorder.micPaused` seam exactly —
-            // TECH-G-MIC will replace it with a per-buffer apply.
-            switch transition {
-            case .paused: self?.recorder.micPaused = true
-            case .resumed: self?.recorder.micPaused = false
+        // MicGate consumes the recorder's per-buffer mic RMS; the gate
+        // is allocation-free and defers its publish off the render
+        // thread, so calling from the audio tap is safe.
+        recorder.onMicRmsDb = { [weak self] db in
+            self?.micGate.ingest(rmsDb: db)
+        }
+        // Backstop fires once when the mic-only-silence threshold is
+        // exceeded. Hop to the main actor and route through the
+        // existing forceStop path so the event log records the reason.
+        silenceBackstop.onTriggered = { [weak self] _ in
+            Task { @MainActor in
+                self?.forceStop(reason: "mic_only_silence")
             }
         }
     }
@@ -221,6 +309,21 @@ final class Coordinator: NSObject {
         notifier.delegate = self
         promptWindow.delegate = self
         recordingHUD.delegate = self
+
+        // Drive the recorder's writer + silence backstop from the gate's
+        // verdict stream. The stream is unbounded and lives for the
+        // daemon's lifetime; verdicts only flow while a meeting is
+        // engaged. Cancelled in `shutdown()`.
+        verdictConsumerTask = Task { [weak self] in
+            guard let self = self else { return }
+            for await verdict in self.micGate.verdicts {
+                await MainActor.run {
+                    self.recorder.setMicGateVerdict(verdict)
+                    let hasSystem = Double(self.latestSystemLevelDb) > Coordinator.systemSilenceThresholdDb
+                    self.silenceBackstop.ingest(verdict: verdict, hasSystemAudio: hasSystem)
+                }
+            }
+        }
 
         // Funnel every TCC dialog through PermissionsCenter so the
         // Preferences "Permissions" tab and the startup sequence both
@@ -364,12 +467,22 @@ final class Coordinator: NSObject {
         Log.main.info("shutting down")
         detector.stop()
         hotkey.unregister()
+        verdictConsumerTask?.cancel()
+        verdictConsumerTask = nil
+        micGate.shutdown()
+        lifecycleCoord.shutdown()
         if recorder.isRecording {
             // Best-effort flush; we don't want orphan recording state.
             let recorder = self.recorder
             Task { await recorder.stop() }
         }
     }
+
+    /// Treat the system channel as "carries audio" when its 1 s RMS
+    /// average sits above this floor. Mirrors `SilenceDetector`'s
+    /// `defaultThresholdDb` so the silence backstop and the existing
+    /// 5-min auto-stop draw the same line between silence and content.
+    private static let systemSilenceThresholdDb: Double = SilenceDetector.defaultThresholdDb
 
     // MARK: Menu actions
 
@@ -862,7 +975,7 @@ final class Coordinator: NSObject {
                 "workflow_name": resolvedWorkflow?.name ?? NSNull(),
             ])
             armSilenceDetector()
-            armMuteProbe(source: source)
+            engageMicGate(source: source)
         } catch {
             Log.main.error("failed to start recorder: \(error.localizedDescription)")
             notifier.notifyError("Could not start recording: \(error.localizedDescription)")
@@ -876,7 +989,10 @@ final class Coordinator: NSObject {
         statusBar.setStopping()
         recordingHUD.dismiss()
         disarmSilenceDetector()
-        muteProbe.disarm()
+        // Tear down the per-meeting AX subscriptions and the gate's
+        // adapter. The verdict stream stays open for the next meeting.
+        lifecycleCoord.disengage()
+        micGate.stop()
 
         // Recorder.stop is async; runs on a background task so the UI
         // stays responsive. Once flushed, the audio is enqueued for
@@ -1060,8 +1176,13 @@ final class Coordinator: NSObject {
         recorder.onMicLevel = { [weak self] db in
             self?.silenceDetector?.observeMic(db: Double(db))
         }
+        // Forward the system level both to the silence detector and to
+        // the latest-level mirror the MicOnlySilenceBackstop reads. One
+        // callback site so the two consumers can never drift.
         recorder.onSystemLevel = { [weak self] db in
-            self?.silenceDetector?.observeSystem(db: Double(db))
+            guard let self = self else { return }
+            self.latestSystemLevelDb = db
+            self.silenceDetector?.observeSystem(db: Double(db))
         }
     }
 
@@ -1087,14 +1208,52 @@ final class Coordinator: NSObject {
         stopRecording(file: file, source: src, summaryMode: mode)
     }
 
-    // MARK: - Mute probe (honor app-level mute)
+    // MARK: - MicGate engage (TECH-G-MIC + TECH-C13)
 
-    /// Forward the captured source through the mute-probe subsystem.
-    /// The subsystem owns the timer and the AX handle; the Coordinator
-    /// only flips `recorder.micPaused` via the wired transition callback
-    /// (see `wireSubsystems`).
-    private func armMuteProbe(source: AppSource?) {
-        muteProbe.arm(source: source, enabled: liveHonorAppMute)
+    /// Walk the AX tree for the active meeting, build the
+    /// `LifecycleAdapterHandle` + `MicGateAdapterHandle`, and engage
+    /// both subsystems. Manual / browser-no-AX sources still call this:
+    /// the builder returns empty handles in those cases and the
+    /// subsystems fall through to HAL VAD + RMS only. Also primes the
+    /// silence-backstop state for the new meeting.
+    private func engageMicGate(source: AppSource?) {
+        silenceBackstop.reset()
+        latestSystemLevelDb = -120
+        guard liveHonorAppMute, let source = source else { return }
+        guard let handles = MeetingAXHandleBuilder.build(source: source, catalogue: muteLabels) else {
+            Log.event(category: "coordinator", action: "micgate_engage_skipped", attributes: [
+                "bundle_id": source.bundleID,
+                "reason": "no_pid",
+            ])
+            return
+        }
+        do {
+            try lifecycleCoord.engage(context: handles.context, handle: handles.lifecycle)
+        } catch {
+            Log.event(category: "coordinator", action: "lifecycle_engage_failed", attributes: [
+                "bundle_id": source.bundleID,
+                "error": error.localizedDescription,
+            ])
+        }
+        do {
+            try micGate.start(context: handles.context, handle: handles.micGate)
+        } catch {
+            Log.event(category: "coordinator", action: "micgate_start_failed", attributes: [
+                "bundle_id": source.bundleID,
+                "error": error.localizedDescription,
+            ])
+        }
+    }
+}
+
+/// Bridge between `MeetingPipeCore`'s `EventLog` protocol and the
+/// daemon-side `Log.event(...)` sink. `MeetingPipeCore` doesn't link
+/// against `Logger.swift` so it can't call `Log.event` directly;
+/// adapters and coordinators receive this concrete forwarder at
+/// construction time.
+private final class LogEventAdapter: EventLog {
+    func emit(category: String, action: String, attributes: [String: Any]) {
+        Log.event(category: category, action: action, attributes: attributes)
     }
 }
 

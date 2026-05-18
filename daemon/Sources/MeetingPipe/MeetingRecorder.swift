@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import MeetingPipeCore
 
 /// In-process meeting recorder. Captures the user's microphone and the
 /// system audio mix as TWO independent WAV files, then merges them with a
@@ -57,15 +58,26 @@ final class MeetingRecorder {
     var onMicLevel: ((Float) -> Void)?
     var onSystemLevel: ((Float) -> Void)?
 
-    /// When true, the mic tap drops incoming buffers instead of writing
-    /// them to `mic.wav`. The Coordinator flips this in response to
-    /// `MeetingMuteProbe` so a Teams / Zoom / Slack mute is honoured —
-    /// otherwise the OS-level mic tap would happily capture the user's
-    /// voice into the transcript even though it never reached the call.
-    /// Single writer (main thread) / single reader (audio render
-    /// thread); a momentary stale read is fine because the next tap
-    /// callback re-reads the flag a few ms later.
-    var micPaused: Bool = false
+    /// Per-buffer mic RMS in dBFS, fired on the audio render thread.
+    /// MicGate's RMS hysteresis gate ingests this directly (the gate is
+    /// allocation-free and defers its publish off the render thread).
+    /// Distinct from `onMicLevel`, which is the once-per-second average
+    /// used by SilenceDetector.
+    var onMicRmsDb: ((Float) -> Void)?
+
+    /// Per-buffer writer that materialises the current MicGate verdict
+    /// onto each mic tap buffer. Created at `start()` once the input
+    /// sample rate is bound; released at `stop()`. Touched from the
+    /// audio render thread only.
+    private(set) var micGateWriter: MicGateWriter?
+
+    /// Latest MicGate verdict the writer should apply. Single writer
+    /// (main thread, via `setMicGateVerdict`) / single reader (audio
+    /// render thread). Default `.uncertain` matches MicGate's pre-start
+    /// state, so the writer treats it as muted and a momentary unset
+    /// before the first verdict zeroes the buffer rather than leaking
+    /// raw mic frames.
+    private var currentMicGateVerdict: MicGateVerdict = .uncertain(reasons: ["not_started"])
 
     /// True when we successfully enabled `setVoiceProcessingEnabled(true)`
     /// on the input node for the current session. The Voice Processing
@@ -132,9 +144,11 @@ final class MeetingRecorder {
         micAccumFrames = 0
         systemAccumSumSq = 0
         systemAccumFrames = 0
-        // Always start unpaused so a stale flag from a prior session
-        // can't keep the mic file silent on the first buffer.
-        micPaused = false
+        // Reset the gate writer's transition state so a fade in
+        // progress from a prior session can't bleed into the next.
+        // The writer instance itself is rebuilt below once the input
+        // sample rate is bound.
+        currentMicGateVerdict = .uncertain(reasons: ["not_started"])
 
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -186,25 +200,53 @@ final class MeetingRecorder {
         self.micFile = micFile
         Log.writeLine("recorder", "mic file opened format=\(micFormat)")
 
+        // MicGate writer: receives the live verdict and zero-fills (with
+        // a 20 ms linear fade) buffers that fall outside `.hot`. Built
+        // here so it inherits the actual input sample rate; released in
+        // `stop()`.
+        self.micGateWriter = MicGateWriter(sampleRate: micFormat.sampleRate)
+
         engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { [weak self] buffer, _ in
             guard let self = self, let file = self.micFile else { return }
             self.micFires &+= 1
             if self.micFires == 1 {
                 Log.writeLine("recorder", "mic tap first fired: frames=\(buffer.frameLength)")
             }
-            // Honour the Coordinator-driven mute gate. The frame is
-            // still counted (so `lastMicFires` doesn't trip the "no
-            // mic activity" warning at stop) and RMS still emits (so
-            // the silence detector sees the real input level — long
-            // mute periods are fine because the system-audio side
-            // keeps the silence timer fed). We just don't persist the
-            // bytes.
-            if !self.micPaused {
-                do {
-                    try file.write(from: buffer)
-                } catch {
-                    Log.recorder.error("mic write: \(error.localizedDescription)")
+            // Per-buffer RMS in dBFS computed on the raw input BEFORE
+            // the writer applies the verdict, so MicGate's RMS gate
+            // sees the live mic level rather than the zeroed output.
+            // Tight pointer loop, no allocations on the render thread.
+            if let data = buffer.floatChannelData, buffer.frameLength > 0 {
+                let frameLen = Int(buffer.frameLength)
+                let channels = Int(buffer.format.channelCount)
+                if channels > 0 {
+                    var sumSq: Double = 0
+                    for ch in 0..<channels {
+                        let ptr = data[ch]
+                        for i in 0..<frameLen {
+                            let s = Double(ptr[i])
+                            sumSq += s * s
+                        }
+                    }
+                    let mean = sumSq / Double(frameLen * channels)
+                    let db: Float = mean > 0 ? Float(10.0 * log10(mean)) : -120
+                    self.onMicRmsDb?(db)
                 }
+                // Apply the current verdict in place on the first channel.
+                // Frame parity with the system tap is preserved (no
+                // frames dropped) per ADR 0009; muted buffers become
+                // zero-amplitude with a 20 ms fade across transitions.
+                if let writer = self.micGateWriter {
+                    let bufPtr = UnsafeMutableBufferPointer(start: data[0], count: Int(buffer.frameLength))
+                    writer.apply(verdict: self.currentMicGateVerdict, to: bufPtr)
+                }
+            }
+            // Write the (possibly zeroed) buffer unconditionally so the
+            // file's frame count tracks the system channel one-for-one.
+            do {
+                try file.write(from: buffer)
+            } catch {
+                Log.recorder.error("mic write: \(error.localizedDescription)")
             }
             self.accumulateAndEmit(
                 buffer: buffer,
@@ -220,6 +262,7 @@ final class MeetingRecorder {
         } catch {
             engine.inputNode.removeTap(onBus: 0)
             self.micFile = nil
+            self.micGateWriter = nil
             try? FileManager.default.removeItem(at: micURL)
             // engine.start() failed AFTER we may have enabled VP. Flip
             // it back off so the HAL device isn't stranded in
@@ -325,6 +368,10 @@ final class MeetingRecorder {
         systemCapture = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        // Drop the writer; its sample rate was bound to the just-closed
+        // engine input. The next `start()` rebuilds one against whatever
+        // format the input reports then.
+        micGateWriter = nil
 
         // CRITICAL: revert the Voice Processing IO unit if we enabled
         // it on this session. macOS does not auto-disable VPIO when
@@ -385,6 +432,22 @@ final class MeetingRecorder {
         Log.recorder.info("recorder stopped → \(final.path)")
         Log.writeLine("recorder", "recorder stopped → \(final.path)")
     }
+
+    // MARK: - MicGate verdict (TECH-G-MIC)
+
+    /// Latch a new MicGate verdict for the mic tap to consume on its
+    /// next buffer. Called from the Coordinator's verdict-consumer Task
+    /// on the main actor; the audio render thread reads the value
+    /// without locking. A momentary stale read is fine because the
+    /// writer applies a 20 ms linear fade across transitions and the
+    /// next tap callback re-reads the value a few ms later.
+    func setMicGateVerdict(_ verdict: MicGateVerdict) {
+        currentMicGateVerdict = verdict
+    }
+
+    /// Snapshot of the most recent verdict. Visible to integration
+    /// tests that drive `setMicGateVerdict` directly.
+    var debugCurrentMicGateVerdict: MicGateVerdict { currentMicGateVerdict }
 
     // MARK: - RMS level emission (TECH-C2)
 
