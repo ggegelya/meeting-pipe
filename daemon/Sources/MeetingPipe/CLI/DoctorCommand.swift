@@ -108,6 +108,7 @@ enum DoctorCommand {
         out.append(Probe(name: "pipeline.binary", run: probePipelineBinary))
         out.append(Probe(name: "pipeline.roundtrip", run: probePipelineRoundtrip))
         out.append(Probe(name: "events.writable", run: probeEventsWritable))
+        out.append(Probe(name: "library.orphans", run: probeOrphans))
         return out
     }
 
@@ -300,6 +301,60 @@ enum DoctorCommand {
             status: .ok,
             message: "`mp --help` exited 0."
         )
+    }
+
+    /// Surface recordings that the library can't pair with a row, and
+    /// rows that lost their wav. Soft signal: orphans don't fail the
+    /// probe (they don't block daily use), but the message gives the
+    /// user a starting point for the cleanup.
+    static func probeOrphans() -> ProbeResult {
+        let dir = resolveRecordingsDir()
+        let report = OrphanScan.scan(directory: dir)
+        if report.isEmpty {
+            return ProbeResult(
+                name: "library.orphans",
+                status: .ok,
+                message: "No orphaned recordings or sidecars in \(dir.path)."
+            )
+        }
+        return ProbeResult(
+            name: "library.orphans",
+            status: .warn,
+            message: formatOrphanMessage(report, dir: dir)
+        )
+    }
+
+    static func formatOrphanMessage(_ report: OrphanScan.Report, dir: URL) -> String {
+        var parts: [String] = []
+        if !report.wavsWithoutRow.isEmpty {
+            let stems = report.wavsWithoutRow.prefix(5).map { $0.stem }
+            let suffix = report.wavsWithoutRow.count > 5 ? ", …" : ""
+            parts.append(
+                "\(report.wavsWithoutRow.count) wav(s) the library can't index: "
+                + "\(stems.joined(separator: ", "))\(suffix)"
+            )
+        }
+        if !report.rowsWithoutWav.isEmpty {
+            let stems = report.rowsWithoutWav.prefix(5).map { $0.stem }
+            let suffix = report.rowsWithoutWav.count > 5 ? ", …" : ""
+            parts.append(
+                "\(report.rowsWithoutWav.count) stem(s) with sidecars but no wav: "
+                + "\(stems.joined(separator: ", "))\(suffix)"
+            )
+        }
+        return parts.joined(separator: "; ") + " (in \(dir.path))"
+    }
+
+    /// Reproduce `Coordinator`'s recordings-dir lookup so the probe
+    /// sees the same path the daemon writes to. Best-effort: TOML
+    /// failures fall back to the example default, which is also the
+    /// daemon's behaviour at first launch.
+    static func resolveRecordingsDir() -> URL {
+        do {
+            return try Config.load().recording.outputDir
+        } catch {
+            return Config.defaultFallback().recording.outputDir
+        }
     }
 
     /// Verify we can append a line to `events.jsonl`. The probe is
