@@ -77,7 +77,17 @@ enum TranscriptLoader {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
-        return parse(obj)
+        let parsed = parse(obj)
+        let corrections = TranscriptCorrectionStore.read(stem: stem, in: directory)
+        let overlaid = TranscriptCorrectionStore.apply(
+            corrections: corrections,
+            to: parsed.segments
+        )
+        return Result(
+            segments: overlaid,
+            language: parsed.language,
+            speakerOrder: parsed.speakerOrder
+        )
     }
 
     /// Parses the dict-shaped transcript payload into typed segments.
@@ -168,6 +178,10 @@ struct TranscriptTab: View {
     @State private var language: String? = nil
     @State private var loadedForStem: String? = nil
     @State private var loading: Bool = true
+    /// The row the user is editing right now. `nil` when no sheet is
+    /// open. Set by the row's context-menu action; cleared when the
+    /// sheet dismisses.
+    @State private var editingSegment: TranscriptSegment? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -180,6 +194,16 @@ struct TranscriptTab: View {
         .task(id: meeting.stem) {
             await reload()
             playback.load(url: meeting.wavURL)
+        }
+        .sheet(item: $editingSegment) { seg in
+            TranscriptLineEditor(
+                segment: seg,
+                onSave: { newText in
+                    saveCorrection(for: seg, newText: newText)
+                    editingSegment = nil
+                },
+                onCancel: { editingSegment = nil }
+            )
         }
     }
 
@@ -194,7 +218,52 @@ struct TranscriptTab: View {
             TranscriptList(
                 segments: segments,
                 language: language,
-                playback: playback
+                playback: playback,
+                onEdit: { seg in editingSegment = seg }
+            )
+        }
+    }
+
+    /// Persist the edit, emit the event, and patch the in-memory
+    /// segment so the row updates without a full reload.
+    private func saveCorrection(for segment: TranscriptSegment, newText: String) {
+        let edited = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pipelineOriginal = segment.text
+        do {
+            _ = try TranscriptCorrectionStore.upsert(
+                segmentIndex: segment.index,
+                pipelineOriginal: pipelineOriginal,
+                edited: edited,
+                stem: meeting.stem,
+                in: meeting.recordingsDir
+            )
+        } catch {
+            Log.event(category: "correction", action: "transcript_correction_failed",
+                      attributes: [
+                        "stem": meeting.stem,
+                        "segment_index": segment.index,
+                        "error": error.localizedDescription,
+                      ])
+            return
+        }
+        Log.event(category: "correction", action: "transcript_correction",
+                  attributes: [
+                    "stem": meeting.stem,
+                    "segment_index": segment.index,
+                    "original_text": pipelineOriginal,
+                    "edited_text": edited,
+                  ])
+        // Patch the in-memory list so the row updates immediately.
+        // Reverting to the original drops the override in the store
+        // but the displayed text should still flip back, so we apply
+        // the same source-of-truth resolution the loader does.
+        if let i = segments.firstIndex(where: { $0.index == segment.index }) {
+            segments[i] = TranscriptSegment(
+                index: segment.index,
+                start: segment.start,
+                end: segment.end,
+                text: edited.isEmpty ? pipelineOriginal : edited,
+                speakerID: segment.speakerID
             )
         }
     }
@@ -238,6 +307,10 @@ private struct TranscriptList: View {
     let segments: [TranscriptSegment]
     let language: String?
     @ObservedObject var playback: AudioPlaybackController
+    /// Called when the user picks "Edit text" from the row's context
+    /// menu. The host owns the sheet presentation; the list just
+    /// reports the request.
+    let onEdit: (TranscriptSegment) -> Void
 
     /// Index of the segment whose `[start, end)` contains the playback
     /// head. Updated as a side effect of `playback.currentTime` changes
@@ -258,10 +331,10 @@ private struct TranscriptList: View {
                     ForEach(segments) { seg in
                         TranscriptRow(
                             segment: seg,
-                            isActive: seg.index == activeIndex
-                        ) {
-                            playback.playFrom(seg.start)
-                        }
+                            isActive: seg.index == activeIndex,
+                            onTap: { playback.playFrom(seg.start) },
+                            onEdit: { onEdit(seg) }
+                        )
                         .id(seg.index)
                     }
                 }
@@ -287,6 +360,7 @@ private struct TranscriptRow: View {
     let segment: TranscriptSegment
     let isActive: Bool
     let onTap: () -> Void
+    let onEdit: () -> Void
 
     var body: some View {
         Button(action: onTap) {
@@ -324,6 +398,57 @@ private struct TranscriptRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button("Edit text…", action: onEdit)
+        }
+    }
+}
+
+// MARK: - Line editor sheet
+
+private struct TranscriptLineEditor: View {
+    let segment: TranscriptSegment
+    let onSave: (String) -> Void
+    let onCancel: () -> Void
+
+    @State private var text: String
+
+    init(segment: TranscriptSegment, onSave: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+        self.segment = segment
+        self.onSave = onSave
+        self.onCancel = onCancel
+        _text = State(initialValue: segment.text)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Text(TranscriptDisplay.displayName(for: segment.speakerID))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(TranscriptDisplay.color(for: segment.speakerID))
+                Text(TranscriptDisplay.timestamp(segment.start))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+            TextEditor(text: $text)
+                .font(.body)
+                .frame(minHeight: 120)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.secondary.opacity(0.3))
+                )
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save", action: { onSave(text) })
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(text == segment.text)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 480, idealWidth: 560, minHeight: 240)
     }
 }
 
