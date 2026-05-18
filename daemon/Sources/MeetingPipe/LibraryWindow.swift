@@ -120,6 +120,13 @@ final class LibraryWindowModel: ObservableObject {
     /// pipeline running".
     @Published var liveRecordingStem: String? = nil
 
+    /// Set by the menu-bar Quick Find panel when the user picks a
+    /// meeting. The library root view observes this, switches scope to
+    /// All Meetings, selects the row, and clears the value so the
+    /// next selection is a fresh edge. Cleared back to nil from the
+    /// observing view.
+    @Published var pendingSelection: String? = nil
+
     /// Held as a non-`@Published` constant so reads from the toolbar
     /// don't trigger a republish of the parent model. The toolbar
     /// observes `processing` directly via its own `@ObservedObject`.
@@ -299,6 +306,15 @@ struct LibraryRootView: View {
         }
         .onChange(of: meetingStore.revision) { _, _ in recomputeCounts() }
         .onChange(of: model.workflowStore?.workflows.count ?? 0) { _, _ in recomputeCounts() }
+        .onChange(of: model.pendingSelection) { _, stem in
+            guard let stem else { return }
+            // The menu-bar Quick Find can land while the user is in a
+            // workflow-scoped view; jump to All Meetings so the row is
+            // guaranteed to be visible regardless of the active scope.
+            scope = .allMeetings
+            meetingSelection = [stem]
+            model.pendingSelection = nil
+        }
         .sheet(item: $editingWorkflow, onDismiss: { editingWorkflow = nil }) { wf in
             if let store = model.workflowStore {
                 WorkflowEditorSheet(workflow: wf, store: store) {

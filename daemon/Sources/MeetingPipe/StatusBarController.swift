@@ -440,6 +440,15 @@ final class StatusBarController {
         openLibrary.target = coordinator
         menu.addItem(openLibrary)
 
+        let quickFind = NSMenuItem(
+            title: "Quick Find…",
+            action: #selector(Coordinator.menuQuickFind),
+            keyEquivalent: "f"
+        )
+        quickFind.keyEquivalentModifierMask = [.command, .shift]
+        quickFind.target = coordinator
+        menu.addItem(quickFind)
+
         if let coordinator = coordinator,
            let recentItem = recentMeetingsMenuItem(coordinator: coordinator) {
             menu.addItem(recentItem)

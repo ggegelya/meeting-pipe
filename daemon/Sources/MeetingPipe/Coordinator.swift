@@ -394,6 +394,24 @@ final class Coordinator: NSObject {
         libraryWindow.show()
     }
 
+    @objc func menuQuickFind() {
+        quickFindWindow.show()
+    }
+
+    /// Open the Library window and select the row with the given stem.
+    /// Called by the Quick Find panel when the user picks a result.
+    func openMeeting(stem: String) {
+        libraryModel.pendingSelection = stem
+        libraryWindow.show()
+    }
+
+    private lazy var quickFindWindow: QuickFindWindow = QuickFindWindow(
+        meetingStore: libraryModel.meetingStore,
+        onSelect: { [weak self] meeting in
+            self?.openMeeting(stem: meeting.stem)
+        }
+    )
+
     /// Retry the full pipeline for a meeting whose original run never
     /// produced a summary (daemon was killed mid-transcribe, the
     /// orchestrator crashed, etc.). Enqueues the same `mp run-all`
