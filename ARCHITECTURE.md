@@ -13,6 +13,200 @@ The daemon writes a WAV + sidecar; it spawns the pipeline as a subprocess and fo
 
 ---
 
+## Visual overview
+
+Five diagrams for the high-level picture. Each answers one question; jump to the section that matches what you need.
+
+### Subsystem map
+
+Who-talks-to-whom across the whole system. The daemon is one Swift process that owns detection, recording, and routing; the pipeline is a short-lived Python subprocess invoked per meeting.
+
+```mermaid
+flowchart LR
+    User([User])
+    subgraph Daemon["MeetingPipe daemon (Swift, menu-bar)"]
+        Detector
+        Coordinator
+        MLC["MeetingLifecycle<br/>Coordinator"]
+        MicGate
+        Recorder["MeetingRecorder"]
+        Sinks["SinkDispatcher"]
+        UI["Status bar + HUD<br/>+ Library + Preferences"]
+    end
+    subgraph FS["Filesystem (~/Documents/Meetings/raw/)"]
+        WAV[".wav"]
+        Meta[".meta.json"]
+        Summary[".summary.json"]
+        Notion[".notion.json"]
+    end
+    Pipeline["mp run-all<br/>(Python subprocess)"]
+    Anthropic[(Anthropic API)]
+    NotionAPI[(Notion API)]
+
+    User -->|mic + system audio| Recorder
+    User -->|joins / leaves call| Detector
+    Detector --> Coordinator
+    Coordinator --> UI
+    Coordinator --> Recorder
+    Coordinator --> MicGate
+    Coordinator --> MLC
+    MicGate -->|verdict per buffer| Recorder
+    Recorder --> WAV
+    Coordinator --> Meta
+    Coordinator --> Sinks
+    Sinks --> Pipeline
+    Pipeline --> Anthropic
+    Pipeline --> Summary
+    Pipeline --> NotionAPI
+    NotionAPI --> Notion
+    UI --> WAV
+    UI --> Meta
+    UI --> Summary
+```
+
+### Meeting lifecycle
+
+What happens between "you join a Teams call" and "the Notion page appears". MicGate runs in parallel with the recorder for the whole call; the pipeline subprocess runs after the recorder closes the WAV.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Det as Detector
+    participant Coord as Coordinator
+    participant Rec as MeetingRecorder
+    participant Gate as MicGate
+    participant Pipe as Pipeline (mp run-all)
+    participant N as Notion
+
+    User->>Det: opens Teams call
+    Det->>Coord: .started(AppSource)
+    Coord->>User: prompt panel (Record? Skip?)
+    User->>Coord: Record
+    Coord->>Rec: start(outputDir, voiceProcessing)
+    Coord->>Gate: engage(handles)
+    loop every audio buffer
+        Rec->>Gate: per-buffer mic RMS
+        Gate-->>Rec: MicGateVerdict
+        Note right of Rec: MicGateWriter applies the<br/>verdict in place, 20 ms fade,<br/>frame parity preserved
+    end
+    User->>Det: clicks Leave
+    Det->>Coord: .ended
+    Coord->>Rec: stop()
+    Rec->>Rec: ffmpeg merge mic + system
+    Coord->>Pipe: enqueue(wav)
+    Pipe->>Pipe: transcribe + summarize
+    Pipe->>N: publish
+    N-->>User: notifier opens page URL
+```
+
+### Verdict-fusion stack
+
+The post-detection layer that decides, every audio buffer, whether your mic should be audible or silent. Four probes feed `MicGate`; its verdict drives both the writer (shapes the recorded audio) and the silence backstop (auto-stops dead meetings).
+
+```mermaid
+flowchart TB
+    subgraph Probes["Probes (MeetingPipeCore)"]
+        HALMute["HAL system mute<br/>kAudioObjectPropertyMute"]
+        HALVAD["HAL VAD<br/>VoiceActivityDetection*"]
+        AXMute["AX mute observer<br/>MuteLabels.toml<br/>en, uk, de, es, fr, ja, pt, ru"]
+        RMS["Per-buffer mic RMS<br/>(from MeetingRecorder tap)"]
+    end
+
+    MicGate["MicGate<br/>pure precedence rules<br/>(verdict_changed event per flip)"]
+
+    Verdict[/"MicGateVerdict<br/>.hot · .mutedByApp · .mutedByHardware<br/>.silentByRMS · .uncertain"/]
+
+    subgraph Consumers
+        Writer["MicGateWriter<br/>per-buffer apply<br/>20 ms linear fade"]
+        Backstop["MicOnlySilenceBackstop<br/>force-stop after N seconds<br/>(default 480, configurable)"]
+    end
+
+    Audio[".wav left channel"]
+    ForceStop["force_stop<br/>reason=mic_only_silence"]
+
+    HALMute --> MicGate
+    HALVAD --> MicGate
+    AXMute --> MicGate
+    RMS --> MicGate
+    MicGate --> Verdict
+    Verdict --> Writer
+    Verdict --> Backstop
+    Writer --> Audio
+    Backstop --> ForceStop
+```
+
+`MeetingLifecycleCoordinator` is the sibling system for meeting-level verdicts (`.idle`, `.starting`, `.inMeeting`, `.endingProvisional`, `.ended`). It runs alongside MicGate today; wiring its `.ended` verdict into stop-recording is a deferred follow-up (TECH-C13 step 5).
+
+### Data contracts
+
+The daemon and pipeline share state through files on disk, not IPC. Five sidecars per meeting; the schemas live in [`CONVENTIONS.md`](./CONVENTIONS.md). The library window also reads the same files.
+
+```mermaid
+flowchart LR
+    subgraph DaemonSide["Swift daemon"]
+        DR["MeetingRecorder"]
+        DM["MeetingMetaSidecar"]
+        DL["Library window"]
+    end
+
+    subgraph Files["~/Documents/Meetings/raw/&lt;stem&gt;.*"]
+        WAV[".wav<br/>mixed mic + system"]
+        META[".meta.json<br/>workflow + source"]
+        SUMM[".summary.json<br/>LLM output"]
+        NOT[".notion.json<br/>page URL"]
+        RUN[".run.json<br/>run metadata"]
+    end
+
+    subgraph Pipe["Python pipeline (mp run-all)"]
+        PT["transcribe"]
+        PS["summarize"]
+        PP["publish"]
+    end
+
+    DR --> WAV
+    DM --> META
+    WAV --> PT
+    META --> PS
+    PS --> SUMM
+    PP --> NOT
+    PP --> RUN
+    WAV --> DL
+    META --> DL
+    SUMM --> DL
+    NOT --> DL
+```
+
+### Workflow resolution
+
+How a recording gets routed: precedence top-down. The prompt window's chevron menu sets an explicit override; failing that, rules match by bundle ID and window title; failing that, the default workflow runs. `nda_mode` then forces local backend + filesystem-only sinks regardless of the resolved workflow's preferences.
+
+```mermaid
+flowchart TD
+    Start([AppSource or manual])
+    OV{pendingOverride<br/>set?}
+    BT{bundle + title<br/>rule match?}
+    B{bundle-only<br/>rule match?}
+    Def[Default workflow]
+    Pick[/Picked Workflow/]
+    NDA{nda_mode<br/>= true?}
+    Local["Backend: local<br/>Sinks: filesystem only"]
+    Normal["Backend: workflow.backend<br/>Sinks: workflow.sinks"]
+
+    Start --> OV
+    OV -->|yes| Pick
+    OV -->|no| BT
+    BT -->|yes| Pick
+    BT -->|no| B
+    B -->|yes| Pick
+    B -->|no| Def
+    Def --> Pick
+    Pick --> NDA
+    NDA -->|yes| Local
+    NDA -->|no| Normal
+```
+
+---
+
 ## Daemon — `daemon/Sources/MeetingPipe/`
 
 ### Lifecycle entry points

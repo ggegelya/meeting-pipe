@@ -19,6 +19,8 @@ Silicon.**
    is plain Markdown. Notion, Obsidian, and filesystem sinks fan out
    independently, and one going down doesn't block the others.
 
+**Architecture overview:** see [ARCHITECTURE.md](./ARCHITECTURE.md) for the subsystem map, meeting-lifecycle sequence, and the verdict-fusion stack that drives mute handling.
+
 ## Quickstart
 
 ```bash
