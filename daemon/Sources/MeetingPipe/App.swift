@@ -35,6 +35,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.main.info("MeetingPipe starting")
 
+        // Tag a launch whose cdhash differs from the previous launch
+        // before any other event lands, so dogfood analysis can exclude
+        // the re-grant churn that follows each `--reset-tcc` cycle.
+        RebuildTagger.runOnce()
+
         // Apply the user's theme override before any window is created
         // so the first paint already matches their choice (otherwise the
         // Library/Preferences windows briefly flash the system
