@@ -56,6 +56,8 @@ enum MeetingAXHandleBuilder {
         // empty handles; the adapter relies on ShareableContent +
         // window-title signals and MicGate operates on HAL + RMS only.
         if kind == .browser {
+            emitDiagnostic(source: source, axTrusted: nil, windowCount: 0,
+                           foundLeave: false, foundMute: false)
             return Handles(
                 lifecycle: LifecycleAdapterHandle(),
                 micGate: MicGateAdapterHandle(),
@@ -63,7 +65,10 @@ enum MeetingAXHandleBuilder {
             )
         }
 
-        guard AXIsProcessTrusted() else {
+        let axTrusted = AXIsProcessTrusted()
+        guard axTrusted else {
+            emitDiagnostic(source: source, axTrusted: false, windowCount: 0,
+                           foundLeave: false, foundMute: false)
             return Handles(
                 lifecycle: LifecycleAdapterHandle(),
                 micGate: MicGateAdapterHandle(),
@@ -72,18 +77,44 @@ enum MeetingAXHandleBuilder {
         }
 
         let axApp = AXUIElementCreateApplication(pid)
-        let window = pickMeetingWindow(axApp: axApp, bundleID: source.bundleID)
-        let leave = window.flatMap { findButton(in: $0, depth: 0) { el in
-            matchesLeave(bundleID: source.bundleID, element: el)
-        } }
-        let mute = window.flatMap { w -> AXUIElement? in
-            guard let app = appNameByBundle[source.bundleID] else { return nil }
-            return findButton(in: w, depth: 0) { el in
-                matchesMute(app: app, catalogue: catalogue, element: el)
+        let allWindows = listWindows(axApp: axApp)
+        let meetingWindow = pickMeetingWindow(windows: allWindows)
+        let app = appNameByBundle[source.bundleID]
+
+        // Search every window for leave + mute buttons. First match
+        // per category wins. The picked meeting window is still used
+        // for the lifecycle adapter's `meetingWindow` field, but
+        // button discovery is decoupled because the AX tree's window
+        // order isn't always [meeting, chat] (Teams ships both and
+        // the chat window is what the title-first picker grabs;
+        // searching every window finds the mute / leave buttons
+        // even when the picker grabs the wrong window).
+        var leave: AXUIElement?
+        var mute: AXUIElement?
+        for w in allWindows {
+            if leave == nil {
+                leave = findButton(in: w, depth: 0) { el in
+                    matchesLeave(bundleID: source.bundleID, element: el)
+                }
             }
+            if mute == nil, let app = app {
+                mute = findButton(in: w, depth: 0) { el in
+                    matchesMute(app: app, catalogue: catalogue, element: el)
+                }
+            }
+            if leave != nil && mute != nil { break }
         }
+
+        emitDiagnostic(
+            source: source,
+            axTrusted: true,
+            windowCount: allWindows.count,
+            foundLeave: leave != nil,
+            foundMute: mute != nil
+        )
+
         return Handles(
-            lifecycle: LifecycleAdapterHandle(leaveButton: leave, meetingWindow: window),
+            lifecycle: LifecycleAdapterHandle(leaveButton: leave, meetingWindow: meetingWindow),
             micGate: MicGateAdapterHandle(muteButton: mute),
             context: context
         )
@@ -91,17 +122,27 @@ enum MeetingAXHandleBuilder {
 
     // MARK: - Private
 
-    private static let maxDepth = 12
+    /// Depth ceiling for the per-window button walk. 18 is empirically
+    /// generous for Teams' nested toolbar shells (the old 12-level
+    /// ceiling occasionally missed buttons in deeply-nested call
+    /// controls); the walk is bounded by AX query latency, not by
+    /// total nodes, so a deeper ceiling is cheap.
+    private static let maxDepth = 18
 
-    private static func pickMeetingWindow(axApp: AXUIElement, bundleID: String) -> AXUIElement? {
+    private static func listWindows(axApp: AXUIElement) -> [AXUIElement] {
         var windowsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
               let windows = windowsRef as? [AXUIElement] else {
-            return nil
+            return []
         }
-        // First window with a non-empty title; per-app meeting-title
-        // recognition is handled inside MeetingPipeCore, so here we
-        // just pick the first viable candidate.
+        return windows
+    }
+
+    private static func pickMeetingWindow(windows: [AXUIElement]) -> AXUIElement? {
+        // First window with a non-empty title is the default for the
+        // lifecycle adapter's `meetingWindow` handle field. Button
+        // discovery in `build` searches every window separately so a
+        // wrong pick here doesn't hide the mute / leave buttons.
         for w in windows {
             var titleRef: CFTypeRef?
             guard AXUIElementCopyAttributeValue(w, kAXTitleAttribute as CFString, &titleRef) == .success,
@@ -110,6 +151,34 @@ enum MeetingAXHandleBuilder {
             return w
         }
         return windows.first
+    }
+
+    /// Single observable surface for the AX walk's outcome. Emitted
+    /// once per `build` call; tail with:
+    ///   tail -200 ~/Library/Logs/MeetingPipe/events.jsonl \
+    ///     | grep ax_handles_built
+    /// `found_mute = false` for a native bundle with AX trusted is
+    /// the signature symptom of "AX walk didn't find the button"
+    /// (the gate then runs on HAL + RMS only and the user can speak
+    /// while in-app muted).
+    private static func emitDiagnostic(
+        source: AppSource,
+        axTrusted: Bool?,
+        windowCount: Int,
+        foundLeave: Bool,
+        foundMute: Bool
+    ) {
+        var attrs: [String: Any] = [
+            "bundle_id": source.bundleID,
+            "kind": source.kind == .browser ? "browser" : "native",
+            "window_count": windowCount,
+            "found_leave": foundLeave,
+            "found_mute": foundMute,
+        ]
+        if let axTrusted = axTrusted {
+            attrs["ax_trusted"] = axTrusted
+        }
+        Log.event(category: "coordinator", action: "ax_handles_built", attributes: attrs)
     }
 
     /// Bounded depth-first walk for the first element that satisfies
