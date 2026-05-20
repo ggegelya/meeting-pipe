@@ -148,6 +148,35 @@ enum MeetingAXHandleBuilder {
     /// total even at this depth).
     private static let maxDepth = 32
 
+    /// Return all AX windows of `axApp`. Internal so
+    /// `MeetingAXWindowWatcher` can re-walk on a window-created
+    /// notification without duplicating the `kAXWindowsAttribute`
+    /// dance.
+    static func allWindows(of axApp: AXUIElement) -> [AXUIElement] {
+        listWindows(axApp: axApp)
+    }
+
+    /// Walk every window of an axApp and return every mute button
+    /// the existing `matchesMute` predicate accepts. Used by
+    /// `MeetingAXWindowWatcher` to rediscover buttons after a new
+    /// window appears mid-meeting (Teams 2 compact view, etc.).
+    static func findAllMuteButtons(
+        in axApp: AXUIElement,
+        bundleID: String,
+        catalogue: MuteLabels
+    ) -> [AXUIElement] {
+        guard let app = appNameByBundle[bundleID] else { return [] }
+        var result: [AXUIElement] = []
+        for window in listWindows(axApp: axApp) {
+            if let button = findButton(in: window, depth: 0, predicate: { el in
+                matchesMute(app: app, catalogue: catalogue, element: el)
+            }) {
+                result.append(button)
+            }
+        }
+        return result
+    }
+
     private static func listWindows(axApp: AXUIElement) -> [AXUIElement] {
         var windowsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,

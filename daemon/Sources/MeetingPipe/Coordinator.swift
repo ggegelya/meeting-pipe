@@ -74,6 +74,13 @@ final class Coordinator: NSObject {
     /// and the silence backstop on the main actor.
     private var verdictConsumerTask: Task<Void, Never>?
 
+    /// Watches the AX application for window-created events so mute
+    /// buttons that appear after `beginRecording` (Teams 2 compact
+    /// view, PIP overlays, ...) get observed too. Owned per-meeting;
+    /// created in `engageMicGate`, torn down in `stopRecording`.
+    /// See TECH-C14.
+    private var axWindowWatcher: MeetingAXWindowWatcher?
+
     /// Pre-fetches the local-MLX model whenever the user picks a backend
     /// that needs one. The first meeting in local mode otherwise pays a
     /// 30s-3min download stall inside `mlx_lm.server`'s first call;
@@ -998,6 +1005,8 @@ final class Coordinator: NSObject {
         // adapter. The verdict stream stays open for the next meeting.
         lifecycleCoord.disengage()
         micGate.stop()
+        axWindowWatcher?.stop()
+        axWindowWatcher = nil
 
         // Recorder.stop is async; runs on a background task so the UI
         // stays responsive. Once flushed, the audio is enqueued for
@@ -1248,6 +1257,23 @@ final class Coordinator: NSObject {
                 "error": error.localizedDescription,
             ])
         }
+
+        // Reactive AX subscription for mute buttons that only appear
+        // after recording-start (Teams 2 compact view, etc.). Each
+        // newly-discovered button gets its own AXMuteButtonProbe;
+        // events flow back into MicGate's state via injectAxMuteEvent.
+        let watcher = MeetingAXWindowWatcher(
+            pid: handles.context.pid,
+            bundleID: handles.context.bundleID,
+            catalogue: muteLabels,
+            axBus: axBus,
+            eventLog: LogEventAdapter(),
+            onMuteEvent: { [weak self] event in
+                self?.micGate.injectAxMuteEvent(event)
+            }
+        )
+        watcher.start()
+        axWindowWatcher = watcher
     }
 }
 

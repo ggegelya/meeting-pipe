@@ -152,6 +152,21 @@ public final class MicGate {
         rmsGate.ingest(dBFS: rmsDb)
     }
 
+    /// Inject an AX mute event from an out-of-band probe. The
+    /// adapter wired by `start()` already feeds AX events into the
+    /// state machine; this entry point lets the host attach
+    /// additional probes (e.g., on windows that only appear after
+    /// `start()` returned, like the Teams 2 compact view) and
+    /// have their events merged into the same precedence chain.
+    /// Threading: caller's queue; `update` serialises internally.
+    public func injectAxMuteEvent(_ event: AXMuteButtonProbe.Event) {
+        update {
+            $0.axMute = event.state
+            $0.axLabel = event.label
+            $0.axLocale = event.locale
+        }
+    }
+
     public var current: MicGateVerdict {
         lock.withLock { lastVerdict }
     }

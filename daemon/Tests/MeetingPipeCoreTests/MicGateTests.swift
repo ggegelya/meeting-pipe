@@ -125,4 +125,32 @@ final class MicGateIntegrationTests: XCTestCase {
         gate.stop()
         XCTAssertTrue(log.entries.contains { $0.action == "verdict_changed" })
     }
+
+    /// Out-of-band AX mute events fed via injectAxMuteEvent must
+    /// flow through the same precedence chain as the adapter sink.
+    /// Used by MeetingAXWindowWatcher (TECH-C14) to merge events
+    /// from mute buttons in windows that appear after start().
+    func test_injectAxMuteEvent_flips_verdict_to_muted_by_app() throws {
+        let halBus = CoreAudioHALBus()
+        let axBus = AXObserverBus()
+        let gate = MicGate(catalogue: Self.catalogue, halBus: halBus, axBus: axBus)
+        try gate.start(context: teamsContext, handle: MicGateAdapterHandle())
+        defer { gate.stop() }
+
+        let mutedEvent = AXMuteButtonProbe.Event(
+            state: .muted, label: "Unmute", locale: "en"
+        )
+        gate.injectAxMuteEvent(mutedEvent)
+
+        // The publish path is async on the gate's internal queue;
+        // wait a tick for it to drain.
+        let exp = expectation(description: "verdict")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { exp.fulfill() }
+        wait(for: [exp], timeout: 1.0)
+
+        XCTAssertEqual(
+            gate.current,
+            .mutedByApp(axLabel: "Unmute", locale: "en")
+        )
+    }
 }
