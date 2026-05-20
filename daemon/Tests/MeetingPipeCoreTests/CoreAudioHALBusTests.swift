@@ -72,4 +72,57 @@ final class CoreAudioHALBusTests: XCTestCase {
         bus.unsubscribe(token)
         XCTAssertEqual(bus.activeSubscriptionCount, 0)
     }
+
+    /// Backend that always throws backendFailed with a configurable
+    /// OSStatus. Used to verify the per-subscription diagnostic logging
+    /// surfaces both the numeric status and its four-char code.
+    final class FailingBackend: CoreAudioHALBus.Backend {
+        let status: OSStatus
+        init(status: OSStatus) { self.status = status }
+        func register(
+            _ address: CoreAudioHALBus.Address,
+            handler: @escaping () -> Void
+        ) throws -> () -> Void {
+            throw CoreAudioHALBus.BusError.backendFailed(status)
+        }
+    }
+
+    /// 560947818 decimal is 0x21_6F_62_6A — the four bytes spell '!obj'.
+    /// macOS CoreAudio surfaces this status when an AudioObject is
+    /// not yet registered for the supplied selector + scope; previously
+    /// the bus emitted just `lifecycle_engage_failed` with the numeric
+    /// status which made diagnosis hard without the four-char decoding.
+    func test_subscribe_failed_logs_osstatus_and_fourcc() {
+        let backend = FailingBackend(status: 560947818)
+        let log = RecordingEventLog()
+        let bus = CoreAudioHALBus(backend: backend, eventLog: log)
+
+        XCTAssertThrowsError(try bus.subscribe(address()) {}) { error in
+            guard case CoreAudioHALBus.BusError.backendFailed(let s) = error else {
+                return XCTFail("expected backendFailed; got \(error)")
+            }
+            XCTAssertEqual(s, 560947818)
+        }
+
+        XCTAssertTrue(log.entries.contains { $0.action == "subscribe_attempt" })
+        let failed = log.entries.first { $0.action == "subscribe_failed" }
+        XCTAssertNotNil(failed)
+        XCTAssertEqual(failed?.attributes["osstatus"], "560947818")
+        XCTAssertEqual(failed?.attributes["osstatus_4cc"], "!obj")
+
+        // No `subscribed` event on the failure path.
+        XCTAssertFalse(log.entries.contains { $0.action == "subscribed" })
+    }
+
+    func test_subscribe_attempt_logs_address_before_registration() {
+        let backend = RecordingBackend()
+        let log = RecordingEventLog()
+        let bus = CoreAudioHALBus(backend: backend, eventLog: log)
+
+        _ = try? bus.subscribe(address()) {}
+
+        let attempts = log.entries.filter { $0.action == "subscribe_attempt" }
+        XCTAssertEqual(attempts.count, 1)
+        XCTAssertEqual(attempts.first?.attributes["object_id"], String(0xfeed))
+    }
 }

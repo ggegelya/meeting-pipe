@@ -88,23 +88,46 @@ public final class CoreAudioHALBus {
 
     /// Subscribe to a HAL property. Returns a token the caller stores
     /// and passes to `unsubscribe` at meeting end.
+    ///
+    /// Per-subscription diagnostic events bracket the registration so a
+    /// `lifecycle_engage_failed` is traceable down to the exact
+    /// AudioObject + selector that returned the OSStatus. On failure,
+    /// `subscribe_failed` reports both the numeric status and its
+    /// four-char code (e.g. 560947818 -> "!obj") before re-throwing.
     public func subscribe(_ address: Address, handler: @escaping () -> Void) throws -> Token {
-        let token = try queue.sync { () throws -> Token in
-            let teardown = try backend.register(address, handler: { [queue] in
-                queue.async(execute: handler)
-            })
-            nextID += 1
-            let token = Token(id: nextID)
-            subscriptions[token] = Subscription(address: address, teardown: teardown)
-            return token
-        }
-        eventLog.emit(category: "halbus", action: "subscribed", attributes: [
+        let attemptAttrs: [String: Any] = [
             "object_id": address.objectID,
             "selector": fourCC(address.selector),
             "scope": fourCC(address.scope),
             "element": address.element
-        ])
-        return token
+        ]
+        eventLog.emit(category: "halbus", action: "subscribe_attempt", attributes: attemptAttrs)
+        do {
+            let token = try queue.sync { () throws -> Token in
+                let teardown = try backend.register(address, handler: { [queue] in
+                    queue.async(execute: handler)
+                })
+                nextID += 1
+                let token = Token(id: nextID)
+                subscriptions[token] = Subscription(address: address, teardown: teardown)
+                return token
+            }
+            eventLog.emit(category: "halbus", action: "subscribed", attributes: attemptAttrs)
+            return token
+        } catch let busError as BusError {
+            var attrs = attemptAttrs
+            if case .backendFailed(let status) = busError {
+                attrs["osstatus"] = Int(status)
+                attrs["osstatus_4cc"] = fourCC(UInt32(bitPattern: status))
+            }
+            eventLog.emit(category: "halbus", action: "subscribe_failed", attributes: attrs)
+            throw busError
+        } catch {
+            var attrs = attemptAttrs
+            attrs["error"] = "\(error)"
+            eventLog.emit(category: "halbus", action: "subscribe_failed", attributes: attrs)
+            throw error
+        }
     }
 
     public func unsubscribe(_ token: Token) {
