@@ -28,6 +28,12 @@ import MeetingPipeCore
 /// Threading: not thread-safe; main-queue only.
 final class MeetingAXWindowWatcher {
 
+    /// Closure that schedules a delayed `() -> Void` on some queue and
+    /// returns a cancel closure. Default uses `Timer.scheduledTimer`
+    /// on the main runloop; tests inject a manual driver so the retry
+    /// path can be exercised without sleeping.
+    typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
+
     private let axApp: AXUIElement
     private let pid: pid_t
     private let bundleID: String
@@ -35,6 +41,9 @@ final class MeetingAXWindowWatcher {
     private let axBus: AXObserverBus
     private let eventLog: EventLog
     private let onMuteEvent: (AXMuteButtonProbe.Event) -> Void
+    private let scheduler: Scheduler
+    private let maxSubscribeAttempts: Int
+    private let subscribeRetryDelay: TimeInterval
 
     private var subscriptionToken: AXObserverBus.Token?
     /// Probes spun up for buttons discovered after `start()`. Each
@@ -45,6 +54,21 @@ final class MeetingAXWindowWatcher {
     /// Rescan count for the event log so we can spot a runaway
     /// notification storm at a glance.
     private var rescanCount: Int = 0
+    /// How many `start()` -> `attemptSubscribe` cycles have failed in
+    /// the current `start()` lifetime. Reset by `start()`, capped at
+    /// `maxSubscribeAttempts`.
+    private var subscribeAttempts: Int = 0
+    /// Pending retry teardown (Timer / DispatchWorkItem cancel). Set
+    /// when a retry is scheduled after a transient backendFailed; nil
+    /// otherwise.
+    private var cancelPendingRetry: (() -> Void)?
+
+    static let defaultScheduler: Scheduler = { delay, action in
+        let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in
+            action()
+        }
+        return { timer.invalidate() }
+    }
 
     init(
         pid: pid_t,
@@ -52,7 +76,10 @@ final class MeetingAXWindowWatcher {
         catalogue: MuteLabels,
         axBus: AXObserverBus,
         eventLog: EventLog,
-        onMuteEvent: @escaping (AXMuteButtonProbe.Event) -> Void
+        onMuteEvent: @escaping (AXMuteButtonProbe.Event) -> Void,
+        scheduler: @escaping Scheduler = MeetingAXWindowWatcher.defaultScheduler,
+        maxSubscribeAttempts: Int = 3,
+        subscribeRetryDelay: TimeInterval = 1.5
     ) {
         self.axApp = AXUIElementCreateApplication(pid)
         self.pid = pid
@@ -61,10 +88,41 @@ final class MeetingAXWindowWatcher {
         self.axBus = axBus
         self.eventLog = eventLog
         self.onMuteEvent = onMuteEvent
+        self.scheduler = scheduler
+        self.maxSubscribeAttempts = maxSubscribeAttempts
+        self.subscribeRetryDelay = subscribeRetryDelay
     }
 
     func start() {
         stop()
+        subscribeAttempts = 0
+        attemptSubscribe()
+    }
+
+    func stop() {
+        if let token = subscriptionToken {
+            axBus.unsubscribe(token)
+            subscriptionToken = nil
+        }
+        cancelPendingRetry?()
+        cancelPendingRetry = nil
+        for probe in dynamicProbes { probe.stop() }
+        dynamicProbes.removeAll()
+        rescanCount = 0
+        subscribeAttempts = 0
+    }
+
+    /// Try to register the `kAXWindowCreatedNotification` subscription.
+    /// On `AXObserverBus.BusError.backendFailed` we schedule one retry
+    /// per attempt up to `maxSubscribeAttempts`; macOS occasionally
+    /// returns `kAXErrorCannotComplete` for an AX application that
+    /// just spawned (e.g., Teams launching alongside the meeting),
+    /// and the latch fix for the transient-unknown mute state masks
+    /// the first-window-created event being missed if we give up
+    /// after one attempt. Three attempts at 1.5 s catches the slow
+    /// path without holding up disengage on a permanently-broken app.
+    private func attemptSubscribe() {
+        subscribeAttempts += 1
         do {
             let token = try axBus.subscribe(
                 pid: pid,
@@ -77,27 +135,32 @@ final class MeetingAXWindowWatcher {
             eventLog.emit(category: "coordinator", action: "ax_watcher_started", attributes: [
                 "bundle_id": bundleID,
                 "pid": Int(pid),
+                "attempts": subscribeAttempts,
             ])
             // Run an initial rescan so any compact-view-already-open
             // case is also covered (rare, but possible if the user
             // backgrounds Teams before clicking Record).
             handleWindowCreated()
         } catch {
-            eventLog.emit(category: "coordinator", action: "ax_watcher_subscribe_failed", attributes: [
-                "bundle_id": bundleID,
-                "error": "\(error)",
-            ])
+            if subscribeAttempts < maxSubscribeAttempts {
+                eventLog.emit(category: "coordinator", action: "ax_watcher_subscribe_retry", attributes: [
+                    "bundle_id": bundleID,
+                    "attempt": subscribeAttempts,
+                    "max_attempts": maxSubscribeAttempts,
+                    "error": "\(error)",
+                ])
+                cancelPendingRetry = scheduler(subscribeRetryDelay) { [weak self] in
+                    self?.cancelPendingRetry = nil
+                    self?.attemptSubscribe()
+                }
+            } else {
+                eventLog.emit(category: "coordinator", action: "ax_watcher_subscribe_gave_up", attributes: [
+                    "bundle_id": bundleID,
+                    "attempts": subscribeAttempts,
+                    "error": "\(error)",
+                ])
+            }
         }
-    }
-
-    func stop() {
-        if let token = subscriptionToken {
-            axBus.unsubscribe(token)
-            subscriptionToken = nil
-        }
-        for probe in dynamicProbes { probe.stop() }
-        dynamicProbes.removeAll()
-        rescanCount = 0
     }
 
     /// Rescan every window's subtree for mute buttons and rebuild
