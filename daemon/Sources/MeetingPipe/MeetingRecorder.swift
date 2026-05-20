@@ -408,6 +408,29 @@ final class MeetingRecorder {
 
         Log.writeLine("recorder", "stopping: mic_fires=\(micFires) system_fires=\(systemFires) mic_bytes=\(Self.fileSize(micURL)) system_bytes=\(Self.fileSize(systemURL))")
 
+        // Per-channel duration diagnostic. Users have reported a
+        // few-seconds shift at end of recording (P1.4); the merge step
+        // is the only place where the two streams' durations can drift
+        // visibly because ffmpeg pads / truncates to the longer input.
+        // Surface both durations + delta before ffmpeg so a follow-up
+        // can pin down whether the shift is mic-only, system-only, or
+        // an intentional ffmpeg amerge fill.
+        let micAudioSec = hasMic ? Self.audioDurationSec(of: micURL) : nil
+        let systemAudioSec = hasSystem ? Self.audioDurationSec(of: systemURL) : nil
+        let wallclockSec = started.map { Date().timeIntervalSince($0) }
+        let deltaSec: Double? = {
+            guard let m = micAudioSec, let s = systemAudioSec else { return nil }
+            return s - m
+        }()
+        Log.event(category: "recorder", action: "intermediate_durations", attributes: [
+            "mic_audio_sec": micAudioSec as Any,
+            "system_audio_sec": systemAudioSec as Any,
+            "delta_sec": deltaSec as Any,
+            "wallclock_sec": wallclockSec as Any,
+            "has_mic": hasMic,
+            "has_system": hasSystem,
+        ])
+
         // Decide what to produce as the final WAV.
         if hasMic && hasSystem {
             await mergeViaFFmpeg(mic: micURL, system: systemURL, final: final)
@@ -613,17 +636,7 @@ final class MeetingRecorder {
     /// After stop, sanity-check the WAV's audio duration vs wallclock.
     /// In-process recording should be ~100% — if not, surface it.
     private func checkDurationParity(file url: URL, recordedFor wallclock: TimeInterval) {
-        guard FileManager.default.fileExists(atPath: url.path),
-              let h = try? FileHandle(forReadingFrom: url) else { return }
-        defer { try? h.close() }
-        guard let header = try? h.read(upToCount: 64), header.count >= 44 else { return }
-        guard header.range(of: Data("RIFF".utf8))?.lowerBound == 0,
-              header.range(of: Data("WAVE".utf8))?.lowerBound == 8 else { return }
-        let bytesPerSec = header.subdata(in: 28..<32).withUnsafeBytes { $0.load(as: UInt32.self) }
-        guard bytesPerSec > 0 else { return }
-        let totalSize = Self.fileSize(url)
-        let payload = max(0, Int64(totalSize) - 44)
-        let audioSec = Double(payload) / Double(bytesPerSec)
+        guard let audioSec = Self.audioDurationSec(of: url) else { return }
         let ratio = wallclock > 0 ? audioSec / wallclock : 1.0
         let summary = String(format: "duration check: wallclock=%.2fs audio=%.2fs ratio=%.0f%%", wallclock, audioSec, ratio * 100)
         Log.recorder.info("\(summary)")
@@ -631,5 +644,23 @@ final class MeetingRecorder {
         if ratio < 0.85 && wallclock > 2.0 {
             Log.writeLine("recorder", "WARN: WAV is \(Int(ratio*100))% of recording wallclock")
         }
+    }
+
+    /// Parse the RIFF / WAVE header at `url` and return the audio
+    /// duration in seconds, or nil when the file is absent / not a
+    /// recognisable PCM WAV. Shared between the post-merge parity
+    /// check and the pre-merge intermediate-duration diagnostic.
+    static func audioDurationSec(of url: URL) -> Double? {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let h = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? h.close() }
+        guard let header = try? h.read(upToCount: 64), header.count >= 44 else { return nil }
+        guard header.range(of: Data("RIFF".utf8))?.lowerBound == 0,
+              header.range(of: Data("WAVE".utf8))?.lowerBound == 8 else { return nil }
+        let bytesPerSec = header.subdata(in: 28..<32).withUnsafeBytes { $0.load(as: UInt32.self) }
+        guard bytesPerSec > 0 else { return nil }
+        let totalSize = fileSize(url)
+        let payload = max(0, Int64(totalSize) - 44)
+        return Double(payload) / Double(bytesPerSec)
     }
 }
