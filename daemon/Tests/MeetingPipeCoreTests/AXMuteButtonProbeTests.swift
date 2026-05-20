@@ -89,6 +89,57 @@ final class AXMuteButtonProbeTests: XCTestCase {
         XCTAssertEqual(events.first?.state, .unknown)
     }
 
+    /// Regression: Teams 2's mute button briefly shows
+    /// "Mic is not available" during call setup and then drops its
+    /// title entirely before the call audio session is established.
+    /// Both decode to `.unknown`. The original probe propagated those
+    /// to MicGate, clearing `axMute` and dropping the gate for ~90s
+    /// while the user was actually muted. Latching keeps the prior
+    /// known state until a real `.muted` / `.unmuted` event lands.
+    func test_transient_unknown_after_muted_preserves_state() throws {
+        var label: String? = "Unmute"
+        var events: [AXMuteButtonProbe.Event] = []
+        let probe = makeProbe(probe: { _ in
+            .init(title: label, help: nil, description: nil)
+        })
+        probe.onChange = { events.append($0) }
+        try probe.start(pid: 1, bundleID: "com.microsoft.teams2", button: stubElement())
+        XCTAssertEqual(events.map(\.state), [.muted])
+
+        // Teams flips the title to something we do not recognise:
+        // the probe must NOT emit and the stored state must stay .muted.
+        label = "Mic is not available"
+        probe.evaluate(reason: "test_transient_label")
+        XCTAssertEqual(events.map(\.state), [.muted], "transient .unknown after .muted must be latched")
+        XCTAssertEqual(probe.lastEvent?.state, .muted)
+
+        // Title goes nil briefly.
+        label = nil
+        probe.evaluate(reason: "test_nil_label")
+        XCTAssertEqual(events.map(\.state), [.muted], "nil label is .unknown and must also be latched")
+        XCTAssertEqual(probe.lastEvent?.state, .muted)
+
+        // Teams resumes normal labels: the latch lifts.
+        label = "Mute"
+        probe.evaluate(reason: "test_unmute_resumes")
+        XCTAssertEqual(events.map(\.state), [.muted, .unmuted])
+        XCTAssertEqual(probe.lastEvent?.state, .unmuted)
+    }
+
+    /// First-ever evaluation of an unrecognised label must still emit
+    /// `.unknown`: there is no prior known state to latch onto, and
+    /// downstream consumers need to see `.unknown` to fall through to
+    /// VAD / RMS.
+    func test_initial_unknown_state_still_emits() throws {
+        var events: [AXMuteButtonProbe.Event] = []
+        let probe = makeProbe(probe: { _ in
+            .init(title: "Mic is not available", help: nil, description: nil)
+        })
+        probe.onChange = { events.append($0) }
+        try probe.start(pid: 1, bundleID: "com.microsoft.teams2", button: stubElement())
+        XCTAssertEqual(events.map(\.state), [.unknown])
+    }
+
     func test_stop_releases_two_ax_subscriptions() throws {
         let bus = AXObserverBus()
         let probe = makeProbe(bus: bus, probe: { _ in

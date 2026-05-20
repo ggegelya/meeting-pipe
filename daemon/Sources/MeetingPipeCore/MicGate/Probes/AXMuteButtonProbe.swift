@@ -131,6 +131,30 @@ public final class AXMuteButtonProbe {
         let label = labelFromBlob(blob)
         let event = Event(state: state, label: label, locale: locale)
         if event == lastEvent { return }
+
+        // Suppress transient `.unknown` once a real state was
+        // observed. Teams 2 shows "Mic is not available" on its
+        // mute button during call setup, then briefly returns nil
+        // for the title; both decode to `.unknown` and the original
+        // code propagated those to MicGate. Clearing `axMute` made
+        // the verdict fall through to VAD / RMS for ~90 s while the
+        // user was actually muted in Teams, leaking their voice
+        // into the recording. Latching the prior known state keeps
+        // `mutedByApp` in place across the glitch; the next real
+        // `.muted` or `.unmuted` event resumes normal flow.
+        if state == .unknown, let prev = lastEvent, prev.state != .unknown {
+            eventLog.emit(category: "micgate", action: "ax_mute_button_state_kept", attributes: [
+                "bundle_id": bundleID,
+                "pid": Int(pid),
+                "app": app,
+                "locale": locale,
+                "reason": reason,
+                "kept_state": prev.state == .muted ? "muted" : "unmuted",
+                "transient_label": label as Any
+            ])
+            return
+        }
+
         let previous = lastEvent
         lastEvent = event
         eventLog.emit(category: "micgate", action: "ax_mute_button_state", attributes: [
