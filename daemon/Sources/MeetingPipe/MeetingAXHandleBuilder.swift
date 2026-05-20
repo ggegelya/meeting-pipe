@@ -177,6 +177,79 @@ enum MeetingAXHandleBuilder {
         return result
     }
 
+    /// Walk every window of an axApp and return every leave button the
+    /// per-bundle leave predicate accepts. Mirrors `findAllMuteButtons`
+    /// for the scorer's Leave-button-found signal (TECH-C15). One
+    /// button per window at most; the search short-circuits at the
+    /// first hit per window so cost stays bounded.
+    static func findAllLeaveButtons(
+        in axApp: AXUIElement,
+        bundleID: String
+    ) -> [AXUIElement] {
+        var result: [AXUIElement] = []
+        for window in listWindows(axApp: axApp) {
+            if let button = findButton(in: window, depth: 0, predicate: { el in
+                matchesLeave(bundleID: bundleID, element: el)
+            }) {
+                result.append(button)
+            }
+        }
+        return result
+    }
+
+    /// Walk every window of an axApp looking for a Calling- or Meeting-
+    /// controls toolbar (TECH-C15). Returns the first match found.
+    ///
+    /// The shape:
+    ///   - Teams 2 (com.microsoft.teams2): an `AXToolbar` whose `AXTitle`
+    ///     or `AXDescription` reads "Calling controls" (en).
+    ///   - Google Meet (any browser): an `AXToolbar` whose `AXTitle` or
+    ///     `AXDescription` contains "Meeting controls" (en, observed in
+    ///     the 2026-05-20 AX dump that motivated this signal).
+    ///   - Other apps (Zoom, Webex) typically expose call controls
+    ///     differently; we add them as the per-bundle patterns get
+    ///     dumped from a live meeting. Falling through to no-match is
+    ///     safe; this signal is bonus weight on top of the leave + mute
+    ///     buttons, not a replacement.
+    static func findCallingControlsToolbar(
+        in axApp: AXUIElement,
+        bundleID: String
+    ) -> AXUIElement? {
+        let needles = callingControlsToolbarNeedles(bundleID: bundleID)
+        guard !needles.isEmpty else { return nil }
+        for window in listWindows(axApp: axApp) {
+            if let toolbar = findToolbar(in: window, depth: 0, needles: needles) {
+                return toolbar
+            }
+        }
+        return nil
+    }
+
+    /// Per-bundle toolbar-title needles for the scorer's
+    /// Calling-controls signal. Plain substring match against the
+    /// element's title or description, case-insensitive. Browsers
+    /// share the Meet pattern because Google's controls toolbar lives
+    /// in the rendered page, not the browser chrome.
+    static func callingControlsToolbarNeedles(bundleID: String) -> [String] {
+        switch bundleID {
+        case "com.microsoft.teams2", "com.microsoft.teams":
+            return ["calling controls"]
+        case "us.zoom.xos":
+            return ["meeting controls"]
+        case "com.cisco.webexmeetingsapp", "com.cisco.spark":
+            return ["meeting controls", "call controls"]
+        case "com.tinyspeck.slackmacgap":
+            return ["huddle controls", "call controls"]
+        default:
+            // Browsers and unknown natives: assume Meet-style "meeting
+            // controls" / "call controls" labelling. Cheap superset
+            // that picks up Meet in Chrome / Arc / Edge / Safari and
+            // doesn't fire on shells (their non-meeting windows don't
+            // host a toolbar with these strings).
+            return ["meeting controls", "call controls"]
+        }
+    }
+
     private static func listWindows(axApp: AXUIElement) -> [AXUIElement] {
         var windowsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
@@ -252,6 +325,41 @@ enum MeetingAXHandleBuilder {
         }
         for child in children {
             if let hit = findButton(in: child, depth: depth + 1, predicate: predicate) {
+                return hit
+            }
+        }
+        return nil
+    }
+
+    /// Bounded depth-first walk for the first `AXToolbar` whose title
+    /// or description contains any of `needles` (case-insensitive
+    /// substring). Mirrors `findButton`'s shape so the depth ceiling
+    /// and traversal cost stay consistent.
+    private static func findToolbar(
+        in element: AXUIElement,
+        depth: Int,
+        needles: [String]
+    ) -> AXUIElement? {
+        if depth > maxDepth { return nil }
+        var roleRef: CFTypeRef?
+        let roleErr = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+        let role = (roleErr == .success) ? (roleRef as? String) : nil
+        if role == (kAXToolbarRole as String) || role == (kAXGroupRole as String) {
+            let (title, help, desc) = textBlob(element)
+            let blob = [title, help, desc]
+                .compactMap { $0?.lowercased() }
+                .joined(separator: " | ")
+            if !blob.isEmpty && needles.contains(where: { blob.contains($0) }) {
+                return element
+            }
+        }
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else {
+            return nil
+        }
+        for child in children {
+            if let hit = findToolbar(in: child, depth: depth + 1, needles: needles) {
                 return hit
             }
         }

@@ -3,6 +3,7 @@ import AVFoundation
 import ApplicationServices
 import CoreAudio
 import Foundation
+import MeetingPipeCore
 
 /// Rate-limited log emitter for the "Accessibility permission missing"
 /// failure mode. The window probes fire many times per second; we don't
@@ -169,6 +170,24 @@ final class Detector {
     /// not native AX elements).
     private var recordingWindow: MeetingWindowHandle?
 
+    /// Last scan's winning candidate, used by the scorer for the
+    /// sticky-bonus tie-break (TECH-C15). Cleared in `stop()` and when
+    /// the scorer returns nil (no candidate clears the threshold) so a
+    /// stale pin can't bias a fresh scan after the user closes every
+    /// meeting app.
+    private var lastScorerWinner: AppSource?
+
+    /// Cached MuteLabels catalogue for the scorer's mute-button signal.
+    /// Loaded once per Detector lifetime; resolution failure degrades
+    /// the scorer's `muteButton` flag to false (other signals carry).
+    private static let muteCatalogue: MuteLabels? = {
+        do {
+            return try MuteLabelsLoader.loadDefault()
+        } catch {
+            return nil
+        }
+    }()
+
     private var nsObservers: [NSObjectProtocol] = []
     private var avObservation: NSKeyValueObservation?
 
@@ -260,6 +279,7 @@ final class Detector {
         coalesceWork?.cancel()
         coalesceWork = nil
         recordingWindow = nil
+        lastScorerWinner = nil
     }
 
     // MARK: Recorder lifecycle hooks
@@ -604,68 +624,182 @@ final class Detector {
 
     // MARK: Signal A
 
+    /// Pick the best meeting-app candidate via multi-source scoring
+    /// (TECH-C15). Enumerates every concurrently-running known meeting
+    /// app plus every browser hosting a meeting tab, populates a
+    /// signal tuple per candidate, scores them, and returns the
+    /// highest scorer above threshold. Replaces the previous
+    /// browser-first then first-native-wins linear scan that
+    /// mis-attributed a 2026-05-20 Meet recording to a shell-only
+    /// Teams.
     private func scanMeetingApp() -> AppSource? {
-        // Browser tab with a meeting URL fragment is the more specific
-        // signal: "user is actively in meet.google.com" beats "Teams is
-        // sitting idle in the dock". Without this ordering, an autostarted
-        // Teams in the background outranked the real Google Meet call
-        // and the recordingSource got pinned to the wrong app — which
-        // also broke the window-probe end signal (it inspected Teams
-        // windows that had no relation to the actual call).
-        if let browser = scanBrowserTab() { return browser }
-        if let native = scanNativeApp() { return native }
-        return nil
+        var candidates = enumerateCandidates()
+        guard let winner = MeetingSourceScorer.pickBest(
+            &candidates,
+            lastWinner: lastScorerWinner
+        ) else {
+            // No candidate cleared the floor. Drop the sticky pin so
+            // the next scan starts unbiased; the recordingSource pin
+            // is independent and controls lock-in for an in-progress
+            // recording.
+            if !hasFiredStart {
+                lastScorerWinner = nil
+            }
+            return nil
+        }
+        // Diagnostic on each winner change so the user can audit
+        // attribution after the 2026-05-20 incident. Skip when the
+        // winner is unchanged to avoid 3s-poll noise.
+        if lastScorerWinner?.bundleID != winner.source.bundleID {
+            Log.event(category: "detector", action: "source_scored", attributes: [
+                "winner_bundle_id": winner.source.bundleID,
+                "winner_kind": winner.source.kind == .browser ? "browser" : "native",
+                "winner_score": winner.score,
+                "candidate_count": candidates.count,
+                "calling_controls_toolbar": winner.signals.callingControlsToolbar,
+                "leave_button": winner.signals.leaveButton,
+                "mute_button": winner.signals.muteButton,
+                "title_match": winner.signals.titleMatch,
+                "process_audio_active": winner.signals.processAudioActive,
+            ])
+        }
+        lastScorerWinner = winner.source
+        return winner.source
     }
 
-    private func scanNativeApp() -> AppSource? {
+    /// Walk `NSWorkspace.runningApplications` and produce one
+    /// `MeetingSourceCandidate` per concurrent meeting-app contender.
+    /// Native bundles always become candidates (signals may be all
+    /// false; the scorer will reject them). Browsers become candidates
+    /// only when at least one of their windows has a meeting-pattern
+    /// title (matches the existing scanBrowserTab filter so we don't
+    /// drag in every running browser).
+    private func enumerateCandidates() -> [MeetingSourceCandidate] {
+        let axTrusted = AXIsProcessTrusted()
+        var candidates: [MeetingSourceCandidate] = []
+
         for app in NSWorkspace.shared.runningApplications {
             guard let bid = app.bundleIdentifier else { continue }
+            let pid = app.processIdentifier
+
             if nativeBundles.contains(bid) {
-                return AppSource(bundleID: bid, displayName: app.localizedName ?? bid, kind: .native)
+                let source = AppSource(
+                    bundleID: bid,
+                    displayName: app.localizedName ?? bid,
+                    kind: .native
+                )
+                let signals = collectSignals(
+                    bundleID: bid,
+                    kind: .native,
+                    pid: pid,
+                    axTrusted: axTrusted,
+                    preTitleMatch: nil
+                )
+                candidates.append(MeetingSourceCandidate(source: source, signals: signals))
+                continue
+            }
+
+            if browserBundles.contains(bid) {
+                // Browsers are candidates only when at least one of
+                // their windows has a meeting-pattern title. The probe
+                // needs AX trust; without it we can't tell whether a
+                // browser is in a meeting, so it doesn't become a
+                // candidate (native still does because they can win on
+                // audio + button signals alone via the AX walk attempt).
+                guard axTrusted,
+                      anyWindowMatchesMeetingFragment(pid: pid) else { continue }
+                let source = AppSource(
+                    bundleID: bid,
+                    displayName: app.localizedName ?? "Browser",
+                    kind: .browser
+                )
+                let signals = collectSignals(
+                    bundleID: bid,
+                    kind: .browser,
+                    pid: pid,
+                    axTrusted: axTrusted,
+                    preTitleMatch: true
+                )
+                candidates.append(MeetingSourceCandidate(source: source, signals: signals))
             }
         }
-        return nil
+
+        return candidates
     }
 
-    /// Locate a browser whose tab title contains a known meeting URL
-    /// fragment. Tries the frontmost browser's focused window first
-    /// (cheap; the common case), then falls back to walking every running
-    /// browser's window list — covers the user clicking another app
-    /// mid-call. Degrades to nil when AX permission is missing.
-    private func scanBrowserTab() -> AppSource? {
-        guard AXIsProcessTrusted() else { return nil }
+    /// Populate the per-candidate signal tuple. Each signal degrades
+    /// to `false` on AX denied / read failed, so the scorer naturally
+    /// down-weights a candidate whose evidence couldn't be gathered.
+    ///
+    /// `preTitleMatch` short-circuits the per-bundle recognizer:
+    ///   - For browser candidates the caller already filtered by the
+    ///     meeting URL fragment, so we set it true rather than re-walk.
+    ///   - For native candidates pass nil so the recognizer runs.
+    private func collectSignals(
+        bundleID: String,
+        kind: AppSourceKind,
+        pid: pid_t,
+        axTrusted: Bool,
+        preTitleMatch: Bool?
+    ) -> MeetingSourceCandidate.Signals {
+        var signals = MeetingSourceCandidate.Signals()
 
-        // Frontmost-focused fast path.
-        if let front = NSWorkspace.shared.frontmostApplication,
-           let bid = front.bundleIdentifier,
-           browserBundles.contains(bid),
-           let title = focusedWindowTitle(forPID: front.processIdentifier),
-           titleMatchesMeetingFragment(title) {
-            return AppSource(bundleID: bid, displayName: front.localizedName ?? "Browser", kind: .browser)
-        }
+        if axTrusted {
+            let axApp = AXUIElementCreateApplication(pid)
 
-        // Background-window slow path: any running browser may host the
-        // call in a window that isn't currently focused. Scoped to known
-        // browser bundles so the AX traversal stays bounded.
-        for app in NSWorkspace.shared.runningApplications {
-            guard let bid = app.bundleIdentifier,
-                  browserBundles.contains(bid) else { continue }
-            if anyWindowMatchesMeetingFragment(pid: app.processIdentifier) {
-                return AppSource(bundleID: bid, displayName: app.localizedName ?? "Browser", kind: .browser)
+            // titleMatch: browsers were already filtered; natives run
+            // the per-bundle recognizer against every window title.
+            if let pre = preTitleMatch {
+                signals.titleMatch = pre
+            } else if let titles = Detector.collectAXWindowTitles(pid: pid) {
+                signals.titleMatch = titles.contains { title in
+                    Detector.isActiveMeetingWindow(
+                        bundleID: bundleID,
+                        kind: kind,
+                        title: title
+                    )
+                }
+            }
+
+            signals.callingControlsToolbar = MeetingAXHandleBuilder
+                .findCallingControlsToolbar(in: axApp, bundleID: bundleID) != nil
+
+            signals.leaveButton = !MeetingAXHandleBuilder
+                .findAllLeaveButtons(in: axApp, bundleID: bundleID).isEmpty
+
+            if let catalogue = Detector.muteCatalogue {
+                signals.muteButton = !MeetingAXHandleBuilder
+                    .findAllMuteButtons(
+                        in: axApp,
+                        bundleID: bundleID,
+                        catalogue: catalogue
+                    ).isEmpty
             }
         }
-        return nil
-    }
 
-    private func focusedWindowTitle(forPID pid: pid_t) -> String? {
-        let axApp = AXUIElementCreateApplication(pid)
-        var windowRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
-              let win = windowRef else { return nil }
-        var titleRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(win as! AXUIElement, kAXTitleAttribute as CFString, &titleRef) == .success,
-              let title = titleRef as? String else { return nil }
-        return title
+        // Process-audio: HAL per-PID query via ProcessAudioSignal's
+        // default probe. Webex is excluded because Cisco documents
+        // Webex holding the mic open after meetings for ultrasound
+        // device discovery; rewarding it for that would push Webex
+        // above threshold long after the call ended.
+        if bundleID != "com.cisco.webexmeetingsapp",
+           bundleID != "com.cisco.spark" {
+            let context = MeetingLifecycleContext(
+                bundleID: bundleID,
+                kind: kind == .browser ? .browser : .native,
+                pid: pid,
+                title: nil
+            )
+            if let active = ProcessAudioSignal.defaultProbe(context) {
+                signals.processAudioActive = active
+            }
+        }
+
+        // ShareableContent slot reserved; SCShareableContent is async
+        // and the scan path is synchronous. Left false until a
+        // follow-up adds an async pre-scan that caches the latest
+        // shareable-content set for the synchronous scorer to read.
+        return signals
     }
 
     private func anyWindowMatchesMeetingFragment(pid: pid_t) -> Bool {
