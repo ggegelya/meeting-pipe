@@ -14,6 +14,20 @@
 #      recording does not pay download latency.
 #   5. Stage config files at ~/.config/meeting-pipe/.
 #   6. Install LaunchAgent for autostart.
+#   7. Reset macOS TCC grants for com.meetingpipe.daemon (default on,
+#      see --keep-tcc to skip). Each dev rebuild produces a new cdhash
+#      and TCC keys grants on (bundle_id, identifier, cdhash); without
+#      a paid Developer ID (TECH-D8 deferred to P3) the prior grants
+#      no longer apply to the new build, so System Settings shows the
+#      toggle ON while the daemon silently lacks the permission. The
+#      user otherwise has to remove the stale row and re-add it via
+#      the + button every reinstall. Resetting up front collapses the
+#      cycle to one fresh prompt per service per install.
+#
+# Flags:
+#   --keep-tcc   skip the TCC reset step. Use when you happen to know
+#                the new cdhash matches the prior one (rare for dev
+#                builds) and want to keep the granted state.
 #
 # Transcription stack: FluidAudio runs Parakeet TDT v3 + pyannote
 # Community-1 in-process on the Apple Neural Engine. Models live in
@@ -24,6 +38,21 @@
 # deliberately opt back into a pyannote-token workflow.
 
 set -euo pipefail
+
+RESET_TCC=1
+for arg in "$@"; do
+    case "$arg" in
+        --keep-tcc) RESET_TCC=0 ;;
+        -h|--help)
+            awk '/^set -/{exit}{print}' "$0"
+            exit 0
+            ;;
+        *)
+            printf 'unknown flag: %s\n' "$arg" >&2
+            exit 2
+            ;;
+    esac
+done
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG_DIR="$HOME/.config/meeting-pipe"
@@ -305,6 +334,43 @@ sed \
 if launchctl list | grep -q "$LAUNCHD_LABEL"; then
     launchctl unload "$PLIST" || true
 fi
+
+# 7. TCC reset (default on, --keep-tcc skips) ------------------------------
+#
+# Run BEFORE the LaunchAgent loads the new bundle. Order matters: if the
+# daemon is already running with the previous cdhash, its live TCC
+# verdict cache can re-assert the prior grant against the freshly-reset
+# DB. SIGKILL first so nothing is mid-shutdown when tccutil runs.
+#
+# Without this, every dev rebuild leaves a stale row in System Settings ->
+# Privacy & Security -> Screen Recording (and Accessibility) where the
+# toggle shows ON but macOS silently denies the new bundle's request
+# because the cdhash no longer matches. The user has to remove the row
+# and re-add it via the + button each time.
+if (( RESET_TCC )); then
+    BUNDLE_ID="com.meetingpipe.daemon"
+    pkill -KILL -f "MeetingPipe.app/Contents/MacOS/MeetingPipe" 2>/dev/null || true
+
+    # tccutil reset takes (service, bundle_id). Listing the four
+    # services the daemon talks to plus the catch-all `All` for
+    # anything macOS may have added that we don't track here.
+    for service in Microphone ScreenCapture Accessibility AppleEvents \
+                    SystemPolicyAllFiles; do
+        if tccutil reset "$service" "$BUNDLE_ID" 2>/dev/null; then
+            say "reset TCC: $service for $BUNDLE_ID"
+        fi
+    done
+    tccutil reset All "$BUNDLE_ID" >/dev/null 2>&1 || true
+
+    # The System Settings panel caches rows in memory and keeps showing
+    # a stale toggle even after the underlying TCC.db row is gone.
+    # Killing the panel forces it to re-read on next open. No-op if
+    # Settings isn't running.
+    killall "System Settings" 2>/dev/null || true
+
+    say "TCC permissions reset. Next launch re-prompts for Mic / Screen Recording / Accessibility."
+fi
+
 launchctl load -w "$PLIST"
 say "LaunchAgent installed → $PLIST"
 
@@ -323,8 +389,10 @@ Next steps:
   4. Look for the menu bar icon: 〰️  → "MeetingPipe: Idle".
 
 Logs: $LOG_DIR
+Reinstall: $REPO_ROOT/scripts/install.sh
+  TCC permissions reset by default each install (dev cdhash changes
+  every rebuild). Pass --keep-tcc to skip the reset.
 Uninstall: $REPO_ROOT/scripts/uninstall.sh
   Add --purge to also remove ~/.config/meeting-pipe.
-  Add --reset-tcc if a permission was denied and macOS won't re-prompt
-  next install (TCC caches state per bundle id). Or pass --all for both.
+  Add --reset-tcc to clear TCC for the bundle. Or pass --all for both.
 EOF

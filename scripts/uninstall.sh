@@ -110,6 +110,13 @@ if (( RESET_TCC )); then
         fi
     done
     tccutil reset All "$BUNDLE_ID" >/dev/null 2>&1 || true
+
+    # The System Settings panel caches rows in memory and keeps showing
+    # a stale toggle even after the underlying TCC.db row is gone.
+    # Killing the panel forces it to re-read on next open. No-op if
+    # Settings isn't running.
+    killall "System Settings" 2>/dev/null || true
+
     echo "Reset TCC permissions for $BUNDLE_ID."
 
     # Notifications are not in TCC; they live in a separate authorization
