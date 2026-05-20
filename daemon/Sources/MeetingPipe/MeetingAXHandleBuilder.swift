@@ -122,12 +122,31 @@ enum MeetingAXHandleBuilder {
 
     // MARK: - Private
 
-    /// Depth ceiling for the per-window button walk. 18 is empirically
-    /// generous for Teams' nested toolbar shells (the old 12-level
-    /// ceiling occasionally missed buttons in deeply-nested call
-    /// controls); the walk is bounded by AX query latency, not by
-    /// total nodes, so a deeper ceiling is cheap.
-    private static let maxDepth = 18
+    /// Depth ceiling for the per-window button walk.
+    ///
+    /// Teams 2 (com.microsoft.teams2) is Electron: Chromium's AX tree
+    /// nests under the native NSWindow via HostingBridgedContentView
+    /// then BrowserAccessibilityCocoa. An Accessibility Inspector dump
+    /// during a live meeting (2026-05-20) placed the Mute mic (AXButton)
+    /// at depth 20 from the window:
+    ///
+    ///   0  TeamsWindow
+    ///   1  HostingBridgedContentView
+    ///   2  Web content (AXPlatformNodeCocoa)
+    ///   3-9   seven empty `group` wrappers
+    ///   10 scroll area (RenderWidgetHostViewCocoa)
+    ///   11 HTML content (BrowserAccessibilityCocoa)
+    ///   12 application (BrowserAccessibilityCocoa)
+    ///   13-17 five more `group` wrappers
+    ///   18 Meeting controls (toolbar)
+    ///   19 group
+    ///   20 Mute mic (button)
+    ///
+    /// 32 leaves margin for future Chromium pipeline additions without
+    /// burning meaningful walk time (each level adds one AX query per
+    /// branch; Teams' button tree fans out to well under 100 nodes
+    /// total even at this depth).
+    private static let maxDepth = 32
 
     private static func listWindows(axApp: AXUIElement) -> [AXUIElement] {
         var windowsRef: CFTypeRef?
