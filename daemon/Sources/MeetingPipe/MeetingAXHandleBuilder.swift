@@ -321,9 +321,14 @@ enum MeetingAXHandleBuilder {
             .joined(separator: " | ")
         if blob.isEmpty { return false }
         guard let perLocale = catalogue.entries[app.lowercased()] else { return false }
+        // Word-boundary match (not raw substring); see
+        // MuteLabels.containsAsWord for why. Without this, Teams 2's
+        // "Unmuted (⌥ ⌘ Q)" status-indicator button was picked up
+        // by the AX walk and bound to a probe that injected
+        // spurious .muted events.
         for entry in perLocale.values {
             for label in entry.actionMute + entry.actionUnmute + entry.statusMuted + entry.statusUnmuted {
-                if blob.contains(label.lowercased()) { return true }
+                if MuteLabels.containsAsWord(blob: blob, label: label) { return true }
             }
         }
         return false

@@ -82,11 +82,48 @@ public struct MuteLabels {
             .joined(separator: " | ")
         if blob.isEmpty { return .unknown }
 
-        if entry.statusMuted.contains(where: { blob.contains($0.lowercased()) }) { return .muted }
-        if entry.statusUnmuted.contains(where: { blob.contains($0.lowercased()) }) { return .unmuted }
-        if entry.actionUnmute.contains(where: { blob.contains($0.lowercased()) }) { return .muted }
-        if entry.actionMute.contains(where: { blob.contains($0.lowercased()) }) { return .unmuted }
+        if entry.statusMuted.contains(where: { MuteLabels.containsAsWord(blob: blob, label: $0) }) { return .muted }
+        if entry.statusUnmuted.contains(where: { MuteLabels.containsAsWord(blob: blob, label: $0) }) { return .unmuted }
+        if entry.actionUnmute.contains(where: { MuteLabels.containsAsWord(blob: blob, label: $0) }) { return .muted }
+        if entry.actionMute.contains(where: { MuteLabels.containsAsWord(blob: blob, label: $0) }) { return .unmuted }
         return .unknown
+    }
+
+    /// Word-boundary substring check. Returns true if `label` appears
+    /// in `blob` flanked by non-letter characters or string
+    /// boundaries on both sides.
+    ///
+    /// Replaces a plain `blob.contains(label)` check that caused
+    /// MicGate to spuriously publish `mutedByApp` and zero the user's
+    /// mic during the 2026-05-20 25-minute Teams meeting. Teams 2
+    /// exposes a status indicator with `kAXTitleAttribute = "Unmuted
+    /// (⌥ ⌘ Q)"` separately from the toggle button labeled "Mute
+    /// mic" / "Unmute mic". The substring `"unmute"` matched the
+    /// `"Unmuted"` prefix and recognise() mis-classified the
+    /// indicator as the `actionUnmute` label (which means "user is
+    /// muted"). Word boundaries make "Unmute" reject "Unmuted"
+    /// because the trailing `d` is a letter.
+    ///
+    /// Caller passes `blob` already lowercased per recognize()'s
+    /// existing contract; the label is lowercased defensively.
+    public static func containsAsWord(blob: String, label: String) -> Bool {
+        let needle = label.lowercased()
+        guard !needle.isEmpty else { return false }
+        var searchStart = blob.startIndex
+        while searchStart < blob.endIndex,
+              let range = blob.range(of: needle, range: searchStart..<blob.endIndex) {
+            let beforeOk: Bool = {
+                guard range.lowerBound > blob.startIndex else { return true }
+                return !blob[blob.index(before: range.lowerBound)].isLetter
+            }()
+            let afterOk: Bool = {
+                guard range.upperBound < blob.endIndex else { return true }
+                return !blob[range.upperBound].isLetter
+            }()
+            if beforeOk && afterOk { return true }
+            searchStart = blob.index(after: range.lowerBound)
+        }
+        return false
     }
 }
 

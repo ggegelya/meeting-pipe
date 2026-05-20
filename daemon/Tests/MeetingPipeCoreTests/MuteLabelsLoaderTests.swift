@@ -51,6 +51,67 @@ final class MuteLabelsLoaderTests: XCTestCase {
         XCTAssertEqual(state, .muted)
     }
 
+    /// Regression for the 2026-05-20 Teams 25-min meeting bug.
+    /// Teams 2 ships a status-indicator button with title "Unmuted
+    /// (⌥ ⌘ Q)" alongside the real toggle "Mute mic" / "Unmute mic".
+    /// The original substring match treated "Unmuted" as containing
+    /// "Unmute", classified it as `actionUnmute` (state .muted), and
+    /// flipped MicGate to mutedByApp for the rest of the meeting,
+    /// silencing the user's mic. Word-boundary matching rejects this:
+    /// the trailing `d` in "Unmuted" breaks the boundary.
+    func test_recognise_unmuted_status_label_does_not_match_unmute_action() throws {
+        let catalogue = try MuteLabelsLoader.loadDefault()
+        let state = catalogue.recognize(
+            app: "teams", locale: "en",
+            title: "Unmuted (\u{2325} \u{2318} Q)", help: nil, description: nil
+        )
+        XCTAssertNotEqual(state, .muted,
+            "label 'Unmuted (...)' must not trigger actionUnmute via substring match")
+        XCTAssertNotEqual(state, .unmuted,
+            "label 'Unmuted (...)' is a status indicator the catalogue does not model; should be .unknown")
+    }
+
+    func test_recognise_teams_mute_mic_label_returns_unmuted() throws {
+        // The real Teams 2 toggle button when the user is unmuted is
+        // labeled "Mute mic" (clicking it would mute). Word-boundary
+        // match must still accept this.
+        let catalogue = try MuteLabelsLoader.loadDefault()
+        let state = catalogue.recognize(
+            app: "teams", locale: "en",
+            title: "Mute mic", help: nil, description: nil
+        )
+        XCTAssertEqual(state, .unmuted)
+    }
+
+    func test_recognise_teams_unmute_mic_label_returns_muted() throws {
+        // The real Teams 2 toggle when the user is muted.
+        let catalogue = try MuteLabelsLoader.loadDefault()
+        let state = catalogue.recognize(
+            app: "teams", locale: "en",
+            title: "Unmute mic", help: nil, description: nil
+        )
+        XCTAssertEqual(state, .muted)
+    }
+
+    func test_containsAsWord_rejects_prefix_match() {
+        XCTAssertFalse(
+            MuteLabels.containsAsWord(blob: "unmuted (⌥ ⌘ q)", label: "unmute"),
+            "'unmute' must not match inside 'unmuted'"
+        )
+        XCTAssertTrue(
+            MuteLabels.containsAsWord(blob: "unmute mic", label: "unmute"),
+            "'unmute' must match the word 'unmute' in 'unmute mic'"
+        )
+        XCTAssertTrue(
+            MuteLabels.containsAsWord(blob: "click mute", label: "mute"),
+            "'mute' must match the trailing word 'mute'"
+        )
+        XCTAssertFalse(
+            MuteLabels.containsAsWord(blob: "muted", label: "mute"),
+            "'mute' must not match inside 'muted'"
+        )
+    }
+
     func test_recognise_unknown_app_returns_unknown() throws {
         let catalogue = try MuteLabelsLoader.loadDefault()
         let state = catalogue.recognize(
