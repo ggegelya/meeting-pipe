@@ -18,13 +18,26 @@ final class PreferencesWindow {
     private var window: NSWindow?
     private let store: ConfigStore
     private let secrets: SecretsStore
+    /// Shared selection state so callers can deeplink to a specific
+    /// section via `show(initial:)`. SwiftUI re-renders the sidebar
+    /// whenever this updates, so it works both for "open fresh" and
+    /// "already-on-screen, switch tabs" cases.
+    private let selectionState = PreferencesSelectionState()
 
     init(store: ConfigStore, secrets: SecretsStore) {
         self.store = store
         self.secrets = secrets
     }
 
-    func show() {
+    /// Open the Preferences window. If `initial` is provided, the
+    /// sidebar lands on that section instead of `.general`.
+    /// Idempotent: re-opening brings the existing window to front
+    /// rather than stacking duplicates.
+    func show(initial: PreferencesItem? = nil) {
+        if let item = initial {
+            selectionState.current = item
+        }
+
         if let w = window {
             let wasHidden = !w.isVisible
             w.makeKeyAndOrderFront(nil)
@@ -33,7 +46,11 @@ final class PreferencesWindow {
             return
         }
 
-        let view = PreferencesView(store: store, secrets: secrets)
+        let view = PreferencesView(
+            store: store,
+            secrets: secrets,
+            selectionState: selectionState
+        )
         let host = NSHostingController(rootView: view)
         let w = NSWindow(contentViewController: host)
         w.title = "MeetingPipe Preferences"

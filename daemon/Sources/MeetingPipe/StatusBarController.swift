@@ -401,7 +401,7 @@ final class StatusBarController {
         if hasPendingPermissionIssue() {
             let warn = NSMenuItem(
                 title: "⚠ Permissions need attention — Open Preferences…",
-                action: #selector(Coordinator.menuPreferences),
+                action: #selector(Coordinator.menuPreferencesPermissions),
                 keyEquivalent: ""
             )
             warn.target = coordinator

@@ -1,6 +1,18 @@
 import AppKit
 import SwiftUI
 
+/// Shared selection state for the Preferences window. The Coordinator
+/// holds a single instance and passes it both into `PreferencesView`
+/// (which binds the sidebar to `current`) and `PreferencesWindow.show`,
+/// which can mutate `current` to deeplink an external caller (e.g. the
+/// menu-bar permission-warning row, or the mic-permission-blocked path
+/// in beginRecording) to a specific section. SwiftUI re-renders the
+/// sidebar selection whenever `current` changes, so deeplink works
+/// whether the window is being created fresh or is already on screen.
+final class PreferencesSelectionState: ObservableObject {
+    @Published var current: PreferencesItem = .general
+}
+
 /// Sidebar navigation items for the redesigned Preferences window (TECH-E4).
 /// IA reshuffle per the Claude-Design handoff:
 ///   - General      — global hotkeys (lifted from Detection — they're
@@ -62,14 +74,14 @@ enum PreferencesItem: String, CaseIterable, Identifiable, Hashable {
 struct PreferencesView: View {
     @ObservedObject var store: ConfigStore
     @ObservedObject var secrets: SecretsStore
+    @ObservedObject var selectionState: PreferencesSelectionState
     @StateObject private var doctor = DoctorRunner()
 
-    @State private var selection: PreferencesItem = .general
     @State private var doctorSheetOpen: Bool = false
 
     var body: some View {
         NavigationSplitView {
-            PreferencesSidebar(selection: $selection)
+            PreferencesSidebar(selection: $selectionState.current)
         } detail: {
             ScrollView {
                 detailContent
@@ -86,7 +98,7 @@ struct PreferencesView: View {
 
     @ViewBuilder
     private var detailContent: some View {
-        switch selection {
+        switch selectionState.current {
         case .general:
             GeneralSectionView(store: store)
         case .recording:

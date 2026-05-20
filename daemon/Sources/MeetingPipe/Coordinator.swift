@@ -512,6 +512,14 @@ final class Coordinator: NSObject {
         preferencesWindow?.show()
     }
 
+    /// Deeplink entry for the menu-bar warning row and the recording-
+    /// blocked-on-mic-permission path. Opens Preferences directly on
+    /// the Permissions section so the user can resolve the TCC issue
+    /// without hunting through the sidebar.
+    @objc func menuPreferencesPermissions() {
+        preferencesWindow?.show(initial: .permissions)
+    }
+
     @objc func menuOpenLibrary() {
         libraryWindow.show()
     }
@@ -921,10 +929,9 @@ final class Coordinator: NSObject {
             ])
             notifier.notifyError("Microphone permission is required. Grant it in Preferences → Permissions, then try again.")
             // Pop the Preferences window so the user can act without
-            // hunting for the menu item. The Preferences tab order
-            // surfaces Permissions; the existing menu menuPreferences
-            // handler activates the right window.
-            menuPreferences()
+            // hunting for the menu item. Deeplink directly to the
+            // Permissions section since the error is permission-shaped.
+            menuPreferencesPermissions()
             stateMachine.setIdle()
             statusBar.setIdle()
             return
