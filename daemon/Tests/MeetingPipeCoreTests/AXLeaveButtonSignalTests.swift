@@ -23,7 +23,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
 
     final class ManualScheduler { var tick: (() -> Void)? }
 
-    func test_initial_healthy_state_does_not_emit() throws {
+    func test_initial_healthy_state_emits_live_baseline() throws {
         let log = RecordingEventLog()
         let bus = AXObserverBus()
         let scheduler = ManualScheduler()
@@ -37,7 +37,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         signal.onChange = { observed.append($0) }
 
         try signal.start(context: teamsContext, leaveButton: stubElement())
-        XCTAssertEqual(observed, [], "Healthy baseline must not emit a transition")
+        XCTAssertEqual(observed, [.healthy], "Healthy baseline emits so PromotionEngine can promote to .inMeeting")
         XCTAssertEqual(signal.lastState, .healthy)
     }
 
@@ -58,7 +58,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         scheduler.tick?()
         scheduler.tick?()
 
-        XCTAssertEqual(observed, [.invalid], "Invalid edge fires exactly once")
+        XCTAssertEqual(observed, [.healthy, .invalid], "Healthy baseline, then the invalid edge fires exactly once")
     }
 
     func test_health_poll_catches_dropped_destruction_notification() throws {
@@ -79,7 +79,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         probeReturn = .invalid
         scheduler.tick?()
 
-        XCTAssertEqual(observed, [.invalid])
+        XCTAssertEqual(observed, [.healthy, .invalid])
         XCTAssertTrue(log.entries.contains { entry in
             entry.action == "ax_leave_button_state" && entry.attributes["reason"] == "health_poll"
         })

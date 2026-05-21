@@ -108,9 +108,10 @@ public final class AXLeaveButtonSignal {
             "reason": reason,
             "previous": previous.map { $0 == .invalid ? "invalid" : "healthy" } as Any
         ])
+        // Initial reading emits too: a healthy button at engage is the .live the engine needs.
         if state == .invalid && previous != .invalid {
             onChange?(state)
-        } else if state == .healthy && previous == .invalid {
+        } else if state == .healthy && previous != .healthy {
             onChange?(state)
         }
     }
