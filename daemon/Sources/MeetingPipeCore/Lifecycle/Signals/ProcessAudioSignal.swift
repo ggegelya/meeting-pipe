@@ -36,6 +36,14 @@ public final class ProcessAudioSignal {
     /// Default uses `Timer.scheduledTimer` on the main runloop.
     public typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
 
+    /// Resolves a process PID to its HAL process `AudioObjectID`.
+    /// Returns nil when the process has no audio object (not yet
+    /// registered, quit). Production translates via
+    /// `kAudioHardwarePropertyTranslatePIDToProcessObject`; tests
+    /// inject a stub so the listener path can be exercised without a
+    /// live audio process.
+    public typealias ProcessObjectResolver = (pid_t) -> AudioObjectID?
+
     public var onChange: ((Bool) -> Void)?
 
     /// Last reading we forwarded. nil means we haven't read yet (no
@@ -49,6 +57,7 @@ public final class ProcessAudioSignal {
     private let eventLog: EventLog
     private let probe: Probe
     private let scheduler: Scheduler
+    private let resolver: ProcessObjectResolver
     private let pollInterval: TimeInterval
 
     private var context: MeetingLifecycleContext?
@@ -60,32 +69,58 @@ public final class ProcessAudioSignal {
         eventLog: EventLog = NoopEventLog(),
         probe: @escaping Probe = ProcessAudioSignal.defaultProbe,
         scheduler: @escaping Scheduler = ProcessAudioSignal.defaultScheduler,
+        resolver: @escaping ProcessObjectResolver = ProcessAudioSignal.defaultResolver,
         pollInterval: TimeInterval = ProcessAudioSignal.defaultPollInterval
     ) {
         self.halBus = halBus
         self.eventLog = eventLog
         self.probe = probe
         self.scheduler = scheduler
+        self.resolver = resolver
         self.pollInterval = pollInterval
     }
 
     public func start(context: MeetingLifecycleContext) throws {
         stop()
         self.context = context
-        // Resolve the AudioObject via the probe + subscribe to the HAL
-        // property. The address is keyed by the AudioObjectID the probe
-        // implementation chose; subscribers using the default probe can
-        // expect kAudioProcessPropertyIsRunningInput on the process
-        // object.
-        let address = CoreAudioHALBus.Address(
-            objectID: AudioObjectID(context.pid),
-            selector: kAudioProcessPropertyIsRunningInput,
-            scope: kAudioObjectPropertyScopeGlobal,
-            element: kAudioObjectPropertyElementMain
-        )
-        halToken = try halBus.subscribe(address) { [weak self] in
-            self?.evaluate(reason: "listener")
+
+        // Subscribe the HAL listener to the meeting app's process
+        // AudioObject. The PID itself is NOT an AudioObjectID; it must
+        // be translated via kAudioHardwarePropertyTranslatePIDToProcessObject
+        // first (see `defaultResolver`). Subscribing against the raw
+        // PID returns kAudioHardwareBadObjectError ('!obj') and, when
+        // rethrown, took the whole lifecycle coordinator engage down.
+        //
+        // Listener registration is best-effort: if the process object
+        // can't be resolved, or the HAL refuses the listener, the
+        // signal degrades to the 1 Hz polling fallback rather than
+        // failing `start`. Per the TECH-C13 spec a polling-only path
+        // is acceptable but must be logged, never silent.
+        if let processObject = resolver(context.pid) {
+            let address = CoreAudioHALBus.Address(
+                objectID: processObject,
+                selector: kAudioProcessPropertyIsRunningInput,
+                scope: kAudioObjectPropertyScopeGlobal,
+                element: kAudioObjectPropertyElementMain
+            )
+            do {
+                halToken = try halBus.subscribe(address) { [weak self] in
+                    self?.evaluate(reason: "listener")
+                }
+            } catch {
+                eventLog.emit(category: "signal", action: "process_audio_listener_unavailable", attributes: [
+                    "bundle_id": context.bundleID,
+                    "pid": Int(context.pid),
+                    "error": "\(error)"
+                ])
+            }
+        } else {
+            eventLog.emit(category: "signal", action: "process_audio_object_unresolved", attributes: [
+                "bundle_id": context.bundleID,
+                "pid": Int(context.pid)
+            ])
         }
+
         cancelPoll = scheduler(pollInterval) { [weak self] in
             self?.evaluate(reason: "poll")
         }
@@ -132,6 +167,14 @@ public final class ProcessAudioSignal {
             action()
         }
         return { timer.invalidate() }
+    }
+
+    /// Default resolver: translate a PID to its HAL process
+    /// AudioObject. Used both by `start` (to key the listener) and by
+    /// `defaultProbe` (to key the poll readback) so the two paths
+    /// always target the same object.
+    public static let defaultResolver: ProcessObjectResolver = { pid in
+        translatePIDToProcessObject(pid)
     }
 
     /// Default probe: resolve the meeting-app PID to an AudioObjectID
