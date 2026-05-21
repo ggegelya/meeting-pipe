@@ -94,8 +94,3 @@ struct ProcessingJob: Equatable {
     let summaryMode: SummaryMode
     let startedAt: Date
 }
-
-enum DetectorEvent {
-    case started(AppSource)
-    case ended
-}

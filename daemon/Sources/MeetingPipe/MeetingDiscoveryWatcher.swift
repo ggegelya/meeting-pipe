@@ -59,6 +59,13 @@ final class MeetingDiscoveryWatcher {
         coalesceWork = nil
     }
 
+    /// Kick an immediate scan, bypassing the poll interval. The
+    /// Coordinator calls this on a permission grant so an in-progress
+    /// meeting is picked up the moment Accessibility / Mic flips on.
+    func refreshNow() {
+        scheduleScan(triggerBundle: nil)
+    }
+
     // MARK: Wiring
 
     private func wireWorkspaceObservers() {

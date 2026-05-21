@@ -18,15 +18,9 @@ final class Coordinator: NSObject {
     private let notifier: Notifier
     private let promptWindow: MeetingPromptWindow
     private let recordingHUD: RecordingHUDWindow
-    /// `var` so we can swap in a fresh Detector when the user changes
-    /// debounce values via Preferences. See `applyConfigRefreshIfPossible`.
-    private var detector: Detector
-
-    /// Shadow-mode cold-start discovery (TECH-C13 step 5). Runs the
-    /// extracted MeetingSourceScanner on the same triggers as Detector
-    /// and logs its pick; nothing consumes its output yet. Start
-    /// detection migrates onto it in a later step. Carries no debounce
-    /// config, so `applyConfigRefreshIfPossible` leaves it running.
+    /// Cold-start meeting discovery: scans for a meeting app, engages
+    /// the lifecycle adapter, and the `.starting` verdict raises the
+    /// prompt (TECH-C13 step 5).
     private let discoveryWatcher = MeetingDiscoveryWatcher()
     private let hotkey: HotkeyManager
     private let consent: ConsentStore
@@ -151,15 +145,6 @@ final class Coordinator: NSObject {
         self.notifier = Notifier()
         self.promptWindow = MeetingPromptWindow()
         self.recordingHUD = RecordingHUDWindow()
-        self.detector = Detector(
-            debounceStartSec: configStore?.debounceStartSec ?? config.detection.debounceStartSec,
-            debounceEndSec: configStore?.debounceEndSec ?? config.detection.debounceEndSec,
-            // Per-bundle end-debounce overrides aren't surfaced in
-            // Preferences yet (TECH-C4 ships TOML support only), so we
-            // read straight from the loaded Config. Editing requires a
-            // daemon restart for now.
-            debounceEndPerBundle: config.detection.debounceEndPerBundle
-        )
         self.hotkey = HotkeyManager()
         self.consent = ConsentStore()
         let resolvedLauncher = launcher ?? PipelineLauncher()
@@ -445,7 +430,7 @@ final class Coordinator: NSObject {
                 Log.event(category: "coordinator", action: "permission_granted", attributes: [
                     "kind": kind.rawValue,
                 ])
-                self.detector.refreshNow()
+                self.discoveryWatcher.refreshNow()
                 self.statusBar.refreshMenuForPermissionChange()
             }
     }
@@ -508,7 +493,6 @@ final class Coordinator: NSObject {
 
     func shutdown() {
         Log.main.info("shutting down")
-        detector.stop()
         discoveryWatcher.stop()
         hotkey.unregister()
         verdictConsumerTask?.cancel()
@@ -830,9 +814,7 @@ final class Coordinator: NSObject {
     //
     // When a `ConfigStore` is wired up, prefer its current value over the
     // boot-time `config` snapshot. That way Preferences edits take effect
-    // at the next read without bouncing the daemon. Detector debounce
-    // values are special-cased: they're constructor params, so we rebuild
-    // the Detector on persist (see `applyConfigRefreshIfPossible`).
+    // at the next read without bouncing the daemon.
 
     private var liveOutputDir: URL {
         guard let raw = configStore?.outputDirPath else { return config.recording.outputDir }
@@ -1008,12 +990,6 @@ final class Coordinator: NSObject {
                 outputDir: liveOutputDir,
                 voiceProcessing: liveVoiceProcessing
             )
-            // Tell the detector our tap is live so micInUse() switches
-            // its gating, and any endTimer armed by a pre-recording
-            // mic flicker gets cancelled immediately. Without this, a
-            // stale debounce can fire seconds into a fresh recording
-            // and stop it.
-            detector.recorderDidStart()
             activeWorkflow = resolvedWorkflow
             stateMachine.setRecording(file: file, source: source, summaryMode: summaryMode)
             statusBar.setRecording(file: file, source: source, summaryMode: summaryMode, workflow: resolvedWorkflow)
@@ -1064,10 +1040,6 @@ final class Coordinator: NSObject {
         Task { @MainActor [weak self] in
             await recorder.stop()
             guard let self = self else { return }
-            // Recorder is no longer holding the input device, so
-            // `micInUse` can re-enable its CoreAudio probe and the
-            // detector resumes its normal pre-recording behaviour.
-            self.detector.recorderDidStop()
             Log.writeLine("daemon", "recording stopped → \(file.path)")
             Log.event(category: "coordinator", action: "recording_stopped", attributes: [
                 "file": file.lastPathComponent,
@@ -1368,15 +1340,7 @@ private final class LogEventAdapter: EventLog {
     }
 }
 
-extension Coordinator: DetectorDelegate {
-    func detector(_ detector: Detector, event: DetectorEvent) {
-        switch event {
-        case .started(let src):
-            handleMeetingStarted(source: src)
-        case .ended:
-            handleMeetingEndedDuringPrompt()
-        }
-    }
+extension Coordinator {
 
     private func handleMeetingStarted(source: AppSource) {
         guard stateMachine.isAcceptingPrompts else { return }
