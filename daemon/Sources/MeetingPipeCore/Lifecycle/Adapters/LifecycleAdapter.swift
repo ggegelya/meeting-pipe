@@ -54,10 +54,7 @@ public protocol LifecycleAdapter: AnyObject {
 /// vendors. Adapters compose these per-platform.
 public enum MeetingTitlePatterns {
 
-    /// Teams native + Teams web: any title containing the localised
-    /// "Meeting" / "Reunion" / "Reuniao" / "Reunion" / "Besprechung"
-    /// / "Encuentro" / "Mitarbeiter" stems plus the explicit
-    /// "Microsoft Teams" fallback that older builds emit.
+    /// Teams native + web: a localised "meeting" stem, or the universal " | Microsoft Teams" window-title suffix.
     public static let teams: (String?) -> Bool = { title in
         guard let lowered = title?.lowercased() else { return false }
         for token in teamsTokens where lowered.contains(token) {
@@ -105,7 +102,9 @@ public enum MeetingTitlePatterns {
 
     private static let teamsTokens: [String] = [
         "meeting", "besprechung", "reunion", "reuniao", "encuentro",
-        "встреча", "kokous", "spotkanie", "moot"
+        "встреча", "kokous", "spotkanie", "moot",
+        // Universal " | Microsoft Teams" suffix: matches meeting windows whose subject lacks a meeting stem.
+        "microsoft teams"
     ]
 
     private static let zoomTokens: [String] = [

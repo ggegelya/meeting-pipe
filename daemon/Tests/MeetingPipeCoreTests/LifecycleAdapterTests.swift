@@ -57,6 +57,11 @@ final class LifecycleAdapterTests: XCTestCase {
         XCTAssertFalse(MeetingTitlePatterns.teams("Chat | Acme"))
     }
 
+    func test_teams_title_pattern_matches_subject_titled_meeting_window() {
+        // New-Teams meeting windows are "<subject> | Microsoft Teams" with no literal "meeting" token (the 8m47s false-stop regression).
+        XCTAssertTrue(MeetingTitlePatterns.teams("Architecture priorities - Weekly sync | Microsoft Teams"))
+    }
+
     func test_zoom_title_pattern_matches_zoom_meeting_strings() {
         XCTAssertTrue(MeetingTitlePatterns.zoom("Zoom Meeting"))
         XCTAssertTrue(MeetingTitlePatterns.zoom("Zoom - Standup"))
