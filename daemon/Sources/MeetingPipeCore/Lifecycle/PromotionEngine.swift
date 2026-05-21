@@ -45,9 +45,12 @@ public struct PrimarySignalEvent: Equatable {
 ///
 ///   - `.idle` -> `.starting` on the first PRIMARY `.live` event for
 ///     a context.
-///   - `.starting` -> `.inMeeting` once any PRIMARY emits `.live`
-///     (the same event that triggered `.starting` is enough for the
-///     immediate promotion when no other signal contradicts).
+///   - `.starting` -> `.inMeeting` only when the coordinator calls
+///     `confirmRecording()` after arming the recorder. Further PRIMARY
+///     `.live` events while `.starting` are absorbed, not promoted:
+///     `.inMeeting` means "recording confirmed", not "a signal fired".
+///   - `.starting` -> `.ended` on the first PRIMARY `.ended` (the
+///     meeting ended before the recorder was armed; no debounce).
 ///   - `.inMeeting` -> `.endingProvisional(leading:)` on the first
 ///     PRIMARY emitting `.ended`; `leadingSignal` is that signal's
 ///     name.
@@ -129,12 +132,22 @@ public final class PromotionEngine {
         return Decision(verdict: .ended(context: context, reason: reason))
     }
 
+    /// Promote an in-flight `.starting` phase to `.inMeeting`. Called by
+    /// the coordinator once the recorder is armed, so `.inMeeting`
+    /// means "recording confirmed" rather than merely "a signal fired".
+    /// No-op in every other phase.
+    public func confirmRecording() -> Decision? {
+        guard case .starting(let context, let observed) = phase else { return nil }
+        phase = .inMeeting(context: context, observed: observed)
+        return Decision(verdict: .inMeeting(context: context))
+    }
+
     // MARK: - Phase handlers
 
     private func handleIdle(_ event: PrimarySignalEvent) -> Decision? {
         guard event.state == .live else { return nil }
-        phase = .inMeeting(context: event.context, observed: [event.kind])
-        return Decision(verdict: .inMeeting(context: event.context))
+        phase = .starting(context: event.context, observed: [event.kind])
+        return Decision(verdict: .starting(context: event.context))
     }
 
     private func handleStarting(
@@ -143,12 +156,22 @@ public final class PromotionEngine {
         observed: inout Set<PrimarySignalKind>
     ) -> Decision? {
         guard event.context == context else { return nil }
-        if event.state == .live {
+        switch event.state {
+        case .live:
+            // Absorb the corroborating signal but stay `.starting`.
+            // Promotion to `.inMeeting` is `confirmRecording()`'s job,
+            // so `.inMeeting` tracks the recorder, not the signals.
             observed.insert(event.kind)
-            phase = .inMeeting(context: context, observed: observed)
-            return Decision(verdict: .inMeeting(context: context))
+            phase = .starting(context: context, observed: observed)
+            return nil
+        case .ended:
+            // The meeting ended before the recorder was armed (slow
+            // prompt answer, or a stale discovery scan). End directly
+            // so the consumer dismisses the prompt.
+            let reason = EndingReason(leadingSignal: event.kind.rawValue, confirmedBy: [])
+            phase = .ended(context: context)
+            return Decision(verdict: .ended(context: context, reason: reason))
         }
-        return nil
     }
 
     private func handleInMeeting(

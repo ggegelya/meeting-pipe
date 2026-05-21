@@ -285,10 +285,10 @@ final class Coordinator: NSObject {
     /// probe transitions). Done after `super.init` so `self` is valid.
     private func wireSubsystems() {
         stateMachine.onIdleTransition = { [weak self] in
-            // Mid-recording config edits get deferred — apply them when
-            // we land back in idle so the next meeting picks up the new
-            // values.
-            self?.applyConfigRefreshIfPossible()
+            // Every path back to idle (record then stop, skip, prompt
+            // timeout, stale-prompt end) tears down the lifecycle
+            // adapter through this single hook.
+            self?.disengageLifecycle()
         }
         sinkDispatcher.onQueueDepthChanged = { [weak self] depth in
             self?.statusBar.setProcessingCount(depth)
@@ -344,13 +344,20 @@ final class Coordinator: NSObject {
             }
         }
 
-        // Consume the lifecycle verdict stream; .ended closes the recording. Other verdicts await later TECH-C13 steps.
+        // Consume the lifecycle verdict stream: `.starting` raises the
+        // prompt, `.ended` closes the recording or dismisses a stale
+        // prompt. `.inMeeting` / `.endingProvisional` are telemetry.
         lifecycleConsumerTask = Task { [weak self] in
             guard let self = self else { return }
             for await verdict in self.lifecycleCoord.verdicts {
                 await MainActor.run {
-                    if case .ended = verdict {
+                    switch verdict {
+                    case .starting(let context):
+                        self.handleMeetingStarted(source: self.appSource(from: context))
+                    case .ended:
                         self.handleMeetingEnded()
+                    default:
+                        break
                     }
                 }
             }
@@ -371,10 +378,12 @@ final class Coordinator: NSObject {
             Log.event(category: "coordinator", action: "dry_run_enabled")
         }
 
-        detector.delegate = self
-        detector.start()
-        // Shadow-mode discovery runs alongside Detector; nothing reads
-        // its output yet (TECH-C13 step 5).
+        // Cold-start discovery: the watcher reports a winning source,
+        // the Coordinator engages the lifecycle adapter, and the
+        // `.starting` verdict raises the prompt (TECH-C13 step 5).
+        discoveryWatcher.onDiscovered = { [weak self] source in
+            self?.handleDiscovery(source)
+        }
         discoveryWatcher.start()
 
         // Seed the status bar with the initial regulated-mode flag so
@@ -1023,6 +1032,10 @@ final class Coordinator: NSObject {
             ])
             armSilenceDetector()
             engageMicGate(source: source)
+            // The recorder is armed: promote the lifecycle verdict from
+            // `.starting` to `.inMeeting`. A no-op for manual recordings
+            // (no adapter engaged) and for the prompt-answered-late race.
+            lifecycleCoord.confirmRecording()
         } catch {
             Log.main.error("failed to start recorder: \(error.localizedDescription)")
             notifier.notifyError("Could not start recording: \(error.localizedDescription)")
@@ -1157,8 +1170,6 @@ final class Coordinator: NSObject {
     // MARK: Config refresh
 
     private func handleConfigPersisted() {
-        stateMachine.markConfigRefreshPending()
-        applyConfigRefreshIfPossible()
         ensureModelPrefetchIfNeeded()
         statusBar.setRegulatedMode(configStore?.regulatedMode ?? false)
     }
@@ -1181,31 +1192,6 @@ final class Coordinator: NSObject {
         let modelId = store.summarizationLocalModel
         guard !modelId.isEmpty else { return }
         modelDownload.ensure(modelId: modelId)
-    }
-
-    /// Rebuild the Detector with the live debounce values, but only when
-    /// we're idle — rebuilding mid-recording would reset `hasFiredStart`,
-    /// stranding the in-flight meeting because the new Detector wouldn't
-    /// fire `.ended`. Anything stashed gets applied on the next idle
-    /// transition (see `state.didSet`).
-    private func applyConfigRefreshIfPossible() {
-        guard stateMachine.consumePendingConfigRefreshIfIdle(), let store = configStore else { return }
-
-        let newStart = store.debounceStartSec
-        let newEnd = store.debounceEndSec
-        Log.main.info("config persisted → rebuilding detector (start=\(newStart) end=\(newEnd))")
-        detector.stop()
-        let fresh = Detector(
-            debounceStartSec: newStart,
-            debounceEndSec: newEnd,
-            // Per-bundle overrides aren't writable via ConfigStore yet,
-            // so we keep the boot-time snapshot. Re-applying them here
-            // ensures the rebuilt Detector matches the constructor path.
-            debounceEndPerBundle: config.detection.debounceEndPerBundle
-        )
-        fresh.delegate = self
-        fresh.start()
-        detector = fresh
     }
 
     // MARK: - Silence detection (TECH-C2)
@@ -1277,14 +1263,6 @@ final class Coordinator: NSObject {
             return
         }
         do {
-            try lifecycleCoord.engage(context: handles.context, handle: handles.lifecycle)
-        } catch {
-            Log.event(category: "coordinator", action: "lifecycle_engage_failed", attributes: [
-                "bundle_id": source.bundleID,
-                "error": error.localizedDescription,
-            ])
-        }
-        do {
             try micGate.start(context: handles.context, handle: handles.micGate)
         } catch {
             Log.event(category: "coordinator", action: "micgate_start_failed", attributes: [
@@ -1309,6 +1287,73 @@ final class Coordinator: NSObject {
         )
         watcher.start()
         axWindowWatcher = watcher
+    }
+
+    // MARK: - Lifecycle discovery (TECH-C13)
+
+    /// Watcher callback: a discovery scan found a winning meeting
+    /// source. Engage the lifecycle subsystem for it when we are idle
+    /// and the bundle is not in its post-meeting cooldown. The
+    /// `.starting` verdict the adapter then produces raises the prompt.
+    private func handleDiscovery(_ source: AppSource) {
+        guard stateMachine.isAcceptingPrompts else { return }
+        if stateMachine.isCoolingDown(
+            bundleID: source.bundleID,
+            cooldownSec: liveRepromptCooldownSec
+        ) {
+            return
+        }
+        engageLifecycle(for: source)
+    }
+
+    /// Walk the meeting app's AX tree and engage the lifecycle adapter
+    /// so it fuses PRIMARY signals into the verdict stream. Replaces the
+    /// recording-time engage that used to live in `engageMicGate`.
+    private func engageLifecycle(for source: AppSource) {
+        guard let handles = MeetingAXHandleBuilder.build(source: source, catalogue: muteLabels) else {
+            Log.event(category: "coordinator", action: "lifecycle_engage_skipped", attributes: [
+                "bundle_id": source.bundleID,
+                "reason": "no_pid",
+            ])
+            return
+        }
+        do {
+            try lifecycleCoord.engage(context: handles.context, handle: handles.lifecycle)
+        } catch {
+            Log.event(category: "coordinator", action: "lifecycle_engage_failed", attributes: [
+                "bundle_id": source.bundleID,
+                "error": error.localizedDescription,
+            ])
+        }
+    }
+
+    /// Tear down the lifecycle adapter + reset the engine. Wired to the
+    /// state machine's idle transition so every path back to idle
+    /// disengages exactly once.
+    private func disengageLifecycle() {
+        lifecycleCoord.disengage()
+    }
+
+    /// Bridge a lifecycle verdict's `MeetingLifecycleContext` back into
+    /// an `AppSource` for the prompt + workflow matcher. The context
+    /// has no display name (resolved here via `NSRunningApplication`)
+    /// and its title is best-effort, so the meeting title is re-walked
+    /// synchronously for the workflow matcher's title rules.
+    private func appSource(from context: MeetingLifecycleContext) -> AppSource {
+        let kind: AppSourceKind = context.kind == .browser ? .browser : .native
+        let displayName = NSRunningApplication(processIdentifier: context.pid)?
+            .localizedName ?? context.bundleID
+        let title = MeetingTitleResolver.resolve(
+            bundleID: context.bundleID,
+            kind: kind,
+            pid: context.pid
+        )
+        return AppSource(
+            bundleID: context.bundleID,
+            displayName: displayName,
+            kind: kind,
+            meetingTitle: title
+        )
     }
 }
 
@@ -1344,26 +1389,6 @@ extension Coordinator: DetectorDelegate {
                 "bundle_id": source.bundleID,
             ])
             beginRecording(source: source, summaryMode: .auto)
-            return
-        }
-
-        // Re-prompt cooldown gate. After a recording / skipped prompt
-        // for this bundle, post-call surfaces (Teams chat reclaiming
-        // mic, Zoom's teardown audio session) regularly trigger a
-        // fresh `.started` within seconds of the previous end. Drop
-        // the prompt for the cooldown window. Manual hotkey path
-        // clears the entry so the user can still force a fresh
-        // recording in the same app immediately.
-        let cooldown = liveRepromptCooldownSec
-        if stateMachine.isCoolingDown(bundleID: source.bundleID, cooldownSec: cooldown) {
-            Log.writeLine(
-                "daemon",
-                "prompt suppressed (cooldown) → \(source.bundleID) (\(Int(cooldown))s window)"
-            )
-            Log.event(category: "coordinator", action: "prompt_suppressed_cooldown", attributes: [
-                "bundle_id": source.bundleID,
-                "cooldown_sec": cooldown,
-            ])
             return
         }
 
@@ -1405,7 +1430,8 @@ extension Coordinator: DetectorDelegate {
         }
     }
 
-    /// Stale-prompt dismissal when a meeting ends before the user answers (Detector-driven; the lifecycle stream is not engaged pre-recording).
+    /// Dismiss a stale prompt when the meeting ends before the user
+    /// answers. Reached via the lifecycle `.ended` verdict.
     private func handleMeetingEndedDuringPrompt() {
         switch stateMachine.current {
         case .prompting, .suppressed:

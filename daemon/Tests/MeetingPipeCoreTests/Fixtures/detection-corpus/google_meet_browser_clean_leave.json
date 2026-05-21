@@ -14,6 +14,7 @@
     {"t": 27.5, "kind": "tick"}
   ],
   "expected_verdicts": [
+    {"after": "events[0]", "verdict": "starting"},
     {"after": "events[0]", "verdict": "in_meeting"},
     {"after": "events[1]", "verdict": "ending_provisional", "leading": "browser_tab_title_left_meet_pattern"},
     {"after": "events[2]", "verdict": "ended", "leading": "browser_tab_title_left_meet_pattern", "confirmed_by": []}

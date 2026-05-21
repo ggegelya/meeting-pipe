@@ -108,6 +108,10 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
             context: teamsContext
         ))
         flushEngine(coordinator)
+        XCTAssertEqual(coordinator.current, .starting(context: teamsContext))
+
+        coordinator.confirmRecording()
+        flushEngine(coordinator)
         XCTAssertEqual(coordinator.current, .inMeeting(context: teamsContext))
 
         now = Date(timeIntervalSince1970: 1)
@@ -157,7 +161,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
             context: teamsContext
         ))
         flushEngine(coordinator)
-        XCTAssertEqual(coordinator.current, .inMeeting(context: teamsContext))
+        XCTAssertEqual(coordinator.current, .starting(context: teamsContext))
 
         coordinator.disengage()
         XCTAssertTrue(fake.didStop)

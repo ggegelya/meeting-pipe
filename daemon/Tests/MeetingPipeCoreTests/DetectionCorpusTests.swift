@@ -85,6 +85,14 @@ final class DetectionCorpusTests: XCTestCase {
             )
             if let decision = engine.ingest(primaryEvent) {
                 observed.append((index, decision.verdict))
+                // The corpus traces are recorded-meeting scenarios.
+                // Model the user arming the recorder right after
+                // discovery so each trace exercises the full
+                // `.inMeeting` -> `.ended` path.
+                if case .starting = decision.verdict,
+                   let confirmed = engine.confirmRecording() {
+                    observed.append((index, confirmed.verdict))
+                }
             }
         }
 
@@ -196,6 +204,8 @@ final class DetectionCorpusTests: XCTestCase {
             return XCTFail("\(traceName) expectation missing 'verdict'")
         }
         switch label {
+        case "starting":
+            XCTAssertEqual(actual, .starting(context: context), traceName)
         case "in_meeting":
             XCTAssertEqual(actual, .inMeeting(context: context), traceName)
         case "ending_provisional":

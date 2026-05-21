@@ -19,10 +19,11 @@ import Foundation
 /// the verdict stream directly without an adapter (and for the
 /// orchestrator's bootstrap moments such as TCC-denied state).
 ///
-/// Threading: `engage`, `disengage`, `publish`, and `shutdown` must
-/// run on the main queue. Adapter sink callbacks may fire on
-/// background queues; the coordinator serialises engine ingestion on
-/// `engineQueue` so the engine's internal phase stays consistent.
+/// Threading: `engage`, `disengage`, `publish`, `confirmRecording`,
+/// and `shutdown` must run on the main queue. Adapter sink callbacks
+/// may fire on background queues; the coordinator serialises engine
+/// ingestion on `engineQueue` so the engine's internal phase stays
+/// consistent.
 public final class MeetingLifecycleCoordinator {
 
     /// `AsyncStream` of verdicts. Unbounded buffering: verdicts are
@@ -156,6 +157,18 @@ public final class MeetingLifecycleCoordinator {
         engineQueue.async { [weak self] in
             guard let self = self else { return }
             if let decision = self.engine.tick(at: self.clock()) {
+                self.publish(decision.verdict)
+            }
+        }
+    }
+
+    /// Promote the in-flight `.starting` phase to `.inMeeting`. Called
+    /// by the orchestrator once the recorder is armed. No-op when the
+    /// engine is not in `.starting`.
+    public func confirmRecording() {
+        engineQueue.async { [weak self] in
+            guard let self = self else { return }
+            if let decision = self.engine.confirmRecording() {
                 self.publish(decision.verdict)
             }
         }

@@ -2,16 +2,18 @@ import AppKit
 import AVFoundation
 import Foundation
 
-/// Shadow-mode cold-start discovery (TECH-C13 step 5).
+/// Cold-start meeting discovery (TECH-C13 step 5).
 ///
-/// Mirrors `Detector`'s workspace-observer + mic-KVO + 3 s-poll wiring
-/// but drives the extracted `MeetingSourceScanner` instead of the
-/// recording state machine. In shadow mode nothing consumes its output:
-/// it scans on the same triggers as Detector and logs the winning
-/// source as `discovery_shadow_pick`, so its picks can be diffed
-/// against Detector's `source_scored` in the event log before start
-/// detection is migrated onto it.
+/// Workspace-observer + mic-KVO + 3 s-poll wiring that drives the
+/// `MeetingSourceScanner` and reports the winning source through
+/// `onDiscovered`. Each winner change is also logged as
+/// `discovery_shadow_pick` for the event log.
 final class MeetingDiscoveryWatcher {
+
+    /// Called on the main queue each time a scan finds a winning
+    /// meeting source. The owner gates on its own state to decide
+    /// whether to act; leaving this nil keeps the watcher silent.
+    var onDiscovered: ((AppSource) -> Void)?
 
     private let scanner = MeetingSourceScanner()
 
@@ -109,18 +111,27 @@ final class MeetingDiscoveryWatcher {
         scanQueue.async { [weak self] in
             guard let self = self else { return }
             let result = self.scanner.scan(keepStickyOnEmpty: false)
-            guard result.winnerChanged, let winner = result.winner else { return }
-            Log.event(category: "detector", action: "discovery_shadow_pick", attributes: [
-                "winner_bundle_id": winner.source.bundleID,
-                "winner_kind": winner.source.kind == .browser ? "browser" : "native",
-                "winner_score": winner.score,
-                "candidate_count": result.candidateCount,
-                "calling_controls_toolbar": winner.signals.callingControlsToolbar,
-                "leave_button": winner.signals.leaveButton,
-                "mute_button": winner.signals.muteButton,
-                "title_match": winner.signals.titleMatch,
-                "process_audio_active": winner.signals.processAudioActive,
-            ])
+            guard let winner = result.winner else { return }
+            if result.winnerChanged {
+                Log.event(category: "detector", action: "discovery_shadow_pick", attributes: [
+                    "winner_bundle_id": winner.source.bundleID,
+                    "winner_kind": winner.source.kind == .browser ? "browser" : "native",
+                    "winner_score": winner.score,
+                    "candidate_count": result.candidateCount,
+                    "calling_controls_toolbar": winner.signals.callingControlsToolbar,
+                    "leave_button": winner.signals.leaveButton,
+                    "mute_button": winner.signals.muteButton,
+                    "title_match": winner.signals.titleMatch,
+                    "process_audio_active": winner.signals.processAudioActive,
+                ])
+            }
+            // Report every scan that has a winner; the owner gates on
+            // its own state. This keeps re-discovery working when a
+            // meeting ends and the same app is rejoined.
+            let source = winner.source
+            DispatchQueue.main.async { [weak self] in
+                self?.onDiscovered?(source)
+            }
         }
     }
 }

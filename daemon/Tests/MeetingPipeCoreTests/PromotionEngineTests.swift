@@ -22,15 +22,36 @@ final class PromotionEngineTests: XCTestCase {
         )
     }
 
-    func test_first_live_signal_promotes_to_in_meeting() {
+    func test_first_live_signal_promotes_to_starting() {
         let engine = PromotionEngine()
         let decision = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        XCTAssertEqual(decision?.verdict, .starting(context: teamsContext))
+    }
+
+    func test_confirm_recording_promotes_starting_to_in_meeting() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        let decision = engine.confirmRecording()
         XCTAssertEqual(decision?.verdict, .inMeeting(context: teamsContext))
+    }
+
+    func test_ended_signal_during_starting_promotes_straight_to_ended() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        let decision = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
+        XCTAssertEqual(
+            decision?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "shareable_content_window_gone")
+            )
+        )
     }
 
     func test_first_ended_signal_promotes_to_ending_provisional() {
         let engine = PromotionEngine()
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.confirmRecording()
         let decision = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
         XCTAssertEqual(
             decision?.verdict,
@@ -45,6 +66,7 @@ final class PromotionEngineTests: XCTestCase {
         let engine = PromotionEngine()
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
         _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
         _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
         let decision = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 1.5))
 
@@ -63,6 +85,7 @@ final class PromotionEngineTests: XCTestCase {
     func test_tick_after_debounce_promotes_to_ended_without_confirmation() {
         let engine = PromotionEngine(debounce: 2.0)
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.confirmRecording()
         _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
 
         let pre = engine.tick(at: Date(timeIntervalSince1970: 2.5))
@@ -81,6 +104,7 @@ final class PromotionEngineTests: XCTestCase {
     func test_leading_signal_flipping_back_to_live_reverts_to_in_meeting() {
         let engine = PromotionEngine(debounce: 2.0)
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.confirmRecording()
         _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
         let revert = engine.ingest(event(.shareableContentWindow, .live, at: 1.2))
 
@@ -117,6 +141,6 @@ final class PromotionEngineTests: XCTestCase {
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
         engine.reset()
         let decision = engine.ingest(event(.processAudioIsRunningInput, .live, at: 1))
-        XCTAssertEqual(decision?.verdict, .inMeeting(context: teamsContext))
+        XCTAssertEqual(decision?.verdict, .starting(context: teamsContext))
     }
 }
