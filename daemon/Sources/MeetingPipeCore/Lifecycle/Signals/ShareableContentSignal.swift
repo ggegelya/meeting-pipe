@@ -61,6 +61,7 @@ public final class ShareableContentSignal {
     private var titleMatch: TitleMatch?
     private var cancelTick: (() -> Void)?
     private var currentInterval: TimeInterval = 0
+    private var lastUnmatchedCandidates: [String]?
 
     public init(
         eventLog: EventLog = NoopEventLog(),
@@ -93,6 +94,7 @@ public final class ShareableContentSignal {
         titleMatch = nil
         lastValue = nil
         currentInterval = 0
+        lastUnmatchedCandidates = nil
     }
 
     func evaluate(reason: String) {
@@ -108,6 +110,22 @@ public final class ShareableContentSignal {
             summary.bundleIdentifier == context.bundleID && titleMatch(summary.title)
         }
         adjustCadence(forActive: present)
+        if present {
+            lastUnmatchedCandidates = nil
+        } else {
+            // Diagnostic: distinguish "no window" from "title mismatch" by logging the bundle's window titles, deduped on the set.
+            let candidates = summaries
+                .filter { $0.bundleIdentifier == context.bundleID }
+                .map { $0.title ?? "<nil>" }
+            if candidates != lastUnmatchedCandidates {
+                lastUnmatchedCandidates = candidates
+                eventLog.emit(category: "signal", action: "shareable_content_no_match", attributes: [
+                    "bundle_id": context.bundleID,
+                    "candidate_titles": candidates,
+                    "reason": reason
+                ])
+            }
+        }
         if lastValue == present { return }
         let previous = lastValue
         lastValue = present

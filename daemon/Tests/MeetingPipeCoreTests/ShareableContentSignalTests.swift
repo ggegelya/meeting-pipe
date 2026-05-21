@@ -131,4 +131,25 @@ final class ShareableContentSignalTests: XCTestCase {
         XCTAssertEqual(observed, [true])
         XCTAssertTrue(log.entries.contains { $0.action == "shareable_content_unavailable" })
     }
+
+    func test_no_match_logs_candidate_titles_for_diagnosis() {
+        let log = RecordingEventLog()
+        let scheduler = ManualScheduler()
+        let signal = ShareableContentSignal(
+            eventLog: log,
+            probe: {
+                [Summary(bundleIdentifier: "com.microsoft.teams2", title: "Chat - Acme")]
+            },
+            scheduler: manualScheduler(scheduler)
+        )
+
+        signal.start(context: teamsContext) { title in
+            (title ?? "").lowercased().contains("meeting")
+        }
+
+        XCTAssertTrue(
+            log.entries.contains { $0.action == "shareable_content_no_match" },
+            "A bundle-owned window that fails the title match is logged for diagnosis"
+        )
+    }
 }
