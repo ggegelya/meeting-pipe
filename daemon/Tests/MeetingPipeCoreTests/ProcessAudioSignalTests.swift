@@ -24,7 +24,7 @@ final class ProcessAudioSignalTests: XCTestCase {
     /// The real resolver translates a PID via CoreAudio, which returns
     /// nil for the fake PIDs these tests use.
     private func stubResolver(_ objectID: AudioObjectID = 9999) -> ProcessAudioSignal.ProcessObjectResolver {
-        return { _ in objectID }
+        return { _ in .resolved(objectID) }
     }
 
     func test_initial_evaluation_emits_first_transition() throws {
@@ -122,7 +122,7 @@ final class ProcessAudioSignalTests: XCTestCase {
     }
 
     func test_unresolved_process_object_degrades_to_poll_only() throws {
-        // Resolver returns nil (PID has no HAL process object). The
+        // Resolver reports the PID has no HAL process object. The
         // listener must be skipped, NOT throw, so the lifecycle
         // coordinator engage survives; the 1 Hz poll still runs.
         let log = RecordingEventLog()
@@ -134,7 +134,7 @@ final class ProcessAudioSignalTests: XCTestCase {
             eventLog: log,
             probe: { _ in true },
             scheduler: manualScheduler(scheduler),
-            resolver: { _ in nil }
+            resolver: { _ in .unresolved(-1) }
         )
         signal.onChange = { observed.append($0) }
 

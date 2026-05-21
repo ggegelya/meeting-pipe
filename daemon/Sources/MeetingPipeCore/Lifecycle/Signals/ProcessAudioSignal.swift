@@ -36,13 +36,14 @@ public final class ProcessAudioSignal {
     /// Default uses `Timer.scheduledTimer` on the main runloop.
     public typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
 
-    /// Resolves a process PID to its HAL process `AudioObjectID`.
-    /// Returns nil when the process has no audio object (not yet
-    /// registered, quit). Production translates via
-    /// `kAudioHardwarePropertyTranslatePIDToProcessObject`; tests
-    /// inject a stub so the listener path can be exercised without a
-    /// live audio process.
-    public typealias ProcessObjectResolver = (pid_t) -> AudioObjectID?
+    /// PID-to-HAL-process-object resolution. `.unresolved` carries the OSStatus so the failure reason reaches events.jsonl.
+    public enum ProcessObjectResolution {
+        case resolved(AudioObjectID)
+        case unresolved(OSStatus)
+    }
+
+    /// Resolves a process PID to its HAL process AudioObject. Tests inject a stub; production uses `defaultResolver`.
+    public typealias ProcessObjectResolver = (pid_t) -> ProcessObjectResolution
 
     public var onChange: ((Bool) -> Void)?
 
@@ -96,7 +97,8 @@ public final class ProcessAudioSignal {
         // signal degrades to the 1 Hz polling fallback rather than
         // failing `start`. Per the TECH-C13 spec a polling-only path
         // is acceptable but must be logged, never silent.
-        if let processObject = resolver(context.pid) {
+        switch resolver(context.pid) {
+        case .resolved(let processObject):
             let address = CoreAudioHALBus.Address(
                 objectID: processObject,
                 selector: kAudioProcessPropertyIsRunningInput,
@@ -114,10 +116,11 @@ public final class ProcessAudioSignal {
                     "error": "\(error)"
                 ])
             }
-        } else {
+        case .unresolved(let status):
             eventLog.emit(category: "signal", action: "process_audio_object_unresolved", attributes: [
                 "bundle_id": context.bundleID,
-                "pid": Int(context.pid)
+                "pid": Int(context.pid),
+                "osstatus": Int(status)
             ])
         }
 
@@ -183,7 +186,7 @@ public final class ProcessAudioSignal {
     /// matching the contract that the signal stays steady on
     /// inconclusive reads rather than flapping.
     public static let defaultProbe: Probe = { context in
-        guard let processID = translatePIDToProcessObject(context.pid) else { return nil }
+        guard case .resolved(let processID) = translatePIDToProcessObject(context.pid) else { return nil }
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioProcessPropertyIsRunningInput,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -196,7 +199,7 @@ public final class ProcessAudioSignal {
         return running != 0
     }
 
-    private static func translatePIDToProcessObject(_ pid: pid_t) -> AudioObjectID? {
+    private static func translatePIDToProcessObject(_ pid: pid_t) -> ProcessObjectResolution {
         var pidVar = pid
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
@@ -213,7 +216,7 @@ public final class ProcessAudioSignal {
             &size,
             &processID
         )
-        guard status == noErr, processID != 0 else { return nil }
-        return processID
+        guard status == noErr, processID != 0 else { return .unresolved(status) }
+        return .resolved(processID)
     }
 }
