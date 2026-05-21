@@ -74,6 +74,9 @@ final class Coordinator: NSObject {
     /// and the silence backstop on the main actor.
     private var verdictConsumerTask: Task<Void, Never>?
 
+    /// Consumes `lifecycleCoord.verdicts`. Launched in `start()` once; cancelled at shutdown. Routes `.ended` into the recording-end path.
+    private var lifecycleConsumerTask: Task<Void, Never>?
+
     /// Watches the AX application for window-created events so mute
     /// buttons that appear after `beginRecording` (Teams 2 compact
     /// view, PIP overlays, ...) get observed too. Owned per-meeting;
@@ -334,6 +337,18 @@ final class Coordinator: NSObject {
             }
         }
 
+        // Consume the lifecycle verdict stream; .ended closes the recording. Other verdicts await later TECH-C13 steps.
+        lifecycleConsumerTask = Task { [weak self] in
+            guard let self = self else { return }
+            for await verdict in self.lifecycleCoord.verdicts {
+                await MainActor.run {
+                    if case .ended = verdict {
+                        self.handleMeetingEnded()
+                    }
+                }
+            }
+        }
+
         // Funnel every TCC dialog through PermissionsCenter so the
         // Preferences "Permissions" tab and the startup sequence both
         // read from the same published state. macOS still serializes
@@ -478,6 +493,8 @@ final class Coordinator: NSObject {
         hotkey.unregister()
         verdictConsumerTask?.cancel()
         verdictConsumerTask = nil
+        lifecycleConsumerTask?.cancel()
+        lifecycleConsumerTask = nil
         micGate.shutdown()
         lifecycleCoord.shutdown()
         if recorder.isRecording {
