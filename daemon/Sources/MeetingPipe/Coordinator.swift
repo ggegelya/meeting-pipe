@@ -21,6 +21,13 @@ final class Coordinator: NSObject {
     /// `var` so we can swap in a fresh Detector when the user changes
     /// debounce values via Preferences. See `applyConfigRefreshIfPossible`.
     private var detector: Detector
+
+    /// Shadow-mode cold-start discovery (TECH-C13 step 5). Runs the
+    /// extracted MeetingSourceScanner on the same triggers as Detector
+    /// and logs its pick; nothing consumes its output yet. Start
+    /// detection migrates onto it in a later step. Carries no debounce
+    /// config, so `applyConfigRefreshIfPossible` leaves it running.
+    private let discoveryWatcher = MeetingDiscoveryWatcher()
     private let hotkey: HotkeyManager
     private let consent: ConsentStore
     private let launcher: PipelineDriver
@@ -366,6 +373,9 @@ final class Coordinator: NSObject {
 
         detector.delegate = self
         detector.start()
+        // Shadow-mode discovery runs alongside Detector; nothing reads
+        // its output yet (TECH-C13 step 5).
+        discoveryWatcher.start()
 
         // Seed the status bar with the initial regulated-mode flag so
         // the lock glyph (if the user has it enabled) shows from boot
@@ -490,6 +500,7 @@ final class Coordinator: NSObject {
     func shutdown() {
         Log.main.info("shutting down")
         detector.stop()
+        discoveryWatcher.stop()
         hotkey.unregister()
         verdictConsumerTask?.cancel()
         verdictConsumerTask = nil
