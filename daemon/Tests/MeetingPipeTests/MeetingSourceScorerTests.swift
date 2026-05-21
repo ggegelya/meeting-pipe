@@ -70,30 +70,32 @@ final class MeetingSourceScorerTests: XCTestCase {
         XCTAssertEqual(MeetingSourceScorer.distinctSignalCount(signals), 2)
     }
 
-    // MARK: - Threshold + distinct-signal floor
+    // MARK: - Single-contender path (threshold does not apply)
 
-    func test_below_threshold_returns_nil() {
-        // titleMatch alone is 2 points - below the 5 floor.
+    func test_single_contender_below_threshold_still_wins() {
+        // A real meeting where the AX walk + process-audio probe came
+        // back empty scores only titleMatch = 2. With one contender
+        // there is nothing to disambiguate, so it must still be
+        // returned - gating it behind the 5-point threshold is exactly
+        // the TECH-C15 regression this rule fixes. The Detector's
+        // micActive AND-gate downstream is the real meeting check.
         var candidates = [teams(signals: .init(titleMatch: true))]
-        XCTAssertNil(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil))
+        let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
+        XCTAssertEqual(winner?.source.bundleID, "com.microsoft.teams2")
+        XCTAssertEqual(winner?.score, 2)
     }
 
-    func test_at_threshold_with_only_one_distinct_signal_returns_nil() {
-        // Single signal cleared above threshold by itself? Not possible
-        // with current weights, but pin the distinct-signal floor
-        // semantics regardless. Sticky bonus alone cannot push to win.
-        // Two-signal floor protects against a stale sticky bias
-        // resurrecting a candidate with no real evidence.
+    func test_single_contender_with_one_signal_wins() {
+        // One distinct signal, below the 2-signal floor. The floor is a
+        // multi-candidate disambiguation rule; with a sole contender it
+        // does not apply.
         var candidates = [teams(signals: .init(callingControlsToolbar: true))]
-        // 4 + sticky 1 = 5, but only 1 distinct signal.
-        let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: AppSource(
-            bundleID: "com.microsoft.teams2", displayName: "Teams"
-        ))
-        XCTAssertNil(winner)
+        let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
+        XCTAssertEqual(winner?.source.bundleID, "com.microsoft.teams2")
     }
 
     func test_score_exactly_at_threshold_with_two_signals_returns_winner() {
-        // leave (3) + mute (2) = 5, two distinct signals - clears floors.
+        // leave (3) + mute (2) = 5, two distinct signals.
         var candidates = [teams(signals: .init(leaveButton: true, muteButton: true))]
         let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
         XCTAssertEqual(winner?.source.bundleID, "com.microsoft.teams2")
@@ -102,6 +104,36 @@ final class MeetingSourceScorerTests: XCTestCase {
 
     func test_empty_candidate_list_returns_nil() {
         var candidates: [MeetingSourceCandidate] = []
+        XCTAssertNil(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil))
+    }
+
+    // MARK: - Idle-app filtering
+
+    func test_idle_meeting_apps_with_no_signal_are_filtered() {
+        // The regression scenario: Teams in a real call (AX walk blind,
+        // so only titleMatch) alongside Slack + Zoom auto-started on
+        // login but idle (zero signals). Slack and Zoom are dropped as
+        // non-contenders, leaving Teams the sole contender, which is
+        // returned despite scoring only 2.
+        var candidates = [
+            teams(signals: .init(titleMatch: true)),
+            MeetingSourceCandidate(
+                source: AppSource(bundleID: "com.tinyspeck.slackmacgap",
+                                   displayName: "Slack", kind: .native),
+                signals: .init()
+            ),
+            zoom(signals: .init()),
+        ]
+        let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
+        XCTAssertEqual(winner?.source.bundleID, "com.microsoft.teams2")
+    }
+
+    func test_all_candidates_idle_returns_nil() {
+        // No app shows any in-meeting signal. Nothing to detect.
+        var candidates = [
+            teams(signals: .init()),
+            zoom(signals: .init()),
+        ]
         XCTAssertNil(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil))
     }
 
@@ -125,18 +157,18 @@ final class MeetingSourceScorerTests: XCTestCase {
     }
 
     /// The motivating scenario for TECH-C15: 2026-05-20 incident.
-    /// Teams running with only a shell window (no Calling controls,
-    /// no leave / mute button visible, no process audio); user is
+    /// Teams running with a shell window (a chat window whose title
+    /// passes the recognizer, so titleMatch is true - the realistic
+    /// case, since a Teams shell always has SOME window). The user is
     /// actually in a Google Meet via Chrome (meeting controls toolbar
-    /// shows, title matches, process audio active).
-    /// The scorer must pick Chrome despite Teams being "first" in
-    /// enumeration order.
+    /// shows, title matches, process audio active). Both are genuine
+    /// contenders, so the threshold path runs; Chrome's far higher
+    /// score wins.
     func test_2026_05_20_incident_scorer_picks_chrome_over_teams_shell() {
         var candidates = [
-            // Teams: shell only. No buttons, no toolbar, no audio,
-            // no title. Worst case for the previous first-match logic.
-            teams(signals: .init()),
-            // Chrome: Meet tab with the full UI rendered.
+            // Teams shell: a chat window passes the recognizer = 2.
+            teams(signals: .init(titleMatch: true)),
+            // Chrome: Meet tab with the full UI rendered = 4 + 2 + 3 = 9.
             chrome(signals: .init(
                 callingControlsToolbar: true,
                 titleMatch: true,
@@ -175,9 +207,14 @@ final class MeetingSourceScorerTests: XCTestCase {
         XCTAssertEqual(winner?.score, 6)
     }
 
-    func test_sticky_bonus_cannot_lift_below_threshold_candidate() {
-        // Teams: titleMatch only = 2. Sticky bonus = 3. Still below 5.
-        var candidates = [teams(signals: .init(titleMatch: true))]
+    func test_sticky_bonus_cannot_lift_below_threshold_in_multi_contender() {
+        // Two contenders, so the threshold applies. Teams: titleMatch
+        // (2) + sticky (1) = 3. Zoom: titleMatch (2). Neither clears 5,
+        // so the sticky bonus cannot resurrect a low-evidence winner.
+        var candidates = [
+            teams(signals: .init(titleMatch: true)),
+            zoom(signals: .init(titleMatch: true)),
+        ]
         let winner = MeetingSourceScorer.pickBest(
             &candidates,
             lastWinner: AppSource(bundleID: "com.microsoft.teams2", displayName: "Teams")
@@ -251,11 +288,26 @@ final class MeetingSourceScorerTests: XCTestCase {
         XCTAssertNil(winner)
     }
 
-    func test_browser_with_only_titleMatch_alone_does_not_win() {
-        // A background Meet tab open while user uses a different app
-        // shouldn't trigger detection. titleMatch alone (2) + nothing
-        // else is below threshold.
+    func test_browser_with_only_titleMatch_is_returned_as_sole_contender() {
+        // A lone Chrome with a meeting-pattern tab title is the only
+        // contender, so it is returned even at score 2. This does NOT
+        // mean a background Meet tab false-starts a recording: the
+        // Detector's micActive AND-gate (DetectorSignals.decide())
+        // still requires the mic to be in use before .started fires.
+        // The scorer's job is "which app", not "is the mic live".
         var candidates = [chrome(signals: .init(titleMatch: true))]
+        let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
+        XCTAssertEqual(winner?.source.bundleID, "com.google.Chrome")
+    }
+
+    func test_multi_contender_all_below_threshold_returns_nil() {
+        // Two genuine contenders, neither clearing the threshold: a
+        // real ambiguity the scorer cannot resolve. Return nil rather
+        // than guess - guessing "first" was the pre-scorer bug.
+        var candidates = [
+            teams(signals: .init(titleMatch: true)),     // 2
+            chrome(signals: .init(titleMatch: true)),    // 2
+        ]
         XCTAssertNil(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil))
     }
 

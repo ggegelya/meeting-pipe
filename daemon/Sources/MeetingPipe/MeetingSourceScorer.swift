@@ -65,8 +65,17 @@ enum MeetingSourceScorer {
     }
 
     /// Score every candidate (mutating each in-place with its score),
-    /// then pick the highest. Returns nil when no candidate clears the
-    /// threshold + distinct-signal floor.
+    /// then pick the winner.
+    ///
+    /// The threshold + distinct-signal floor is a *disambiguation*
+    /// confidence bar: it only applies when two or more candidates are
+    /// genuinely competing. With a single contender there is nothing to
+    /// disambiguate, so it is returned unconditionally and the
+    /// Detector's own `micActive` AND-gate (`DetectorSignals.decide()`)
+    /// stays the real "is this a meeting" check, exactly as it was
+    /// before the scorer landed. Gating a lone meeting app behind the
+    /// threshold is what broke auto-detection when the AX button walk
+    /// and HAL process-audio probe both came back empty on a real call.
     ///
     /// - Parameter lastWinner: source pinned by the previous scan, used
     ///   for the sticky bonus (tie-break + small boost so steady-state
@@ -82,18 +91,33 @@ enum MeetingSourceScorer {
             candidates[i].score = score(candidates[i].signals, isStickyLast: isSticky)
         }
 
-        // Stable sort by score (descending). Ties keep enumeration order;
-        // when one of the tied bundles is the sticky last winner, its
-        // sticky bonus already lifted it above the others, so an explicit
-        // tie-break on `bundleID == lastWinner?.bundleID` is redundant
-        // here. The bonus IS the tie-break.
-        let best = candidates.max(by: { $0.score < $1.score })
+        // A candidate with zero evidence signals is not a real
+        // contender: it is a meeting app sitting idle in the dock
+        // (Slack / Zoom / Teams all auto-start on login). Drop them so
+        // the candidate field reflects apps that actually look in-
+        // meeting. distinctSignalCount excludes the sticky bonus, so a
+        // sticky-only no-evidence candidate is correctly dropped too.
+        let contenders = candidates.filter { distinctSignalCount($0.signals) > 0 }
 
-        guard let winner = best,
-              winner.score >= threshold,
-              distinctSignalCount(winner.signals) >= minDistinctSignals else {
+        guard let best = contenders.max(by: { $0.score < $1.score }) else {
             return nil
         }
-        return winner
+
+        // Single contender: nothing to disambiguate. Return it without
+        // the threshold gate.
+        if contenders.count == 1 {
+            return best
+        }
+
+        // Two or more contenders: the scorer must disambiguate
+        // confidently. Highest score above the threshold + distinct-
+        // signal floor wins; a field where nothing clears is a genuine
+        // ambiguity the scorer cannot resolve, so return nil rather
+        // than guess (guessing "first" was the pre-scorer bug).
+        guard best.score >= threshold,
+              distinctSignalCount(best.signals) >= minDistinctSignals else {
+            return nil
+        }
+        return best
     }
 }
