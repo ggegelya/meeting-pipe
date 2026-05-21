@@ -1,7 +1,7 @@
 import XCTest
 @testable import MeetingPipe
 
-/// Audit `Detector.isActiveMeetingWindow` against an empirical title
+/// Audit `MeetingSourceScanner.isActiveMeetingWindow` against an empirical title
 /// fixture. Each entry pins a (bundle_id, state, expected outcome)
 /// triple to one or more literal AX titles captured from the real app.
 ///
@@ -48,7 +48,7 @@ final class WindowRecognizerFixtureTests: XCTestCase {
             // Native kind for all current entries; the fixture format
             // can grow a `kind` column when browser captures land.
             let recognized = entry.titles.contains { title in
-                Detector.isActiveMeetingWindow(
+                MeetingSourceScanner.isActiveMeetingWindow(
                     bundleID: entry.bundleID, kind: .native, title: title)
             }
             let expected = (entry.expected == "recognize")

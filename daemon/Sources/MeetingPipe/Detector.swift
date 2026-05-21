@@ -3,7 +3,6 @@ import AVFoundation
 import ApplicationServices
 import CoreAudio
 import Foundation
-import MeetingPipeCore
 
 /// Rate-limited log emitter for the "Accessibility permission missing"
 /// failure mode. The window probes fire many times per second; we don't
@@ -35,7 +34,6 @@ enum AXTrustWarning {
         ])
     }
 }
-import TOMLKit
 
 protocol DetectorDelegate: AnyObject {
     func detector(_ detector: Detector, event: DetectorEvent)
@@ -124,9 +122,10 @@ final class Detector {
     /// default; populated from `[detection.debounce_end_per_bundle]` in
     /// `config.toml`. Override > built-in browser default > global.
     private let debounceEndPerBundle: [String: Double]
-    private let nativeBundles: Set<String>
-    private let browserBundles: Set<String>
-    private let browserURLFragments: [String]
+    /// Discovery scan: enumerate-score-pick over the running meeting
+    /// apps. Owns the meeting-app catalogue Detector still reads for its
+    /// workspace-observer fast-exit.
+    private let scanner: MeetingSourceScanner
     private let windowProbe: WindowProbe
 
     /// Built-in end-debounce default for browser sources. Browser
@@ -169,24 +168,6 @@ final class Detector {
     /// at start-fire time, or the source is a browser (browser tabs are
     /// not native AX elements).
     private var recordingWindow: MeetingWindowHandle?
-
-    /// Last scan's winning candidate, used by the scorer for the
-    /// sticky-bonus tie-break (TECH-C15). Cleared in `stop()` and when
-    /// the scorer returns nil (no candidate clears the threshold) so a
-    /// stale pin can't bias a fresh scan after the user closes every
-    /// meeting app.
-    private var lastScorerWinner: AppSource?
-
-    /// Cached MuteLabels catalogue for the scorer's mute-button signal.
-    /// Loaded once per Detector lifetime; resolution failure degrades
-    /// the scorer's `muteButton` flag to false (other signals carry).
-    private static let muteCatalogue: MuteLabels? = {
-        do {
-            return try MuteLabelsLoader.loadDefault()
-        } catch {
-            return nil
-        }
-    }()
 
     private var nsObservers: [NSObjectProtocol] = []
     private var avObservation: NSKeyValueObservation?
@@ -231,15 +212,13 @@ final class Detector {
         self.debounceStartSec = debounceStartSec
         self.debounceEndSec = debounceEndSec
         self.debounceEndPerBundle = debounceEndPerBundle
-        let apps = Detector.loadMeetingApps()
-        self.nativeBundles = apps.native
-        self.browserBundles = apps.browsers
-        self.browserURLFragments = apps.urlFragments
+        let scanner = MeetingSourceScanner()
+        self.scanner = scanner
         // The default probe needs the URL fragments for the browser branch,
         // so we bake them into a closure rather than reloading the TOML
         // resource on every probe call. Tests still inject a fake.
         self.windowProbe = windowProbe ?? Detector.makeDefaultWindowProbe(
-            browserURLFragments: apps.urlFragments
+            browserURLFragments: scanner.browserURLFragments
         )
     }
 
@@ -279,7 +258,7 @@ final class Detector {
         coalesceWork?.cancel()
         coalesceWork = nil
         recordingWindow = nil
-        lastScorerWinner = nil
+        scanner.resetStickyWinner()
     }
 
     // MARK: Recorder lifecycle hooks
@@ -386,8 +365,8 @@ final class Detector {
     /// Caller must be on the main run loop.
     private func scheduleReevaluate(triggerBundle: String?) {
         if !hasFiredStart, let bid = triggerBundle,
-           !nativeBundles.contains(bid),
-           !browserBundles.contains(bid) {
+           !scanner.nativeBundles.contains(bid),
+           !scanner.browserBundles.contains(bid) {
             return
         }
         coalesceWork?.cancel()
@@ -625,37 +604,18 @@ final class Detector {
     // MARK: Signal A
 
     /// Pick the best meeting-app candidate via multi-source scoring
-    /// (TECH-C15). Enumerates every concurrently-running known meeting
-    /// app plus every browser hosting a meeting tab, populates a
-    /// signal tuple per candidate, scores them, and returns the
-    /// highest scorer above threshold. Replaces the previous
-    /// browser-first then first-native-wins linear scan that
-    /// mis-attributed a 2026-05-20 Meet recording to a shell-only
-    /// Teams.
+    /// (TECH-C15). Delegates the enumerate-score-pick scan to
+    /// `MeetingSourceScanner` and emits the `source_scored` diagnostic
+    /// on each winner change so attribution stays auditable.
     private func scanMeetingApp() -> AppSource? {
-        var candidates = enumerateCandidates()
-        guard let winner = MeetingSourceScorer.pickBest(
-            &candidates,
-            lastWinner: lastScorerWinner
-        ) else {
-            // No candidate cleared the floor. Drop the sticky pin so
-            // the next scan starts unbiased; the recordingSource pin
-            // is independent and controls lock-in for an in-progress
-            // recording.
-            if !hasFiredStart {
-                lastScorerWinner = nil
-            }
-            return nil
-        }
-        // Diagnostic on each winner change so the user can audit
-        // attribution after the 2026-05-20 incident. Skip when the
-        // winner is unchanged to avoid 3s-poll noise.
-        if lastScorerWinner?.bundleID != winner.source.bundleID {
+        let result = scanner.scan(keepStickyOnEmpty: hasFiredStart)
+        guard let winner = result.winner else { return nil }
+        if result.winnerChanged {
             Log.event(category: "detector", action: "source_scored", attributes: [
                 "winner_bundle_id": winner.source.bundleID,
                 "winner_kind": winner.source.kind == .browser ? "browser" : "native",
                 "winner_score": winner.score,
-                "candidate_count": candidates.count,
+                "candidate_count": result.candidateCount,
                 "calling_controls_toolbar": winner.signals.callingControlsToolbar,
                 "leave_button": winner.signals.leaveButton,
                 "mute_button": winner.signals.muteButton,
@@ -663,163 +623,7 @@ final class Detector {
                 "process_audio_active": winner.signals.processAudioActive,
             ])
         }
-        lastScorerWinner = winner.source
         return winner.source
-    }
-
-    /// Walk `NSWorkspace.runningApplications` and produce one
-    /// `MeetingSourceCandidate` per concurrent meeting-app contender.
-    /// Native bundles always become candidates (signals may be all
-    /// false; the scorer will reject them). Browsers become candidates
-    /// only when at least one of their windows has a meeting-pattern
-    /// title (matches the existing scanBrowserTab filter so we don't
-    /// drag in every running browser).
-    private func enumerateCandidates() -> [MeetingSourceCandidate] {
-        let axTrusted = AXIsProcessTrusted()
-        var candidates: [MeetingSourceCandidate] = []
-
-        for app in NSWorkspace.shared.runningApplications {
-            guard let bid = app.bundleIdentifier else { continue }
-            let pid = app.processIdentifier
-
-            if nativeBundles.contains(bid) {
-                let source = AppSource(
-                    bundleID: bid,
-                    displayName: app.localizedName ?? bid,
-                    kind: .native
-                )
-                let signals = collectSignals(
-                    bundleID: bid,
-                    kind: .native,
-                    pid: pid,
-                    axTrusted: axTrusted,
-                    preTitleMatch: nil
-                )
-                candidates.append(MeetingSourceCandidate(source: source, signals: signals))
-                continue
-            }
-
-            if browserBundles.contains(bid) {
-                // Browsers are candidates only when at least one of
-                // their windows has a meeting-pattern title. The probe
-                // needs AX trust; without it we can't tell whether a
-                // browser is in a meeting, so it doesn't become a
-                // candidate (native still does because they can win on
-                // audio + button signals alone via the AX walk attempt).
-                guard axTrusted,
-                      anyWindowMatchesMeetingFragment(pid: pid) else { continue }
-                let source = AppSource(
-                    bundleID: bid,
-                    displayName: app.localizedName ?? "Browser",
-                    kind: .browser
-                )
-                let signals = collectSignals(
-                    bundleID: bid,
-                    kind: .browser,
-                    pid: pid,
-                    axTrusted: axTrusted,
-                    preTitleMatch: true
-                )
-                candidates.append(MeetingSourceCandidate(source: source, signals: signals))
-            }
-        }
-
-        return candidates
-    }
-
-    /// Populate the per-candidate signal tuple. Each signal degrades
-    /// to `false` on AX denied / read failed, so the scorer naturally
-    /// down-weights a candidate whose evidence couldn't be gathered.
-    ///
-    /// `preTitleMatch` short-circuits the per-bundle recognizer:
-    ///   - For browser candidates the caller already filtered by the
-    ///     meeting URL fragment, so we set it true rather than re-walk.
-    ///   - For native candidates pass nil so the recognizer runs.
-    private func collectSignals(
-        bundleID: String,
-        kind: AppSourceKind,
-        pid: pid_t,
-        axTrusted: Bool,
-        preTitleMatch: Bool?
-    ) -> MeetingSourceCandidate.Signals {
-        var signals = MeetingSourceCandidate.Signals()
-
-        if axTrusted {
-            let axApp = AXUIElementCreateApplication(pid)
-
-            // titleMatch: browsers were already filtered; natives run
-            // the per-bundle recognizer against every window title.
-            if let pre = preTitleMatch {
-                signals.titleMatch = pre
-            } else if let titles = Detector.collectAXWindowTitles(pid: pid) {
-                signals.titleMatch = titles.contains { title in
-                    Detector.isActiveMeetingWindow(
-                        bundleID: bundleID,
-                        kind: kind,
-                        title: title
-                    )
-                }
-            }
-
-            signals.callingControlsToolbar = MeetingAXHandleBuilder
-                .findCallingControlsToolbar(in: axApp, bundleID: bundleID) != nil
-
-            signals.leaveButton = !MeetingAXHandleBuilder
-                .findAllLeaveButtons(in: axApp, bundleID: bundleID).isEmpty
-
-            if let catalogue = Detector.muteCatalogue {
-                signals.muteButton = !MeetingAXHandleBuilder
-                    .findAllMuteButtons(
-                        in: axApp,
-                        bundleID: bundleID,
-                        catalogue: catalogue
-                    ).isEmpty
-            }
-        }
-
-        // Process-audio: HAL per-PID query via ProcessAudioSignal's
-        // default probe. Webex is excluded because Cisco documents
-        // Webex holding the mic open after meetings for ultrasound
-        // device discovery; rewarding it for that would push Webex
-        // above threshold long after the call ended.
-        if bundleID != "com.cisco.webexmeetingsapp",
-           bundleID != "com.cisco.spark" {
-            let context = MeetingLifecycleContext(
-                bundleID: bundleID,
-                kind: kind == .browser ? .browser : .native,
-                pid: pid,
-                title: nil
-            )
-            if let active = ProcessAudioSignal.defaultProbe(context) {
-                signals.processAudioActive = active
-            }
-        }
-
-        // ShareableContent slot reserved; SCShareableContent is async
-        // and the scan path is synchronous. Left false until a
-        // follow-up adds an async pre-scan that caches the latest
-        // shareable-content set for the synchronous scorer to read.
-        return signals
-    }
-
-    private func anyWindowMatchesMeetingFragment(pid: pid_t) -> Bool {
-        let axApp = AXUIElementCreateApplication(pid)
-        var windowsRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-              let windows = windowsRef as? [AXUIElement] else { return false }
-        for win in windows {
-            var titleRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef) == .success,
-                  let title = titleRef as? String,
-                  !title.isEmpty else { continue }
-            if titleMatchesMeetingFragment(title) { return true }
-        }
-        return false
-    }
-
-    private func titleMatchesMeetingFragment(_ title: String) -> Bool {
-        let lowered = title.lowercased()
-        return browserURLFragments.contains(where: { lowered.contains($0) })
     }
 
     // MARK: Signal B
@@ -949,7 +753,7 @@ final class Detector {
             Log.writeLine("detector", "windowprobe(native) app=\(source.bundleID) NOT_RUNNING → ended")
             return false
         }
-        let titles = collectAXWindowTitles(pid: pid)
+        let titles = MeetingSourceScanner.collectAXWindowTitles(pid: pid)
         // AX read failed (transient). Keep it inconclusive so we don't
         // false-stop on a one-off failure.
         guard let titles = titles else { return nil }
@@ -967,7 +771,7 @@ final class Detector {
         }
 
         let recognized = titles.first { title in
-            isActiveMeetingWindow(bundleID: source.bundleID, kind: source.kind, title: title)
+            MeetingSourceScanner.isActiveMeetingWindow(bundleID: source.bundleID, kind: source.kind, title: title)
         }
         // Wrap each title in quotes + use a separator that can't appear
         // inside a window title. The previous " | " separator was
@@ -980,103 +784,6 @@ final class Detector {
         )
         if titles.isEmpty { return false }
         return recognized != nil
-    }
-
-    /// Recognize whether a window title belongs to an *active meeting
-    /// window* for the given app. Distinct from the per-app extractors
-    /// (`extractZoomNativeTitle` etc.): those try to pull a usable topic
-    /// and return nil for valid-but-bare meeting windows. Recognition
-    /// must be permissive about the bare case, because a false negative
-    /// here cuts the recording mid-call.
-    ///
-    /// Returns `true` on positive match. The probe upstream returns true
-    /// if ANY title in the app's window list recognizes; this function
-    /// alone never ends recording.
-    static func isActiveMeetingWindow(bundleID: String, kind: AppSourceKind, title: String) -> Bool {
-        let lowered = title.lowercased().trimmingCharacters(in: .whitespaces)
-
-        switch (bundleID, kind) {
-        case ("us.zoom.xos", _):
-            // Active meeting windows always end in "zoom meeting" (with
-            // or without topic prefix). Idle launcher and chrome dialogs
-            // are explicitly rejected so a future title format change
-            // can't sneak through.
-            if lowered == "zoom" { return false }                    // launcher
-            if lowered.hasPrefix("schedule meeting") { return false } // dialog
-            if lowered.hasPrefix("join meeting") { return false }     // dialog
-            return lowered.contains("zoom meeting")
-
-        case ("com.microsoft.teams2", .native), ("com.microsoft.teams", .native):
-            // Teams (May 2026) drops the "Meeting in <X>" / "Meeting with
-            // <X>" lead in favour of just the meeting topic in the title.
-            // Examples observed in the wild:
-            //   - "Echo | Microsoft Teams"   (topic = "Echo")
-            //   - "Standup | Microsoft Teams"
-            //   - Just "Echo" with no suffix (rare; some Teams versions)
-            // The old prefix-based recognizer was too strict and rejected
-            // real meetings, leading to recordings being auto-stopped a
-            // few seconds in. The new contract favours false-positives
-            // (recording continues into a stale chat thread; user clicks
-            // stop or the silence detector catches it after 5 min) over
-            // false-negatives (recording dies mid-call, audio lost).
-            //
-            // Reject only well-known chrome / non-meeting surfaces. Both
-            // the bare "<X>" form and the "<X> | Microsoft Teams" form
-            // share the same chrome blacklist.
-            let chrome: Set<String> = [
-                "microsoft teams",
-                "teams",
-                "calendar",
-                "settings",
-                "activity",
-                "chat",
-                "files",
-                "apps",
-                "store",
-                "join meeting",
-                "schedule meeting",
-            ]
-            if chrome.contains(lowered) { return false }
-            if lowered.hasSuffix("| microsoft teams") {
-                let lead = String(lowered.dropLast("| microsoft teams".count))
-                    .trimmingCharacters(in: .whitespaces)
-                if lead.isEmpty { return false }                     // bare app chrome
-                if chrome.contains(lead) { return false }
-                return true
-            }
-            // No suffix — Teams sometimes spawns the meeting window with
-            // just the topic. We can't distinguish that from chrome by
-            // title alone, so we trust the blacklist above to filter
-            // chrome and accept everything else as a meeting candidate.
-            // An unknown / empty title is treated as inconclusive (the
-            // upstream probe ORs results across windows; this title
-            // contributes nothing rather than a misleading false).
-            return !lowered.isEmpty
-
-        case ("com.cisco.webexmeetingsapp", _):
-            // Webex active meeting always contains "webex meeting".
-            // Idle is "Webex" or "Cisco Webex".
-            return lowered.contains("webex meeting")
-
-        case ("com.tinyspeck.slackmacgap", _):
-            // Slack huddles: "huddle" as a whole word, not as substring
-            // of channel name. Word-boundary regex so "team-huddles"
-            // (plural channel name) does not match: `s` after `huddle`
-            // is alphanumeric, so the trailing word boundary fails.
-            return title.range(of: #"\bhuddle\b"#, options: [.regularExpression, .caseInsensitive]) != nil
-
-        case ("com.skype.skype", _):
-            return lowered.contains("call with") || lowered.contains("group call")
-
-        case ("com.google.meet", _):
-            return lowered.contains("google meet")
-
-        default:
-            // Unknown native bundle. The probe upstream short-circuits
-            // before reaching the recognizer for unknown shapes, so this
-            // path is dead under normal operation; kept as a safety net.
-            return false
-        }
     }
 
     private static func isKnownShapeApp(_ bundleID: String) -> Bool {
@@ -1126,7 +833,7 @@ final class Detector {
         // failures). Fall back to window titles so a closed last window
         // still ends the recording — we lose the in-window tab-switch
         // fidelity, which is acceptable for these niche cases.
-        let titles = collectAXWindowTitles(pid: pid)
+        let titles = MeetingSourceScanner.collectAXWindowTitles(pid: pid)
         guard let titles = titles else { return nil }
         let sawFragment = anyTitleMatchesFragment(titles, fragments: fragments)
         let titleListing = titles.map { "\"\($0)\"" }.joined(separator: " » ")
@@ -1225,23 +932,6 @@ final class Detector {
         }?.processIdentifier
     }
 
-    private static func collectAXWindowTitles(pid: pid_t) -> [String]? {
-        let axApp = AXUIElementCreateApplication(pid)
-        var windowsRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-              let windows = windowsRef as? [AXUIElement] else {
-            return nil
-        }
-        var titles: [String] = []
-        for win in windows {
-            var titleRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef) == .success,
-                  let title = titleRef as? String, !title.isEmpty else { continue }
-            titles.append(title)
-        }
-        return titles
-    }
-
     // MARK: Meeting title extraction
     //
     // Best-effort: walk the source app's AX windows once at start-fire
@@ -1254,7 +944,7 @@ final class Detector {
     private func enrichWithMeetingTitle(_ src: AppSource) -> AppSource {
         guard AXIsProcessTrusted(),
               let pid = Detector.pidFor(bundleID: src.bundleID),
-              let titles = Detector.collectAXWindowTitles(pid: pid) else {
+              let titles = MeetingSourceScanner.collectAXWindowTitles(pid: pid) else {
             return src
         }
         let title = Detector.extractMeetingTitle(bundleID: src.bundleID, kind: src.kind, titles: titles)
@@ -1382,32 +1072,4 @@ final class Detector {
         return captured.isEmpty ? nil : captured
     }
 
-    // MARK: Resource loading
-
-    private struct MeetingApps {
-        let native: Set<String>
-        let browsers: Set<String>
-        let urlFragments: [String]
-    }
-
-    private static func loadMeetingApps() -> MeetingApps {
-        // Bundled inside the SPM resource bundle.
-        let bundle = Bundle.module
-        guard let url = bundle.url(forResource: "meeting_apps", withExtension: "toml"),
-              let data = try? String(contentsOf: url, encoding: .utf8),
-              let toml = try? TOMLTable(string: data) else {
-            Log.detector.warning("meeting_apps.toml not found; using empty lists")
-            return MeetingApps(native: [], browsers: [], urlFragments: [])
-        }
-
-        let nativeArr = toml["native"]?.table?["bundle_ids"]?.array?.compactMap { $0.string } ?? []
-        let urlArr = toml["browser"]?.table?["url_fragments"]?.array?.compactMap { $0.string } ?? []
-        let browserArr = toml["browser"]?.table?["bundles"]?.table?["ids"]?.array?.compactMap { $0.string } ?? []
-
-        return MeetingApps(
-            native: Set(nativeArr),
-            browsers: Set(browserArr),
-            urlFragments: urlArr.map { $0.lowercased() }
-        )
-    }
 }

@@ -67,7 +67,7 @@ enum MeetingWindowProbe {
             var titleRef: CFTypeRef?
             guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success,
                   let title = titleRef as? String, !title.isEmpty else { continue }
-            if Detector.isActiveMeetingWindow(bundleID: source.bundleID, kind: source.kind, title: title) {
+            if MeetingSourceScanner.isActiveMeetingWindow(bundleID: source.bundleID, kind: source.kind, title: title) {
                 return MeetingWindowHandle(element: window, pid: pid, bundleID: source.bundleID)
             }
         }
