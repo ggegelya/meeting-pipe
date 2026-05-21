@@ -1318,7 +1318,7 @@ extension Coordinator: DetectorDelegate {
         case .started(let src):
             handleMeetingStarted(source: src)
         case .ended:
-            handleMeetingEnded()
+            handleMeetingEndedDuringPrompt()
         }
     }
 
@@ -1387,6 +1387,16 @@ extension Coordinator: DetectorDelegate {
         switch stateMachine.current {
         case .recording(let file, let src, let mode):
             stopRecording(file: file, source: src, summaryMode: mode)
+        case .prompting, .suppressed:
+            handleMeetingEndedDuringPrompt()
+        default:
+            break
+        }
+    }
+
+    /// Stale-prompt dismissal when a meeting ends before the user answers (Detector-driven; the lifecycle stream is not engaged pre-recording).
+    private func handleMeetingEndedDuringPrompt() {
+        switch stateMachine.current {
         case .prompting, .suppressed:
             stateMachine.cancelPromptTimeout()
             promptWindow.dismiss()
