@@ -78,4 +78,46 @@ final class MeetingRecorderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         XCTAssertNil(MeetingRecorder.audioDurationSec(of: url))
     }
+
+    /// AVAudioFile writes Float32 WAV intermediates with a JUNK (or
+    /// PEAK / fact) chunk before `fmt `. The old fixed-offset parser
+    /// read a zero byte-rate from inside that chunk and returned nil,
+    /// which is why intermediate_durations logged null. The chunk
+    /// walker must find `fmt ` and `data` wherever they sit.
+    func test_audioDurationSec_handles_junk_chunk_before_fmt() throws {
+        let sampleRate: UInt32 = 16000
+        let channels: UInt16 = 1
+        let bitsPerSample: UInt16 = 16
+        let byteRate = sampleRate * UInt32(channels) * UInt32(bitsPerSample / 8)
+        let payloadBytes = Int(Double(byteRate) * 4.0)        // 4 s
+        let junkBody = Data(repeating: 0, count: 28)          // typical alignment pad
+
+        var data = Data()
+        data.append(contentsOf: "RIFF".utf8)
+        data.append(contentsOf: withUnsafeBytes(of: UInt32(0).littleEndian, Array.init)) // size not validated
+        data.append(contentsOf: "WAVE".utf8)
+        // JUNK chunk ahead of fmt - the regression trigger.
+        data.append(contentsOf: "JUNK".utf8)
+        data.append(contentsOf: withUnsafeBytes(of: UInt32(junkBody.count).littleEndian, Array.init))
+        data.append(junkBody)
+        // fmt chunk.
+        data.append(contentsOf: "fmt ".utf8)
+        data.append(contentsOf: withUnsafeBytes(of: UInt32(16).littleEndian, Array.init))
+        data.append(contentsOf: withUnsafeBytes(of: UInt16(1).littleEndian, Array.init))
+        data.append(contentsOf: withUnsafeBytes(of: channels.littleEndian, Array.init))
+        data.append(contentsOf: withUnsafeBytes(of: sampleRate.littleEndian, Array.init))
+        data.append(contentsOf: withUnsafeBytes(of: byteRate.littleEndian, Array.init))
+        data.append(contentsOf: withUnsafeBytes(of: UInt16(channels * (bitsPerSample / 8)).littleEndian, Array.init))
+        data.append(contentsOf: withUnsafeBytes(of: bitsPerSample.littleEndian, Array.init))
+        // data chunk.
+        data.append(contentsOf: "data".utf8)
+        data.append(contentsOf: withUnsafeBytes(of: UInt32(payloadBytes).littleEndian, Array.init))
+        data.append(Data(repeating: 0, count: payloadBytes))
+
+        let url = try writeTemp(data)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let duration = MeetingRecorder.audioDurationSec(of: url)
+        XCTAssertNotNil(duration)
+        XCTAssertEqual(duration!, 4.0, accuracy: 0.001)
+    }
 }

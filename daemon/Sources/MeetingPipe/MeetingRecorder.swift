@@ -650,17 +650,54 @@ final class MeetingRecorder {
     /// duration in seconds, or nil when the file is absent / not a
     /// recognisable PCM WAV. Shared between the post-merge parity
     /// check and the pre-merge intermediate-duration diagnostic.
+    ///
+    /// Walks the RIFF chunk list rather than assuming `fmt ` is first
+    /// and the header is exactly 44 bytes: AVAudioFile writes Float32
+    /// WAV intermediates with extra chunks (`JUNK` / `PEAK` / `fact`)
+    /// before `data`, so the fixed-offset parse read a zero byte-rate
+    /// and the diagnostic logged null durations.
     static func audioDurationSec(of url: URL) -> Double? {
         guard FileManager.default.fileExists(atPath: url.path),
               let h = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? h.close() }
-        guard let header = try? h.read(upToCount: 64), header.count >= 44 else { return nil }
-        guard header.range(of: Data("RIFF".utf8))?.lowerBound == 0,
-              header.range(of: Data("WAVE".utf8))?.lowerBound == 8 else { return nil }
-        let bytesPerSec = header.subdata(in: 28..<32).withUnsafeBytes { $0.load(as: UInt32.self) }
-        guard bytesPerSec > 0 else { return nil }
-        let totalSize = fileSize(url)
-        let payload = max(0, Int64(totalSize) - 44)
-        return Double(payload) / Double(bytesPerSec)
+        // 8 KB covers the header chunks that precede `data` in both
+        // AVAudioFile and ffmpeg output; only the chunk headers need to
+        // land in the window, not the audio payload itself.
+        guard let head = try? h.read(upToCount: 8192), head.count >= 44 else { return nil }
+        guard head.range(of: Data("RIFF".utf8))?.lowerBound == 0,
+              head.range(of: Data("WAVE".utf8))?.lowerBound == 8 else { return nil }
+
+        func u32(_ offset: Int) -> UInt32? {
+            guard offset >= 0, offset + 4 <= head.count else { return nil }
+            return head.subdata(in: offset..<offset + 4)
+                .withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+        }
+        func fourCC(_ offset: Int) -> Data? {
+            guard offset >= 0, offset + 4 <= head.count else { return nil }
+            return head.subdata(in: offset..<offset + 4)
+        }
+
+        var byteRate: UInt32?
+        var dataSize: UInt32?
+        // Chunks start at offset 12, right after "WAVE". Each chunk is
+        // [4-byte id][4-byte little-endian size][body], body padded to
+        // an even length.
+        var cursor = 12
+        while cursor + 8 <= head.count {
+            guard let id = fourCC(cursor), let size = u32(cursor + 4) else { break }
+            let body = cursor + 8
+            if id == Data("fmt ".utf8) {
+                // fmt body: format(2) + channels(2) + sampleRate(4) +
+                // byteRate(4) - byteRate is at body offset 8.
+                byteRate = u32(body + 8)
+            } else if id == Data("data".utf8) {
+                dataSize = size
+                break
+            }
+            cursor = body + Int(size) + (Int(size) & 1)
+        }
+
+        guard let rate = byteRate, rate > 0, let payload = dataSize else { return nil }
+        return Double(payload) / Double(rate)
     }
 }
