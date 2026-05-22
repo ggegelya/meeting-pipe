@@ -36,6 +36,13 @@ public protocol LifecycleAdapter: AnyObject {
     /// route browser-hosted contexts to the browser adapter.
     var kind: MeetingLifecycleContext.Kind { get }
 
+    /// Whether this adapter handles `bundleID`. The default
+    /// implementation is an exact match against `bundleIDs`; the
+    /// browser adapter overrides it to also accept Chromium PWA
+    /// bundle IDs, whose `<browser>.app.<hash>` form is per-install
+    /// and so cannot be enumerated as a fixed set.
+    func handles(bundleID: String) -> Bool
+
     /// Start observing the given meeting. The sink is called whenever
     /// a PRIMARY signal flips. The adapter retains the sink for the
     /// duration of `start ... stop`.
@@ -46,6 +53,13 @@ public protocol LifecycleAdapter: AnyObject {
     ) throws
 
     func stop()
+}
+
+public extension LifecycleAdapter {
+    /// Default dispatch: exact match against the advertised set.
+    func handles(bundleID: String) -> Bool {
+        bundleIDs.contains(bundleID)
+    }
 }
 
 /// Locale-tolerant title-match callbacks used by adapters when they

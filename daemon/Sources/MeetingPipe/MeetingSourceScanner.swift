@@ -140,6 +140,34 @@ final class MeetingSourceScanner {
                     preTitleMatch: true
                 )
                 candidates.append(MeetingSourceCandidate(source: source, signals: signals))
+                continue
+            }
+
+            if BrowserMeetingLifecycleAdapter.isPWABundleID(bid) {
+                // A Chromium "installed PWA" (Google Meet run as a
+                // desktop app, etc.) is its own process under a
+                // per-install bundle ID, in neither TOML list
+                // (TECH-I5). It has no address bar, so its windows
+                // carry the page title rather than a URL; match the
+                // meeting-title patterns instead of the URL fragments
+                // the regular-browser branch above relies on. Treated
+                // as `.browser` kind so the existing browser
+                // end-detection + MicGate fallback paths apply.
+                guard axTrusted,
+                      anyWindowMatchesMeetingTitle(pid: pid) else { continue }
+                let source = AppSource(
+                    bundleID: bid,
+                    displayName: app.localizedName ?? "Meeting",
+                    kind: .browser
+                )
+                let signals = collectSignals(
+                    bundleID: bid,
+                    kind: .browser,
+                    pid: pid,
+                    axTrusted: axTrusted,
+                    preTitleMatch: true
+                )
+                candidates.append(MeetingSourceCandidate(source: source, signals: signals))
             }
         }
 
@@ -239,6 +267,20 @@ final class MeetingSourceScanner {
     private func titleMatchesMeetingFragment(_ title: String) -> Bool {
         let lowered = title.lowercased()
         return browserURLFragments.contains(where: { lowered.contains($0) })
+    }
+
+    /// True when any AX window of `pid` carries a title matching a
+    /// browser meeting-title pattern. The PWA counterpart of
+    /// `anyWindowMatchesMeetingFragment`: a PWA window has no URL in
+    /// its title, so it is matched against the same title patterns
+    /// the browser lifecycle adapter uses.
+    private func anyWindowMatchesMeetingTitle(pid: pid_t) -> Bool {
+        guard let titles = MeetingSourceScanner.collectAXWindowTitles(pid: pid) else {
+            return false
+        }
+        return titles.contains { title in
+            BrowserMeetingLifecycleAdapter.defaultTitleMatchers.contains { $0(title) }
+        }
     }
 
     // MARK: Window-title recognizer

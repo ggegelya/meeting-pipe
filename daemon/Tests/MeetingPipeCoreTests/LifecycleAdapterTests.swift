@@ -20,6 +20,11 @@ final class LifecycleAdapterTests: XCTestCase {
         bundleID: "com.google.Chrome", kind: .browser, pid: 3456
     )
 
+    private let meetPWAContext = MeetingLifecycleContext(
+        bundleID: "com.google.Chrome.app.fmgjjmmmlfnkbppncabfkddbjimcfncm",
+        kind: .browser, pid: 7890
+    )
+
     func test_teams_adapter_advertises_teams_bundle_ids() {
         let adapter = TeamsLifecycleAdapter(
             halBus: CoreAudioHALBus(), axBus: AXObserverBus()
@@ -49,6 +54,39 @@ final class LifecycleAdapterTests: XCTestCase {
         XCTAssertEqual(adapter.kind, .browser)
         XCTAssertTrue(adapter.bundleIDs.contains("com.google.Chrome"))
         XCTAssertTrue(adapter.bundleIDs.contains("com.apple.Safari"))
+    }
+
+    func test_browser_adapter_handles_known_browsers_and_chromium_pwas() {
+        let adapter = BrowserMeetingLifecycleAdapter()
+        // Advertised browsers.
+        XCTAssertTrue(adapter.handles(bundleID: "com.google.Chrome"))
+        XCTAssertTrue(adapter.handles(bundleID: "com.apple.Safari"))
+        // Chromium PWAs (Google Meet installed as a desktop app, etc.):
+        // the `<browser>.app.<hash>` hash is assigned per install.
+        XCTAssertTrue(adapter.handles(bundleID: "com.google.Chrome.app.fmgjjmmmlfnkbppncabfkddbjimcfncm"))
+        XCTAssertTrue(adapter.handles(bundleID: "com.microsoft.edgemac.app.aaaabbbbccccdddd"))
+        XCTAssertTrue(adapter.handles(bundleID: "com.brave.Browser.app.zzzz"))
+        // Not a browser, not a PWA. The Chrome helper shares the
+        // browser prefix but is not an installed PWA.
+        XCTAssertFalse(adapter.handles(bundleID: "com.acme.Notes"))
+        XCTAssertFalse(adapter.handles(bundleID: "com.google.Chrome.helper"))
+    }
+
+    func test_isPWABundleID_matches_only_chromium_app_prefixes() {
+        XCTAssertTrue(BrowserMeetingLifecycleAdapter.isPWABundleID("com.google.Chrome.app.hash"))
+        XCTAssertTrue(BrowserMeetingLifecycleAdapter.isPWABundleID("com.microsoft.edgemac.app.hash"))
+        XCTAssertFalse(BrowserMeetingLifecycleAdapter.isPWABundleID("com.google.Chrome"))
+        XCTAssertFalse(BrowserMeetingLifecycleAdapter.isPWABundleID("org.mozilla.firefox"))
+        XCTAssertFalse(BrowserMeetingLifecycleAdapter.isPWABundleID(""))
+    }
+
+    func test_native_adapter_handles_is_exact_match() {
+        let teams = TeamsLifecycleAdapter(halBus: CoreAudioHALBus(), axBus: AXObserverBus())
+        XCTAssertTrue(teams.handles(bundleID: "com.microsoft.teams2"))
+        // The default (native) dispatch is exact: a PWA-shaped id never
+        // leaks into a native adapter.
+        XCTAssertFalse(teams.handles(bundleID: "com.microsoft.teams2.app.hash"))
+        XCTAssertFalse(teams.handles(bundleID: "us.zoom.xos"))
     }
 
     func test_teams_title_pattern_recognises_localised_meeting_token() {
@@ -93,17 +131,17 @@ final class LifecycleAdapterTests: XCTestCase {
         let browser = BrowserMeetingLifecycleAdapter()
         let adapters: [LifecycleAdapter] = [teams, zoom, webex, browser]
 
-        XCTAssertTrue(adapters.first(where: {
-            $0.kind == teamsContext.kind && $0.bundleIDs.contains(teamsContext.bundleID)
-        }) === teams)
-        XCTAssertTrue(adapters.first(where: {
-            $0.kind == zoomContext.kind && $0.bundleIDs.contains(zoomContext.bundleID)
-        }) === zoom)
-        XCTAssertTrue(adapters.first(where: {
-            $0.kind == webexContext.kind && $0.bundleIDs.contains(webexContext.bundleID)
-        }) === webex)
-        XCTAssertTrue(adapters.first(where: {
-            $0.kind == chromeContext.kind && $0.bundleIDs.contains(chromeContext.bundleID)
-        }) === browser)
+        // Mirrors MeetingLifecycleCoordinator.engage's dispatch.
+        func adapter(for context: MeetingLifecycleContext) -> LifecycleAdapter? {
+            adapters.first { $0.kind == context.kind && $0.handles(bundleID: context.bundleID) }
+        }
+
+        XCTAssertTrue(adapter(for: teamsContext) === teams)
+        XCTAssertTrue(adapter(for: zoomContext) === zoom)
+        XCTAssertTrue(adapter(for: webexContext) === webex)
+        XCTAssertTrue(adapter(for: chromeContext) === browser)
+        // A Chromium PWA routes to the browser adapter even though its
+        // per-install bundle ID is in no fixed list (TECH-I5).
+        XCTAssertTrue(adapter(for: meetPWAContext) === browser)
     }
 }

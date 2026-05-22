@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Foundation
+import MeetingPipeCore
 
 /// Cold-start meeting discovery (TECH-C13 step 5).
 ///
@@ -98,14 +99,15 @@ final class MeetingDiscoveryWatcher {
     }
 
     /// Schedule a coalesced scan. Skips entirely when a workspace
-    /// notification names an app that is neither a known meeting app nor
-    /// a browser, so Cmd+Tab between unrelated apps never triggers an AX
-    /// walk. A nil `triggerBundle` (mic KVO, poll, initial pass) always
-    /// scans. Caller must be on the main run loop.
+    /// notification names an app that is neither a known meeting app, a
+    /// browser, nor a Chromium PWA, so Cmd+Tab between unrelated apps
+    /// never triggers an AX walk. A nil `triggerBundle` (mic KVO, poll,
+    /// initial pass) always scans. Caller must be on the main run loop.
     private func scheduleScan(triggerBundle: String?) {
         if let bid = triggerBundle,
            !scanner.nativeBundles.contains(bid),
-           !scanner.browserBundles.contains(bid) {
+           !scanner.browserBundles.contains(bid),
+           !BrowserMeetingLifecycleAdapter.isPWABundleID(bid) {
             return
         }
         coalesceWork?.cancel()

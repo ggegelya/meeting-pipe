@@ -87,7 +87,7 @@ public final class MeetingLifecycleCoordinator {
     public func engage(context: MeetingLifecycleContext, handle: LifecycleAdapterHandle) throws {
         disengage()
         guard let adapter = adapters.first(where: {
-            $0.kind == context.kind && $0.bundleIDs.contains(context.bundleID)
+            $0.kind == context.kind && $0.handles(bundleID: context.bundleID)
         }) else {
             eventLog.emit(category: "lifecycle", action: "no_adapter_for_context", attributes: [
                 "bundle_id": context.bundleID,

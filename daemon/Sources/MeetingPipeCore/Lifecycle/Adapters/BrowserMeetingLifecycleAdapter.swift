@@ -24,6 +24,32 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
     ]
     public let kind: MeetingLifecycleContext.Kind = .browser
 
+    /// Bundle-ID prefixes for Chromium "installed PWA" apps. A PWA
+    /// installed from Chrome / Edge / Brave runs as its own process
+    /// under `<browser-bundle-id>.app.<hash>`, where the hash is
+    /// assigned per install and so cannot be listed as a fixed
+    /// bundle ID (TECH-I5). Detection is by prefix instead. Firefox
+    /// has no PWA mechanism; Safari "Add to Dock" web apps use a
+    /// different scheme and are left for a verified follow-up.
+    public static let pwaBundleIDPrefixes: [String] = [
+        "com.google.Chrome.app.",
+        "com.microsoft.edgemac.app.",
+        "com.brave.Browser.app."
+    ]
+
+    /// True when `bundleID` is a Chromium-installed PWA (see
+    /// `pwaBundleIDPrefixes`).
+    public static func isPWABundleID(_ bundleID: String) -> Bool {
+        pwaBundleIDPrefixes.contains { bundleID.hasPrefix($0) }
+    }
+
+    /// Accepts the advertised browsers plus any Chromium PWA bundle
+    /// ID. The coordinator dispatches `.browser`-kind contexts here.
+    public func handles(bundleID: String) -> Bool {
+        bundleIDs.contains(bundleID)
+            || BrowserMeetingLifecycleAdapter.isPWABundleID(bundleID)
+    }
+
     /// Title-match patterns the adapter cycles through. The first
     /// matching pattern wins; a tab title that matches none reads as
     /// `.ended`, which is exactly what we want for the Meet "left
