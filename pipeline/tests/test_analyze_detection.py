@@ -52,7 +52,7 @@ def test_pair_sessions_classifies_detector_triggered_stop() -> None:
     events = [
         _event("2026-05-01T10:00:00Z", "coordinator", "recording_started",
                file="meet.wav", bundle_id="us.zoom.xos"),
-        _event("2026-05-01T10:30:00Z", "detector", "ended", bundle_id="us.zoom.xos"),
+        _event("2026-05-01T10:30:00Z", "lifecycle", "ended", bundle_id="us.zoom.xos"),
         _event("2026-05-01T10:30:02Z", "coordinator", "recording_stopped",
                file="meet.wav", bundle_id="us.zoom.xos"),
     ]
@@ -64,7 +64,7 @@ def test_pair_sessions_classifies_detector_triggered_stop() -> None:
 
 
 def test_pair_sessions_classifies_manual_stop() -> None:
-    """No `detector.ended` between start and stop → manual stop."""
+    """No `lifecycle.ended` between start and stop → manual stop."""
     events = [
         _event("2026-05-01T11:00:00Z", "coordinator", "recording_started",
                file="hotkey.wav", bundle_id="manual"),
@@ -78,13 +78,13 @@ def test_pair_sessions_classifies_manual_stop() -> None:
 
 
 def test_pair_sessions_picks_latest_detector_ended_when_debounce_flutters() -> None:
-    """Multiple `detector.ended` inside one session (debounce flutter):
+    """Multiple `lifecycle.ended` inside one session (debounce flutter):
     use the latest, which is the one that actually drove the stop."""
     events = [
         _event("2026-05-01T12:00:00Z", "coordinator", "recording_started",
                file="m.wav", bundle_id="com.google.Chrome"),
-        _event("2026-05-01T12:10:00Z", "detector", "ended"),
-        _event("2026-05-01T12:20:00Z", "detector", "ended"),
+        _event("2026-05-01T12:10:00Z", "lifecycle", "ended"),
+        _event("2026-05-01T12:20:00Z", "lifecycle", "ended"),
         _event("2026-05-01T12:20:03Z", "coordinator", "recording_stopped",
                file="m.wav", bundle_id="com.google.Chrome"),
     ]
@@ -94,15 +94,15 @@ def test_pair_sessions_picks_latest_detector_ended_when_debounce_flutters() -> N
 
 
 def test_pair_sessions_ignores_detector_ended_outside_session() -> None:
-    """`detector.ended` before any started, or after stopped, must not
+    """`lifecycle.ended` before any started, or after stopped, must not
     flip the classification."""
     events = [
-        _event("2026-05-01T09:00:00Z", "detector", "ended"),  # before any session
+        _event("2026-05-01T09:00:00Z", "lifecycle", "ended"),  # before any session
         _event("2026-05-01T10:00:00Z", "coordinator", "recording_started",
                file="a.wav", bundle_id="manual"),
         _event("2026-05-01T10:05:00Z", "coordinator", "recording_stopped",
                file="a.wav", bundle_id="manual"),
-        _event("2026-05-01T10:10:00Z", "detector", "ended"),  # after stop
+        _event("2026-05-01T10:10:00Z", "lifecycle", "ended"),  # after stop
     ]
     sessions = [classify_session(s) for s in pair_sessions(events)]
     assert len(sessions) == 1
@@ -177,7 +177,7 @@ def test_render_report_includes_per_app_table_and_misses(tmp_path: Path) -> None
     events = [
         _event("2026-05-01T10:00:00Z", "coordinator", "recording_started",
                file="zoom.wav", bundle_id="us.zoom.xos"),
-        _event("2026-05-01T10:30:00Z", "detector", "ended"),
+        _event("2026-05-01T10:30:00Z", "lifecycle", "ended"),
         _event("2026-05-01T10:30:01Z", "coordinator", "recording_stopped",
                file="zoom.wav", bundle_id="us.zoom.xos"),
         _event("2026-05-01T11:00:00Z", "coordinator", "recording_started",
@@ -201,7 +201,7 @@ def test_main_writes_markdown_to_output(tmp_path: Path) -> None:
     events = [
         _event("2026-05-01T10:00:00Z", "coordinator", "recording_started",
                file="x.wav", bundle_id="us.zoom.xos"),
-        _event("2026-05-01T10:10:00Z", "detector", "ended"),
+        _event("2026-05-01T10:10:00Z", "lifecycle", "ended"),
         _event("2026-05-01T10:10:01Z", "coordinator", "recording_stopped",
                file="x.wav", bundle_id="us.zoom.xos"),
     ]

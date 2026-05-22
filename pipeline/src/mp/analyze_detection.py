@@ -1,12 +1,12 @@
-"""`mp analyze-detection` — audit how often the detector misses the
-"meeting ended" signal.
+"""`mp analyze-detection`: audit how often meeting-end detection
+misses the "meeting ended" signal.
 
 Pairs each `coordinator.recording_started` with the next
 `coordinator.recording_stopped` from the Swift event stream
 (`~/Library/Logs/MeetingPipe/events.jsonl`). For each session, scans
-for a `detector.ended` event in between. Sessions with no preceding
-`detector.ended` were stopped manually (hotkey or quit) — that is the
-failure mode TECH-C1 exists to surface, because it's the reason
+for a `lifecycle.ended` event in between. Sessions with no preceding
+`lifecycle.ended` were stopped manually (hotkey or quit), which is the
+failure mode the lifecycle subsystem exists to reduce: it is the reason
 recordings keep running after the user has clearly hung up.
 
 Pure functions (`iter_events`, `pair_sessions`, `classify_session`,
@@ -28,13 +28,13 @@ from typing import Iterable, Iterator
 
 DEFAULT_EVENTS_PATH = Path(os.path.expanduser("~/Library/Logs/MeetingPipe/events.jsonl"))
 
-# Pairing window: any `detector.ended` whose timestamp falls within the
+# Pairing window: any `lifecycle.ended` whose timestamp falls within the
 # session's [started, stopped] interval is treated as the trigger.
 # We do not bound how far before `recording_stopped` it can be: the
-# Coordinator forwards `detector.ended` directly to `stopRecording`, so
-# the two events are normally <100 ms apart, but `Recorder.stop` is
-# async and can take seconds to flush — making a tight window flag
-# real successes as misses.
+# lifecycle verdict stream drives `stopRecording`, so the two events are
+# normally <100 ms apart, but `Recorder.stop` is async and can take
+# seconds to flush, which would make a tight window flag real successes
+# as misses.
 
 
 @dataclass
@@ -144,8 +144,8 @@ def pair_sessions(events: Iterable[dict], *, since: datetime | None = None) -> l
                 bundle_id=str(ev.get("bundle_id") or "manual"),
                 file=str(ev.get("file") or ""),
             )
-        elif cat == "detector" and action == "ended" and open_session is not None:
-            # Record the latest detector.ended inside the open window.
+        elif cat == "lifecycle" and action == "ended" and open_session is not None:
+            # Record the latest lifecycle.ended inside the open window.
             # If multiple fire (debounce flutter), the last one is what
             # actually drove the stop.
             open_session.detector_ended_ts = ts
@@ -255,11 +255,11 @@ def render_report(sessions: list[Session], stats: dict[str, AppStats]) -> str:
     lines.append(f"## Detector misses ({len(misses)})")
     lines.append("")
     if not misses:
-        lines.append("_None — every session had a preceding `detector.ended`._")
+        lines.append("_None: every session had a preceding `lifecycle.ended`._")
         lines.append("")
     else:
-        lines.append("Sessions stopped without a preceding `detector.ended` — "
-                     "the user had to manually stop. Grouped by source app:")
+        lines.append("Sessions stopped without a preceding `lifecycle.ended`, "
+                     "so the user had to manually stop. Grouped by source app:")
         lines.append("")
         misses_by_app: dict[str, list[Session]] = {}
         for s in misses:
