@@ -1,7 +1,7 @@
 import XCTest
 @testable import MeetingPipe
 
-/// Round-trip + resilience tests for `PipelineFailureSidecar` — the
+/// Round-trip + resilience tests for `PipelineFailureSidecar`, the
 /// durable record of why a meeting's pipeline run failed. The sidecar is
 /// the only thing standing between a missed notification and a silently
 /// lost meeting, so its read path must tolerate every malformed input
