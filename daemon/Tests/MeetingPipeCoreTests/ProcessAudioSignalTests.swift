@@ -102,6 +102,54 @@ final class ProcessAudioSignalTests: XCTestCase {
         XCTAssertTrue(log.entries.contains { $0.action == "process_audio_unresolved" })
     }
 
+    func test_unresolved_probe_logs_once_per_streak() throws {
+        // A probe that can never resolve the HAL process object must
+        // not write `process_audio_unresolved` on every 1 Hz tick:
+        // that floods events.jsonl for the daemon's whole lifetime.
+        let log = RecordingEventLog()
+        let bus = CoreAudioHALBus()
+        let scheduler = ManualScheduler()
+        let signal = ProcessAudioSignal(
+            halBus: bus,
+            eventLog: log,
+            probe: { _ in nil },
+            scheduler: manualScheduler(scheduler)
+        )
+
+        try signal.start(context: teamsContext)
+        scheduler.tick?()
+        scheduler.tick?()
+        scheduler.tick?()
+
+        let unresolved = log.entries.filter { $0.action == "process_audio_unresolved" }
+        XCTAssertEqual(unresolved.count, 1, "unresolved probe must log once per streak, not per tick")
+    }
+
+    func test_unresolved_streak_re_logs_after_a_resolved_read() throws {
+        // A resolved read closes the streak, so a fresh unresolved run
+        // is a new streak and logs again.
+        let log = RecordingEventLog()
+        let bus = CoreAudioHALBus()
+        let scheduler = ManualScheduler()
+        var probeReturn: Bool? = nil
+        let signal = ProcessAudioSignal(
+            halBus: bus,
+            eventLog: log,
+            probe: { _ in probeReturn },
+            scheduler: manualScheduler(scheduler)
+        )
+
+        try signal.start(context: teamsContext)   // unresolved streak 1 logs
+        scheduler.tick?()                          // still unresolved, no re-log
+        probeReturn = true
+        scheduler.tick?()                          // resolves, clears the streak
+        probeReturn = nil
+        scheduler.tick?()                          // unresolved streak 2 logs
+
+        let unresolved = log.entries.filter { $0.action == "process_audio_unresolved" }
+        XCTAssertEqual(unresolved.count, 2)
+    }
+
     func test_stop_releases_bus_subscription_and_resets_state() throws {
         let bus = CoreAudioHALBus()
         let scheduler = ManualScheduler()

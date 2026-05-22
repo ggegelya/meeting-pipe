@@ -65,6 +65,12 @@ public final class ProcessAudioSignal {
     private var halToken: CoreAudioHALBus.Token?
     private var cancelPoll: (() -> Void)?
 
+    /// True once `process_audio_unresolved` has been logged for the
+    /// current unresolved streak. Gates the 1 Hz poll so the event is
+    /// written once per streak instead of on every tick. Cleared the
+    /// moment the probe resolves again, and on `stop()`.
+    private var unresolvedLogged = false
+
     public init(
         halBus: CoreAudioHALBus,
         eventLog: EventLog = NoopEventLog(),
@@ -135,6 +141,7 @@ public final class ProcessAudioSignal {
         cancelPoll?(); cancelPoll = nil
         context = nil
         lastValue = nil
+        unresolvedLogged = false
     }
 
     /// Re-read the probe + emit a change event if the value flipped.
@@ -143,13 +150,21 @@ public final class ProcessAudioSignal {
     func evaluate(reason: String) {
         guard let context = context else { return }
         guard let value = probe(context) else {
-            eventLog.emit(category: "signal", action: "process_audio_unresolved", attributes: [
-                "bundle_id": context.bundleID,
-                "pid": Int(context.pid),
-                "reason": reason
-            ])
+            // Collapse the 1 Hz poll spam: emit once per unresolved
+            // streak, not on every tick. A machine where the HAL
+            // process object never resolves would otherwise write this
+            // line every second for the daemon's whole lifetime.
+            if !unresolvedLogged {
+                unresolvedLogged = true
+                eventLog.emit(category: "signal", action: "process_audio_unresolved", attributes: [
+                    "bundle_id": context.bundleID,
+                    "pid": Int(context.pid),
+                    "reason": reason
+                ])
+            }
             return
         }
+        unresolvedLogged = false
         if lastValue == value { return }
         let previous = lastValue
         lastValue = value
