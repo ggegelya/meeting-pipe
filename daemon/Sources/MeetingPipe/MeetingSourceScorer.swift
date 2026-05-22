@@ -64,6 +64,21 @@ enum MeetingSourceScorer {
         return count
     }
 
+    /// True when the candidate shows at least one in-call signal
+    /// beyond `titleMatch`. `titleMatch` alone is unreliable for a
+    /// native app: the Teams / Slack window-title recognizer matches
+    /// almost any window the app keeps open (a chat thread, the
+    /// calendar). A leave button, a calling-controls toolbar, a mute
+    /// button, live process audio, or shareable-content activity only
+    /// appear once a call is actually running.
+    static func hasCorroboratingSignal(_ signals: MeetingSourceCandidate.Signals) -> Bool {
+        signals.callingControlsToolbar
+            || signals.leaveButton
+            || signals.muteButton
+            || signals.processAudioActive
+            || signals.shareableContentActive
+    }
+
     /// Score every candidate (mutating each in-place with its score),
     /// then pick the winner.
     ///
@@ -103,9 +118,22 @@ enum MeetingSourceScorer {
             return nil
         }
 
-        // Single contender: nothing to disambiguate. Return it without
-        // the threshold gate.
+        // Single contender: the multi-candidate score threshold does
+        // not apply, there is nothing to disambiguate. But a lone
+        // native app that trips only `titleMatch` is an idle app with
+        // a stray window (a Teams chat or calendar), not a meeting, so
+        // it must show a corroborating in-call signal first. Browsers
+        // are exempt: the scanner only enumerates a browser after a
+        // window already matched a meeting URL fragment, so a browser
+        // candidate's `titleMatch` is URL-vetted rather than a
+        // window-title-recognizer guess. Before TECH-C13 the deleted
+        // `Detector` supplied this second gate via its `micActive`
+        // AND-check; the discovery path now stands alone.
         if contenders.count == 1 {
+            if best.source.kind == .native,
+               !hasCorroboratingSignal(best.signals) {
+                return nil
+            }
             return best
         }
 

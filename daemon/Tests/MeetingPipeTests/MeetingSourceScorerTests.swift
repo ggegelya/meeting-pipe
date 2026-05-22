@@ -70,25 +70,32 @@ final class MeetingSourceScorerTests: XCTestCase {
         XCTAssertEqual(MeetingSourceScorer.distinctSignalCount(signals), 2)
     }
 
-    // MARK: - Single-contender path (threshold does not apply)
+    // MARK: - Single-contender path
 
-    func test_single_contender_below_threshold_still_wins() {
-        // A real meeting where the AX walk + process-audio probe came
-        // back empty scores only titleMatch = 2. With one contender
-        // there is nothing to disambiguate, so it must still be
-        // returned - gating it behind the 5-point threshold is exactly
-        // the TECH-C15 regression this rule fixes. The Detector's
-        // micActive AND-gate downstream is the real meeting check.
+    func test_single_native_contender_with_only_titleMatch_is_rejected() {
+        // The Issue 3 false-prompt fix. A native meeting app idling
+        // with just a chat or calendar window trips `titleMatch` (the
+        // window-title recognizer is permissive), but that is not a
+        // meeting. With no corroborating in-call signal the lone
+        // contender is rejected, so discovery never engages and no
+        // "record this meeting?" prompt is raised.
         var candidates = [teams(signals: .init(titleMatch: true))]
+        XCTAssertNil(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil))
+    }
+
+    func test_single_native_contender_with_corroborating_signal_wins() {
+        // A real native call: `titleMatch` plus a leave button. The
+        // leave button is genuine in-call evidence, so the lone
+        // contender is returned.
+        var candidates = [teams(signals: .init(leaveButton: true, titleMatch: true))]
         let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
         XCTAssertEqual(winner?.source.bundleID, "com.microsoft.teams2")
-        XCTAssertEqual(winner?.score, 2)
     }
 
     func test_single_contender_with_one_signal_wins() {
-        // One distinct signal, below the 2-signal floor. The floor is a
-        // multi-candidate disambiguation rule; with a sole contender it
-        // does not apply.
+        // A single corroborating in-call signal is enough for a lone
+        // contender: a calling-controls toolbar only renders inside an
+        // active call, so it stands on its own without `titleMatch`.
         var candidates = [teams(signals: .init(callingControlsToolbar: true))]
         let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
         XCTAssertEqual(winner?.source.bundleID, "com.microsoft.teams2")
@@ -110,13 +117,12 @@ final class MeetingSourceScorerTests: XCTestCase {
     // MARK: - Idle-app filtering
 
     func test_idle_meeting_apps_with_no_signal_are_filtered() {
-        // The regression scenario: Teams in a real call (AX walk blind,
-        // so only titleMatch) alongside Slack + Zoom auto-started on
-        // login but idle (zero signals). Slack and Zoom are dropped as
-        // non-contenders, leaving Teams the sole contender, which is
-        // returned despite scoring only 2.
+        // Teams in a real call (leave button visible) alongside Slack +
+        // Zoom auto-started on login but idle (zero signals). Slack and
+        // Zoom are dropped as non-contenders, leaving Teams the sole
+        // contender, which is returned.
         var candidates = [
-            teams(signals: .init(titleMatch: true)),
+            teams(signals: .init(leaveButton: true, titleMatch: true)),
             MeetingSourceCandidate(
                 source: AppSource(bundleID: "com.tinyspeck.slackmacgap",
                                    displayName: "Slack", kind: .native),
@@ -289,12 +295,12 @@ final class MeetingSourceScorerTests: XCTestCase {
     }
 
     func test_browser_with_only_titleMatch_is_returned_as_sole_contender() {
-        // A lone Chrome with a meeting-pattern tab title is the only
-        // contender, so it is returned even at score 2. This does NOT
-        // mean a background Meet tab false-starts a recording: the
-        // Detector's micActive AND-gate (DetectorSignals.decide())
-        // still requires the mic to be in use before .started fires.
-        // The scorer's job is "which app", not "is the mic live".
+        // A lone browser with a meeting-pattern tab title is returned
+        // even at score 2. Browsers are exempt from the native
+        // corroborating-signal rule: the scanner only enumerates a
+        // browser after one of its windows already matched a meeting
+        // URL fragment, so a browser's `titleMatch` is URL-vetted, not
+        // a permissive window-title-recognizer guess.
         var candidates = [chrome(signals: .init(titleMatch: true))]
         let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
         XCTAssertEqual(winner?.source.bundleID, "com.google.Chrome")
