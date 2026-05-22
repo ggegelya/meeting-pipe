@@ -23,10 +23,9 @@ import Foundation
 /// would normally provide.
 public final class CoreAudioHALBus {
 
-    /// Identifies a HAL property subscription. Keys the bus so two
-    /// subscribers on the same address share one underlying CoreAudio
-    /// listener once the real backend lands.
-    public struct Address: Hashable {
+    /// Identifies a HAL property subscription: the AudioObject plus the
+    /// property selector, scope, and element it listens on.
+    public struct Address {
         public let objectID: AudioObjectID
         public let selector: AudioObjectPropertySelector
         public let scope: AudioObjectPropertyScope

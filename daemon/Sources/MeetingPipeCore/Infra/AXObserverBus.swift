@@ -6,15 +6,14 @@ import Foundation
 /// `MeetingLifecycleCoordinator` (Leave-button destruction notifications,
 /// title changes) and `MicGate` (Mute-button value + title changes) both
 /// need to observe AX notifications on the meeting-app process. The bus
-/// caches one `AXObserver` per PID and multiplexes notification handlers
-/// off of it so a single AX-tree walk satisfies both consumers, per the
-/// "AX tree walked exactly once per meeting" requirement in TECH-C13.
+/// gives them one registration path, one dispatch queue, and one teardown
+/// point. Each `subscribe` maps 1:1 to a backend registration keyed by
+/// `Token`; TECH-C13 specced coalescing to one shared `AXObserver` per
+/// PID, but that deduplication was never built.
 ///
-/// The skeleton lands in TECH-C13 step 1. Real registration via
-/// `AXObserverAddNotification` is wired in step 2 alongside the
-/// `AXLeaveButtonSignal`. For now the bus only owns the bookkeeping and
-/// the test seam; the default `NoopAXBackend` records no observer but
-/// returns a teardown so the bus's accounting matches production.
+/// Real registration via `AXObserverAddNotification` is provided by the
+/// backend; the default `NoopAXBackend` records no observer but returns a
+/// teardown so the bus's accounting matches production.
 ///
 /// Threading: every entry point is serialised on `queue`. Handlers are
 /// dispatched on the main queue so subscribers can touch AppKit /
@@ -22,7 +21,7 @@ import Foundation
 public final class AXObserverBus {
 
     /// Identifies a single AX subscription on a specific element + name.
-    public struct Subscription: Hashable {
+    public struct Subscription {
         public let pid: pid_t
         public let notification: String
 
@@ -134,11 +133,9 @@ public final class AXObserverBus {
     }
 }
 
-/// Default backend used until the real AX wiring lands. Records no
-/// observer but returns a teardown so the bus's bookkeeping behaves
-/// identically to production. Step 2 (TECH-C13) replaces this with a
-/// real `AXObserverAddNotification` backend that caches one observer
-/// per PID and multiplexes handlers off of it.
+/// Test/no-op backend: records no observer but returns a teardown so the
+/// bus's bookkeeping behaves identically to a real
+/// `AXObserverAddNotification` backend.
 public final class NoopAXBackend: AXObserverBus.Backend {
     public init() {}
 
