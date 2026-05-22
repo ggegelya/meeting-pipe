@@ -168,3 +168,36 @@ def test_regulated_local_zero_egress(tmp_path: Any) -> None:
     assert blocker.violations == [], f"egress violations: {blocker.violations}"
     summary_md = out["md"].read_text(encoding="utf-8")
     assert "Local" in summary_md
+
+
+# ----- Local backend subprocess scoping -----
+
+def test_summarize_closes_self_created_local_client(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The plain `local` backend owns an mlx_lm.server subprocess.
+    # summarize() must close a client it built itself so the subprocess
+    # does not outlive the CLI process (the `auto` path already does).
+    from mp.schemas import MeetingSummary
+    from mp.summarize import summarize
+
+    md = tmp_path / "t.md"
+    md.write_text("# Transcript\n\nA: hello.\n", encoding="utf-8")
+
+    class _SpyClient:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def summarize(self, **_: Any) -> MeetingSummary:
+            return MeetingSummary(
+                title="T", summary=["b"], decisions=[], actions=[],
+                questions=[], attendees=[], detected_language="en",
+            )
+
+        def close(self) -> None:
+            self.closed = True
+
+    spy = _SpyClient()
+    monkeypatch.setattr("mp.summarize._select_backend", lambda _cfg: spy)
+    summarize(md, cfg=_local_cfg(backend="local"))
+    assert spy.closed is True

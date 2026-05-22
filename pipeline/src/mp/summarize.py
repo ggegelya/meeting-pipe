@@ -197,15 +197,28 @@ def summarize(
         cfg.summarization.summary_language,
     )
 
+    owns_client = client is None
     if client is None:
         client = _select_backend(cfg)
 
-    summary = client.summarize(
-        system_prompt=system_prompt,
-        transcript=transcript,
-        model=cfg.summarization.model,
-        max_tokens=cfg.summarization.max_tokens,
-    )
+    try:
+        summary = client.summarize(
+            system_prompt=system_prompt,
+            transcript=transcript,
+            model=cfg.summarization.model,
+            max_tokens=cfg.summarization.max_tokens,
+        )
+    finally:
+        # The plain `local` backend owns an mlx_lm.server subprocess;
+        # close it so it does not outlive this CLI process, matching the
+        # `auto` path which already scopes its local client in a `with`.
+        # Only a client summarize() built itself is closed; an injected
+        # client is the caller's to manage, and anthropic/auto have no
+        # subprocess and no `close`.
+        if owns_client:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
 
     stem = transcript_md.stem
     out_dir = transcript_md.parent
