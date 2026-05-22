@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import AVFoundation
 import Combine
 import Foundation
@@ -330,8 +331,9 @@ final class Coordinator: NSObject {
         }
 
         // Consume the lifecycle verdict stream: `.starting` raises the
-        // prompt, `.ended` closes the recording or dismisses a stale
-        // prompt. `.inMeeting` / `.endingProvisional` are telemetry.
+        // prompt, `.endingProvisional` triggers the compact-view
+        // rescue re-walk, `.ended` closes the recording or dismisses a
+        // stale prompt. `.inMeeting` is telemetry.
         lifecycleConsumerTask = Task { [weak self] in
             guard let self = self else { return }
             for await verdict in self.lifecycleCoord.verdicts {
@@ -339,6 +341,8 @@ final class Coordinator: NSObject {
                     switch verdict {
                     case .starting(let context):
                         self.handleMeetingStarted(source: self.appSource(from: context))
+                    case .endingProvisional(let context, _):
+                        self.rescueProvisionalEnd(context: context)
                     case .ended:
                         self.handleMeetingEnded()
                     default:
@@ -1353,6 +1357,36 @@ final class Coordinator: NSObject {
               let leaveButton = handles.lifecycle.leaveButton else {
             return
         }
+        lifecycleCoord.armLeaveButton(leaveButton)
+    }
+
+    /// React to a provisional meeting-end verdict. A PRIMARY signal
+    /// flipped to `.ended` and the engine is in its debounce window
+    /// before `.ended`. For native meetings the usual cause is a real
+    /// Leave click, but the Teams 2 compact-view swap also destroys
+    /// the meeting window's Leave button while the call continues.
+    /// Re-walk the AX tree: when a Leave button still exists (it moved
+    /// to the compact panel) re-arm the signal on it, and its
+    /// `.healthy` baseline flips the engine back to `.inMeeting` before
+    /// the debounce promotes to `.ended`. A genuine end finds no Leave
+    /// button and the debounce proceeds untouched.
+    private func rescueProvisionalEnd(context: MeetingLifecycleContext) {
+        guard context.kind == .native else { return }
+        let axApp = AXUIElementCreateApplication(context.pid)
+        let leaveButtons = MeetingAXHandleBuilder.findAllLeaveButtons(
+            in: axApp,
+            bundleID: context.bundleID
+        )
+        guard let leaveButton = leaveButtons.first else {
+            Log.event(category: "coordinator", action: "lifecycle_provisional_end_confirmed", attributes: [
+                "bundle_id": context.bundleID,
+            ])
+            return
+        }
+        Log.event(category: "coordinator", action: "lifecycle_provisional_end_rescued", attributes: [
+            "bundle_id": context.bundleID,
+            "leave_buttons_found": leaveButtons.count,
+        ])
         lifecycleCoord.armLeaveButton(leaveButton)
     }
 

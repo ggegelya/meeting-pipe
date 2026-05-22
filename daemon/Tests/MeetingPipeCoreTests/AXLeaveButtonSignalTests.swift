@@ -165,4 +165,31 @@ final class AXLeaveButtonSignalTests: XCTestCase {
 
         XCTAssertEqual(observed, [.healthy, .invalid])
     }
+
+    func test_armIfNeeded_rearms_when_current_element_is_dead() throws {
+        let bus = AXObserverBus()
+        let scheduler = ManualScheduler()
+        let deadButton = AXUIElementCreateApplication(91001)
+        let liveButton = AXUIElementCreateApplication(91002)
+        var observed: [AXLeaveButtonSignal.State] = []
+        let signal = AXLeaveButtonSignal(
+            axBus: bus,
+            probe: { element in CFEqual(element, liveButton) ? .healthy : .invalid },
+            scheduler: manualScheduler(scheduler)
+        )
+        signal.onChange = { observed.append($0) }
+
+        // Armed on the meeting window's Leave button, which probes
+        // invalid: the Teams compact-view swap destroyed it.
+        try signal.start(context: teamsContext, leaveButton: deadButton)
+        XCTAssertEqual(observed, [.invalid])
+
+        // The orchestrator re-walked and found the replacement on the
+        // compact panel. The re-arm must take even though the signal
+        // still holds the (dead) original element.
+        signal.armIfNeeded(context: teamsContext, leaveButton: liveButton)
+
+        XCTAssertEqual(observed, [.invalid, .healthy], "Re-arm onto a live button resumes the signal")
+        XCTAssertTrue(signal.isArmed)
+    }
 }

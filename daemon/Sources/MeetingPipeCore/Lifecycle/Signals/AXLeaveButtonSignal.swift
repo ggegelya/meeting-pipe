@@ -92,17 +92,27 @@ public final class AXLeaveButtonSignal {
         evaluate(reason: "initial")
     }
 
-    /// Idempotent late-arm. The executable's discovery-time AX walk
-    /// often misses the Leave button because the call UI has not
-    /// rendered yet; it re-walks at recording-start and calls this with
-    /// the button it found. No-op when the signal already armed at
-    /// engage time. A subscribe failure is logged, not thrown: the
-    /// silence backstop still bounds the recording.
+    /// Arm, or re-arm, the signal on `leaveButton`. Two callers:
+    ///
+    ///   - Recording-start late-arm: the executable's discovery-time
+    ///     AX walk often misses the Leave button because the call UI
+    ///     has not rendered yet, so it re-walks at recording-start.
+    ///     A no-op here when the signal already watches a live button.
+    ///   - Compact-view rescue: the Teams 2 compact-view swap destroys
+    ///     the meeting window's Leave button and rebuilds it on a
+    ///     panel. The currently-armed element then probes invalid;
+    ///     this re-arms onto the replacement so a window collapse is
+    ///     not mistaken for a meeting end.
+    ///
+    /// A subscribe failure is logged, not thrown: the silence backstop
+    /// still bounds the recording.
     public func armIfNeeded(
         context: MeetingLifecycleContext,
         leaveButton: AXUIElement
     ) {
-        guard !isArmed else { return }
+        // Skip only when the signal already watches a still-live
+        // button. An armed-but-dead element falls through to re-arm.
+        if let current = element, probe(current) == .healthy { return }
         do {
             try start(context: context, leaveButton: leaveButton)
         } catch {
