@@ -60,6 +60,24 @@ DEFAULT_PORT = 8765
 DEFAULT_STARTUP_TIMEOUT_SEC = 120.0
 DEFAULT_IDLE_TIMEOUT_SEC = 300.0
 
+# Loopback hosts the local model server may bind / be reached on.
+# meeting-pipe always runs that server on the same machine; a
+# non-loopback host (a stray "0.0.0.0" in config) would bind the
+# unauthenticated inference server to every interface and expose every
+# transcript on the LAN, so it is clamped back to loopback.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _loopback_only(host: str) -> str:
+    if host.strip().lower() in _LOOPBACK_HOSTS:
+        return host
+    log.warning(
+        "local backend host %r is not loopback; clamping to %s so the "
+        "inference server is not exposed beyond this machine",
+        host, DEFAULT_HOST,
+    )
+    return DEFAULT_HOST
+
 
 class LocalSummaryError(RuntimeError):
     """Raised when the local backend cannot satisfy the request."""
@@ -86,7 +104,7 @@ class LocalSummaryClient:
         manage_subprocess: bool = True,
     ) -> None:
         self._model = model
-        self._host = host
+        self._host = _loopback_only(host)
         self._port = port
         self._startup_timeout_sec = startup_timeout_sec
         self._idle_timeout_sec = idle_timeout_sec

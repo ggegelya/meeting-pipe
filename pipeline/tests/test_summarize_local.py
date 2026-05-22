@@ -245,6 +245,21 @@ def test_no_server_with_manage_false_raises() -> None:
             )
 
 
+# ----- Bind host is clamped to loopback -----
+
+def test_non_loopback_host_is_clamped() -> None:
+    # A non-loopback host (e.g. a stray bind-all address in config) would
+    # expose the unauthenticated inference server on the LAN; the client
+    # must clamp it back to loopback.
+    c = LocalSummaryClient(host="10.0.0.5", port=8765, manage_subprocess=False)
+    assert c.base_url == "http://127.0.0.1:8765"
+
+
+def test_loopback_host_is_preserved() -> None:
+    c = LocalSummaryClient(host="localhost", port=8765, manage_subprocess=False)
+    assert c.base_url == "http://localhost:8765"
+
+
 # ----- Pure helper: balanced JSON scanner -----
 
 def test_largest_balanced_object_picks_outer() -> None:
