@@ -145,6 +145,30 @@ final class LifecycleAdapterTests: XCTestCase {
         XCTAssertTrue(adapter(for: meetPWAContext) === browser)
     }
 
+    // MARK: - Leave-button late-arm
+
+    func test_native_adapters_armLeaveButton_before_start_is_a_safe_noop() {
+        // The orchestrator calls armLeaveButton at recording-start;
+        // before start() there is no captured context, so each native
+        // adapter must absorb the late-arm rather than crash.
+        let element = AXUIElementCreateSystemWide()
+        let adapters: [LifecycleAdapter] = [
+            TeamsLifecycleAdapter(halBus: CoreAudioHALBus(), axBus: AXObserverBus()),
+            ZoomLifecycleAdapter(halBus: CoreAudioHALBus(), axBus: AXObserverBus()),
+            WebexLifecycleAdapter(axBus: AXObserverBus()),
+            SlackLifecycleAdapter(axBus: AXObserverBus()),
+        ]
+        for adapter in adapters {
+            adapter.armLeaveButton(element)
+        }
+    }
+
+    func test_browser_adapter_armLeaveButton_is_a_noop() {
+        // The browser adapter has no AX Leave-button signal; it relies
+        // on the protocol's default no-op.
+        BrowserMeetingLifecycleAdapter().armLeaveButton(AXUIElementCreateSystemWide())
+    }
+
     // MARK: - Browser adapter signal wiring (GAP 2)
 
     /// A browser adapter with an inert shareable-content signal so a

@@ -40,6 +40,11 @@ public final class AXLeaveButtonSignal {
     public var onChange: ((State) -> Void)?
     public private(set) var lastState: State?
 
+    /// True once the signal is watching a Leave-button element.
+    /// `armIfNeeded` consults this so a recording-start late-arm does
+    /// not clobber a subscription that already armed at engage time.
+    public var isArmed: Bool { element != nil }
+
     public static let defaultPollInterval: TimeInterval = 1.0
 
     private let axBus: AXObserverBus
@@ -85,6 +90,28 @@ public final class AXLeaveButtonSignal {
             self?.evaluate(reason: "health_poll")
         }
         evaluate(reason: "initial")
+    }
+
+    /// Idempotent late-arm. The executable's discovery-time AX walk
+    /// often misses the Leave button because the call UI has not
+    /// rendered yet; it re-walks at recording-start and calls this with
+    /// the button it found. No-op when the signal already armed at
+    /// engage time. A subscribe failure is logged, not thrown: the
+    /// silence backstop still bounds the recording.
+    public func armIfNeeded(
+        context: MeetingLifecycleContext,
+        leaveButton: AXUIElement
+    ) {
+        guard !isArmed else { return }
+        do {
+            try start(context: context, leaveButton: leaveButton)
+        } catch {
+            eventLog.emit(category: "signal", action: "ax_leave_button_arm_failed", attributes: [
+                "bundle_id": context.bundleID,
+                "pid": Int(context.pid),
+                "error": "\(error)"
+            ])
+        }
     }
 
     public func stop() {

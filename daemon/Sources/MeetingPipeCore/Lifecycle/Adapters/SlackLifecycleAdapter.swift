@@ -20,6 +20,11 @@ public final class SlackLifecycleAdapter: LifecycleAdapter {
     private let shareableContent: ShareableContentSignal
     private let axLeaveButton: AXLeaveButtonSignal
 
+    /// Context captured at `start`. `armLeaveButton` reuses it so the
+    /// late-armed signal emits events under the same context the
+    /// promotion engine matches against.
+    private var startedContext: MeetingLifecycleContext?
+
     public init(
         axBus: AXObserverBus,
         eventLog: EventLog = NoopEventLog()
@@ -33,6 +38,7 @@ public final class SlackLifecycleAdapter: LifecycleAdapter {
         handle: LifecycleAdapterHandle,
         sink: @escaping (PrimarySignalEvent) -> Void
     ) throws {
+        startedContext = context
         shareableContent.onChange = { present in
             sink(PrimarySignalEvent(
                 kind: .shareableContentWindow,
@@ -58,8 +64,14 @@ public final class SlackLifecycleAdapter: LifecycleAdapter {
         }
     }
 
+    public func armLeaveButton(_ element: AXUIElement) {
+        guard let context = startedContext else { return }
+        axLeaveButton.armIfNeeded(context: context, leaveButton: element)
+    }
+
     public func stop() {
         shareableContent.stop()
         axLeaveButton.stop()
+        startedContext = nil
     }
 }

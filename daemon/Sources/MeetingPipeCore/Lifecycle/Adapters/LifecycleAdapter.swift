@@ -53,6 +53,14 @@ public protocol LifecycleAdapter: AnyObject {
     ) throws
 
     func stop()
+
+    /// Late-arm the AX Leave-button signal with a button the executable
+    /// re-walked at recording-start. The discovery-time AX walk usually
+    /// misses the Leave button because the call UI has not rendered yet
+    /// (`MeetingAXHandleBuilder.build` returns `leaveButton: nil`).
+    /// Idempotent: a no-op when the signal already armed at engage
+    /// time, and for adapters with no AX Leave-button signal.
+    func armLeaveButton(_ element: AXUIElement)
 }
 
 public extension LifecycleAdapter {
@@ -60,6 +68,10 @@ public extension LifecycleAdapter {
     func handles(bundleID: String) -> Bool {
         bundleIDs.contains(bundleID)
     }
+
+    /// Default: adapters with no AX Leave-button signal ignore the
+    /// late-arm. The browser adapter relies on this.
+    func armLeaveButton(_ element: AXUIElement) {}
 }
 
 /// Locale-tolerant title-match callbacks used by adapters when they

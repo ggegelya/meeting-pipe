@@ -1042,6 +1042,11 @@ final class Coordinator: NSObject {
             ])
             armSilenceDetector()
             engageMicGate(source: source)
+            // Late-arm the lifecycle Leave-button signal. The
+            // discovery-time AX walk that drove `engageLifecycle` runs
+            // before the call UI renders, so the Leave button is
+            // usually absent then; re-walk now that the recorder is up.
+            armLifecycleLeaveButton(source: source)
             // The recorder is armed: promote the lifecycle verdict from
             // `.starting` to `.inMeeting`. A no-op for manual recordings
             // (no adapter engaged) and for the prompt-answered-late race.
@@ -1331,6 +1336,24 @@ final class Coordinator: NSObject {
                 "error": error.localizedDescription,
             ])
         }
+    }
+
+    /// Re-walk the meeting AX tree at recording-start and late-arm the
+    /// lifecycle adapter's Leave-button signal. `engageLifecycle` runs
+    /// at discovery time, before the call UI renders, so the Leave
+    /// button is usually absent then (`ax_handles_built` logs
+    /// `found_leave:false`); by recording-start it exists. The
+    /// re-walk's `ax_handles_built` event records that second reading.
+    /// Idempotent: `armLeaveButton` is a no-op when the signal already
+    /// armed at engage time; a still-missing button leaves the
+    /// recording on the silence backstop, as before.
+    private func armLifecycleLeaveButton(source: AppSource?) {
+        guard let source = source else { return }
+        guard let handles = MeetingAXHandleBuilder.build(source: source, catalogue: muteLabels),
+              let leaveButton = handles.lifecycle.leaveButton else {
+            return
+        }
+        lifecycleCoord.armLeaveButton(leaveButton)
     }
 
     /// Tear down the lifecycle adapter + reset the engine. Wired to the

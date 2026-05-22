@@ -1,3 +1,4 @@
+import ApplicationServices
 import Foundation
 
 /// Single-owner verdict producer for meeting lifecycle events.
@@ -20,7 +21,8 @@ import Foundation
 /// orchestrator's bootstrap moments such as TCC-denied state).
 ///
 /// Threading: `engage`, `disengage`, `publish`, `confirmRecording`,
-/// and `shutdown` must run on the main queue. Adapter sink callbacks
+/// `armLeaveButton`, and `shutdown` must run on the main queue.
+/// Adapter sink callbacks
 /// may fire on background queues; the coordinator serialises engine
 /// ingestion on `engineQueue` so the engine's internal phase stays
 /// consistent.
@@ -172,6 +174,16 @@ public final class MeetingLifecycleCoordinator {
                 self.publish(decision.verdict)
             }
         }
+    }
+
+    /// Late-arm the active adapter's AX Leave-button signal. The
+    /// orchestrator calls this at recording-start with a button it
+    /// re-walked once the call UI rendered; the discovery-time walk
+    /// that drove `engage` usually runs too early to see it. No-op
+    /// when no adapter is engaged or the adapter has no Leave-button
+    /// signal.
+    public func armLeaveButton(_ element: AXUIElement) {
+        activeAdapter?.armLeaveButton(element)
     }
 
     // MARK: - Event log

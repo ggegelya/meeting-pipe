@@ -13,6 +13,11 @@ public final class TeamsLifecycleAdapter: LifecycleAdapter {
     private let shareableContent: ShareableContentSignal
     private let axLeaveButton: AXLeaveButtonSignal
 
+    /// Context captured at `start`. `armLeaveButton` reuses it so the
+    /// late-armed signal emits events under the same context the
+    /// promotion engine matches against.
+    private var startedContext: MeetingLifecycleContext?
+
     public init(
         halBus: CoreAudioHALBus,
         axBus: AXObserverBus,
@@ -28,6 +33,7 @@ public final class TeamsLifecycleAdapter: LifecycleAdapter {
         handle: LifecycleAdapterHandle,
         sink: @escaping (PrimarySignalEvent) -> Void
     ) throws {
+        startedContext = context
         processAudio.onChange = { value in
             sink(PrimarySignalEvent(
                 kind: .processAudioIsRunningInput,
@@ -59,9 +65,15 @@ public final class TeamsLifecycleAdapter: LifecycleAdapter {
         }
     }
 
+    public func armLeaveButton(_ element: AXUIElement) {
+        guard let context = startedContext else { return }
+        axLeaveButton.armIfNeeded(context: context, leaveButton: element)
+    }
+
     public func stop() {
         processAudio.stop()
         shareableContent.stop()
         axLeaveButton.stop()
+        startedContext = nil
     }
 }

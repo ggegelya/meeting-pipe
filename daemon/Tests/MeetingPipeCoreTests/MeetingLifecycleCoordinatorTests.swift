@@ -1,3 +1,4 @@
+import ApplicationServices
 import XCTest
 @testable import MeetingPipeCore
 
@@ -184,6 +185,29 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         XCTAssertTrue(log.entries.contains { $0.action == "no_adapter_for_context" })
     }
 
+    func test_armLeaveButton_forwards_to_active_adapter() throws {
+        let fake = FakeAdapter()
+        let scheduler = ManualScheduler()
+        let coordinator = MeetingLifecycleCoordinator(
+            adapters: [fake],
+            scheduler: scheduler.scheduler()
+        )
+
+        // No adapter engaged yet: the late-arm is absorbed, not crashed.
+        coordinator.armLeaveButton(AXUIElementCreateSystemWide())
+        XCTAssertEqual(fake.armedLeaveButtons.count, 0)
+
+        try coordinator.engage(
+            context: teamsContext,
+            handle: LifecycleAdapterHandle()
+        )
+        coordinator.armLeaveButton(AXUIElementCreateSystemWide())
+        XCTAssertEqual(
+            fake.armedLeaveButtons.count, 1,
+            "Recording-start late-arm forwards to the engaged adapter"
+        )
+    }
+
     private func flushEngine(_ coordinator: MeetingLifecycleCoordinator) {
         let expectation = expectation(description: "engine drain")
         coordinator.tick()
@@ -201,6 +225,7 @@ private final class FakeAdapter: LifecycleAdapter {
     let bundleIDs: Set<String>
     let kind: MeetingLifecycleContext.Kind
     private(set) var didStop = false
+    private(set) var armedLeaveButtons: [AXUIElement] = []
     private var sink: ((PrimarySignalEvent) -> Void)?
 
     init(
@@ -223,6 +248,10 @@ private final class FakeAdapter: LifecycleAdapter {
     func stop() {
         sink = nil
         didStop = true
+    }
+
+    func armLeaveButton(_ element: AXUIElement) {
+        armedLeaveButtons.append(element)
     }
 
     func emit(_ event: PrimarySignalEvent) {

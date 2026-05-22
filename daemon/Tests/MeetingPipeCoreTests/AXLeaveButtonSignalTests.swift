@@ -101,4 +101,68 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         XCTAssertEqual(bus.activeSubscriptionCount, 0)
         XCTAssertNil(signal.lastState)
     }
+
+    // MARK: - Late-arm (armIfNeeded)
+
+    func test_armIfNeeded_arms_a_fresh_signal() {
+        let bus = AXObserverBus()
+        let scheduler = ManualScheduler()
+        var observed: [AXLeaveButtonSignal.State] = []
+        let signal = AXLeaveButtonSignal(
+            axBus: bus,
+            probe: { _ in .healthy },
+            scheduler: manualScheduler(scheduler)
+        )
+        signal.onChange = { observed.append($0) }
+
+        XCTAssertFalse(signal.isArmed)
+        signal.armIfNeeded(context: teamsContext, leaveButton: stubElement())
+
+        XCTAssertTrue(signal.isArmed, "Late-arm subscribes the signal like start()")
+        XCTAssertEqual(observed, [.healthy], "Late-arm emits the healthy baseline")
+        XCTAssertEqual(bus.activeSubscriptionCount, 1)
+    }
+
+    func test_armIfNeeded_is_noop_when_already_armed() throws {
+        let bus = AXObserverBus()
+        let scheduler = ManualScheduler()
+        var observed: [AXLeaveButtonSignal.State] = []
+        let signal = AXLeaveButtonSignal(
+            axBus: bus,
+            probe: { _ in .healthy },
+            scheduler: manualScheduler(scheduler)
+        )
+        signal.onChange = { observed.append($0) }
+
+        try signal.start(context: teamsContext, leaveButton: stubElement())
+        XCTAssertEqual(observed, [.healthy])
+
+        // The recording-start late-arm racing an engage-time arm must
+        // not re-subscribe or re-emit the baseline.
+        signal.armIfNeeded(context: teamsContext, leaveButton: stubElement())
+
+        XCTAssertEqual(observed, [.healthy], "Already-armed signal absorbs the late-arm")
+        XCTAssertEqual(bus.activeSubscriptionCount, 1)
+    }
+
+    func test_late_armed_signal_detects_leave() {
+        let bus = AXObserverBus()
+        let scheduler = ManualScheduler()
+        var probeReturn: AXLeaveButtonSignal.State = .healthy
+        var observed: [AXLeaveButtonSignal.State] = []
+        let signal = AXLeaveButtonSignal(
+            axBus: bus,
+            probe: { _ in probeReturn },
+            scheduler: manualScheduler(scheduler)
+        )
+        signal.onChange = { observed.append($0) }
+
+        // A signal armed only via the late-arm path still flips to
+        // .invalid when the Leave button is destroyed.
+        signal.armIfNeeded(context: teamsContext, leaveButton: stubElement())
+        probeReturn = .invalid
+        scheduler.tick?()
+
+        XCTAssertEqual(observed, [.healthy, .invalid])
+    }
 }
