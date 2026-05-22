@@ -14,6 +14,14 @@ import Foundation
 /// file for pipeline processing.
 enum OrphanRecordingRecovery {
 
+    /// Recovery is bounded to recently orphaned recordings. A crash,
+    /// kill, or rebuild orphan is recovered on the very next launch,
+    /// so it is always recent; intermediates older than this are stale
+    /// test debris from earlier development and must not be swept up
+    /// and auto-published weeks later. They stay on disk for the
+    /// doctor orphan scan to report.
+    static let maxOrphanAge: TimeInterval = 24 * 60 * 60
+
     /// Pure scan: given the file names present in a recordings
     /// directory, return the stems that have orphaned intermediates (a
     /// `.mic.wav` or `.system.wav`) but no finished `.wav`. Split from
@@ -36,21 +44,48 @@ enum OrphanRecordingRecovery {
         return intermediateStems.subtracting(finalStems).sorted()
     }
 
-    /// Synchronously enumerate `directory` and return the orphan
-    /// stems. Cheap (one `contentsOfDirectory` call). The caller runs
-    /// it before any new recording can start, so a live recording's
-    /// in-flight intermediates are never mistaken for an orphan. Best
-    /// effort: a directory that cannot be read yields an empty result.
-    static func scanOrphanStems(in directory: URL) -> [String] {
+    /// Synchronously enumerate `directory` and return the orphan stems
+    /// worth recovering: those with no finished `.wav` AND with
+    /// intermediates modified within `maxOrphanAge`. Cheap (one
+    /// `contentsOfDirectory` call). The caller runs it before any new
+    /// recording can start, so a live recording's in-flight
+    /// intermediates are never mistaken for an orphan. Best effort: a
+    /// directory that cannot be read yields an empty result.
+    static func scanOrphanStems(in directory: URL, now: Date = Date()) -> [String] {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: nil,
+            includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else {
             return []
         }
-        return detectOrphanStems(fileNames: entries.map { $0.lastPathComponent })
+        let candidates = detectOrphanStems(fileNames: entries.map { $0.lastPathComponent })
+        return candidates.filter { stem in
+            guard let modified = newestIntermediateDate(stem: stem, in: directory) else {
+                return false
+            }
+            if now.timeIntervalSince(modified) <= maxOrphanAge {
+                return true
+            }
+            Log.writeLine(
+                "daemon",
+                "skipping stale orphaned recording \(stem) (intermediates older than \(Int(maxOrphanAge / 3600))h)"
+            )
+            return false
+        }
+    }
+
+    /// Newest modification date across a stem's `.mic.wav` /
+    /// `.system.wav` intermediates, or nil when neither can be stat'd.
+    private static func newestIntermediateDate(stem: String, in directory: URL) -> Date? {
+        [".mic.wav", ".system.wav"]
+            .map { directory.appendingPathComponent("\(stem)\($0)") }
+            .compactMap { url -> Date? in
+                (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate
+            }
+            .max()
     }
 
     /// Merge each orphan stem's intermediates into its final
