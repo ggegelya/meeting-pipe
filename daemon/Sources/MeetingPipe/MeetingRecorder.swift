@@ -433,16 +433,16 @@ final class MeetingRecorder {
 
         // Decide what to produce as the final WAV.
         if hasMic && hasSystem {
-            await mergeViaFFmpeg(mic: micURL, system: systemURL, final: final)
+            await Self.mergeViaFFmpeg(mic: micURL, system: systemURL, final: final)
             try? FileManager.default.removeItem(at: micURL)
             try? FileManager.default.removeItem(at: systemURL)
         } else if hasMic {
             // Just resample mic to 16 kHz mono and rename.
-            await convertMonoMixdownViaFFmpeg(input: micURL, output: final)
+            await Self.convertMonoMixdownViaFFmpeg(input: micURL, output: final)
             try? FileManager.default.removeItem(at: micURL)
             try? FileManager.default.removeItem(at: systemURL)
         } else if hasSystem {
-            await convertMonoMixdownViaFFmpeg(input: systemURL, output: final)
+            await Self.convertMonoMixdownViaFFmpeg(input: systemURL, output: final)
             try? FileManager.default.removeItem(at: micURL)
             try? FileManager.default.removeItem(at: systemURL)
         } else {
@@ -513,6 +513,54 @@ final class MeetingRecorder {
         }
     }
 
+    // MARK: - Orphan recovery
+
+    /// Recover a recording orphaned by a daemon that terminated
+    /// mid-recording: a crash, a `kill`, a `rebuild.sh` during
+    /// testing, or the permission-grant restart churn after a
+    /// reinstall. In every one of those cases `stop()` never ran, so
+    /// the `<stem>.mic.wav` / `<stem>.system.wav` intermediates are
+    /// still on disk and were never merged into the final WAV, and the
+    /// meeting is otherwise silently lost.
+    ///
+    /// This reproduces `stop()`'s merge decision (mic + system merged,
+    /// a lone side mixed down), deletes the intermediates, and returns
+    /// the final `<stem>.wav` URL. Returns nil when a final
+    /// `<stem>.wav` already exists (the recording did finish) or
+    /// neither intermediate holds usable audio.
+    static func recoverOrphan(stem: String, in directory: URL) async -> URL? {
+        let micURL = directory.appendingPathComponent("\(stem).mic.wav")
+        let systemURL = directory.appendingPathComponent("\(stem).system.wav")
+        let finalURL = directory.appendingPathComponent("\(stem).wav")
+        let fm = FileManager.default
+
+        // Never clobber a recording that already finished.
+        guard !fm.fileExists(atPath: finalURL.path) else { return nil }
+
+        let hasMic = fm.fileExists(atPath: micURL.path) && Self.fileSize(micURL) > 4096
+        let hasSystem = fm.fileExists(atPath: systemURL.path) && Self.fileSize(systemURL) > 4096
+
+        if hasMic && hasSystem {
+            await Self.mergeViaFFmpeg(mic: micURL, system: systemURL, final: finalURL)
+        } else if hasMic {
+            await Self.convertMonoMixdownViaFFmpeg(input: micURL, output: finalURL)
+        } else if hasSystem {
+            await Self.convertMonoMixdownViaFFmpeg(input: systemURL, output: finalURL)
+        } else {
+            return nil
+        }
+
+        try? fm.removeItem(at: micURL)
+        try? fm.removeItem(at: systemURL)
+
+        guard fm.fileExists(atPath: finalURL.path) else {
+            Log.writeLine("recorder", "WARN: orphan recovery produced no file for \(stem)")
+            return nil
+        }
+        Log.writeLine("recorder", "recovered orphaned recording → \(finalURL.lastPathComponent)")
+        return finalURL
+    }
+
     // MARK: - ffmpeg post-process
 
     /// Merge mic + system into a 16 kHz **stereo** WAV with the user's
@@ -534,7 +582,7 @@ final class MeetingRecorder {
     ///     channel is silent.
     ///   - File size grows ~2× vs mono. Negligible at 16 kHz s16le
     ///     (~30 KB/s for stereo vs 15 KB/s mono).
-    private func mergeViaFFmpeg(mic: URL, system: URL, final: URL) async {
+    private static func mergeViaFFmpeg(mic: URL, system: URL, final: URL) async {
         guard let ffmpeg = Self.findFFmpeg() else {
             Log.writeLine("recorder", "ERROR: ffmpeg not found — leaving mic.wav as final")
             try? FileManager.default.moveItem(at: mic, to: final)
@@ -565,7 +613,7 @@ final class MeetingRecorder {
 
     /// Convert a single-source recording to 16 kHz mono Int16 (the format
     /// WhisperX expects). Used when one side is missing.
-    private func convertMonoMixdownViaFFmpeg(input: URL, output: URL) async {
+    private static func convertMonoMixdownViaFFmpeg(input: URL, output: URL) async {
         guard let ffmpeg = Self.findFFmpeg() else {
             // No ffmpeg — best effort: just copy the file. WhisperX will
             // resample internally.
@@ -582,7 +630,7 @@ final class MeetingRecorder {
         await runFFmpeg(ffmpeg: ffmpeg, args: args, label: "convert")
     }
 
-    private func runFFmpeg(ffmpeg: String, args: [String], label: String) async {
+    private static func runFFmpeg(ffmpeg: String, args: [String], label: String) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
                 let proc = Process()

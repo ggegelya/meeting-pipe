@@ -433,6 +433,11 @@ final class Coordinator: NSObject {
                 self.discoveryWatcher.refreshNow()
                 self.statusBar.refreshMenuForPermissionChange()
             }
+
+        // Recover any recording orphaned by a daemon that terminated
+        // mid-recording (crash, kill, rebuild, or the reinstall
+        // permission-grant restart churn). Runs once, here at startup.
+        recoverOrphanedRecordings()
     }
 
     /// Fire every TCC dialog the daemon needs in a single ordered
@@ -505,6 +510,35 @@ final class Coordinator: NSObject {
             // Best-effort flush; we don't want orphan recording state.
             let recorder = self.recorder
             Task { await recorder.stop() }
+        }
+    }
+
+    /// Recover recordings orphaned by a daemon that terminated
+    /// mid-recording: a crash, a `kill`, a `rebuild.sh` during
+    /// testing, or the permission-grant restart churn after a
+    /// reinstall. `shutdown()`'s flush above is a detached task the
+    /// exiting process may never finish, so an interrupted recording
+    /// leaves `<stem>.mic.wav` / `<stem>.system.wav` intermediates
+    /// with no merged `<stem>.wav`. Each such pair is merged and
+    /// enqueued for the pipeline. The orphan set is snapshotted
+    /// synchronously here, before discovery can start a new recording,
+    /// so a live recording's in-flight intermediates are never
+    /// mistaken for an orphan; the ffmpeg merges then run off the main
+    /// actor so the menu bar is not stalled.
+    private func recoverOrphanedRecordings() {
+        let dir = liveOutputDir
+        let stems = OrphanRecordingRecovery.scanOrphanStems(in: dir)
+        guard !stems.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            let recovered = await OrphanRecordingRecovery.recover(stems: stems, in: dir)
+            guard let self = self else { return }
+            for url in recovered {
+                Log.writeLine("daemon", "recovered orphaned recording → \(url.lastPathComponent)")
+                Log.event(category: "coordinator", action: "orphan_recording_recovered", attributes: [
+                    "file": url.lastPathComponent,
+                ])
+                self.sinkDispatcher.enqueue(file: url, summaryMode: .auto)
+            }
         }
     }
 
