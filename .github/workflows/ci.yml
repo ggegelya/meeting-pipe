@@ -90,7 +90,11 @@ jobs:
 
   daemon:
     name: Daemon (swift build + test)
-    runs-on: macos-14
+    # macos-15: its default Xcode ships a Swift 6 toolchain, required to
+    # resolve the FluidAudio package (its Package.swift declares
+    # swift-tools-version 6.0). The macos-14 image's default Xcode is
+    # older and fails dependency resolution before the build even starts.
+    runs-on: macos-15
     defaults:
       run:
         working-directory: daemon
