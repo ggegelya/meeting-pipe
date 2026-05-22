@@ -2,9 +2,8 @@
 
 Single source of truth for every host, API path, model name, or signup URL
 used by the pipeline. Keeping these out of business logic means a service
-move (e.g. Notion bumping API version, pyannote releasing v4) is a one-file
-change, and any test that needs to monkeypatch a URL has a single import to
-target.
+move (e.g. Notion bumping its API version) is a one-file change, and any
+test that needs to monkeypatch a URL has a single import to target.
 
 Constants only. Anything that needs runtime data (auth header construction,
 URL formatting) belongs in the caller; constants stay pure.
@@ -24,27 +23,14 @@ NOTION_API_VERSION = "2022-06-28"
 NOTION_INTEGRATIONS_URL = "https://www.notion.so/profile/integrations"
 NOTION_PAGE_URL_TEMPLATE = "https://www.notion.so/{page_id_no_dashes}"
 
-# --- HuggingFace + pyannote --------------------------------------------------
+# --- HuggingFace -------------------------------------------------------------
+# `mp doctor` validates an optional HF token (only relevant if the user
+# opts back into pyannote diarization); diarization itself runs in the
+# Swift daemon via FluidAudio, so the pyannote repo IDs and model-URL
+# helpers no longer live here.
 HF_API_BASE = "https://huggingface.co/api"
 HF_API_WHOAMI = f"{HF_API_BASE}/whoami-v2"
-HF_API_MODEL_TEMPLATE = f"{HF_API_BASE}/models/{{repo}}"
 HF_TOKENS_URL = "https://huggingface.co/settings/tokens"
-HF_MODEL_PAGE_TEMPLATE = "https://huggingface.co/{repo}"
-
-PYANNOTE_DIARIZATION_REPO = "pyannote/speaker-diarization-3.1"
-PYANNOTE_SEGMENTATION_REPO = "pyannote/segmentation-3.0"
-PYANNOTE_GATED_REPOS: tuple[str, ...] = (
-    PYANNOTE_DIARIZATION_REPO,
-    PYANNOTE_SEGMENTATION_REPO,
-)
-
-
-def hf_model_api_url(repo: str) -> str:
-    return HF_API_MODEL_TEMPLATE.format(repo=repo)
-
-
-def hf_model_page_url(repo: str) -> str:
-    return HF_MODEL_PAGE_TEMPLATE.format(repo=repo)
 
 
 def notion_page_url(page_id: str) -> str:
