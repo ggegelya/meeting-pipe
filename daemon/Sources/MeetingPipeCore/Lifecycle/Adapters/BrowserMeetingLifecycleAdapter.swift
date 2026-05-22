@@ -1,13 +1,18 @@
 import Foundation
 
 /// Browser-hosted meeting adapter. Covers Google Meet, Teams web,
-/// Webex web, and Slack huddles (PWA).
+/// Webex web, Slack huddles, and Chromium PWAs (Meet / Teams / etc.
+/// installed as desktop apps).
 ///
 /// Browsers expose tab content as a single AX window per browser, so
-/// `AXLeaveButton` is unavailable. Browsers also do not expose
-/// per-tab mic state via any public Apple API as of macOS 14-15.
-/// The PRIMARY signal is therefore `ShareableContent` only, keyed
-/// on the browser bundle ID with a host-specific title regex.
+/// `AXLeaveButton` is unavailable, and they expose no per-tab mic
+/// state via any public Apple API as of macOS 14-15. The adapter
+/// fuses up to three PRIMARY signals: `ShareableContentSignal` (a
+/// meeting-titled window owned by the bundle), `WorkspaceSignal` (the
+/// meeting-app process terminating), and - for PWA contexts only -
+/// `WindowTitleSignal` (an AX title transition off the meeting
+/// pattern). A regular browser is left on the first two: an AX title
+/// change on a shared tabbed window is usually a tab switch.
 ///
 /// `TeamsLifecycleAdapter` covers the Teams native app; the browser
 /// adapter handles "Teams in Chrome / Edge / Arc" through the same
@@ -62,14 +67,39 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
     ]
 
     private let shareableContent: ShareableContentSignal
+    private let workspace: WorkspaceSignal
+    private let windowTitle: WindowTitleSignal
     private let titleMatchers: [(String?) -> Bool]
+    private let eventLog: EventLog
 
-    public init(
+    public convenience init(
+        axBus: AXObserverBus = AXObserverBus(),
         eventLog: EventLog = NoopEventLog(),
         titleMatchers: [(String?) -> Bool] = BrowserMeetingLifecycleAdapter.defaultTitleMatchers
     ) {
-        self.shareableContent = ShareableContentSignal(eventLog: eventLog)
+        self.init(
+            shareableContent: ShareableContentSignal(eventLog: eventLog),
+            workspace: WorkspaceSignal(eventLog: eventLog),
+            windowTitle: WindowTitleSignal(axBus: axBus, eventLog: eventLog),
+            titleMatchers: titleMatchers,
+            eventLog: eventLog
+        )
+    }
+
+    /// Designated initializer with injectable signals. Production goes
+    /// through the convenience init above; tests supply fakes.
+    init(
+        shareableContent: ShareableContentSignal,
+        workspace: WorkspaceSignal,
+        windowTitle: WindowTitleSignal,
+        titleMatchers: [(String?) -> Bool],
+        eventLog: EventLog
+    ) {
+        self.shareableContent = shareableContent
+        self.workspace = workspace
+        self.windowTitle = windowTitle
         self.titleMatchers = titleMatchers
+        self.eventLog = eventLog
     }
 
     public func start(
@@ -77,6 +107,10 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
         handle: LifecycleAdapterHandle,
         sink: @escaping (PrimarySignalEvent) -> Void
     ) throws {
+        let matchers = titleMatchers
+
+        // PRIMARY: a window owned by this bundle still matches a
+        // meeting-title pattern in the shareable-content snapshot.
         shareableContent.onChange = { present in
             sink(PrimarySignalEvent(
                 kind: .browserTabTitle,
@@ -85,13 +119,54 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
                 context: context
             ))
         }
-        let matchers = titleMatchers
         shareableContent.start(context: context) { title in
             matchers.contains { $0(title) }
+        }
+
+        // PRIMARY: meeting-app process termination. For a PWA, closing
+        // the meeting window quits its process - a definitive end that
+        // needs no TCC permission and is the only signal left if Screen
+        // Recording is denied. A tab-in-browser meeting outlives a tab
+        // close, so this rarely fires there.
+        workspace.onTerminated = { endedContext in
+            sink(PrimarySignalEvent(
+                kind: .workspaceAppTerminated,
+                state: .ended,
+                timestamp: Date(),
+                context: endedContext
+            ))
+        }
+        workspace.start(context: context)
+
+        // PRIMARY: AX window-title transition off the meeting pattern.
+        // Wired only when the handle carries a meeting window, which
+        // MeetingAXHandleBuilder resolves for PWA contexts only. A
+        // WindowTitleSignal failure degrades to the two signals above
+        // rather than failing the engage.
+        if let window = handle.meetingWindow {
+            windowTitle.onChange = { title in
+                let live = matchers.contains { $0(title) }
+                sink(PrimarySignalEvent(
+                    kind: .windowTitleLeftPattern,
+                    state: live ? .live : .ended,
+                    timestamp: Date(),
+                    context: context
+                ))
+            }
+            do {
+                try windowTitle.start(context: context, window: window)
+            } catch {
+                eventLog.emit(category: "signal", action: "window_title_signal_unavailable", attributes: [
+                    "bundle_id": context.bundleID,
+                    "error": "\(error)"
+                ])
+            }
         }
     }
 
     public func stop() {
         shareableContent.stop()
+        workspace.stop()
+        windowTitle.stop()
     }
 }

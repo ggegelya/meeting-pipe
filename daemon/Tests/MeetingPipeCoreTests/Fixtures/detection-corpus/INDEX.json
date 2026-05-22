@@ -7,6 +7,7 @@
     "zoom_native_clean_leave_en.json",
     "webex_ultrasound_retention_en.json",
     "google_meet_browser_clean_leave.json",
+    "google_meet_pwa_clean_leave.json",
     "micgate_teams_mute_unmute_de.json",
     "micgate_hardware_mute_wins.json",
     "micgate_silent_by_rms_default.json"

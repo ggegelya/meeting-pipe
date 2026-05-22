@@ -144,4 +144,81 @@ final class LifecycleAdapterTests: XCTestCase {
         // per-install bundle ID is in no fixed list (TECH-I5).
         XCTAssertTrue(adapter(for: meetPWAContext) === browser)
     }
+
+    // MARK: - Browser adapter signal wiring (GAP 2)
+
+    /// A browser adapter with an inert shareable-content signal so a
+    /// test can drive the workspace / window-title signals in isolation.
+    private func makeBrowserAdapter(
+        workspace: WorkspaceSignal,
+        windowTitle: WindowTitleSignal
+    ) -> BrowserMeetingLifecycleAdapter {
+        BrowserMeetingLifecycleAdapter(
+            shareableContent: ShareableContentSignal(probe: { nil }, scheduler: { _, _ in {} }),
+            workspace: workspace,
+            windowTitle: windowTitle,
+            titleMatchers: BrowserMeetingLifecycleAdapter.defaultTitleMatchers,
+            eventLog: NoopEventLog()
+        )
+    }
+
+    func test_browser_adapter_emits_ended_on_meeting_app_termination() throws {
+        let workspace = WorkspaceSignal(probe: { _ in nil })
+        let adapter = makeBrowserAdapter(
+            workspace: workspace,
+            windowTitle: WindowTitleSignal(axBus: AXObserverBus(), probe: { _ in nil })
+        )
+        var events: [PrimarySignalEvent] = []
+        try adapter.start(context: meetPWAContext, handle: LifecycleAdapterHandle()) {
+            events.append($0)
+        }
+        defer { adapter.stop() }
+
+        workspace.handleTerminated(reason: "test")
+
+        let terminated = events.first { $0.kind == .workspaceAppTerminated }
+        XCTAssertEqual(terminated?.state, .ended)
+        XCTAssertEqual(terminated?.context.bundleID, meetPWAContext.bundleID)
+    }
+
+    func test_browser_adapter_skips_window_title_without_a_meeting_window() throws {
+        // No meeting window in the handle (a regular tabbed browser):
+        // the window-title signal stays dormant, so no title events.
+        let adapter = makeBrowserAdapter(
+            workspace: WorkspaceSignal(probe: { _ in nil }),
+            windowTitle: WindowTitleSignal(axBus: AXObserverBus(), probe: { _ in "Meet - abc-defg" })
+        )
+        var events: [PrimarySignalEvent] = []
+        try adapter.start(context: meetPWAContext, handle: LifecycleAdapterHandle()) {
+            events.append($0)
+        }
+        defer { adapter.stop() }
+        XCTAssertFalse(events.contains { $0.kind == .windowTitleLeftPattern })
+    }
+
+    func test_browser_adapter_window_title_maps_meeting_pattern_to_live_then_ended() throws {
+        // PWA context: the handle carries a meeting window, so the
+        // window-title signal is wired. A title matching the meeting
+        // pattern is .live; a title that left the pattern is .ended.
+        var currentTitle: String? = "Meet - abc-defg-hij"
+        let windowTitle = WindowTitleSignal(axBus: AXObserverBus(), probe: { _ in currentTitle })
+        let adapter = makeBrowserAdapter(
+            workspace: WorkspaceSignal(probe: { _ in nil }),
+            windowTitle: windowTitle
+        )
+        var events: [PrimarySignalEvent] = []
+        try adapter.start(
+            context: meetPWAContext,
+            handle: LifecycleAdapterHandle(meetingWindow: AXUIElementCreateSystemWide())
+        ) { events.append($0) }
+        defer { adapter.stop() }
+
+        currentTitle = "Google Meet"
+        windowTitle.evaluate(reason: "test")
+
+        let titleStates = events
+            .filter { $0.kind == .windowTitleLeftPattern }
+            .map(\.state)
+        XCTAssertEqual(titleStates, [.live, .ended])
+    }
 }

@@ -9,6 +9,12 @@ final class PromotionEngineTests: XCTestCase {
         pid: 1234
     )
 
+    private let browserContext = MeetingLifecycleContext(
+        bundleID: "com.google.Chrome.app.fmgjjmmmlfnkbppncabfkddbjimcfncm",
+        kind: .browser,
+        pid: 7890
+    )
+
     private func event(
         _ kind: PrimarySignalKind,
         _ state: PrimarySignalState,
@@ -19,6 +25,19 @@ final class PromotionEngineTests: XCTestCase {
             state: state,
             timestamp: Date(timeIntervalSince1970: at),
             context: teamsContext
+        )
+    }
+
+    private func browserEvent(
+        _ kind: PrimarySignalKind,
+        _ state: PrimarySignalState,
+        at: TimeInterval
+    ) -> PrimarySignalEvent {
+        PrimarySignalEvent(
+            kind: kind,
+            state: state,
+            timestamp: Date(timeIntervalSince1970: at),
+            context: browserContext
         )
     }
 
@@ -142,5 +161,58 @@ final class PromotionEngineTests: XCTestCase {
         engine.reset()
         let decision = engine.ingest(event(.processAudioIsRunningInput, .live, at: 1))
         XCTAssertEqual(decision?.verdict, .starting(context: teamsContext))
+    }
+
+    // MARK: - Browser path corroboration (GAP 2)
+
+    func test_workspace_termination_confirms_browser_ended_without_debounce() {
+        // The browser path now fuses more than one PRIMARY signal:
+        // ShareableContent leads .ended, WorkspaceSignal (a distinct
+        // kind) confirms, so .ended fires immediately instead of
+        // waiting out the 2 s debounce a lone signal would need.
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(browserEvent(.browserTabTitle, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(browserEvent(.browserTabTitle, .ended, at: 25))
+        let decision = engine.ingest(browserEvent(.workspaceAppTerminated, .ended, at: 25.3))
+
+        XCTAssertEqual(
+            decision?.verdict,
+            .ended(
+                context: browserContext,
+                reason: EndingReason(
+                    leadingSignal: "browser_tab_title_left_meet_pattern",
+                    confirmedBy: ["workspace_app_terminated"]
+                )
+            )
+        )
+    }
+
+    func test_window_title_can_lead_browser_ended_confirmed_by_shareable_content() {
+        // PWA path: the AX window-title signal leads, the
+        // shareable-content snapshot confirms.
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(browserEvent(.windowTitleLeftPattern, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(browserEvent(.windowTitleLeftPattern, .ended, at: 10))
+        let decision = engine.ingest(browserEvent(.shareableContentWindow, .ended, at: 10.4))
+
+        XCTAssertEqual(
+            decision?.verdict,
+            .ended(
+                context: browserContext,
+                reason: EndingReason(
+                    leadingSignal: "window_title_left_pattern",
+                    confirmedBy: ["shareable_content_window_gone"]
+                )
+            )
+        )
+    }
+
+    func test_new_browser_signal_kinds_have_stable_raw_values() {
+        // The raw values surface verbatim in events.jsonl and the
+        // dogfood report, so they are part of the contract.
+        XCTAssertEqual(PrimarySignalKind.workspaceAppTerminated.rawValue, "workspace_app_terminated")
+        XCTAssertEqual(PrimarySignalKind.windowTitleLeftPattern.rawValue, "window_title_left_pattern")
     }
 }

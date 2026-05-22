@@ -188,6 +188,10 @@ final class DetectionCorpusTests: XCTestCase {
             return .axLeaveButton
         case "browser_tab_title":
             return .browserTabTitle
+        case "workspace_app_terminated":
+            return .workspaceAppTerminated
+        case "window_title":
+            return .windowTitleLeftPattern
         default:
             XCTFail("Unknown signal kind: \(kind)")
             throw NSError(domain: "DetectionCorpus", code: 1)

@@ -52,14 +52,28 @@ enum MeetingAXHandleBuilder {
             title: source.meetingTitle
         )
 
-        // Browsers have no useful AX surface for call controls. Return
-        // empty handles; the adapter relies on ShareableContent +
-        // window-title signals and MicGate operates on HAL + RMS only.
+        // Browsers have no useful AX surface for call controls, so the
+        // handle carries no leave / mute button and MicGate operates on
+        // HAL + RMS only. A meeting window is resolved for PWA contexts
+        // only: a Chromium PWA hosts the call in a dedicated, tabless
+        // window, so an AX title change there is a real join / leave
+        // (safe for WindowTitleSignal). A regular browser shows the
+        // active tab's title on a shared window, where a title change
+        // is usually a tab switch and would false-end a meeting still
+        // live in a background tab.
         if kind == .browser {
-            emitDiagnostic(source: source, axTrusted: nil, windowCount: 0,
+            var meetingWindow: AXUIElement?
+            let browserAXTrusted = AXIsProcessTrusted()
+            if browserAXTrusted,
+               BrowserMeetingLifecycleAdapter.isPWABundleID(source.bundleID) {
+                let axApp = AXUIElementCreateApplication(pid)
+                meetingWindow = pickMeetingWindow(windows: listWindows(axApp: axApp))
+            }
+            emitDiagnostic(source: source, axTrusted: browserAXTrusted,
+                           windowCount: meetingWindow == nil ? 0 : 1,
                            foundLeave: false, foundMute: false)
             return Handles(
-                lifecycle: LifecycleAdapterHandle(),
+                lifecycle: LifecycleAdapterHandle(meetingWindow: meetingWindow),
                 micGate: MicGateAdapterHandle(),
                 context: context
             )

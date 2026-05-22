@@ -1,0 +1,22 @@
+{
+  "scenario": "google_meet_pwa_clean_leave",
+  "description": "Google Meet run as a Chrome PWA. ShareableContent leads .ended when the post-call page loses the Meet title; WorkspaceSignal confirms when the PWA window is closed. The second PRIMARY promotes .ended without waiting out the debounce, the corroboration a lone-signal browser path lacked before GAP 2.",
+  "engine": "promotion",
+  "debounce_seconds": 2.0,
+  "context": {
+    "bundle_id": "com.google.Chrome.app.fmgjjmmmlfnkbppncabfkddbjimcfncm",
+    "kind": "browser",
+    "pid": 7890
+  },
+  "events": [
+    {"t": 0.0, "kind": "browser_tab_title", "state": "live"},
+    {"t": 31.0, "kind": "browser_tab_title", "state": "ended"},
+    {"t": 31.4, "kind": "workspace_app_terminated", "state": "ended"}
+  ],
+  "expected_verdicts": [
+    {"after": "events[0]", "verdict": "starting"},
+    {"after": "events[0]", "verdict": "in_meeting"},
+    {"after": "events[1]", "verdict": "ending_provisional", "leading": "browser_tab_title_left_meet_pattern"},
+    {"after": "events[2]", "verdict": "ended", "leading": "browser_tab_title_left_meet_pattern", "confirmed_by": ["workspace_app_terminated"]}
+  ]
+}

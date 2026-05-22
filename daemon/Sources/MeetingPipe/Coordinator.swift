@@ -233,7 +233,7 @@ final class Coordinator: NSObject {
                 ZoomLifecycleAdapter(halBus: halBus, axBus: axBus, eventLog: logAdapter),
                 WebexLifecycleAdapter(axBus: axBus, eventLog: logAdapter),
                 SlackLifecycleAdapter(axBus: axBus, eventLog: logAdapter),
-                BrowserMeetingLifecycleAdapter(eventLog: logAdapter),
+                BrowserMeetingLifecycleAdapter(axBus: axBus, eventLog: logAdapter),
             ]
         )
         self.micGate = MicGate(

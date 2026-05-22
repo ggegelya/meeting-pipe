@@ -9,6 +9,13 @@ public enum PrimarySignalKind: String, Equatable, CaseIterable {
     case processAudioIsRunningInput = "process_audio_is_running_input_false"
     case axLeaveButton = "ax_leave_button_invalid"
     case browserTabTitle = "browser_tab_title_left_meet_pattern"
+    /// Meeting-app process termination (`WorkspaceSignal`). Corroborates
+    /// the browser path: closing a PWA's meeting window quits its
+    /// process, a definitive end that needs no TCC permission.
+    case workspaceAppTerminated = "workspace_app_terminated"
+    /// AX window-title transition off the meeting pattern
+    /// (`WindowTitleSignal`). Browser path, PWA contexts only.
+    case windowTitleLeftPattern = "window_title_left_pattern"
 }
 
 /// Per-signal state passed into `PromotionEngine`. `.live` means the
