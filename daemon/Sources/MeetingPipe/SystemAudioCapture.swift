@@ -55,6 +55,34 @@ final class SystemAudioCapture: NSObject {
     }
     static private(set) var permissionState: PermissionState = .unknown
 
+    /// Once-per-launch latch for the Screen Recording request. Guards
+    /// the check-and-set below; `prewarm()` runs from several
+    /// concurrent Tasks (App startup + the Permissions center) so the
+    /// latch flip has to be atomic.
+    private static let requestLock = NSLock()
+
+    /// True once `CGRequestScreenCaptureAccess` has fired in this
+    /// process. That API re-pops the system dialog on every call when
+    /// access is not granted, and a Screen Recording grant only takes
+    /// effect after an app restart, so firing it more than once per
+    /// launch (two startup `prewarm()` paths plus every Preferences
+    /// "Request" click) just stacks duplicate dialogs the user cannot
+    /// dismiss for good. We fire it at most once per launch.
+    private static var didRequestScreenCaptureThisLaunch = false
+
+    /// Atomically claim the once-per-launch screen-recording request
+    /// slot: true for the first caller in this process, false for
+    /// every later one. Synchronous on purpose so the lock is never
+    /// held across an `await` (the Swift concurrency checker rejects
+    /// `NSLock.unlock()` in an async context).
+    private static func claimScreenCaptureRequestSlot() -> Bool {
+        requestLock.lock()
+        defer { requestLock.unlock() }
+        if didRequestScreenCaptureThisLaunch { return false }
+        didRequestScreenCaptureThisLaunch = true
+        return true
+    }
+
     /// Open System Settings → Privacy & Security → Screen Recording. Used by
     /// the menu-bar warning, the prompt-panel inline banner, and the
     /// "Recording was mic-only" notification action. All known call sites
@@ -93,6 +121,16 @@ final class SystemAudioCapture: NSObject {
         //    make when access is confirmed (no second prompt).
         let alreadyTrusted = CGPreflightScreenCaptureAccess()
         if !alreadyTrusted {
+            // Cap the request at one dialog per launch. Without this,
+            // the App-startup prewarm, the Permissions-center startup
+            // request, and every Preferences "Request" click each
+            // re-pop the system dialog. A Screen Recording grant only
+            // applies after the next launch, so re-popping it just
+            // stacks dialogs the user can never make stick in-session.
+            guard claimScreenCaptureRequestSlot() else {
+                Log.writeLine("recorder", "screen-recording prompt already shown this launch; skipping repeat CGRequest")
+                return
+            }
             // 2. Actively request — this is what populates the System
             //    Settings list and surfaces the prompt. Returns the
             //    current verdict synchronously; the dialog itself is
