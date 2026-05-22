@@ -116,7 +116,14 @@ final class SinkDispatcher {
                 "engine": transcriptionRunner.backendName,
                 "error": error.localizedDescription,
             ])
-            await MainActor.run { self.completeActiveJob(job, with: .failure(error)) }
+            await MainActor.run {
+                let loc = SinkDispatcher.sidecarLocation(for: job)
+                PipelineFailureSidecar.write(
+                    stem: loc.stem, in: loc.dir,
+                    stage: .transcribe, reason: error.localizedDescription
+                )
+                self.completeActiveJob(job, with: .failure(error))
+            }
         }
     }
 
@@ -124,6 +131,7 @@ final class SinkDispatcher {
         launcher.runAll(wav: job.file, summaryMode: job.summaryMode) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
+                let loc = SinkDispatcher.sidecarLocation(for: job)
                 switch result {
                 case .success(let pageURL):
                     Log.writeLine("daemon", "pipeline OK -> \(pageURL?.absoluteString ?? "(local-only)")")
@@ -131,12 +139,28 @@ final class SinkDispatcher {
                         "file": job.file.lastPathComponent,
                         "page_url": pageURL?.absoluteString ?? NSNull(),
                     ])
+                    // The run finished; clear any failure sidecar a prior
+                    // failed run (or retry) left behind for this stem.
+                    PipelineFailureSidecar.clear(stem: loc.stem, in: loc.dir)
                 case .failure(let err):
                     Log.writeLine("daemon", "pipeline FAIL -> \(err.localizedDescription)")
                     Log.event(category: "coordinator", action: "pipeline_failed", attributes: [
                         "file": job.file.lastPathComponent,
                         "error": err.localizedDescription,
                     ])
+                    // `mp run-all` ran (or could not be launched): a missing
+                    // executable is the only launch-stage case, everything
+                    // else is a fault inside the summarize / publish run.
+                    let stage: PipelineFailureSidecar.Stage
+                    if case PipelineLauncher.LaunchError.mpNotFound = err {
+                        stage = .launch
+                    } else {
+                        stage = .pipeline
+                    }
+                    PipelineFailureSidecar.write(
+                        stem: loc.stem, in: loc.dir,
+                        stage: stage, reason: err.localizedDescription
+                    )
                 }
                 self.completeActiveJob(job, with: result)
             }
@@ -151,5 +175,12 @@ final class SinkDispatcher {
         }
         onQueueDepthChanged?(processingJobs.count)
         startNextJobIfNeeded()
+    }
+
+    /// Split a queued job's wav URL into the (stem, recordingsDir) pair the
+    /// per-meeting sidecars are keyed by.
+    private static func sidecarLocation(for job: ProcessingJob) -> (stem: String, dir: URL) {
+        (job.file.deletingPathExtension().lastPathComponent,
+         job.file.deletingLastPathComponent())
     }
 }

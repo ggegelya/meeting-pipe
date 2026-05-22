@@ -315,4 +315,102 @@ final class SinkDispatcherTests: XCTestCase {
             "runner threw, no JSON should land on disk"
         )
     }
+
+    // MARK: - Failure sidecar
+
+    /// Poll until the job's `onJobCompleted` has fired at least once.
+    private func waitForJobCompletion(
+        _ completed: @escaping () -> Int,
+        timeout: TimeInterval = 2.5
+    ) {
+        let exp = expectation(description: "job completed")
+        let deadline = Date().addingTimeInterval(timeout - 0.5)
+        func poll() {
+            if completed() >= 1 { exp.fulfill(); return }
+            if Date() >= deadline { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() }
+        }
+        DispatchQueue.main.async { poll() }
+        wait(for: [exp], timeout: timeout)
+    }
+
+    func test_pipeline_failure_writes_an_error_sidecar() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        struct Boom: Error {}
+        driver.finish(.failure(Boom()))
+        drainMain()
+
+        let failure = PipelineFailureSidecar.read(
+            stem: "clip", in: wav.deletingLastPathComponent()
+        )
+        XCTAssertEqual(failure?.stage, .pipeline,
+                       "a non-launch run-all fault records the pipeline stage")
+        XCTAssertNotNil(failure?.reason)
+    }
+
+    func test_launch_failure_records_the_launch_stage() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        driver.finish(.failure(PipelineLauncher.LaunchError.mpNotFound))
+        drainMain()
+
+        let failure = PipelineFailureSidecar.read(
+            stem: "clip", in: wav.deletingLastPathComponent()
+        )
+        XCTAssertEqual(failure?.stage, .launch,
+                       "a missing `mp` executable is a launch-stage failure")
+    }
+
+    func test_pipeline_success_clears_a_stale_error_sidecar() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+        let dir = wav.deletingLastPathComponent()
+
+        // A prior run failed; the sidecar is already on disk.
+        PipelineFailureSidecar.write(stem: "clip", in: dir, stage: .pipeline, reason: "old")
+        XCTAssertNotNil(PipelineFailureSidecar.read(stem: "clip", in: dir))
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        driver.finish(.success(nil))
+        drainMain()
+
+        XCTAssertNil(PipelineFailureSidecar.read(stem: "clip", in: dir),
+                     "a successful run clears the stale failure sidecar")
+    }
+
+    func test_transcription_failure_writes_an_error_sidecar() throws {
+        let driver = FakeDriver()
+        let runner = FakeRunner()
+        runner.shouldThrow = true
+        let dispatcher = SinkDispatcher(launcher: driver, transcriptionRunner: runner)
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForJobCompletion { completed.count }
+
+        let failure = PipelineFailureSidecar.read(
+            stem: "clip", in: wav.deletingLastPathComponent()
+        )
+        XCTAssertEqual(failure?.stage, .transcribe,
+                       "an in-process ASR fault records the transcribe stage")
+        XCTAssertTrue(driver.startedFiles.isEmpty, "pipeline must not run when ASR fails")
+    }
 }

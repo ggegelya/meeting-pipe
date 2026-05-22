@@ -670,6 +670,12 @@ final class Coordinator: NSObject {
                     // Summarize wrote a fresh <stem>.summary.json next to
                     // the transcript; chain into publish so the Notion
                     // page picks up the new content too.
+                    //
+                    // A fresh summary means the meeting is no longer lost,
+                    // so drop any failure sidecar an earlier failed run
+                    // left behind. A retry clears via the dispatcher; a
+                    // regenerate bypasses run-all, so it clears here.
+                    PipelineFailureSidecar.clear(stem: stem, in: dir)
                     self.republishMeeting(stem: stem, completion: completion)
                 case .failure(let err):
                     Log.event(category: "coordinator", action: "regenerate_failed", attributes: [
