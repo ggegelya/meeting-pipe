@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 
 from mp.publish_obsidian import ObsidianPublisher, _slugify, _yaml_str
 from mp.schemas import ActionItem, MeetingSummary
@@ -74,6 +75,36 @@ def test_upsert_overwrites_when_body_changes(tmp_path: Path) -> None:
     body = Path(res["page_id"]).read_text(encoding="utf-8")
     assert "Changed bullet." in body
     assert "Reviewed Q3 milestones." not in body
+
+
+def test_upsert_idempotent_across_day_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The note body carries a `date` and a `generated` timestamp, both
+    # non-deterministic. A re-publish the next day must still register as
+    # unchanged: same hash, no rewrite, and no second note orphaning the
+    # first.
+    transcript = tmp_path / "20260506-1500.md"
+    transcript.write_text("# Transcript\n", encoding="utf-8")
+    sidecar = tmp_path / "20260506-1500.obsidian.json"
+    vault = tmp_path / "vault"
+    pub = ObsidianPublisher(vault_path=vault, folder="Meetings", attach_audio=False)
+
+    monkeypatch.setattr("mp.publish_obsidian._today_iso", lambda: "2026-05-06")
+    monkeypatch.setattr("mp.publish_obsidian._now_iso", lambda: "2026-05-06T15:30:00+00:00")
+    first = pub.upsert(summary=_summary(), transcript_md=transcript, sidecar_path=sidecar)
+    note = Path(first["page_id"])
+    mtime_before = note.stat().st_mtime_ns
+
+    # Next day: both the front-matter date and the generated timestamp move.
+    monkeypatch.setattr("mp.publish_obsidian._today_iso", lambda: "2026-05-07")
+    monkeypatch.setattr("mp.publish_obsidian._now_iso", lambda: "2026-05-07T09:00:00+00:00")
+    second = pub.upsert(summary=_summary(), transcript_md=transcript, sidecar_path=sidecar)
+
+    assert second["idempotent"] is True
+    assert note.stat().st_mtime_ns == mtime_before, "unchanged meeting must not be rewritten"
+    notes = list((vault / "Meetings").glob("*.md"))
+    assert notes == [note], f"next-day re-run orphaned a note: {notes}"
 
 
 def test_attachment_copied_when_wav_present(tmp_path: Path) -> None:

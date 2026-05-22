@@ -33,6 +33,13 @@ from .schemas import MeetingSummary
 
 log = logging.getLogger("mp.publish_obsidian")
 
+# Fixed stand-ins for the volatile front-matter fields when computing the
+# idempotency hash. The real values still go into the written note; only
+# the fingerprint pins them so an unchanged meeting hashes the same on a
+# re-publish or a next-day re-run.
+_HASH_PINNED_DATE = "0000-00-00"
+_HASH_PINNED_GENERATED = "0000-00-00T00:00:00+00:00"
+
 
 DEFAULT_TEMPLATE = """\
 ---
@@ -98,8 +105,19 @@ class ObsidianPublisher:
         transcript_md: Path | None,
         sidecar_path: Path,
     ) -> dict[str, Any]:
-        body = self._render_note(summary, transcript_md)
-        body_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        body = self._render_note(
+            summary, transcript_md, date=_today_iso(), generated=_now_iso(),
+        )
+        # Idempotency fingerprint: hash a canonical render with the
+        # volatile date/generated values pinned. Without this every
+        # re-publish rewrites the file, and a next-day re-run produces a
+        # second note (orphaning the old one), since the body always
+        # differs by at least its timestamp.
+        canonical = self._render_note(
+            summary, transcript_md,
+            date=_HASH_PINNED_DATE, generated=_HASH_PINNED_GENERATED,
+        )
+        body_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
         existing = _load_sidecar(sidecar_path)
         if existing and existing.get("body_sha256") == body_hash:
@@ -186,7 +204,14 @@ class ObsidianPublisher:
 
     # ----- Rendering -----
 
-    def _render_note(self, summary: MeetingSummary, transcript_md: Path | None) -> str:
+    def _render_note(
+        self,
+        summary: MeetingSummary,
+        transcript_md: Path | None,
+        *,
+        date: str,
+        generated: str,
+    ) -> str:
         template = (
             self._template_path.read_text(encoding="utf-8")
             if self._template_path and self._template_path.exists()
@@ -204,11 +229,11 @@ class ObsidianPublisher:
 
         return template.format(
             title=summary.title.replace('"', '\\"'),
-            date=_today_iso(),
+            date=date,
             attendees=attendees_yaml,
             tags="meeting",  # back-compat: older templates may use {tags}
             language=summary.detected_language,
-            generated=_now_iso(),
+            generated=generated,
             summary_bullets=summary_bullets,
             decisions=decisions,
             actions=actions,
