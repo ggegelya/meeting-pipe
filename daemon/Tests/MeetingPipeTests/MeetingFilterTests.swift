@@ -173,6 +173,7 @@ final class MeetingFilterTests: XCTestCase {
             workflowName: workflow, workflowColor: nil,
             durationSec: nil, backend: nil, modelId: nil,
             status: status,
+            failureReason: nil, failureStage: nil,
             searchableText: searchable.lowercased()
         )
     }

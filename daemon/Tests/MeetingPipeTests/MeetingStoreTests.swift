@@ -136,6 +136,74 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(captured.first?.status, .done)
     }
 
+    // MARK: failure surfacing
+
+    func test_failed_when_error_sidecar_present() throws {
+        let dir = try tempDir()
+        // A recent stem: without the error sidecar this would be
+        // `.processing`, so the test proves the sidecar is what flips it.
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        PipelineFailureSidecar.write(
+            stem: stem, in: dir, stage: .pipeline, reason: "pipeline exited 1: boom"
+        )
+        let store = MeetingStore(recordingsDir: dir)
+        let exp = expectation(description: "scan")
+        var captured: [Meeting] = []
+        let cancel = store.$meetings.dropFirst().sink { meetings in
+            captured = meetings
+            exp.fulfill()
+        }
+        store.start()
+        wait(for: [exp], timeout: 2.0)
+        cancel.cancel()
+        let row = try XCTUnwrap(captured.first)
+        XCTAssertEqual(row.status, .failed)
+        XCTAssertEqual(row.failureReason, "pipeline exited 1: boom")
+        XCTAssertEqual(row.failureStage, "pipeline")
+    }
+
+    func test_summary_supersedes_a_stale_error_sidecar() throws {
+        // A regenerate produced a summary but left the old failure
+        // sidecar behind: the row is `.done`, not `.failed`.
+        let dir = try tempDir()
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{}")
+        PipelineFailureSidecar.write(
+            stem: stem, in: dir, stage: .pipeline, reason: "old failure"
+        )
+        let store = MeetingStore(recordingsDir: dir)
+        let exp = expectation(description: "scan")
+        var captured: [Meeting] = []
+        let cancel = store.$meetings.dropFirst().sink { meetings in
+            captured = meetings
+            exp.fulfill()
+        }
+        store.start()
+        wait(for: [exp], timeout: 2.0)
+        cancel.cancel()
+        let row = try XCTUnwrap(captured.first)
+        XCTAssertEqual(row.status, .done)
+        XCTAssertNil(row.failureReason)
+    }
+
+    func test_unrecoveredFailureStems_finds_error_without_summary() {
+        let stems = MeetingStore.unrecoveredFailureStems(fileNames: [
+            "a.wav", "a.error.json",
+            "b.wav", "b.summary.json",
+            "c.wav", "c.error.json", "c.summary.json",
+        ])
+        XCTAssertEqual(stems, ["a"],
+                       "b succeeded; c's summary supersedes its error sidecar")
+    }
+
+    func test_unrecoveredFailureStems_empty_when_no_failures() {
+        XCTAssertTrue(MeetingStore.unrecoveredFailureStems(fileNames: [
+            "a.wav", "a.summary.json", "b.wav",
+        ]).isEmpty)
+    }
+
     // MARK: meta + summary parsing
 
     func test_meta_and_summary_populate_row_fields() throws {
@@ -316,6 +384,8 @@ final class MeetingStoreTests: XCTestCase {
             backend: nil,
             modelId: nil,
             status: .done,
+            failureReason: nil,
+            failureStage: nil,
             searchableText: ""
         )
     }

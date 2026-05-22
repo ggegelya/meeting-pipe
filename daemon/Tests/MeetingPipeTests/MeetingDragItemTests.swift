@@ -92,6 +92,7 @@ final class MeetingDragItemTests: XCTestCase {
             workflowName: nil, workflowColor: nil,
             durationSec: nil, backend: nil, modelId: nil,
             status: .done,
+            failureReason: nil, failureStage: nil,
             searchableText: ""
         )
         let item = MeetingDragItem(meeting: meeting)

@@ -863,6 +863,21 @@ final class Coordinator: NSObject {
         }
     }
 
+    /// Count of meetings whose last pipeline run failed and that the owner
+    /// has not yet recovered. Backs the status-bar failure row. Scans the
+    /// recordings dir directly (filenames only) so it works while the
+    /// Library window is closed and stays cheap enough to run per menu
+    /// open.
+    func failedMeetingCount() -> Int {
+        let dir = liveOutputDir
+        guard let names = try? FileManager.default.contentsOfDirectory(
+            atPath: dir.path
+        ) else {
+            return 0
+        }
+        return MeetingStore.unrecoveredFailureStems(fileNames: names).count
+    }
+
     // MARK: Live-config readers
     //
     // When a `ConfigStore` is wired up, prefer its current value over the

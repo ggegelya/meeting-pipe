@@ -446,6 +446,25 @@ final class StatusBarController {
             menu.addItem(.separator())
         }
 
+        // Aggregate failed-pipeline warning. A failed transcribe /
+        // summarize / launch leaves a durable error sidecar; this row
+        // stays until the owner retries or deletes the meeting, so a
+        // notification missed under Focus is no longer the only surface.
+        if let coordinator = coordinator {
+            let failedCount = coordinator.failedMeetingCount()
+            if failedCount > 0 {
+                let noun = failedCount == 1 ? "meeting" : "meetings"
+                let failedRow = NSMenuItem(
+                    title: "⚠ \(failedCount) \(noun) failed - open Library to retry",
+                    action: #selector(Coordinator.menuOpenLibrary),
+                    keyEquivalent: ""
+                )
+                failedRow.target = coordinator
+                menu.addItem(failedRow)
+                menu.addItem(.separator())
+            }
+        }
+
         switch state {
         case .idle:
             let start = NSMenuItem(title: "Start Recording", action: #selector(Coordinator.menuStart), keyEquivalent: "")

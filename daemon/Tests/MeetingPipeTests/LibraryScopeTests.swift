@@ -153,7 +153,8 @@ final class LibraryScopeTests: XCTestCase {
             sourceBundleID: nil, sourceDisplayName: nil, sourceKind: nil,
             workflowName: workflow, workflowColor: nil,
             durationSec: nil, backend: nil, modelId: nil,
-            status: .done, searchableText: ""
+            status: .done, failureReason: nil, failureStage: nil,
+            searchableText: ""
         )
     }
 }

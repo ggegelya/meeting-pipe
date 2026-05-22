@@ -155,11 +155,22 @@ struct MeetingRow: View, Equatable {
             MPStatusPill(kind: .processing, label: "Paste pending")
         case (.failed, _):
             MPStatusPill(kind: .failed, label: "Failed")
+                .help(failureHelpText)
         case (.done, _):
             MPStatusPill(kind: .ready, label: "Ready")
         case (.unknown, _):
             MPStatusPill(kind: .neutral, label: "—")
         }
+    }
+
+    /// Hover text for the failed pill: the persisted reason when the
+    /// failure sidecar supplied one, a generic line for a `.failed` row
+    /// inferred only from the staleness age heuristic.
+    private var failureHelpText: String {
+        if let reason = meeting.failureReason, !reason.isEmpty {
+            return reason
+        }
+        return "The pipeline did not finish for this meeting."
     }
 
     /// Leading glyph — swaps to a lock for NDA / local-only meetings

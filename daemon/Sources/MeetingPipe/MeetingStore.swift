@@ -8,15 +8,16 @@ import Foundation
 struct Meeting: Identifiable, Hashable {
 
     /// Coarse lifecycle state derived from which sidecars exist on disk.
-    /// We don't have a single per-meeting status file (yet), so this is
-    /// inferred from presence/absence of `<stem>.summary.json`,
-    /// `<stem>.READY_FOR_MANUAL.md`, etc.
+    /// `.failed` has a precise signal (a `<stem>.error.json` sidecar from
+    /// a failed run); the other states are inferred from presence /
+    /// absence of `<stem>.summary.json`, `<stem>.READY_FOR_MANUAL.md`,
+    /// etc., with an age fallback for a run that left no sidecar.
     enum Status: String, Hashable {
         case recording            // currently being written (live)
         case processing           // wav present, no summary yet
         case manualPasteReady     // long-meeting bundle waiting on user paste
         case done                 // summary.json on disk
-        case failed               // wav started > N hours ago and the pipeline never finished
+        case failed               // error sidecar present, or stalled past the age window
         case unknown
     }
 
@@ -51,6 +52,13 @@ struct Meeting: Identifiable, Hashable {
     let modelId: String?
 
     let status: Status
+
+    /// Persisted reason and stage from the failed pipeline run, when a
+    /// `<stem>.error.json` sidecar is the source of `status == .failed`.
+    /// Both nil for a `.failed` row inferred only from the staleness age
+    /// heuristic, and for every non-failed row.
+    let failureReason: String?
+    let failureStage: String?
 
     /// Lowercased corpus used by the in-memory filter bar (TECH-A14):
     /// display title + summary bullets + decisions + action tasks.
@@ -271,6 +279,9 @@ final class MeetingStore: ObservableObject {
             let runURL = files.first { $0.lastPathComponent.hasSuffix(".run.json") }
             let summaryURL = files.first { $0.lastPathComponent.hasSuffix(".summary.json") }
             let pasteReadyURL = files.first { $0.lastPathComponent.hasSuffix(".READY_FOR_MANUAL.md") }
+            let errorURL = files.first {
+                $0.lastPathComponent.hasSuffix(PipelineFailureSidecar.suffix)
+            }
             let transcriptJSON = files.first { url in
                 let lc = url.lastPathComponent
                 return lc.hasSuffix(".json")
@@ -278,11 +289,21 @@ final class MeetingStore: ObservableObject {
                     && !lc.hasSuffix(".run.json")
                     && !lc.hasSuffix(".summary.json")
                     && !lc.hasSuffix(".notion.json")
+                    && !lc.hasSuffix(PipelineFailureSidecar.suffix)
             }
 
             let meta = metaURL.flatMap { readJSON(at: $0) }
             let run = runURL.flatMap { readJSON(at: $0) }
             let summary = summaryURL.flatMap { readJSON(at: $0) }
+            // A failed pipeline run leaves this sidecar; a successful run
+            // or a regenerate clears it. A present summary supersedes it:
+            // the meeting was produced, so the sidecar is stale debris.
+            let failure: PipelineFailureSidecar.Failure?
+            if summaryURL == nil, let errorURL = errorURL {
+                failure = PipelineFailureSidecar.read(at: errorURL)
+            } else {
+                failure = nil
+            }
 
             let wavMtime = (try? wav.resourceValues(forKeys: [.contentModificationDateKey])
                 .contentModificationDate)
@@ -296,15 +317,19 @@ final class MeetingStore: ObservableObject {
             let status: Meeting.Status
             if summaryURL != nil {
                 status = .done
+            } else if failure != nil {
+                status = .failed
             } else if pasteReadyURL != nil {
                 status = .manualPasteReady
             } else {
-                // Without a summary the row is either in flight, never
-                // started, or stalled. Without per-job liveness tracking
-                // we use age as a proxy: anything older than the staleness
-                // window with no summary is `.failed`; the live-recording
-                // overlay supersedes this for the actively-recording stem
-                // via `LibraryWindowModel.liveRecordingStem`.
+                // No summary and no failure sidecar: the row is either in
+                // flight, never started, or stalled (a run that died
+                // without leaving a sidecar). Without per-job liveness
+                // tracking we use age as a proxy: anything older than the
+                // staleness window with no summary is `.failed`; the
+                // live-recording overlay supersedes this for the
+                // actively-recording stem via
+                // `LibraryWindowModel.liveRecordingStem`.
                 let age = Date().timeIntervalSince(startedAt)
                 if age > Meeting.staleProcessingThresholdSec {
                     status = .failed
@@ -344,6 +369,8 @@ final class MeetingStore: ObservableObject {
                 backend: (run?["backend"] as? String),
                 modelId: (run?["model"] as? String),
                 status: status,
+                failureReason: failure?.reason,
+                failureStage: failure?.stage.rawValue,
                 searchableText: searchable
             ))
         }
@@ -409,6 +436,25 @@ final class MeetingStore: ObservableObject {
     static func parseStem(_ stem: String) -> Date? {
         guard stem.count == 15 else { return nil }
         return MeetingFormatters.stem.date(from: stem)
+    }
+
+    /// Stems whose last pipeline run failed and that the owner has not yet
+    /// recovered: a `<stem>.error.json` sidecar is present and no
+    /// `<stem>.summary.json` exists. Pure over a directory listing (no
+    /// JSON parsing) so the status-bar count stays cheap and unit-
+    /// testable. Mirrors `scan`'s precedence, where a present summary
+    /// supersedes a stale failure sidecar.
+    static func unrecoveredFailureStems(fileNames: [String]) -> [String] {
+        var failed: Set<String> = []
+        var summarised: Set<String> = []
+        for name in fileNames {
+            if name.hasSuffix(".summary.json") {
+                summarised.insert(String(name.dropLast(".summary.json".count)))
+            } else if name.hasSuffix(PipelineFailureSidecar.suffix) {
+                failed.insert(String(name.dropLast(PipelineFailureSidecar.suffix.count)))
+            }
+        }
+        return failed.subtracting(summarised).sorted()
     }
 
     private static func readJSON(at url: URL) -> [String: Any]? {

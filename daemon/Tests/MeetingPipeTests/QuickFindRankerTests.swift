@@ -41,6 +41,8 @@ final class QuickFindRankerTests: XCTestCase {
             backend: nil,
             modelId: nil,
             status: .done,
+            failureReason: nil,
+            failureStage: nil,
             searchableText: searchableText.lowercased()
         )
     }
