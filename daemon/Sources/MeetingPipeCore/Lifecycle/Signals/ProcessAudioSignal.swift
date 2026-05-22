@@ -10,8 +10,9 @@ import Foundation
 /// property-listener notifications silently, so the poll guarantees an
 /// upper bound on the gap between the OS event and the verdict
 /// promotion. Webex specifically excludes this signal from PRIMARY
-/// (per `WebexLifecycleAdapter`) because Cisco documents that Webex
-/// holds the microphone open after meetings for ultrasound discovery.
+/// (per `NativeLifecycleConfig.webex`) because Cisco documents that
+/// Webex holds the microphone open after meetings for ultrasound
+/// discovery.
 ///
 /// The signal is testable through two injection points:
 ///   - `Probe`: closure returning the current `isRunningInput` value

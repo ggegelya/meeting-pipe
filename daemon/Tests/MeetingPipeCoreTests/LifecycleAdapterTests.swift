@@ -26,8 +26,8 @@ final class LifecycleAdapterTests: XCTestCase {
     )
 
     func test_teams_adapter_advertises_teams_bundle_ids() {
-        let adapter = TeamsLifecycleAdapter(
-            halBus: CoreAudioHALBus(), axBus: AXObserverBus()
+        let adapter = NativeLifecycleAdapter(
+            config: .teams, halBus: CoreAudioHALBus(), axBus: AXObserverBus()
         )
         XCTAssertEqual(adapter.kind, .native)
         XCTAssertTrue(adapter.bundleIDs.contains("com.microsoft.teams2"))
@@ -35,15 +35,15 @@ final class LifecycleAdapterTests: XCTestCase {
     }
 
     func test_zoom_adapter_advertises_zoom_bundle_id() {
-        let adapter = ZoomLifecycleAdapter(
-            halBus: CoreAudioHALBus(), axBus: AXObserverBus()
+        let adapter = NativeLifecycleAdapter(
+            config: .zoom, halBus: CoreAudioHALBus(), axBus: AXObserverBus()
         )
         XCTAssertEqual(adapter.kind, .native)
         XCTAssertEqual(adapter.bundleIDs, ["us.zoom.xos"])
     }
 
     func test_webex_adapter_covers_legacy_and_unified_bundles() {
-        let adapter = WebexLifecycleAdapter(axBus: AXObserverBus())
+        let adapter = NativeLifecycleAdapter(config: .webex, axBus: AXObserverBus())
         XCTAssertEqual(adapter.kind, .native)
         XCTAssertTrue(adapter.bundleIDs.contains("com.cisco.webexmeetingsapp"))
         XCTAssertTrue(adapter.bundleIDs.contains("com.cisco.spark"))
@@ -81,7 +81,7 @@ final class LifecycleAdapterTests: XCTestCase {
     }
 
     func test_native_adapter_handles_is_exact_match() {
-        let teams = TeamsLifecycleAdapter(halBus: CoreAudioHALBus(), axBus: AXObserverBus())
+        let teams = NativeLifecycleAdapter(config: .teams, halBus: CoreAudioHALBus(), axBus: AXObserverBus())
         XCTAssertTrue(teams.handles(bundleID: "com.microsoft.teams2"))
         // The default (native) dispatch is exact: a PWA-shaped id never
         // leaks into a native adapter.
@@ -125,9 +125,9 @@ final class LifecycleAdapterTests: XCTestCase {
     }
 
     func test_adapter_routing_picks_correct_adapter_per_bundle() {
-        let teams = TeamsLifecycleAdapter(halBus: CoreAudioHALBus(), axBus: AXObserverBus())
-        let zoom = ZoomLifecycleAdapter(halBus: CoreAudioHALBus(), axBus: AXObserverBus())
-        let webex = WebexLifecycleAdapter(axBus: AXObserverBus())
+        let teams = NativeLifecycleAdapter(config: .teams, halBus: CoreAudioHALBus(), axBus: AXObserverBus())
+        let zoom = NativeLifecycleAdapter(config: .zoom, halBus: CoreAudioHALBus(), axBus: AXObserverBus())
+        let webex = NativeLifecycleAdapter(config: .webex, axBus: AXObserverBus())
         let browser = BrowserMeetingLifecycleAdapter()
         let adapters: [LifecycleAdapter] = [teams, zoom, webex, browser]
 
@@ -153,10 +153,10 @@ final class LifecycleAdapterTests: XCTestCase {
         // adapter must absorb the late-arm rather than crash.
         let element = AXUIElementCreateSystemWide()
         let adapters: [LifecycleAdapter] = [
-            TeamsLifecycleAdapter(halBus: CoreAudioHALBus(), axBus: AXObserverBus()),
-            ZoomLifecycleAdapter(halBus: CoreAudioHALBus(), axBus: AXObserverBus()),
-            WebexLifecycleAdapter(axBus: AXObserverBus()),
-            SlackLifecycleAdapter(axBus: AXObserverBus()),
+            NativeLifecycleAdapter(config: .teams, halBus: CoreAudioHALBus(), axBus: AXObserverBus()),
+            NativeLifecycleAdapter(config: .zoom, halBus: CoreAudioHALBus(), axBus: AXObserverBus()),
+            NativeLifecycleAdapter(config: .webex, axBus: AXObserverBus()),
+            NativeLifecycleAdapter(config: .slack, axBus: AXObserverBus()),
         ]
         for adapter in adapters {
             adapter.armLeaveButton(element)

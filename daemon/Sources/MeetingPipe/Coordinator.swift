@@ -230,10 +230,10 @@ final class Coordinator: NSObject {
             axBus: axBus,
             eventLog: logAdapter,
             adapters: [
-                TeamsLifecycleAdapter(halBus: halBus, axBus: axBus, eventLog: logAdapter),
-                ZoomLifecycleAdapter(halBus: halBus, axBus: axBus, eventLog: logAdapter),
-                WebexLifecycleAdapter(axBus: axBus, eventLog: logAdapter),
-                SlackLifecycleAdapter(axBus: axBus, eventLog: logAdapter),
+                NativeLifecycleAdapter(config: .teams, halBus: halBus, axBus: axBus, eventLog: logAdapter),
+                NativeLifecycleAdapter(config: .zoom, halBus: halBus, axBus: axBus, eventLog: logAdapter),
+                NativeLifecycleAdapter(config: .webex, axBus: axBus, eventLog: logAdapter),
+                NativeLifecycleAdapter(config: .slack, axBus: axBus, eventLog: logAdapter),
                 BrowserMeetingLifecycleAdapter(axBus: axBus, eventLog: logAdapter),
             ]
         )

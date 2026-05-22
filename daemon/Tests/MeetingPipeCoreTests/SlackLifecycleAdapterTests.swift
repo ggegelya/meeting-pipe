@@ -4,7 +4,7 @@ import XCTest
 final class SlackLifecycleAdapterTests: XCTestCase {
 
     func test_advertises_native_slack_bundle_id() {
-        let adapter = SlackLifecycleAdapter(axBus: AXObserverBus())
+        let adapter = NativeLifecycleAdapter(config: .slack, axBus: AXObserverBus())
         XCTAssertEqual(adapter.kind, .native)
         XCTAssertEqual(adapter.bundleIDs, ["com.tinyspeck.slackmacgap"])
     }

@@ -56,8 +56,8 @@ struct MeetingSourceCandidate: Equatable {
 
         /// `kAudioProcessPropertyIsRunningInput` reports active input
         /// capture for this PID. Webex is suppressed elsewhere (see
-        /// WebexLifecycleAdapter rationale) but the candidate doesn't
-        /// suppress it here; the suppression is a Detector-side filter.
+        /// `NativeLifecycleConfig.webex` rationale) but the candidate
+        /// doesn't suppress it here; the suppression is a Detector-side filter.
         var processAudioActive: Bool
 
         /// SCShareableContent lists this bundle as an active source.
