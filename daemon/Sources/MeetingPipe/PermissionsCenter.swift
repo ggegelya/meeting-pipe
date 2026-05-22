@@ -128,9 +128,16 @@ final class PermissionsCenter: ObservableObject {
     }
 
     func refreshMic() async {
+        refreshMicSync()
+    }
+
+    /// Synchronous mic-permission probe. `AVCaptureDevice
+    /// .authorizationStatus` is a synchronous TCC read; the `async`
+    /// `refreshMic()` wrapper exists only for call-site uniformity
+    /// with the genuinely-async notification probe.
+    func refreshMicSync() {
         let raw = AVCaptureDevice.authorizationStatus(for: .audio)
-        let new = Self.status(forAVAuth: raw)
-        commit(\.microphone, kind: .microphone, status: new)
+        commit(\.microphone, kind: .microphone, status: Self.status(forAVAuth: raw))
     }
 
     func refreshScreenRecording() {
@@ -188,6 +195,20 @@ final class PermissionsCenter: ObservableObject {
             new = .unknown
         }
         commit(\.notifications, kind: .notifications, status: new)
+    }
+
+    /// Synchronously re-probe the three permissions the menu-bar
+    /// warning row depends on: Microphone, Screen Recording, and
+    /// Accessibility. All three are synchronous, read-only TCC reads
+    /// (no async hop, no dialog). Notifications is intentionally
+    /// excluded: it needs an async `UNUserNotificationCenter` call and
+    /// the menu warning does not depend on it. Lets the status-bar
+    /// menu show a current verdict when the user grants a permission
+    /// in System Settings without opening Preferences.
+    func refreshMenuRelevantSync() {
+        refreshMicSync()
+        refreshScreenRecording()
+        refreshAccessibility()
     }
 
     // MARK: Requests

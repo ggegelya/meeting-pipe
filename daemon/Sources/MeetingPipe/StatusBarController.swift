@@ -61,6 +61,12 @@ final class StatusBarController {
     /// the user almost never opens.
     private var recentMeetingsDelegate: RecentMeetingsMenuDelegate?
 
+    /// Delegate for the top-level status menu. Its `menuNeedsUpdate`
+    /// re-probes the permission state just before the menu is shown,
+    /// so the warning row reflects a permission the user just granted
+    /// in System Settings without their having to open Preferences.
+    private let menuDelegate = StatusMenuDelegate()
+
     /// Re-render the menu whenever any permission flips so the
     /// aggregate warning row appears / disappears without waiting for
     /// the next recording state change. Subscribed once at init.
@@ -125,6 +131,8 @@ final class StatusBarController {
             .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.applyTitle() }
+
+        menuDelegate.controller = self
     }
 
     /// True when the recording icon (coral dot) is currently shown on
@@ -382,6 +390,26 @@ final class StatusBarController {
     private func rebuildMenu(state: AppState) {
         lastMenuState = state
         let menu = NSMenu()
+        menu.delegate = menuDelegate
+        populateMenu(menu, state: state)
+        item.menu = menu
+    }
+
+    /// Re-probe the permissions the warning row depends on, then
+    /// repopulate `menu` in place. Wired through
+    /// `StatusMenuDelegate.menuNeedsUpdate` so opening the menu always
+    /// reflects the current TCC verdict: a grant the user just made in
+    /// System Settings clears the warning without their opening
+    /// Preferences.
+    fileprivate func refreshMenuBeforeDisplay(_ menu: NSMenu) {
+        PermissionsCenter.shared.refreshMenuRelevantSync()
+        populateMenu(menu, state: lastMenuState)
+    }
+
+    /// Build the status menu's items into `menu`, replacing whatever
+    /// was there. Shared by `rebuildMenu` and `refreshMenuBeforeDisplay`.
+    private func populateMenu(_ menu: NSMenu, state: AppState) {
+        menu.removeAllItems()
 
         let header = NSMenuItem(title: stateLabel(state), action: nil, keyEquivalent: "")
         header.isEnabled = false
@@ -469,8 +497,6 @@ final class StatusBarController {
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit MeetingPipe", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-
-        item.menu = menu
     }
 
     /// "Recent meetings…" submenu placeholder. The submenu populates
@@ -558,6 +584,19 @@ final class StatusBarController {
         case .recording: return "MeetingPipe: Recording\(suffix)"
         case .stopping: return "MeetingPipe: Stopping…\(suffix)"
         }
+    }
+}
+
+/// Delegate for the top-level status-bar menu. `menuNeedsUpdate`
+/// fires immediately before the menu is displayed; we use it to
+/// re-probe the permission state so the warning row is never stale.
+/// The 2 s `PermissionsCenter` poll, the only other refresh path,
+/// runs solely while the Preferences window is open.
+private final class StatusMenuDelegate: NSObject, NSMenuDelegate {
+    weak var controller: StatusBarController?
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        controller?.refreshMenuBeforeDisplay(menu)
     }
 }
 
