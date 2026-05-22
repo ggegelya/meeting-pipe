@@ -177,4 +177,43 @@ final class MeetingRecorderTests: XCTestCase {
             for i in 0..<128 { XCTAssertEqual(dst[i], Float(i)) }
         }
     }
+
+    // MARK: - resample
+
+    func test_resample_converts_a_buffer_to_the_target_sample_rate() {
+        let input = makeFloatBuffer(frames: 1200, sampleRate: 24000) { Float($0 % 200) / 200.0 }
+        let outputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 1, interleaved: false
+        )!
+        guard let converter = AVAudioConverter(from: input.format, to: outputFormat) else {
+            return XCTFail("could not build converter")
+        }
+        guard let output = MeetingRecorder.resample(input, using: converter, to: outputFormat) else {
+            return XCTFail("resample returned nil")
+        }
+        XCTAssertEqual(output.format.sampleRate, 48000)
+        // 1200 frames at 24 kHz is 50 ms; at 48 kHz that is ~2400 frames.
+        XCTAssertEqual(Double(output.frameLength), 2400, accuracy: 200)
+    }
+
+    // MARK: - makeSilenceBuffer
+
+    func test_makeSilenceBuffer_is_zero_filled_with_the_requested_length() {
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 1, interleaved: false
+        )!
+        guard let silence = MeetingRecorder.makeSilenceBuffer(format: format, frames: 4096) else {
+            return XCTFail("makeSilenceBuffer returned nil")
+        }
+        XCTAssertEqual(silence.frameLength, 4096)
+        let data = silence.floatChannelData![0]
+        for i in 0..<4096 { XCTAssertEqual(data[i], 0) }
+    }
+
+    func test_makeSilenceBuffer_returns_nil_for_zero_frames() {
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 1, interleaved: false
+        )!
+        XCTAssertNil(MeetingRecorder.makeSilenceBuffer(format: format, frames: 0))
+    }
 }

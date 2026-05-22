@@ -300,6 +300,15 @@ final class Coordinator: NSObject {
         recorder.onMicRmsDb = { [weak self] db in
             self?.micGate.ingest(rmsDb: db)
         }
+        // Surface a mid-recording input device change. The recorder
+        // re-arms capture where it can; this just tells the user.
+        recorder.onConfigurationChange = { [weak self] outcome in
+            guard let self = self else { return }
+            switch outcome {
+            case .resumed: self.notifier.notifyCaptureRecovered()
+            case .failed:  self.notifier.notifyCaptureLost()
+            }
+        }
         // Backstop fires once when the mic-only-silence threshold is
         // exceeded. Hop to the main actor and route through the
         // existing forceStop path so the event log records the reason.

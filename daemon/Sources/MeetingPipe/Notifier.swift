@@ -231,6 +231,25 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(req)
     }
 
+    /// Posted when a mid-recording input device change was recovered:
+    /// capture continued into the same recording, with a short silent
+    /// gap where the device was switching.
+    func notifyCaptureRecovered() {
+        post(
+            title: "Input device changed",
+            body: "MeetingPipe switched to the new input device and kept recording. There is a short gap where the device changed."
+        )
+    }
+
+    /// Posted when a mid-recording input device change could not be
+    /// recovered. The microphone is no longer being captured.
+    func notifyCaptureLost() {
+        post(
+            title: "Microphone capture stopped",
+            body: "The input device changed and MeetingPipe could not resume the microphone. Stop and restart the recording to capture the rest."
+        )
+    }
+
     private func post(title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title

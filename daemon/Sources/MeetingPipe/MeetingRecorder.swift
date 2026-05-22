@@ -77,6 +77,36 @@ final class MeetingRecorder {
     private var micWriter: SerialBufferWriter<AVAudioPCMBuffer>?
     private var systemWriter: SerialBufferWriter<AVAudioPCMBuffer>?
 
+    /// Format the mic `.wav` was opened with. Buffers from a tap that
+    /// has been re-installed after a device change are resampled back to
+    /// this, so the file stays a single format. Set at `start()`.
+    private var micFileFormat: AVAudioFormat?
+
+    /// Resamples the live input device's audio back to `micFileFormat`.
+    /// Nil while the live device matches the file format (the normal
+    /// case); built when a device change alters the format.
+    private var micConverter: AVAudioConverter?
+
+    /// Observer token for `AVAudioEngineConfigurationChange`, removed at
+    /// `stop()`.
+    private var configChangeObserver: NSObjectProtocol?
+
+    /// True after a recovery attempt failed, so the user is notified
+    /// once per failure run rather than on every retry. Reset at
+    /// `start()` and on a later successful recovery.
+    private var captureRecoveryFailed = false
+
+    /// Outcome of reacting to a mid-recording input device change.
+    enum CaptureRecoveryOutcome {
+        case resumed
+        case failed
+    }
+
+    /// Fired on the main queue when a mid-recording input device change
+    /// is observed: `.resumed` once capture is re-armed, `.failed` when
+    /// it cannot be. The Coordinator surfaces it to the user.
+    var onConfigurationChange: ((CaptureRecoveryOutcome) -> Void)?
+
     /// Latest MicGate verdict the writer should apply. Single writer
     /// (main thread, via `setMicGateVerdict`) / single reader (audio
     /// render thread). Default `.uncertain` matches MicGate's pre-start
@@ -155,6 +185,10 @@ final class MeetingRecorder {
         // The writer instance itself is rebuilt below once the input
         // sample rate is bound.
         currentMicGateVerdict = .uncertain(reasons: ["not_started"])
+        // No converter until a device change introduces a format
+        // mismatch; clear any failure state from a prior session.
+        micConverter = nil
+        captureRecoveryFailed = false
 
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -204,6 +238,7 @@ final class MeetingRecorder {
             throw RecorderError.fileCreateFailed("mic file: \(error.localizedDescription)")
         }
         self.micFile = micFile
+        self.micFileFormat = micFormat
         Log.writeLine("recorder", "mic file opened format=\(micFormat)")
 
         // MicGate writer: receives the live verdict and zero-fills (with
@@ -222,58 +257,9 @@ final class MeetingRecorder {
             }
         }
 
-        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { [weak self] buffer, _ in
-            guard let self = self, self.micFile != nil else { return }
-            self.micFires &+= 1
-            if self.micFires == 1 {
-                Log.writeLine("recorder", "mic tap first fired: frames=\(buffer.frameLength)")
-            }
-            // Per-buffer RMS in dBFS computed on the raw input BEFORE
-            // the writer applies the verdict, so MicGate's RMS gate
-            // sees the live mic level rather than the zeroed output.
-            // Tight pointer loop, no allocations on the render thread.
-            if let data = buffer.floatChannelData, buffer.frameLength > 0 {
-                let frameLen = Int(buffer.frameLength)
-                let channels = Int(buffer.format.channelCount)
-                if channels > 0 {
-                    var sumSq: Double = 0
-                    for ch in 0..<channels {
-                        let ptr = data[ch]
-                        for i in 0..<frameLen {
-                            let s = Double(ptr[i])
-                            sumSq += s * s
-                        }
-                    }
-                    let mean = sumSq / Double(frameLen * channels)
-                    let db: Float = mean > 0 ? Float(10.0 * log10(mean)) : -120
-                    self.onMicRmsDb?(db)
-                }
-                // Apply the current verdict in place on the first channel.
-                // Frame parity with the system tap is preserved (no
-                // frames dropped) per ADR 0009; muted buffers become
-                // zero-amplitude with a 20 ms fade across transitions.
-                if let writer = self.micGateWriter {
-                    let bufPtr = UnsafeMutableBufferPointer(start: data[0], count: Int(buffer.frameLength))
-                    writer.apply(verdict: self.currentMicGateVerdict, to: bufPtr)
-                }
-            }
-            // Hand the gated buffer to the serial writer queue so the
-            // disk write never runs on this delivery thread. The tap
-            // buffer is engine-owned and reused once we return, so the
-            // writer gets an owned deep copy. Frame parity with the
-            // system channel (ADR 0009) holds: the queue is unbounded
-            // and never drops.
-            if let copy = buffer.deepCopy() {
-                self.micWriter?.enqueue(copy)
-            }
-            self.accumulateAndEmit(
-                buffer: buffer,
-                sumSq: &self.micAccumSumSq,
-                frames: &self.micAccumFrames,
-                threshold: Int(micFormat.sampleRate),
-                callback: self.onMicLevel
-            )
-        }
+        // The tap closure forwards each buffer to `processMicBuffer`,
+        // which is also the re-arm point after an input device change.
+        installMicTap(captureFormat: micFormat)
 
         do {
             try engine.start()
@@ -293,6 +279,17 @@ final class MeetingRecorder {
             throw RecorderError.engineStartFailed(error.localizedDescription)
         }
         Log.writeLine("recorder", "engine started")
+
+        // Observe input device / route changes so a mid-recording swap
+        // (e.g. AirPods unplugged) re-arms capture instead of silently
+        // flatlining the mic. Removed in `stop()`.
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleConfigurationChange()
+        }
 
         // --- System audio via SCStream (independent) ----------------------
         // Open the system file lazily on first SCStream sample, since
@@ -367,6 +364,242 @@ final class MeetingRecorder {
         return finalURL
     }
 
+    // MARK: - Mic tap
+
+    /// Install the mic tap. Factored out so both `start()` and the
+    /// post-device-change recovery path arm capture the same way.
+    private func installMicTap(captureFormat: AVAudioFormat) {
+        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: captureFormat) { [weak self] buffer, _ in
+            self?.processMicBuffer(buffer)
+        }
+    }
+
+    /// Process one mic tap buffer on the AVAudioEngine delivery thread.
+    /// Normalises it to an owned buffer in the file format - a deep copy
+    /// in the common case, a resample when a device change left a
+    /// converter in place - applies the MicGate verdict, and enqueues it
+    /// for the serial writer.
+    private func processMicBuffer(_ rawBuffer: AVAudioPCMBuffer) {
+        guard micFile != nil, let fileFormat = micFileFormat else { return }
+
+        // The tap buffer is engine-owned and reused once we return; the
+        // converter emits a fresh buffer of its own. Either way `buffer`
+        // ends up owned and in the file format.
+        let buffer: AVAudioPCMBuffer
+        if let converter = micConverter {
+            guard let converted = Self.resample(rawBuffer, using: converter, to: fileFormat) else { return }
+            buffer = converted
+        } else {
+            guard let copy = rawBuffer.deepCopy() else { return }
+            buffer = copy
+        }
+
+        micFires &+= 1
+        if micFires == 1 {
+            Log.writeLine("recorder", "mic tap first fired: frames=\(buffer.frameLength)")
+        }
+
+        // Per-buffer RMS in dBFS BEFORE the verdict is applied, so
+        // MicGate's RMS gate sees the live mic level rather than the
+        // zeroed output. Tight pointer loop, no allocations.
+        if let data = buffer.floatChannelData, buffer.frameLength > 0 {
+            let frameLen = Int(buffer.frameLength)
+            let channels = Int(buffer.format.channelCount)
+            if channels > 0 {
+                var sumSq: Double = 0
+                for ch in 0..<channels {
+                    let ptr = data[ch]
+                    for i in 0..<frameLen {
+                        let s = Double(ptr[i])
+                        sumSq += s * s
+                    }
+                }
+                let mean = sumSq / Double(frameLen * channels)
+                let db: Float = mean > 0 ? Float(10.0 * log10(mean)) : -120
+                onMicRmsDb?(db)
+            }
+            // Apply the current verdict in place on the first channel.
+            // Frame parity with the system tap is preserved (no frames
+            // dropped) per ADR 0009; muted buffers become zero-amplitude
+            // with a 20 ms fade across transitions.
+            if let writer = micGateWriter {
+                let bufPtr = UnsafeMutableBufferPointer(start: data[0], count: frameLen)
+                writer.apply(verdict: currentMicGateVerdict, to: bufPtr)
+            }
+        }
+
+        // `buffer` is already owned, so it goes straight onto the serial
+        // writer. Frame parity (ADR 0009) holds: the queue never drops.
+        micWriter?.enqueue(buffer)
+
+        accumulateAndEmit(
+            buffer: buffer,
+            sumSq: &micAccumSumSq,
+            frames: &micAccumFrames,
+            threshold: Int(fileFormat.sampleRate),
+            callback: onMicLevel
+        )
+    }
+
+    // MARK: - Input device change recovery
+
+    /// React to an `AVAudioEngineConfigurationChange`. macOS stops the
+    /// engine when the input device or route changes mid-recording and
+    /// gives no automatic recovery, so we re-arm the tap and restart the
+    /// engine. When the new device's format differs from the open mic
+    /// file's, an `AVAudioConverter` resamples the tap output back to the
+    /// file format so the recording stays one continuous WAV. The
+    /// switchover gap is silence-padded to keep the mic frame-aligned
+    /// with the system channel. If capture cannot be re-armed, the
+    /// failure is surfaced so the user can restart the recording.
+    private func handleConfigurationChange() {
+        let gapStart = Date()
+        guard let fileFormat = micFileFormat else { return }
+
+        let rawLiveFormat = engine.inputNode.outputFormat(forBus: 0)
+        let liveFormat: AVAudioFormat? = rawLiveFormat.sampleRate > 0 ? rawLiveFormat : nil
+
+        switch CaptureRecoveryPlanner.plan(
+            isRecording: isRecording,
+            fileFormat: fileFormat,
+            liveFormat: liveFormat
+        ) {
+        case .ignore:
+            return
+        case .abort:
+            Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
+                "reason": "no_usable_input_format",
+            ])
+            Log.writeLine("recorder", "WARN: input device changed mid-recording and no usable input remains - mic capture stopped")
+            reportRecoveryFailure()
+        case .resume(let needsConverter):
+            guard let liveFormat else { return }
+            recoverCapture(
+                fileFormat: fileFormat,
+                liveFormat: liveFormat,
+                needsConverter: needsConverter,
+                gapStart: gapStart
+            )
+        }
+    }
+
+    /// Re-arm mic capture after a device change. The engine is stopped
+    /// here, so the converter the tap reads is swapped while the audio
+    /// thread is down.
+    private func recoverCapture(
+        fileFormat: AVAudioFormat,
+        liveFormat: AVAudioFormat,
+        needsConverter: Bool,
+        gapStart: Date
+    ) {
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+
+        if needsConverter {
+            guard let converter = AVAudioConverter(from: liveFormat, to: fileFormat) else {
+                Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
+                    "reason": "converter_init_failed",
+                ])
+                Log.writeLine("recorder", "WARN: could not build an input converter after a device change - mic capture stopped")
+                reportRecoveryFailure()
+                return
+            }
+            micConverter = converter
+        } else {
+            micConverter = nil
+        }
+
+        installMicTap(captureFormat: liveFormat)
+
+        // Pad the switchover gap with silence so the mic file stays
+        // frame-aligned with the system channel. Enqueued before the
+        // engine restarts, so it lands ahead of the first resumed
+        // buffer. The span is measured from the change being observed to
+        // here, so it under-pads slightly by the engine warmup; a
+        // sub-100 ms offset is below what a meeting recording cares
+        // about, and padding only the gap keeps it clear of the separate
+        // end-of-call skew investigation.
+        let padFrames = CaptureRecoveryPlanner.silenceFrames(
+            gapStart: gapStart,
+            resumeAt: Date(),
+            sampleRate: fileFormat.sampleRate
+        )
+        if padFrames > 0, let silence = Self.makeSilenceBuffer(format: fileFormat, frames: padFrames) {
+            micWriter?.enqueue(silence)
+        }
+
+        do {
+            try engine.start()
+        } catch {
+            Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
+                "reason": "engine_restart_failed",
+            ])
+            Log.writeLine("recorder", "WARN: audio engine failed to restart after a device change: \(error.localizedDescription)")
+            reportRecoveryFailure()
+            return
+        }
+
+        captureRecoveryFailed = false
+        Log.event(category: "recorder", action: "configuration_change_recovered", attributes: [
+            "live_sample_rate": liveFormat.sampleRate,
+            "used_converter": needsConverter,
+            "gap_frames": Int(padFrames),
+        ])
+        Log.writeLine("recorder", "input device changed mid-recording - capture re-armed (\(padFrames) silent frames padded the gap)")
+        onConfigurationChange?(.resumed)
+    }
+
+    /// Surface a recovery failure, but only once per failure run so a
+    /// flapping device does not spam notifications.
+    private func reportRecoveryFailure() {
+        guard !captureRecoveryFailed else { return }
+        captureRecoveryFailed = true
+        onConfigurationChange?(.failed)
+    }
+
+    /// Resample a tap buffer to the file format with a pre-built
+    /// converter (set up when a device change altered the input format).
+    /// The converter is stateful; reuse the one instance across calls.
+    static func resample(
+        _ input: AVAudioPCMBuffer,
+        using converter: AVAudioConverter,
+        to outputFormat: AVAudioFormat
+    ) -> AVAudioPCMBuffer? {
+        guard input.frameLength > 0, input.format.sampleRate > 0 else { return nil }
+        let ratio = outputFormat.sampleRate / input.format.sampleRate
+        let capacity = AVAudioFrameCount((Double(input.frameLength) * ratio).rounded(.up)) + 1024
+        guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
+            return nil
+        }
+        var fed = false
+        let status = converter.convert(to: output, error: nil) { _, inputStatus in
+            if fed {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            fed = true
+            inputStatus.pointee = .haveData
+            return input
+        }
+        guard status != .error, output.frameLength > 0 else { return nil }
+        return output
+    }
+
+    /// Build a zero-filled buffer used to pad the gap left by an input
+    /// device switch.
+    static func makeSilenceBuffer(format: AVAudioFormat, frames: AVAudioFrameCount) -> AVAudioPCMBuffer? {
+        guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {
+            return nil
+        }
+        buffer.frameLength = frames
+        for audioBuffer in UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList) {
+            if let data = audioBuffer.mData {
+                memset(data, 0, Int(audioBuffer.mDataByteSize))
+            }
+        }
+        return buffer
+    }
+
     /// Stop the recording and merge the intermediate files.
     func stop() async {
         guard let final = currentFile,
@@ -394,12 +627,20 @@ final class MeetingRecorder {
         // Halt capture before closing files.
         await systemCapture?.stop()
         systemCapture = nil
+        // Stop observing device changes before tearing the engine down,
+        // so teardown cannot trigger a recovery attempt.
+        if let observer = configChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configChangeObserver = nil
+        }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         // Drop the writer; its sample rate was bound to the just-closed
         // engine input. The next `start()` rebuilds one against whatever
         // format the input reports then.
         micGateWriter = nil
+        micConverter = nil
+        micFileFormat = nil
 
         // Both capture callbacks are stopped now, so nothing new can be
         // enqueued. Drain the writer queues - finish() blocks until the
