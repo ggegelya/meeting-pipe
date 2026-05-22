@@ -396,12 +396,45 @@ enum MeetingAXHandleBuilder {
         case "us.zoom.xos":
             return blob.contains("leave") || blob.contains("end meeting")
         case "com.microsoft.teams2", "com.microsoft.teams":
-            return blob.contains("leave") || blob.contains("hang up") || blob.contains("hangup")
+            // Match the call control by phrase, not a bare "leave"
+            // substring. Teams chrome buttons such as "Leave feedback",
+            // "Leave team", and "Leave organization" otherwise made an
+            // idle Settings window read as a live call.
+            return isTeamsCallLeaveLabel(title)
+                || isTeamsCallLeaveLabel(help)
+                || isTeamsCallLeaveLabel(description)
         case "com.cisco.webexmeetingsapp", "com.cisco.spark":
             return blob.contains("leave meeting") || blob.contains("end meeting")
                 || blob == "end" || blob.contains("leave")
         case "com.tinyspeck.slackmacgap":
             return blob.contains("leave huddle") || blob.contains("leave call") || blob.contains("end huddle")
+        default:
+            return false
+        }
+    }
+
+    /// True when an AX label names the Teams call Leave / Hang-up
+    /// control. The control is labelled "Leave" on its own (sometimes
+    /// with a trailing keyboard-shortcut hint in parentheses), "Leave
+    /// call", or "Leave meeting"; the hang-up variant reads "Hang up".
+    /// A bare substring match on "leave" also accepted Teams chrome
+    /// buttons such as "Leave feedback", "Leave team", and "Leave
+    /// organization", which made the Settings window read as a live
+    /// call and raised a false recording prompt.
+    static func isTeamsCallLeaveLabel(_ text: String?) -> Bool {
+        guard var t = text?.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else {
+            return false
+        }
+        if t.contains("hang up") || t.contains("hangup") { return true }
+        // Drop a trailing keyboard-shortcut hint, e.g. "leave (⌘⇧h)".
+        if let paren = t.firstIndex(of: "(") {
+            t = String(t[..<paren]).trimmingCharacters(in: .whitespaces)
+        }
+        switch t {
+        case "leave", "leave call", "leave meeting",
+             "leave the call", "leave the meeting":
+            return true
         default:
             return false
         }

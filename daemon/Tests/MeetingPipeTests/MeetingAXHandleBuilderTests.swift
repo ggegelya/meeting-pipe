@@ -28,6 +28,27 @@ final class MeetingAXHandleBuilderTests: XCTestCase {
             bundleID: "com.microsoft.teams2", title: "Camera", help: nil, description: nil))
     }
 
+    func test_teams_leave_matches_call_phrases() {
+        for label in ["Leave", "Leave call", "Leave meeting", "Leave (⌘⇧H)", "Hang up"] {
+            XCTAssertTrue(MeetingAXHandleBuilder.matchesLeave(
+                bundleID: "com.microsoft.teams2", title: label, help: nil, description: nil),
+                "\(label) should match the Teams call leave control")
+        }
+    }
+
+    func test_teams_leave_rejects_settings_chrome_buttons() {
+        // The Issue 4 false-positive: Teams Settings / chrome buttons
+        // whose label merely contains the word "leave" must NOT be
+        // taken for the call leave control, or an idle Settings window
+        // raises a false recording prompt.
+        for label in ["Leave feedback", "Leave team", "Leave organization",
+                      "Leave channel", "Leave the beta"] {
+            XCTAssertFalse(MeetingAXHandleBuilder.matchesLeave(
+                bundleID: "com.microsoft.teams2", title: label, help: nil, description: nil),
+                "\(label) must not match the Teams call leave control")
+        }
+    }
+
     func test_webex_leave_accepts_legacy_and_unified_bundles() {
         XCTAssertTrue(MeetingAXHandleBuilder.matchesLeave(
             bundleID: "com.cisco.webexmeetingsapp", title: "Leave Meeting", help: nil, description: nil))
