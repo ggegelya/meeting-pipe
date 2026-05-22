@@ -44,12 +44,13 @@ jobs:
 
   pipeline:
     name: Pipeline (pytest)
-    # Pure-Python tests — runs everywhere. The transcribe step's heavy deps
-    # (whisperx + torch) are imported lazily inside the function body, so the
-    # tests can exercise the renderer + everything else without installing
-    # them. We deliberately bypass `uv run` and `uv sync` to avoid pulling
-    # the full project dependency tree (and the multi-minute torch wheel
-    # download) on every CI run.
+    # Pure-Python tests, run on Linux. ASR and diarization are Swift
+    # (FluidAudio); the pipeline only summarizes and publishes. The local
+    # summary backend's heavy dep (mlx-lm) is imported lazily and is
+    # darwin/arm64-only, so Linux CI exercises the renderers, publishers,
+    # and orchestrator without it. We deliberately bypass `uv run` / `uv
+    # sync` and install a pinned light dependency set so CI does not
+    # resolve the full project tree on every run.
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -70,20 +71,21 @@ jobs:
             "httpx>=0.27.0" \
             "pydantic>=2.7.0" \
             "tenacity>=8.2.0" \
-            "pandas>=2.0" \
+            "numpy>=1.26" \
+            "soundfile>=0.12.1" \
             "pytest>=8.0.0" \
             "ruff>=0.5.0"
           uv pip install -e . --no-deps
 
       - name: Lint
-        # Use the venv binary directly — `uv run` would trigger `uv sync`
-        # and pull in whisperx + torch, which we don't need for tests.
+        # Use the venv binary directly: `uv run` would trigger `uv sync`
+        # and resolve the full project tree, including mlx-lm.
         run: .venv/bin/ruff check src tests
 
       - name: Test
-        # All tests run together. test_transcribe.py only touches
-        # render_markdown, which sits at module top and doesn't trigger
-        # the lazy `import whisperx` inside transcribe().
+        # All tests run against the pinned light dependency set. The
+        # mlx-lm import in summarize_local.py is lazy, and its tests stub
+        # the server, so CI never needs the heavy local-model dep.
         run: .venv/bin/pytest -v
 
   daemon:
