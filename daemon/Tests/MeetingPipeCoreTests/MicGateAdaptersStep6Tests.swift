@@ -12,28 +12,28 @@ final class MicGateAdaptersStep6Tests: XCTestCase {
     )
 
     func test_webex_mute_adapter_routes_both_bundle_ids() {
-        let adapter = WebexMuteAdapter(axBus: AXObserverBus(), catalogue: Self.catalogue)
+        let adapter = NativeMuteAdapter(config: .webex, axBus: AXObserverBus(), catalogue: Self.catalogue)
         XCTAssertEqual(adapter.app, "webex")
         XCTAssertTrue(adapter.bundleIDs.contains("com.cisco.webexmeetingsapp"))
         XCTAssertTrue(adapter.bundleIDs.contains("com.cisco.spark"))
     }
 
     func test_meet_mute_adapter_covers_browser_bundles() {
-        let adapter = MeetMuteAdapter()
+        let adapter = NoOpMuteAdapter(config: .meet)
         XCTAssertEqual(adapter.app, "meet")
         XCTAssertTrue(adapter.bundleIDs.contains("com.google.Chrome"))
     }
 
     func test_browser_mute_adapter_distinct_from_meet() {
-        let meet = MeetMuteAdapter()
-        let browser = BrowserMuteAdapter()
+        let meet = NoOpMuteAdapter(config: .meet)
+        let browser = NoOpMuteAdapter(config: .browser)
         XCTAssertEqual(meet.bundleIDs, browser.bundleIDs)
         XCTAssertNotEqual(meet.app, browser.app)
     }
 
     func test_meet_adapter_emits_no_signal_log_on_start() throws {
         let log = RecordingEventLog()
-        let adapter = MeetMuteAdapter(eventLog: log)
+        let adapter = NoOpMuteAdapter(config: .meet, eventLog: log)
         try adapter.start(
             context: MeetingLifecycleContext(bundleID: "com.google.Chrome", kind: .browser, pid: 99),
             handle: MicGateAdapterHandle(),

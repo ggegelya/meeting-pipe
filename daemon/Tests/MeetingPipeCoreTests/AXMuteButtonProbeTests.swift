@@ -163,26 +163,26 @@ final class MicGateAdapterTests: XCTestCase {
     )
 
     func test_teams_adapter_routes_teams_bundle_ids() {
-        let adapter = TeamsMuteAdapter(axBus: AXObserverBus(), catalogue: Self.catalogue)
+        let adapter = NativeMuteAdapter(config: .teams, axBus: AXObserverBus(), catalogue: Self.catalogue)
         XCTAssertEqual(adapter.app, "teams")
         XCTAssertTrue(adapter.bundleIDs.contains("com.microsoft.teams2"))
     }
 
     func test_zoom_adapter_routes_zoom_bundle_id() {
-        let adapter = ZoomMuteAdapter(axBus: AXObserverBus(), catalogue: Self.catalogue)
+        let adapter = NativeMuteAdapter(config: .zoom, axBus: AXObserverBus(), catalogue: Self.catalogue)
         XCTAssertEqual(adapter.app, "zoom")
         XCTAssertEqual(adapter.bundleIDs, ["us.zoom.xos"])
     }
 
     func test_slack_adapter_routes_slack_bundle_id() {
-        let adapter = SlackMuteAdapter(axBus: AXObserverBus(), catalogue: Self.catalogue)
+        let adapter = NativeMuteAdapter(config: .slack, axBus: AXObserverBus(), catalogue: Self.catalogue)
         XCTAssertEqual(adapter.app, "slack")
         XCTAssertEqual(adapter.bundleIDs, ["com.tinyspeck.slackmacgap"])
     }
 
     func test_adapter_start_does_nothing_without_mute_button_handle() throws {
         let bus = AXObserverBus()
-        let adapter = TeamsMuteAdapter(axBus: bus, catalogue: Self.catalogue)
+        let adapter = NativeMuteAdapter(config: .teams, axBus: bus, catalogue: Self.catalogue)
         try adapter.start(
             context: teamsContext,
             handle: MicGateAdapterHandle(muteButton: nil),

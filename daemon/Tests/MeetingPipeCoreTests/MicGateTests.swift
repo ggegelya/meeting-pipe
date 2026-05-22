@@ -102,8 +102,8 @@ final class MicGateIntegrationTests: XCTestCase {
     func test_start_uses_matching_adapter_for_bundle_id() throws {
         let halBus = CoreAudioHALBus()
         let axBus = AXObserverBus()
-        let teams = TeamsMuteAdapter(axBus: axBus, catalogue: Self.catalogue)
-        let zoom = ZoomMuteAdapter(axBus: axBus, catalogue: Self.catalogue)
+        let teams = NativeMuteAdapter(config: .teams, axBus: axBus, catalogue: Self.catalogue)
+        let zoom = NativeMuteAdapter(config: .zoom, axBus: axBus, catalogue: Self.catalogue)
         let gate = MicGate(
             catalogue: Self.catalogue,
             halBus: halBus,

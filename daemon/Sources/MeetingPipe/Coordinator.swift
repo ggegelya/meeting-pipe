@@ -243,12 +243,12 @@ final class Coordinator: NSObject {
             axBus: axBus,
             eventLog: logAdapter,
             adapters: [
-                TeamsMuteAdapter(axBus: axBus, catalogue: muteLabels, eventLog: logAdapter),
-                ZoomMuteAdapter(axBus: axBus, catalogue: muteLabels, eventLog: logAdapter),
-                WebexMuteAdapter(axBus: axBus, catalogue: muteLabels, eventLog: logAdapter),
-                SlackMuteAdapter(axBus: axBus, catalogue: muteLabels, eventLog: logAdapter),
-                MeetMuteAdapter(eventLog: logAdapter),
-                BrowserMuteAdapter(eventLog: logAdapter),
+                NativeMuteAdapter(config: .teams, axBus: axBus, catalogue: muteLabels, eventLog: logAdapter),
+                NativeMuteAdapter(config: .zoom, axBus: axBus, catalogue: muteLabels, eventLog: logAdapter),
+                NativeMuteAdapter(config: .webex, axBus: axBus, catalogue: muteLabels, eventLog: logAdapter),
+                NativeMuteAdapter(config: .slack, axBus: axBus, catalogue: muteLabels, eventLog: logAdapter),
+                NoOpMuteAdapter(config: .meet, eventLog: logAdapter),
+                NoOpMuteAdapter(config: .browser, eventLog: logAdapter),
             ]
         )
         // Window read from the TOML knob (TECH-C7). Live edits in
