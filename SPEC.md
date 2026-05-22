@@ -36,9 +36,9 @@ and operate the system; this file documents *why* it's shaped the way it is.
 | Daemon           | Swift menu-bar app, no Dock icon                | Native NSWorkspace, AVCaptureDevice KVO, UNUserNotificationCenter. |
 | System audio     | ScreenCaptureKit (`SCStream` w/ `capturesAudio = true`) | Apple-recommended since macOS 13. No aggregate devices, no BlackHole, no ffmpeg subprocess. Excludes our own process audio so notifications don't loop back. |
 | Microphone       | `AVAudioEngine.inputNode`                        | Auto-tracks the macOS default input. User changes input in System Settings ▸ Sound → next recording adapts. |
-| Mixing + write   | `AVAudioMixerNode` + `AVAudioFile`               | In-process. Mixer resamples to 16 kHz mono; AVAudioFile writes Int16 PCM WAV. |
-| ASR              | mlx-whisper (Apple Silicon native MLX/Metal)     | ~5-10× faster than faster-whisper-CPU on M-series; emits word-level timestamps directly. faster-whisper kept as fallback for non-Apple-Silicon. |
-| Diarization      | sherpa-onnx (CoreML / Apple Neural Engine)       | Replaces pyannote-on-CPU. Language-agnostic, no torch/HF-TOS pin pain, runs at ~0.1-0.3× realtime. |
+| Mixing + write   | `AVAudioEngine` + `AVAudioFile`                  | In-process. Mic and system audio are written as a stereo WAV (mic left, system right) so diarization and silent-system detection stay possible; see ADR 0009. |
+| ASR              | FluidAudio (Parakeet TDT), Apple Neural Engine   | Swift-native, runs in the daemon after the recording stops. No Python ASR process. Replaced mlx-whisper (TECH-P1/P2). |
+| Diarization      | FluidAudio (pyannote-community-1), Apple Neural Engine | Swift-native, runs alongside ASR in the daemon. Replaced sherpa-onnx (TECH-P3). `mp.diarize` keeps a channel-aware speaker fallback for the rare FluidAudio miss. |
 | Summarization    | Anthropic Messages API direct, Claude Sonnet 4.6 | Headless, deterministic, structured outputs via tool-use schema. **Not Claude Code** — Claude Code is interactive; an unattended pipeline calls the API directly. |
 | Publishing       | Notion REST API + integration token              | Robust unattended; idempotent; testable. **Not Notion MCP** — MCP is for interactive Claude. |
 | Glue             | Python 3.11, single CLI with subcommands          | Each step debuggable in isolation. |
@@ -48,60 +48,21 @@ and operate the system; this file documents *why* it's shaped the way it is.
 
 ## 3. Architecture
 
-```
-            ┌─────────────────────────────────────────────────────┐
-            │              MeetingPipe.app  (Swift)               │
-            │  NSWorkspace ─┐                                     │
-            │  AVCaptureDev ┼──> Detector ──> StateMachine        │
-            │  Hotkey ──────┘                  │                  │
-            │                                  ▼                  │
-            │                              Notifier               │
-            │                                  │                  │
-            │                                  ▼                  │
-            │                          MeetingRecorder            │
-            │   SCStream ──┐                   │                  │
-            │   (system    │   AVAudioEngine   │                  │
-            │    audio)    └─►  ┌─────────┐    │                  │
-            │                   │  Mixer  │ ──►│ AVAudioFile      │
-            │   AVAudioEngine   └─────────┘    │ (16k mono WAV)   │
-            │   .inputNode ────► (mic)         │                  │
-            │   (system default)               ▼                  │
-            └──────────────────────── $RECORDINGS_DIR/{ts}.wav ───┘
-                                                  │
-                                                  │ (PipelineLauncher invokes `mp run-all`)
-                                                  │
-                                                  │  In parallel during recording, a SECOND subprocess
-                                                  │  (`mp transcribe-stream`) tails the daemon's growing
-                                                  │  mic.wav / system.wav, runs mlx-whisper on 30 s chunks,
-                                                  │  and runs the StreamDiarizer per chunk.
-                                                  │  By the time the user hits Stop, {ts}.json is ~95 % done.
-                                                  ▼
-                                        ┌─────────────────────┐
-                                        │   pipeline (Py)     │
-                                        │  ┌───────────────┐  │
-                                        │  │  transcribe   │  │  Skipped if streaming already wrote a
-                                        │  │       +       │  │  usable {ts}.json (mlx + sherpa).
-                                        │  └──────┬────────┘  │  → {ts}.json + {ts}.md (canonical)
-                                        │         ▼           │
-                                        │  guard: long?       │  → {ts}.READY_FOR_MANUAL.md
-                                        │         │           │     (skip API; manual processing)
-                                        │         ▼ (no)      │
-                                        │  ┌───────────────┐  │
-                                        │  │  summarize    │  │  Anthropic API (tool-use schema)
-                                        │  └──────┬────────┘  │  → {ts}.summary.json + .summary.md
-                                        │         ▼           │
-                                        │  ┌───────────────┐  │
-                                        │  │ publish_notion│  │  Notion REST
-                                        │  └──────┬────────┘  │  → {ts}.notion.json (page id)
-                                        └─────────┼───────────┘
-                                                  ▼
-                                             Notification:
-                                        "Done — open in Notion"
-```
+The daemon (`MeetingPipe.app`, Swift) owns detection, recording, and
+on-device transcription end to end. The Python pipeline is a short-lived
+subprocess that only summarizes and publishes.
 
-Recording is fully in-process: ScreenCaptureKit and AVAudioEngine deliver
-PCM directly into the daemon's mixer. The pipeline still runs
-out-of-process so transcription doesn't block the daemon.
+Flow: the `MeetingPipeCore` lifecycle subsystem detects the meeting and
+drives the `Coordinator` state machine. `MeetingRecorder` captures the mic
+(`AVAudioEngine`) plus system audio (ScreenCaptureKit) into a stereo WAV,
+with `MicGate` deciding per buffer whether the mic channel is audible. On
+Stop, `SinkDispatcher` runs FluidAudio ASR + diarization on-device, then
+spawns `mp run-all`, which summarizes and publishes.
+
+Recording and transcription are both in-process in the daemon; the Python
+pipeline runs out-of-process so summarize + publish does not block the
+daemon. See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the subsystem map
+and sequence diagrams.
 
 ---
 
@@ -109,25 +70,26 @@ out-of-process so transcription doesn't block the daemon.
 
 ```
 IDLE
-  │  (detector: meeting started, debounced)
+  │  (lifecycle verdict: meeting started, debounced)
   ▼
-PROMPTING ──(timeout / "Skip")──> SUPPRESSED ──(detector: end)──> IDLE
+PROMPTING ──(timeout / "Skip")──> SUPPRESSED ──(lifecycle verdict: ended)──> IDLE
   │
   │  (user: "Record" or auto-consented bundle)
   ▼
 RECORDING
-  │  (detector: meeting ended, debounced)
+  │  (lifecycle verdict: meeting ended)
   │  (or user: hotkey / "Stop")
   ▼
 STOPPING ─(recorder flushed)─> IDLE
                                  │
-                                 │  (concurrently — does not block recording)
+                                 │  (concurrently, does not block recording)
                                  ▼
                           ProcessingJobs queue (FIFO)
-                                 │  one whisper.cpp at a time so the CPU isn't thrashed,
-                                 │  but recording can start a new meeting at any time
+                                 │  FluidAudio transcribe, then `mp run-all`,
+                                 │  one job at a time; a new meeting can start
+                                 │  recording at any point
                                  ▼
-                          spawn `mp run-all` per job → notification on done
+                          notification on done
 ```
 
 `.handoff` used to be a state; it lived inside `AppState` and blocked the
@@ -139,151 +101,56 @@ so recording stays unblocked while jobs run in the background.
 
 ## 5. Detection logic
 
-**Two-signal AND, debounced.** Both must hold for ≥`debounce_start_sec`
-(default 5s) before transitioning to PROMPTING.
+Detection is the `MeetingPipeCore` lifecycle subsystem. It replaced the
+old two-signal `Detector` in TECH-C13. See [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+for the subsystem map; this section is the *why*.
 
-### Signal A — meeting app active
+### Verdict fusion, not a single signal
 
-- Native: `NSWorkspace.shared.runningApplications` contains a known bundle ID.
-  The list lives in `daemon/Sources/MeetingPipe/Resources/meeting_apps.toml`.
-- Browser: Accessibility API reads frontmost browser tab title against
-  substring patterns (also in `meeting_apps.toml`).
+A meeting recorder cannot trust one signal. A meeting app being open does
+not mean a call is live; the mic being held does not survive the user
+joining muted; a window title can flicker. So the lifecycle subsystem
+fuses several signals per meeting client into one `MeetingLifecycleVerdict`
+(`.idle`, `.starting`, `.inMeeting`, `.endingProvisional`, `.ended`).
 
-### Signal B — microphone in use
+PRIMARY signals: per-process audio activity, ScreenCaptureKit
+shareable-content windows, and the Accessibility "Leave" button.
+`PromotionEngine` is the pure fusion rule: a signal raises a provisional
+verdict, and a second corroborating signal or a debounce confirms it.
+Each meeting client (Teams, Zoom, Webex, Slack, browser) has an adapter
+that wires the right signals with locale-tolerant window-title patterns.
 
-- Primary: KVO on `AVCaptureDevice.default(for: .audio)?.isInUseByAnotherApplication`.
-- Fallback: poll Core Audio `kAudioDevicePropertyDeviceIsRunningSomewhere`
-  every 3s across all input devices.
-- **Post-start gating** (`Detector.micInUse()`): once `hasFiredStart` is
-  true, the broad Core Audio probe is skipped. Reason: the daemon's own
-  `AVAudioEngine.inputNode` tap holds the input device while recording,
-  which would keep `kAudioDevicePropertyDeviceIsRunningSomewhere` true
-  forever and mask the meeting app releasing the mic.
-  `isInUseByAnotherApplication` excludes self by Apple's design and is
-  the correct signal for end detection.
+### Start-side scoring
 
-### Signal C: meeting window still open (end-detection only)
+A user can have Teams open for chat while actually in a Google Meet tab,
+so start detection does not take the first matching app. `MeetingSourceScanner`
+enumerates every concurrent candidate, `MeetingSourceScorer` scores each on
+"I am in a meeting" evidence (calling-controls toolbar, leave / mute
+buttons, process audio, window title), and the strongest candidate wins.
+Once a recording starts the attribution is locked; it is not re-evaluated
+mid-call.
 
-A per-app window recognizer runs the AX query for the recording
-source's PID and checks each window title against
-`Detector.isActiveMeetingWindow(bundleID:, kind:, title:)`. The
-recognizer has explicit positive and negative anchors per known shape:
+### Mute-aware capture
 
-- **Zoom** (`us.zoom.xos`): title contains `"zoom meeting"`.
-  Rejects `"Zoom"` (launcher), `"Schedule Meeting"`, `"Join Meeting"`.
-- **Teams** (`com.microsoft.teams2`, `com.microsoft.teams`): title ends
-  with `"| microsoft teams"` AND the lead segment is exactly `"meeting"`,
-  starts with `"meeting in "` / `"meeting with "` / `"call with "`,
-  equals `"calling"` / starts with `"calling "`, or contains
-  `"huddle"` / `"breakout"`. Prefix-match (not substring) so chat
-  threads with subjects like `"Sprint planning meeting"` don't
-  false-positive.
-- **Webex** (`com.cisco.webexmeetingsapp`): title contains `"webex meeting"`.
-- **Slack** (`com.tinyspeck.slackmacgap`): title matches `\bhuddle\b`
-  as a whole word. `"team-huddles"` channel name correctly fails the
-  trailing word boundary.
-- **Skype** / **Google Meet**: dedicated checks; documented in source.
-- **Unknown bundle**: probe short-circuits to `nil` (inconclusive),
-  composer treats as "still open", mic-release alone drives end.
+`MicGate`, the per-buffer mute verdict-fusion subsystem, decides whether
+the recorded mic channel carries audio or zero-amplitude frames, so the
+transcript does not contain the user's voice while they are muted in the
+meeting client. The system mix is always recorded in full.
 
-For **browser** sources, the probe walks each window's AX subtree to
-locate the tab strip (`AXTabGroup`) and collects every open tab's title.
-Switching tabs in the same window therefore doesn't end the meeting:
-the Meet tab stays detectable in the background. Only closing the tab
-(no fragment match across any window's tab list) ends the recording.
-If the tab strip can't be located (Safari multi-window layouts, Edge
-PWAs without tabs), the probe falls back to window titles — losing the
-in-window tab-switch fidelity but still catching the "last browser
-window closed" case.
+### Silence safety nets
 
-### End-detection composition
-
-`SignalDecision.decide()` in [`Detector.swift`](daemon/Sources/MeetingPipe/Detector.swift)
-runs after `hasFiredStart`:
-
-```
-shouldEnd if (mic released) OR (window recognizer says no)
-```
-
-Both signals are debounced by `debounce_end_sec` (default 5s). Mic
-release is the primary path; the window recognizer covers the few-second
-tail where the meeting app holds the input device past hangup, plus the
-case where AX permission is missing on the meeting app but not the mic.
-
-**Per-app debounce (TECH-C4).** The end-debounce can be tuned per
-bundle ID via `[detection.debounce_end_per_bundle]` in `config.toml`.
-Browser sources without an explicit override get a built-in 12 s
-default — browser window/tab state flickers more during a call than
-native meeting apps, and the global 5 s produced premature stops.
-Lookup precedence: explicit override > browser default > global.
-
-### Re-prompt cooldown after a recording ends
-
-When a recording for app X finishes (or its prompt is skipped / times
-out), the Coordinator arms a per-bundle cooldown via `RepromptCooldown`.
-Detector-driven `.started` events for the same bundle within
-`reprompt_cooldown_sec` (default 60 s) are dropped with a
-`prompt_suppressed_cooldown` event and never reach the prompt window.
-
-The cooldown catches the post-call surface that Teams (and similar
-clients) keep open after the meeting window dies — a chat tab that
-briefly re-acquires the audio session is enough to make
-`AVCaptureDevice.isInUseByAnotherApplication` flip true, producing a
-stray "Record this meeting?" prompt 2-3 s after the previous stop.
-
-The manual hotkey (`toggleManual`) and "Always for {App}" consent both
-clear the cooldown entry so an explicit user-start is never blocked.
-
-### Mute-aware mic capture
-
-`MeetingMuteProbe` polls the active recording's meeting window once
-per second and reads the client's mute control via Accessibility. The
-recognised state flips `MeetingRecorder.micPaused`:
-
-- `.muted` → recorder drops mic frames (`mic.wav` records silence for
-  that interval); `mic_paused_due_to_mute` logged.
-- `.unmuted` → recorder resumes writing; `mic_resumed` logged.
-- `.unknown` → no change, last state is preserved.
-
-This is needed because `AVAudioEngine.inputNode` taps the OS-level
-microphone, which is independent of any meeting client's mute UI.
-Without the probe, meeting-pipe captured the user's voice into the
-transcript even while Teams said they were muted — surfaced in the
-2026-05-13 17:25 test recording. Per-bundle predicates live in
-`MeetingMuteProbe.recognize` (Teams, Zoom, Slack today). System-audio
-capture is unaffected: the system mix continues to be recorded so the
-transcript still contains everything the other participants said.
-
-Opt-out via `recording.honor_app_mute = false` in `config.toml`. AX
-denied / unrecognised label / browser sources keep the legacy
-behaviour (record everything) without further configuration.
-
-### Silence-based safety net
-
-When the regular end-signal misses (browser-tab meetings where the call ended
-but a leftover tab keeps the window probe firing, AX permission denied on the
-meeting app), `SilenceDetector` is a post-recording fallback. It watches the
-RMS level of mic + system audio during the recording. After 90 s of unbroken
-silence on both channels (< -50 dBFS), it surfaces a "Still meeting?"
-notification with a stop action. After 5 minutes of continuous silence it
-auto-stops the recorder and emits an `auto_stop_silence` event. If Screen
-Recording is denied the gate reduces to mic-only, which is still correct: a
-mic-only recording is just the user, and a 5-minute mic silence means they
-walked away.
+`SilenceDetector` watches mic + system RMS during a recording and fires a
+"Still meeting?" notification, then an auto-stop, after sustained silence.
+`MicOnlySilenceBackstop` force-stops a recording that has been mic-only and
+silent past a configured window (`mic_only_silence_seconds`, default 480).
+Both catch the case where end detection missed and the user walked away.
 
 ### Manual override
 
-Two global hotkeys, both configurable in Preferences → Detection:
-
-- **Manual record (toggle)** — default `⌃⌥M`. IDLE → start, RECORDING → stop.
-  Also functions as a force-stop when the detector misses end (`hasFiredStart`
-  stays true, so the detector can't re-prompt for the same meeting; only a
-  real `.ended` resets it).
-- **Force stop (stop only)** — default `⌃⌥⇧M`. Stops a running recording;
-  is a no-op when idle. Useful as a panic button that can never accidentally
-  start a fresh recording. On PROMPTING, it dismisses the prompt and
-  transitions to SUPPRESSED so the daemon doesn't re-prompt for the same call.
-  Logged via the `coordinator.force_stop` event.
+Two global hotkeys, both configurable in Preferences. Manual record
+(default `⌃⌥M`) toggles recording: idle starts, recording stops. Force stop
+(default `⌃⌥⇧M`) only stops a running recording, so it can never accidentally
+start one. Force stop is logged via the `coordinator.force_stop` event.
 
 ---
 
@@ -291,108 +158,27 @@ Two global hotkeys, both configurable in Preferences → Detection:
 
 ```
 meeting-pipe/
-├── README.md
-├── SPEC.md
-├── LICENSE
-├── .gitignore
+├── README.md  SPEC.md  ARCHITECTURE.md  CONVENTIONS.md  GLOSSARY.md
 ├── config.example.toml
-├── daemon/                          Swift menu bar app
-│   ├── Package.swift
-│   ├── Sources/MeetingPipe/
-│   │   ├── App.swift                @main, AppDelegate
-│   │   ├── Coordinator.swift        State machine + recorder lifecycle + dry-run gate
-│   │   ├── Detector.swift           NSWorkspace + AVCaptureDevice + AX, 3-signal composer,
-│   │   │                            per-app window recognizer (isActiveMeetingWindow)
-│   │   ├── MeetingRecorder.swift    AVAudioEngine + AVAudioFile WAV writer
-│   │   ├── SystemAudioCapture.swift SCStream wrapper for system audio
-│   │   ├── MeetingPromptWindow.swift On-screen "Record this meeting?" panel (P4.1 redesign)
-│   │   ├── RecordingHUDWindow.swift Top-right pulse + elapsed timer + stop affordance
-│   │   ├── Notifier.swift           UNUserNotificationCenter + actions
-│   │   ├── PreferencesWindow.swift  SwiftUI tabs (Recording/Detection/Integrations/
-│   │   │                            Pipeline/Modes); backend selector lives on Pipeline
-│   │   ├── ConfigStore.swift        TOML round-trip for the UI-bound subset
-│   │   ├── PipelineLauncher.swift   Spawns `mp run-all`
-│   │   ├── StreamingTranscriber.swift  Spawns/manages `mp transcribe-stream` (Tier 2)
-│   │   ├── HotkeyManager.swift      Carbon-based global hotkey
-│   │   ├── Config.swift             Loads ~/.config/meeting-pipe/config.toml
-│   │   ├── ConsentStore.swift       Persisted "Always for {App}" choices
-│   │   ├── SecretsStore.swift       Reads ~/.config/meeting-pipe/secrets.env
-│   │   ├── State.swift              Enums for the state machine
-│   │   ├── StatusBarController.swift
-│   │   ├── DoctorRunner.swift       In-process `mp doctor` invocation
-│   │   ├── Endpoints.swift          Bundle id, paths, log subsystem constants
-│   │   ├── Logger.swift             os.Logger + tail-able text logs + JSONL events
-│   │   ├── MeetingPromptWindow.swift / RecordingHUDWindow.swift / ...
-│   │   ├── Design/                  Tokens.swift, MPButton, AppGlyphView,
-│   │   │                            DismissProgressView, LiveWaveformView, MicLevelMonitor
-│   │   └── Resources/
-│   │       └── meeting_apps.toml
-│   └── Tests/MeetingPipeTests/
-│       ├── SignalDecisionTests.swift              Composer rules (start/end semantics)
-│       ├── WindowRecognizerTests.swift            Per-app must-recognize/must-reject matrix
-│       ├── WindowRecognizerFixtureTests.swift     Audits recognizer against captured titles
-│       ├── ConfigTests.swift, ConfigStoreTests.swift, ConsentStoreTests.swift,
-│       ├── HotkeyManagerTests.swift, PipelineLauncherTests.swift, SecretsStoreTests.swift,
-│       ├── StateTests.swift
-│       └── Fixtures/
-│           └── window_titles.json   (bundle_id, state, expected, titles) per row
-├── pipeline/
-│   ├── pyproject.toml               (mlx-lm declared with arm64 marker)
-│   ├── uv.lock
-│   ├── src/mp/
-│   │   ├── __init__.py
-│   │   ├── __main__.py              Subcommand dispatcher (run-all / transcribe /
-│   │   │                            transcribe-stream / summarize / publish-notion /
-│   │   │                            publish-from-paste / doctor / logs / dogfood)
-│   │   ├── doctor.py                Preflight (secrets + ML runtimes + APIs + sinks)
-│   │   ├── transcribe.py            mlx-whisper ASR (faster-whisper fallback)
-│   │   ├── transcribe_stream.py     Long-running streaming sidecar (Tier 2)
-│   │   ├── diarize.py               sherpa-onnx offline diarization (CoreML EP) +
-│   │   │                            StreamDiarizer for online clustering (Tier 2.5)
-│   │   ├── summarize.py             Backend selector → AnthropicSummaryClient /
-│   │   │                            LocalSummaryClient / _AutoFallbackClient
-│   │   ├── summarize_local.py       MLX backend: lazy mlx_lm.server, response_format
-│   │   │                            hint, corrective retry, 3-layer JSON extractor
-│   │   ├── publish_notion.py        NotionRestPublisher (name="notion"); P4.3 page
-│   │   │                            layout (callout, bold opener, owner pill, chips)
-│   │   ├── publish_obsidian.py      ObsidianPublisher (name="obsidian"); content-hash
-│   │   │                            idempotent, optional audio attachment + daily-note
-│   │   ├── publish_fs.py            FilesystemPublisher (name="filesystem"); summary +
-│   │   │                            transcript + actions JSON
-│   │   ├── publish_router.py        fanout(): builds publishers from output.sinks,
-│   │   │                            iterates with per-sink failure isolation
-│   │   ├── publish_from_paste.py    BYO summary mode
-│   │   ├── orchestrate.py           `run-all` + long-meeting guard + JSONL events
-│   │   ├── events.py                pipeline_events.jsonl emitter
-│   │   ├── logs_cmd.py              `mp logs` filter / pretty-print
-│   │   ├── dogfood.py               A/B harness + ship-decision report (Anthropic vs
-│   │   │                            local; hand-graded scorecards)
-│   │   ├── config.py                Pydantic settings (incl. backend, output.sinks,
-│   │   │                            obsidian, filesystem)
-│   │   ├── schemas.py               Pydantic models for summary JSON
-│   │   ├── services.py              MeetingPublisher / SummaryClient / Diarizer protocols
-│   │   │                            (NotionPublisher kept as back-compat alias)
-│   │   └── prompts/
-│   │       ├── __init__.py
-│   │       └── meeting_summary.md   Tightened decision/action rules + worked examples
+├── daemon/                          Swift menu-bar app
+│   ├── Package.swift                two targets: MeetingPipe + MeetingPipeCore
+│   ├── Sources/MeetingPipe/         app target: Coordinator + state machine,
+│   │                                recording, transcription, workflows, all UI
+│   ├── Sources/MeetingPipeCore/     library target: the Lifecycle and MicGate
+│   │                                verdict-fusion subsystems, plus Infra
+│   └── Tests/                       MeetingPipeTests + MeetingPipeCoreTests
+├── pipeline/                        Python `mp` CLI: summarize + publish only
+│   ├── pyproject.toml  uv.lock
+│   ├── src/mp/                      one module per subcommand (run-all,
+│   │                                summarize, publish-*, doctor, logs,
+│   │                                dogfood, corrections-stats, analyze-detection)
 │   └── tests/
-│       ├── test_schemas.py, test_transcribe.py, test_summarize.py,
-│       ├── test_publish_notion.py, test_publish_notion_blocks.py,
-│       ├── test_publish_obsidian.py, test_publish_fs.py, test_publish_router.py,
-│       ├── test_summarize_local.py, test_summarize_backend.py,
-│       ├── test_dogfood.py,
-│       ├── test_publish_from_paste.py, test_orchestrate.py,
-│       ├── test_doctor.py, test_endpoints.py
-├── scripts/
-│   ├── install.sh
-│   ├── uninstall.sh                 (--purge / --reset-tcc / --all)
-│   ├── launchd.plist.template
-│   ├── gen-icon.swift
-│   └── dump_window_titles.swift     AX dump → fixture row for window_titles.json
-└── .github/
-    └── workflows/
-        └── ci.yml
+├── scripts/                         install.sh, rebuild.sh, uninstall.sh, dev tools
+└── docs/                            decisions/ (ADRs), test-coverage.md
 ```
+
+[`ARCHITECTURE.md`](./ARCHITECTURE.md) carries the per-file subsystem map and
+is kept current as code moves; treat it as the accurate index.
 
 ---
 
@@ -406,9 +192,6 @@ written to TOML.
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
 NOTION_TOKEN=ntn_...
-# HF_TOKEN is optional — only needed if you opt back into pyannote diarization.
-# The default sherpa-onnx pipeline does not touch Hugging Face.
-HF_TOKEN=
 ```
 
 Daemon and pipeline both source `secrets.env` on startup.
@@ -421,7 +204,7 @@ Daemon and pipeline both source `secrets.env` on startup.
 |------------------|--------------------------------------------------------------------|--------------------------------------|
 | Microphone       | `AVAudioEngine.inputNode` — captures user voice                    | First launch prompt                  |
 | Screen Recording | `SCStream.capturesAudio` — gates system-audio capture in TCC        | System Settings → Privacy & Security |
-| Accessibility    | Reads browser tab titles AND native meeting-app window titles for the per-app end-detection recognizer | System Settings → Privacy & Security |
+| Accessibility    | Lifecycle detection reads the Leave button and window titles; MicGate reads the meeting client's Mute button | System Settings, Privacy & Security |
 | Notifications    | Prompts and completion alerts                                       | First launch prompt                  |
 
 macOS TCC keys these grants on the bundle id (`com.meetingpipe.daemon`).
@@ -433,35 +216,22 @@ re-prompts cleanly.
 
 ---
 
-## 8.4. Performance & streaming pipeline (Tier 1 / 2 / 2.5)
+## 8.4. Performance: on-device transcription
 
-The pipeline used to run end-to-end after the user hit Stop. A 17-min
-recording took ~38 min of post-stop wallclock under whisperx + pyannote
-on CPU. Three tiers brought that to a few seconds:
+ASR and diarization run in the Swift daemon via FluidAudio (Parakeet TDT
+for ASR, pyannote-community-1 for diarization), both on the Apple Neural
+Engine. `SinkDispatcher` runs them after the recorder closes the WAV, then
+spawns `mp run-all` for summarize + publish.
 
-| Tier | Change | What it gets you | After-stop wait for a 17-min meeting |
-|---|---|---|---|
-| 1 | mlx-whisper (Apple Silicon native) replaces faster-whisper-CPU; sherpa-onnx replaces pyannote. | ~7× faster end-to-end. | ~38 min → **~5 min** |
-| 2 | `mp transcribe-stream` subprocess spawned at recording-start; tails the growing WAVs and transcribes 30-s chunks during the meeting. Orchestrator skips the offline transcribe stage at finalization. | Transcribe wallclock disappears into the meeting. | ~5 min → **~3 min** (just diarize + summarize + publish) |
-| 2.5 | StreamDiarizer (silero-vad + NeMo TitaNet + online incremental clustering) runs per-chunk inside the streaming subprocess. Orchestrator skips offline diarize when ≥50% of segments already have a label. | Diarization wallclock also disappears into the meeting. | ~3 min → **~10-30 s** (just summarize + publish) |
+This replaced an earlier Python streaming pipeline (`mp transcribe-stream`,
+mlx-whisper, sherpa-onnx) in TECH-P1 through TECH-P4. The Swift / ANE path
+is fast enough that a streaming-during-the-call architecture was no longer
+worth its complexity: transcription now happens once, after Stop, on the
+canonical merged WAV. The Python pipeline no longer transcribes at all,
+which is why it ships no torch / whisperx dependency.
 
-Streaming details:
-
-- **Chunking**: 30 s windows (Whisper's natural context) with 5 s
-  overlap for context continuity at boundaries. Boundary-overlap
-  duplicates get dropped by `_absorb_segments` (≤0.25 s difference).
-- **Audio source**: the streaming sidecar tails the daemon's growing
-  `<stem>.mic.wav` and (when present) `<stem>.system.wav` directly.
-  AVAudioFile flushes PCM bytes to disk per `write(from:)` call; the
-  RIFF header's `data` size is stale until close, which the sidecar
-  ignores in favor of `os.stat()`-based byte tracking.
-- **Termination**: daemon sends SIGTERM at recorder.stop(); 60 s grace
-  to flush the final chunk; SIGKILL escalation. Failures fall through
-  to the offline path so quality never silently degrades.
-- **Fallback chain**: streaming JSON missing/empty → offline transcribe.
-  Streaming JSON present but no speakers → offline diarize over the
-  canonical merged WAV. Streaming JSON with speakers → straight to
-  summarize.
+Long meetings still skip the Anthropic call above
+`summarization.skip_above_chars` (see section 11).
 
 ---
 
@@ -469,8 +239,8 @@ Streaming details:
 
 | Stage | Multilang behavior |
 |---|---|
-| ASR (mlx-whisper) | All 99 Whisper languages. Default is `language="en"`; an explicit ISO 639-1 code (`"en"`, `"uk"`, `"ru"`, `"de"`) skips detection. `language="auto"` opts back into per-meeting detection from the first 30 s of audio. Auto is intentionally opt-in: Whisper misfires on accented speech and silence-heavy openings (a Standup with Indian-English accents was classified as Spanish in the wild). The multilingual ASR still handles non-native accents fine when language is locked. |
-| Diarization (sherpa-onnx + NeMo TitaNet) | Language-agnostic. Speaker identity is encoded in phoneme-level acoustic features that transfer across languages. No per-language model. |
+| ASR (FluidAudio / Parakeet TDT) | Parakeet TDT v3 is multilingual; quality on the user's languages was validated in the TECH-P0 benchmark (`bench/parakeet-vs-whisperx/`). Runs on the Apple Neural Engine in the daemon. |
+| Diarization (FluidAudio / pyannote) | Language-agnostic. Speaker identity is acoustic, not lexical, so it transfers across languages with no per-language model. |
 | Summarization | The Anthropic prompt detects the transcript language and writes the summary in that same language by default. `summarization.summary_language` in config can force a specific output language regardless. |
 | Notion title | Inherits the summary language (or, when present, the meeting-name sidecar from the daemon — that name lives in whatever the source app exposed). |
 
@@ -511,11 +281,11 @@ and includes the configured `team_context` so domain terms aren't misclassified.
 
 | Risk                                                          | Mitigation |
 |---------------------------------------------------------------|------------|
-| `isInUseByAnotherApplication` flakiness pre-start                  | Core Audio `DeviceIsRunningSomewhere` probe runs only before `hasFiredStart` (the daemon's own input tap would mask it post-start). |
-| Native meeting-app title format drift (Teams/Zoom UI rename)        | `Tests/.../Fixtures/window_titles.json` + `WindowRecognizerFixtureTests` turn silent regressions into a red row in CI. `dump_window_titles.swift` captures fresh rows from the live app. |
+| A single detection signal misfires (app open but no call, title flicker) | The lifecycle subsystem fuses several signals per client via `PromotionEngine`; no lone signal starts or ends a recording. |
+| Native meeting-app title format drift (Teams/Zoom UI rename)        | Title patterns live in the per-app lifecycle adapters and `meeting_apps.toml`, not compiled constants. The detection corpus (TECH-C6) replays captured traces to catch regressions. |
 | Browser tab title patterns drift                                    | Patterns in TOML, not compiled. Easy to tweak. |
-| Diarization quality variance per language                           | sherpa-onnx with NeMo TitaNet generalizes well across languages, but `disable_diarization=true` is the escape hatch. |
-| Apple Silicon MLX requirement for fast path                         | Pipeline auto-falls-back to faster-whisper on non-arm64 hosts; daemon is macOS-only anyway. |
+| Diarization quality variance per language                           | FluidAudio's pyannote model is acoustic and language-agnostic; a channel-aware fallback in `mp.diarize` covers a hard FluidAudio miss on a stereo recording. |
+| Apple Silicon requirement                                           | FluidAudio runs on the Apple Neural Engine; the daemon is Apple-Silicon, macOS 14+ only by design. There is no Intel fallback. |
 | Long meetings burning Anthropic tokens silently                     | `summarization.skip_above_chars` (default 80 000) writes a manual-processing bundle instead of calling the API. |
 | Anthropic API cost creep                                            | ≈$0.05/meeting on Sonnet 4.6 at typical 5k in / 2k out. Local backend (P2) brings it to $0. |
 | Compliance for client/regulated calls                               | `regulated_mode=true` skips Notion. Pair with `summarization.backend = "local"` for full zero-egress (test_summarize_backend locks this in). |
@@ -531,9 +301,9 @@ The Anthropic API charges per token. A 1+ hour meeting can produce a
 transcript that runs many tens of thousands of tokens, which is real money
 to summarize automatically. To avoid that:
 
-- After `transcribe` produces `<stem>.md`, the orchestrator checks
-  `len(md) > summarization.skip_above_chars` (default `80000` ≈ 20 000
-  tokens ≈ ~1 hour of speech).
+- After the daemon's FluidAudio transcription produces `<stem>.md`, the
+  orchestrator checks `len(md) > summarization.skip_above_chars` (default
+  `80000` ≈ 20 000 tokens ≈ ~1 hour of speech).
 - On hit: stages 2 and 3 are skipped. Anthropic and Notion are not called.
 - A sidecar `<stem>.READY_FOR_MANUAL.md` is written. It contains:
   - A short header explaining what's going on.
@@ -671,7 +441,7 @@ free-form attributes. Categories emitted today:
 
 | Category | Actions |
 |---|---|
-| `detector` | `started`, `ended` |
+| `lifecycle` | `idle`, `starting`, `in_meeting`, `ending_provisional`, `ended` |
 | `coordinator` | `state_change`, `prompt_shown`, `prompt_timeout`, `user_skipped`, `user_consented_always`, `auto_consent`, `recording_started`, `recording_stopped`, `pipeline_queued`, `pipeline_started`, `pipeline_succeeded`, `pipeline_failed`, `dry_run_enabled`, `dry_run_would_record` |
 | `pipeline` | `run_started`, `stage_started`, `stage_completed`, `run_completed`, `run_skipped` (`no_speech` / `byo` / `too_long`), `run_failed` |
 | `publisher` | `sink_started`, `sink_completed`, `sink_failed` |

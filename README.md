@@ -13,8 +13,8 @@ Silicon.**
    for a fully zero-egress pipeline (MLX-Qwen on Metal, no outbound calls).
 2. **Hands-off recording.** Detects Zoom, Teams, Meet, Webex, and Slack
    huddles across native apps and browser tabs, pops a prompt before each
-   call, and auto-stops when the meeting ends. Transcription runs in parallel
-   with the call, so the wait after Stop is roughly 10 to 30 seconds.
+   call, and auto-stops when the meeting ends. Transcription runs on-device
+   right after Stop (FluidAudio on the Apple Neural Engine).
 3. **Owns nothing.** Recordings live in `~/Documents/Meetings/raw/`. Output
    is plain Markdown. Notion, Obsidian, and filesystem sinks fan out
    independently, and one going down doesn't block the others.
@@ -40,13 +40,13 @@ below. Architecture rationale is in [`SPEC.md`](./SPEC.md).
 1. **Detects** when you're in a meeting (Zoom, Teams, Slack huddles, Google Meet,
    Webex — native apps and browser tabs).
 2. **Asks** to record via an on-screen panel (top-right, Notion-style).
-3. **Captures** system audio (every other process) + your mic, mixes them, and
-   writes a 16 kHz mono WAV to `~/Documents/Meetings/raw/`.
-4. **Transcribes** with mlx-whisper (Apple Silicon native, all 99 Whisper
-   languages) and labels speakers via sherpa-onnx diarization on CoreML.
+3. **Captures** system audio (every other process) + your mic into a stereo
+   WAV (mic left, system right) in `~/Documents/Meetings/raw/`.
+4. **Transcribes** on-device with FluidAudio (Parakeet TDT for ASR,
+   pyannote for speaker diarization, both on the Apple Neural Engine).
 5. **Summarizes** (title, decisions, action items, questions) in the same
    language as the transcript. Either Claude Sonnet via the Anthropic API
-   (default) or Qwen2.5-14B-Instruct-4bit via on-device MLX, your choice.
+   (default) or a local MLX model via on-device `mlx_lm`, your choice.
 6. **Publishes** to every sink in `output.sinks` (Notion, Obsidian, filesystem,
    or a combination). Each sink is idempotent and failures are isolated;
    one sink falling over does not block the others.
@@ -58,19 +58,11 @@ meeting's Notion page is ready.
 
 ### Performance
 
-Transcription and diarization happen **in parallel with the meeting**, so
-the wait after you click Stop is essentially just summarize + publish.
-Measured on a 17-min recording, M-series Mac:
-
-| When |  | Wallclock after Stop |
-|---|---|---|
-| Original (whisperx + pyannote on CPU) | | ~38 min |
-| Tier 1 (mlx-whisper + sherpa-onnx) | | ~5 min |
-| Tier 2 (streaming transcribe during recording) | | ~3 min |
-| Tier 2.5 (streaming diarize during recording) | | **~10-30 s** |
-
-If streaming fails for any reason, the pipeline falls back to the offline
-path automatically — you never lose a transcript.
+After you click Stop, the daemon transcribes the recording on-device with
+FluidAudio (Parakeet TDT + pyannote on the Apple Neural Engine), then runs
+summarize + publish. ASR and diarization are Swift-native and accelerated
+on the Neural Engine, so the post-Stop wait is short on Apple Silicon.
+There is no Python ASR process and no torch / whisperx dependency.
 
 A global hotkey (default `⌃⌥M`) toggles recording manually if detection misses a
 meeting or you want a quick voice memo. A second hotkey (default `⌃⌥⇧M`) is a
@@ -93,16 +85,11 @@ hand-summarise. After the recording finishes, save your summary as
 
 - **macOS 14 (Sonoma) or later** — required for ScreenCaptureKit's
   `excludesCurrentProcessAudio`.
-- **Apple Silicon (M-series)** for the fast path. mlx-whisper requires
-  arm64; on Intel Macs the pipeline falls back to faster-whisper-CPU and
-  runs roughly 5× slower.
-- ~3 GB free disk: ~1.5 GB for the MLX-converted Whisper model (downloaded
-  on first recording) + ~32 MB for sherpa-onnx diarization models.
+- **Apple Silicon (M-series), required.** FluidAudio (ASR + diarization)
+  runs on the Apple Neural Engine; there is no Intel fallback.
+- A few GB of free disk for the FluidAudio models, downloaded on first use.
 - A Notion integration token + a database to write to.
-- An Anthropic API key.
-- **Hugging Face token is no longer required.** sherpa-onnx pulls models
-  from a public GitHub release. `HF_TOKEN` stays optional in the secrets
-  file for users who deliberately opt back into a pyannote workflow.
+- An Anthropic API key (unless you run the local summary backend).
 
 ---
 
@@ -125,8 +112,7 @@ The installer will:
    can launch it.
 3. Install the Python pipeline into `~/.local/share/meeting-pipe/venv/`.
 4. Stage `~/.config/meeting-pipe/config.toml` and `secrets.env` (mode 0600).
-5. Pre-fetch HF models if `HF_TOKEN` is set.
-6. Install the LaunchAgent so the daemon starts at login.
+5. Install the LaunchAgent so the daemon starts at login.
 
 **First launch & Gatekeeper.** The app is unsigned (no Apple Developer
 subscription required for personal use). On first launch from Spotlight,
@@ -152,7 +138,6 @@ The installer can't do these for you:
    ```env
    ANTHROPIC_API_KEY=sk-ant-...
    NOTION_TOKEN=ntn_...
-   # HF_TOKEN is optional — only needed if you opt back into pyannote.
    ```
 
    You can rotate these any time — the daemon re-reads `secrets.env` every
@@ -165,8 +150,8 @@ The installer can't do these for you:
 2. **Configure** `~/.config/meeting-pipe/config.toml`:
    - Set `notion.database_id` to your Meetings database ID
      (the 32-char string in the database URL).
-   - Optionally tune `transcription.diarize_cluster_threshold` if speaker
-     splitting looks off (higher → fewer speakers, lower → more).
+   - Adjust `output.sinks` and the summarization backend if the defaults
+     (Notion, Anthropic) are not what you want.
 
 3. **Grant macOS permissions** when prompted on first launch. The
    daemon fires every TCC dialog in one ordered sequence within the
@@ -238,8 +223,7 @@ or re-publishing a fixed transcript:
 # Full pipeline
 ~/.local/share/meeting-pipe/venv/bin/mp run-all ~/Documents/Meetings/raw/20260428-1430.wav
 
-# Or step-by-step
-mp transcribe   <wav>
+# Or step-by-step (transcription is done by the daemon, not the CLI)
 mp summarize    <transcript.md>
 mp publish-notion <summary.json>
 
@@ -250,8 +234,8 @@ mp doctor
 # Filter the JSONL event streams (see Logs section)
 mp logs --since 1h --category detector
 
-# Audit detector end-signal reliability — pairs each recording with its
-# preceding `detector.ended` and surfaces sessions you had to stop manually
+# Audit meeting-end detection reliability: pairs each recording with its
+# preceding lifecycle.ended event and surfaces sessions you stopped manually
 mp analyze-detection --since 7d
 
 # Compare Anthropic vs the local backend on one transcript; writes a
@@ -577,19 +561,9 @@ See [`config.example.toml`](./config.example.toml). Highlights:
   suppresses the call, `"record"` auto-starts an auto-summary
   recording, `"byo"` auto-starts a BYO (manual-paste) recording.
   Surfaced as a segmented control in Preferences → Prompt.
-- `transcription.model` — MLX Whisper repo. Default `mlx-community/whisper-large-v3-turbo`.
-- `transcription.language` — `"auto"` or an ISO 639-1 code (`"en"`, `"uk"`,
-  `"ru"`, `"de"`, ...) to skip detection.
-- `transcription.disable_diarization` — set to `true` to label all turns as
-  "Speaker" and skip the diarization stage entirely.
-- `transcription.diarize_cluster_threshold` — sherpa-onnx FastClustering
-  cosine-distance threshold (default `0.85`). Higher merges more aggressively
-  (fewer speakers); lower keeps more clusters separate. Used by the
-  offline diarize fallback.
-- `transcription.stream_diarize_threshold` — online (streaming)
-  StreamDiarizer threshold (default `0.7`). Different scale than
-  `diarize_cluster_threshold` because the algorithms are different.
-  Used by the streaming sidecar that runs during recording.
+- Transcription (ASR + speaker diarization) runs in the daemon via
+  FluidAudio and is not tuned through `config.toml`. The old
+  `transcription.*` keys were removed when ASR moved into Swift.
 - `summarization.summary_language` — `"auto"` (default; matches transcript
   language) or an ISO 639-1 code to force a specific output language.
 - `summarization.team_context` — domain string injected into the system prompt
@@ -653,17 +627,11 @@ the daemon: `launchctl kickstart -k gui/$(id -u)/com.meetingpipe.daemon`.
 
 **Speaker labels look wrong (one person split across many speakers, or
 multiple people collapsed into one).**
-Two thresholds depending on which path produced the labels — check
-`pipeline.log` for "streaming" or "offline" diarize lines.
-
-- **Streaming (the common case):** tune `transcription.stream_diarize_threshold`
-  (default `0.7`). Raise toward `0.85` if one person gets split; lower
-  toward `0.55` if multiple participants get merged.
-- **Offline (fallback path, only runs when streaming was unusable):**
-  tune `transcription.diarize_cluster_threshold` (default `0.85`).
-
-Both take effect on the next recording — no daemon restart, the
-pipeline re-reads config each run.
+Diarization is done on-device by FluidAudio (pyannote) in the daemon, with
+no user-facing tuning knobs. A hard miss on a stereo recording falls back
+to channel-aware labelling (your mic vs the system mix). If labels are
+consistently wrong, capture the recording as a detection-corpus trace
+(TECH-C6) so the regression is reproducible.
 
 **The transcript I see right after stop has speaker labels but the next
 day they look different.**
@@ -707,9 +675,8 @@ runaway recording stopped on its own.
   sync`). The dep is declared in `pyproject.toml` with an Apple-Silicon
   marker; non-arm64 hosts fall back to `backend="anthropic"` automatically.
 - `mlx_lm.server did not become healthy within 120s`: the model is being
-  downloaded for the first time (~9 GB). Check
-  `~/.cache/huggingface/hub/models--mlx-community--Qwen2.5-14B-Instruct-4bit/`
-  size growth.
+  downloaded for the first time. The default `Qwen2.5-3B-Instruct-4bit` is
+  ~2 GB; check `~/.cache/huggingface/hub/` size growth.
 - Output looks fine but `mp doctor` still warns "regulated_mode + backend
   = anthropic": expected. `regulated_mode` does not by itself force the
   local backend. Set `summarization.backend = "local"` explicitly for the
