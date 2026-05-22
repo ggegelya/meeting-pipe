@@ -1,5 +1,14 @@
 # Test coverage - Coordinator + Coordination/
 
+> Status note: this is a point-in-time TECH-H4 snapshot and is partly
+> historical. TECH-G-MIC since replaced `MuteProbeSubsystem` with the
+> `MicGate` subsystem in `MeetingPipeCore` (covered by `MicGateTests`,
+> `MicGateWriterTests`, `MicGateVerdictTests`, and the per-app adapter
+> suites), and `StreamingTranscriber` was deleted when ASR moved into the
+> Swift daemon (FluidAudio). Treat the `MuteProbeSubsystem` and
+> `StreamingTranscriber` sections below as historical; `DetectionStateMachine`
+> and `SinkDispatcher` are current.
+
 TECH-H4 audit of the unit-test surface for `Coordinator.swift` and its three
 post-extraction subordinates (`DetectionStateMachine`, `MuteProbeSubsystem`,
 `SinkDispatcher`). Each seam is listed with its current status and the explicit

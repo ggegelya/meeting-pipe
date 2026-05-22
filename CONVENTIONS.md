@@ -53,7 +53,7 @@ Most start/stop/error sites pair an event line (structured) with a writeLine (re
 
 ### Error propagation
 
-Throwing functions for in-module calls, `Result<T, Error>` at protocol/API boundaries. Each subsystem declares its own nested `enum X: Error, LocalizedError` (see `MeetingRecorder.RecorderError`, `PipelineLauncher.LaunchError`, `StreamingTranscriber.LaunchError`). There is no unified `MeetingPipeError`. `LocalizedError.errorDescription` is what the notifier surfaces, so write user-facing strings there.
+Throwing functions for in-module calls, `Result<T, Error>` at protocol/API boundaries. Each subsystem declares its own nested `enum X: Error, LocalizedError` (see `MeetingRecorder.RecorderError`, `PipelineLauncher.LaunchError`). There is no unified `MeetingPipeError`. `LocalizedError.errorDescription` is what the notifier surfaces, so write user-facing strings there.
 
 ### Test file naming
 
@@ -74,7 +74,7 @@ Don't add packages without asking. The dependency surface is deliberately small.
 Pure logic lives in its own type with explicit inputs (a `Date`, a `Bool`, a function pointer) so XCTest can drive it without AVFoundation, NSWorkspace, or TCC. Examples in repo:
 
 - `SilenceDetector.SilenceDecision` — `decide(at: Date, micRMS:, systemRMS:) → Action` with no AVAudioEngine dependency. Test feeds synthetic RMS sequences.
-- `MeetingWindowProbe.ProbeResult` — pure predicate over a window snapshot.
+- `MicGate.decide(state:)` - pure precedence over the fused mute signals, no AX or CoreAudio dependency.
 - `WorkflowMatcher.match(source:workflows:)` — pure function, full unit coverage.
 
 When a subsystem grows non-trivial conditional logic, lift the decision into a `decide(…)`-style entry point on its own type before adding the next branch.
@@ -111,19 +111,19 @@ Build the menu once per state transition, not per property change. Filter Combin
 
 ### Stdlib first
 
-Reach for `pathlib`, `dataclasses`, `argparse`, `subprocess`, `json` before pulling in a dep. The pipeline ships pydantic for schemas, anthropic + httpx for the API, whisperx / mlx-whisper / sherpa-onnx for ASR — that's it.
+Reach for `pathlib`, `dataclasses`, `argparse`, `subprocess`, `json` before pulling in a dep. The pipeline ships pydantic for schemas, anthropic + httpx for the API, mlx-lm for the local-summary backend, and soundfile + numpy for the channel-aware speaker fallback. That is it.
 
 ### Lazy heavy imports
 
-Top-of-file imports stay stdlib + light deps. Heavy imports (`torch`, `whisperx`, `mlx_whisper`, `mlx_lm`, `sherpa_onnx`) live *inside* the function that uses them:
+Top-of-file imports stay stdlib + light deps. The heavier imports the pipeline still has (`mlx_lm` for the local-summary backend, `soundfile` and `numpy` for the channel-aware speaker fallback in `diarize.py`) live *inside* the function that uses them:
 
 ```python
-def transcribe(wav: Path) -> dict:
-    import mlx_whisper  # heavy; defer until we actually transcribe
+def summarize(self, transcript: str) -> MeetingSummary:
+    from mlx_lm import load  # heavy; defer until the local backend runs
     ...
 ```
 
-Why: `mp --help` and `mp logs` shouldn't trigger a multi-second torch import. CI also installs only light deps and bypasses `uv sync`, relying on these lazy boundaries to not blow up.
+Why: `mp --help` and `mp logs` shouldn't pay an import cost they do not need. Linux CI installs only a light dep set and bypasses `uv sync`, relying on these lazy boundaries to not blow up.
 
 ### Subcommand pattern
 
@@ -178,8 +178,8 @@ Every line is one JSON object with at least three fields:
 
 | Source | Categories |
 |---|---|
-| Daemon (`Log.event`) | `coordinator`, `correction`, `detector`, `library`, `main`, `recorder`, `workflow` |
-| Pipeline (`mp.events.emit`) | `pipeline`, `publisher`, `prefetch` |
+| Daemon (`Log.event` / `EventLog.emit`) | `axbus`, `coordinator`, `correction`, `detector`, `doctor`, `halbus`, `library`, `lifecycle`, `main`, `micgate`, `recorder`, `signal`, `transcription`, `workflow` |
+| Pipeline (`mp.events.emit`) | `pipeline`, `publisher` |
 
 ### Adding a new action
 

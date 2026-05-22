@@ -4,12 +4,12 @@ Fast subsystem map for finding code. For the *why* behind shape decisions, see [
 
 ```
 meeting-pipe/
-├── daemon/      Swift menu-bar app (detection, recording, UI, hotkeys)
-├── pipeline/    Python CLI invoked as `mp <subcommand>` (ASR, summarize, publish)
+├── daemon/      Swift menu-bar app (detection, recording, transcription, UI, hotkeys)
+├── pipeline/    Python CLI invoked as `mp <subcommand>` (summarize, publish)
 └── scripts/    install.sh, rebuild.sh, uninstall.sh, dev tools
 ```
 
-The daemon writes a WAV + sidecar; it spawns the pipeline as a subprocess and forgets about it. The pipeline reads the sidecar, decides what to do per workflow, and writes summaries / publishes. The two processes share contracts via two files on disk: `.meta.json` (per recording) and `events.jsonl` / `pipeline_events.jsonl` (append-only log).
+The daemon records the WAV, writes the `.meta.json` sidecar, and transcribes on-device (FluidAudio); then it spawns the pipeline as a subprocess and forgets about it. The pipeline reads the transcript and the sidecar, decides what to do per workflow, and summarizes / publishes. The two processes share contracts via files on disk: `.meta.json` (per recording) and `events.jsonl` / `pipeline_events.jsonl` (append-only logs).
 
 ---
 
@@ -25,17 +25,18 @@ Who-talks-to-whom across the whole system. The daemon is one Swift process that 
 flowchart LR
     User([User])
     subgraph Daemon["MeetingPipe daemon (Swift, menu-bar)"]
-        Detector
-        Coordinator
         MLC["MeetingLifecycle<br/>Coordinator"]
+        Coordinator
         MicGate
         Recorder["MeetingRecorder"]
+        Transcribe["FluidAudio<br/>ASR + diarization"]
         Sinks["SinkDispatcher"]
         UI["Status bar + HUD<br/>+ Library + Preferences"]
     end
     subgraph FS["Filesystem (~/Documents/Meetings/raw/)"]
         WAV[".wav"]
         Meta[".meta.json"]
+        Transcript[".json / .md"]
         Summary[".summary.json"]
         Notion[".notion.json"]
     end
@@ -44,16 +45,17 @@ flowchart LR
     NotionAPI[(Notion API)]
 
     User -->|mic + system audio| Recorder
-    User -->|joins / leaves call| Detector
-    Detector --> Coordinator
+    User -->|joins / leaves call| MLC
+    MLC --> Coordinator
     Coordinator --> UI
     Coordinator --> Recorder
     Coordinator --> MicGate
-    Coordinator --> MLC
     MicGate -->|verdict per buffer| Recorder
     Recorder --> WAV
     Coordinator --> Meta
     Coordinator --> Sinks
+    Sinks --> Transcribe
+    Transcribe --> Transcript
     Sinks --> Pipeline
     Pipeline --> Anthropic
     Pipeline --> Summary
@@ -71,15 +73,16 @@ What happens between "you join a Teams call" and "the Notion page appears". MicG
 ```mermaid
 sequenceDiagram
     actor User
-    participant Det as Detector
+    participant LC as Lifecycle subsystem
     participant Coord as Coordinator
     participant Rec as MeetingRecorder
     participant Gate as MicGate
+    participant Sink as SinkDispatcher
     participant Pipe as Pipeline (mp run-all)
     participant N as Notion
 
-    User->>Det: opens Teams call
-    Det->>Coord: .started(AppSource)
+    User->>LC: opens Teams call
+    LC->>Coord: verdict .starting
     Coord->>User: prompt panel (Record? Skip?)
     User->>Coord: Record
     Coord->>Rec: start(outputDir, voiceProcessing)
@@ -89,12 +92,14 @@ sequenceDiagram
         Gate-->>Rec: MicGateVerdict
         Note right of Rec: MicGateWriter applies the<br/>verdict in place, 20 ms fade,<br/>frame parity preserved
     end
-    User->>Det: clicks Leave
-    Det->>Coord: .ended
+    User->>LC: clicks Leave
+    LC->>Coord: verdict .ended
     Coord->>Rec: stop()
     Rec->>Rec: ffmpeg merge mic + system
-    Coord->>Pipe: enqueue(wav)
-    Pipe->>Pipe: transcribe + summarize
+    Coord->>Sink: enqueue(wav)
+    Sink->>Sink: FluidAudio transcribe + diarize
+    Sink->>Pipe: mp run-all
+    Pipe->>Pipe: summarize
     Pipe->>N: publish
     N-->>User: notifier opens page URL
 ```
@@ -135,7 +140,7 @@ flowchart TB
     Backstop --> ForceStop
 ```
 
-`MeetingLifecycleCoordinator` is the sibling system for meeting-level verdicts (`.idle`, `.starting`, `.inMeeting`, `.endingProvisional`, `.ended`). It runs alongside MicGate today; wiring its `.ended` verdict into stop-recording is a deferred follow-up (TECH-C13 step 5).
+`MeetingLifecycleCoordinator` is the sibling system for meeting-level verdicts (`.idle`, `.starting`, `.inMeeting`, `.endingProvisional`, `.ended`). It runs alongside MicGate; its `.ended` verdict drives stop-recording (TECH-C13 step 5, shipped).
 
 ### Data contracts
 
@@ -146,32 +151,36 @@ flowchart LR
     subgraph DaemonSide["Swift daemon"]
         DR["MeetingRecorder"]
         DM["MeetingMetaSidecar"]
+        DT["FluidAudio transcribe"]
         DL["Library window"]
     end
 
     subgraph Files["~/Documents/Meetings/raw/&lt;stem&gt;.*"]
         WAV[".wav<br/>mixed mic + system"]
         META[".meta.json<br/>workflow + source"]
+        TRANSCRIPT[".json / .md<br/>diarized transcript"]
         SUMM[".summary.json<br/>LLM output"]
         NOT[".notion.json<br/>page URL"]
         RUN[".run.json<br/>run metadata"]
     end
 
     subgraph Pipe["Python pipeline (mp run-all)"]
-        PT["transcribe"]
         PS["summarize"]
         PP["publish"]
     end
 
     DR --> WAV
     DM --> META
-    WAV --> PT
+    WAV --> DT
+    DT --> TRANSCRIPT
+    TRANSCRIPT --> PS
     META --> PS
     PS --> SUMM
     PP --> NOT
     PP --> RUN
     WAV --> DL
     META --> DL
+    TRANSCRIPT --> DL
     SUMM --> DL
     NOT --> DL
 ```
@@ -214,20 +223,33 @@ flowchart TD
 - `App.swift` — `@main`. NSApplication accessory app. Reads `UISettings`, applies theme, sets up `ConfigStore` + `SecretsStore`, constructs `Coordinator`, wires `StatusBarController`, kicks off `SystemAudioCapture.prewarm`.
 - `Coordinator.swift` — the spine. Owns the `AppState` machine (`State.swift`), drives every transition, dispatches between subsystems. ~1500 lines, the only place where everything meets.
 
-### Detection — "is the user in a meeting?"
+### Detection - "is the user in a meeting?"
 
-- `Detector.swift` — polls `NSWorkspace.shared.runningApplications` + window enumeration on a coalesced background queue. Two-signal AND: known meeting app + mic-active. Fires `.started(AppSource)` / `.ended`.
-- `MeetingWindowProbe.swift` — locks onto the specific NSWindow (via AX handle) that hosts the meeting, watches it for close. Source of the "AX lockon" path.
-- `Resources/meeting_apps.toml` — per-bundle-id table of which apps are "known meeting apps", their window-title regex hints, and per-app debounce overrides.
-- `SilenceDetector.swift` — pure logic: given a stream of mic + system RMS samples, decides when to fire the 90 s "Still meeting?" notify and the 5-min auto-stop (TECH-C2).
-- `RepromptCooldown.swift` — per-bundle suppression window after a recording / skip so Teams' post-call mic flicker can't spawn a fresh prompt.
-- `MeetingMuteProbe.swift` / `MeetingRecorder.setMicGate(_:)` — TECH-C8 mute tracking. AX path (Teams/Zoom/Meet/Webex Mute button) + RMS fallback. Zeros mic frames while muted so the merged WAV's left channel is silent.
+Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side discovery scan.
 
-### Recording — "capture what's playing + what I say"
+- `MeetingPipeCore/Lifecycle/MeetingLifecycleCoordinator.swift` - owns the per-app adapters and fuses their signals into a `MeetingLifecycleVerdict` stream (`.idle`, `.starting`, `.inMeeting`, `.endingProvisional`, `.ended`).
+- `MeetingPipeCore/Lifecycle/PromotionEngine.swift` - the pure verdict-fusion rules: a debounce that promotes provisional signals to a confirmed verdict.
+- `MeetingPipeCore/Lifecycle/Signals/` - the signal sources: per-process audio activity, ScreenCaptureKit shareable-content windows, the AX Leave button, plus corroborating window-title / workspace / input-device signals.
+- `MeetingPipeCore/Lifecycle/Adapters/` - one adapter per meeting client (Teams, Zoom, Webex, Slack, browser), wiring the right signals with locale-tolerant title patterns.
+- `MeetingDiscoveryWatcher.swift` / `MeetingSourceScanner.swift` / `MeetingSourceScorer.swift` - start-side discovery: enumerate every concurrent candidate app, score each on "I am in a meeting" evidence, pick the strongest.
+- `Resources/meeting_apps.toml` - per-bundle-id table of known meeting apps and their window-title regex hints.
+- `SilenceDetector.swift` - pure logic over mic + system RMS samples: decides when to fire the "Still meeting?" notify and the silence auto-stop.
+- `RepromptCooldown.swift` - per-bundle suppression window after a recording / skip so a post-call mic flicker can't spawn a fresh prompt.
 
-- `MeetingRecorder.swift` — AVAudioEngine for mic capture + the `SystemAudioCapture` source for everything else, mixed and written to disk.
-- `SystemAudioCapture.swift` — ScreenCaptureKit + ProcessTap (macOS 14.2+) capture of every-other-process audio. The `excludesCurrentProcessAudio` API is the macOS 14 hard floor.
-- `StreamingTranscriber.swift` — spawns `mp transcribe-stream` during the recording so transcription overlaps the meeting (the Tier 2.5 "10–30 s after Stop" win).
+### Recording - "capture what's playing + what I say"
+
+- `MeetingRecorder.swift` - AVAudioEngine for mic capture + the `SystemAudioCapture` source for everything else, mixed and written to disk. `MicGateWriter` applies the per-buffer mute verdict in place.
+- `SystemAudioCapture.swift` - ScreenCaptureKit + ProcessTap (macOS 14.2+) capture of every-other-process audio. The `excludesCurrentProcessAudio` API is the macOS 14 hard floor.
+
+### Mute gating - "don't record me while I'm muted"
+
+- `MeetingPipeCore/MicGate/` - the `MicGate` verdict-fusion subsystem. Probes (HAL system mute, HAL voice-activity detection, an AX read of the meeting client's Mute button, a per-buffer RMS gate) feed `MicGate.decide`; `MicGateWriter` zeros the mic channel with a short fade while muted, preserving frame alignment with system audio.
+- `MeetingPipeCore/MicGate/MicOnlySilenceBackstop.swift` - force-stops a recording that has been mic-only and silent past a configured window.
+
+### Transcription - "ASR + speaker labels, on device"
+
+- `Transcription/FluidAudioRunner.swift` - FluidAudio (Parakeet TDT for ASR, pyannote-community-1 for diarization) on the Apple Neural Engine. `SinkDispatcher` runs it after the recorder closes the WAV, producing `<stem>.json` / `<stem>.md`.
+- `Transcription/SegmentBuilder.swift`, `TranscriptionRunner.swift`, `TranscriptionService.swift` - segment assembly, the runner protocol, and the factory the dispatcher calls.
 
 ### Workflows — per-context routing (TECH-B)
 
@@ -275,30 +297,28 @@ flowchart TD
 
 ### Entry point
 
-- `__main__.py` — argv dispatch. Lazy imports per subcommand so `mp --help` doesn't pay torch / whisperx / mlx cost.
+- `__main__.py` - argv dispatch. Lazy imports per subcommand so `mp --help` and `mp logs` stay fast; the heavier `mlx_lm` / `soundfile` imports are deferred to the subcommands that use them.
 
 ### Subcommands (one module each)
 
 | Module | Subcommand | Output |
 |---|---|---|
-| `transcribe.py` | `mp transcribe <wav>` | `<stem>.json`, `<stem>.md` |
-| `transcribe_stream.py` | `mp transcribe-stream` | streamed chunks → final `<stem>.json` |
-| `diarize.py` | (called from `transcribe`) | speaker labels |
+| `orchestrate.py` | `mp run-all <wav>` | reads the daemon transcript, then summarize, then publish; fail-fast |
 | `summarize.py` | `mp summarize <transcript.md>` | `<stem>.summary.json`, `<stem>.summary.md` |
 | `summarize_local.py` | (called from `summarize`) | on-device MLX path |
 | `publish_notion.py` | `mp publish-notion <summary.json>` | Notion page (idempotent) |
 | `publish_obsidian.py` | (called via router) | Markdown note in vault |
 | `publish_fs.py` | (called via router) | three files in a directory |
 | `publish_router.py` | (called from `orchestrate`) | fan-out over `output.sinks` |
-| `publish_from_paste.py` | `mp publish-from-paste <transcript.md>` | BYO summary → publish |
-| `orchestrate.py` | `mp run-all <wav>` | transcribe → summarize → publish, fail-fast |
+| `publish_from_paste.py` | `mp publish-from-paste <transcript.md>` | BYO summary, then publish |
 | `workflow.py` | (called from `orchestrate`) | applies `.meta.json` overrides |
+| `diarize.py` | (called from `orchestrate`) | channel-aware speaker labels when daemon diarization is missing |
 | `doctor.py` | `mp doctor` | preflight diagnostics |
 | `logs_cmd.py` | `mp logs` | `events.jsonl` pretty-printer / filter |
 | `dogfood.py` | `mp dogfood` | side-by-side backend comparison |
 | `prefetch_model.py` | `mp prefetch-model <repo>` | MLX model download (JSONL progress) |
 | `corrections.py` | `mp corrections-stats` | aggregate over correction records |
-| `analyze_detection.py` | `mp analyze-detection` | detector failure-mode audit (TECH-C1) |
+| `analyze_detection.py` | `mp analyze-detection` | meeting-end detection audit |
 
 ### Shared services and contracts
 
@@ -314,36 +334,36 @@ flowchart TD
 ### Detect → record (daemon-only)
 
 ```
-NSWorkspace + window scan → Detector.started(AppSource)
-  → WorkflowMatcher.resolve(source) → Workflow
-  → MeetingPromptWindow shown (or auto-consent / always-for-bundle)
-  → user clicks Record (or auto / timeout-default)
-  → Coordinator.beginRecording(source, summaryMode, workflow)
-  → MeetingRecorder writes <stem>.wav  ─┐
-  → MeetingMetaSidecar.build → <stem>.meta.json  ┴─ in ~/Documents/Meetings/raw/
-  → StreamingTranscriber spawns `mp transcribe-stream` (Tier 2.5)
+lifecycle verdict .starting (or discovery scan, or manual hotkey)
+  -> WorkflowMatcher.resolve(source) -> Workflow
+  -> MeetingPromptWindow shown (or auto-consent / always-for-bundle)
+  -> user clicks Record (or auto / timeout-default)
+  -> Coordinator.beginRecording(source, summaryMode, workflow)
+  -> MeetingRecorder writes <stem>.wav
+  -> MeetingMetaSidecar.build writes <stem>.meta.json   (both in ~/Documents/Meetings/raw/)
+  -> MicGate engaged for the recording
 ```
 
 ### Stop → process → publish (daemon hands off to pipeline)
 
 ```
-Detector.ended (or hotkey, or SilenceDetector auto-stop)
-  → MeetingRecorder.flush → final WAV closed
-  → PipelineLauncher.enqueue(ProcessingJob)
-  → mp run-all <wav>:
-       orchestrate reads <stem>.meta.json
-       workflow.apply_overrides → context_prompt, backend, sinks
-       transcribe (offline fallback if streaming failed)
-       summarize → Anthropic OR mlx_lm.server (per workflow.backend)
-       publish_router fanout → notion + obsidian + filesystem (per workflow.sinks)
-       sidecar updates → <stem>.run.json, <stem>.notion.json, …
-  → daemon notifies "published"
+lifecycle verdict .ended (or hotkey, or silence backstop)
+  -> MeetingRecorder.stop -> ffmpeg merge -> final WAV closed
+  -> SinkDispatcher: FluidAudio transcribe + diarize -> <stem>.json / <stem>.md
+  -> PipelineLauncher.enqueue(ProcessingJob)
+  -> mp run-all <wav>:
+       orchestrate reads <stem>.meta.json and the daemon transcript
+       workflow.apply_overrides -> context_prompt, backend, sinks
+       summarize -> Anthropic OR mlx_lm.server (per workflow.backend)
+       publish_router fanout -> notion + obsidian + filesystem (per workflow.sinks)
+       sidecar updates -> <stem>.run.json, <stem>.notion.json, ...
+  -> daemon notifies "published"
 ```
 
 ### Cross-cutting
 
 - **`<stem>.meta.json`** — the only Swift→Python contract surface. Schema lives in `MeetingMetaSidecar.swift` (writer) and `mp.workflow.apply_overrides` (reader). Don't add keys to one without the other.
-- **Event log** (`events.jsonl` from Swift + `pipeline_events.jsonl` from Python) — one JSON object per line, fields `{ts, category, action, ...attrs}`. Categories Swift writes: `coordinator`, `correction`, `detector`, `library`, `main`, `recorder`, `workflow`. Categories Python writes: `pipeline`, `publisher`, `prefetch`. See [`CONVENTIONS.md`](./CONVENTIONS.md#event-log-schema).
+- **Event log** (`events.jsonl` from Swift + `pipeline_events.jsonl` from Python): one JSON object per line, fields `{ts, category, action, ...attrs}`. Categories Swift writes: `axbus`, `coordinator`, `correction`, `detector`, `doctor`, `halbus`, `library`, `lifecycle`, `main`, `micgate`, `recorder`, `signal`, `transcription`, `workflow`. Categories Python writes: `pipeline`, `publisher`. See [`CONVENTIONS.md`](./CONVENTIONS.md#event-log-schema).
 - **Logs directory** (`~/Library/Logs/MeetingPipe/`) — both event logs, plus `daemon.log`, `detector.log`, `recording.log`, `pipeline.log`, `launchd.out.log`, `launchd.err.log`.
 
 ---
