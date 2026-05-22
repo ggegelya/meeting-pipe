@@ -69,4 +69,15 @@ final class HALVoiceActivityProbeTests: XCTestCase {
         XCTAssertNil(probe.lastValue)
         XCTAssertEqual(probe.support, .unsupported)
     }
+
+    func test_default_enable_probe_is_observational_for_unknown_device() {
+        // The default enable probe READS the VAD-enable flag; it must
+        // never write it. Writing it on forces the input device into
+        // voice-processing mode and drops system audio output on
+        // combined input/output headsets. An unresolvable device id
+        // yields a clean `false` (degrades to `.unsupported`) rather
+        // than a crash or a device mutation.
+        let result = HALVoiceActivityProbe.defaultEnableProbe(AudioDeviceID(0))
+        XCTAssertFalse(result)
+    }
 }
