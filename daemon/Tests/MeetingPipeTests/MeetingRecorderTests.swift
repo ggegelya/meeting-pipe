@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import MeetingPipe
 
@@ -119,5 +120,61 @@ final class MeetingRecorderTests: XCTestCase {
         let duration = MeetingRecorder.audioDurationSec(of: url)
         XCTAssertNotNil(duration)
         XCTAssertEqual(duration!, 4.0, accuracy: 0.001)
+    }
+
+    // MARK: - AVAudioPCMBuffer.deepCopy
+
+    private func makeFloatBuffer(
+        frames: AVAudioFrameCount,
+        channels: AVAudioChannelCount = 1,
+        sampleRate: Double = 48000,
+        fill: (Int) -> Float
+    ) -> AVAudioPCMBuffer {
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: channels,
+            interleaved: false
+        )!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buffer.frameLength = frames
+        let data = buffer.floatChannelData!
+        for ch in 0..<Int(channels) {
+            for i in 0..<Int(frames) { data[ch][i] = fill(i) }
+        }
+        return buffer
+    }
+
+    func test_deepCopy_preserves_frame_length_and_samples() {
+        let original = makeFloatBuffer(frames: 512) { Float($0) / 512.0 }
+        guard let copy = original.deepCopy() else { return XCTFail("deepCopy returned nil") }
+        XCTAssertEqual(copy.frameLength, original.frameLength)
+        XCTAssertEqual(copy.format.sampleRate, original.format.sampleRate)
+        let src = original.floatChannelData![0]
+        let dst = copy.floatChannelData![0]
+        for i in 0..<512 { XCTAssertEqual(dst[i], src[i]) }
+    }
+
+    /// The reason deepCopy exists: AVAudioEngine reuses the tap buffer
+    /// after the callback returns, so the queued copy must be unaffected
+    /// by a later overwrite of the original.
+    func test_deepCopy_is_independent_of_later_mutation_of_the_original() {
+        let original = makeFloatBuffer(frames: 256) { _ in 0.25 }
+        guard let copy = original.deepCopy() else { return XCTFail("deepCopy returned nil") }
+        let data = original.floatChannelData![0]
+        for i in 0..<256 { data[i] = -1.0 }
+        let copied = copy.floatChannelData![0]
+        for i in 0..<256 { XCTAssertEqual(copied[i], 0.25) }
+    }
+
+    func test_deepCopy_handles_multi_channel_buffers() {
+        let original = makeFloatBuffer(frames: 128, channels: 2) { Float($0) }
+        guard let copy = original.deepCopy() else { return XCTFail("deepCopy returned nil") }
+        XCTAssertEqual(copy.frameLength, 128)
+        XCTAssertEqual(copy.format.channelCount, 2)
+        for ch in 0..<2 {
+            let dst = copy.floatChannelData![ch]
+            for i in 0..<128 { XCTAssertEqual(dst[i], Float(i)) }
+        }
     }
 }

@@ -71,6 +71,12 @@ final class MeetingRecorder {
     /// audio render thread only.
     private(set) var micGateWriter: MicGateWriter?
 
+    /// Serial writer queues that drain each capture callback's buffers
+    /// to disk off the latency-sensitive delivery thread. Created at
+    /// `start()`, drained and released at `stop()`.
+    private var micWriter: SerialBufferWriter<AVAudioPCMBuffer>?
+    private var systemWriter: SerialBufferWriter<AVAudioPCMBuffer>?
+
     /// Latest MicGate verdict the writer should apply. Single writer
     /// (main thread, via `setMicGateVerdict`) / single reader (audio
     /// render thread). Default `.uncertain` matches MicGate's pre-start
@@ -206,8 +212,18 @@ final class MeetingRecorder {
         // `stop()`.
         self.micGateWriter = MicGateWriter(sampleRate: micFormat.sampleRate)
 
+        // Serial writer for the mic file. The tap callback enqueues; the
+        // disk write runs here, off the delivery thread.
+        self.micWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.mic-writer") { buffer in
+            do {
+                try micFile.write(from: buffer)
+            } catch {
+                Log.recorder.error("mic write: \(error.localizedDescription)")
+            }
+        }
+
         engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { [weak self] buffer, _ in
-            guard let self = self, let file = self.micFile else { return }
+            guard let self = self, self.micFile != nil else { return }
             self.micFires &+= 1
             if self.micFires == 1 {
                 Log.writeLine("recorder", "mic tap first fired: frames=\(buffer.frameLength)")
@@ -241,12 +257,14 @@ final class MeetingRecorder {
                     writer.apply(verdict: self.currentMicGateVerdict, to: bufPtr)
                 }
             }
-            // Write the (possibly zeroed) buffer unconditionally so the
-            // file's frame count tracks the system channel one-for-one.
-            do {
-                try file.write(from: buffer)
-            } catch {
-                Log.recorder.error("mic write: \(error.localizedDescription)")
+            // Hand the gated buffer to the serial writer queue so the
+            // disk write never runs on this delivery thread. The tap
+            // buffer is engine-owned and reused once we return, so the
+            // writer gets an owned deep copy. Frame parity with the
+            // system channel (ADR 0009) holds: the queue is unbounded
+            // and never drops.
+            if let copy = buffer.deepCopy() {
+                self.micWriter?.enqueue(copy)
             }
             self.accumulateAndEmit(
                 buffer: buffer,
@@ -291,18 +309,27 @@ final class MeetingRecorder {
             systemFile = nil
         }
         self.systemFile = systemFile
+        if let systemFile {
+            self.systemWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.system-writer") { buffer in
+                do {
+                    try systemFile.write(from: buffer)
+                } catch {
+                    Log.recorder.error("system write: \(error.localizedDescription)")
+                }
+            }
+        }
 
         let capture = SystemAudioCapture { [weak self] pcm in
-            guard let self = self, let file = self.systemFile else { return }
+            guard let self = self, self.systemFile != nil else { return }
             self.systemFires &+= 1
             if self.systemFires == 1 {
                 Log.writeLine("recorder", "system tap first fired: frames=\(pcm.frameLength)")
             }
-            do {
-                try file.write(from: pcm)
-            } catch {
-                Log.recorder.error("system write: \(error.localizedDescription)")
-            }
+            // SystemAudioCapture hands us a freshly allocated buffer
+            // (see pcmBuffer(from:)), not a reused one, so unlike the
+            // mic tap it needs no deep copy - enqueue it straight onto
+            // the serial writer.
+            self.systemWriter?.enqueue(pcm)
             self.accumulateAndEmit(
                 buffer: pcm,
                 sumSq: &self.systemAccumSumSq,
@@ -326,6 +353,7 @@ final class MeetingRecorder {
                 // Drop the system file so merge knows there's nothing to mix.
                 self?.systemCapture = nil
                 self?.systemFile = nil
+                self?.systemWriter = nil
                 try? FileManager.default.removeItem(at: systemURL)
             }
         }
@@ -372,6 +400,15 @@ final class MeetingRecorder {
         // engine input. The next `start()` rebuilds one against whatever
         // format the input reports then.
         micGateWriter = nil
+
+        // Both capture callbacks are stopped now, so nothing new can be
+        // enqueued. Drain the writer queues - finish() blocks until the
+        // last queued buffer is on disk - before the files are closed,
+        // so ffmpeg never reads a partial WAV.
+        micWriter?.finish()
+        systemWriter?.finish()
+        micWriter = nil
+        systemWriter = nil
 
         // CRITICAL: revert the Voice Processing IO unit if we enabled
         // it on this session. macOS does not auto-disable VPIO when
@@ -747,5 +784,29 @@ final class MeetingRecorder {
 
         guard let rate = byteRate, rate > 0, let payload = dataSize else { return nil }
         return Double(payload) / Double(rate)
+    }
+}
+
+extension AVAudioPCMBuffer {
+    /// Deep-copy this buffer so it can safely outlive the capture
+    /// callback. `AVAudioEngine` reuses the buffer it hands to a tap
+    /// once the callback returns, so any buffer queued for an off-thread
+    /// disk write must own its own backing store. Format-agnostic: the
+    /// per-`AudioBuffer` memcpy copies interleaved and non-interleaved
+    /// layouts alike. Returns nil only when the allocation fails.
+    func deepCopy() -> AVAudioPCMBuffer? {
+        guard let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCapacity) else {
+            return nil
+        }
+        copy.frameLength = frameLength
+        let source = UnsafeMutableAudioBufferListPointer(
+            UnsafeMutablePointer(mutating: audioBufferList)
+        )
+        let destination = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
+        for (src, dst) in zip(source, destination) {
+            guard let srcData = src.mData, let dstData = dst.mData else { continue }
+            memcpy(dstData, srcData, Int(src.mDataByteSize))
+        }
+        return copy
     }
 }
