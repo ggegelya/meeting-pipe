@@ -24,6 +24,15 @@ enum PipelineFailureSidecar {
         case transcribe   // FluidAudio ASR + diarization, in-process
         case pipeline     // mp run-all: summarize + publish
         case launch       // mp executable missing or could not spawn
+
+        /// Human-readable label for the failed-meeting detail surface.
+        var displayName: String {
+            switch self {
+            case .transcribe: return "Transcription"
+            case .pipeline:   return "Summarize and publish"
+            case .launch:     return "Pipeline launch"
+            }
+        }
     }
 
     /// Parsed contents of a `<stem>.error.json` sidecar.

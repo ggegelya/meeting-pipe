@@ -32,6 +32,12 @@ final class PipelineFailureSidecarTests: XCTestCase {
         XCTAssertEqual(url.deletingLastPathComponent().path, dir.path)
     }
 
+    func test_stage_displayName_is_human_readable() {
+        XCTAssertEqual(PipelineFailureSidecar.Stage.transcribe.displayName, "Transcription")
+        XCTAssertEqual(PipelineFailureSidecar.Stage.pipeline.displayName, "Summarize and publish")
+        XCTAssertEqual(PipelineFailureSidecar.Stage.launch.displayName, "Pipeline launch")
+    }
+
     // MARK: - Write + read round-trip
 
     func test_write_then_read_round_trips_every_field() throws {

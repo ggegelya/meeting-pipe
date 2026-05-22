@@ -473,12 +473,69 @@ struct SummaryTab: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(40)
+        } else if meeting.status == .failed {
+            failedState
         } else {
             Text("No summary yet.\nIt appears here once the pipeline finishes.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(40)
+        }
+    }
+
+    /// Failed-meeting state: the persisted reason plus a one-click Retry,
+    /// so a meeting whose pipeline failed is actionable from the detail
+    /// pane rather than dead-ending at "No summary yet."
+    private var failedState: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 30))
+                .foregroundStyle(.orange)
+            Text("Pipeline failed")
+                .font(.title3.weight(.semibold))
+            if let stage = stageLabel {
+                Text("Failed at: \(stage)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            if let reason = meeting.failureReason, !reason.isEmpty {
+                ScrollView {
+                    Text(reason)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxWidth: 460, maxHeight: 150)
+            }
+            Button("Retry pipeline") { runRetry() }
+                .controlSize(.large)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(40)
+    }
+
+    /// Human label for the failed stage from the error sidecar, if known.
+    private var stageLabel: String? {
+        guard let raw = meeting.failureStage,
+              let stage = PipelineFailureSidecar.Stage(rawValue: raw) else {
+            return nil
+        }
+        return stage.displayName
+    }
+
+    private func runRetry() {
+        switch libraryModel.retryMeeting(stem: meeting.stem) {
+        case .success:
+            break
+        case .failure(let err):
+            let alert = NSAlert()
+            alert.messageText = "Retry failed"
+            alert.informativeText = err.localizedDescription
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
         }
     }
 

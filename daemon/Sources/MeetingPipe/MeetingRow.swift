@@ -69,6 +69,9 @@ struct MeetingRow: View, Equatable {
                 if let inFlight = inFlight {
                     inFlightBadge(inFlight)
                 } else {
+                    if effectiveStatus == .failed {
+                        retryButton
+                    }
                     trailingPill
                 }
                 trailingWhenStack
@@ -161,6 +164,14 @@ struct MeetingRow: View, Equatable {
         case (.unknown, _):
             MPStatusPill(kind: .neutral, label: "—")
         }
+    }
+
+    /// Inline one-click retry for a failed row: the audit's fix for
+    /// Retry being right-click-only. Sits next to the Failed pill so the
+    /// owner sees the action without opening the context menu.
+    private var retryButton: some View {
+        Button("Retry") { runRetry() }
+            .controlSize(.small)
     }
 
     /// Hover text for the failed pill: the persisted reason when the

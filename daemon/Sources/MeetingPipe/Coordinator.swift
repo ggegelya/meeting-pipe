@@ -631,6 +631,11 @@ final class Coordinator: NSObject {
         Log.event(category: "coordinator", action: "retry_requested", attributes: [
             "stem": stem,
         ])
+        // The retry supersedes the prior failure: drop the sidecar now so
+        // the meeting leaves the failed set immediately (the status-bar
+        // count, and a recent row, stop showing failed without waiting
+        // for the run). The dispatcher writes a fresh one if it fails too.
+        PipelineFailureSidecar.clear(stem: stem, in: dir)
         sinkDispatcher.enqueue(file: wavURL, summaryMode: .auto)
         return .success(())
     }
