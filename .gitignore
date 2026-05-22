@@ -50,6 +50,8 @@ secrets.env
 *.wav
 *.mp3
 *.m4a
+*.summary.md
+*.meta.json
 *.json.bak
 recordings/
 .notion-cassettes/
