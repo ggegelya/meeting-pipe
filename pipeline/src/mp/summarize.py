@@ -265,6 +265,13 @@ def _select_backend(cfg: Config) -> SummaryClient:
                    network/auth failure.
     """
     backend = cfg.summarization.backend
+    # regulated_mode is a hard zero-egress guarantee: force the on-device
+    # path regardless of the configured backend, mirroring how nda_mode
+    # forces local in workflow.apply_overrides. Without this the default
+    # backend="anthropic" would still send a confidential transcript out.
+    if cfg.modes.regulated_mode and backend != "local":
+        log.info("regulated_mode=true; forcing local backend (was %s)", backend)
+        backend = "local"
     if backend == "local":
         from .summarize_local import LocalSummaryClient
         host, port = _parse_local_endpoint(cfg.summarization.local_endpoint)

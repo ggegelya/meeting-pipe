@@ -74,9 +74,10 @@ class Summarization(BaseModel):
     #   "local":     never call Anthropic; force the on-device MLX path.
     #   "auto":      try Anthropic first, fall back to local on
     #                network/auth failure.
-    # When `modes.regulated_mode = true` AND `backend = "local"`, the
-    # pipeline must not make any outbound HTTP request. This is the
-    # combination test_regulated_local_zero_egress locks in.
+    # When `modes.regulated_mode = true` the local backend is forced
+    # regardless of this setting (summarize._select_backend), so no
+    # transcript leaves the machine. test_regulated_local_zero_egress
+    # locks the zero-egress contract in.
     backend: Literal["anthropic", "local", "auto"] = "anthropic"
     # Default to the 3B-4bit (~2 GB) so first-time local users do not pay
     # a 7-8 GB download. Power users opt into a larger model in

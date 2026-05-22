@@ -63,6 +63,26 @@ def test_select_backend_unknown_raises() -> None:
         _select_backend(cfg)
 
 
+def test_regulated_mode_forces_local_over_anthropic() -> None:
+    # regulated_mode is a hard zero-egress guarantee: even with the
+    # default backend=anthropic, _select_backend must resolve to the
+    # on-device path so no transcript reaches Anthropic. Mirrors
+    # test_nda_mode_forces_local_and_filesystem on the workflow side.
+    cfg = _local_cfg(backend="anthropic", regulated=True)
+    client = _select_backend(cfg)
+    from mp.summarize_local import LocalSummaryClient
+    assert isinstance(client, LocalSummaryClient)
+
+
+def test_regulated_mode_forces_local_over_auto() -> None:
+    # auto would call Anthropic first whenever it is reachable; under
+    # regulated_mode that egress is not permitted, so it is forced local too.
+    cfg = _local_cfg(backend="auto", regulated=True)
+    client = _select_backend(cfg)
+    from mp.summarize_local import LocalSummaryClient
+    assert isinstance(client, LocalSummaryClient)
+
+
 def test_parse_local_endpoint_variants() -> None:
     assert _parse_local_endpoint("http://127.0.0.1:8765") == ("127.0.0.1", 8765)
     assert _parse_local_endpoint("https://localhost:9000/v1") == ("localhost", 9000)

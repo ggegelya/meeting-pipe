@@ -115,10 +115,10 @@ def check_config() -> Config | None:
     _info(f"modes.regulated_mode = {cfg.modes.regulated_mode}")
     if not cfg.notion.database_id and not cfg.modes.regulated_mode:
         _warn("notion.database_id is empty AND regulated_mode is off — Notion publish will fail")
-    if cfg.modes.regulated_mode and cfg.summarization.backend == "anthropic":
-        _warn(
-            "regulated_mode=true with backend=anthropic still calls api.anthropic.com. "
-            "Set summarization.backend = \"local\" for full zero-egress operation."
+    if cfg.modes.regulated_mode and cfg.summarization.backend != "local":
+        _info(
+            f"regulated_mode=true overrides summarization.backend "
+            f"({cfg.summarization.backend}); the local backend is forced for zero egress"
         )
     return cfg
 
