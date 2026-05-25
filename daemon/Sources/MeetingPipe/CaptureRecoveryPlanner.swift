@@ -49,4 +49,24 @@ enum CaptureRecoveryPlanner {
         guard frames > 0, frames < Double(AVAudioFrameCount.max) else { return 0 }
         return AVAudioFrameCount(frames)
     }
+
+    /// Retry schedule for `.abort` reads. AirPods (and most Bluetooth
+    /// inputs) publish the route change a moment before the input
+    /// node's format is queryable, so the first read after a
+    /// configuration change frequently reports sampleRate=0. Backing off
+    /// across ~4 s covers the device-warmup window without leaving the
+    /// user staring at a stopped engine when the next observation would
+    /// have succeeded.
+    static let retryDelaysSeconds: [TimeInterval] = [0.3, 0.6, 1.2, 2.0]
+    static var maxRetryAttempts: Int { retryDelaysSeconds.count }
+
+    /// Delay for the next retry given how many attempts have already
+    /// been queued. Returns nil when the budget is exhausted.
+    static func nextRetryDelay(attemptsAlreadyMade: Int) -> TimeInterval? {
+        guard attemptsAlreadyMade >= 0,
+              attemptsAlreadyMade < retryDelaysSeconds.count else {
+            return nil
+        }
+        return retryDelaysSeconds[attemptsAlreadyMade]
+    }
 }

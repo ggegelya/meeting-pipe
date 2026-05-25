@@ -96,6 +96,17 @@ final class MeetingRecorder {
     /// `start()` and on a later successful recovery.
     private var captureRecoveryFailed = false
 
+    /// Pending recovery retry scheduled on the main queue. Bluetooth
+    /// inputs publish the route change a moment before the input
+    /// node's format is queryable, so we retry the read instead of
+    /// giving up on the first sampleRate=0. Cancelled in `stop()`.
+    private var pendingRecoveryRetry: DispatchWorkItem?
+
+    /// Number of retries already queued for the current device-change
+    /// event. Zeroed once a retry observes a usable format or the
+    /// engine is torn down.
+    private var configurationRecoveryAttempts = 0
+
     /// Outcome of reacting to a mid-recording input device change.
     enum CaptureRecoveryOutcome {
         case resumed
@@ -189,6 +200,8 @@ final class MeetingRecorder {
         // mismatch; clear any failure state from a prior session.
         micConverter = nil
         captureRecoveryFailed = false
+        cancelPendingRecoveryRetry()
+        configurationRecoveryAttempts = 0
 
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -453,7 +466,19 @@ final class MeetingRecorder {
     /// with the system channel. If capture cannot be re-armed, the
     /// failure is surfaced so the user can restart the recording.
     private func handleConfigurationChange() {
-        let gapStart = Date()
+        // A fresh configuration change supersedes any retry queued for
+        // an earlier event: the new observation either succeeds outright
+        // or restarts the retry budget from zero.
+        cancelPendingRecoveryRetry()
+        configurationRecoveryAttempts = 0
+        evaluateConfigurationChange(gapStart: Date())
+    }
+
+    /// Inspect the engine's input format and dispatch to recovery,
+    /// retry, or failure. Pulled out of `handleConfigurationChange` so a
+    /// retry can re-run it with the same `gapStart` and the silence
+    /// padding still reflects the full switchover span.
+    private func evaluateConfigurationChange(gapStart: Date) {
         guard let fileFormat = micFileFormat else { return }
 
         let rawLiveFormat = engine.inputNode.outputFormat(forBus: 0)
@@ -465,15 +490,28 @@ final class MeetingRecorder {
             liveFormat: liveFormat
         ) {
         case .ignore:
+            configurationRecoveryAttempts = 0
             return
         case .abort:
+            if let delay = CaptureRecoveryPlanner.nextRetryDelay(
+                attemptsAlreadyMade: configurationRecoveryAttempts
+            ) {
+                if configurationRecoveryAttempts == 0 {
+                    Log.writeLine("recorder", "input device changed mid-recording - input format not ready yet, retrying")
+                }
+                configurationRecoveryAttempts += 1
+                scheduleRecoveryRetry(after: delay, gapStart: gapStart)
+                return
+            }
             Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
                 "reason": "no_usable_input_format",
+                "attempts": configurationRecoveryAttempts,
             ])
             Log.writeLine("recorder", "WARN: input device changed mid-recording and no usable input remains - mic capture stopped")
             reportRecoveryFailure()
         case .resume(let needsConverter):
             guard let liveFormat else { return }
+            configurationRecoveryAttempts = 0
             recoverCapture(
                 fileFormat: fileFormat,
                 liveFormat: liveFormat,
@@ -481,6 +519,23 @@ final class MeetingRecorder {
                 gapStart: gapStart
             )
         }
+    }
+
+    /// Schedule a retry of `evaluateConfigurationChange` on the main
+    /// queue. The work item is held so `stop()` and a superseding
+    /// configuration change can cancel a pending retry.
+    private func scheduleRecoveryRetry(after delay: TimeInterval, gapStart: Date) {
+        cancelPendingRecoveryRetry()
+        let work = DispatchWorkItem { [weak self] in
+            self?.evaluateConfigurationChange(gapStart: gapStart)
+        }
+        pendingRecoveryRetry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func cancelPendingRecoveryRetry() {
+        pendingRecoveryRetry?.cancel()
+        pendingRecoveryRetry = nil
     }
 
     /// Re-arm mic capture after a device change. The engine is stopped
@@ -633,6 +688,10 @@ final class MeetingRecorder {
             NotificationCenter.default.removeObserver(observer)
             configChangeObserver = nil
         }
+        // Drop any pending sampleRate=0 retry — the engine is about to
+        // be torn down, so re-evaluating against it would race the stop.
+        cancelPendingRecoveryRetry()
+        configurationRecoveryAttempts = 0
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         // Drop the writer; its sample rate was bound to the just-closed

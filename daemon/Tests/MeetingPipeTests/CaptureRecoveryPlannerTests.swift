@@ -100,4 +100,23 @@ final class CaptureRecoveryPlannerTests: XCTestCase {
             0
         )
     }
+
+    // MARK: - nextRetryDelay
+
+    func test_nextRetryDelay_returns_each_step_in_the_schedule() {
+        XCTAssertEqual(CaptureRecoveryPlanner.nextRetryDelay(attemptsAlreadyMade: 0), 0.3)
+        XCTAssertEqual(CaptureRecoveryPlanner.nextRetryDelay(attemptsAlreadyMade: 1), 0.6)
+        XCTAssertEqual(CaptureRecoveryPlanner.nextRetryDelay(attemptsAlreadyMade: 2), 1.2)
+        XCTAssertEqual(CaptureRecoveryPlanner.nextRetryDelay(attemptsAlreadyMade: 3), 2.0)
+    }
+
+    func test_nextRetryDelay_is_nil_when_the_budget_is_exhausted() {
+        XCTAssertNil(CaptureRecoveryPlanner.nextRetryDelay(
+            attemptsAlreadyMade: CaptureRecoveryPlanner.maxRetryAttempts
+        ))
+    }
+
+    func test_nextRetryDelay_rejects_negative_attempt_counts() {
+        XCTAssertNil(CaptureRecoveryPlanner.nextRetryDelay(attemptsAlreadyMade: -1))
+    }
 }
