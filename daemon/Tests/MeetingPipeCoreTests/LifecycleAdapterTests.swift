@@ -80,6 +80,29 @@ final class LifecycleAdapterTests: XCTestCase {
         XCTAssertFalse(BrowserMeetingLifecycleAdapter.isPWABundleID(""))
     }
 
+    func test_matchesKnownMeetingPWA_admits_meeting_app_names() {
+        XCTAssertTrue(BrowserMeetingLifecycleAdapter.matchesKnownMeetingPWA(localizedName: "Google Meet"))
+        XCTAssertTrue(BrowserMeetingLifecycleAdapter.matchesKnownMeetingPWA(localizedName: "Meet"))
+        XCTAssertTrue(BrowserMeetingLifecycleAdapter.matchesKnownMeetingPWA(localizedName: "Microsoft Teams"))
+        XCTAssertTrue(BrowserMeetingLifecycleAdapter.matchesKnownMeetingPWA(localizedName: "Webex"))
+        XCTAssertTrue(BrowserMeetingLifecycleAdapter.matchesKnownMeetingPWA(localizedName: "Zoom"))
+        XCTAssertTrue(BrowserMeetingLifecycleAdapter.matchesKnownMeetingPWA(localizedName: "Slack"))
+        // Case-insensitive + whitespace tolerant.
+        XCTAssertTrue(BrowserMeetingLifecycleAdapter.matchesKnownMeetingPWA(localizedName: "  google meet  "))
+    }
+
+    func test_matchesKnownMeetingPWA_rejects_unrelated_names() {
+        XCTAssertFalse(BrowserMeetingLifecycleAdapter.matchesKnownMeetingPWA(localizedName: "Notion"))
+        XCTAssertFalse(BrowserMeetingLifecycleAdapter.matchesKnownMeetingPWA(localizedName: "Photopea"))
+        XCTAssertFalse(BrowserMeetingLifecycleAdapter.matchesKnownMeetingPWA(localizedName: nil))
+        XCTAssertFalse(BrowserMeetingLifecycleAdapter.matchesKnownMeetingPWA(localizedName: ""))
+        XCTAssertFalse(BrowserMeetingLifecycleAdapter.matchesKnownMeetingPWA(localizedName: "   "))
+        // "meet" as a bare token matches; "meets the eye" should not -
+        // we only treat exact "meet" or "google meet" as a Google Meet
+        // PWA, not arbitrary substrings.
+        XCTAssertFalse(BrowserMeetingLifecycleAdapter.matchesKnownMeetingPWA(localizedName: "Meets The Eye"))
+    }
+
     func test_native_adapter_handles_is_exact_match() {
         let teams = NativeLifecycleAdapter(config: .teams, halBus: CoreAudioHALBus(), axBus: AXObserverBus())
         XCTAssertTrue(teams.handles(bundleID: "com.microsoft.teams2"))

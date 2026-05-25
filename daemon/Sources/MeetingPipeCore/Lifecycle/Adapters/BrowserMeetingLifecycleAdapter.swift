@@ -48,6 +48,37 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
         pwaBundleIDPrefixes.contains { bundleID.hasPrefix($0) }
     }
 
+    /// Recognise a Chromium-installed PWA by the localised name macOS
+    /// reports for `NSRunningApplication`. The name is set by the PWA's
+    /// web manifest at install time (Google Meet, Microsoft Teams,
+    /// etc.) and is durable across the meeting lifecycle, unlike the
+    /// window title which goes through "Meet", "Meeting details",
+    /// "Google Meet" before settling on "Meet - <code>". The scanner
+    /// uses this as a fallback when the title-matcher rejects a real
+    /// meeting because its hyphen-bearing code is not yet in the title
+    /// (typical when starting a meeting solo via the PWA).
+    public static func matchesKnownMeetingPWA(localizedName: String?) -> Bool {
+        guard let lowered = localizedName?.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !lowered.isEmpty else {
+            return false
+        }
+        return pwaLocalizedNameRecognizers.contains { $0(lowered) }
+    }
+
+    /// Lowercased-name predicates that identify the localised name of a
+    /// known meeting PWA. Add new entries here when expanding to a new
+    /// meeting app's PWA. The list is intentionally tight; matching a
+    /// generic substring would over-admit casual web apps the user
+    /// installed for other reasons.
+    private static let pwaLocalizedNameRecognizers: [(String) -> Bool] = [
+        { $0.contains("google meet") || $0 == "meet" },
+        { $0.contains("microsoft teams") || $0 == "teams" },
+        { $0.contains("webex") },
+        { $0.contains("zoom") },
+        { $0.contains("slack") }
+    ]
+
     /// Accepts the advertised browsers plus any Chromium PWA bundle
     /// ID. The coordinator dispatches `.browser`-kind contexts here.
     public func handles(bundleID: String) -> Bool {

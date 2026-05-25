@@ -153,8 +153,21 @@ final class MeetingSourceScanner {
                 // the regular-browser branch above relies on. Treated
                 // as `.browser` kind so the existing browser
                 // end-detection + MicGate fallback paths apply.
-                guard axTrusted,
-                      anyWindowMatchesMeetingTitle(pid: pid) else { continue }
+                //
+                // The title matcher is strict (Google Meet requires a
+                // hyphen-bearing meeting code in the title) and rejects
+                // the transient titles the PWA carries while the user
+                // is bootstrapping a solo meeting. Fall back to the
+                // PWA's localised name in that case: it is set by the
+                // app's web manifest at install time and stays "Google
+                // Meet" / "Microsoft Teams" across the meeting
+                // lifecycle, so it is a durable identity signal for an
+                // app the user deliberately installed.
+                guard axTrusted else { continue }
+                let titleMatched = anyWindowMatchesMeetingTitle(pid: pid)
+                let nameMatched = BrowserMeetingLifecycleAdapter
+                    .matchesKnownMeetingPWA(localizedName: app.localizedName)
+                guard titleMatched || nameMatched else { continue }
                 let source = AppSource(
                     bundleID: bid,
                     displayName: app.localizedName ?? "Meeting",
