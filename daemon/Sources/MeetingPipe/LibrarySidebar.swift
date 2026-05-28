@@ -144,7 +144,10 @@ private struct LibraryScopeRow: View {
                 Spacer(minLength: 0)
                 Text(count.formatted(.number))
                     .font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(isSelected ? .primary : .tertiary)
+                    // TECH-UI-8: mute empty scopes (secondary at half opacity);
+                    // non-empty stay full secondary, keeping the selected emphasis.
+                    .foregroundStyle(count == 0 ? AnyShapeStyle(Color.secondary.opacity(0.5))
+                                                 : AnyShapeStyle(isSelected ? .primary : .secondary))
             }
         } icon: {
             if let img = scope.systemImage {
@@ -175,7 +178,9 @@ private struct WorkflowScopeRow: View {
                 Spacer(minLength: 0)
                 Text(count.formatted(.number))
                     .font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(.tertiary)
+                    // TECH-UI-8: empty workflows render dimmed.
+                    .foregroundStyle(count == 0 ? AnyShapeStyle(Color.secondary.opacity(0.5))
+                                                : AnyShapeStyle(HierarchicalShapeStyle.secondary))
             }
         } icon: {
             // 8pt filled dot in the workflow color.

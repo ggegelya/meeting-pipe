@@ -628,7 +628,9 @@ Acceptance: per Q2 addendum lines 124-129.
 
 Deps: none.
 
-**TECH-UI-8 · Sidebar zero-count muting · S · none** [REVISED]
+**TECH-UI-8 · Sidebar zero-count muting · S · none** [DONE]
+
+> Resolved 2026-05-28: in `LibrarySidebar`, both `LibraryScopeRow` and `WorkflowScopeRow` count badges now render `Color.secondary.opacity(0.5)` when the count is zero and full `.secondary` otherwise (the library row keeps `.primary` when selected). Muting applies only to the count Text, not the icon or label, and updates live as counts cross zero (SwiftUI re-render). Pure styling, so no unit test (snapshot coverage is the deferred TECH-T2); build green.
 
 Counts equal to zero render at secondary label color * 0.5 opacity; non-zero counts stay at full secondary.
 
