@@ -2,110 +2,71 @@ import Combine
 import Foundation
 import TOMLKit
 
-/// Observable wrapper around `~/.config/meeting-pipe/config.toml`.
-///
-/// Owns load/persist round-trips so the SwiftUI Preferences view can bind
-/// directly to the published values. Persisting is debounced (500ms) and
-/// preserves any TOML keys we don't model in `Config` — pipeline-side
-/// fields like `transcription.model` or `summarization.team_context`
-/// stay in the file untouched, so editing daemon-only fields here can't
-/// nuke the Python side's settings.
-///
-/// Threading: `@Published` updates fire on whatever queue the setter runs
-/// on; SwiftUI views observe via `ObservableObject`. Persistence uses
-/// `DispatchQueue.main` for the timer and a background queue for the
-/// disk write so we don't block the UI on slow flash.
+/// Observable wrapper around `~/.config/meeting-pipe/config.toml` that the
+/// Preferences view binds to. Persistence is debounced (500 ms) and
+/// preserves unknown TOML keys (pipeline-side fields stay untouched). The
+/// disk write runs off the main queue.
 final class ConfigStore: ObservableObject {
     private let configURL: URL
     private let writeQueue = DispatchQueue(label: "com.meetingpipe.configstore.write", qos: .utility)
 
-    /// Toml document we read at load. We mutate it in place and re-convert
-    /// to a string when persisting — that's how unknown keys survive.
+    /// Read once at load, mutated in place and re-serialized on persist;
+    /// that's how unknown keys survive.
     private var rawDocument: TOMLTable
 
     /// Live values exposed to SwiftUI. didSet → schedule debounced save.
     @Published var outputDirPath: String { didSet { scheduleSave() } }
     @Published var sampleRate: Int { didSet { scheduleSave() } }
     @Published var autoConsentApps: [String] { didSet { scheduleSave() } }
-    /// Apple's VoIP DSP chain (noise suppression, AGC, echo cancel) on
-    /// the mic capture path. Off by default because VPIO drops the HAL
-    /// device gain system-wide while the engine runs, so Teams / Zoom /
-    /// FaceTime hear the user quietly for the duration of the recording.
-    /// Takes effect on the next recording (Recorder binds it at start).
+    /// Apple's VoIP DSP on the mic path. Off by default: VPIO drops the HAL
+    /// gain system-wide so other clients hear the user quietly. Applies next
+    /// recording.
     @Published var voiceProcessing: Bool { didSet { scheduleSave() } }
-    /// When true, MicGate's per-buffer apply zeroes mic frames whenever
-    /// the meeting client reports the user as muted (Teams / Zoom /
-    /// Slack / Webex AX scrape) or the system input mute is engaged.
-    /// Off keeps the mic recording even while you appear muted in-app.
+    /// When true, MicGate zeroes mic frames while the client reports muted
+    /// (or system input mute is on); off keeps recording through in-app mute.
     @Published var honorAppMute: Bool { didSet { scheduleSave() } }
 
     @Published var debounceStartSec: Double { didSet { scheduleSave() } }
     @Published var debounceEndSec: Double { didSet { scheduleSave() } }
     @Published var manualHotkey: String { didSet { scheduleSave() } }
-    /// Stop-only hotkey (TECH-C5). Same parser as `manualHotkey`; the
-    /// daemon registers it as a second Carbon binding. Default
+    /// Stop-only hotkey (TECH-C5); second Carbon binding. Default
     /// `ctrl+option+shift+m`.
     @Published var forceStopHotkey: String { didSet { scheduleSave() } }
     @Published var promptTimeoutSec: Double { didSet { scheduleSave() } }
-    /// What the prompt panel does when the user ignores it for
-    /// `promptTimeoutSec`. Default `"skip"` keeps the historical
-    /// behaviour (state goes to `.suppressed`, no recording). `"record"`
-    /// auto-starts an auto-summary recording; `"byo"` auto-starts a
-    /// BYO recording (manual-paste bundle). Anything else falls back to
-    /// `"skip"`. Mirrors `[detection.default_prompt_action]`.
+    /// Action when the prompt times out: `"skip"` (default, suppress),
+    /// `"record"`, or `"byo"`. Mirrors `[detection.default_prompt_action]`.
     @Published var defaultPromptAction: String { didSet { scheduleSave() } }
-    /// Per-bundle re-prompt cooldown (seconds). After a recording for
-    /// a bundle ends, or its prompt is skipped/timed out, the detector
-    /// can keep firing fresh `.started` events from the post-call
-    /// surface (Teams chat reclaiming the mic for a second, Zoom's
-    /// post-meeting toast holding the audio session, etc.). Suppress
-    /// new prompts for the same bundle for this long. Manual hotkey
-    /// always bypasses the cooldown.
+    /// Per-bundle re-prompt cooldown (s): suppress fresh `.started` events
+    /// from a post-call mic grab. Manual hotkey bypasses it.
     @Published var repromptCooldownSec: Double { didSet { scheduleSave() } }
-    /// Window (seconds) for the MicOnlySilenceBackstop (TECH-C7).
-    /// Force-stops the recording after this many seconds of mic-only
-    /// silence while the system audio channel is also silent. Default
-    /// 480 (8 minutes). Catches the "everyone else left and the user
-    /// forgot to stop" case.
+    /// MicOnlySilenceBackstop window (s); force-stop after this much mic-only
+    /// silence with system also silent (TECH-C7). Default 480.
     @Published var micOnlySilenceSec: Double { didSet { scheduleSave() } }
 
     @Published var regulatedMode: Bool { didSet { scheduleSave() } }
 
-    /// Pipeline-side fields surfaced in the UI for first-run setup.
-    /// The pipeline reads these from the same TOML file at subprocess
-    /// spawn time, so changes here take effect on the next recording
-    /// without restarting the daemon.
+    /// Pipeline-side fields surfaced for first-run setup; the pipeline reads
+    /// the same TOML at spawn time, so edits apply next recording.
     @Published var notionDatabaseId: String { didSet { scheduleSave() } }
-    /// Transcription language. ISO 639-1 code (e.g. "en") forces Whisper
-    /// to skip its first-30 s auto-detect (which mis-fires on accented
-    /// speech and silence-heavy openings). "auto" opts back into per-
-    /// meeting detection. Mirrors `transcription.language` in the
-    /// pipeline config.
+    /// ISO 639-1 code (e.g. "en") forces Whisper to skip its flaky 30 s
+    /// auto-detect; "auto" re-enables it. Mirrors `transcription.language`.
     @Published var transcriptionLanguage: String { didSet { scheduleSave() } }
     @Published var summaryLanguage: String { didSet { scheduleSave() } }
     @Published var summarizationSkipAboveChars: Int { didSet { scheduleSave() } }
-    /// Backend selection for the summarize stage. Mirrors
-    /// `summarization.backend` in the pipeline config; see
-    /// `pipeline/src/mp/summarize.py::_select_backend`.
-    /// Valid values: "anthropic", "local", "auto".
+    /// Summarize backend: "anthropic" | "local" | "auto". Mirrors
+    /// `summarization.backend`.
     @Published var summarizationBackend: String { didSet { scheduleSave() } }
     @Published var summarizationLocalModel: String { didSet { scheduleSave() } }
     @Published var summarizationLocalEndpoint: String { didSet { scheduleSave() } }
 
-    /// Fired AFTER a successful disk write so subscribers (the daemon's
-    /// Coordinator) can re-read affected fields without polling. Sends
-    /// nothing — it's a "config changed, refresh whatever you care about"
-    /// notification.
+    /// Fired after a successful disk write so subscribers re-read without
+    /// polling ("config changed, refresh what you care about").
     let didPersist = PassthroughSubject<Void, Never>()
 
     private var saveTimer: Timer?
 
-    /// Set true at the end of `init`. `didSet` callbacks fire while we
-    /// assign the `@Published` defaults during init; gating `scheduleSave`
-    /// on this flag prevents a spurious immediate write of compile-time
-    /// defaults to the user's config file when init runs off the main
-    /// thread (where the previous `Thread.current.isMainThread` re-entry
-    /// guard didn't actually catch the re-entry).
+    /// Gates `scheduleSave` until init finishes, so the `didSet` storm from
+    /// assigning defaults doesn't write compile-time defaults to the file.
     private var isInitialized: Bool = false
 
     init(configURL: URL = Config.defaultPath) throws {
@@ -114,8 +75,7 @@ final class ConfigStore: ObservableObject {
         do {
             raw = try String(contentsOf: configURL, encoding: .utf8)
         } catch {
-            // Bootstrapping a fresh user: no config file yet. Start with
-            // an empty TOML and the daemon's compile-time defaults.
+            // Fresh user, no config yet: empty TOML + compile-time defaults.
             raw = ""
         }
         let doc = (try? TOMLTable(string: raw)) ?? TOMLTable()
@@ -157,8 +117,7 @@ final class ConfigStore: ObservableObject {
         self.summarizationLocalEndpoint = summ?["local_endpoint"]?.string
             ?? "http://127.0.0.1:8765"
 
-        // Arming this last is the whole point — every prior `self.x = …`
-        // triggered didSet which now no-ops on `!isInitialized`.
+        // Arm last: every prior assignment's didSet no-ops on !isInitialized.
         self.isInitialized = true
     }
 
@@ -170,14 +129,11 @@ final class ConfigStore: ObservableObject {
         try persistToDisk()
     }
 
-    /// Debounce: collapse a burst of UI changes into a single disk write.
-    /// 500ms is below human-noticeable latency but high enough that
-    /// dragging a slider doesn't thrash the file system.
+    /// Debounce a burst of UI changes into one disk write (500 ms).
     private func scheduleSave() {
-        // Drop the storm of didSet callbacks fired during init.
-        guard isInitialized else { return }
-        // Timer.scheduledTimer must be called from a thread with a run
-        // loop. Hop to main if a non-UI setter raced in.
+        guard isInitialized else { return }   // drop the init didSet storm
+        // Timer.scheduledTimer needs a run loop; hop to main if a non-UI
+        // setter raced in.
         guard Thread.current.isMainThread else {
             DispatchQueue.main.async { [weak self] in self?.scheduleSave() }
             return
@@ -229,14 +185,9 @@ final class ConfigStore: ObservableObject {
 
     /// Render `rawDocument` and replace `configURL` atomically.
     private func persistToDisk() throws {
-        // Pass a FormatOptions set WITHOUT `.allowLiteralStrings` so all
-        // strings round-trip with double quotes (`key = "value"`) rather
-        // than TOML's literal-string single-quote form (`key = 'value'`).
-        // Other tools (vim TOML highlighters, external linters, our own
-        // tests) all expect the canonical basic-string output, and the
-        // single-quote form was breaking ConfigStore round-trip
-        // assertions under Xcode 26.5 / Swift 6 once TOMLKit started
-        // preferring literal strings for value-only payloads.
+        // Omit `.allowLiteralStrings` so strings serialize as canonical
+        // double-quoted basic strings; the single-quote form broke
+        // round-trip assertions once TOMLKit started preferring it.
         let toml = rawDocument.convert(
             to: .toml,
             options: [
@@ -254,11 +205,8 @@ final class ConfigStore: ObservableObject {
         )
         let tmp = configURL.appendingPathExtension("writing")
         try toml.data(using: .utf8)?.write(to: tmp, options: .atomic)
-        // Propagate the replace error rather than swallowing with `try?` —
-        // a silent failure here would mean every subsequent Preferences
-        // edit also vanishes (the user thinks they saved, but the file
-        // didn't change), and the user has no signal anything is wrong.
-        // The caller logs at error level via the writeQueue's catch.
+        // Propagate the replace error (not `try?`): a silent failure means
+        // every later edit also vanishes with no signal to the user.
         if FileManager.default.fileExists(atPath: configURL.path) {
             _ = try FileManager.default.replaceItemAt(configURL, withItemAt: tmp)
         } else {
@@ -268,36 +216,24 @@ final class ConfigStore: ObservableObject {
 
     /// Get-or-create a top-level table in `rawDocument`.
     ///
-    /// CRITICAL: TOMLKit's subscript SET on `TOMLTable` (the underlying
-    /// `tableReplaceOrInsertNode` C call) COPIES the source node into
-    /// the parent's backing store. After `rawDocument[key] = new`, the
-    /// local `new` is detached from the persisted document — any
-    /// subscript assignment on it goes to an orphan table that nobody
-    /// renders. The symptom is silent: the FIRST assignment per
-    /// fresh top-level table (e.g. `notion.database_id` when the user
-    /// has no `[notion]` block yet) is dropped on save while every
-    /// subsequent assignment lands.
-    ///
-    /// Re-fetching the table from `rawDocument` after insertion gives
-    /// us a Swift wrapper around the SAME C-level pointer that
-    /// `persistToDisk` will serialize, so subsequent assignments
-    /// persist correctly.
+    /// CRITICAL: TOMLKit's subscript SET copies the source node into the
+    /// parent, so after `rawDocument[key] = new` the local `new` is detached
+    /// and its assignments go to an orphan table. The silent symptom: the
+    /// first assignment per fresh table is dropped on save. Re-fetch after
+    /// insertion to get a wrapper around the live pointer.
     private func ensureTable(_ key: String) -> TOMLTable {
         if let existing = rawDocument[key]?.table { return existing }
         rawDocument[key] = TOMLTable()
-        // Re-fetch: the value we just stored is a detached copy.
-        // `rawDocument[key]?.table` wraps the live pointer.
+        // Re-fetch: the stored value is a detached copy.
         if let live = rawDocument[key]?.table { return live }
-        // Defensive fallback (shouldn't happen — we just inserted).
+        // Defensive fallback (we just inserted).
         let new = TOMLTable()
         rawDocument[key] = new
         return new
     }
 
-    /// Render the current document as a TOML string. Visible to tests.
-    /// Mirrors `persistToDisk`'s format options so test assertions see
-    /// the same canonical basic-string output that actually lands on
-    /// disk.
+    /// Render the document as TOML; mirrors `persistToDisk`'s options so
+    /// tests see the on-disk output. Visible to tests.
     func currentTOML() -> String {
         rawDocument.convert(
             to: .toml,
