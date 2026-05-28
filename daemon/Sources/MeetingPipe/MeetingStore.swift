@@ -98,6 +98,13 @@ final class MeetingStore: ObservableObject {
     private static let debounceSec: TimeInterval = 0.5
     private var debounceWork: DispatchWorkItem?
 
+    /// Per-stem parse cache (TECH-A12). A `.done` row re-parsed every 500 ms scan during recording was the audit perf finding: with 500+ meetings each rescan re-read summary.json + run.json + meta.json for every row. We keep the built `Meeting` keyed by a signature of the stem's on-disk file mtimes; an unchanged signature skips the JSON parse entirely. Only terminal rows are cached (a `.processing` row's status is age-derived, so it must re-evaluate each scan even when no file changed). Touched only on `scanQueue` (serial), so no extra locking.
+    private struct CacheEntry {
+        let signature: [String: Date]
+        let meeting: Meeting
+    }
+    private var scanCache: [String: CacheEntry] = [:]
+
     init(recordingsDir: URL) {
         self.recordingsDir = recordingsDir
     }
@@ -121,9 +128,9 @@ final class MeetingStore: ObservableObject {
         scanRunning = true
         let dir = recordingsDir
         scanQueue.async { [weak self] in
-            let result = MeetingStore.scan(directory: dir)
+            guard let self = self else { return }
+            let result = self.performScan(directory: dir)
             DispatchQueue.main.async {
-                guard let self = self else { return }
                 self.meetings = result
                 self.revision &+= 1
                 if !self.hasLoadedOnce { self.hasLoadedOnce = true }
@@ -193,7 +200,8 @@ final class MeetingStore: ObservableObject {
 
     // MARK: Scan
 
-    private static func scan(directory: URL) -> [Meeting] {
+    /// Enumerate the recordings dir and materialize `Meeting` rows, reusing cached rows whose on-disk signature is unchanged since the last scan. Instance method (not static) because it reads and updates `scanCache`. Runs on `scanQueue`; also the entry point unit tests drive directly.
+    func performScan(directory: URL) -> [Meeting] {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
         guard let entries = try? fm.contentsOfDirectory(
@@ -201,6 +209,7 @@ final class MeetingStore: ObservableObject {
             includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles]
         ) else {
+            scanCache.removeAll()
             return []
         }
 
@@ -214,108 +223,151 @@ final class MeetingStore: ObservableObject {
 
         var out: [Meeting] = []
         out.reserveCapacity(byStem.count)
+        var nextCache: [String: CacheEntry] = [:]
         for (stem, files) in byStem {
-            // No wav = no meeting row; leftover sidecars from manual deletes shouldn't appear.
-            guard let wav = files.first(where: { $0.pathExtension == "wav" }) else {
+            let signature = MeetingStore.signature(of: files)
+            // The cache holds only terminal rows, so a signature match is always safe to reuse and skips the per-sidecar JSON parse (the audit's perf finding).
+            if let cached = scanCache[stem], cached.signature == signature {
+                out.append(cached.meeting)
+                nextCache[stem] = cached
                 continue
             }
-            guard let startedAt = MeetingStore.parseStem(stem) else { continue }
-
-            let metaURL = files.first { $0.lastPathComponent.hasSuffix(".meta.json") }
-            let runURL = files.first { $0.lastPathComponent.hasSuffix(".run.json") }
-            let summaryURL = files.first { $0.lastPathComponent.hasSuffix(".summary.json") }
-            let pasteReadyURL = files.first { $0.lastPathComponent.hasSuffix(".READY_FOR_MANUAL.md") }
-            let errorURL = files.first {
-                $0.lastPathComponent.hasSuffix(PipelineFailureSidecar.suffix)
+            guard let built = MeetingStore.buildMeeting(stem: stem, files: files, directory: directory) else {
+                continue
             }
-            let transcriptJSON = files.first { url in
-                let lc = url.lastPathComponent
-                return lc.hasSuffix(".json")
-                    && !lc.hasSuffix(".meta.json")
-                    && !lc.hasSuffix(".run.json")
-                    && !lc.hasSuffix(".summary.json")
-                    && !lc.hasSuffix(".notion.json")
-                    && !lc.hasSuffix(PipelineFailureSidecar.suffix)
+            out.append(built.meeting)
+            if built.cacheable {
+                nextCache[stem] = CacheEntry(signature: signature, meeting: built.meeting)
             }
-
-            let meta = metaURL.flatMap { readJSON(at: $0) }
-            let run = runURL.flatMap { readJSON(at: $0) }
-            let summary: MeetingSummary? = summaryURL.flatMap { MeetingSummary.load(from: $0) }
-            // A present summary supersedes the failure sidecar: the meeting was produced, so the error is stale.
-            let failure: PipelineFailureSidecar.Failure?
-            if summaryURL == nil, let errorURL = errorURL {
-                failure = PipelineFailureSidecar.read(at: errorURL)
-            } else {
-                failure = nil
-            }
-
-            let wavMtime = (try? wav.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate)
-            let duration: TimeInterval?
-            if let m = wavMtime, m > startedAt {
-                duration = m.timeIntervalSince(startedAt)
-            } else {
-                duration = nil
-            }
-
-            let status: Meeting.Status
-            if summaryURL != nil {
-                status = .done
-            } else if failure != nil {
-                status = .failed
-            } else if pasteReadyURL != nil {
-                status = .manualPasteReady
-            } else {
-                // No summary, no failure sidecar: in-flight, never started, or stalled. Use age as a proxy; anything older than the staleness window is `.failed`. The live-recording overlay supersedes this via `LibraryWindowModel.liveRecordingStem`.
-                let age = Date().timeIntervalSince(startedAt)
-                if age > Meeting.staleProcessingThresholdSec {
-                    status = .failed
-                } else {
-                    status = .processing
-                }
-                _ = transcriptJSON  // currently informational only
-            }
-
-            let sourceKindRaw = meta?["source_kind"] as? String
-            let kind: AppSourceKind?
-            switch sourceKindRaw {
-            case "browser": kind = .browser
-            case "native":  kind = .native
-            default:        kind = nil
-            }
-
-            let searchable = MeetingStore.buildSearchableText(
-                meetingTitle: meta?["meeting_title"] as? String,
-                sourceDisplayName: meta?["source_display_name"] as? String,
-                summary: summary
-            )
-            out.append(Meeting(
-                stem: stem,
-                startedAt: startedAt,
-                wavURL: wav,
-                recordingsDir: directory,
-                summaryTitle: (summary?.title).flatMap { $0.isEmpty ? nil : $0 },
-                meetingTitle: (meta?["meeting_title"] as? String),
-                sourceBundleID: (meta?["source_bundle_id"] as? String),
-                sourceDisplayName: (meta?["source_display_name"] as? String),
-                sourceKind: kind,
-                workflowName: (meta?["workflow_name"] as? String),
-                workflowColor: (meta?["workflow_color"] as? String),
-                durationSec: duration,
-                backend: (run?["backend"] as? String),
-                modelId: (run?["model"] as? String),
-                status: status,
-                failureReason: failure?.reason,
-                failureStage: failure?.stage.rawValue,
-                searchableText: searchable
-            ))
         }
+        // Replacing wholesale prunes cache entries for stems whose files were deleted.
+        scanCache = nextCache
+
         // Newest first; equal starts fall back to stem for stable ordering.
         out.sort { lhs, rhs in
             if lhs.startedAt != rhs.startedAt { return lhs.startedAt > rhs.startedAt }
             return lhs.stem > rhs.stem
         }
         return out
+    }
+
+    /// Signature of a stem's on-disk files: filename -> content-modification date. The directory enumeration prefetched `.contentModificationDateKey`, so reading it here is cache-cheap (no extra stat syscall). Any added/removed file or any mtime bump (a title edit, a correction, a summary landing) changes the signature and forces a re-parse for that stem.
+    private static func signature(of files: [URL]) -> [String: Date] {
+        var sig: [String: Date] = [:]
+        for url in files {
+            let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate ?? .distantPast
+            sig[url.lastPathComponent] = mtime
+        }
+        return sig
+    }
+
+    /// Build a single `Meeting` from its on-disk file group. `cacheable` is true only for terminal rows (summary present, error sidecar present, or paste-ready). A `.processing` / age-inferred `.failed` row derives its status from the wall clock, so it is never cached: it must be rebuilt each scan to catch the staleness transition.
+    private static func buildMeeting(
+        stem: String,
+        files: [URL],
+        directory: URL
+    ) -> (meeting: Meeting, cacheable: Bool)? {
+        // No wav = no meeting row; leftover sidecars from manual deletes shouldn't appear.
+        guard let wav = files.first(where: { $0.pathExtension == "wav" }) else {
+            return nil
+        }
+        guard let startedAt = MeetingStore.parseStem(stem) else { return nil }
+
+        let metaURL = files.first { $0.lastPathComponent.hasSuffix(".meta.json") }
+        let runURL = files.first { $0.lastPathComponent.hasSuffix(".run.json") }
+        let summaryURL = files.first { $0.lastPathComponent.hasSuffix(".summary.json") }
+        let pasteReadyURL = files.first { $0.lastPathComponent.hasSuffix(".READY_FOR_MANUAL.md") }
+        let errorURL = files.first {
+            $0.lastPathComponent.hasSuffix(PipelineFailureSidecar.suffix)
+        }
+        let transcriptJSON = files.first { url in
+            let lc = url.lastPathComponent
+            return lc.hasSuffix(".json")
+                && !lc.hasSuffix(".meta.json")
+                && !lc.hasSuffix(".run.json")
+                && !lc.hasSuffix(".summary.json")
+                && !lc.hasSuffix(".notion.json")
+                && !lc.hasSuffix(PipelineFailureSidecar.suffix)
+        }
+
+        let meta = metaURL.flatMap { readJSON(at: $0) }
+        let run = runURL.flatMap { readJSON(at: $0) }
+        let summary: MeetingSummary? = summaryURL.flatMap { MeetingSummary.load(from: $0) }
+        // A present summary supersedes the failure sidecar: the meeting was produced, so the error is stale.
+        let failure: PipelineFailureSidecar.Failure?
+        if summaryURL == nil, let errorURL = errorURL {
+            failure = PipelineFailureSidecar.read(at: errorURL)
+        } else {
+            failure = nil
+        }
+
+        let wavMtime = (try? wav.resourceValues(forKeys: [.contentModificationDateKey])
+            .contentModificationDate)
+        let duration: TimeInterval?
+        if let m = wavMtime, m > startedAt {
+            duration = m.timeIntervalSince(startedAt)
+        } else {
+            duration = nil
+        }
+
+        let status: Meeting.Status
+        let cacheable: Bool
+        if summaryURL != nil {
+            status = .done
+            cacheable = true
+        } else if failure != nil {
+            status = .failed
+            cacheable = true
+        } else if pasteReadyURL != nil {
+            status = .manualPasteReady
+            cacheable = true
+        } else {
+            // No summary, no failure sidecar: in-flight, never started, or stalled. Use age as a proxy; anything older than the staleness window is `.failed`. The live-recording overlay supersedes this via `LibraryWindowModel.liveRecordingStem`. Age-derived, so not cacheable.
+            let age = Date().timeIntervalSince(startedAt)
+            if age > Meeting.staleProcessingThresholdSec {
+                status = .failed
+            } else {
+                status = .processing
+            }
+            cacheable = false
+            _ = transcriptJSON  // currently informational only
+        }
+
+        let sourceKindRaw = meta?["source_kind"] as? String
+        let kind: AppSourceKind?
+        switch sourceKindRaw {
+        case "browser": kind = .browser
+        case "native":  kind = .native
+        default:        kind = nil
+        }
+
+        let searchable = MeetingStore.buildSearchableText(
+            meetingTitle: meta?["meeting_title"] as? String,
+            sourceDisplayName: meta?["source_display_name"] as? String,
+            summary: summary
+        )
+        let meeting = Meeting(
+            stem: stem,
+            startedAt: startedAt,
+            wavURL: wav,
+            recordingsDir: directory,
+            summaryTitle: (summary?.title).flatMap { $0.isEmpty ? nil : $0 },
+            meetingTitle: (meta?["meeting_title"] as? String),
+            sourceBundleID: (meta?["source_bundle_id"] as? String),
+            sourceDisplayName: (meta?["source_display_name"] as? String),
+            sourceKind: kind,
+            workflowName: (meta?["workflow_name"] as? String),
+            workflowColor: (meta?["workflow_color"] as? String),
+            durationSec: duration,
+            backend: (run?["backend"] as? String),
+            modelId: (run?["model"] as? String),
+            status: status,
+            failureReason: failure?.reason,
+            failureStage: failure?.stage.rawValue,
+            searchableText: searchable
+        )
+        return (meeting, cacheable)
     }
 
     /// Build the lowercased filter haystack from user-visible fields (titles, source app, summary bullets, decisions, action tasks). Internal so tests can drive it directly.

@@ -20,6 +20,10 @@ final class MeetingStoreTests: XCTestCase {
         try contents.data(using: .utf8)!.write(to: url, options: .atomic)
     }
 
+    private func setMtime(_ url: URL, _ date: Date) throws {
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
+    }
+
     // MARK: stem + parse
 
     func test_stem_strips_first_dot_onward() {
@@ -287,6 +291,75 @@ final class MeetingStoreTests: XCTestCase {
             captured.map(\.stem),
             ["20260511-143110", "20260510-080000", "20260509-101010"]
         )
+    }
+
+    // MARK: mtime cache (TECH-A12)
+
+    func test_mtime_cache_serves_stale_row_until_mtime_changes() throws {
+        // Drives performScan directly (synchronous) so the cache behavior is
+        // deterministic without the debounce / watcher timing. Both files are
+        // pinned to whole-second mtimes that round-trip losslessly through
+        // setAttributes, so "unchanged" really means a bit-identical signature.
+        let dir = try tempDir()
+        let stem = "20260511-143110"
+        let wavURL = dir.appendingPathComponent("\(stem).wav")
+        let summaryURL = dir.appendingPathComponent("\(stem).summary.json")
+        try writeFile(wavURL)
+        try writeFile(summaryURL, "{\"title\":\"Alpha\"}")
+        let wavTime = Date(timeIntervalSince1970: 1_700_000_000)
+        let summaryTime = Date(timeIntervalSince1970: 1_700_000_100)
+        try setMtime(wavURL, wavTime)
+        try setMtime(summaryURL, summaryTime)
+
+        let store = MeetingStore(recordingsDir: dir)
+        XCTAssertEqual(store.performScan(directory: dir).first?.summaryTitle, "Alpha")
+
+        // Rewrite the content but restore the same mtimes. The signature is
+        // unchanged, so a working cache serves the stale row (the JSON parse
+        // was skipped) rather than the new content.
+        try writeFile(summaryURL, "{\"title\":\"Beta\"}")
+        try setMtime(wavURL, wavTime)
+        try setMtime(summaryURL, summaryTime)
+        XCTAssertEqual(
+            store.performScan(directory: dir).first?.summaryTitle, "Alpha",
+            "unchanged mtime should reuse the cached row (no re-parse)"
+        )
+
+        // Bump the summary mtime: signature changes, the row re-parses.
+        try setMtime(summaryURL, summaryTime.addingTimeInterval(5))
+        XCTAssertEqual(
+            store.performScan(directory: dir).first?.summaryTitle, "Beta",
+            "a changed mtime should trigger a re-parse"
+        )
+    }
+
+    func test_new_meeting_appears_on_next_scan() throws {
+        let dir = try tempDir()
+        try writeFile(dir.appendingPathComponent("20260511-143110.wav"))
+        try writeFile(dir.appendingPathComponent("20260511-143110.summary.json"), "{\"title\":\"A\"}")
+        let store = MeetingStore(recordingsDir: dir)
+        XCTAssertEqual(store.performScan(directory: dir).count, 1)
+
+        try writeFile(dir.appendingPathComponent("20260512-090000.wav"))
+        try writeFile(dir.appendingPathComponent("20260512-090000.summary.json"), "{\"title\":\"B\"}")
+        let rows = store.performScan(directory: dir)
+        XCTAssertEqual(rows.count, 2, "a new stem must appear even though older rows are cached")
+        XCTAssertEqual(rows.map(\.stem), ["20260512-090000", "20260511-143110"])
+    }
+
+    func test_processing_row_is_not_cached_and_picks_up_a_late_summary() throws {
+        // A `.processing` row is age-derived, so it must re-evaluate each scan
+        // rather than be pinned in the cache.
+        let dir = try tempDir()
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        let store = MeetingStore(recordingsDir: dir)
+        XCTAssertEqual(store.performScan(directory: dir).first?.status, .processing)
+
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{\"title\":\"done now\"}")
+        let rows = store.performScan(directory: dir)
+        XCTAssertEqual(rows.first?.status, .done)
+        XCTAssertEqual(rows.first?.summaryTitle, "done now")
     }
 
     // MARK: grouping

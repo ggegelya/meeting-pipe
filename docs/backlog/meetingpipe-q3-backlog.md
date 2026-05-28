@@ -242,7 +242,9 @@ Stop and ask: if the Python schema and the Swift Codable disagree on any field n
 
 Deps: none. Can run in parallel with TECH-A12.
 
-**TECH-A12 · MeetingStore mtime cache · S · none** [NEW]
+**TECH-A12 · MeetingStore mtime cache · S · none** [DONE]
+
+> Resolved 2026-05-28: verified the directory watcher is dir-level (`DispatchSource.makeFileSystemObjectSource` on the folder fd) and gives no per-file change event, so the stop-and-ask resolves to the mtime cache rather than a watch upgrade. `scan` is now an instance `performScan` that keeps a per-stem `CacheEntry(signature: [filename: mtime], meeting)`; an unchanged signature reuses the built row and skips the summary/run/meta JSON parse. The mtimes come from the existing `contentsOfDirectory(includingPropertiesForKeys:)` prefetch, so the signature costs no extra stat. Only terminal rows (`.done` / error-sidecar `.failed` / `.manualPasteReady`) are cached; a `.processing` / age-inferred `.failed` row is age-derived and rebuilt each scan so the staleness transition still fires. Three new `MeetingStoreTests` (stale-serve until mtime bump, new-meeting visibility, processing-row re-evaluation); full suite green.
 
 `MeetingStore.scan` re-parses every sidecar in the library on a 500ms debounce during recording. With 500+ meetings this is the audit's `[Medium] Open` perf finding. Add an mtime cache: per stem, hold `(sidecarMtime, parsedRow)`; rescan only when `sidecarMtime` changes.
 
