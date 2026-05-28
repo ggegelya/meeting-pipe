@@ -2,35 +2,18 @@ import AVFoundation
 import Foundation
 import MeetingPipeCore
 
-/// In-process meeting recorder. Captures the user's microphone and the
-/// system audio mix as TWO independent WAV files, then merges them with a
-/// short ffmpeg `amix` post-process when the recording stops.
+/// In-process recorder: captures mic and system audio as two independent
+/// WAV files, merged with a short ffmpeg `amix` at stop.
 ///
-/// Why dual-file + post-merge instead of in-engine mixing:
+/// Dual-file rather than in-engine mixing because `inputNode.installTap`
+/// self-pumps reliably, but mixing input + an SCStream-fed player node
+/// needs a pull chain to outputNode, and muting that chain short-circuits
+/// the render cycle so taps never fire (every variant produced a 4 KB
+/// header and `tap_fires=0`). Two files + ffmpeg is plain and debuggable.
 ///
-///   - `AVAudioEngine.inputNode.installTap` self-pumps from the hardware
-///     audio input device — taps fire regardless of whether anything is
-///     connected to `engine.outputNode`. Reliable.
-///
-///   - Trying to mix the input node + an `AVAudioPlayerNode` (fed by
-///     SCStream) inside the engine requires a pull chain to outputNode.
-///     Muting that chain (`mainMixerNode.outputVolume = 0`) keeps the
-///     audio off the speakers but **also short-circuits the render
-///     cycle**, so taps never fire. Manual rendering mode doesn't support
-///     inputNode either. Every variant we tried produced a 4 KB header
-///     and `tap_fires=0`.
-///
-///   - Two independent recordings + a 0.5 s `ffmpeg amix` at stop is
-///     plain, debuggable, and matches how OBS, Loopback's free tier, and
-///     similar tools work.
-///
-/// File layout during a recording (in `outputDir`):
-///
-///   `{ts}.wav`         the final merged output (created at stop)
-///   `{ts}.mic.wav`     intermediate, deleted after merge
-///   `{ts}.system.wav`  intermediate, deleted after merge (only when
-///                      Screen Recording perm is granted; otherwise the
-///                      final file is just the mic, no merge needed)
+/// Files in `outputDir`: `{ts}.wav` (final, at stop), `{ts}.mic.wav` and
+/// `{ts}.system.wav` (intermediates deleted after merge; system only when
+/// Screen Recording is granted, else the final is mic-only, no merge).
 final class MeetingRecorder {
 
     private let engine = AVAudioEngine()
@@ -51,60 +34,44 @@ final class MeetingRecorder {
     private var micFires: UInt64 = 0
     private var systemFires: UInt64 = 0
 
-    /// Per-source RMS callbacks for the SilenceDetector (TECH-C2). Wired
-    /// by the Coordinator at recording start and cleared at stop. Fires
-    /// approximately once per second of audio per source on the main
-    /// queue. `nil` when nothing is listening so the math short-circuits.
+    /// Per-source ~1 Hz RMS for SilenceDetector (TECH-C2), on the main
+    /// queue. `nil` short-circuits the math when nobody listens.
     var onMicLevel: ((Float) -> Void)?
     var onSystemLevel: ((Float) -> Void)?
 
-    /// Per-buffer mic RMS in dBFS, fired on the audio render thread.
-    /// MicGate's RMS hysteresis gate ingests this directly (the gate is
-    /// allocation-free and defers its publish off the render thread).
-    /// Distinct from `onMicLevel`, which is the once-per-second average
-    /// used by SilenceDetector.
+    /// Per-buffer mic RMS in dBFS on the render thread, ingested by
+    /// MicGate's RMS gate. Distinct from the ~1 Hz `onMicLevel` average.
     var onMicRmsDb: ((Float) -> Void)?
 
-    /// Per-buffer writer that materialises the current MicGate verdict
-    /// onto each mic tap buffer. Created at `start()` once the input
-    /// sample rate is bound; released at `stop()`. Touched from the
-    /// audio render thread only.
+    /// Applies the current MicGate verdict onto each mic tap buffer. Built
+    /// at `start()`, released at `stop()`; render-thread only.
     private(set) var micGateWriter: MicGateWriter?
 
-    /// Serial writer queues that drain each capture callback's buffers
-    /// to disk off the latency-sensitive delivery thread. Created at
-    /// `start()`, drained and released at `stop()`.
+    /// Serial writers that drain capture buffers to disk off the
+    /// latency-sensitive delivery thread.
     private var micWriter: SerialBufferWriter<AVAudioPCMBuffer>?
     private var systemWriter: SerialBufferWriter<AVAudioPCMBuffer>?
 
-    /// Format the mic `.wav` was opened with. Buffers from a tap that
-    /// has been re-installed after a device change are resampled back to
-    /// this, so the file stays a single format. Set at `start()`.
+    /// Format the mic `.wav` was opened with; tap buffers after a device
+    /// change are resampled back to this so the file stays one format.
     private var micFileFormat: AVAudioFormat?
 
-    /// Resamples the live input device's audio back to `micFileFormat`.
-    /// Nil while the live device matches the file format (the normal
-    /// case); built when a device change alters the format.
+    /// Resamples the live device back to `micFileFormat`; nil while they
+    /// match (the normal case), built when a device change differs.
     private var micConverter: AVAudioConverter?
 
-    /// Observer token for `AVAudioEngineConfigurationChange`, removed at
-    /// `stop()`.
+    /// `AVAudioEngineConfigurationChange` observer, removed at `stop()`.
     private var configChangeObserver: NSObjectProtocol?
 
-    /// True after a recovery attempt failed, so the user is notified
-    /// once per failure run rather than on every retry. Reset at
-    /// `start()` and on a later successful recovery.
+    /// Notify once per failure run, not per retry.
     private var captureRecoveryFailed = false
 
-    /// Pending recovery retry scheduled on the main queue. Bluetooth
-    /// inputs publish the route change a moment before the input
-    /// node's format is queryable, so we retry the read instead of
-    /// giving up on the first sampleRate=0. Cancelled in `stop()`.
+    /// Pending recovery retry. Bluetooth inputs publish the route change
+    /// before the input format is queryable, so we retry rather than give
+    /// up on the first sampleRate=0. Cancelled in `stop()`.
     private var pendingRecoveryRetry: DispatchWorkItem?
 
-    /// Number of retries already queued for the current device-change
-    /// event. Zeroed once a retry observes a usable format or the
-    /// engine is torn down.
+    /// Retries queued for the current device-change event.
     private var configurationRecoveryAttempts = 0
 
     /// Outcome of reacting to a mid-recording input device change.
@@ -113,41 +80,30 @@ final class MeetingRecorder {
         case failed
     }
 
-    /// Fired on the main queue when a mid-recording input device change
-    /// is observed: `.resumed` once capture is re-armed, `.failed` when
-    /// it cannot be. The Coordinator surfaces it to the user.
+    /// Fired on main when a mid-recording device change is observed:
+    /// `.resumed` once re-armed, `.failed` when it can't be.
     var onConfigurationChange: ((CaptureRecoveryOutcome) -> Void)?
 
-    /// Latest MicGate verdict the writer should apply. Single writer
-    /// (main thread, via `setMicGateVerdict`) / single reader (audio
-    /// render thread). Default `.uncertain` matches MicGate's pre-start
-    /// state, so the writer treats it as muted and a momentary unset
-    /// before the first verdict zeroes the buffer rather than leaking
-    /// raw mic frames.
+    /// Latest MicGate verdict for the writer; single writer (main) / single
+    /// reader (render). Default `.uncertain` so an unset before the first
+    /// verdict zeroes the buffer rather than leaking raw mic frames.
     private var currentMicGateVerdict: MicGateVerdict = .uncertain(reasons: ["not_started"])
 
-    /// True when we successfully enabled `setVoiceProcessingEnabled(true)`
-    /// on the input node for the current session. The Voice Processing
-    /// IO audio unit applies system-wide AGC / noise suppression that
-    /// macOS does NOT auto-revert when the engine stops — the HAL
-    /// device is left in a degraded "everything is quiet" state that
-    /// other audio clients (Teams, Zoom, FaceTime) see as the user
-    /// being barely audible. We track the enabled state explicitly so
-    /// `stop()` can flip it back off and release the HAL config.
+    /// True when VoiceProcessing was enabled this session. macOS does NOT
+    /// auto-revert it on stop: the VPIO unit's system-wide AGC leaves the
+    /// HAL device degraded (other apps hear the user as barely audible), so
+    /// `stop()` must flip it back off. Tracked explicitly for that.
     private var voiceProcessingEnabledForSession: Bool = false
 
-    /// Accumulators for one-second RMS aggregation. Two pairs because
-    /// mic + system run on independent threads with different sample
-    /// rates and we don't want the math to cross.
+    /// Per-source 1 s RMS accumulators; two pairs because mic + system run
+    /// on independent threads at different sample rates.
     private var micAccumSumSq: Double = 0
     private var micAccumFrames: Int = 0
     private var systemAccumSumSq: Double = 0
     private var systemAccumFrames: Int = 0
 
-    /// Snapshot of the counters at the most recent `stop()`. The Coordinator
-    /// reads these to decide whether to warn the user that the recording
-    /// captured mic only (because Screen Recording is denied). Reset to zero
-    /// at each `start()`.
+    /// Counters snapshotted at the last `stop()`; the Coordinator reads
+    /// these to warn about a mic-only recording (Screen Recording denied).
     private(set) var lastMicFires: UInt64 = 0
     private(set) var lastSystemFires: UInt64 = 0
 
@@ -167,21 +123,14 @@ final class MeetingRecorder {
         }
     }
 
-    /// Start a recording. The returned URL is the FINAL filename — it
-    /// won't exist until `stop()` finishes the merge. Intermediate
-    /// `.mic.wav` and `.system.wav` files appear next to it during
-    /// the recording.
+    /// Start a recording. The returned URL is the FINAL filename and won't
+    /// exist until `stop()` merges; `.mic.wav`/`.system.wav` intermediates
+    /// appear alongside during the recording.
     ///
-    /// `voiceProcessing` toggles `AVAudioInputNode.setVoiceProcessingEnabled`
-    /// on the mic path. When true, Apple's VoIP DSP chain (noise
-    /// suppression, echo cancellation, AGC) runs at capture time and
-    /// the mic.wav we write is already cleaned up. Default **false**
-    /// because the VPIO unit's AGC tugs the HAL device's gain down
-    /// system-wide while the engine is running, and other apps that
-    /// share the mic (Teams, Zoom, FaceTime) hear the user as
-    /// extremely quiet for the duration of the recording. Flip to true
-    /// in `config.toml` only if your call client isn't going to be
-    /// using the same physical mic concurrently.
+    /// `voiceProcessing` runs Apple's VoIP DSP (NS/AEC/AGC) at capture time.
+    /// Default false: the VPIO unit's AGC tugs the HAL gain down system-wide
+    /// while the engine runs, so other mic clients (Teams, Zoom) hear the
+    /// user as very quiet. Enable only if no call client shares the mic.
     func start(outputDir: URL, voiceProcessing: Bool = false) throws -> URL {
         if isRecording { throw RecorderError.alreadyRecording }
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
@@ -191,13 +140,10 @@ final class MeetingRecorder {
         micAccumFrames = 0
         systemAccumSumSq = 0
         systemAccumFrames = 0
-        // Reset the gate writer's transition state so a fade in
-        // progress from a prior session can't bleed into the next.
-        // The writer instance itself is rebuilt below once the input
-        // sample rate is bound.
+        // Reset so a prior session's fade/verdict can't bleed in; the
+        // writer itself is rebuilt below once the sample rate is bound.
         currentMicGateVerdict = .uncertain(reasons: ["not_started"])
-        // No converter until a device change introduces a format
-        // mismatch; clear any failure state from a prior session.
+        // No converter until a device change introduces a format mismatch.
         micConverter = nil
         captureRecoveryFailed = false
         cancelPendingRecoveryRetry()
@@ -212,19 +158,10 @@ final class MeetingRecorder {
 
         Log.writeLine("recorder", "start: final=\(finalURL.lastPathComponent) mic=\(micURL.lastPathComponent) system=\(systemURL.lastPathComponent) voiceProcessing=\(voiceProcessing)")
 
-        // --- Voice processing toggle --------------------------------------
-        //
-        // Must be set BEFORE we read inputNode.outputFormat below — voice
-        // processing changes the node's output format (mono 16/24/48 kHz
-        // depending on the platform's VoIP pipeline). Reading the format
-        // first and then flipping the flag would have us write a file
-        // whose declared format doesn't match the tap buffers.
-        //
-        // Apple's API throws if the engine has already started in a
-        // configuration incompatible with voice processing — but we
-        // haven't started yet, and the SPM target deploys to macOS 14+,
-        // where the call is well-supported. A throw here falls back to
-        // raw capture (the docs note it's "best effort").
+        // Set BEFORE reading inputNode.outputFormat: voice processing
+        // changes the node's output format, so reading first would write a
+        // file whose declared format mismatches the tap buffers. A throw
+        // here falls back to raw capture (best-effort).
         voiceProcessingEnabledForSession = false
         if voiceProcessing {
             do {
@@ -239,7 +176,7 @@ final class MeetingRecorder {
             }
         }
 
-        // --- Mic via AVAudioEngine.inputNode (self-pumping) ---------------
+        // Mic via AVAudioEngine.inputNode (self-pumping).
         let micFormat = engine.inputNode.outputFormat(forBus: 0)
         guard micFormat.sampleRate > 0 else {
             throw RecorderError.fileCreateFailed("inputNode reports zero sample rate — Microphone permission likely not granted")
@@ -254,14 +191,11 @@ final class MeetingRecorder {
         self.micFileFormat = micFormat
         Log.writeLine("recorder", "mic file opened format=\(micFormat)")
 
-        // MicGate writer: receives the live verdict and zero-fills (with
-        // a 20 ms linear fade) buffers that fall outside `.hot`. Built
-        // here so it inherits the actual input sample rate; released in
-        // `stop()`.
+        // Zero-fills (20 ms fade) buffers outside `.hot`. Built here so it
+        // inherits the input sample rate; released in `stop()`.
         self.micGateWriter = MicGateWriter(sampleRate: micFormat.sampleRate)
 
-        // Serial writer for the mic file. The tap callback enqueues; the
-        // disk write runs here, off the delivery thread.
+        // Serial writer: the tap enqueues, the disk write runs off-thread.
         self.micWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.mic-writer") { buffer in
             do {
                 try micFile.write(from: buffer)
@@ -270,8 +204,6 @@ final class MeetingRecorder {
             }
         }
 
-        // The tap closure forwards each buffer to `processMicBuffer`,
-        // which is also the re-arm point after an input device change.
         installMicTap(captureFormat: micFormat)
 
         do {
@@ -281,10 +213,8 @@ final class MeetingRecorder {
             self.micFile = nil
             self.micGateWriter = nil
             try? FileManager.default.removeItem(at: micURL)
-            // engine.start() failed AFTER we may have enabled VP. Flip
-            // it back off so the HAL device isn't stranded in
-            // voice-processing mode with a degraded gain that affects
-            // every other app on the box.
+            // start() failed after VP was enabled: flip it back off so the
+            // HAL device isn't stranded with degraded gain for other apps.
             if voiceProcessingEnabledForSession {
                 try? engine.inputNode.setVoiceProcessingEnabled(false)
                 voiceProcessingEnabledForSession = false
@@ -293,9 +223,8 @@ final class MeetingRecorder {
         }
         Log.writeLine("recorder", "engine started")
 
-        // Observe input device / route changes so a mid-recording swap
-        // (e.g. AirPods unplugged) re-arms capture instead of silently
-        // flatlining the mic. Removed in `stop()`.
+        // Re-arm capture on a mid-recording device swap (e.g. AirPods
+        // unplugged) instead of flatlining the mic. Removed in `stop()`.
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
@@ -304,10 +233,8 @@ final class MeetingRecorder {
             self?.handleConfigurationChange()
         }
 
-        // --- System audio via SCStream (independent) ----------------------
-        // Open the system file lazily on first SCStream sample, since
-        // SCStream's actual delivered format may differ from our declared
-        // captureFormat. Either way, write each PCM buffer straight to disk.
+        // System audio via SCStream (independent). SCStream's delivered
+        // format may differ from captureFormat; write each PCM buffer as-is.
         let systemFile: AVAudioFile?
         do {
             systemFile = try AVAudioFile(
@@ -335,10 +262,8 @@ final class MeetingRecorder {
             if self.systemFires == 1 {
                 Log.writeLine("recorder", "system tap first fired: frames=\(pcm.frameLength)")
             }
-            // SystemAudioCapture hands us a freshly allocated buffer
-            // (see pcmBuffer(from:)), not a reused one, so unlike the
-            // mic tap it needs no deep copy - enqueue it straight onto
-            // the serial writer.
+            // SystemAudioCapture hands us a fresh buffer (not reused), so
+            // unlike the mic tap it needs no deep copy.
             self.systemWriter?.enqueue(pcm)
             self.accumulateAndEmit(
                 buffer: pcm,
@@ -349,11 +274,8 @@ final class MeetingRecorder {
             )
         }
         self.systemCapture = capture
-        // Run start() off the calling thread but track the Task so stop()
-        // can await it. Without that, a fast stop() races the in-flight
-        // start: the SCStream becomes "started" only after stop() ran its
-        // teardown, leaving the stream orphaned until SystemAudioCapture
-        // deinits.
+        // Track the Task so stop() can await it; otherwise a fast stop()
+        // races the in-flight start and orphans the SCStream.
         systemStartTask = Task { [weak self] in
             do {
                 try await capture.start()
@@ -379,25 +301,21 @@ final class MeetingRecorder {
 
     // MARK: - Mic tap
 
-    /// Install the mic tap. Factored out so both `start()` and the
-    /// post-device-change recovery path arm capture the same way.
+    /// Install the mic tap. Shared by `start()` and device-change recovery.
     private func installMicTap(captureFormat: AVAudioFormat) {
         engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: captureFormat) { [weak self] buffer, _ in
             self?.processMicBuffer(buffer)
         }
     }
 
-    /// Process one mic tap buffer on the AVAudioEngine delivery thread.
-    /// Normalises it to an owned buffer in the file format - a deep copy
-    /// in the common case, a resample when a device change left a
-    /// converter in place - applies the MicGate verdict, and enqueues it
-    /// for the serial writer.
+    /// Normalise one tap buffer to an owned file-format buffer (deep copy,
+    /// or resample when a device change left a converter), apply the MicGate
+    /// verdict, and enqueue it for the serial writer. On the delivery thread.
     private func processMicBuffer(_ rawBuffer: AVAudioPCMBuffer) {
         guard micFile != nil, let fileFormat = micFileFormat else { return }
 
-        // The tap buffer is engine-owned and reused once we return; the
-        // converter emits a fresh buffer of its own. Either way `buffer`
-        // ends up owned and in the file format.
+        // The tap buffer is engine-owned and reused after return; end up with
+        // an owned buffer in the file format either way.
         let buffer: AVAudioPCMBuffer
         if let converter = micConverter {
             guard let converted = Self.resample(rawBuffer, using: converter, to: fileFormat) else { return }
@@ -412,9 +330,8 @@ final class MeetingRecorder {
             Log.writeLine("recorder", "mic tap first fired: frames=\(buffer.frameLength)")
         }
 
-        // Per-buffer RMS in dBFS BEFORE the verdict is applied, so
-        // MicGate's RMS gate sees the live mic level rather than the
-        // zeroed output. Tight pointer loop, no allocations.
+        // RMS BEFORE the verdict is applied, so MicGate's RMS gate sees the
+        // live level not the zeroed output. Allocation-free pointer loop.
         if let data = buffer.floatChannelData, buffer.frameLength > 0 {
             let frameLen = Int(buffer.frameLength)
             let channels = Int(buffer.format.channelCount)
@@ -431,10 +348,8 @@ final class MeetingRecorder {
                 let db: Float = mean > 0 ? Float(10.0 * log10(mean)) : -120
                 onMicRmsDb?(db)
             }
-            // Apply the current verdict in place on the first channel.
-            // Frame parity with the system tap is preserved (no frames
-            // dropped) per ADR 0009; muted buffers become zero-amplitude
-            // with a 20 ms fade across transitions.
+            // Apply the verdict in place; frame parity is preserved (ADR
+            // 0009), muted buffers fade to zero over 20 ms.
             if let writer = micGateWriter {
                 let bufPtr = UnsafeMutableBufferPointer(start: data[0], count: frameLen)
                 writer.apply(verdict: currentMicGateVerdict, to: bufPtr)
@@ -456,28 +371,20 @@ final class MeetingRecorder {
 
     // MARK: - Input device change recovery
 
-    /// React to an `AVAudioEngineConfigurationChange`. macOS stops the
-    /// engine when the input device or route changes mid-recording and
-    /// gives no automatic recovery, so we re-arm the tap and restart the
-    /// engine. When the new device's format differs from the open mic
-    /// file's, an `AVAudioConverter` resamples the tap output back to the
-    /// file format so the recording stays one continuous WAV. The
-    /// switchover gap is silence-padded to keep the mic frame-aligned
-    /// with the system channel. If capture cannot be re-armed, the
-    /// failure is surfaced so the user can restart the recording.
+    /// React to an `AVAudioEngineConfigurationChange`: macOS stops the engine
+    /// on a mid-recording device/route change with no auto-recovery, so
+    /// re-arm the tap and restart, resampling back to the file format (and
+    /// silence-padding the gap) so the recording stays one continuous,
+    /// frame-aligned WAV. Surfaces failure if capture can't be re-armed.
     private func handleConfigurationChange() {
-        // A fresh configuration change supersedes any retry queued for
-        // an earlier event: the new observation either succeeds outright
-        // or restarts the retry budget from zero.
+        // A fresh change supersedes any queued retry and restarts the budget.
         cancelPendingRecoveryRetry()
         configurationRecoveryAttempts = 0
         evaluateConfigurationChange(gapStart: Date())
     }
 
-    /// Inspect the engine's input format and dispatch to recovery,
-    /// retry, or failure. Pulled out of `handleConfigurationChange` so a
-    /// retry can re-run it with the same `gapStart` and the silence
-    /// padding still reflects the full switchover span.
+    /// Inspect the input format and dispatch to recovery/retry/failure. Split
+    /// out so a retry reuses the same `gapStart` for the silence padding.
     private func evaluateConfigurationChange(gapStart: Date) {
         guard let fileFormat = micFileFormat else { return }
 
@@ -521,9 +428,7 @@ final class MeetingRecorder {
         }
     }
 
-    /// Schedule a retry of `evaluateConfigurationChange` on the main
-    /// queue. The work item is held so `stop()` and a superseding
-    /// configuration change can cancel a pending retry.
+    /// Schedule a retry; held so `stop()` or a superseding change can cancel.
     private func scheduleRecoveryRetry(after delay: TimeInterval, gapStart: Date) {
         cancelPendingRecoveryRetry()
         let work = DispatchWorkItem { [weak self] in
@@ -538,9 +443,8 @@ final class MeetingRecorder {
         pendingRecoveryRetry = nil
     }
 
-    /// Re-arm mic capture after a device change. The engine is stopped
-    /// here, so the converter the tap reads is swapped while the audio
-    /// thread is down.
+    /// Re-arm mic capture after a device change; the engine is stopped here
+    /// so the tap's converter is swapped while the audio thread is down.
     private func recoverCapture(
         fileFormat: AVAudioFormat,
         liveFormat: AVAudioFormat,
@@ -673,54 +577,43 @@ final class MeetingRecorder {
         self.micFires = 0
         self.systemFires = 0
 
-        // Wait for the SCStream start to finish (success or failure) before
-        // tearing down — otherwise we can stop() a stream that hasn't fully
-        // started yet, leaving an orphaned SCStream alive.
+        // Await the SCStream start before teardown, else we stop() a stream
+        // that hasn't fully started and orphan it.
         await systemStartTask?.value
         systemStartTask = nil
 
         // Halt capture before closing files.
         await systemCapture?.stop()
         systemCapture = nil
-        // Stop observing device changes before tearing the engine down,
-        // so teardown cannot trigger a recovery attempt.
+        // Stop observing device changes before teardown so it can't trigger
+        // a recovery attempt.
         if let observer = configChangeObserver {
             NotificationCenter.default.removeObserver(observer)
             configChangeObserver = nil
         }
-        // Drop any pending sampleRate=0 retry — the engine is about to
-        // be torn down, so re-evaluating against it would race the stop.
+        // The engine is about to go down, so any pending retry would race.
         cancelPendingRecoveryRetry()
         configurationRecoveryAttempts = 0
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        // Drop the writer; its sample rate was bound to the just-closed
-        // engine input. The next `start()` rebuilds one against whatever
-        // format the input reports then.
+        // The writer's sample rate was bound to the now-closed input; the
+        // next start() rebuilds it.
         micGateWriter = nil
         micConverter = nil
         micFileFormat = nil
 
-        // Both capture callbacks are stopped now, so nothing new can be
-        // enqueued. Drain the writer queues - finish() blocks until the
-        // last queued buffer is on disk - before the files are closed,
-        // so ffmpeg never reads a partial WAV.
+        // Callbacks are stopped, so drain the writer queues (finish() blocks
+        // until the last buffer is on disk) before closing the files, so
+        // ffmpeg never reads a partial WAV.
         micWriter?.finish()
         systemWriter?.finish()
         micWriter = nil
         systemWriter = nil
 
-        // CRITICAL: revert the Voice Processing IO unit if we enabled
-        // it on this session. macOS does not auto-disable VPIO when
-        // the engine stops — the HAL device retains the
-        // voice-processing config and other audio clients (Teams,
-        // Zoom, FaceTime) keep hearing the user at a drastically
-        // reduced gain until the process exits. Symptom seen on
-        // 2026-05-13: "when I hit record my mic becomes EXTREMELY
-        // low, nobody can hear me, until I restart meetingpipe".
-        // `setVoiceProcessingEnabled(false)` releases the audio unit
-        // and the next mic consumer gets the device back at its
-        // default gain.
+        // CRITICAL: macOS does not auto-disable VPIO on stop, so the HAL
+        // device stays degraded and other clients (Teams, Zoom) keep hearing
+        // the user at reduced gain until the process exits (symptom on
+        // 2026-05-13: mic became extremely low until restart). Revert it.
         if voiceProcessingEnabledForSession {
             do {
                 try engine.inputNode.setVoiceProcessingEnabled(false)
@@ -734,9 +627,7 @@ final class MeetingRecorder {
             voiceProcessingEnabledForSession = false
         }
 
-        // Closing the AVAudioFiles flushes their headers. ARC handles it
-        // when we drop the references — set to nil explicitly to be sure
-        // before ffmpeg reads them.
+        // Drop the AVAudioFiles to flush their headers before ffmpeg reads.
         micFile = nil
         systemFile = nil
 
@@ -745,13 +636,9 @@ final class MeetingRecorder {
 
         Log.writeLine("recorder", "stopping: mic_fires=\(micFires) system_fires=\(systemFires) mic_bytes=\(Self.fileSize(micURL)) system_bytes=\(Self.fileSize(systemURL))")
 
-        // Per-channel duration diagnostic. Users have reported a
-        // few-seconds shift at end of recording (P1.4); the merge step
-        // is the only place where the two streams' durations can drift
-        // visibly because ffmpeg pads / truncates to the longer input.
-        // Surface both durations + delta before ffmpeg so a follow-up
-        // can pin down whether the shift is mic-only, system-only, or
-        // an intentional ffmpeg amerge fill.
+        // Per-channel duration diagnostic for the reported end-of-call skew
+        // (TECH-CAP1): log both durations + delta before ffmpeg pads/truncates
+        // to the longer input, so a follow-up can pin where the shift is.
         let micAudioSec = hasMic ? Self.audioDurationSec(of: micURL) : nil
         let systemAudioSec = hasSystem ? Self.audioDurationSec(of: systemURL) : nil
         let wallclockSec = started.map { Date().timeIntervalSince($0) }
@@ -795,12 +682,9 @@ final class MeetingRecorder {
 
     // MARK: - MicGate verdict (TECH-G-MIC)
 
-    /// Latch a new MicGate verdict for the mic tap to consume on its
-    /// next buffer. Called from the Coordinator's verdict-consumer Task
-    /// on the main actor; the audio render thread reads the value
-    /// without locking. A momentary stale read is fine because the
-    /// writer applies a 20 ms linear fade across transitions and the
-    /// next tap callback re-reads the value a few ms later.
+    /// Latch a verdict for the mic tap. Written on main, read lock-free on
+    /// the render thread; a stale read is fine (20 ms fade + re-read next
+    /// buffer).
     func setMicGateVerdict(_ verdict: MicGateVerdict) {
         currentMicGateVerdict = verdict
     }
@@ -811,11 +695,8 @@ final class MeetingRecorder {
 
     // MARK: - RMS level emission (TECH-C2)
 
-    /// Fold one PCM buffer into the running sum-of-squares for its
-    /// source. When ≥ ~1 s of audio has accumulated, compute dBFS and
-    /// hand it to the callback on the main queue. Frames are summed
-    /// across channels because the silence gate doesn't care which
-    /// channel was loud — only whether *anything* was.
+    /// Fold one buffer into the running sum-of-squares; at ~1 s, emit dBFS
+    /// on main. Channels are summed (the gate only cares if anything was loud).
     private func accumulateAndEmit(
         buffer: AVAudioPCMBuffer,
         sumSq: inout Double,
@@ -852,19 +733,10 @@ final class MeetingRecorder {
 
     // MARK: - Orphan recovery
 
-    /// Recover a recording orphaned by a daemon that terminated
-    /// mid-recording: a crash, a `kill`, a `rebuild.sh` during
-    /// testing, or the permission-grant restart churn after a
-    /// reinstall. In every one of those cases `stop()` never ran, so
-    /// the `<stem>.mic.wav` / `<stem>.system.wav` intermediates are
-    /// still on disk and were never merged into the final WAV, and the
-    /// meeting is otherwise silently lost.
-    ///
-    /// This reproduces `stop()`'s merge decision (mic + system merged,
-    /// a lone side mixed down), deletes the intermediates, and returns
-    /// the final `<stem>.wav` URL. Returns nil when a final
-    /// `<stem>.wav` already exists (the recording did finish) or
-    /// neither intermediate holds usable audio.
+    /// Reproduce `stop()`'s merge for intermediates left when stop() never
+    /// ran (crash, kill, rebuild, reinstall restart): merge mic+system or
+    /// mix down a lone side, delete intermediates, return the final URL.
+    /// Returns nil if the final `<stem>.wav` exists or neither side has audio.
     static func recoverOrphan(stem: String, in directory: URL) async -> URL? {
         let micURL = directory.appendingPathComponent("\(stem).mic.wav")
         let systemURL = directory.appendingPathComponent("\(stem).system.wav")
@@ -900,36 +772,19 @@ final class MeetingRecorder {
 
     // MARK: - ffmpeg post-process
 
-    /// Merge mic + system into a 16 kHz **stereo** WAV with the user's
-    /// mic on the left channel and the system audio mix on the right.
-    ///
-    /// The previous behavior was a 50/50 amix into mono. That made
-    /// diarization much harder than necessary on a 1:1 call: the
-    /// mic and system voices share the same channel and the diarizer
-    /// has to lean on embedding clustering to separate them. Worse,
-    /// when system audio capture silently fails, the mono file is
-    /// indistinguishable from "user was the only one talking" — which
-    /// is exactly the May 5 18:30 recording's failure mode.
-    ///
-    /// Keeping channel separation:
-    ///   - Trivial channel-aware speaker labelling at the diarize stage
-    ///     (per-segment RMS comparison; see `mp.diarize.assign_
-    ///     speakers_by_channel`).
-    ///   - Visible at a glance that system audio is missing — the right
-    ///     channel is silent.
-    ///   - File size grows ~2× vs mono. Negligible at 16 kHz s16le
-    ///     (~30 KB/s for stereo vs 15 KB/s mono).
+    /// Merge mic + system into a 16 kHz stereo WAV: mic on the left, system
+    /// mix on the right. Channel separation keeps diarization simple
+    /// (per-channel RMS labelling) and makes a missing system channel
+    /// obvious, instead of the old mono amix where a silent-system failure
+    /// looked like "user was the only one talking" (the May 5 18:30 loss).
     private static func mergeViaFFmpeg(mic: URL, system: URL, final: URL) async {
         guard let ffmpeg = Self.findFFmpeg() else {
             Log.writeLine("recorder", "ERROR: ffmpeg not found — leaving mic.wav as final")
             try? FileManager.default.moveItem(at: mic, to: final)
             return
         }
-        // Filter graph:
-        //   [0:a] mic, mono Float32 48 kHz → resample to 16 kHz mono.
-        //   [1:a] system, stereo Float32 48 kHz → resample, mix to mono.
-        //   amerge stitches the two mono inputs into a stereo stream
-        //     (first input → L, second input → R).
+        // Resample mic and system to 16 kHz mono, then amerge into stereo
+        // (input 0 -> L, input 1 -> R).
         let filter = """
         [0:a]aresample=16000,aformat=channel_layouts=mono[micL];\
         [1:a]aresample=16000,pan=mono|c0=0.5*c0+0.5*c1[sysR];\
@@ -952,8 +807,7 @@ final class MeetingRecorder {
     /// WhisperX expects). Used when one side is missing.
     private static func convertMonoMixdownViaFFmpeg(input: URL, output: URL) async {
         guard let ffmpeg = Self.findFFmpeg() else {
-            // No ffmpeg — best effort: just copy the file. WhisperX will
-            // resample internally.
+            // No ffmpeg: copy as-is; WhisperX resamples internally.
             try? FileManager.default.copyItem(at: input, to: output)
             return
         }
@@ -1031,23 +885,15 @@ final class MeetingRecorder {
         }
     }
 
-    /// Parse the RIFF / WAVE header at `url` and return the audio
-    /// duration in seconds, or nil when the file is absent / not a
-    /// recognisable PCM WAV. Shared between the post-merge parity
-    /// check and the pre-merge intermediate-duration diagnostic.
-    ///
-    /// Walks the RIFF chunk list rather than assuming `fmt ` is first
-    /// and the header is exactly 44 bytes: AVAudioFile writes Float32
-    /// WAV intermediates with extra chunks (`JUNK` / `PEAK` / `fact`)
-    /// before `data`, so the fixed-offset parse read a zero byte-rate
-    /// and the diagnostic logged null durations.
+    /// Audio duration in seconds from the RIFF/WAVE header, or nil if absent
+    /// or not a PCM WAV. Walks the chunk list rather than assuming a 44-byte
+    /// header: AVAudioFile writes extra chunks (JUNK/PEAK/fact) before `data`,
+    /// which a fixed-offset parse misread as a zero byte-rate.
     static func audioDurationSec(of url: URL) -> Double? {
         guard FileManager.default.fileExists(atPath: url.path),
               let h = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? h.close() }
-        // 8 KB covers the header chunks that precede `data` in both
-        // AVAudioFile and ffmpeg output; only the chunk headers need to
-        // land in the window, not the audio payload itself.
+        // 8 KB covers the chunk headers before `data` (not the payload).
         guard let head = try? h.read(upToCount: 8192), head.count >= 44 else { return nil }
         guard head.range(of: Data("RIFF".utf8))?.lowerBound == 0,
               head.range(of: Data("WAVE".utf8))?.lowerBound == 8 else { return nil }
@@ -1064,16 +910,13 @@ final class MeetingRecorder {
 
         var byteRate: UInt32?
         var dataSize: UInt32?
-        // Chunks start at offset 12, right after "WAVE". Each chunk is
-        // [4-byte id][4-byte little-endian size][body], body padded to
-        // an even length.
+        // Chunks after "WAVE": [id(4)][size(4 LE)][body], body even-padded.
         var cursor = 12
         while cursor + 8 <= head.count {
             guard let id = fourCC(cursor), let size = u32(cursor + 4) else { break }
             let body = cursor + 8
             if id == Data("fmt ".utf8) {
-                // fmt body: format(2) + channels(2) + sampleRate(4) +
-                // byteRate(4) - byteRate is at body offset 8.
+                // byteRate is at fmt body offset 8.
                 byteRate = u32(body + 8)
             } else if id == Data("data".utf8) {
                 dataSize = size
@@ -1088,12 +931,9 @@ final class MeetingRecorder {
 }
 
 extension AVAudioPCMBuffer {
-    /// Deep-copy this buffer so it can safely outlive the capture
-    /// callback. `AVAudioEngine` reuses the buffer it hands to a tap
-    /// once the callback returns, so any buffer queued for an off-thread
-    /// disk write must own its own backing store. Format-agnostic: the
-    /// per-`AudioBuffer` memcpy copies interleaved and non-interleaved
-    /// layouts alike. Returns nil only when the allocation fails.
+    /// Deep-copy so the buffer outlives the capture callback (AVAudioEngine
+    /// reuses the tap buffer after return). Format-agnostic per-AudioBuffer
+    /// memcpy; nil only on allocation failure.
     func deepCopy() -> AVAudioPCMBuffer? {
         guard let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCapacity) else {
             return nil

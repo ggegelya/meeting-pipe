@@ -5,12 +5,9 @@ import Combine
 import Foundation
 import MeetingPipeCore
 
-/// Top-level state owner. Detector and HotkeyManager push events in;
-/// Coordinator drives the state machine and tells MeetingRecorder /
-/// Notifier what to do.
-///
-/// Threading: every public method must run on the main queue. Detector
-/// and HotkeyManager already dispatch back here.
+/// Top-level state owner: detection + hotkey events come in, the state
+/// machine drives, the recorder/notifier/HUD act. All public methods run
+/// on the main queue.
 final class Coordinator: NSObject {
     private let config: Config
     private let configStore: ConfigStore?
@@ -19,111 +16,85 @@ final class Coordinator: NSObject {
     private let notifier: Notifier
     private let promptWindow: MeetingPromptWindow
     private let recordingHUD: RecordingHUDWindow
-    /// Cold-start meeting discovery: scans for a meeting app, engages
-    /// the lifecycle adapter, and the `.starting` verdict raises the
-    /// prompt (TECH-C13 step 5).
+    /// Cold-start discovery: finds a meeting app and engages the lifecycle
+    /// adapter; the `.starting` verdict raises the prompt (TECH-C13 step 5).
     private let discoveryWatcher = MeetingDiscoveryWatcher()
     private let hotkey: HotkeyManager
     private let consent: ConsentStore
     private let launcher: PipelineDriver
     private let preferencesWindow: PreferencesWindow?
-    /// Library window — daemon's primary UI surface for browsing past
-    /// recordings. Built lazily-once; `show()` brings it forward on
-    /// every "Open Library…" click.
+    /// Daemon's primary UI for browsing past recordings.
     private let libraryWindow: LibraryWindow
-    /// Observable mirror of the recording state machine + processing
-    /// queue + model-download progress. The library window subscribes
-    /// to this; StatusBarController writes into it from each state setter.
+    /// Observable mirror of recording state + processing queue +
+    /// model-download progress; the library window reads it, the status
+    /// bar writes it.
     private let libraryModel: LibraryWindowModel
-    /// Recording-side state machine + per-bundle cooldown + prompt
-    /// timeout timer. Owns every `AppState` transition; the Coordinator
-    /// drives surfaces (status bar, prompt window, HUD) off of it.
+    /// Owns every `AppState` transition, plus per-bundle cooldown and the
+    /// prompt-timeout timer; Coordinator drives the UI surfaces off it.
     private let stateMachine = DetectionStateMachine()
 
-    /// Pipeline-job queue + streaming transcriber subprocess. The
-    /// Coordinator routes start/stop transitions through here; per-job
-    /// completion flows back via `onJobCompleted` so the notifier and
-    /// status bar stay in one place.
+    /// Pipeline-job queue + in-process transcription runner.
     private let sinkDispatcher: SinkDispatcher
 
-    /// Wraps `sinkDispatcher` and owns the per-job completion routing +
+    /// Wraps `sinkDispatcher`; owns per-job completion routing + the
     /// queue-depth surface (TECH-H1-FINISH). Built in `wireSubsystems()`.
     private var jobDispatcher: PipelineJobDispatcher!
 
     /// Event-driven MicGate + Lifecycle stack (TECH-G-MIC + TECH-C13).
-    /// Replaces the 1 Hz `MuteProbeSubsystem` poll: `MicGate` fuses AX
-    /// mute observations, HAL system-input mute, HAL VAD, and per-buffer
-    /// RMS into a single verdict stream that the recorder's writer
-    /// applies in place. `MeetingLifecycleCoordinator` runs alongside
-    /// for the per-meeting AX subscription lifecycle (its `.ended`
-    /// verdict-fusion path is wired in a follow-up TECH-C13 step).
+    /// MicGate fuses AX mute, HAL system-mute, HAL VAD, and per-buffer RMS
+    /// into one verdict stream the recorder applies in place;
+    /// MeetingLifecycleCoordinator owns the per-meeting AX lifecycle.
     private let halBus: CoreAudioHALBus
     private let axBus: AXObserverBus
     private let muteLabels: MuteLabels
     private let lifecycleCoord: MeetingLifecycleCoordinator
     private let micGate: MicGate
-    /// Mic-only-silence backstop (TECH-C7). Force-stops the recording
-    /// after `windowSeconds` of continuous non-`.hot` MicGate verdicts
-    /// while the system audio channel is also silent: catches the
-    /// "everyone else left and the user forgot" failure mode.
+    /// Force-stops after `windowSeconds` of non-`.hot` MicGate verdicts
+    /// while system audio is also silent: the "everyone left and the user
+    /// forgot" case (TECH-C7).
     private let silenceBackstop: MicOnlySilenceBackstop
 
-    /// Latest system-audio level in dBFS, updated on the main queue from
-    /// the existing `recorder.onSystemLevel` callback. Read by the
-    /// verdict-consumer Task to decide whether the system channel still
-    /// carries audible content for the silence backstop. `-120` is the
-    /// "no audio observed yet" sentinel used by `accumulateAndEmit`.
+    /// Latest system-audio dBFS (from `recorder.onSystemLevel`), read by
+    /// the silence backstop. `-120` is the "no audio observed yet" sentinel.
     private var latestSystemLevelDb: Float = -120
 
-    /// Consumes `micGate.verdicts`. Launched in `start()` once; cancelled
-    /// at shutdown. Each verdict is forwarded to the recorder's writer
-    /// and the silence backstop on the main actor.
+    /// Consumes `micGate.verdicts` (started in `start()`, cancelled at
+    /// shutdown); forwards each to the recorder writer + silence backstop.
     private var verdictConsumerTask: Task<Void, Never>?
 
-    /// Consumes `lifecycleCoord.verdicts`. Launched in `start()` once; cancelled at shutdown. Routes `.ended` into the recording-end path.
+    /// Consumes `lifecycleCoord.verdicts`; routes `.ended` into the
+    /// recording-end path.
     private var lifecycleConsumerTask: Task<Void, Never>?
 
-    /// Watches the AX application for window-created events so mute
-    /// buttons that appear after `beginRecording` (Teams 2 compact
-    /// view, PIP overlays, ...) get observed too. Owned per-meeting;
-    /// created in `engageMicGate`, torn down in `stopRecording`.
-    /// See TECH-C14.
+    /// Observes window-created events so mute buttons that appear after
+    /// `beginRecording` (Teams 2 compact view, PIP overlays) get watched
+    /// too. Per-meeting (TECH-C14).
     private var axWindowWatcher: MeetingAXWindowWatcher?
 
-    /// Per-context routing rules (TECH-B). Workflows live as TOML files
-    /// under `~/.config/meeting-pipe/workflows/`. Held as a published
-    /// store so the Workflows tab + the prompt window's chip can both
-    /// subscribe directly.
+    /// Per-context routing rules (TECH-B): TOML files under
+    /// `~/.config/meeting-pipe/workflows/`. Published so the Workflows tab
+    /// and the prompt chip can subscribe.
     let workflowStore: WorkflowStore
 
-    /// Watches mic + system levels to surface a missed meeting end (TECH-C2).
-    /// Created at recording start, released at stop. Notifies after 90 s of
-    /// silence and auto-stops after 5 min.
+    /// Surfaces a missed meeting end (TECH-C2): notify after 90 s of
+    /// mic+system silence, auto-stop after 5 min. Lives for the recording.
     private var silenceDetector: SilenceDetector?
 
-    /// Show the "Screen Recording disabled" startup notification at most
-    /// once per daemon launch — repeated banners would be noisy.
+    /// Gate the "Screen Recording disabled" banner to once per launch.
     private var didNotifyAboutPermissionDenial: Bool = false
 
-    /// Workflow resolved at the start of the current recording (TECH-B3).
-    /// Nil between meetings. Read by `writeMetaSidecar` so the pipeline
-    /// picks up the workflow's context prompt + backend + sinks; cleared
-    /// when the recorder finishes flushing.
+    /// Workflow for the in-flight recording (TECH-B3); nil between
+    /// meetings. Read by `writeMetaSidecar`, cleared after flush.
     private var activeWorkflow: Workflow?
 
-    /// Explicit override from the prompt window's chevron menu (TECH-B5).
-    /// Set when the user picks a non-default workflow before clicking
-    /// Record; consumed (and cleared) by the next `beginRecording`. The
-    /// matcher's precedence rules treat this as the highest-specificity
-    /// signal so it always wins over rule matches.
+    /// User's explicit workflow pick from the prompt chevron (TECH-B5),
+    /// consumed by the next `beginRecording`. Highest matcher precedence,
+    /// so it wins over rule matches.
     private var pendingWorkflowOverride: UUID?
 
-    /// Dry-run mode: detection + recognizer run end-to-end, all decisions
-    /// hit the JSONL event log, but `MeetingRecorder.start` is never
-    /// called. Lets the daemon ride along during a normal workday so the
-    /// user can verify detection accuracy without producing audio. Read
-    /// once at init from `MEETING_PIPE_DRY_RUN`; flipping it requires a
-    /// daemon restart, which is fine for a debug knob.
+    /// Dry-run (`MEETING_PIPE_DRY_RUN`): detection runs and logs, but the
+    /// recorder never starts. Verify detection accuracy without producing
+    /// audio. Read once at init.
     private let dryRun: Bool = (ProcessInfo.processInfo.environment["MEETING_PIPE_DRY_RUN"] == "1")
 
     private var permissionGrantedCancellable: AnyCancellable?
@@ -146,9 +117,8 @@ final class Coordinator: NSObject {
         self.consent = ConsentStore()
         let resolvedLauncher = launcher ?? PipelineLauncher()
         self.launcher = resolvedLauncher
-        // FluidAudio is the only ASR path: the daemon owns transcription
-        // in-process via Parakeet TDT + pyannote on the Apple Neural
-        // Engine. The Python pipeline runs summarize + publish only.
+        // FluidAudio is the only ASR path: in-process Parakeet TDT +
+        // pyannote on the ANE; Python does summarize + publish only.
         let runner = TranscriptionService.makeRunner()
         Log.event(category: "transcription", action: "engine_resolved", attributes: [
             "engine": runner.backendName,
@@ -157,20 +127,15 @@ final class Coordinator: NSObject {
             launcher: resolvedLauncher,
             transcriptionRunner: runner
         )
-        // PreferencesWindow needs both stores. When the daemon was
-        // launched with neither (test fixtures, headless smoke runs)
-        // the menu item is wired through this guard; clicking it
-        // becomes a no-op rather than crashing.
+        // PreferencesWindow needs both stores; without them (test/headless)
+        // the menu item is a no-op instead of a crash.
         if let configStore = configStore, let secretsStore = secretsStore {
             self.preferencesWindow = PreferencesWindow(store: configStore, secrets: secretsStore)
         } else {
             self.preferencesWindow = nil
         }
-        // The recordings dir is read from ConfigStore at runtime so the
-        // Library list reflects edits made in Preferences. We snapshot
-        // here at init for the store's root; live-config switches require
-        // a daemon restart for the library window (acceptable since the
-        // recordings dir is rarely changed).
+        // Snapshot the recordings dir at init for the library root; a live
+        // change needs a daemon restart for the library window (rare).
         let recordingsDir: URL = {
             if let raw = configStore?.outputDirPath {
                 return URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
@@ -180,13 +145,10 @@ final class Coordinator: NSObject {
         let libraryModel = LibraryWindowModel(recordingsDir: recordingsDir)
         self.libraryModel = libraryModel
         self.libraryWindow = LibraryWindow(model: libraryModel)
-        // Workflow store (TECH-B1): per-context routing rules live as
-        // TOML files under `~/.config/meeting-pipe/workflows/`. Loaded
-        // synchronously so the matcher (TECH-B3) and Workflows tab see
-        // a populated store on the first detection / window open.
-        // TECH-B2: if the store is empty we seed a "General" workflow
-        // from the legacy `summarization.team_context` so the pipeline's
-        // observable behaviour doesn't change for existing installs.
+        // Load workflows synchronously so the matcher (TECH-B3) and
+        // Workflows tab see them on first detection (TECH-B1). The migrator
+        // seeds a "General" workflow from legacy team_context if empty
+        // (TECH-B2) so behaviour is unchanged for existing installs.
         let workflowStore = WorkflowStore()
         workflowStore.load()
         WorkflowMigrator.runIfNeeded(
@@ -197,11 +159,9 @@ final class Coordinator: NSObject {
         self.workflowStore = workflowStore
         libraryModel.workflowStore = workflowStore
 
-        // MicGate + Lifecycle stack (TECH-G-MIC + TECH-C13). The shared
-        // buses centralise CoreAudio HAL + AX observer registrations;
-        // adapters live in MeetingPipeCore and dispatch per-bundle. The
-        // EventLog bridge forwards `MeetingPipeCore` telemetry into the
-        // daemon's existing events.jsonl stream via `Log.event`.
+        // Shared HAL + AX buses centralise CoreAudio/AX registrations;
+        // adapters dispatch per-bundle. LogEventAdapter bridges
+        // MeetingPipeCore telemetry into events.jsonl.
         let logAdapter = LogEventAdapter()
         let halBus = CoreAudioHALBus(backend: RealCoreAudioBackend(), eventLog: logAdapter)
         let axBus = AXObserverBus(backend: RealAXBackend(), eventLog: logAdapter)
@@ -209,9 +169,8 @@ final class Coordinator: NSObject {
         do {
             muteLabels = try MuteLabelsLoader.loadDefault()
         } catch {
-            // Bundle resource missing or malformed: keep the daemon
-            // running with an empty catalogue. AX mute matching becomes
-            // a no-op; HAL VAD + RMS still drive the gate.
+            // Missing/malformed resource: run with an empty catalogue. AX
+            // mute matching no-ops; HAL VAD + RMS still drive the gate.
             Log.main.warning("MuteLabels.loadDefault failed: \(error.localizedDescription), using empty catalogue")
             Log.event(category: "coordinator", action: "mute_labels_load_failed", attributes: [
                 "error": error.localizedDescription,
@@ -247,24 +206,18 @@ final class Coordinator: NSObject {
                 NoOpMuteAdapter(config: .browser, eventLog: logAdapter),
             ]
         )
-        // Window read from the TOML knob (TECH-C7). Live edits in
-        // Preferences only take effect on the next meeting because the
-        // backstop is constructed once at Coordinator init.
+        // TECH-C7 window from TOML; built once, so edits apply next meeting.
         let micOnlySilenceSec = configStore?.micOnlySilenceSec ?? config.detection.micOnlySilenceSec
         self.silenceBackstop = MicOnlySilenceBackstop(windowSeconds: micOnlySilenceSec)
 
         super.init()
-        // Wire the model back to the Coordinator so the sidebar's
-        // Start/Stop button can route through the existing menu handlers.
-        // Done post-super.init so the weak ref is valid.
+        // Post-super.init: wire the model + status bar back to self.
         libraryModel.coordinator = self
         statusBar.libraryModel = libraryModel
         wireSubsystems()
     }
 
-    /// Bind the three Coordination subordinates back to the Coordinator
-    /// (state-machine callbacks, sink-dispatcher per-job results, mute
-    /// probe transitions). Done after `super.init` so `self` is valid.
+    /// Bind subsystem callbacks back to self. Post-super.init so self is valid.
     private func wireSubsystems() {
         stateMachine.onIdleTransition = { [weak self] in
             // Every path back to idle (record then stop, skip, prompt
@@ -304,9 +257,8 @@ final class Coordinator: NSObject {
             case .failed:  self.notifier.notifyCaptureLost()
             }
         }
-        // Backstop fires once when the mic-only-silence threshold is
-        // exceeded. Hop to the main actor and route through the
-        // existing forceStop path so the event log records the reason.
+        // Route the one-shot backstop trigger through forceStop (on main)
+        // so the event log records the reason.
         silenceBackstop.onTriggered = { [weak self] _ in
             Task { @MainActor in
                 self?.forceStop(reason: "mic_only_silence")
@@ -319,10 +271,8 @@ final class Coordinator: NSObject {
         promptWindow.delegate = self
         recordingHUD.delegate = self
 
-        // Drive the recorder's writer + silence backstop from the gate's
-        // verdict stream. The stream is unbounded and lives for the
-        // daemon's lifetime; verdicts only flow while a meeting is
-        // engaged. Cancelled in `shutdown()`.
+        // Drive the recorder writer + silence backstop from the gate's
+        // verdict stream (unbounded, daemon-lifetime; cancelled in shutdown).
         verdictConsumerTask = Task { [weak self] in
             guard let self = self else { return }
             for await verdict in self.micGate.verdicts {
@@ -334,10 +284,9 @@ final class Coordinator: NSObject {
             }
         }
 
-        // Consume the lifecycle verdict stream: `.starting` raises the
-        // prompt, `.endingProvisional` triggers the compact-view
-        // rescue re-walk, `.ended` closes the recording or dismisses a
-        // stale prompt. `.inMeeting` is telemetry.
+        // Lifecycle verdicts: `.starting` raises the prompt,
+        // `.endingProvisional` triggers the compact-view rescue re-walk,
+        // `.ended` closes the recording or dismisses a stale prompt.
         lifecycleConsumerTask = Task { [weak self] in
             guard let self = self else { return }
             for await verdict in self.lifecycleCoord.verdicts {
@@ -357,12 +306,9 @@ final class Coordinator: NSObject {
         }
 
         // Funnel every TCC dialog through PermissionsCenter so the
-        // Preferences "Permissions" tab and the startup sequence both
-        // read from the same published state. macOS still serializes
-        // the actual prompts (notifications first, then mic, then
-        // screen recording, then accessibility), but they now all
-        // surface within the first few seconds of launch instead of
-        // dribbling out across the first recording.
+        // Preferences tab and startup share one published state, and the
+        // prompts surface in the first seconds instead of across the first
+        // recording.
         requestPermissionsAtStartup()
 
         if dryRun {
@@ -371,9 +317,6 @@ final class Coordinator: NSObject {
             Log.event(category: "coordinator", action: "dry_run_enabled")
         }
 
-        // Cold-start discovery: the watcher reports a winning source,
-        // the Coordinator engages the lifecycle adapter, and the
-        // `.starting` verdict raises the prompt (TECH-C13 step 5).
         discoveryWatcher.onDiscovered = { [weak self] source in
             self?.handleDiscovery(source)
         }
@@ -388,10 +331,9 @@ final class Coordinator: NSObject {
             Log.main.warning("Could not parse hotkey: \(self.liveManualHotkey)")
         }
 
-        // Stop-only hotkey (TECH-C5). Distinct so a panic-press can
-        // never accidentally start a recording the way the toggle
-        // hotkey can when the daemon is idle. Logged with a different
-        // event action so the post-mortem analyzer can tell them apart.
+        // Stop-only hotkey (TECH-C5): distinct from the toggle so a
+        // panic-press can never start a recording, and logged with its own
+        // event action.
         if liveForceStopHotkey == liveManualHotkey {
             Log.main.warning("Force-stop hotkey matches manual hotkey — skipping second registration")
         } else if let parsed = HotkeyManager.parse(liveForceStopHotkey) {
@@ -408,12 +350,9 @@ final class Coordinator: NSObject {
         // persistence. Owned by ConfigRefreshCoordinator (TECH-H1-FINISH).
         configRefresh.start()
 
-        // Subscribe to permission grants so the detector picks up an
-        // in-progress meeting the moment Mic / Accessibility flip on.
-        // Without this, a user who restarts the daemon mid-meeting (the
-        // typical Accessibility-grant flow) waits for the next Workspace
-        // notification before detection kicks in, by which point the
-        // meeting may have started silently.
+        // Re-evaluate detection the moment Mic/Accessibility flip on, so a
+        // daemon restarted mid-meeting (the typical AX-grant flow) doesn't
+        // wait for the next Workspace notification.
         permissionGrantedCancellable = PermissionsCenter.shared.permissionGranted
             .receive(on: DispatchQueue.main)
             .sink { [weak self] kind in
@@ -426,38 +365,24 @@ final class Coordinator: NSObject {
                 self.statusBar.refreshMenuForPermissionChange()
             }
 
-        // Recover any recording orphaned by a daemon that terminated
-        // mid-recording (crash, kill, rebuild, or the reinstall
-        // permission-grant restart churn). Runs once, here at startup.
+        // Re-enqueue recordings orphaned by a mid-recording termination
+        // (crash, kill, rebuild, reinstall restart).
         recoverOrphanedRecordings()
     }
 
-    /// Fire every TCC dialog the daemon needs in a single ordered
-    /// sequence at startup. macOS serializes prompts internally (the
-    /// second dialog only paints once the first is dismissed) but they
-    /// all surface within the first few seconds, instead of dribbling
-    /// out across the first recording. The Permissions tab in
-    /// Preferences is the canonical surface for re-prompting later.
+    /// Fire every startup TCC dialog in order. macOS serializes the prompts
+    /// internally, but they all surface in the first few seconds; the
+    /// Preferences Permissions tab is the surface for re-prompting later.
     private func requestPermissionsAtStartup() {
         Task { @MainActor in
-            // 1. Notifications — silent prompt; non-blocking either way.
             await PermissionsCenter.shared.requestNotifications()
-            // 2. Microphone — used to be implicit (KVO on AVCaptureDevice),
-            //    which fired the dialog a couple of seconds after launch.
-            //    Explicit request keeps it next to its siblings.
             await PermissionsCenter.shared.requestMic()
-            // 3. Screen Recording — CGRequestScreenCaptureAccess +
-            //    SCShareableContent prewarm. prewarm() was already
-            //    triggered from App.swift; this re-runs it through the
-            //    Permissions center so the published state is current.
+            // Re-runs the SCShareableContent prewarm App.swift already
+            // triggered, so the published state is current.
             await PermissionsCenter.shared.requestScreenRecording()
-            // 4. Accessibility — surfaces the "App wants to control your
-            //    Mac" prompt + adds MeetingPipe to System Settings.
-            //    Granting requires a daemon restart for AX trust to
-            //    propagate; the notifier banner explains that.
+            // Granting AX requires a daemon restart for trust to propagate;
+            // the notifier banner explains that.
             _ = PermissionsCenter.shared.requestAccessibility()
-            // Surface follow-ups (banner + menu refresh) once the dust
-            // has settled.
             checkScreenRecordingPermissionAtStartup()
             checkAccessibilityPermissionAtStartup()
         }
@@ -472,12 +397,9 @@ final class Coordinator: NSObject {
     }
 
     private func checkAccessibilityPermissionAtStartup() {
-        // PermissionsCenter.requestAccessibility() has already surfaced
-        // the system prompt by the time this runs. Here we only fan out
-        // the side effects: log the verdict, raise the fallback banner
-        // when still untrusted (the user dismissed the dialog without
-        // granting, or revoked previously and needs a restart for the
-        // change to propagate).
+        // The prompt was already surfaced by requestAccessibility(); here we
+        // only log the verdict and raise the fallback banner if still
+        // untrusted.
         if AXIsProcessTrusted() {
             Log.main.info("Accessibility: trusted")
             return
@@ -499,24 +421,17 @@ final class Coordinator: NSObject {
         micGate.shutdown()
         lifecycleCoord.shutdown()
         if recorder.isRecording {
-            // Best-effort flush; we don't want orphan recording state.
+            // Best-effort flush so we don't orphan recording state.
             let recorder = self.recorder
             Task { await recorder.stop() }
         }
     }
 
-    /// Recover recordings orphaned by a daemon that terminated
-    /// mid-recording: a crash, a `kill`, a `rebuild.sh` during
-    /// testing, or the permission-grant restart churn after a
-    /// reinstall. `shutdown()`'s flush above is a detached task the
-    /// exiting process may never finish, so an interrupted recording
-    /// leaves `<stem>.mic.wav` / `<stem>.system.wav` intermediates
-    /// with no merged `<stem>.wav`. Each such pair is merged and
-    /// enqueued for the pipeline. The orphan set is snapshotted
-    /// synchronously here, before discovery can start a new recording,
-    /// so a live recording's in-flight intermediates are never
-    /// mistaken for an orphan; the ffmpeg merges then run off the main
-    /// actor so the menu bar is not stalled.
+    /// Re-enqueue recordings orphaned by a mid-recording termination
+    /// (crash, kill, rebuild, reinstall restart) that left unmerged
+    /// `.mic.wav`/`.system.wav` intermediates. Snapshot synchronously
+    /// before discovery so a live recording's intermediates aren't seen as
+    /// orphans; the ffmpeg merges run off-main so the menu bar isn't stalled.
     private func recoverOrphanedRecordings() {
         let dir = liveOutputDir
         let stems = OrphanRecordingRecovery.scanOrphanStems(in: dir)
@@ -534,10 +449,9 @@ final class Coordinator: NSObject {
         }
     }
 
-    /// Treat the system channel as "carries audio" when its 1 s RMS
-    /// average sits above this floor. Mirrors `SilenceDetector`'s
-    /// `defaultThresholdDb` so the silence backstop and the existing
-    /// 5-min auto-stop draw the same line between silence and content.
+    /// System channel "carries audio" above this 1 s RMS floor. Mirrors
+    /// `SilenceDetector.defaultThresholdDb` so the backstop and the 5-min
+    /// auto-stop draw the same line.
     private static let systemSilenceThresholdDb: Double = SilenceDetector.defaultThresholdDb
 
     // MARK: Menu actions
@@ -559,10 +473,8 @@ final class Coordinator: NSObject {
         preferencesWindow?.show()
     }
 
-    /// Deeplink entry for the menu-bar warning row and the recording-
-    /// blocked-on-mic-permission path. Opens Preferences directly on
-    /// the Permissions section so the user can resolve the TCC issue
-    /// without hunting through the sidebar.
+    /// Deeplink to the Preferences Permissions section (from the warning
+    /// row and the mic-permission-blocked path).
     @objc func menuPreferencesPermissions() {
         preferencesWindow?.show(initial: .permissions)
     }
@@ -575,8 +487,7 @@ final class Coordinator: NSObject {
         quickFindWindow.show()
     }
 
-    /// Open the Library window and select the row with the given stem.
-    /// Called by the Quick Find panel when the user picks a result.
+    /// Open the Library window and select the given stem (from Quick Find).
     func openMeeting(stem: String) {
         libraryModel.pendingSelection = stem
         libraryWindow.show()
@@ -589,11 +500,8 @@ final class Coordinator: NSObject {
         }
     )
 
-    /// Post-recording meeting operations (retry / regenerate / republish
-    /// / soft-delete / export, plus the recent-correctable and
-    /// failed-count menu queries). Extracted in TECH-H1-FINISH; the
-    /// methods below forward to it so external callers keep the same
-    /// Coordinator API.
+    /// Post-recording meeting operations (TECH-H1-FINISH); the methods
+    /// below forward to it so external callers keep the Coordinator API.
     private lazy var library = MeetingLibraryService(
         outputDir: { [weak self] in
             self?.liveOutputDir ?? URL(fileURLWithPath: NSTemporaryDirectory())
@@ -644,10 +552,8 @@ final class Coordinator: NSObject {
         SystemAudioCapture.openScreenRecordingSettings()
     }
 
-    /// Open the correction sheet for whichever stem the menu item carries
-    /// in `representedObject`. The status bar builds the submenu from
-    /// `recentCorrectableMeetings()` so menus and the click site share
-    /// the same path resolution.
+    /// Open the correction sheet for the stem in the menu item's
+    /// `representedObject` (submenu built from `recentCorrectableMeetings()`).
     @objc func menuRecentMeeting(_ sender: NSMenuItem) {
         guard let stem = sender.representedObject as? String else { return }
         CorrectionWindow.present(stem: stem, recordingsDir: liveOutputDir)
@@ -663,9 +569,8 @@ final class Coordinator: NSObject {
 
     // MARK: Live-config readers
     //
-    // When a `ConfigStore` is wired up, prefer its current value over the
-    // boot-time `config` snapshot. That way Preferences edits take effect
-    // at the next read without bouncing the daemon.
+    // Prefer the ConfigStore's current value over the boot-time `config`
+    // snapshot, so Preferences edits apply without a daemon restart.
 
     private var liveOutputDir: URL {
         guard let raw = configStore?.outputDirPath else { return config.recording.outputDir }
@@ -711,30 +616,22 @@ final class Coordinator: NSObject {
         case .idle:
             beginRecording(source: nil, summaryMode: .auto)
         case .prompting(let src), .suppressed(let src):
-            // Preserve meeting attribution when the user overrides via hotkey
-            // — without this, "Always for {App}" would never see the source.
+            // Keep the source so "Always for {App}" still attributes; clear
+            // the cooldown so this explicit start isn't suppressed.
             promptWindow.dismiss()
-            // Manual override is an explicit "start now" signal; drop
-            // any cooldown entry for this bundle so the next detector-
-            // driven detection isn't suppressed by a stale skip/end.
             stateMachine.clearCooldown(bundleID: src.bundleID)
             beginRecording(source: src, summaryMode: .auto)
         case .recording(let file, let src, let mode):
             stopRecording(file: file, source: src, summaryMode: mode)
         case .stopping:
-            // Recorder is mid-flush; a new start would race the await.
-            // Pipeline jobs run in their own queue inside the dispatcher.
+            // Mid-flush; a new start would race the await.
             break
         }
     }
 
-    /// Stop-only entry point used by the force-stop hotkey and any other
-    /// surface that needs an unambiguous "stop, never start" semantics
-    /// (TECH-C5). Unlike `toggleManual`, this never transitions out of
-    /// `.idle` into a recording — pressing the force-stop hotkey when
-    /// nothing is running is a logged no-op. The detector's own state
-    /// (`hasFiredStart`) is preserved so it can't re-prompt for the same
-    /// meeting; a fresh `.started` only fires after a real `.ended`.
+    /// Stop-only entry (TECH-C5): never starts a recording from `.idle`, so
+    /// a panic-press when nothing runs is a logged no-op. The detector
+    /// state is preserved, so a fresh `.started` only fires after a real end.
     private func forceStop(reason: String) {
         Log.event(category: "coordinator", action: "force_stop", attributes: [
             "reason": reason,
@@ -744,8 +641,7 @@ final class Coordinator: NSObject {
         case .recording(let file, let src, let mode):
             stopRecording(file: file, source: src, summaryMode: mode)
         case .prompting(let src):
-            // Treat as "no, don't record, and don't ask again until the
-            // detector sees this meeting end" — same as clicking Skip.
+            // Same as Skip: suppress until the detector sees this meeting end.
             stateMachine.cancelPromptTimeout()
             promptWindow.dismiss()
             stateMachine.setSuppressed(source: src)
@@ -755,24 +651,17 @@ final class Coordinator: NSObject {
         }
     }
 
-    /// Public setter used by the prompt window's chevron menu (TECH-B5)
-    /// to pin the next recording to a specific workflow. The override is
-    /// consumed by the next `beginRecording`; if the user dismisses the
-    /// prompt without recording, the override is cleared when the
-    /// prompt times out so a stale pick can't leak into the next call.
+    /// Pin the next recording to a workflow (prompt chevron, TECH-B5).
+    /// Consumed by the next `beginRecording`.
     func setPendingWorkflowOverride(_ id: UUID?) {
         pendingWorkflowOverride = id
     }
 
-    /// Active workflow (if any) for the in-flight recording. Surfaced so
-    /// the HUD and status-bar UI can paint the workflow's color/chip
-    /// without holding a reference to the matcher.
+    /// Workflow for the in-flight recording, for the HUD/status-bar chip.
     var currentActiveWorkflow: Workflow? { activeWorkflow }
 
-    /// Resolve the workflow that would apply to a given source right
-    /// now. Used by the prompt window to render its chip ahead of the
-    /// Record click. Returns the default workflow when no source / no
-    /// rule matches.
+    /// Workflow that would apply to `source` now (for the prompt chip);
+    /// falls back to the default when nothing matches.
     func workflowForPrompt(source: AppSource?) -> Workflow? {
         return WorkflowMatcher.resolve(
             source: source,
@@ -784,12 +673,9 @@ final class Coordinator: NSObject {
     private func beginRecording(source: AppSource?, summaryMode: SummaryMode) {
         stateMachine.cancelPromptTimeout()
 
-        // Pre-record gate. Mic is non-negotiable — without it the
-        // recording is silent and the pipeline produces empty
-        // transcripts. Screen Recording stays optional (mic-only is a
-        // documented fallback). We re-probe synchronously here so a
-        // permission the user just granted via Preferences is reflected
-        // without a daemon restart.
+        // Mic is non-negotiable (no mic = silent recording, empty
+        // transcript); Screen Recording stays optional. Re-probe
+        // synchronously so a just-granted permission counts without restart.
         let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         if micStatus != .authorized {
             Log.main.warning("beginRecording aborted: microphone permission missing")
@@ -798,9 +684,7 @@ final class Coordinator: NSObject {
                 "status": "\(micStatus.rawValue)",
             ])
             notifier.notifyError("Microphone permission is required. Grant it in Preferences → Permissions, then try again.")
-            // Pop the Preferences window so the user can act without
-            // hunting for the menu item. Deeplink directly to the
-            // Permissions section since the error is permission-shaped.
+            // Deeplink to the Permissions section so the user can act.
             menuPreferencesPermissions()
             stateMachine.setIdle()
             statusBar.setIdle()
@@ -808,11 +692,8 @@ final class Coordinator: NSObject {
         }
 
         if dryRun {
-            // Detection happened, consent was resolved, but we deliberately
-            // do not start the recorder, the streaming transcriber, or the
-            // HUD. Returning to .idle keeps the detector ready for the next
-            // .started event so a workday's worth of meetings can be
-            // captured in the JSONL stream as detection-only signals.
+            // Detection ran but we deliberately skip the recorder/HUD and
+            // return to .idle, so a workday logs as detection-only signals.
             Log.writeLine("daemon", "[dry-run] would record (\(source?.bundleID ?? "manual"))")
             Log.event(category: "coordinator", action: "dry_run_would_record", attributes: [
                 "bundle_id": source?.bundleID ?? "manual",
@@ -823,12 +704,9 @@ final class Coordinator: NSObject {
             return
         }
 
-        // Resolve the workflow that controls this meeting's context
-        // prompt / backend / sinks (TECH-B3). The lookup is deterministic
-        // and uses the explicit override the prompt window may have set,
-        // then falls through to rule matches, then to the default. After
-        // resolution we clear the override so it can't leak into the
-        // next meeting.
+        // Resolve the workflow controlling context/backend/sinks (TECH-B3):
+        // override, then rule matches, then default. Clear the override so
+        // it can't leak into the next meeting.
         let resolvedWorkflow = WorkflowMatcher.resolve(
             source: source,
             overrideID: pendingWorkflowOverride,
@@ -859,14 +737,11 @@ final class Coordinator: NSObject {
             ])
             armSilenceDetector()
             engageMicGate(source: source)
-            // Late-arm the lifecycle Leave-button signal. The
-            // discovery-time AX walk that drove `engageLifecycle` runs
-            // before the call UI renders, so the Leave button is
-            // usually absent then; re-walk now that the recorder is up.
+            // Re-walk for the Leave button now the call UI has rendered;
+            // the discovery-time walk usually runs too early to see it.
             armLifecycleLeaveButton(source: source)
-            // The recorder is armed: promote the lifecycle verdict from
-            // `.starting` to `.inMeeting`. A no-op for manual recordings
-            // (no adapter engaged) and for the prompt-answered-late race.
+            // Recorder armed: promote `.starting` to `.inMeeting` (no-op for
+            // manual recordings and the prompt-answered-late race).
             lifecycleCoord.confirmRecording()
         } catch {
             Log.main.error("failed to start recorder: \(error.localizedDescription)")
@@ -881,17 +756,15 @@ final class Coordinator: NSObject {
         statusBar.setStopping()
         recordingHUD.dismiss()
         disarmSilenceDetector()
-        // Tear down the per-meeting AX subscriptions and the gate's
-        // adapter. The verdict stream stays open for the next meeting.
+        // Tear down per-meeting AX subscriptions; the verdict stream stays
+        // open for the next meeting.
         lifecycleCoord.disengage()
         micGate.stop()
         axWindowWatcher?.stop()
         axWindowWatcher = nil
 
-        // Recorder.stop is async; runs on a background task so the UI
-        // stays responsive. Once flushed, the audio is enqueued for
-        // pipeline processing and the recording-side state returns to
-        // .idle so the user can record another meeting immediately.
+        // recorder.stop is async (off the UI); once flushed, enqueue for the
+        // pipeline and return to .idle so the next meeting can start.
         let recorder = self.recorder
         Task { @MainActor [weak self] in
             await recorder.stop()
@@ -902,14 +775,11 @@ final class Coordinator: NSObject {
                 "bundle_id": source?.bundleID ?? "manual",
                 "system_audio_frames": recorder.lastSystemFires,
             ])
-            // No system-audio frames means the user just lost the other
-            // side of the call. Always surface it — the previous gate
-            // also required `permissionState == .denied`, which silently
-            // dropped the warning when the state was `.unknown` (fresh
-            // launch, prewarm hadn't run yet) and produced exactly the
-            // mic-only recording the user reported losing on May 5.
-            // The notifier message branches on permissionState so
-            // "Open Settings" only appears when a perm change would help.
+            // Zero system-audio frames = lost the other side of the call;
+            // always surface it. (A prior gate also required
+            // `permissionState == .denied` and silently dropped the warning
+            // when `.unknown`, the mic-only loss reported on May 5.) The
+            // notifier shows "Open Settings" only when a perm change helps.
             if recorder.lastSystemFires == 0 {
                 let perm = SystemAudioCapture.permissionState
                 self.notifier.notifyMicOnlyRecording(file: file, permissionState: perm)
@@ -920,14 +790,10 @@ final class Coordinator: NSObject {
             self.writeMetaSidecar(file: file, source: source)
             self.notifier.notifyProcessing(file: file)
             self.jobDispatcher.enqueue(file: file, summaryMode: summaryMode)
-            // Drop the workflow attribution after the sidecar lands so it
-            // can't bleed into the next meeting; a fresh resolve runs at
-            // the start of the next `beginRecording`.
+            // Drop the workflow so it can't bleed into the next meeting.
             self.activeWorkflow = nil
-            // Arm the re-prompt cooldown for this bundle so the post-
-            // call surface (Teams chat reclaiming the mic, Zoom's
-            // teardown toast) can't trigger a fresh "Record this
-            // meeting?" prompt within seconds of the stop flush.
+            // Arm the re-prompt cooldown so a post-call mic grab (Teams chat,
+            // Zoom teardown toast) can't re-prompt right after the flush.
             if let bid = source?.bundleID {
                 self.stateMachine.recordCooldownEnd(bundleID: bid)
             }
@@ -985,10 +851,8 @@ final class Coordinator: NSObject {
             default:
                 Log.writeLine("daemon", "prompt timed out → suppressed (\(source.bundleID))")
                 self.stateMachine.setSuppressed(source: source)
-                // Same reasoning as the explicit-skip path: the user's
-                // silence is a "don't pester me for this call" signal,
-                // so arm the cooldown to absorb post-call mic flickers
-                // after suppression lifts.
+                // Like an explicit Skip: arm the cooldown to absorb post-call
+                // mic flickers once suppression lifts.
                 self.stateMachine.recordCooldownEnd(bundleID: source.bundleID)
                 self.statusBar.setIdle()
             }
@@ -1007,14 +871,13 @@ final class Coordinator: NSObject {
             }
         )
         silenceDetector = detector
-        // RMS callbacks are dispatched to main by the Recorder, so it's
-        // safe to touch the SilenceDetector directly here.
+        // Recorder dispatches RMS callbacks to main, so touching the
+        // detector directly here is safe.
         recorder.onMicLevel = { [weak self] db in
             self?.silenceDetector?.observeMic(db: Double(db))
         }
-        // Forward the system level both to the silence detector and to
-        // the latest-level mirror the MicOnlySilenceBackstop reads. One
-        // callback site so the two consumers can never drift.
+        // One callback site feeds both the detector and the backstop's
+        // level mirror so the two can't drift.
         recorder.onSystemLevel = { [weak self] db in
             guard let self = self else { return }
             self.latestSystemLevelDb = db
@@ -1046,12 +909,9 @@ final class Coordinator: NSObject {
 
     // MARK: - MicGate engage (TECH-G-MIC + TECH-C13)
 
-    /// Walk the AX tree for the active meeting, build the
-    /// `LifecycleAdapterHandle` + `MicGateAdapterHandle`, and engage
-    /// both subsystems. Manual / browser-no-AX sources still call this:
-    /// the builder returns empty handles in those cases and the
-    /// subsystems fall through to HAL VAD + RMS only. Also primes the
-    /// silence-backstop state for the new meeting.
+    /// Build the AX handles and engage MicGate; also primes the silence
+    /// backstop. Manual / browser-no-AX sources fall through to HAL VAD +
+    /// RMS only (empty handles).
     private func engageMicGate(source: AppSource?) {
         silenceBackstop.reset()
         latestSystemLevelDb = -120
@@ -1072,10 +932,8 @@ final class Coordinator: NSObject {
             ])
         }
 
-        // Reactive AX subscription for mute buttons that only appear
-        // after recording-start (Teams 2 compact view, etc.). Each
-        // newly-discovered button gets its own AXMuteButtonProbe;
-        // events flow back into MicGate's state via injectAxMuteEvent.
+        // Watch for mute buttons that appear after recording-start (Teams 2
+        // compact view, etc.); events flow back via injectAxMuteEvent.
         let watcher = MeetingAXWindowWatcher(
             pid: handles.context.pid,
             bundleID: handles.context.bundleID,
@@ -1092,10 +950,8 @@ final class Coordinator: NSObject {
 
     // MARK: - Lifecycle discovery (TECH-C13)
 
-    /// Watcher callback: a discovery scan found a winning meeting
-    /// source. Engage the lifecycle subsystem for it when we are idle
-    /// and the bundle is not in its post-meeting cooldown. The
-    /// `.starting` verdict the adapter then produces raises the prompt.
+    /// Discovery found a meeting source: engage the lifecycle subsystem if
+    /// idle and the bundle isn't in its post-meeting cooldown.
     private func handleDiscovery(_ source: AppSource) {
         guard stateMachine.isAcceptingPrompts else { return }
         if stateMachine.isCoolingDown(
@@ -1107,9 +963,8 @@ final class Coordinator: NSObject {
         engageLifecycle(for: source)
     }
 
-    /// Walk the meeting app's AX tree and engage the lifecycle adapter
-    /// so it fuses PRIMARY signals into the verdict stream. Replaces the
-    /// recording-time engage that used to live in `engageMicGate`.
+    /// Engage the lifecycle adapter so it fuses PRIMARY signals into the
+    /// verdict stream.
     private func engageLifecycle(for source: AppSource) {
         guard let handles = MeetingAXHandleBuilder.build(source: source, catalogue: muteLabels) else {
             Log.event(category: "coordinator", action: "lifecycle_engage_skipped", attributes: [
@@ -1128,15 +983,10 @@ final class Coordinator: NSObject {
         }
     }
 
-    /// Re-walk the meeting AX tree at recording-start and late-arm the
-    /// lifecycle adapter's Leave-button signal. `engageLifecycle` runs
-    /// at discovery time, before the call UI renders, so the Leave
-    /// button is usually absent then (`ax_handles_built` logs
-    /// `found_leave:false`); by recording-start it exists. The
-    /// re-walk's `ax_handles_built` event records that second reading.
-    /// Idempotent: `armLeaveButton` is a no-op when the signal already
-    /// armed at engage time; a still-missing button leaves the
-    /// recording on the silence backstop, as before.
+    /// Late-arm the Leave-button signal at recording-start: the
+    /// discovery-time walk usually runs before the call UI renders the
+    /// button. Idempotent; a still-missing button leaves the recording on
+    /// the silence backstop.
     private func armLifecycleLeaveButton(source: AppSource?) {
         guard let source = source else { return }
         guard let handles = MeetingAXHandleBuilder.build(source: source, catalogue: muteLabels),
@@ -1146,16 +996,11 @@ final class Coordinator: NSObject {
         lifecycleCoord.armLeaveButton(leaveButton)
     }
 
-    /// React to a provisional meeting-end verdict. A PRIMARY signal
-    /// flipped to `.ended` and the engine is in its debounce window
-    /// before `.ended`. For native meetings the usual cause is a real
-    /// Leave click, but the Teams 2 compact-view swap also destroys
-    /// the meeting window's Leave button while the call continues.
-    /// Re-walk the AX tree: when a Leave button still exists (it moved
-    /// to the compact panel) re-arm the signal on it, and its
-    /// `.healthy` baseline flips the engine back to `.inMeeting` before
-    /// the debounce promotes to `.ended`. A genuine end finds no Leave
-    /// button and the debounce proceeds untouched.
+    /// Rescue a provisional end caused by the Teams 2 compact-view swap,
+    /// which destroys the Leave button while the call continues. If a Leave
+    /// button still exists (moved to the compact panel), re-arm on it so its
+    /// healthy baseline flips back to `.inMeeting` before the debounce
+    /// promotes to `.ended`. A genuine end finds none and proceeds.
     private func rescueProvisionalEnd(context: MeetingLifecycleContext) {
         guard context.kind == .native else { return }
         let axApp = AXUIElementCreateApplication(context.pid)
@@ -1177,17 +1022,14 @@ final class Coordinator: NSObject {
     }
 
     /// Tear down the lifecycle adapter + reset the engine. Wired to the
-    /// state machine's idle transition so every path back to idle
-    /// disengages exactly once.
+    /// state machine's idle transition so every idle path disengages once.
     private func disengageLifecycle() {
         lifecycleCoord.disengage()
     }
 
-    /// Bridge a lifecycle verdict's `MeetingLifecycleContext` back into
-    /// an `AppSource` for the prompt + workflow matcher. The context
-    /// has no display name (resolved here via `NSRunningApplication`)
-    /// and its title is best-effort, so the meeting title is re-walked
-    /// synchronously for the workflow matcher's title rules.
+    /// Bridge a lifecycle context back into an `AppSource` for the prompt +
+    /// matcher: resolve the display name via `NSRunningApplication` and
+    /// re-walk the title for the matcher's title rules.
     private func appSource(from context: MeetingLifecycleContext) -> AppSource {
         let kind: AppSourceKind = context.kind == .browser ? .browser : .native
         let displayName = NSRunningApplication(processIdentifier: context.pid)?
@@ -1206,11 +1048,8 @@ final class Coordinator: NSObject {
     }
 }
 
-/// Bridge between `MeetingPipeCore`'s `EventLog` protocol and the
-/// daemon-side `Log.event(...)` sink. `MeetingPipeCore` doesn't link
-/// against `Logger.swift` so it can't call `Log.event` directly;
-/// adapters and coordinators receive this concrete forwarder at
-/// construction time.
+/// Forwards `MeetingPipeCore`'s `EventLog` protocol to the daemon's
+/// `Log.event`, which that module can't link against directly.
 private final class LogEventAdapter: EventLog {
     func emit(category: String, action: String, attributes: [String: Any]) {
         Log.event(category: category, action: action, attributes: attributes)
@@ -1235,15 +1074,9 @@ extension Coordinator {
 
         stateMachine.setPrompting(source: source)
         statusBar.setPrompting(source)
-        // On-screen panel is the primary surface (Notion-style top-right
-        // floating window). Banner notification stays disabled by default —
-        // the panel doesn't get suppressed under Focus modes and is harder
-        // to miss. If the user wants OS-level persistence too, flip the
-        // notifier call back on here.
-        //
-        // TECH-B5: pass the resolved workflow + the full set so the chip
-        // can render the current match and the popup menu can show every
-        // workflow as an override option.
+        // The on-screen panel is the primary surface (not suppressed under
+        // Focus modes); the banner stays off by default. Pass the resolved
+        // workflow + full set so the chip and override menu render (TECH-B5).
         let promptWorkflow = workflowForPrompt(source: source)
         promptWindow.present(
             source: source,
@@ -1297,11 +1130,8 @@ extension Coordinator: NotifierDelegate {
         stateMachine.cancelPromptTimeout()
         stateMachine.setSuppressed(source: source)
         statusBar.setIdle()
-        // Skip is a "don't ask again about this call" signal, so we
-        // also gate near-future detections of the same bundle. The
-        // `suppressed` state already covers the current call (until
-        // the detector reports `.ended`), but post-call mic flickers
-        // can fire a fresh `.started` after the suppression lifts.
+        // Skip = don't ask again for this call: also cool down the bundle so
+        // a post-call mic flicker can't re-prompt once suppression lifts.
         stateMachine.recordCooldownEnd(bundleID: source.bundleID)
         Log.writeLine("daemon", "user skipped (\(source.bundleID))")
         Log.event(category: "coordinator", action: "user_skipped", attributes: [
@@ -1315,10 +1145,8 @@ extension Coordinator: NotifierDelegate {
         Log.event(category: "coordinator", action: "user_consented_always", attributes: [
             "bundle_id": source.bundleID,
         ])
-        // Drop the cooldown entry for the same reason as the manual
-        // hotkey path: an explicit "yes, record this and the next one
-        // too" mustn't be blocked by a stale skip/end from earlier in
-        // the session.
+        // Explicit "always": clear the cooldown so a stale skip/end can't
+        // block it (as with the manual hotkey path).
         stateMachine.clearCooldown(bundleID: source.bundleID)
         beginRecording(source: source, summaryMode: .auto)
     }
@@ -1340,12 +1168,9 @@ extension Coordinator: NotifierDelegate {
         didMarkLooksGoodFor stem: String,
         recordingsDir: URL
     ) {
-        // Inline write of a verdict-good correction record. Reads the
-        // run sidecar (for backend + model_id) and the summary JSON
-        // (for the original_summary blob) so the file is self-contained
-        // for Phase 3 training. A failure here is logged, not
-        // user-visible: the user already clicked "Looks good" and would
-        // rather have a silent miss than a banner about a sidecar.
+        // Write a verdict-good correction record (self-contained for Phase 3
+        // training). Failure is logged, not surfaced: the user already
+        // clicked "Looks good" and shouldn't get a sidecar banner.
         let runURL = recordingsDir.appendingPathComponent("\(stem).run.json")
         let summaryURL = recordingsDir.appendingPathComponent("\(stem).summary.json")
         do {
@@ -1388,11 +1213,8 @@ extension Coordinator: NotifierDelegate {
     }
 
     func notifierDidRequestAccessibilitySettings(_ notifier: Notifier) {
-        // `Privacy_Accessibility` is the documented anchor for the
-        // Accessibility pane in System Settings (Ventura+); the legacy
-        // panel URL is the macOS 12 fallback. NSWorkspace.open returns
-        // false if the URL can't resolve, so try the modern one first
-        // and fall back.
+        // Modern (Ventura+) anchor first, macOS 12 panel URL as fallback;
+        // NSWorkspace.open returns false when a URL can't resolve.
         let modern = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
         if !NSWorkspace.shared.open(modern) {
             let legacy = URL(string: "x-apple.systempreferences:com.apple.preference.universalaccess")!
@@ -1401,16 +1223,13 @@ extension Coordinator: NotifierDelegate {
     }
 
     func notifierDidRequestStopRecording(_ notifier: Notifier) {
-        // Reuse `toggleManual` so the stop path is identical to the
-        // hotkey-stop and recorder-HUD-stop surfaces — one entry point.
+        // One stop entry point shared with hotkey-stop and HUD-stop.
         if case .recording = stateMachine.current { toggleManual() }
     }
 }
 
 extension Coordinator: MeetingPromptDelegate {
-    // The on-screen panel re-uses the same outcome semantics as the banner
-    // notification path. Funnel both into the existing handlers so the state
-    // machine sees one entry point per outcome.
+    // Panel and banner share one handler per outcome.
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecord source: AppSource) {
         notifier(notifier, didChooseRecord: source)
     }
@@ -1426,10 +1245,7 @@ extension Coordinator: MeetingPromptDelegate {
     }
 
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseWorkflow id: UUID?) {
-        // Stash the override so the next beginRecording's matcher call
-        // resolves to the user's pick. Cleared after consumption inside
-        // beginRecording so a dismissed prompt can't leak a stale pick
-        // into the next meeting.
+        // Stash the override for the next beginRecording's matcher.
         setPendingWorkflowOverride(id)
         Log.event(category: "workflow", action: "override_picked", attributes: [
             "workflow_id": id?.uuidString ?? NSNull(),
@@ -1439,8 +1255,7 @@ extension Coordinator: MeetingPromptDelegate {
 
 extension Coordinator: RecordingHUDDelegate {
     func recordingHUDDidRequestStop(_ hud: RecordingHUDWindow) {
-        // Reuse the existing toggle path so manual-stop, hotkey-stop, and
-        // HUD-stop all flow through one state-machine entry.
+        // One stop entry point shared with manual-stop and hotkey-stop.
         toggleManual()
     }
 }

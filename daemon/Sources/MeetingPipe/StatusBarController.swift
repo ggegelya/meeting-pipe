@@ -1,18 +1,15 @@
 import AppKit
 import Combine
 
-/// Owns the NSStatusItem and its menu. Phase 0 just shows "Idle"; later phases
-/// flip this to "Recording" and add Start/Stop entries.
+/// Owns the NSStatusItem and its menu, and mirrors state to the menu bar.
 final class StatusBarController {
     private let item: NSStatusItem
     weak var coordinator: Coordinator?
-    /// Optional bridge into the SwiftUI Library window's footer. Each
-    /// state setter mirrors here so the rail's status row + record button
-    /// stay in sync with the menu bar without subscribing to private
-    /// AppKit setters.
+    /// Bridge into the Library window's footer; state setters mirror here so
+    /// the rail stays in sync with the menu bar.
     var libraryModel: LibraryWindowModel?
 
-    /// 18pt is the menu-bar standard. Both icons render at this size.
+    /// 18pt is the menu-bar standard.
     private static let iconSize: CGFloat = 18
 
     private var idleIcon: NSImage = StatusBarController.makeIdleIcon(
@@ -21,62 +18,45 @@ final class StatusBarController {
     )
     private var recordingIcon: NSImage = StatusBarController.makeRecordingIcon(size: StatusBarController.iconSize)
 
-    /// Live regulated-mode flag for the lock-glyph badge. Driven by
-    /// `Coordinator` whenever `ConfigStore` changes (or at startup).
-    /// Pair this with `UISettings.shared.showRegulatedBadge` — both
-    /// must be true for the glyph to appear.
+    /// Regulated-mode flag for the lock-glyph badge (driven by Coordinator).
+    /// The glyph needs this AND `UISettings.shared.showRegulatedBadge`.
     private var regulatedMode: Bool = false
 
-    /// Combine subscriptions for live UI-setting changes (icon style +
-    /// regulated badge toggle). Held so the menu bar updates without
-    /// the user re-opening the menu.
+    /// Live UI-setting subscriptions (icon style + regulated badge).
     private var iconStyleCancellable: AnyCancellable?
     private var regulatedBadgeCancellable: AnyCancellable?
 
-    /// Last state we built a menu for, so `refreshMenuForPermissionChange`
-    /// can rebuild without callers having to remember which state we're in.
+    /// Last state a menu was built for, so a permission-driven rebuild
+    /// doesn't need the caller to re-supply it.
     private var lastMenuState: AppState = .idle
-    /// Cached recording-side title so the processing badge can be appended
-    /// without callers re-supplying the current state.
+    /// Cached recording title so the processing badge can append to it.
     private var baseTitle: String = "Idle"
-    /// Number of pipeline jobs currently queued or running. Surfaced as a
-    /// badge alongside the recording state title so the user always knows
-    /// how many meetings are still being transcribed in the background.
+    /// Pipeline jobs queued or running; shown as a title badge.
     private var processingCount: Int = 0
 
-    /// Last reported model-download state. Surfaced as a prefix on the
-    /// menu-bar title (so it's visible without opening the menu) plus a
-    /// dedicated header row in the menu (so the user can see the bytes
-    /// breakdown). `idle` means no downloading happening; we never show
-    /// `completed` longer than `completedDisplayDuration` to avoid a
-    /// stale "Downloaded X" line lingering forever.
+    /// Last model-download state. Shown as a title prefix + a menu header
+    /// row; `completed` collapses to idle after `completedDisplayDuration`
+    /// so a stale "Downloaded X" line doesn't linger.
     private var modelDownload: ModelDownloadSupervisor.State = .idle
     private var modelDownloadCompletedDisplayTimer: Timer?
     private static let completedDisplayDuration: TimeInterval = 5
 
-    /// Retained NSMenuDelegate for the "Recent meetings…" submenu. The
-    /// submenu populates on `menuNeedsUpdate(_:)` rather than on every
-    /// `rebuildMenu` so a stop click / state change doesn't pay a
-    /// synchronous directory scan + per-entry mtime read for a submenu
-    /// the user almost never opens.
+    /// Delegate for the "Recent meetings" submenu; populates on
+    /// `menuNeedsUpdate` so a rebuild doesn't pay a dir scan for a submenu
+    /// the user rarely opens.
     private var recentMeetingsDelegate: RecentMeetingsMenuDelegate?
 
-    /// Delegate for the top-level status menu. Its `menuNeedsUpdate`
-    /// re-probes the permission state just before the menu is shown,
-    /// so the warning row reflects a permission the user just granted
-    /// in System Settings without their having to open Preferences.
+    /// Top-level menu delegate; re-probes permissions just before showing so
+    /// the warning row reflects a just-granted permission.
     private let menuDelegate = StatusMenuDelegate()
 
-    /// Re-render the menu whenever any permission flips so the
-    /// aggregate warning row appears / disappears without waiting for
-    /// the next recording state change. Subscribed once at init.
+    /// Rebuild the menu when any permission flips, so the warning row
+    /// appears/disappears without waiting for a state change.
     private var permissionsCancellable: AnyCancellable?
 
-    /// Snapshot of every permission status, used by the combined
-    /// publisher so we can `removeDuplicates` on the *actual* values
-    /// rather than rebuilding the menu on every `objectWillChange`
-    /// (which fires per-property and at 2s poll cadence). Equatable for
-    /// the dedupe.
+    /// Permission snapshot for `removeDuplicates`, so the menu rebuilds on
+    /// real value changes rather than every `objectWillChange` (per-property,
+    /// 2 s poll).
     private struct PermissionsSnapshot: Equatable {
         let microphone: PermissionsCenter.Status
         let screenRecording: PermissionsCenter.Status
@@ -91,14 +71,9 @@ final class StatusBarController {
             button.imagePosition = .imageLeft
         }
         let center = PermissionsCenter.shared
-        // Subscribe to a derived stream of permission snapshots,
-        // collapsed via `removeDuplicates` so the menu only rebuilds on
-        // a real value change. The previous wiring subscribed to
-        // `objectWillChange`, which fires per-property — and the
-        // 2-second permissions polling timer in `PermissionsCenter`
-        // emits 4+ commits per tick (one per @Published). That meant
-        // the NSMenu was being rebuilt roughly twice a second whenever
-        // the Permissions tab was open, even when nothing changed.
+        // Dedupe permission snapshots so the menu rebuilds only on a real
+        // change; subscribing to `objectWillChange` rebuilt it ~twice a
+        // second (4+ commits per 2 s poll tick).
         permissionsCancellable = Publishers.CombineLatest4(
             center.$microphone,
             center.$screenRecording,
@@ -107,14 +82,12 @@ final class StatusBarController {
         )
         .map(PermissionsSnapshot.init(microphone:screenRecording:accessibility:notifications:))
         .removeDuplicates()
-        .dropFirst()   // skip the initial snapshot — menu is built lazily on first state setter
+        .dropFirst()   // menu is built lazily on the first state setter
         .receive(on: DispatchQueue.main)
         .sink { [weak self] _ in self?.refreshMenuForPermissionChange() }
 
-        // Live icon-style swap: when the user flips Outline ↔ Filled in
-        // Preferences, rebuild the cached idle icon and reflect it on
-        // the button. The recording icon variant is style-independent
-        // (it always pairs ring + coral dot) and stays as-is.
+        // Live icon-style swap (Outline/Filled); the recording icon is
+        // style-independent and stays as-is.
         iconStyleCancellable = UISettings.shared.$menuBarIconStyle
             .dropFirst()
             .receive(on: DispatchQueue.main)
@@ -124,9 +97,8 @@ final class StatusBarController {
                 if !self.isShowingRecordingIcon { self.item.button?.image = self.idleIcon }
             }
 
-        // The regulated-badge toggle is purely visual — recompute the
-        // title suffix whenever it flips so the lock glyph appears /
-        // disappears immediately without the user clicking around.
+        // Recompute the title suffix when the badge toggle flips so the lock
+        // glyph appears/disappears immediately.
         regulatedBadgeCancellable = UISettings.shared.$showRegulatedBadge
             .dropFirst()
             .receive(on: DispatchQueue.main)
@@ -135,17 +107,13 @@ final class StatusBarController {
         menuDelegate.controller = self
     }
 
-    /// True when the recording icon (coral dot) is currently shown on
-    /// the menu-bar button. Used by the icon-style live-swap so we don't
-    /// stomp a recording icon back to the idle variant mid-session.
+    /// True when the recording icon is shown; the icon-style live-swap
+    /// checks this so it doesn't stomp it back to idle mid-session.
     private var isShowingRecordingIcon: Bool {
         item.button?.image === recordingIcon
     }
 
-    /// Reflect a global `regulatedMode` change. Called by the
-    /// Coordinator on startup and whenever the persisted config flips.
-    /// The actual glyph rendering happens in `applyTitle()` so it
-    /// stays in sync with whatever base title the current state holds.
+    /// Reflect a `regulatedMode` change; the glyph renders in `applyTitle()`.
     func setRegulatedMode(_ on: Bool) {
         regulatedMode = on
         applyTitle()
@@ -177,10 +145,8 @@ final class StatusBarController {
         item.button?.image = recordingIcon
         var label = summaryMode == .byo ? "Recording (BYO)" : "Recording"
         if let wf = workflow {
-            // TECH-B5: status-bar title now includes the active workflow
-            // so the user can confirm at a glance that they're recording
-            // to e.g. the "Client work" Notion DB and not their personal
-            // one. NDA mode gets a coral marker.
+            // TECH-B5: show the active workflow so the user can confirm the
+            // destination at a glance; NDA mode gets a marker.
             label += " — \(wf.name)\(wf.flags.ndaMode ? " · NDA" : "")"
         }
         baseTitle = label
@@ -200,13 +166,9 @@ final class StatusBarController {
         // stays visible through the flush.
     }
 
-    /// Update the processing-jobs badge. Called from the Coordinator
-    /// whenever the queue grows or shrinks; independent of recording state.
-    ///
-    /// Writes into `LibraryWindowModel.processing` (a sibling
-    /// `ObservableObject`) rather than a `@Published` on the parent
-    /// model so the rail / list / detail don't re-render every tick.
-    /// Only the toolbar observes `processing`.
+    /// Update the processing-jobs badge. Writes into the sibling
+    /// `LibraryWindowModel.processing` (not a parent @Published) so only the
+    /// toolbar re-renders per tick.
     func setProcessingCount(_ n: Int) {
         processingCount = n
         applyTitle()
@@ -214,25 +176,14 @@ final class StatusBarController {
         libraryModel?.processing.count = n
     }
 
-    /// Reflect the model-prefetch lifecycle in the menu bar. The download
-    /// is asynchronous; the user is otherwise blind to it because it
-    /// happens inside a Python subprocess called from the Coordinator.
-    /// Driven by `Coordinator.modelDownload.onStateChange`.
-    ///
-    /// Note: this used to also write into a `@Published modelDownload`
-    /// on `LibraryWindowModel`, but nothing in the Library window
-    /// renders it any more (the rail's old footer was the only reader
-    /// and it was dropped in the IA re-architecture). Keeping the
-    /// state on this controller alone removes a major source of
-    /// re-renders during heavy model fetches.
+    /// Reflect the async model-prefetch lifecycle in the menu bar (driven by
+    /// the supervisor's `onStateChange`), the only surface for it.
     func setModelDownload(_ s: ModelDownloadSupervisor.State) {
         modelDownload = s
         modelDownloadCompletedDisplayTimer?.invalidate()
         modelDownloadCompletedDisplayTimer = nil
         if case .completed = s {
-            // Keep the "Downloaded X" line up briefly so the user sees
-            // the resolution; then collapse to idle so the menu isn't
-            // perpetually advertising a now-finished download.
+            // Show "Downloaded X" briefly, then collapse to idle.
             modelDownloadCompletedDisplayTimer = Timer.scheduledTimer(
                 withTimeInterval: Self.completedDisplayDuration, repeats: false
             ) { [weak self] _ in
@@ -253,9 +204,8 @@ final class StatusBarController {
         item.button?.title = " \(baseTitle)\(badge)\(download)\(lock)"
     }
 
-    /// Compact suffix that fits in the menu-bar title alongside the
-    /// existing state label. We show only the percent (or "…" when the
-    /// total is unknown) here; full byte breakdown lives in the menu.
+    /// Compact title suffix: percent only (or "…" when total is unknown);
+    /// the byte breakdown lives in the menu.
     private var modelDownloadTitleSuffix: String {
         switch modelDownload {
         case .idle, .completed:
@@ -332,11 +282,8 @@ final class StatusBarController {
         let img = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             let s = rect.width / 18.0
 
-            // Ring — drawn in template-friendly black so consumers that DO
-            // template-tint this image still get a sensible ring. We render
-            // this as a NON-template image (because of the coral dot), so
-            // AppKit won't auto-tint; we pick a mid-tone that reads on both
-            // light and dark menu bars.
+            // Non-template image (coral dot), so AppKit won't auto-tint the
+            // ring: pick a mid-tone that reads on light and dark menu bars.
             let ringStroke = NSColor(srgbRed: 0x4A/255.0, green: 0x4F/255.0, blue: 0x58/255.0, alpha: 1) // ink600
             ringStroke.setStroke()
             let ringRect = NSRect(
@@ -361,18 +308,15 @@ final class StatusBarController {
         return img
     }
 
-    /// Rebuild the menu against whatever state we last rendered. Called when
-    /// the Screen Recording permission flips to denied (or back) so the
-    /// warning row appears/disappears without waiting for the next state
-    /// transition.
+    /// Rebuild the menu against the last-rendered state, so a permission flip
+    /// shows/hides the warning row without a state transition.
     func refreshMenuForPermissionChange() {
         rebuildMenu(state: lastMenuState)
     }
 
-    /// Aggregated "any required permission is missing" check used by
-    /// the menu's warning row. Screen Recording's `.unknown` state is
-    /// excluded — it's transient (prewarm hasn't finished) and would
-    /// flash the warning at every cold launch.
+    /// "Any required permission missing" for the warning row. Screen
+    /// Recording's transient `.unknown` is excluded so it doesn't flash at
+    /// every cold launch.
     private func hasPendingPermissionIssue() -> Bool {
         let center = PermissionsCenter.shared
         if center.microphone == .denied || center.microphone == .notDetermined {
@@ -395,19 +339,14 @@ final class StatusBarController {
         item.menu = menu
     }
 
-    /// Re-probe the permissions the warning row depends on, then
-    /// repopulate `menu` in place. Wired through
-    /// `StatusMenuDelegate.menuNeedsUpdate` so opening the menu always
-    /// reflects the current TCC verdict: a grant the user just made in
-    /// System Settings clears the warning without their opening
-    /// Preferences.
+    /// Re-probe permissions then repopulate in place (via
+    /// `menuNeedsUpdate`), so opening the menu reflects a just-made grant.
     fileprivate func refreshMenuBeforeDisplay(_ menu: NSMenu) {
         PermissionsCenter.shared.refreshMenuRelevantSync()
         populateMenu(menu, state: lastMenuState)
     }
 
-    /// Build the status menu's items into `menu`, replacing whatever
-    /// was there. Shared by `rebuildMenu` and `refreshMenuBeforeDisplay`.
+    /// Build the menu items into `menu`, replacing existing ones.
     private func populateMenu(_ menu: NSMenu, state: AppState) {
         menu.removeAllItems()
 
@@ -421,11 +360,9 @@ final class StatusBarController {
             menu.addItem(.separator())
         }
 
-        // Aggregate permission warning. Any of mic / screen recording /
-        // accessibility being non-granted surfaces a single row that
-        // routes to the new Permissions tab in Preferences (TECH-E3).
-        // The legacy Screen-Recording-only row is preserved as a
-        // shortcut to Settings when that's the specific problem.
+        // One warning row when any of mic/screen-recording/accessibility is
+        // ungranted, routing to the Permissions tab (TECH-E3); the
+        // Screen-Recording shortcut stays for that specific case.
         if hasPendingPermissionIssue() {
             let warn = NSMenuItem(
                 title: "⚠ Permissions need attention — Open Preferences…",
@@ -446,10 +383,9 @@ final class StatusBarController {
             menu.addItem(.separator())
         }
 
-        // Aggregate failed-pipeline warning. A failed transcribe /
-        // summarize / launch leaves a durable error sidecar; this row
-        // stays until the owner retries or deletes the meeting, so a
-        // notification missed under Focus is no longer the only surface.
+        // Failed-pipeline row, backed by the durable error sidecar, so a
+        // notification missed under Focus isn't the only surface. Stays
+        // until retry or delete.
         if let coordinator = coordinator {
             let failedCount = coordinator.failedMeetingCount()
             if failedCount > 0 {
@@ -518,13 +454,9 @@ final class StatusBarController {
         menu.addItem(NSMenuItem(title: "Quit MeetingPipe", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
-    /// "Recent meetings…" submenu placeholder. The submenu populates
-    /// lazily via `NSMenuDelegate.menuNeedsUpdate(_:)` so opening the
-    /// menu bar pays the directory scan once, not on every state change.
-    /// Returns nil only when there's no Coordinator to reach into; the
-    /// "no recent meetings" empty-list case is rendered as a single
-    /// disabled row inside the submenu so users get an obvious answer
-    /// when they open it.
+    /// "Recent meetings" submenu, populated lazily via `menuNeedsUpdate` so
+    /// the dir scan is paid on open, not on every state change. Nil only
+    /// without a Coordinator; the empty case renders a disabled row.
     private func recentMeetingsMenuItem(coordinator: Coordinator) -> NSMenuItem? {
         let parent = NSMenuItem(title: "Recent meetings…", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
@@ -532,9 +464,7 @@ final class StatusBarController {
         delegate.coordinator = coordinator
         submenu.delegate = delegate
         recentMeetingsDelegate = delegate
-        // Placeholder so the submenu has at least one child while
-        // unopened. macOS only triggers `menuNeedsUpdate` on submenus
-        // that are about to display; we replace this row at that point.
+        // A child so the submenu isn't empty before `menuNeedsUpdate` fires.
         let placeholder = NSMenuItem(title: "Loading…", action: nil, keyEquivalent: "")
         placeholder.isEnabled = false
         submenu.addItem(placeholder)
@@ -574,9 +504,8 @@ final class StatusBarController {
         }
     }
 
-    /// Drop the `mlx-community/` prefix when present so the menu row
-    /// stays readable on a 24"+ display without truncation. The full id
-    /// is in Preferences -> Pipeline if the user wants exact-string.
+    /// Drop the `org/` prefix so the menu row stays readable; the full id is
+    /// in Preferences -> Pipeline.
     private static func shortModelId(_ id: String) -> String {
         if let slash = id.lastIndex(of: "/") {
             return String(id[id.index(after: slash)...])
@@ -606,11 +535,9 @@ final class StatusBarController {
     }
 }
 
-/// Delegate for the top-level status-bar menu. `menuNeedsUpdate`
-/// fires immediately before the menu is displayed; we use it to
-/// re-probe the permission state so the warning row is never stale.
-/// The 2 s `PermissionsCenter` poll, the only other refresh path,
-/// runs solely while the Preferences window is open.
+/// Top-level menu delegate; `menuNeedsUpdate` re-probes permissions just
+/// before display so the warning row is never stale (the 2 s poll only runs
+/// while Preferences is open).
 private final class StatusMenuDelegate: NSObject, NSMenuDelegate {
     weak var controller: StatusBarController?
 
@@ -619,13 +546,8 @@ private final class StatusMenuDelegate: NSObject, NSMenuDelegate {
     }
 }
 
-/// Populates the "Recent meetings…" submenu only when the user is about
-/// to open it. Each open re-scans the recordings dir for fresh state;
-/// the cost is paid once per click instead of on every menu rebuild.
-///
-/// `coordinator` is held weakly so the controller's lifetime owns the
-/// delegate cleanly. The submenu is rebuilt in place (clear + add) so
-/// stale items from a prior open never linger.
+/// Populates the "Recent meetings" submenu on open (re-scans the dir, paid
+/// per click not per rebuild). Rebuilt in place so stale items don't linger.
 private final class RecentMeetingsMenuDelegate: NSObject, NSMenuDelegate {
     weak var coordinator: Coordinator?
 

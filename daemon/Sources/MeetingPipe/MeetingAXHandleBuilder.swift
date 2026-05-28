@@ -3,18 +3,14 @@ import ApplicationServices
 import Foundation
 import MeetingPipeCore
 
-/// One-time AX walk per meeting that resolves the Leave button and the
-/// Mute button for the matched app, packaged into the handles that
-/// `MeetingLifecycleCoordinator.engage` and `MicGate.start` expect.
+/// One-time AX walk per meeting that resolves the Leave + Mute buttons for
+/// the matched app, packaged into the handles `MeetingLifecycleCoordinator`
+/// and `MicGate` expect. The tree is walked once at start; later changes
+/// flow through observers + health polls.
 ///
-/// The walk runs once at meeting-start (per spec). Subsequent verdict
-/// changes flow through observer notifications + 1 Hz health polls on
-/// the shared buses; the tree itself is not re-walked.
-///
-/// Browser-hosted meetings get an empty handle: `WKWebView` does not
-/// expose call controls as AX elements, so the lifecycle adapter
-/// falls back to ShareableContent + window-title signals and MicGate
-/// falls through to HAL VAD + RMS only.
+/// Browser meetings get an empty handle (WKWebView exposes no AX call
+/// controls), so lifecycle falls back to ShareableContent + window-title and
+/// MicGate to HAL VAD + RMS.
 enum MeetingAXHandleBuilder {
 
     struct Handles {
@@ -23,9 +19,7 @@ enum MeetingAXHandleBuilder {
         let context: MeetingLifecycleContext
     }
 
-    /// Maps bundle ID to the `MuteLabels` short app name. The
-    /// `MeetingPipeCore` adapters use these names to look up their
-    /// per-locale labels.
+    /// Bundle ID to the `MuteLabels` short app name (for per-locale labels).
     static let appNameByBundle: [String: String] = [
         "com.microsoft.teams2": "teams",
         "com.microsoft.teams": "teams",
@@ -52,15 +46,11 @@ enum MeetingAXHandleBuilder {
             title: source.meetingTitle
         )
 
-        // Browsers have no useful AX surface for call controls, so the
-        // handle carries no leave / mute button and MicGate operates on
-        // HAL + RMS only. A meeting window is resolved for PWA contexts
-        // only: a Chromium PWA hosts the call in a dedicated, tabless
-        // window, so an AX title change there is a real join / leave
-        // (safe for WindowTitleSignal). A regular browser shows the
-        // active tab's title on a shared window, where a title change
-        // is usually a tab switch and would false-end a meeting still
-        // live in a background tab.
+        // Browsers expose no AX call controls (HAL + RMS only). Resolve a
+        // meeting window for PWAs only: a tabless PWA window's title change
+        // is a real join/leave, whereas a regular browser's shared-window
+        // title change is usually a tab switch and would false-end a live
+        // meeting in a background tab.
         if kind == .browser {
             var meetingWindow: AXUIElement?
             let browserAXTrusted = AXIsProcessTrusted()
@@ -95,14 +85,10 @@ enum MeetingAXHandleBuilder {
         let meetingWindow = pickMeetingWindow(windows: allWindows)
         let app = appNameByBundle[source.bundleID]
 
-        // Search every window for leave + mute buttons. First match
-        // per category wins. The picked meeting window is still used
-        // for the lifecycle adapter's `meetingWindow` field, but
-        // button discovery is decoupled because the AX tree's window
-        // order isn't always [meeting, chat] (Teams ships both and
-        // the chat window is what the title-first picker grabs;
-        // searching every window finds the mute / leave buttons
-        // even when the picker grabs the wrong window).
+        // Search every window for leave + mute (first match per category
+        // wins), decoupled from the picked meetingWindow: Teams' window order
+        // isn't always [meeting, chat], so the title-first picker can grab
+        // the chat window while the buttons live elsewhere.
         var leave: AXUIElement?
         var mute: AXUIElement?
         for w in allWindows {
@@ -136,30 +122,10 @@ enum MeetingAXHandleBuilder {
 
     // MARK: - Private
 
-    /// Depth ceiling for the per-window button walk.
-    ///
-    /// Teams 2 (com.microsoft.teams2) is Electron: Chromium's AX tree
-    /// nests under the native NSWindow via HostingBridgedContentView
-    /// then BrowserAccessibilityCocoa. An Accessibility Inspector dump
-    /// during a live meeting (2026-05-20) placed the Mute mic (AXButton)
-    /// at depth 20 from the window:
-    ///
-    ///   0  TeamsWindow
-    ///   1  HostingBridgedContentView
-    ///   2  Web content (AXPlatformNodeCocoa)
-    ///   3-9   seven empty `group` wrappers
-    ///   10 scroll area (RenderWidgetHostViewCocoa)
-    ///   11 HTML content (BrowserAccessibilityCocoa)
-    ///   12 application (BrowserAccessibilityCocoa)
-    ///   13-17 five more `group` wrappers
-    ///   18 Meeting controls (toolbar)
-    ///   19 group
-    ///   20 Mute mic (button)
-    ///
-    /// 32 leaves margin for future Chromium pipeline additions without
-    /// burning meaningful walk time (each level adds one AX query per
-    /// branch; Teams' button tree fans out to well under 100 nodes
-    /// total even at this depth).
+    /// Depth ceiling for the per-window button walk. Teams 2 is Electron
+    /// and nests the Mute button ~20 levels deep (verified via Accessibility
+    /// Inspector, 2026-05-20); 32 leaves margin for future Chromium nesting
+    /// at negligible walk cost (well under 100 nodes total).
     private static let maxDepth = 32
 
     /// Return all AX windows of `axApp`. Internal so
@@ -211,20 +177,9 @@ enum MeetingAXHandleBuilder {
         return result
     }
 
-    /// Walk every window of an axApp looking for a Calling- or Meeting-
-    /// controls toolbar (TECH-C15). Returns the first match found.
-    ///
-    /// The shape:
-    ///   - Teams 2 (com.microsoft.teams2): an `AXToolbar` whose `AXTitle`
-    ///     or `AXDescription` reads "Calling controls" (en).
-    ///   - Google Meet (any browser): an `AXToolbar` whose `AXTitle` or
-    ///     `AXDescription` contains "Meeting controls" (en, observed in
-    ///     the 2026-05-20 AX dump that motivated this signal).
-    ///   - Other apps (Zoom, Webex) typically expose call controls
-    ///     differently; we add them as the per-bundle patterns get
-    ///     dumped from a live meeting. Falling through to no-match is
-    ///     safe; this signal is bonus weight on top of the leave + mute
-    ///     buttons, not a replacement.
+    /// First Calling-/Meeting-controls toolbar across all windows (TECH-C15),
+    /// matched by per-bundle title needles. Bonus weight on top of the
+    /// leave + mute buttons, so no-match is safe.
     static func findCallingControlsToolbar(
         in axApp: AXUIElement,
         bundleID: String
@@ -239,11 +194,8 @@ enum MeetingAXHandleBuilder {
         return nil
     }
 
-    /// Per-bundle toolbar-title needles for the scorer's
-    /// Calling-controls signal. Plain substring match against the
-    /// element's title or description, case-insensitive. Browsers
-    /// share the Meet pattern because Google's controls toolbar lives
-    /// in the rendered page, not the browser chrome.
+    /// Per-bundle toolbar-title needles (case-insensitive substring).
+    /// Browsers share the Meet pattern since the controls live in the page.
     static func callingControlsToolbarNeedles(bundleID: String) -> [String] {
         switch bundleID {
         case "com.microsoft.teams2", "com.microsoft.teams":
@@ -255,11 +207,8 @@ enum MeetingAXHandleBuilder {
         case "com.tinyspeck.slackmacgap":
             return ["huddle controls", "call controls"]
         default:
-            // Browsers and unknown natives: assume Meet-style "meeting
-            // controls" / "call controls" labelling. Cheap superset
-            // that picks up Meet in Chrome / Arc / Edge / Safari and
-            // doesn't fire on shells (their non-meeting windows don't
-            // host a toolbar with these strings).
+            // Browsers and unknown natives: Meet-style labelling. Cheap
+            // superset that doesn't fire on non-meeting windows.
             return ["meeting controls", "call controls"]
         }
     }
@@ -274,10 +223,8 @@ enum MeetingAXHandleBuilder {
     }
 
     private static func pickMeetingWindow(windows: [AXUIElement]) -> AXUIElement? {
-        // First window with a non-empty title is the default for the
-        // lifecycle adapter's `meetingWindow` handle field. Button
-        // discovery in `build` searches every window separately so a
-        // wrong pick here doesn't hide the mute / leave buttons.
+        // First titled window, for the `meetingWindow` field only; `build`
+        // searches every window for buttons, so a wrong pick is harmless.
         for w in windows {
             var titleRef: CFTypeRef?
             guard AXUIElementCopyAttributeValue(w, kAXTitleAttribute as CFString, &titleRef) == .success,
@@ -288,14 +235,9 @@ enum MeetingAXHandleBuilder {
         return windows.first
     }
 
-    /// Single observable surface for the AX walk's outcome. Emitted
-    /// once per `build` call; tail with:
-    ///   tail -200 ~/Library/Logs/MeetingPipe/events.jsonl \
-    ///     | grep ax_handles_built
-    /// `found_mute = false` for a native bundle with AX trusted is
-    /// the signature symptom of "AX walk didn't find the button"
-    /// (the gate then runs on HAL + RMS only and the user can speak
-    /// while in-app muted).
+    /// One `ax_handles_built` event per `build`. `found_mute=false` on a
+    /// native bundle with AX trusted is the signature "AX walk missed the
+    /// button" symptom (the gate then runs HAL + RMS only).
     private static func emitDiagnostic(
         source: AppSource,
         axTrusted: Bool?,
@@ -316,10 +258,7 @@ enum MeetingAXHandleBuilder {
         Log.event(category: "coordinator", action: "ax_handles_built", attributes: attrs)
     }
 
-    /// Bounded depth-first walk for the first element that satisfies
-    /// `predicate`. Mirrors the existing `MeetingWindowProbe` walk; the
-    /// 12-depth ceiling is empirically generous for Teams' nested
-    /// toolbar shells.
+    /// Bounded DFS for the first button/checkbox satisfying `predicate`.
     private static func findButton(
         in element: AXUIElement,
         depth: Int,
@@ -345,10 +284,7 @@ enum MeetingAXHandleBuilder {
         return nil
     }
 
-    /// Bounded depth-first walk for the first `AXToolbar` whose title
-    /// or description contains any of `needles` (case-insensitive
-    /// substring). Mirrors `findButton`'s shape so the depth ceiling
-    /// and traversal cost stay consistent.
+    /// Bounded DFS for the first toolbar/group whose text contains any needle.
     private static func findToolbar(
         in element: AXUIElement,
         depth: Int,
@@ -427,14 +363,10 @@ enum MeetingAXHandleBuilder {
         }
     }
 
-    /// True when an AX label names the Teams call Leave / Hang-up
-    /// control. The control is labelled "Leave" on its own (sometimes
-    /// with a trailing keyboard-shortcut hint in parentheses), "Leave
-    /// call", or "Leave meeting"; the hang-up variant reads "Hang up".
-    /// A bare substring match on "leave" also accepted Teams chrome
-    /// buttons such as "Leave feedback", "Leave team", and "Leave
-    /// organization", which made the Settings window read as a live
-    /// call and raised a false recording prompt.
+    /// True when an AX label names the Teams Leave/Hang-up control. Exact
+    /// match (after dropping a shortcut hint), not substring: "leave"
+    /// substring also matched "Leave feedback/team/organization" and made
+    /// the Settings window read as a live call (false prompt).
     static func isTeamsCallLeaveLabel(_ text: String?) -> Bool {
         guard var t = text?.lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else {
@@ -459,11 +391,9 @@ enum MeetingAXHandleBuilder {
         return matchesMute(app: app, catalogue: catalogue, title: title, help: help, description: desc)
     }
 
-    /// Pure mute-button predicate. Matches against ANY locale in the
-    /// `MuteLabels` catalogue for the given app, so the AX walk
-    /// finds the button regardless of the user's system locale.
-    /// Precise per-locale recognition happens later in
-    /// `AXMuteButtonProbe.evaluate` against `Locale.current`.
+    /// Pure mute-button predicate, matching ANY locale in the catalogue so
+    /// the walk finds the button regardless of system locale; precise
+    /// per-locale recognition is `AXMuteButtonProbe.evaluate`'s job later.
     static func matchesMute(
         app: String,
         catalogue: MuteLabels,
@@ -476,10 +406,8 @@ enum MeetingAXHandleBuilder {
             .joined(separator: " | ")
         if blob.isEmpty { return false }
         guard let perLocale = catalogue.entries[app.lowercased()] else { return false }
-        // Word-boundary match (not raw substring); see
-        // MuteLabels.containsAsWord for why. Without this, Teams 2's
-        // "Unmuted (⌥ ⌘ Q)" status-indicator button was picked up
-        // by the AX walk and bound to a probe that injected
+        // Word-boundary match (see MuteLabels.containsAsWord): a raw substring
+        // picked up Teams 2's "Unmuted (...)" status button and injected
         // spurious .muted events.
         for entry in perLocale.values {
             for label in entry.actionMute + entry.actionUnmute + entry.statusMuted + entry.statusUnmuted {
