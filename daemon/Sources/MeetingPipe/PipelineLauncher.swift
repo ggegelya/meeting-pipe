@@ -1,32 +1,22 @@
 import Foundation
 
-/// Contract the Coordinator depends on to run a captured audio file through
-/// the transcription/summarization/publish pipeline. The default
-/// implementation is `PipelineLauncher`; tests substitute a fake.
-///
-/// `summaryMode == .byo` instructs the pipeline to skip the Anthropic call
-/// and write a paste-into-Claude-Code bundle instead. The launcher passes
-/// `MP_FORCE_BYO=1` through the subprocess environment.
+/// Pipeline execution contract. Default implementation is `PipelineLauncher`; tests substitute a fake.
+/// `summaryMode == .byo` skips the Anthropic call and writes a paste bundle; the launcher passes `MP_FORCE_BYO=1` in the subprocess env.
 protocol PipelineDriver: AnyObject {
     func runAll(wav: URL, summaryMode: SummaryMode, completion: @escaping (Result<URL?, Error>) -> Void)
-    /// Re-run the publish step against an existing `<stem>.summary.json`.
-    /// Used by the Library's summary-edit flow after the user persists
-    /// a corrected summary on disk. Returns the Notion page URL on
-    /// success (nil when regulated_mode is on).
+    /// Re-run the publish step against an existing `<stem>.summary.json`. Returns the Notion page URL on success (nil when regulated_mode is on).
     func publish(summaryJSON: URL, completion: @escaping (Result<URL?, Error>) -> Void)
-    /// Re-run only the summarize step against an existing transcript.
-    /// Used by the Library context menu's "Regenerate summary" action.
+    /// Re-run only the summarize step against an existing transcript (Library "Regenerate summary" action).
     func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
 }
 
 extension PipelineDriver {
-    /// Convenience for callers that don't care about summary mode (auto).
+    /// Default summaryMode to `.auto`.
     func runAll(wav: URL, completion: @escaping (Result<URL?, Error>) -> Void) {
         runAll(wav: wav, summaryMode: .auto, completion: completion)
     }
 
-    /// Default no-op stub for test fakes that don't model republish.
-    /// Production code (`PipelineLauncher`) overrides this.
+    /// Default no-op stub; `PipelineLauncher` overrides this.
     func publish(summaryJSON: URL, completion: @escaping (Result<URL?, Error>) -> Void) {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
@@ -34,7 +24,7 @@ extension PipelineDriver {
         )))
     }
 
-    /// Default no-op stub for test fakes that don't model regenerate.
+    /// Default no-op stub; `PipelineLauncher` overrides this.
     func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
@@ -43,15 +33,9 @@ extension PipelineDriver {
     }
 }
 
-/// Spawns `mp run-all <wav>` out of process so transcription doesn't block the daemon.
+/// Spawns `mp` pipeline subcommands out of process so transcription doesn't block the daemon.
 final class PipelineLauncher: PipelineDriver {
-    /// Hard cap on subprocess wallclock. The pipeline's worst legitimate
-    /// run on this hardware is around 30 minutes for a 3-hour input
-    /// (16 min transcribe + small alignment + skipped diarization on long
-    /// audio). 90 minutes is generous headroom that still ensures the
-    /// daemon can never sit in `.handoff` indefinitely if the pipeline
-    /// hangs (May 2026 incident: a 3h audio file pinned 4 cores for 13h
-    /// of wallclock before manual kill).
+    /// Hard wallclock cap for `run-all`. Worst legitimate run is ~30 min for a 3-hour input; 90 min ensures the daemon never sits in `.handoff` indefinitely (May 2026 incident: a 3h file pinned 4 cores for 13h before manual kill).
     static let defaultMaxRuntime: TimeInterval = 90 * 60
 
     private let maxRuntime: TimeInterval
@@ -77,7 +61,7 @@ final class PipelineLauncher: PipelineDriver {
         }
     }
 
-    /// `completion` receives the Notion page URL (nil in regulated_mode) or an error.
+    /// Completion receives the Notion page URL (nil in regulated_mode) or an error.
     func runAll(
         wav: URL,
         summaryMode: SummaryMode = .auto,
@@ -92,15 +76,10 @@ final class PipelineLauncher: PipelineDriver {
         p.executableURL = URL(fileURLWithPath: mpPath.shell)
         p.arguments = mpPath.args + ["run-all", wav.path]
 
-        // Re-read secrets.env on every launch so users can rotate
-        // ANTHROPIC_API_KEY / NOTION_TOKEN / HF_TOKEN without restarting the
-        // daemon. The daemon's own env was sourced once at startup; spawned
-        // pipeline processes get a fresh read every time.
+        // Re-read secrets.env on every launch so token rotations take effect without a daemon restart.
         var env = Self.freshEnvironment()
         if summaryMode == .byo {
-            // Pipeline checks this flag in orchestrate.run_all and short-
-            // circuits to the manual-paste bundle. Env-var (not flag) so
-            // existing `mp run-all <wav>` invocations stay backward-compatible.
+            // Env-var (not a CLI flag) so existing `mp run-all <wav>` invocations stay backward-compatible.
             env["MP_FORCE_BYO"] = "1"
         }
         p.environment = env
@@ -110,7 +89,7 @@ final class PipelineLauncher: PipelineDriver {
         p.standardOutput = outPipe
         p.standardError = errPipe
 
-        // Pipeline log lives next to detector / daemon logs so the user can tail one place.
+        // Pipeline log co-located with daemon logs so the user can tail one place.
         let logURL = Log.logsDir.appendingPathComponent("pipeline.log")
         if !FileManager.default.fileExists(atPath: logURL.path) {
             FileManager.default.createFile(atPath: logURL.path, contents: nil)
@@ -134,12 +113,8 @@ final class PipelineLauncher: PipelineDriver {
             }
         }
 
-        // Watchdog: the pipeline subprocess gets a hard wallclock budget.
-        // If it overruns, we SIGTERM, then SIGKILL after a grace period;
-        // the existing terminationHandler routes the "killed" status into
-        // the LaunchError.timeout completion. Read by both the timer and
-        // the terminationHandler under a lock-free flag — the timer only
-        // sets it, the handler only reads it.
+        // Watchdog: on overrun SIGTERM then SIGKILL after a grace period; terminationHandler routes killed status to LaunchError.timeout.
+        // timedOut is set only by the timer and read only by the handler, so no lock is needed.
         let timedOut = TimeoutFlag()
         let watchdog = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         watchdog.schedule(deadline: .now() + self.maxRuntime)
@@ -149,7 +124,7 @@ final class PipelineLauncher: PipelineDriver {
             timedOut.set()
             Log.main.warning("Pipeline exceeded \(Int(timeoutSeconds / 60)) min — terminating")
             p.terminate()
-            // Grace period: if SIGTERM doesn't take, escalate.
+            // Escalate to SIGKILL if SIGTERM doesn't take.
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30) {
                 if p.isRunning { kill(p.processIdentifier, SIGKILL) }
             }
@@ -173,7 +148,7 @@ final class PipelineLauncher: PipelineDriver {
                 return
             }
 
-            // Side-channel: orchestrator writes <wav-stem>.notion.json with page_url.
+            // Orchestrator writes <wav-stem>.notion.json with page_url; read it back as the success value.
             let stem = wav.deletingPathExtension().lastPathComponent
             let sidecar = wav.deletingLastPathComponent().appendingPathComponent("\(stem).notion.json")
             if let data = try? Data(contentsOf: sidecar),
@@ -194,13 +169,8 @@ final class PipelineLauncher: PipelineDriver {
         }
     }
 
-    /// Spawn `mp publish-notion <summary.json>` and surface the resulting
-    /// page URL (from `<stem>.notion.json`) via the completion handler.
-    /// Reuses the same secrets read + watchdog scaffolding as runAll so
-    /// stale tokens, hung subprocesses, and non-zero exits behave the
-    /// same here as in the main pipeline path. Runs without `MP_FORCE_BYO`
-    /// — the publish step is identical regardless of how the summary
-    /// was produced (auto, paste, or correction-edit).
+    /// Spawn `mp publish-notion <summary.json>` and return the resulting page URL (from `<stem>.notion.json`).
+    /// Reuses the same secrets + watchdog scaffolding as `runAll`. Never sets `MP_FORCE_BYO` - publish is identical regardless of how the summary was produced.
     func publish(
         summaryJSON: URL,
         completion: @escaping (Result<URL?, Error>) -> Void
@@ -243,8 +213,7 @@ final class PipelineLauncher: PipelineDriver {
             }
         }
 
-        // Publish is far quicker than transcribe + summarize; a 10-min
-        // wallclock is generous headroom for Notion's API on a slow link.
+        // Publish is far quicker than transcribe + summarize; 10 min is generous headroom for Notion's API on a slow link.
         let publishTimeout: TimeInterval = 10 * 60
         let timedOut = TimeoutFlag()
         let watchdog = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
@@ -300,12 +269,7 @@ final class PipelineLauncher: PipelineDriver {
         }
     }
 
-    /// Re-run the summarize stage against an existing transcript markdown.
-    /// Spawned as `mp summarize <transcript.md>` so the existing
-    /// per-stage entry point (rather than orchestrate's run-all) handles
-    /// config + secrets resolution. Overwrites `<stem>.summary.json` and
-    /// `<stem>.summary.md` in-place; downstream republish picks up the
-    /// new content from `<stem>.summary.json`.
+    /// Spawn `mp summarize <transcript.md>`. Uses the per-stage entry point (not orchestrate's run-all) so config + secrets are resolved the same way. Overwrites `<stem>.summary.json` and `<stem>.summary.md` in-place.
     func summarize(
         transcriptMD: URL,
         completion: @escaping (Result<Void, Error>) -> Void
@@ -348,10 +312,7 @@ final class PipelineLauncher: PipelineDriver {
             }
         }
 
-        // Summarize is bounded by the LLM round-trip (cloud) or local
-        // model latency. 20 min wallclock covers the worst legitimate
-        // run on the curated Qwen 32B preset (~2-4 min) with generous
-        // headroom for long-meeting prompts.
+        // Bounded by LLM round-trip or local model latency. 20 min covers the worst legitimate run (Qwen 32B, ~2-4 min) with headroom for long-meeting prompts.
         let summarizeTimeout: TimeInterval = 20 * 60
         let timedOut = TimeoutFlag()
         let watchdog = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
@@ -394,9 +355,7 @@ final class PipelineLauncher: PipelineDriver {
         }
     }
 
-    /// Tiny one-way flag for the watchdog → terminationHandler signal.
-    /// Atomic via a serial OS lock — Swift's stdlib still doesn't ship a
-    /// public atomic Bool, and a real lock is cheap for a one-shot flip.
+    /// One-way flag for the watchdog-to-terminationHandler signal. Uses NSLock because Swift stdlib has no public atomic Bool; cheap for a one-shot flip.
     private final class TimeoutFlag: @unchecked Sendable {
         private var flag = false
         private let lock = NSLock()
@@ -404,8 +363,7 @@ final class PipelineLauncher: PipelineDriver {
         var isSet: Bool { lock.lock(); defer { lock.unlock() }; return flag }
     }
 
-    /// Build a process environment with a freshly-read secrets file overlaid
-    /// on top of the daemon's current environment. Visible for tests.
+    /// Build a process environment with a freshly-read secrets file overlaid on the daemon's current environment. Exposed for tests.
     static func freshEnvironment(
         secretsURL: URL? = nil,
         baseEnvironment: [String: String]? = nil
@@ -428,10 +386,8 @@ final class PipelineLauncher: PipelineDriver {
         return env
     }
 
-    /// Resolution order: prebuilt venv (`~/.local/share/meeting-pipe/venv/bin/mp`)
-    /// → `uv run mp` invoked from the repo's pipeline dir → bare `mp` on PATH.
-    /// Exposed `internal` so the streaming transcriber can reuse the same
-    /// resolution logic without duplicating it.
+    /// Resolution order: prebuilt venv -> `uv run mp` from the repo's pipeline dir -> bare `mp` on PATH.
+    /// Exposed `internal` so other callers (e.g. the streaming transcriber) can reuse the same logic.
     struct MPInvocation {
         let shell: String
         let args: [String]
@@ -444,12 +400,8 @@ final class PipelineLauncher: PipelineDriver {
             return MPInvocation(shell: venvBin.path, args: [])
         }
 
-        // Discover repo root by walking up from the executable path looking
-        // for `pipeline/pyproject.toml`. The walk depth covers two layouts:
-        //   - dev:    .build/release/MeetingPipe                          (3 hops)
-        //   - bundled: .build/release/MeetingPipe.app/Contents/MacOS/...  (6 hops)
-        // 10 leaves headroom if the user ever moves the .app under
-        // /Applications or similar.
+        // Walk up from the executable looking for `pipeline/pyproject.toml`.
+        // dev layout needs ~3 hops, .app bundle ~6; 10 gives headroom for /Applications installs.
         if let bin = Bundle.main.executableURL {
             var dir = bin.deletingLastPathComponent()
             for _ in 0..<10 {
@@ -465,7 +417,7 @@ final class PipelineLauncher: PipelineDriver {
             }
         }
 
-        // Fallback: bare mp on PATH (the install script symlinks one).
+        // Last resort: bare mp on PATH (install script symlinks one).
         let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
         for entry in path.split(separator: ":") {
             let candidate = URL(fileURLWithPath: String(entry)).appendingPathComponent("mp")

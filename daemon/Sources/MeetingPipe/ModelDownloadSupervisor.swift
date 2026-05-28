@@ -1,28 +1,8 @@
 import Foundation
 
-/// Owns the lifecycle of a `mp prefetch-model` subprocess and surfaces
-/// download progress to whoever subscribes (Coordinator -> StatusBar).
-///
-/// Behaviour the daemon's UI relies on:
-///
-///   - `ensure(modelId:)` is the only entry point. Idempotent: if the
-///     same model is already downloading, do nothing. If a different
-///     model is downloading, kill the in-flight process and start a new
-///     one for the requested model.
-///   - The supervisor checks `isCached(modelId:)` first; if the model
-///     is fully on disk, it short-circuits and does not spawn anything.
-///     The Python prefetch command would do this too, but skipping the
-///     subprocess hop avoids 0.5-1s of fork/import latency on the happy
-///     path.
-///   - Stdout is the live event channel (one JSON per line). Stderr is
-///     captured into the daemon's text log for postmortem.
-///   - Failures emit one `failed` event and clear the in-flight state.
-///     The next recording falls through to the existing
-///     `LocalSummaryClient` path which would re-attempt the download
-///     (with worse UX). Recovery happens at the next `ensure(...)`.
-///
-/// Threading: every public method must run on the main queue. The stdout
-/// reader hops back to main before invoking callbacks.
+/// Owns the lifecycle of a `mp prefetch-model` subprocess and surfaces download progress to the Coordinator -> StatusBar.
+/// `ensure(modelId:)` is the only entry point - idempotent, cancels any in-flight download for a different model. Short-circuits without spawning if the model is already cached (avoids 0.5-1 s of fork/import latency on the happy path). Stdout is the live JSON-lines event channel; stderr goes to the daemon log.
+/// Threading: every public method must run on the main queue; the stdout reader hops back to main before invoking callbacks.
 final class ModelDownloadSupervisor {
 
     enum State: Equatable {
@@ -33,8 +13,7 @@ final class ModelDownloadSupervisor {
         case failed(modelId: String, error: String)
     }
 
-    /// Called on the main queue every time `state` changes. Coordinator
-    /// uses this to rebuild the menu-bar title + menu.
+    /// Called on the main queue on every state change; Coordinator uses this to rebuild the menu-bar title and menu.
     var onStateChange: ((State) -> Void)?
 
     private(set) var state: State = .idle {
@@ -50,11 +29,7 @@ final class ModelDownloadSupervisor {
     private var stdoutBuffer = Data()
     private var currentModelId: String?
 
-    /// Replicates the HuggingFace Hub cache layout: `~/.cache/huggingface/
-    /// hub/models--<repo_with_slashes_replaced>/snapshots/<hash>/`. We
-    /// treat presence of any non-empty snapshot dir as "cached enough"
-    /// for the short-circuit; the Python side does a real byte-count
-    /// check before declaring complete.
+    /// Replicates the HuggingFace Hub layout (`~/.cache/huggingface/hub/models--<repo>/snapshots/<hash>/`). Any non-empty snapshot dir is "cached enough" for the short-circuit; the Python side does a real byte-count check before declaring complete.
     static func isCached(modelId: String) -> Bool {
         let sanitized = "models--" + modelId.replacingOccurrences(of: "/", with: "--")
         let snapshots = FileManager.default.homeDirectoryForCurrentUser
@@ -70,10 +45,7 @@ final class ModelDownloadSupervisor {
         }
     }
 
-    /// Idempotent. Call when:
-    ///   - Coordinator.start() if backend is local/auto.
-    ///   - Config persisted with a backend or local_model change.
-    /// No-op when backend is anthropic.
+    /// Idempotent. Call on `Coordinator.start()` (local/auto backend) and when config is persisted with a backend or local_model change. No-op when backend is anthropic.
     func ensure(modelId: String) {
         // Already downloading the same model -> let it run.
         if let cur = currentModelId, cur == modelId, process?.isRunning == true {
@@ -107,8 +79,7 @@ final class ModelDownloadSupervisor {
             return
         }
         currentModelId = modelId
-        // Start at downloading(progress: nil, 0, 0); first stdout line
-        // refines this with real numbers from the started/progress event.
+        // Start with progress nil; first stdout event refines to real numbers.
         state = .downloading(modelId: modelId, progress: nil, downloadedBytes: 0, totalBytes: 0)
 
         let p = Process()
@@ -120,7 +91,7 @@ final class ModelDownloadSupervisor {
         p.standardOutput = stdoutPipe
         p.standardError = stderrPipe
 
-        // Drain stderr to the daemon's text log (best-effort, async).
+        // Drain stderr to the daemon log (best-effort).
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if !data.isEmpty, let text = String(data: data, encoding: .utf8) {
@@ -128,7 +99,7 @@ final class ModelDownloadSupervisor {
             }
         }
 
-        // Drain stdout line-by-line; each line is one JSON event.
+        // Drain stdout line-by-line; each line is one JSON progress event.
         let outHandle = stdoutPipe.fileHandleForReading
         stdoutHandle = outHandle
         outHandle.readabilityHandler = { [weak self] handle in
@@ -177,10 +148,7 @@ final class ModelDownloadSupervisor {
         let modelId = (event["repo_id"] as? String) ?? currentModelId ?? ""
         switch kind {
         case "started", "progress":
-            // JSONSerialization returns NSNumber for any numeric value.
-            // `as? Int64` works for ints below 2^31 only on 32-bit archs;
-            // route through NSNumber.int64Value to be size-safe (the
-            // download size is multi-GB, well above Int32).
+            // Route byte counts through NSNumber.int64Value: `as? Int64` only works below 2^31 on 32-bit arches and download sizes are multi-GB.
             let downloaded = (event["downloaded_bytes"] as? NSNumber)?.int64Value
                 ?? (event["cached_bytes"] as? NSNumber)?.int64Value
                 ?? 0
@@ -203,7 +171,7 @@ final class ModelDownloadSupervisor {
     }
 
     private func handleTermination(_ proc: Process) {
-        // Drain any final buffered bytes.
+        // Flush any remaining buffered bytes before clearing the handle.
         if let h = stdoutHandle {
             let remaining = h.availableData
             if !remaining.isEmpty {
@@ -214,7 +182,7 @@ final class ModelDownloadSupervisor {
         stdoutHandle = nil
         process = nil
 
-        // Distinguish abnormal exits the JSONL stream did not narrate.
+        // Non-zero exit without a prior "failed" event - synthesize the failure state.
         if case .downloading(let modelId, _, _, _) = state, proc.terminationStatus != 0 {
             state = .failed(modelId: modelId, error: "prefetch exited \(proc.terminationStatus)")
         }

@@ -3,43 +3,24 @@ import ApplicationServices
 import AVFoundation
 import Foundation
 
-/// `MeetingPipe doctor` - daemon-side preflight that probes the things
-/// that actually break daily use: AX trust + per-app reachability,
-/// CoreAudio HAL tap availability (via the Screen Recording permission),
-/// the pipeline binary's launch-and-exit roundtrip, and events.jsonl
-/// writability. The Python `mp doctor` continues to handle the
-/// credential / network side of the preflight; the two are
-/// complementary, not redundant.
-///
-/// Exit code: 0 when every probe is `.ok` or `.warn`; non-zero (1) when
-/// any probe is `.fail`. Every probe emits exactly one
-/// `Log.event(category: "doctor", action: "probe", ...)` so a dogfood
-/// script can correlate failures with daily-use regressions.
+/// `MeetingPipe doctor` - probes AX trust, per-app reachability, Screen Recording / CoreAudio HAL tap, pipeline binary roundtrip, and events.jsonl writability. Complements (not duplicates) `mp doctor`, which handles credentials and network.
+/// Exit code: 0 when all probes are `.ok` or `.warn`; 1 on any `.fail`. Each probe emits a `Log.event(category: "doctor", action: "probe")` for dogfood regression tracking.
 enum DoctorCommand {
 
     enum Status: String {
-        /// Everything good. Doctor exits zero even if all probes are `.ok`.
         case ok
-        /// Soft failure. Doctor still exits zero but the line is loud
-        /// enough for the user to act on (e.g. an app the user hasn't
-        /// installed but might want).
-        case warn
-        /// Hard failure. Doctor exits non-zero.
-        case fail
+        case warn // exits zero, but visible enough for the user to act on
+        case fail // exits non-zero
     }
 
     struct ProbeResult: Equatable {
         let name: String
         let status: Status
-        /// Single-line summary printed next to the marker. Avoid stack
-        /// traces or paths longer than ~120 chars; the user reads this
-        /// from a terminal.
+        /// Single-line summary. Keep under ~120 chars; avoid stack traces.
         let message: String
     }
 
-    /// A probe is just a name + a zero-arg run closure. Naming this an
-    /// explicit type rather than `(() -> ProbeResult, String)` makes the
-    /// list literal in `defaultProbes()` readable.
+    /// Named probe closure. Explicit type (vs a tuple) keeps the `defaultProbes()` list literal readable.
     struct Probe {
         let name: String
         let run: () -> ProbeResult
@@ -47,15 +28,12 @@ enum DoctorCommand {
 
     // MARK: - Public entry points
 
-    /// CLI entry. Wired in `App.main` when argv[1] is `"doctor"`.
+    /// CLI entry point; wired in `App.main` when argv[1] is `"doctor"`.
     static func run() -> Int32 {
         execute(probes: defaultProbes(), writer: { print($0) })
     }
 
-    /// Pure orchestrator: runs each probe, prints the marker line,
-    /// emits an event, returns the aggregate exit code. Tests inject
-    /// canned probes + a capturing writer to assert behaviour without
-    /// hitting AX / AVFoundation / the file system.
+    /// Pure orchestrator: runs each probe, prints its marker line, emits an event, and returns the aggregate exit code. Tests inject canned probes + a capturing writer to avoid hitting AX / AVFoundation / the file system.
     @discardableResult
     static func execute(
         probes: [Probe],
@@ -93,9 +71,7 @@ enum DoctorCommand {
 
     // MARK: - Probe set
 
-    /// Built-in probe list. Order is the printing order: keep the
-    /// permission probes first since a missing TCC grant masks every
-    /// downstream probe.
+    /// Built-in probe list. Permission probes run first - a missing TCC grant masks all downstream probes.
     static func defaultProbes() -> [Probe] {
         var out: [Probe] = [
             Probe(name: "accessibility.trusted", run: probeAXTrust),
@@ -112,11 +88,7 @@ enum DoctorCommand {
         return out
     }
 
-    /// Subset of bundles from `Resources/meeting_apps.toml` that the
-    /// detector treats as native meeting apps, plus the Webex unified
-    /// app. We only check apps the user might rely on day-to-day; a
-    /// per-bundle "not installed" comes back as `.warn` rather than
-    /// `.fail` so a non-Zoom user isn't told their machine is broken.
+    /// Meeting apps to probe (subset of `meeting_apps.toml` native apps + Webex unified). "Not installed" is `.warn` so a non-Zoom user isn't told their machine is broken.
     static let knownMeetingBundleIDs: [String] = [
         "com.microsoft.teams2",
         "com.microsoft.teams",
@@ -196,9 +168,7 @@ enum DoctorCommand {
         }
     }
 
-    /// For a known meeting bundle: installed? running? AX-reachable?
-    /// Not-installed is a soft signal (the user just doesn't use that
-    /// app). Running + AX-trusted + attribute read works → ok.
+    /// Probe: is the app installed? Running? AX-reachable? Not-installed is `.warn` (user just doesn't use that app).
     static func probeAppReachable(bundleID: String) -> ProbeResult {
         let name = "ax.app.\(bundleID)"
         let workspace = NSWorkspace.shared
@@ -211,9 +181,7 @@ enum DoctorCommand {
         guard let pid = runningPID else {
             return ProbeResult(name: name, status: .ok, message: "Installed; not currently running (probe skipped).")
         }
-        // AX trust is global; if it's off the per-app read will silently
-        // fail. Report the symptom (read failure) here, surface the root
-        // cause via the AX-trust probe.
+        // AX trust is global; a missing grant silently fails per-app reads. Report the symptom here; the AX-trust probe surfaces the root cause.
         let app = AXUIElementCreateApplication(pid)
         var titleRef: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(app, kAXTitleAttribute as CFString, &titleRef)
@@ -252,8 +220,7 @@ enum DoctorCommand {
 
     static func probePipelineRoundtrip() -> ProbeResult {
         guard let mp = PipelineLauncher.findMP() else {
-            // `pipeline.binary` already reported the underlying issue; skip
-            // the redundant FAIL line to keep doctor output readable.
+            // `pipeline.binary` already reported the root cause; skip the redundant FAIL line.
             return ProbeResult(
                 name: "pipeline.roundtrip",
                 status: .fail,
@@ -303,10 +270,7 @@ enum DoctorCommand {
         )
     }
 
-    /// Surface recordings that the library can't pair with a row, and
-    /// rows that lost their wav. Soft signal: orphans don't fail the
-    /// probe (they don't block daily use), but the message gives the
-    /// user a starting point for the cleanup.
+    /// Surface recordings the library can't pair with a row, and rows with no wav. `.warn` only - orphans don't block daily use but the message gives a cleanup starting point.
     static func probeOrphans() -> ProbeResult {
         let dir = resolveRecordingsDir()
         let report = OrphanScan.scan(directory: dir)
@@ -345,10 +309,7 @@ enum DoctorCommand {
         return parts.joined(separator: "; ") + " (in \(dir.path))"
     }
 
-    /// Reproduce `Coordinator`'s recordings-dir lookup so the probe
-    /// sees the same path the daemon writes to. Best-effort: TOML
-    /// failures fall back to the example default, which is also the
-    /// daemon's behaviour at first launch.
+    /// Reproduce `Coordinator`'s recordings-dir lookup. TOML failures fall back to the same default the daemon uses at first launch.
     static func resolveRecordingsDir() -> URL {
         do {
             return try Config.load().recording.outputDir
@@ -357,19 +318,13 @@ enum DoctorCommand {
         }
     }
 
-    /// Verify we can append a line to `events.jsonl`. The probe is
-    /// destructive in spirit (it actually writes), but uses `Log.event`
-    /// so the write goes through the same path the daemon uses at
-    /// runtime - if this succeeds, the daemon's runtime emission will
-    /// too.
+    /// Verify `events.jsonl` is writable. Actually creates the file if absent, using the same path as the daemon at runtime; if this succeeds, runtime emission will too.
     static func probeEventsWritable() -> ProbeResult {
         let url = Log.logsDir.appendingPathComponent("events.jsonl")
-        // Read existing size; the doctor's own `probe` events will be
-        // written after this method returns, so the check just verifies
-        // the path is writable from the daemon's container.
+        // The doctor's own `probe` events are written after this returns, so this just verifies the path is writable in the daemon's container.
         let fm = FileManager.default
         if !fm.fileExists(atPath: url.path) {
-            // First-launch case: try to create the parent dir + file.
+            // First launch: create parent dir + file.
             do {
                 try fm.createDirectory(at: Log.logsDir, withIntermediateDirectories: true)
                 try Data().write(to: url, options: .atomic)

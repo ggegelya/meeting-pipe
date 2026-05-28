@@ -1,13 +1,7 @@
 import Combine
 import Foundation
 
-/// Runs `mp doctor` out of process and streams its output for display
-/// in the Preferences sheet. Reuses the same `mp` resolution logic as
-/// `PipelineLauncher` (prebuilt venv → uv run → PATH) so it picks up
-/// whichever environment the user has set up.
-///
-/// State machine: idle → running → finished. The published properties
-/// drive the UI directly; SwiftUI re-renders on every output append.
+/// Runs `mp doctor` out of process and streams its output for the Preferences sheet. Reuses `PipelineLauncher.findMP()` resolution so it picks up the same environment the user has set up. State: idle -> running -> finished.
 @MainActor
 final class DoctorRunner: ObservableObject {
 
@@ -22,7 +16,7 @@ final class DoctorRunner: ObservableObject {
 
     private var process: Process?
 
-    /// Spawn `mp doctor`. No-op when one is already running.
+    /// Spawn `mp doctor`; no-op if already running.
     func run() {
         guard state != .running else { return }
         guard let mp = PipelineLauncher.findMP() else {
@@ -44,8 +38,7 @@ final class DoctorRunner: ObservableObject {
         p.standardOutput = outPipe
         p.standardError = errPipe
 
-        // Stream both streams into the same `output` so the user sees
-        // FAIL/WARN lines in order with the OK lines around them.
+        // Merge stdout and stderr into the same output so FAIL/WARN lines appear in context.
         let appender = { [weak self] (data: Data) in
             guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
             Task { @MainActor [weak self] in
@@ -77,9 +70,7 @@ final class DoctorRunner: ObservableObject {
         }
     }
 
-    /// Cancel an in-flight run. Used when the user closes the sheet
-    /// before the doctor finishes — we don't want a stray subprocess
-    /// outliving the UI that requested it.
+    /// Cancel an in-flight run (called when the user closes the sheet before the doctor finishes).
     func cancel() {
         process?.terminate()
         process = nil

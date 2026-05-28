@@ -1,27 +1,15 @@
 import Combine
 import Foundation
 
-/// One row in the Notion DB picker: the 32-char DB id plus the human-
-/// readable title the user assigned in Notion. Sorted alphabetically by
-/// title so the picker reads like the user's database sidebar.
+/// One row in the Notion DB picker: 32-char DB id + human-readable title, sorted alphabetically.
 struct NotionDatabaseEntry: Codable, Identifiable, Equatable, Hashable {
     let id: String
     let title: String
 }
 
-/// Fetches and caches the user's Notion databases for the per-workflow
-/// DB picker (TECH-B8).
-///
-/// Cache lives at `~/Library/Caches/MeetingPipe/notion-databases.json`.
-/// We never expire automatically — the cache stays good for as long as
-/// the user's Notion DBs are stable. Refresh is explicit (a button next
-/// to the picker) so the user is never surprised by a stale list and
-/// never pays an API round-trip on a settings-tab open they didn't ask
-/// for.
-///
-/// Threading: every published mutation runs on the main queue. The
-/// underlying URLSession call lives on a background queue and posts
-/// back via `DispatchQueue.main.async`.
+/// Fetches and caches the user's Notion databases for the per-workflow DB picker (TECH-B8).
+/// Cache at `~/Library/Caches/MeetingPipe/notion-databases.json`; never auto-expires (Notion DBs are stable and a stale list is less bad than a surprise API call on settings-tab open). Refresh is explicit.
+/// Threading: `@MainActor`; the URLSession callback posts back to main before mutating published state.
 @MainActor
 final class NotionDatabaseList: ObservableObject {
 
@@ -52,11 +40,7 @@ final class NotionDatabaseList: ObservableObject {
             .appendingPathComponent("Library/Caches/MeetingPipe/notion-databases.json")
     }()
 
-    /// Re-fetch the DB list from Notion using the token currently in
-    /// the process environment. The Preferences-tab "Apply" path keeps
-    /// the env in sync with what's in `secrets.env`, so the daemon's
-    /// process env is the right source — no need to reach back into
-    /// SecretsStore here.
+    /// Re-fetch from Notion using the token in the process environment. Preferences "Apply" keeps the env in sync with `secrets.env`, so no need to reach into SecretsStore.
     func refresh() {
         let token = ProcessInfo.processInfo.environment["NOTION_TOKEN"] ?? ""
         guard !token.isEmpty else {
@@ -76,8 +60,7 @@ final class NotionDatabaseList: ObservableObject {
         }
     }
 
-    /// Whether the picker should fall back to a raw text field. Empty
-    /// cache + no in-flight load → no UI to render in the dropdown.
+    /// True when no databases are loaded yet; picker falls back to a raw text field.
     var isEmpty: Bool { entries.isEmpty }
 
     // MARK: - Persistence
@@ -103,9 +86,7 @@ final class NotionDatabaseList: ObservableObject {
 
     // MARK: - HTTP
 
-    /// Fetch the list. Uses the same `/v1/search` filter the pipeline's
-    /// `mp doctor` uses to validate the token, so a successful daemon
-    /// fetch reproduces the doctor's authentication contract.
+    /// Fetch the DB list. Uses the same `/v1/search` filter as `mp doctor` so a successful fetch implies the token is valid.
     static func fetch(
         token: String,
         session: URLSession = .shared
@@ -130,8 +111,7 @@ final class NotionDatabaseList: ObservableObject {
         return parse(jsonData: data)
     }
 
-    /// Pull `(id, title)` pairs out of Notion's `/v1/search` response.
-    /// Exposed for tests so the JSON shape contract is locked in.
+    /// Parse `(id, title)` pairs from a `/v1/search` response. Exposed for tests to lock in the JSON shape contract.
     static func parse(jsonData: Data) -> [NotionDatabaseEntry] {
         guard let raw = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
               let results = raw["results"] as? [[String: Any]] else {
@@ -140,7 +120,7 @@ final class NotionDatabaseList: ObservableObject {
         var out: [NotionDatabaseEntry] = []
         for item in results {
             guard let id = item["id"] as? String, !id.isEmpty else { continue }
-            // Title is an array of rich-text blocks: [{"plain_text": "..."}, ...].
+            // Notion title is an array of rich-text blocks: [{"plain_text": "..."}, ...].
             var title = ""
             if let parts = item["title"] as? [[String: Any]] {
                 title = parts.compactMap { $0["plain_text"] as? String }.joined()

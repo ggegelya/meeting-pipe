@@ -1,31 +1,15 @@
 import Foundation
 
-/// Persists why a meeting's pipeline run failed, as a `<stem>.error.json`
-/// sidecar next to the recording. A failed transcribe / summarize / run
-/// otherwise surfaces only as one transient notification banner, which
-/// Focus modes silence and which is gone in seconds: the owner can lose a
-/// meeting and never know. This sidecar is durable. It survives a daemon
-/// restart and a missed notification, and the Library reads it to mark the
-/// row failed with a reason until the owner retries or deletes the meeting.
-///
-/// Daemon-owned, distinct from the pipeline's success-path
-/// `<stem>.run.json`. The run sidecar is written by `mp run-all` only
-/// after summarize succeeds; this file is written by the daemon, which is
-/// the one process that observes every failure mode (a SIGKILL'd pipeline
-/// writes nothing). The two never describe the same run: success XOR
-/// failure. A successful run clears any stale failure sidecar.
+/// Writes `<stem>.error.json` next to a recording when the pipeline fails, so the Library can surface the failure durably (banners are silenced by Focus mode and gone in seconds).
+/// Daemon-owned; distinct from `<stem>.run.json` which is written by `mp run-all` only on success. A SIGKILL'd pipeline writes nothing - the daemon is the only observer of every failure mode. Success clears a stale failure sidecar.
 enum PipelineFailureSidecar {
 
-    /// Which pipeline stage failed. Coarse but honest: the daemon
-    /// distinguishes on-device transcription from the `mp run-all`
-    /// subprocess from a launch failure. It does not split summarize vs
-    /// publish inside `mp run-all`; `reason` carries that detail.
+    /// Coarse stage label. Does not split summarize vs publish inside `mp run-all`; `reason` carries that detail.
     enum Stage: String {
         case transcribe   // FluidAudio ASR + diarization, in-process
         case pipeline     // mp run-all: summarize + publish
         case launch       // mp executable missing or could not spawn
 
-        /// Human-readable label for the failed-meeting detail surface.
         var displayName: String {
             switch self {
             case .transcribe: return "Transcription"
@@ -35,15 +19,13 @@ enum PipelineFailureSidecar {
         }
     }
 
-    /// Parsed contents of a `<stem>.error.json` sidecar.
     struct Failure: Equatable {
         let stage: Stage
         let reason: String
         let ts: String
     }
 
-    /// Suffix appended to the meeting stem. `MeetingStore.stem(of:)`
-    /// splits on the first dot, so the stem still resolves cleanly.
+    /// Suffix appended to the meeting stem. `MeetingStore.stem(of:)` splits on the first dot, so the stem still resolves cleanly.
     static let suffix = ".error.json"
 
     static func fileName(forStem stem: String) -> String { stem + suffix }
@@ -52,11 +34,7 @@ enum PipelineFailureSidecar {
         dir.appendingPathComponent(fileName(forStem: stem))
     }
 
-    /// Write (or overwrite) the failure sidecar. Atomic via temp-file +
-    /// rename so a crash mid-write never leaves a half-formed file.
-    /// Best-effort: a write failure is logged and swallowed, because
-    /// losing the sidecar must never escalate a pipeline failure into a
-    /// daemon crash. Returns the written URL, or nil on failure.
+    /// Write (or overwrite) the failure sidecar. Atomic via temp-file + rename. Write failures are swallowed - losing the sidecar must never escalate into a daemon crash. Returns the written URL, or nil on failure.
     @discardableResult
     static func write(
         stem: String,
@@ -97,8 +75,7 @@ enum PipelineFailureSidecar {
         }
     }
 
-    /// Parse a failure sidecar at a known URL. Returns nil for a missing
-    /// file, unreadable bytes, malformed JSON, or an unknown stage value.
+    /// Parse a failure sidecar. Returns nil for missing file, unreadable bytes, malformed JSON, or unknown stage.
     static func read(at url: URL) -> Failure? {
         guard let data = try? Data(contentsOf: url),
               let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -111,14 +88,11 @@ enum PipelineFailureSidecar {
         return Failure(stage: stage, reason: reason, ts: ts)
     }
 
-    /// Parse the failure sidecar for a stem in a recordings directory.
     static func read(stem: String, in dir: URL) -> Failure? {
         read(at: url(forStem: stem, in: dir))
     }
 
-    /// Remove the failure sidecar for a stem, if present. Called when a
-    /// run succeeds so a recovered meeting drops out of the failed set.
-    /// Best-effort: a missing file is success; any other error is logged.
+    /// Remove the failure sidecar when a run succeeds, so the meeting drops out of the failed set. Missing file is treated as success; other errors are logged.
     static func clear(stem: String, in dir: URL) {
         let target = url(forStem: stem, in: dir)
         guard FileManager.default.fileExists(atPath: target.path) else { return }

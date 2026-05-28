@@ -1,35 +1,25 @@
 import AppKit
 import UserNotifications
 
-/// Outcomes the Coordinator cares about. Both the on-screen prompt panel
-/// (`MeetingPromptWindow`) and the "Done, open in Notion" notification
-/// route into this delegate, so the state machine has one entry point per
-/// outcome regardless of the surface that produced it.
+/// Coordinator callback protocol. Both `MeetingPromptWindow` and notification actions route here so the state machine has one entry point per outcome regardless of which surface fired it.
 protocol NotifierDelegate: AnyObject {
     func notifier(_ notifier: Notifier, didChooseRecord source: AppSource)
     func notifier(_ notifier: Notifier, didChooseSkip source: AppSource)
     func notifier(_ notifier: Notifier, didChooseAlways source: AppSource)
     func notifier(_ notifier: Notifier, didOpenPage url: URL)
-    /// User clicked "Open Settings" on a Screen-Recording permission warning.
+    /// User tapped "Open Settings" on the Screen Recording permission warning.
     func notifierDidRequestScreenRecordingSettings(_ notifier: Notifier)
-    /// User clicked "Open Settings" on the Accessibility-permission warning.
-    /// Distinct from the Screen-Recording variant so the Coordinator
-    /// can deep-link to the correct pane.
+    /// User tapped "Open Settings" on the Accessibility permission warning. Distinct from the Screen Recording variant so the Coordinator can deep-link to the correct pane.
     func notifierDidRequestAccessibilitySettings(_ notifier: Notifier)
-    /// User clicked the stop action on the "Still meeting?" silence
-    /// notification, or tapped the banner itself. Coordinator stops the
-    /// current recording (no-op if state is no longer `.recording`).
+    /// User tapped "Stop recording" or the banner body on the "Still meeting?" notification. Coordinator stops the recording (no-op if state is no longer `.recording`).
     func notifierDidRequestStopRecording(_ notifier: Notifier)
     /// User clicked "Looks good" on the published-meeting notification.
-    /// `recordingsDir` is the parent directory of the recording (where
-    /// the run sidecar + summary JSON live).
     func notifier(
         _ notifier: Notifier,
         didMarkLooksGoodFor stem: String,
         recordingsDir: URL
     )
-    /// User clicked "Edit summary" on the published-meeting notification
-    /// or selected a meeting from the Recent meetings… submenu.
+    /// User clicked "Edit summary" or selected a meeting from the Recent meetings submenu.
     func notifier(
         _ notifier: Notifier,
         didRequestEditSummaryFor stem: String,
@@ -37,11 +27,7 @@ protocol NotifierDelegate: AnyObject {
     )
 }
 
-/// Wraps UNUserNotificationCenter for the informational banner notifications
-/// (recording started / processing / done / error). The "Record this
-/// meeting?" prompt itself lives in `MeetingPromptWindow` — banners get
-/// silenced under Focus modes and are easy to miss; the floating panel
-/// is the primary surface.
+/// Wraps UNUserNotificationCenter for informational banners (started / processing / done / error). The "Record this meeting?" prompt lives in `MeetingPromptWindow` - banners are silenced by Focus mode and are the secondary surface.
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     weak var delegate: NotifierDelegate?
 
@@ -54,16 +40,13 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private static let permCategory = "MP_PERM"
     private static let actionOpenSettings = "MP_OPEN_SETTINGS"
     private static let stillMeetingCategory = "MP_STILL_MEETING"
-    /// Separate category from `permCategory` so the Open Settings button
-    /// can route to the Accessibility pane instead of Screen Recording.
+    /// Separate from `permCategory` so "Open Settings" routes to Accessibility instead of Screen Recording.
     private static let accessibilityCategory = "MP_ACCESSIBILITY"
     private static let actionOpenAccessibilitySettings = "MP_OPEN_ACCESS_SETTINGS"
     private static let actionStopRecording = "MP_STOP_RECORDING"
     private static let stillMeetingIDPrefix = "still-meeting-"
 
-    /// Per-notification state. We keep this richer than the previous
-    /// id->URL map so the "Looks good" action can find the recording
-    /// without re-deriving paths on click.
+    /// Per-notification state kept so "Looks good" can find the recording without re-deriving paths on click.
     private struct DoneEntry {
         let stem: String
         let recordingsDir: URL
@@ -96,12 +79,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         post(title: "Recording stopped", body: "Processing \(file.lastPathComponent)…")
     }
 
-    /// Post the "meeting done" notification. When `stem` and
-    /// `recordingsDir` are supplied AND a `<stem>.run.json` exists next
-    /// to the recording, the notification surfaces a "Looks good" action
-    /// that writes a verdict-good correction record inline. Without
-    /// those, we fall back to the legacy behaviour (Open in Notion only,
-    /// or a plain "Local Markdown ready" banner under regulated mode).
+    /// Post the "meeting done" notification. If `stem`+`recordingsDir` are supplied and `<stem>.run.json` exists, surfaces a "Looks good" correction action. Otherwise falls back to legacy behaviour (Open in Notion only, or plain "Local Markdown ready" under regulated mode).
     func notifyDone(
         stem: String? = nil,
         recordingsDir: URL? = nil,
@@ -141,10 +119,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(req)
     }
 
-    /// True when the run sidecar is present, i.e. the pipeline actually
-    /// produced a summary the user can grade. Skipped paths (no_speech,
-    /// byo, too_long) never reach the summarize stage and never write
-    /// the run sidecar, so they correctly disable the correction action.
+    /// True when `<stem>.run.json` exists (pipeline produced a gradeable summary). Skipped paths (no_speech, byo, too_long) never write the run sidecar, so the correction action is correctly disabled for them.
     private static func canCorrect(stem: String?, recordingsDir: URL?) -> Bool {
         guard let stem = stem, let dir = recordingsDir else { return false }
         let runURL = dir.appendingPathComponent("\(stem).run.json")
@@ -155,9 +130,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         post(title: "MeetingPipe error", body: message)
     }
 
-    /// Posted by SilenceDetector after 90 s of unbroken silence on both
-    /// channels. The action button stops the recording immediately;
-    /// ignoring it lets the 5-minute auto-stop run on its own.
+    /// Posted by SilenceDetector after 90 s of unbroken silence. The action button stops immediately; ignoring it lets the 5-minute auto-stop fire on its own.
     func notifyStillMeeting() {
         let content = UNMutableNotificationContent()
         content.title = "Still meeting?"
@@ -172,11 +145,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(req)
     }
 
-    /// Posted at startup when the Accessibility TCC entry is missing.
-    /// Without it the detector's window probes degrade to nil, so native
-    /// meetings (Teams / Zoom / Webex / Slack desktop apps) never
-    /// auto-end and the user has to manually stop every recording.
-    /// Action button opens System Settings → Accessibility.
+    /// Posted at startup when Accessibility TCC is missing. Without it, detector window probes degrade to nil and native meetings (Teams / Zoom / Webex / Slack) never auto-end. Action button opens System Settings -> Accessibility.
     func notifyAccessibilityBlocked() {
         let content = UNMutableNotificationContent()
         content.title = "Accessibility disabled"
@@ -187,9 +156,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(req)
     }
 
-    /// Posted at startup when Screen Recording TCC is denied. The daemon
-    /// keeps running, but every recording will be mic-only until the user
-    /// grants the permission. The action button opens System Settings.
+    /// Posted at startup when Screen Recording TCC is denied; recordings will be mic-only until the user grants it. Action button opens System Settings.
     func notifySystemAudioBlocked() {
         let content = UNMutableNotificationContent()
         content.title = "Screen Recording disabled"
@@ -200,15 +167,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(req)
     }
 
-    /// Posted after a recording stops if no system-audio samples were ever
-    /// delivered. Stronger surface than the startup banner because the user
-    /// has just lost half a meeting and may not have seen the startup one.
-    ///
-    /// `permissionState` shapes the message. Until this commit the warning
-    /// only fired when the state was definitively `.denied`; an `.unknown`
-    /// state (fresh daemon launch with no prewarm yet) silently produced
-    /// mic-only recordings with no surface — that's the regression the
-    /// May 5 18:30 recording hit.
+    /// Posted when a recording stops with no system-audio samples. Stronger than the startup banner because the user just lost half a meeting. `permissionState` shapes the message - `.unknown` is included (not just `.denied`) because a fresh launch with no prewarm silently produced mic-only recordings with no surface (regression: May 5 18:30 recording).
     func notifyMicOnlyRecording(
         file: URL,
         permissionState: SystemAudioCapture.PermissionState
@@ -231,9 +190,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(req)
     }
 
-    /// Posted when a mid-recording input device change was recovered:
-    /// capture continued into the same recording, with a short silent
-    /// gap where the device was switching.
+    /// Posted when a mid-recording input device change was recovered; capture continued with a short silent gap.
     func notifyCaptureRecovered() {
         post(
             title: "Input device changed",
@@ -241,8 +198,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         )
     }
 
-    /// Posted when a mid-recording input device change could not be
-    /// recovered. The microphone is no longer being captured.
+    /// Posted when a mid-recording input device change could not be recovered; microphone capture has stopped.
     func notifyCaptureLost() {
         post(
             title: "Microphone capture stopped",
@@ -265,10 +221,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         let open = UNNotificationAction(identifier: Self.actionOpen, title: "Open in Notion", options: [.foreground])
         let looksGood = UNNotificationAction(identifier: Self.actionLooksGood, title: "Looks good", options: [])
         let edit = UNNotificationAction(identifier: Self.actionEditSummary, title: "Edit summary", options: [.foreground])
-        // Three categories:
-        //   * MP_DONE             : pre-Phase-2 fallback (Open in Notion only)
-        //   * MP_DONE_CORRECTABLE  : Notion + correction action
-        //   * MP_DONE_CORRECTABLE_LOCAL: regulated/local-only + correction action
+        // MP_DONE: pre-Phase-2 fallback (Open in Notion only).
+        // MP_DONE_CORRECTABLE: Notion + correction actions.
+        // MP_DONE_CORRECTABLE_LOCAL: regulated/local-only + correction actions.
         let done = UNNotificationCategory(
             identifier: Self.doneCategory,
             actions: [open],
@@ -365,9 +320,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             }
         }
 
-        // Permission notifications: any tap (action button or default) opens
-        // System Settings. The id prefix is enough to disambiguate from the
-        // "done" category, which is handled above and removed from the map.
+        // Permission notifications: any tap opens System Settings. The `perm-` prefix disambiguates from the done category handled above.
         if id == "perm-accessibility-startup",
            action == Self.actionOpenAccessibilitySettings || isDefault {
             delegate?.notifierDidRequestAccessibilitySettings(self)
@@ -376,9 +329,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             delegate?.notifierDidRequestScreenRecordingSettings(self)
         }
 
-        // "Still meeting?" silence-stall notifications (TECH-C2). Both the
-        // action button and a plain tap on the banner stop the recording —
-        // the user has already confirmed the call is over.
+        // TECH-C2: both the action button and a plain banner tap stop the recording.
         if id.hasPrefix(Self.stillMeetingIDPrefix),
            action == Self.actionStopRecording || isDefault {
             delegate?.notifierDidRequestStopRecording(self)
