@@ -1,56 +1,29 @@
 import CoreAudio
 import Foundation
 
-/// Per-process `kAudioProcessPropertyIsRunningInput` PRIMARY signal.
-///
-/// Subscribes via `CoreAudioHALBus` to the meeting-app process's
-/// AudioObject so a HAL property listener fires the moment the process
-/// starts or stops capturing input. The listener is supplemented by a
-/// 1 Hz polling fallback: macOS Sequoia has been observed to drop
-/// property-listener notifications silently, so the poll guarantees an
-/// upper bound on the gap between the OS event and the verdict
-/// promotion. Webex specifically excludes this signal from PRIMARY
-/// (per `NativeLifecycleConfig.webex`) because Cisco documents that
-/// Webex holds the microphone open after meetings for ultrasound
-/// discovery.
-///
-/// The signal is testable through two injection points:
-///   - `Probe`: closure returning the current `isRunningInput` value
-///     for a given context. Production wires a CoreAudio readback;
-///     tests inject canned values.
-///   - `Scheduler`: closure that schedules a repeating tick. Production
-///     uses `Timer.scheduledTimer`; tests inject a manual driver.
-///
-/// Threading: `start` and `stop` must run on the main queue. Probe
-/// invocations and `onChange` callbacks fire on the bus's serial queue
-/// (HAL listener) or the timer's queue (poll); subscribers should hop
-/// to main themselves if they touch AppKit.
+/// `kAudioProcessPropertyIsRunningInput` PRIMARY signal. HAL property listener fires immediately when
+/// the process starts or stops capturing input; supplemented by a 1 Hz poll because macOS Sequoia drops
+/// HAL property-listener notifications silently. Webex is excluded from this signal (`NativeLifecycleConfig.webex`)
+/// because Cisco holds the mic open post-call for ultrasound discovery.
+/// Threading: `start`/`stop` on main; probe and `onChange` fire on the HAL bus queue or poll timer queue.
 public final class ProcessAudioSignal {
 
-    /// Closure returning the current `isRunningInput` reading for the
-    /// given context. Returns nil when the AudioObject can't be
-    /// resolved (PID quit, unknown-property error); the signal stays
-    /// in its prior state on nil rather than flapping.
+    /// Returns `isRunningInput` for the context. nil when the AudioObject can't be resolved (PID quit, error); signal holds prior state on nil to avoid flapping.
     public typealias Probe = (MeetingLifecycleContext) -> Bool?
 
-    /// Schedules a repeating tick. Returns a cancellation closure.
-    /// Default uses `Timer.scheduledTimer` on the main runloop.
+    /// Schedules a repeating tick; returns a cancellation closure.
     public typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
 
-    /// PID-to-HAL-process-object resolution. `.unresolved` carries the OSStatus so the failure reason reaches events.jsonl.
+    /// PID-to-HAL-process-object resolution. `.unresolved` carries the OSStatus for events.jsonl.
     public enum ProcessObjectResolution {
         case resolved(AudioObjectID)
         case unresolved(OSStatus)
     }
 
-    /// Resolves a process PID to its HAL process AudioObject. Tests inject a stub; production uses `defaultResolver`.
+    /// Resolves a PID to its HAL process AudioObject. Tests inject a stub; production uses `defaultResolver`.
     public typealias ProcessObjectResolver = (pid_t) -> ProcessObjectResolution
 
     public var onChange: ((Bool) -> Void)?
-
-    /// Last reading we forwarded. nil means we haven't read yet (no
-    /// transition emitted on first probe; the initial value is yielded
-    /// directly so downstream gets a baseline).
     public private(set) var lastValue: Bool?
 
     public static let defaultPollInterval: TimeInterval = 1.0
@@ -66,10 +39,7 @@ public final class ProcessAudioSignal {
     private var halToken: CoreAudioHALBus.Token?
     private var cancelPoll: (() -> Void)?
 
-    /// True once `process_audio_unresolved` has been logged for the
-    /// current unresolved streak. Gates the 1 Hz poll so the event is
-    /// written once per streak instead of on every tick. Cleared the
-    /// moment the probe resolves again, and on `stop()`.
+    /// Set on first unresolved probe in a streak; clears when the probe resolves or `stop()` is called. Prevents 1 Hz log spam.
     private var unresolvedLogged = false
 
     public init(
@@ -92,18 +62,9 @@ public final class ProcessAudioSignal {
         stop()
         self.context = context
 
-        // Subscribe the HAL listener to the meeting app's process
-        // AudioObject. The PID itself is NOT an AudioObjectID; it must
-        // be translated via kAudioHardwarePropertyTranslatePIDToProcessObject
-        // first (see `defaultResolver`). Subscribing against the raw
-        // PID returns kAudioHardwareBadObjectError ('!obj') and, when
-        // rethrown, took the whole lifecycle coordinator engage down.
-        //
-        // Listener registration is best-effort: if the process object
-        // can't be resolved, or the HAL refuses the listener, the
-        // signal degrades to the 1 Hz polling fallback rather than
-        // failing `start`. Per the TECH-C13 spec a polling-only path
-        // is acceptable but must be logged, never silent.
+        // PID is NOT an AudioObjectID; must be translated via kAudioHardwarePropertyTranslatePIDToProcessObject first.
+        // Subscribing the raw PID returns kAudioHardwareBadObjectError and previously crashed the coordinator engage.
+        // Listener failure is best-effort: degrades to 1 Hz poll (acceptable per TECH-C13) but must be logged.
         switch resolver(context.pid) {
         case .resolved(let processObject):
             let address = CoreAudioHALBus.Address(
@@ -145,16 +106,10 @@ public final class ProcessAudioSignal {
         unresolvedLogged = false
     }
 
-    /// Re-read the probe + emit a change event if the value flipped.
-    /// Exposed `internal` so tests can drive the evaluator without
-    /// running the scheduler.
+    /// Re-read the probe and emit `onChange` if the value flipped. `internal` so tests can drive without a scheduler.
     func evaluate(reason: String) {
         guard let context = context else { return }
         guard let value = probe(context) else {
-            // Collapse the 1 Hz poll spam: emit once per unresolved
-            // streak, not on every tick. A machine where the HAL
-            // process object never resolves would otherwise write this
-            // line every second for the daemon's whole lifetime.
             if !unresolvedLogged {
                 unresolvedLogged = true
                 eventLog.emit(category: "signal", action: "process_audio_unresolved", attributes: [
@@ -188,19 +143,12 @@ public final class ProcessAudioSignal {
         return { timer.invalidate() }
     }
 
-    /// Default resolver: translate a PID to its HAL process
-    /// AudioObject. Used both by `start` (to key the listener) and by
-    /// `defaultProbe` (to key the poll readback) so the two paths
-    /// always target the same object.
+    /// Translate a PID to its HAL process AudioObject. Shared by `start` (listener) and `defaultProbe` (poll) so both paths target the same object.
     public static let defaultResolver: ProcessObjectResolver = { pid in
         translatePIDToProcessObject(pid)
     }
 
-    /// Default probe: resolve the meeting-app PID to an AudioObjectID
-    /// and read `kAudioProcessPropertyIsRunningInput`. Returns nil for
-    /// any failure (unknown property, dead PID, missing entitlement),
-    /// matching the contract that the signal stays steady on
-    /// inconclusive reads rather than flapping.
+    /// Resolve PID and read `kAudioProcessPropertyIsRunningInput`. Returns nil on any failure so the signal holds its prior state rather than flapping.
     public static let defaultProbe: Probe = { context in
         guard case .resolved(let processID) = translatePIDToProcessObject(context.pid) else { return nil }
         var addr = AudioObjectPropertyAddress(

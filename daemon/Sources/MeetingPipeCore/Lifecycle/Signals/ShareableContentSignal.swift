@@ -1,29 +1,13 @@
 import Foundation
 import ScreenCaptureKit
 
-/// `SCShareableContent`-backed PRIMARY signal. Determines whether a
-/// meeting window currently exists for the target bundle by polling
-/// the shareable-content snapshot at 2 Hz while a meeting is active
-/// and 1 Hz otherwise.
-///
-/// The 2 Hz active cadence gives a sub-second reaction to window
-/// disappearance (the leading signal for the Teams "click Leave →
-/// window closes" path); the 1 Hz idle cadence keeps the
-/// `SCShareableContent` overhead minimal between meetings.
-///
-/// `SCShareableContent` is queried via an injectable closure so tests
-/// can run without Screen Recording TCC and without invoking
-/// ScreenCaptureKit. Production wires `SCShareableContent
-/// .excludingDesktopWindows` and maps the resulting `[SCWindow]` into
-/// `[ShareableWindowSummary]`.
-///
-/// Threading: `start` and `stop` must run on the main queue. Probe
-/// invocations and `onChange` callbacks fire on the scheduler's queue.
+/// `SCShareableContent`-backed PRIMARY signal. Polls at 2 Hz while a meeting window exists (sub-second
+/// reaction to window disappearance, the leading signal for Teams "click Leave") and 1 Hz otherwise
+/// to keep ScreenCaptureKit overhead minimal. Probe is injectable so tests run without Screen Recording TCC.
+/// Threading: `start`/`stop` on main; probe and `onChange` on the scheduler's queue.
 public final class ShareableContentSignal {
 
-    /// Lightweight summary the signal needs from each window. Keeps
-    /// the probe interface decoupled from `SCWindow` so tests don't
-    /// have to construct one.
+    /// Window fields the signal needs, decoupled from `SCWindow` so tests don't have to construct one.
     public struct ShareableWindowSummary: Equatable {
         public let bundleIdentifier: String?
         public let title: String?
@@ -33,9 +17,7 @@ public final class ShareableContentSignal {
         }
     }
 
-    /// Probe returns the current shareable windows, or nil if the
-    /// fetch failed (e.g. TCC denied, transient error). nil leaves
-    /// the prior state in place rather than flapping to "absent".
+    /// Returns current shareable windows, or nil on TCC denial/transient error. nil leaves prior state in place rather than flapping.
     public typealias Probe = () -> [ShareableWindowSummary]?
 
     public typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
@@ -46,9 +28,7 @@ public final class ShareableContentSignal {
     public static let activePollInterval: TimeInterval = 0.5
     public static let idlePollInterval: TimeInterval = 1.0
 
-    /// Optional regex applied against window title. Adapters supply a
-    /// locale-tolerant regex (the Teams "Meeting" / "Reunión" / …
-    /// matcher) to distinguish call windows from chat threads.
+    /// Predicate applied to window title to distinguish call windows from chat threads.
     public typealias TitleMatch = (String?) -> Bool
 
     private let eventLog: EventLog
@@ -113,7 +93,7 @@ public final class ShareableContentSignal {
         if present {
             lastUnmatchedCandidates = nil
         } else {
-            // Diagnostic: distinguish "no window" from "title mismatch" by logging the bundle's window titles, deduped on the set.
+            // Log the bundle's window titles to distinguish "no window" from "title mismatch"; deduped to avoid noise.
             let candidates = summaries
                 .filter { $0.bundleIdentifier == context.bundleID }
                 .map { $0.title ?? "<nil>" }
@@ -161,11 +141,8 @@ public final class ShareableContentSignal {
         return { timer.invalidate() }
     }
 
-    /// Default probe: synchronously bridge `SCShareableContent
-    /// .excludingDesktopWindows` into the summary form. The fetch is
-    /// async on `SCShareableContent`, so we run a semaphore-gated wait
-    /// here; the caller's scheduler dispatches this off the main queue
-    /// in production so the wait doesn't block UI.
+    /// Bridge `SCShareableContent.excludingDesktopWindows` synchronously via a semaphore-gated wait.
+    /// Safe because the scheduler dispatches probes off main in production.
     public static let defaultProbe: Probe = {
         let semaphore = DispatchSemaphore(value: 0)
         var result: [ShareableWindowSummary]?

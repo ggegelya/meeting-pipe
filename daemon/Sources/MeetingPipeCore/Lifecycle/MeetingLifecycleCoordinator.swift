@@ -1,37 +1,16 @@
 import ApplicationServices
 import Foundation
 
-/// Single-owner verdict producer for meeting lifecycle events.
-///
-/// Owns the `PromotionEngine` (TECH-C13 step 4) and routes a per-app
-/// `LifecycleAdapter`'s signal events through it. Publishes the
-/// resulting `MeetingLifecycleVerdict` stream that
-/// `RecordingStateMachine` consumes (step 5 hooks the executable into
-/// the stream).
-///
-/// Lifecycle:
-///   - `engage(context:handle:)` picks the adapter whose
-///     `bundleIDs.contains(context.bundleID)` matches and `kind ==
-///     context.kind`, starts it, and arms the engine tick scheduler.
-///   - `disengage()` stops the active adapter and resets the engine.
-///   - `shutdown()` finishes the verdict stream + tears down both buses.
-///
-/// The `publish(_:)` entry point remains exposed for tests that drive
-/// the verdict stream directly without an adapter (and for the
-/// orchestrator's bootstrap moments such as TCC-denied state).
-///
-/// Threading: `engage`, `disengage`, `publish`, `confirmRecording`,
-/// `armLeaveButton`, and `shutdown` must run on the main queue.
-/// Adapter sink callbacks
-/// may fire on background queues; the coordinator serialises engine
-/// ingestion on `engineQueue` so the engine's internal phase stays
-/// consistent.
+/// Single-owner verdict producer. Owns the `PromotionEngine` (TECH-C13 step 4), routes a per-app
+/// `LifecycleAdapter`'s signal events through it, and publishes the resulting `MeetingLifecycleVerdict`
+/// stream that `RecordingStateMachine` consumes. `publish(_:)` is also exposed for tests and for
+/// orchestrator bootstrap moments (e.g. TCC-denied state).
+/// Threading: `engage`, `disengage`, `publish`, `confirmRecording`, `armLeaveButton`, and `shutdown`
+/// must run on main. Adapter sink callbacks may fire on background queues; engine ingestion is
+/// serialised on `engineQueue` so the engine's phase stays consistent.
 public final class MeetingLifecycleCoordinator {
 
-    /// `AsyncStream` of verdicts. Unbounded buffering: verdicts are
-    /// infrequent (a handful per meeting) and `RecordingStateMachine`
-    /// must not miss `.ended`, so dropping older entries on backpressure
-    /// is unsafe.
+    /// Verdict stream. Unbounded: verdicts are infrequent and `.ended` must never be dropped.
     public let verdicts: AsyncStream<MeetingLifecycleVerdict>
 
     public let halBus: CoreAudioHALBus
@@ -84,8 +63,7 @@ public final class MeetingLifecycleCoordinator {
         self.continuation = sink
     }
 
-    /// Engage the adapter for `context` with the AX handle the
-    /// executable walked. No-op if no adapter matches.
+    /// Start the adapter that matches `context` and arm the engine tick. No-op if no adapter matches.
     public func engage(context: MeetingLifecycleContext, handle: LifecycleAdapterHandle) throws {
         disengage()
         guard let adapter = adapters.first(where: {
@@ -114,9 +92,7 @@ public final class MeetingLifecycleCoordinator {
         publish(.idle)
     }
 
-    /// Emit a verdict + log the transition. Idempotent: emitting the
-    /// same verdict twice in a row is a no-op, matching the upstream
-    /// state-machine pattern of `removeDuplicates`.
+    /// Emit a verdict and log the transition. Idempotent: same verdict twice in a row is a no-op.
     public func publish(_ verdict: MeetingLifecycleVerdict) {
         let shouldEmit: Bool = lock.withLock {
             if verdict == lastVerdict { return false }
@@ -128,15 +104,12 @@ public final class MeetingLifecycleCoordinator {
         continuation.yield(verdict)
     }
 
-    /// Snapshot of the last published verdict. Lets the orchestrator
-    /// reconcile on launch / restart without waiting for the next
-    /// signal.
+    /// Last published verdict. Lets the orchestrator reconcile on launch without waiting for the next signal.
     public var current: MeetingLifecycleVerdict {
         lock.withLock { lastVerdict }
     }
 
-    /// Tear down the verdict stream + reset both buses. Called at
-    /// daemon shutdown. Subsequent `publish` calls become no-ops.
+    /// Finish the verdict stream and reset both buses. Called at daemon shutdown.
     public func shutdown() {
         disengage()
         continuation.finish()
@@ -164,9 +137,7 @@ public final class MeetingLifecycleCoordinator {
         }
     }
 
-    /// Promote the in-flight `.starting` phase to `.inMeeting`. Called
-    /// by the orchestrator once the recorder is armed. No-op when the
-    /// engine is not in `.starting`.
+    /// Promote `.starting` to `.inMeeting` once the recorder is armed. No-op when the engine is not in `.starting`.
     public func confirmRecording() {
         engineQueue.async { [weak self] in
             guard let self = self else { return }
@@ -176,12 +147,8 @@ public final class MeetingLifecycleCoordinator {
         }
     }
 
-    /// Late-arm the active adapter's AX Leave-button signal. The
-    /// orchestrator calls this at recording-start with a button it
-    /// re-walked once the call UI rendered; the discovery-time walk
-    /// that drove `engage` usually runs too early to see it. No-op
-    /// when no adapter is engaged or the adapter has no Leave-button
-    /// signal.
+    /// Late-arm the Leave-button signal. Called at recording-start with a button re-walked after the call UI
+    /// rendered; the discovery-time walk usually runs too early to see it. No-op when no adapter is engaged.
     public func armLeaveButton(_ element: AXUIElement) {
         activeAdapter?.armLeaveButton(element)
     }

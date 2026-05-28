@@ -1,21 +1,9 @@
 import AppKit
 import Foundation
 
-/// Corroborating signal: NSWorkspace app-termination plus
-/// `NSRunningApplication` KVO.
-///
-/// A meeting client process quitting is strong evidence the meeting
-/// ended (the user closed the app or it crashed). The signal does
-/// not promote the verdict on its own; the coordinator records the
-/// transition and combines it with PRIMARY signals.
-///
-/// Wires `NSWorkspaceDidTerminateApplicationNotification` filtered
-/// by bundle ID, plus an `NSRunningApplication.isTerminated` KVO
-/// observer on the resolved running-application instance for the
-/// case where the notification fires before the bus is wired.
-///
-/// Threading: `start` and `stop` must run on the main queue.
-/// Notification + KVO callbacks fire on the main queue.
+/// App-termination PRIMARY signal. Wires `NSWorkspaceDidTerminateApplicationNotification` (filtered by
+/// bundle ID) plus `NSRunningApplication.isTerminated` KVO to cover the race where the app quits before
+/// the notification observer is registered. Threading: `start`/`stop` and all callbacks on main.
 public final class WorkspaceSignal {
 
     public typealias Probe = (String) -> NSRunningApplication?

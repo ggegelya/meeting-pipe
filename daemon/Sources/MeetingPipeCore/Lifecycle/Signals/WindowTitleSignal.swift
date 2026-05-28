@@ -1,22 +1,10 @@
 import ApplicationServices
 import Foundation
 
-/// Corroborating signal: AX title-change on a meeting window.
-///
-/// Subscribes via `AXObserverBus` to `kAXTitleChangedNotification` on
-/// a window element the adapter resolves at meeting start. Used to
-/// catch title transitions that signal the meeting has moved to a
-/// post-call surface, e.g. Google Meet leaving the `Meet · <code>`
-/// pattern, Teams leaving the localised "Meeting" / "Reunión" / …
-/// label set.
-///
-/// The signal does not interpret the title - it forwards every
-/// non-empty change to the consumer plus an event log line. The
-/// adapter's title regex decides whether the new title is still
-/// "in meeting".
-///
-/// Threading: `start` and `stop` must run on the main queue. The
-/// notification handler is dispatched on main by `AXObserverBus`.
+/// `kAXTitleChangedNotification` on a meeting window element. Forwards every non-empty title change
+/// to the adapter, which decides whether the new title is still "in meeting" (e.g. Google Meet leaving
+/// `Meet - <code>`, Teams leaving the localised "Meeting" stem). Signal does not interpret the title.
+/// Threading: `start`/`stop` on main; notification dispatched on main by `AXObserverBus`.
 public final class WindowTitleSignal {
 
     public typealias Probe = (AXUIElement) -> String?

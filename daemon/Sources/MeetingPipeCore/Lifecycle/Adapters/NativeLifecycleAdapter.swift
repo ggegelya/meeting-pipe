@@ -1,16 +1,11 @@
 import ApplicationServices
 import Foundation
 
-/// One native (non-browser) meeting client described as data, for
-/// `NativeLifecycleAdapter`. Collapses what used to be a separate
-/// per-app adapter class (Teams / Zoom / Webex / Slack) into a row.
+/// Per-app config row for `NativeLifecycleAdapter`. Replaces the old per-app adapter classes.
 public struct NativeLifecycleConfig {
     public let bundleIDs: Set<String>
     public let titleMatch: (String?) -> Bool
-    /// Teams and Zoom fuse process-input audio as a PRIMARY signal.
-    /// Webex and Slack deliberately do not: Cisco documents that Webex
-    /// holds the microphone open after a call for ultrasound device
-    /// discovery, which would read as a false `process_audio = live`.
+    /// Webex/Slack are false: Cisco documents that Webex holds the mic open post-call for ultrasound discovery, which would read as a false `process_audio = live`.
     public let usesProcessAudio: Bool
 
     public init(
@@ -25,31 +20,28 @@ public struct NativeLifecycleConfig {
 }
 
 public extension NativeLifecycleConfig {
-    /// Teams 2.x: ShareableContent + ProcessAudio + AXLeaveButton.
+    /// ShareableContent + ProcessAudio + AXLeaveButton.
     static let teams = NativeLifecycleConfig(
         bundleIDs: ["com.microsoft.teams2", "com.microsoft.teams"],
         titleMatch: MeetingTitlePatterns.teams,
         usesProcessAudio: true
     )
 
-    /// Zoom: same PRIMARY set as Teams.
+    /// ShareableContent + ProcessAudio + AXLeaveButton (same set as Teams).
     static let zoom = NativeLifecycleConfig(
         bundleIDs: ["us.zoom.xos"],
         titleMatch: MeetingTitlePatterns.zoom,
         usesProcessAudio: true
     )
 
-    /// Webex: ShareableContent + AXLeaveButton only. Covers the legacy
-    /// `com.cisco.webexmeetingsapp` and the unified Webex App
-    /// (`com.cisco.spark`).
+    /// ShareableContent + AXLeaveButton. Covers legacy `com.cisco.webexmeetingsapp` and the unified Webex App (`com.cisco.spark`).
     static let webex = NativeLifecycleConfig(
         bundleIDs: ["com.cisco.webexmeetingsapp", "com.cisco.spark"],
         titleMatch: MeetingTitlePatterns.webex,
         usesProcessAudio: false
     )
 
-    /// Slack huddles, native `com.tinyspeck.slackmacgap`:
-    /// ShareableContent + AXLeaveButton only.
+    /// ShareableContent + AXLeaveButton for `com.tinyspeck.slackmacgap`.
     static let slack = NativeLifecycleConfig(
         bundleIDs: ["com.tinyspeck.slackmacgap"],
         titleMatch: MeetingTitlePatterns.slackHuddle,
@@ -57,11 +49,7 @@ public extension NativeLifecycleConfig {
     )
 }
 
-/// Lifecycle adapter for native meeting clients. One parameterized
-/// class in place of the byte-identical Teams / Zoom / Webex / Slack
-/// adapters; the per-app differences live in `NativeLifecycleConfig`.
-/// The browser path keeps its own `BrowserMeetingLifecycleAdapter`
-/// (diverged signal fusion + PWA handling).
+/// Single parameterized adapter for native meeting clients (Teams, Zoom, Webex, Slack). Per-app differences live in `NativeLifecycleConfig`.
 public final class NativeLifecycleAdapter: LifecycleAdapter {
 
     public var bundleIDs: Set<String> { config.bundleIDs }
@@ -72,13 +60,10 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
     private let shareableContent: ShareableContentSignal
     private let axLeaveButton: AXLeaveButtonSignal
 
-    /// Context captured at `start`. `armLeaveButton` reuses it so the
-    /// late-armed signal emits events under the same context the
-    /// promotion engine matches against.
+    /// Context captured at `start` so `armLeaveButton` emits under the same context the engine matches against.
     private var startedContext: MeetingLifecycleContext?
 
-    /// `halBus` is required when `config.usesProcessAudio` is true and
-    /// ignored otherwise (Webex / Slack do not fuse process audio).
+    /// `halBus` required when `config.usesProcessAudio` is true; ignored for Webex/Slack.
     public init(
         config: NativeLifecycleConfig,
         halBus: CoreAudioHALBus? = nil,

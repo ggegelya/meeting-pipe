@@ -1,26 +1,18 @@
 import Foundation
 
-/// PRIMARY signal kinds the promotion engine recognises. The string
-/// values double as `leadingSignal` / `confirmedBy` entries in
-/// `EndingReason`, so they appear verbatim in events.jsonl and the
-/// dogfood report.
+/// PRIMARY signal kinds. Raw values appear verbatim in `EndingReason` and events.jsonl.
 public enum PrimarySignalKind: String, Equatable, CaseIterable {
     case shareableContentWindow = "shareable_content_window_gone"
     case processAudioIsRunningInput = "process_audio_is_running_input_false"
     case axLeaveButton = "ax_leave_button_invalid"
     case browserTabTitle = "browser_tab_title_left_meet_pattern"
-    /// Meeting-app process termination (`WorkspaceSignal`). Corroborates
-    /// the browser path: closing a PWA's meeting window quits its
-    /// process, a definitive end that needs no TCC permission.
+    /// Meeting-app process termination (`WorkspaceSignal`). Closing a PWA's meeting window quits its process - a definitive end that needs no TCC permission.
     case workspaceAppTerminated = "workspace_app_terminated"
-    /// AX window-title transition off the meeting pattern
-    /// (`WindowTitleSignal`). Browser path, PWA contexts only.
+    /// AX window-title transition off the meeting pattern (`WindowTitleSignal`). Browser/PWA path only.
     case windowTitleLeftPattern = "window_title_left_pattern"
 }
 
-/// Per-signal state passed into `PromotionEngine`. `.live` means the
-/// signal observes the meeting as ongoing; `.ended` means the signal
-/// observes that the meeting has ended.
+/// Per-signal state fed to `PromotionEngine`.
 public enum PrimarySignalState: Equatable {
     case live
     case ended
@@ -45,32 +37,16 @@ public struct PrimarySignalEvent: Equatable {
     }
 }
 
-/// Pure-logic promotion rules for `MeetingLifecycleCoordinator`.
+/// Pure-logic verdict state machine for `MeetingLifecycleCoordinator`.
 ///
-/// The engine fuses PRIMARY signal events from per-app adapters and
-/// produces `MeetingLifecycleVerdict` transitions. The rules:
-///
-///   - `.idle` -> `.starting` on the first PRIMARY `.live` event for
-///     a context.
-///   - `.starting` -> `.inMeeting` only when the coordinator calls
-///     `confirmRecording()` after arming the recorder. Further PRIMARY
-///     `.live` events while `.starting` are absorbed, not promoted:
-///     `.inMeeting` means "recording confirmed", not "a signal fired".
-///   - `.starting` -> `.ended` on the first PRIMARY `.ended` (the
-///     meeting ended before the recorder was armed; no debounce).
-///   - `.inMeeting` -> `.endingProvisional(leading:)` on the first
-///     PRIMARY emitting `.ended`; `leadingSignal` is that signal's
-///     name.
-///   - `.endingProvisional` -> `.ended(confirmedBy:)` when (a) a
-///     second PRIMARY emits `.ended` before the debounce elapses,
-///     or (b) `tick(at:)` is called past `endingStartedAt + debounce`
-///     and the leading signal is still `.ended`.
-///   - `.endingProvisional` -> `.inMeeting` if the leading signal
-///     flips back to `.live` before the debounce elapses (absorbs a
-///     spurious flicker without ending the recording).
-///
-/// All decisions are returned as `Decision` so the caller can publish
-/// the verdict + record the per-signal state change in events.jsonl.
+/// Fuses PRIMARY signal events from per-app adapters into `MeetingLifecycleVerdict` transitions.
+/// Promotion rules: `.idle` -> `.starting` on first PRIMARY `.live`; `.starting` -> `.inMeeting`
+/// only via `confirmRecording()` (so `.inMeeting` means "recorder armed", not just "signal fired");
+/// `.starting` -> `.ended` directly when PRIMARY `.ended` arrives before the recorder arms;
+/// `.inMeeting` -> `.endingProvisional` on first PRIMARY `.ended`; `.endingProvisional` -> `.ended`
+/// when a second PRIMARY confirms or the debounce elapses; `.endingProvisional` -> `.inMeeting`
+/// if the leading signal flips back to `.live` (absorbs spurious flickers).
+/// All decisions are returned as `Decision` so the caller can publish the verdict and log the transition.
 public final class PromotionEngine {
 
     public static let defaultDebounce: TimeInterval = 2.0
@@ -103,9 +79,7 @@ public final class PromotionEngine {
 
     public func reset() { phase = .idle }
 
-    /// Ingest a PRIMARY signal event and return the verdict transition
-    /// it triggered, if any. Returns nil when the event is consistent
-    /// with the current phase and does not change the verdict.
+    /// Ingest a PRIMARY signal event. Returns the verdict transition it triggered, or nil if the event doesn't change the phase.
     public func ingest(_ event: PrimarySignalEvent) -> Decision? {
         switch phase {
         case .idle:
@@ -124,10 +98,7 @@ public final class PromotionEngine {
         }
     }
 
-    /// Check whether the debounce has elapsed for an in-flight
-    /// `.endingProvisional` phase and promote to `.ended` when it has.
-    /// No-op for every other phase. Returns the promoted verdict so
-    /// the coordinator can publish it.
+    /// Promote `.endingProvisional` to `.ended` if the debounce has elapsed. No-op for every other phase.
     public func tick(at now: Date) -> Decision? {
         guard case .endingProvisional(let context, let leading, let startedAt, let observed) = phase else {
             return nil
@@ -139,10 +110,7 @@ public final class PromotionEngine {
         return Decision(verdict: .ended(context: context, reason: reason))
     }
 
-    /// Promote an in-flight `.starting` phase to `.inMeeting`. Called by
-    /// the coordinator once the recorder is armed, so `.inMeeting`
-    /// means "recording confirmed" rather than merely "a signal fired".
-    /// No-op in every other phase.
+    /// Promote `.starting` to `.inMeeting` once the recorder is armed. No-op in every other phase.
     public func confirmRecording() -> Decision? {
         guard case .starting(let context, let observed) = phase else { return nil }
         phase = .inMeeting(context: context, observed: observed)
@@ -165,16 +133,12 @@ public final class PromotionEngine {
         guard event.context == context else { return nil }
         switch event.state {
         case .live:
-            // Absorb the corroborating signal but stay `.starting`.
-            // Promotion to `.inMeeting` is `confirmRecording()`'s job,
-            // so `.inMeeting` tracks the recorder, not the signals.
+            // Absorb; promotion to `.inMeeting` is `confirmRecording()`'s job so `.inMeeting` tracks the recorder, not signals.
             observed.insert(event.kind)
             phase = .starting(context: context, observed: observed)
             return nil
         case .ended:
-            // The meeting ended before the recorder was armed (slow
-            // prompt answer, or a stale discovery scan). End directly
-            // so the consumer dismisses the prompt.
+            // Meeting ended before the recorder armed (slow prompt, stale discovery scan). End directly.
             let reason = EndingReason(leadingSignal: event.kind.rawValue, confirmedBy: [])
             phase = .ended(context: context)
             return Decision(verdict: .ended(context: context, reason: reason))

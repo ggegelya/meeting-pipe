@@ -1,26 +1,10 @@
 import ApplicationServices
 import Foundation
 
-/// AX Leave-button PRIMARY signal for native meeting clients.
-///
-/// The adapter (Teams / Zoom / Webex) walks the meeting window's AX
-/// subtree once at meeting start and hands the resulting Leave-button
-/// `AXUIElement` to this signal. The signal subscribes via
-/// `AXObserverBus` to `kAXUIElementDestroyedNotification` on that
-/// element, and supplements the notification with a 1 Hz health poll
-/// that calls `AXUIElementCopyAttributeValue` and treats
-/// `kAXErrorInvalidUIElement` as authoritative.
-///
-/// Why both: macOS Sequoia has been observed to drop AX destruction
-/// notifications silently. The health poll bounds the worst-case lag
-/// between the user clicking Leave and the verdict promotion to ~1
-/// second; the notification path provides the sub-100 ms happy path
-/// when it fires.
-///
-/// Threading: `start` and `stop` must run on the main queue. The
-/// notification handler is dispatched onto main by `AXObserverBus`;
-/// the poll fires on the scheduler's queue. `onChange` callbacks fire
-/// wherever the originating event fired.
+/// `kAXUIElementDestroyedNotification` + 1 Hz health poll on the Leave-button element.
+/// Dual path because macOS Sequoia drops AX destruction notifications silently: the notification gives
+/// sub-100 ms on the happy path; the poll bounds worst-case lag to ~1 s.
+/// Threading: `start`/`stop` on main; notification handler dispatched to main by `AXObserverBus`; poll on scheduler queue.
 public final class AXLeaveButtonSignal {
 
     public enum State: Equatable {
@@ -28,11 +12,7 @@ public final class AXLeaveButtonSignal {
         case invalid
     }
 
-    /// Probe returning the current health state for a given AX
-    /// element. Production calls `AXUIElementCopyAttributeValue` and
-    /// maps `kAXErrorInvalidUIElement` to `.invalid`, anything else
-    /// (including transient errors) to `.healthy` so we don't promote
-    /// on a TCC hiccup.
+    /// Returns element health. Maps `kAXErrorInvalidUIElement` to `.invalid`; transient errors stay `.healthy` so a TCC hiccup doesn't promote.
     public typealias Probe = (AXUIElement) -> State
 
     public typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
@@ -40,9 +20,7 @@ public final class AXLeaveButtonSignal {
     public var onChange: ((State) -> Void)?
     public private(set) var lastState: State?
 
-    /// True once the signal is watching a Leave-button element.
-    /// `armIfNeeded` consults this so a recording-start late-arm does
-    /// not clobber a subscription that already armed at engage time.
+    /// True once watching a Leave-button element. `armIfNeeded` checks this to avoid clobbering an already-armed subscription.
     public var isArmed: Bool { element != nil }
 
     public static let defaultPollInterval: TimeInterval = 1.0
@@ -92,26 +70,16 @@ public final class AXLeaveButtonSignal {
         evaluate(reason: "initial")
     }
 
-    /// Arm, or re-arm, the signal on `leaveButton`. Two callers:
-    ///
-    ///   - Recording-start late-arm: the executable's discovery-time
-    ///     AX walk often misses the Leave button because the call UI
-    ///     has not rendered yet, so it re-walks at recording-start.
-    ///     A no-op here when the signal already watches a live button.
-    ///   - Compact-view rescue: the Teams 2 compact-view swap destroys
-    ///     the meeting window's Leave button and rebuilds it on a
-    ///     panel. The currently-armed element then probes invalid;
-    ///     this re-arms onto the replacement so a window collapse is
-    ///     not mistaken for a meeting end.
-    ///
-    /// A subscribe failure is logged, not thrown: the silence backstop
-    /// still bounds the recording.
+    /// Arm, or re-arm, on `leaveButton`. Two callers: (1) recording-start late-arm when the discovery walk
+    /// missed the button because the call UI hadn't rendered; (2) Teams 2 compact-view rescue - the
+    /// compact-view swap destroys and rebuilds the Leave button on a panel, so the armed element probes
+    /// invalid and must be re-armed to avoid treating the window collapse as a meeting end.
+    /// Subscribe failure is logged, not thrown: the poll backstop still bounds the recording.
     public func armIfNeeded(
         context: MeetingLifecycleContext,
         leaveButton: AXUIElement
     ) {
-        // Skip only when the signal already watches a still-live
-        // button. An armed-but-dead element falls through to re-arm.
+        // Skip only when the current element is still live; an armed-but-dead element falls through to re-arm.
         if let current = element, probe(current) == .healthy { return }
         do {
             try start(context: context, leaveButton: leaveButton)
@@ -145,7 +113,7 @@ public final class AXLeaveButtonSignal {
             "reason": reason,
             "previous": previous.map { $0 == .invalid ? "invalid" : "healthy" } as Any
         ])
-        // Initial reading emits too: a healthy button at engage is the .live the engine needs.
+        // Emit on initial reading too: a healthy button at engage is the .live the engine needs.
         if state == .invalid && previous != .invalid {
             onChange?(state)
         } else if state == .healthy && previous != .healthy {
@@ -162,10 +130,7 @@ public final class AXLeaveButtonSignal {
         return { timer.invalidate() }
     }
 
-    /// Default probe: read `kAXRoleAttribute` and treat
-    /// `kAXErrorInvalidUIElement` as authoritative for `.invalid`.
-    /// Any other status (success, transient, attribute-unsupported)
-    /// keeps the signal healthy so a TCC hiccup doesn't promote.
+    /// Read `kAXRoleAttribute`; map `kAXErrorInvalidUIElement` to `.invalid`, all other statuses to `.healthy` (TCC hiccup guard).
     public static let defaultProbe: Probe = { element in
         var value: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(

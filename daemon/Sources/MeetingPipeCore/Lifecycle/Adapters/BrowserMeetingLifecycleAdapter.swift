@@ -1,23 +1,10 @@
 import Foundation
 
-/// Browser-hosted meeting adapter. Covers Google Meet, Teams web,
-/// Webex web, Slack huddles, and Chromium PWAs (Meet / Teams / etc.
-/// installed as desktop apps).
-///
-/// Browsers expose tab content as a single AX window per browser, so
-/// `AXLeaveButton` is unavailable, and they expose no per-tab mic
-/// state via any public Apple API as of macOS 14-15. The adapter
-/// fuses up to three PRIMARY signals: `ShareableContentSignal` (a
-/// meeting-titled window owned by the bundle), `WorkspaceSignal` (the
-/// meeting-app process terminating), and - for PWA contexts only -
-/// `WindowTitleSignal` (an AX title transition off the meeting
-/// pattern). A regular browser is left on the first two: an AX title
-/// change on a shared tabbed window is usually a tab switch.
-///
-/// `TeamsLifecycleAdapter` covers the Teams native app; the browser
-/// adapter handles "Teams in Chrome / Edge / Arc" through the same
-/// title patterns since both surfaces show "Meeting | ..." in their
-/// window title.
+/// Browser-hosted meeting adapter (Google Meet, Teams web, Webex web, Slack huddles, Chromium PWAs).
+/// Browsers expose no per-tab AX Leave button and no per-tab mic state via public Apple APIs (macOS 14-15),
+/// so the adapter fuses `ShareableContentSignal` + `WorkspaceSignal` for regular browsers, adding
+/// `WindowTitleSignal` for PWA contexts only (an AX title change on a shared tabbed window is usually a tab switch, not a meeting end).
+/// "Teams in Chrome/Edge/Arc" is handled here through the same title patterns as the native adapter.
 public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
 
     public let bundleIDs: Set<String> = [
@@ -29,34 +16,24 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
     ]
     public let kind: MeetingLifecycleContext.Kind = .browser
 
-    /// Bundle-ID prefixes for Chromium "installed PWA" apps. A PWA
-    /// installed from Chrome / Edge / Brave runs as its own process
-    /// under `<browser-bundle-id>.app.<hash>`, where the hash is
-    /// assigned per install and so cannot be listed as a fixed
-    /// bundle ID (TECH-I5). Detection is by prefix instead. Firefox
-    /// has no PWA mechanism; Safari "Add to Dock" web apps use a
-    /// different scheme and are left for a verified follow-up.
+    /// Prefixes for Chromium PWA bundle IDs. A PWA runs as `<browser-bundle>.app.<hash>` where the hash is
+    /// per-install and can't be enumerated (TECH-I5), so detection is by prefix. Firefox has no PWA mechanism;
+    /// Safari "Add to Dock" uses a different scheme and is deferred.
     public static let pwaBundleIDPrefixes: [String] = [
         "com.google.Chrome.app.",
         "com.microsoft.edgemac.app.",
         "com.brave.Browser.app."
     ]
 
-    /// True when `bundleID` is a Chromium-installed PWA (see
-    /// `pwaBundleIDPrefixes`).
+    /// True when `bundleID` matches a known Chromium PWA prefix.
     public static func isPWABundleID(_ bundleID: String) -> Bool {
         pwaBundleIDPrefixes.contains { bundleID.hasPrefix($0) }
     }
 
-    /// Recognise a Chromium-installed PWA by the localised name macOS
-    /// reports for `NSRunningApplication`. The name is set by the PWA's
-    /// web manifest at install time (Google Meet, Microsoft Teams,
-    /// etc.) and is durable across the meeting lifecycle, unlike the
-    /// window title which goes through "Meet", "Meeting details",
-    /// "Google Meet" before settling on "Meet - <code>". The scanner
-    /// uses this as a fallback when the title-matcher rejects a real
-    /// meeting because its hyphen-bearing code is not yet in the title
-    /// (typical when starting a meeting solo via the PWA).
+    /// Match a Chromium PWA by `NSRunningApplication.localizedName`. The manifest name (e.g. "Google Meet", "Microsoft Teams")
+    /// is durable across the meeting lifecycle; the window title is not - it cycles through "Meet", "Meeting details",
+    /// "Google Meet" before the hyphenated in-call code appears. The scanner uses this as a fallback when the title-matcher
+    /// rejects a real meeting because the code is not yet in the title (solo "New Meeting" bootstrap).
     public static func matchesKnownMeetingPWA(localizedName: String?) -> Bool {
         guard let lowered = localizedName?.lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -66,11 +43,7 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
         return pwaLocalizedNameRecognizers.contains { $0(lowered) }
     }
 
-    /// Lowercased-name predicates that identify the localised name of a
-    /// known meeting PWA. Add new entries here when expanding to a new
-    /// meeting app's PWA. The list is intentionally tight; matching a
-    /// generic substring would over-admit casual web apps the user
-    /// installed for other reasons.
+    /// Lowercased-name predicates for known meeting PWAs. Intentionally tight - broad substrings over-admit unrelated apps.
     private static let pwaLocalizedNameRecognizers: [(String) -> Bool] = [
         { $0.contains("google meet") || $0 == "meet" },
         { $0.contains("microsoft teams") || $0 == "teams" },
@@ -79,17 +52,13 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
         { $0.contains("slack") }
     ]
 
-    /// Accepts the advertised browsers plus any Chromium PWA bundle
-    /// ID. The coordinator dispatches `.browser`-kind contexts here.
+    /// Accepts the advertised browser bundle IDs plus any Chromium PWA bundle ID.
     public func handles(bundleID: String) -> Bool {
         bundleIDs.contains(bundleID)
             || BrowserMeetingLifecycleAdapter.isPWABundleID(bundleID)
     }
 
-    /// Title-match patterns the adapter cycles through. The first
-    /// matching pattern wins; a tab title that matches none reads as
-    /// `.ended`, which is exactly what we want for the Meet "left
-    /// the call" page transition.
+    /// Ordered title matchers. First match wins; no match reads as `.ended`, which correctly handles the Meet "left the call" title transition.
     public static let defaultTitleMatchers: [(String?) -> Bool] = [
         MeetingTitlePatterns.googleMeet,
         MeetingTitlePatterns.teams,
@@ -117,8 +86,7 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
         )
     }
 
-    /// Designated initializer with injectable signals. Production goes
-    /// through the convenience init above; tests supply fakes.
+    /// Designated initializer with injectable signals for testing.
     init(
         shareableContent: ShareableContentSignal,
         workspace: WorkspaceSignal,
@@ -140,21 +108,12 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
     ) throws {
         let matchers = titleMatchers
 
-        // A Chromium meeting PWA (Google Meet / Teams / etc. installed as
-        // a standalone app) that the discovery scanner admitted on its
-        // localised name rather than a title match: its window title sits
-        // on a non-hyphenated string ("Meet", "Google Meet", "Meeting
-        // details") for the first seconds of a solo "New Meeting" before
-        // the in-call code appears, so the title matchers reject it. For
-        // such a context the PWA simply owning an on-screen window is the
-        // live signal; the scanner already vetted it as a meeting source
-        // and only ever engages PWA bundles through that gate. Regular
-        // tabbed browsers keep the strict title gate so a non-meeting tab
-        // never reads as live.
+        // PWA admitted by localised name: window title starts non-hyphenated ("Meet", "Google Meet")
+        // before the in-call code appears, so title matchers reject it. For such contexts, owning any
+        // on-screen window is the live signal. Regular browsers keep the strict title gate.
         let isMeetingPWA = BrowserMeetingLifecycleAdapter.isPWABundleID(context.bundleID)
 
-        // PRIMARY: a window owned by this bundle still matches a
-        // meeting-title pattern in the shareable-content snapshot.
+        // PRIMARY: a meeting-titled window owned by this bundle exists in the shareable-content snapshot.
         shareableContent.onChange = { present in
             sink(PrimarySignalEvent(
                 kind: .browserTabTitle,
@@ -167,11 +126,8 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
             isMeetingPWA || matchers.contains { $0(title) }
         }
 
-        // PRIMARY: meeting-app process termination. For a PWA, closing
-        // the meeting window quits its process - a definitive end that
-        // needs no TCC permission and is the only signal left if Screen
-        // Recording is denied. A tab-in-browser meeting outlives a tab
-        // close, so this rarely fires there.
+        // PRIMARY: process termination. For a PWA, closing the meeting window quits the process - definitive
+        // end, no TCC needed, and the only signal left when Screen Recording is denied.
         workspace.onTerminated = { endedContext in
             sink(PrimarySignalEvent(
                 kind: .workspaceAppTerminated,
@@ -182,19 +138,12 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
         }
         workspace.start(context: context)
 
-        // PRIMARY: AX window-title transition off the meeting pattern.
-        // Wired only when the handle carries a meeting window, which
-        // MeetingAXHandleBuilder resolves for PWA contexts only. A
-        // WindowTitleSignal failure degrades to the two signals above
-        // rather than failing the engage.
+        // PRIMARY: AX title transition. Wired for PWA contexts only (MeetingAXHandleBuilder resolves a
+        // window only there). Failure degrades to the two signals above rather than failing engage.
         if let window = handle.meetingWindow {
-            // Suppress an "ended" before the in-call title has ever
-            // matched. During a PWA's solo bootstrap the title sits on a
-            // non-meeting string ("Google Meet") before the hyphenated
-            // code appears; emitting "ended" then would close the meeting
-            // the instant shareable-content opened it. Once the in-call
-            // pattern has been seen, a transition off it still ends the
-            // recording promptly (the user left but kept the window open).
+            // Gate "ended" on having seen the in-call title at least once. During PWA solo bootstrap
+            // the title is "Google Meet" before the hyphenated code appears; emitting "ended" immediately
+            // would close the meeting the instant shareable-content opened it.
             var hasMatchedMeetingTitle = false
             windowTitle.onChange = { title in
                 let live = matchers.contains { $0(title) }
