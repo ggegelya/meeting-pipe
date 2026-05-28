@@ -3,28 +3,18 @@ import AVFoundation
 import CoreGraphics
 import ScreenCaptureKit
 
-/// Captures system audio via ScreenCaptureKit. Replaces the prior
-/// `ProcessTapRouter` + aggregate-device approach (which silently dropped
-/// the tap's channels on macOS 26 and required ffmpeg as a subprocess to
-/// read from avfoundation).
-///
-/// SCStream is Apple's recommended API for system audio capture since
-/// macOS 13. It bypasses Core Audio aggregate devices entirely. We get
-/// `CMSampleBuffer`s in the delegate; we convert them to
-/// `AVAudioPCMBuffer`s and hand them to the recorder, which schedules
-/// them on an `AVAudioPlayerNode` inside its `AVAudioEngine`.
-///
-/// Permissions: SCStream is gated by Screen Recording in TCC. The bundle's
-/// Info.plist already includes `NSScreenCaptureUsageDescription`.
+/// Captures system audio via ScreenCaptureKit (SCStream). Replaces the prior
+/// ProcessTapRouter + aggregate-device approach, which silently dropped channels
+/// on macOS 26 and required ffmpeg. SCStream bypasses Core Audio aggregate devices;
+/// sample buffers arrive as CMSampleBuffer, converted to AVAudioPCMBuffer for the
+/// recorder. Gated by Screen Recording TCC; Info.plist includes NSScreenCaptureUsageDescription.
 final class SystemAudioCapture: NSObject {
-    /// Called on a background queue with PCM samples in the configured
-    /// format (48 kHz stereo Float32 by default).
+    /// Called on a background queue with PCM samples (48 kHz stereo Float32).
     private let onBuffer: (AVAudioPCMBuffer) -> Void
     private var stream: SCStream?
     private let sampleQueue = DispatchQueue(label: "com.meetingpipe.sysaudio")
 
-    /// Native delivery format from SCStream — what callers should connect
-    /// their AVAudioPlayerNode at.
+    /// Native delivery format from SCStream; connect AVAudioPlayerNode at this format.
     static let captureFormat: AVAudioFormat = {
         AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -34,47 +24,35 @@ final class SystemAudioCapture: NSObject {
         )!
     }()
 
-    /// Cached SCShareableContent (and the chosen display). Each call to
-    /// `SCShareableContent.excludingDesktopWindows(...)` triggers a TCC
-    /// permission check, and on a freshly-rebuilt binary that hasn't been
-    /// granted Screen Recording yet, every call re-prompts the user. We
-    /// fetch it ONCE at daemon startup (via `prewarm()`) and reuse the
-    /// result across recordings, so the user only sees the prompt the
-    /// first time after install (or after a binary signature change that
-    /// invalidates TCC's record).
+    /// Cached SCShareableContent. Each call to excludingDesktopWindows triggers a
+    /// TCC check and re-prompts on freshly-rebuilt binaries. Fetched once at startup
+    /// via prewarm() and reused across recordings so the user sees the prompt only
+    /// on first install or after a binary signature change.
     private static var cachedContent: SCShareableContent?
 
-    /// Last-known TCC outcome for Screen Recording. Drives the menu-bar
-    /// warning, the post-recording "mic-only" notification, and the inline
-    /// banner on the prompt panel. Reads can happen on any thread but writes
-    /// only from `prewarm()` / `start()`.
+    /// Last-known TCC outcome for Screen Recording. Drives the menu-bar warning,
+    /// "mic-only" notification, and prompt-panel banner. Reads: any thread; writes:
+    /// only from prewarm() / start().
     enum PermissionState {
         case unknown   // we haven't checked yet (cold launch before prewarm)
         case granted   // last call to SCShareableContent / SCStream succeeded
-        case denied    // last call threw a TCC denial — silent mic-only mode
+        case denied    // last call threw a TCC denial; silent mic-only mode
     }
     static private(set) var permissionState: PermissionState = .unknown
 
-    /// Once-per-launch latch for the Screen Recording request. Guards
-    /// the check-and-set below; `prewarm()` runs from several
-    /// concurrent Tasks (App startup + the Permissions center) so the
-    /// latch flip has to be atomic.
+    /// Guards the once-per-launch Screen Recording request slot. prewarm() can
+    /// run from concurrent Tasks, so the latch flip must be atomic.
     private static let requestLock = NSLock()
 
-    /// True once `CGRequestScreenCaptureAccess` has fired in this
-    /// process. That API re-pops the system dialog on every call when
-    /// access is not granted, and a Screen Recording grant only takes
-    /// effect after an app restart, so firing it more than once per
-    /// launch (two startup `prewarm()` paths plus every Preferences
-    /// "Request" click) just stacks duplicate dialogs the user cannot
-    /// dismiss for good. We fire it at most once per launch.
+    /// True once CGRequestScreenCaptureAccess has fired this process lifetime.
+    /// The API re-pops the dialog on every call when access is ungranted, and a
+    /// grant only takes effect after restart, so multiple calls per launch just
+    /// stack undismissable dialogs. Fire at most once per launch.
     private static var didRequestScreenCaptureThisLaunch = false
 
-    /// Atomically claim the once-per-launch screen-recording request
-    /// slot: true for the first caller in this process, false for
-    /// every later one. Synchronous on purpose so the lock is never
-    /// held across an `await` (the Swift concurrency checker rejects
-    /// `NSLock.unlock()` in an async context).
+    /// Returns true for the first caller per process lifetime, false for all
+    /// subsequent callers. Synchronous so NSLock is never held across an await
+    /// (the Swift concurrency checker rejects that).
     private static func claimScreenCaptureRequestSlot() -> Bool {
         requestLock.lock()
         defer { requestLock.unlock() }
@@ -83,11 +61,8 @@ final class SystemAudioCapture: NSObject {
         return true
     }
 
-    /// Open System Settings → Privacy & Security → Screen Recording. Used by
-    /// the menu-bar warning, the prompt-panel inline banner, and the
-    /// "Recording was mic-only" notification action. All known call sites
-    /// run on the main thread, and `NSWorkspace.shared.open(_:)` is
-    /// documented as thread-safe regardless.
+    /// Open System Settings - Privacy & Security - Screen Recording.
+    /// Used by the menu-bar warning, prompt-panel banner, and mic-only notification action.
     static func openScreenRecordingSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
         NSWorkspace.shared.open(url)
@@ -98,62 +73,38 @@ final class SystemAudioCapture: NSObject {
         super.init()
     }
 
-    /// Fetch the shareable-content list once at daemon startup. If the
-    /// user grants Screen Recording, the content is cached. If they deny,
-    /// the call throws — we swallow the error here; subsequent recording
-    /// starts will retry (and re-prompt at most once per daemon lifetime
-    /// per pre-warm cycle).
-    ///
-    /// On recent macOS releases, `SCShareableContent.excludingDesktopWindows`
-    /// alone does NOT reliably register the binary with TCC or surface
-    /// the permission dialog — the binary just silently fails to appear
-    /// in System Settings → Screen & System Audio Recording. We bridge
-    /// that gap with `CGRequestScreenCaptureAccess`, the CoreGraphics
-    /// API documented to add the requesting bundle to the list AND
-    /// surface the system dialog on first use. Subsequent runs are
-    /// no-ops once TCC has an entry.
+    /// Fetch and cache SCShareableContent once at startup. On recent macOS,
+    /// SCShareableContent.excludingDesktopWindows alone does NOT register the
+    /// binary with TCC or surface the dialog - it silently fails to appear in
+    /// System Settings. CGRequestScreenCaptureAccess is the CG API that both adds
+    /// the bundle to the list and pops the dialog on first use; subsequent runs
+    /// are no-ops once TCC has an entry.
     static func prewarm() async {
         if cachedContent != nil { permissionState = .granted; return }
 
-        // 1. Check the current TCC verdict without prompting. If we
-        //    already have access, skip the request call and go
-        //    straight to SCShareableContent — that call is safe to
-        //    make when access is confirmed (no second prompt).
+        // Check TCC without prompting first; skip request if already trusted.
         let alreadyTrusted = CGPreflightScreenCaptureAccess()
         if !alreadyTrusted {
-            // Cap the request at one dialog per launch. Without this,
-            // the App-startup prewarm, the Permissions-center startup
-            // request, and every Preferences "Request" click each
-            // re-pop the system dialog. A Screen Recording grant only
-            // applies after the next launch, so re-popping it just
-            // stacks dialogs the user can never make stick in-session.
+            // One dialog per launch: startup prewarm, Permissions-center request,
+            // and Preferences "Request" clicks all share this slot. A grant only
+            // applies after restart, so re-popping just stacks undismissable dialogs.
             guard claimScreenCaptureRequestSlot() else {
                 Log.writeLine("recorder", "screen-recording prompt already shown this launch; skipping repeat CGRequest")
                 return
             }
-            // 2. Actively request — this is what populates the System
-            //    Settings list and surfaces the prompt. Returns the
-            //    current verdict synchronously; the dialog itself is
-            //    async, so a false return here just means "not granted
-            //    yet" rather than "denied forever".
+            // CGRequestScreenCaptureAccess populates the System Settings list and
+            // surfaces the prompt. Returns the current verdict synchronously; false
+            // means "not yet granted", not "denied forever".
             let granted = CGRequestScreenCaptureAccess()
             Log.recorder.info("CGRequestScreenCaptureAccess: granted=\(granted)")
             Log.writeLine("recorder", "CGRequestScreenCaptureAccess: granted=\(granted)")
             if !granted {
-                // Bail without calling SCShareableContent. On macOS
-                // 14.4+ — and definitely on macOS 26 — `SCShareable
-                // Content.excludingDesktopWindows(...)` surfaces a
-                // second TCC dialog when access has just been denied,
-                // because Apple's "give the user another chance"
-                // policy fires inside the SC framework too. Calling
-                // it after a known-false CGRequest just doubles the
-                // dialog count from a single user-initiated prewarm,
-                // and (when wired into a polling refresh, which we
-                // no longer do) compounds into the prompt loop the
-                // user reported. The cost of bailing is that the
-                // stale-cdhash-effectively-granted edge case isn't
-                // self-healed automatically — the user has to click
-                // Request explicitly to re-probe, which is acceptable.
+                // Skip the SCShareableContent call. On macOS 14.4+ (and macOS 26)
+                // calling excludingDesktopWindows after a known-false CGRequest
+                // surfaces a second TCC dialog ("give the user another chance" policy
+                // inside the SC framework). Skipping it avoids the double-prompt loop
+                // the user reported. Tradeoff: stale-cdhash edge cases aren't
+                // self-healed; the user must click Request again, which is acceptable.
                 Log.writeLine("recorder", "CGRequest denied; skipping SCShareableContent probe to avoid double-prompt")
                 return
             }
@@ -173,17 +124,11 @@ final class SystemAudioCapture: NSObject {
         }
     }
 
-    /// Drop the cached `SCShareableContent` + permission verdict and
-    /// re-probe via `SCShareableContent` only — NEVER calls
-    /// `CGRequestScreenCaptureAccess`. The request API surfaces the
-    /// system dialog every time it's called for an ungranted bundle;
-    /// invoking it on the Permissions tab's 2 s polling loop would
-    /// re-pop the prompt indefinitely.
-    ///
-    /// Used by `PermissionsCenter.refreshScreenRecording` (polling and
-    /// Re-check). The explicit Request button still goes through
-    /// `prewarm()`, which is the only path allowed to surface the
-    /// dialog.
+    /// Re-probe access via SCShareableContent only - never calls
+    /// CGRequestScreenCaptureAccess. The request API pops the dialog on every
+    /// call for an ungranted bundle; using it on the 2 s polling loop would
+    /// re-pop indefinitely. Only prewarm() may surface the dialog.
+    /// Used by PermissionsCenter.refreshScreenRecording (polling + Re-check).
     static func reprobeAccess() async {
         cachedContent = nil
         permissionState = .unknown
@@ -195,13 +140,9 @@ final class SystemAudioCapture: NSObject {
             )
             permissionState = .granted
         } catch {
-            // CGPreflight true + SC fail: TCC says granted but the
-            // call refused — a real denial / transient failure. Set
-            // .denied.
-            // CGPreflight false + SC fail: user hasn't granted yet,
-            // or stale cdhash with no effective access. Keep
-            // .unknown so the UI doesn't fabricate a "denied"
-            // verdict on a polling tick.
+            // CGPreflight true + SC fail: real denial / transient error - set .denied.
+            // CGPreflight false + SC fail: not yet granted or stale cdhash - keep .unknown
+            // so the UI doesn't fabricate a "denied" verdict on a polling tick.
             if alreadyTrusted {
                 permissionState = .denied
             } else {
@@ -210,9 +151,8 @@ final class SystemAudioCapture: NSObject {
         }
     }
 
-    /// Start capturing system audio. The "filter" must reference a real
-    /// display, but with width/height set tiny we incur essentially zero
-    /// video processing cost. We're only interested in `.audio` outputs.
+    /// Start capturing system audio. Filter requires a real display; width/height
+    /// are set to 2x2 to avoid video processing cost. Only .audio outputs are used.
     func start() async throws {
         let content: SCShareableContent
         if let cached = Self.cachedContent {
@@ -242,23 +182,17 @@ final class SystemAudioCapture: NSObject {
 
         let config = SCStreamConfiguration()
         config.capturesAudio = true
-        // Don't loop our own audio (notification dings, etc.) back into
-        // the recording. macOS 13.3+; deployment target is 14, so safe.
-        config.excludesCurrentProcessAudio = true
+        config.excludesCurrentProcessAudio = true // don't loop daemon audio into the recording; macOS 13.3+
         config.sampleRate = 48000
         config.channelCount = 2
-        // Smallest possible video frame so we don't burn CPU on pixels we
-        // throw away. SCStream still requires a non-zero size.
-        config.width = 2
+        config.width = 2  // SCStream requires non-zero; 2x2 wastes negligible CPU
         config.height = 2
         config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
         config.queueDepth = 5
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
-        // SCStream also requires a screen output to be attached even if
-        // we don't care about pixels — without one, `startCapture` errors.
-        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
+        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue) // required even for audio-only; startCapture errors without it
         try await stream.startCapture()
         self.stream = stream
         Log.recorder.info("SCStream system-audio capture started")
@@ -304,9 +238,8 @@ extension SystemAudioCapture: SCStreamOutput, SCStreamDelegate {
         Log.writeLine("recorder", "SCStream error: \(error.localizedDescription)")
     }
 
-    /// Convert a CoreMedia audio sample buffer to an AVAudioPCMBuffer.
-    /// SCStream delivers Float32 non-interleaved; our `captureFormat`
-    /// matches that, so this is a deep copy without resampling.
+    /// Convert a CMSampleBuffer to AVAudioPCMBuffer. SCStream delivers Float32
+    /// non-interleaved matching captureFormat, so this is a deep copy without resampling.
     private static func pcmBuffer(from sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
         guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription) else {
@@ -321,7 +254,6 @@ extension SystemAudioCapture: SCStreamOutput, SCStreamDelegate {
         }
         buffer.frameLength = frames
 
-        // Use the AudioBufferList that CMSampleBuffer can produce directly.
         let audioBufferList = buffer.mutableAudioBufferList
         let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
             sampleBuffer,

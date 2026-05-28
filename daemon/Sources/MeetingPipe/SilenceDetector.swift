@@ -1,37 +1,21 @@
 import Foundation
 
-/// Watches mic + system audio levels during a recording so the daemon
-/// can stop a meeting the regular detector missed-end (TECH-C2).
+/// Watches mic + system audio levels to auto-stop a recording the end-detector
+/// missed (TECH-C2). Covers browser-tab meetings where a stale "Meet" tab or
+/// Slack huddle thread keeps the window-title probe firing after the call ends.
 ///
-/// Failure mode this exists to cover: browser-tab meetings — the
-/// detector's window-title probe can keep firing `started` long after
-/// the call ended (a leftover "Meet" tab in the background, Slack
-/// huddle threads named "huddle"). Until now the user noticed the
-/// recording was still running hours later by checking the menu bar.
+/// Both channels must fall below thresholdDb to start a streak. After
+/// notifyAfterSec: fire onNotifySilence once ("Still meeting?" notification).
+/// After autoStopAfterSec: fire onAutoStopSilence once. Any non-silent sample
+/// resets the streak.
 ///
-/// Behaviour:
-///   - When BOTH the latest mic and the latest system level fall below
-///     `thresholdDb`, a silence streak begins.
-///   - After `notifyAfterSec` seconds of unbroken silence, fire
-///     `onNotifySilence` exactly once. The Coordinator surfaces this
-///     as a "Still meeting?" notification with a stop action — the
-///     user can stop immediately or ignore.
-///   - After `autoStopAfterSec` seconds, fire `onAutoStopSilence`
-///     exactly once. The Coordinator emits `auto_stop_silence` and
-///     stops the recorder.
-///   - Any single non-silent sample resets the streak (and re-arms
-///     the notification path).
+/// Pure timing logic: no Timer owned here. The Coordinator drives observeMic /
+/// observeSystem from the Recorder's ~1×/sec level callbacks; tests inject the
+/// clock via the at: parameter.
 ///
-/// Pure timing logic: the detector never owns a Timer. The Coordinator
-/// drives `observeMic` / `observeSystem` from the Recorder's level
-/// callbacks (already ~1×/sec), and tests inject the clock through the
-/// `at:` parameter. That's why this file has no `import AVFoundation`.
-///
-/// One asymmetry worth flagging: if the user denies Screen Recording,
-/// the system stream never delivers a sample and `latestSystemDb`
-/// stays at `-.infinity`. The gate then reduces to "mic alone is
-/// silent" — which is the correct call for a mic-only recording (no
-/// other channel exists), so the 5-minute fallback still works.
+/// If Screen Recording is denied, the system stream never delivers and
+/// latestSystemDb stays at -.infinity, reducing the gate to mic-only silence -
+/// the correct behaviour for a mic-only recording.
 final class SilenceDetector {
     static let defaultThresholdDb: Double = -50.0
     static let defaultNotifyAfterSec: TimeInterval = 90
@@ -63,10 +47,8 @@ final class SilenceDetector {
         self.onAutoStopSilence = onAutoStopSilence
     }
 
-    /// Wipe streak state so the detector can be reused across recordings.
-    /// Cached level values reset to `-.infinity` deliberately: without a
-    /// sample to prove otherwise, "unknown" is treated as silent so the
-    /// auto-stop path still arms (matches the no-system-audio case).
+    /// Reset streak state for reuse across recordings. Levels reset to -.infinity
+    /// so "unknown" counts as silent and the auto-stop path arms (matches no-system-audio).
     func reset() {
         latestMicDb = -.infinity
         latestSystemDb = -.infinity
@@ -86,9 +68,7 @@ final class SilenceDetector {
     }
 
     private func evaluate(at time: Date) {
-        // Once auto-stop has fired, the recorder is being torn down by
-        // the Coordinator. Subsequent stale ticks must not fire again.
-        if didAutoStop { return }
+        if didAutoStop { return } // recorder is tearing down; stale ticks must not re-fire
 
         let silent = latestMicDb < thresholdDb && latestSystemDb < thresholdDb
         if !silent {

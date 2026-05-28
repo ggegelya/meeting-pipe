@@ -1,27 +1,23 @@
 import AVFoundation
 import Foundation
 
-/// Pure decision logic for recovering mic capture after an
-/// `AVAudioEngineConfigurationChange` (typically the default input
-/// device changing, e.g. AirPods unplugged). `MeetingRecorder` forwards
-/// the live facts in; this type holds the branching and the gap math so
-/// both are unit-testable without a running engine.
+/// Pure decision logic for recovering mic capture after AVAudioEngineConfigurationChange
+/// (e.g. AirPods unplugged). MeetingRecorder forwards live facts; this type owns
+/// the branching and gap math so both are unit-testable without a running engine.
 enum CaptureRecoveryPlanner {
 
     /// What the recorder should do when a configuration change fires.
     enum Action: Equatable {
-        /// Not recording - nothing to recover.
+        /// Not recording; nothing to recover.
         case ignore
-        /// Re-arm capture. `needsConverter` is true when the new input
-        /// device's format differs from the open mic file's, so the tap
-        /// output must be resampled back to the file format.
+        /// Re-arm capture. needsConverter is true when the new device's format differs
+        /// from the open mic file's and the tap output must be resampled.
         case resume(needsConverter: Bool)
         /// No usable input device remains; recovery is not possible.
         case abort
     }
 
-    /// Decide how to react to a configuration change. `liveFormat` is
-    /// nil when the input node reports no usable format.
+    /// Decide how to react to a configuration change. liveFormat is nil when the input node has no usable format.
     static func plan(
         isRecording: Bool,
         fileFormat: AVAudioFormat,
@@ -34,9 +30,8 @@ enum CaptureRecoveryPlanner {
         return .resume(needsConverter: !liveFormat.isEqual(fileFormat))
     }
 
-    /// Number of silent frames to write into the mic file to cover the
-    /// switchover gap, keeping the mic frame-aligned with the system
-    /// channel. A non-positive span or sample rate yields zero.
+    /// Silent frames to pad the mic file during the device-switchover gap,
+    /// keeping mic and system channels frame-aligned. Non-positive span or rate yields 0.
     static func silenceFrames(
         gapStart: Date,
         resumeAt: Date,
@@ -50,18 +45,14 @@ enum CaptureRecoveryPlanner {
         return AVAudioFrameCount(frames)
     }
 
-    /// Retry schedule for `.abort` reads. AirPods (and most Bluetooth
-    /// inputs) publish the route change a moment before the input
-    /// node's format is queryable, so the first read after a
-    /// configuration change frequently reports sampleRate=0. Backing off
-    /// across ~4 s covers the device-warmup window without leaving the
-    /// user staring at a stopped engine when the next observation would
-    /// have succeeded.
+    /// Retry schedule for .abort reads. AirPods and most Bluetooth devices publish
+    /// the route change before the input node's format is queryable, so the first
+    /// read after a config change often reports sampleRate=0. Backing off across ~4 s
+    /// covers the device-warmup window.
     static let retryDelaysSeconds: [TimeInterval] = [0.3, 0.6, 1.2, 2.0]
     static var maxRetryAttempts: Int { retryDelaysSeconds.count }
 
-    /// Delay for the next retry given how many attempts have already
-    /// been queued. Returns nil when the budget is exhausted.
+    /// Delay for the next retry. Returns nil when the budget is exhausted.
     static func nextRetryDelay(attemptsAlreadyMade: Int) -> TimeInterval? {
         guard attemptsAlreadyMade >= 0,
               attemptsAlreadyMade < retryDelaysSeconds.count else {

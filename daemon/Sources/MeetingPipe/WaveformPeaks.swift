@@ -1,27 +1,16 @@
 import AVFoundation
 import Foundation
 
-/// Downsampled per-channel peak data backing the Audio tab's waveform
-/// (TECH-A7). The pipeline writes a 16 kHz stereo wav (mic on the left
-/// channel, system audio on the right). For rendering we don't need the
-/// raw samples — we just need an envelope: one max-abs value per
-/// fixed-duration "bin", per channel. A 60-min meeting at 50 bins/sec
-/// is 180k floats total → trivial to draw at 60 fps and ~720 KB
-/// uncompressed, well inside the spec's 2 s render budget.
-///
-/// The cache lives under `~/Library/Caches/MeetingPipe/waveforms/` and
-/// keys on (file size, modification time). Any change to the underlying
-/// wav invalidates the cache implicitly because the header check fails.
+/// Per-channel peak envelope for the Audio tab waveform (TECH-A7). One max-abs value
+/// per fixed-duration bin per channel. At 50 bins/sec a 60-min meeting is 180k floats -
+/// trivial at 60 fps and within the spec's 2 s render budget. Cache is keyed on
+/// (file size, mtime); any change to the wav invalidates it via the header check.
 struct WaveformPeaks {
 
-    /// Approximate number of peaks per second of audio. 50 gives ~10 ms
-    /// resolution — fine enough that the rendered shape is faithful to
-    /// the original even at 8× zoom, coarse enough that a 60-min file
-    /// stays well under a megabyte.
+    /// ~10 ms resolution at 8x zoom; a 60-min file stays well under 1 MB.
     static let peaksPerSecond: Int = 50
 
-    /// Per-channel peak arrays. `left[i]` and `right[i]` correspond to
-    /// the same time bin; arrays are always equal-length.
+    /// Per-channel peaks; left[i] and right[i] are always the same time bin and same length.
     let left: [Float]
     let right: [Float]
     let durationSec: Double
@@ -31,15 +20,12 @@ struct WaveformPeaks {
         binCount > 0 ? durationSec / Double(binCount) : 0
     }
 
-    /// Map a [0, binCount) bin index back to its starting time. Inverse
-    /// of `bin(at:)`.
+    /// Starting time of a bin. Inverse of bin(at:).
     func time(of bin: Int) -> Double {
         return Double(bin) * binDuration
     }
 
-    /// Bin index containing `time`. Clamped to the array so a tiny
-    /// floating-point overrun at the file end doesn't read past the
-    /// buffer.
+    /// Bin index for a time. Clamped so a floating-point overrun at file end stays in bounds.
     func bin(at time: Double) -> Int {
         guard binDuration > 0 else { return 0 }
         let i = Int(time / binDuration)
@@ -47,12 +33,10 @@ struct WaveformPeaks {
     }
 }
 
-/// Loader + computer for the cached peak data. Stateless namespace; all
-/// IO runs off the SwiftUI main actor at the call site.
+/// Loader and computer for cached peak data. Stateless namespace.
 enum WaveformPeaksLoader {
 
-    /// Magic header for cached peaks. Bumping the version invalidates
-    /// every cached file on the next read.
+    /// Magic header; bump formatVersion to invalidate all cached files.
     static let magic: [UInt8] = Array("MPW1".utf8)
     static let formatVersion: UInt8 = 1
 
@@ -63,15 +47,7 @@ enum WaveformPeaksLoader {
         case cacheWriteFailed(String)
     }
 
-    /// Return cached peaks for `wavURL` if the cache is fresh, otherwise
-    /// recompute, write the cache, and return the fresh value. Network
-    /// of decisions:
-    ///   1. Build a cache path from the stem under
-    ///      `~/Library/Caches/MeetingPipe/waveforms`.
-    ///   2. If the cached header records the same (size, mtime) as the
-    ///      wav on disk, return the cached body straight away.
-    ///   3. Otherwise decode the wav with `AVAudioFile`, bin it, and
-    ///      write the result.
+    /// Return cached peaks if fresh (size + mtime match), otherwise recompute and write cache.
     static func load(wavURL: URL) throws -> WaveformPeaks {
         let attrs = try FileManager.default.attributesOfItem(atPath: wavURL.path)
         let wavSize = (attrs[.size] as? Int64) ?? 0
@@ -105,10 +81,8 @@ enum WaveformPeaksLoader {
         return dir
     }
 
-    /// Decode `wavURL` into per-channel max-abs bins. Stereo only — the
-    /// pipeline never writes a mono wav — but we tolerate mono input by
-    /// duplicating the channel into both lanes so the view doesn't
-    /// crash on hand-imported files.
+    /// Decode wavURL into per-channel max-abs bins. Mono input is duplicated into both
+    /// lanes so the view doesn't crash on hand-imported files.
     static func compute(wavURL: URL) throws -> WaveformPeaks {
         let file: AVAudioFile
         do {
@@ -140,9 +114,7 @@ enum WaveformPeaksLoader {
         leftPeaks.reserveCapacity(estBinCount)
         rightPeaks.reserveCapacity(estBinCount)
 
-        // Read in fixed-size chunks. 64k frames at 16 kHz is ~4 s per
-        // chunk, which keeps peak memory low without thrashing
-        // AVAudioFile's read path.
+        // 64k frames at 16 kHz = ~4 s per chunk: bounded memory without thrashing AVAudioFile.
         let chunkSize: AVAudioFrameCount = 65_536
         guard let buf = AVAudioPCMBuffer(
             pcmFormat: inFormat, frameCapacity: chunkSize
@@ -150,8 +122,7 @@ enum WaveformPeaksLoader {
             throw LoadError.readFailed("could not allocate AVAudioPCMBuffer")
         }
 
-        // Carry-over state across chunk boundaries: a partial bin from
-        // the previous read that still needs samples to complete.
+        // Carry a partial bin across chunk boundaries.
         var carryLeft: Float = 0
         var carryRight: Float = 0
         var carryUsed: Int = 0
@@ -209,17 +180,11 @@ enum WaveformPeaksLoader {
 
     // MARK: Cache I/O
 
-    /// Header (binary, little-endian):
-    ///   magic           4 bytes  "MPW1"
-    ///   version         1 byte
-    ///   channels        1 byte
-    ///   reserved        2 bytes
-    ///   binCount        4 bytes  UInt32
-    ///   durationMillis  8 bytes  Int64
-    ///   wavSize         8 bytes  Int64
-    ///   wavMTime        8 bytes  Int64  (seconds since 1970)
-    /// Total: 36 bytes. Followed by left peaks (Float32 × binCount) then
-    /// right peaks (Float32 × binCount).
+    /// Binary header (little-endian, 36 bytes):
+    ///   magic 4B "MPW1" | version 1B | channels 1B | reserved 2B
+    ///   binCount 4B UInt32 | durationMillis 8B Int64
+    ///   wavSize 8B Int64 | wavMTime 8B Int64 (seconds since 1970)
+    /// Followed by left peaks (Float32 x binCount) then right peaks.
     private static let headerSize = 36
 
     static func readCache(

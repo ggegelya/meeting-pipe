@@ -1,28 +1,20 @@
 import Foundation
 import Security
 
-/// Tag launches that follow a rebuild so dogfood-analysis can exclude
-/// the re-grant churn that surrounds a `--reset-tcc` cycle.
-///
-/// The pure decision (`RebuildTagger.decide`) consumes the current and
-/// previously stored cdhash and returns one of three outcomes; the host
-/// applies the side effects (event emit, UserDefaults write). Splitting
-/// it this way lets XCTest drive the logic without `SecCodeCopySelf` or
-/// `UserDefaults`.
+/// Tags post-rebuild launches so dogfood analysis can exclude TCC re-grant churn.
+/// decide() is pure (cdhash in, outcome out) so XCTest can drive it without
+/// SecCodeCopySelf or UserDefaults; the host applies side effects.
 enum RebuildTagger {
 
     enum Outcome: Equatable {
-        /// cdhash matches; nothing to do.
+        /// cdhash unchanged; nothing to do.
         case noChange
-        /// First run on this machine (no stored prior hash). Store the
-        /// hash but do not emit; there is no prior to compare against.
+        /// First launch on this machine; store the hash but don't emit (no prior to compare).
         case firstLaunch(current: String)
-        /// cdhash differs from the stored prior. Emit `app_rebuild` and
-        /// update the stored hash.
+        /// cdhash changed; emit app_rebuild and update stored hash.
         case rebuild(prev: String, current: String)
-        /// Could not read the current hash. Do not touch the stored
-        /// value so a transient read failure cannot promote the next
-        /// healthy launch into a spurious `app_rebuild`.
+        /// Current hash unreadable. Don't touch the stored value; a transient failure
+        /// must not promote the next healthy launch into a spurious app_rebuild.
         case unreadable
     }
 
@@ -36,10 +28,8 @@ enum RebuildTagger {
     /// UserDefaults key holding the most recently observed cdhash.
     static let defaultsKey = "mp.log.lastCDHash"
 
-    /// Apply the decision: emit `app_rebuild` when warranted and update
-    /// the stored hash. Wired into `App.applicationDidFinishLaunching`
-    /// before the rest of startup so the first event of every relaunch
-    /// is the rebuild marker.
+    /// Apply the decision and update UserDefaults. Wired into applicationDidFinishLaunching
+    /// before other startup so app_rebuild is always the first event of a relaunch.
     static func runOnce(
         defaults: UserDefaults = .standard,
         readCDHash: () -> String? = currentCDHash,
@@ -60,11 +50,9 @@ enum RebuildTagger {
         }
     }
 
-    /// SHA-256 cdhash of the running executable. Reads via
-    /// `SecCodeCopySigningInformation`'s `kSecCodeInfoUnique`, which is
-    /// the principal cdhash that `codesign -d --verbose` prints. For
-    /// adhoc-signed builds (the daemon's normal state during dogfood)
-    /// the cdhash is a content hash, so every rebuild flips it.
+    /// SHA-256 cdhash via SecCodeCopySigningInformation / kSecCodeInfoUnique
+    /// (same value codesign -d --verbose prints). For adhoc-signed builds (normal
+    /// during dogfood) this is a content hash, so every rebuild flips it.
     static func currentCDHash() -> String? {
         var dynamicCode: SecCode?
         guard SecCodeCopySelf([], &dynamicCode) == errSecSuccess,

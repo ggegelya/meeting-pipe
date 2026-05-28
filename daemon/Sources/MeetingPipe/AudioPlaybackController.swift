@@ -2,42 +2,28 @@ import AVFoundation
 import Combine
 import Foundation
 
-/// Local-file audio playback for the Library detail tabs (TECH-A6 +
-/// TECH-A7). Wraps an `AVAudioEngine` + `AVAudioPlayerNode` so SwiftUI
-/// views can observe `currentTime` / `isPlaying` / `duration` without
-/// owning the underlying nodes. One instance is held by
-/// `MeetingDetailView` as a `@StateObject` and shared between the
-/// Transcript and Audio tabs so seeking from one affects the other.
-///
-/// The engine plus player node (rather than `AVAudioPlayer`) is what
-/// lets the channel-mode toggle apply mono mixdown per buffer without
-/// touching the on-disk WAV. Stereo files are scheduled in small
-/// chunks; the mono mode rewrites each chunk in place as `0.5*L +
-/// 0.5*R` so both ears hear the sum. Switching mode mid-playback
-/// captures the current play position, rebuilds the schedule, and
-/// resumes from where the user left off.
-///
-/// Threading: all public mutations and the polling tick run on the
-/// main queue. Buffer-completion callbacks land on an internal audio
-/// thread and hop back to `@MainActor` via `Task` before mutating
-/// scheduling state. Polling at 15 Hz is the minimum that keeps the
-/// line-highlight latency below the spec's ±200 ms budget without
-/// spinning the CPU when no one is watching.
+/// Local-file playback for Library detail tabs (TECH-A6 + TECH-A7). Wraps
+/// AVAudioEngine + AVAudioPlayerNode so the Transcript and Audio tabs share a
+/// single @StateObject and seeking from one affects the other.
+/// AVAudioEngine (not AVAudioPlayer) is required for the per-chunk mono mixdown
+/// (0.5*L + 0.5*R) without touching the on-disk WAV. Mode switches mid-playback
+/// capture the current position and resume from it.
+/// Threading: all public mutations and the 15 Hz polling tick run on the main queue.
+/// Buffer-completion callbacks hop back to @MainActor via Task before touching
+/// scheduling state. 15 Hz is the minimum that keeps line-highlight latency within
+/// the spec's +/-200 ms budget.
 @MainActor
 final class AudioPlaybackController: ObservableObject {
 
     @Published private(set) var currentTime: TimeInterval = 0
     @Published private(set) var duration: TimeInterval = 0
     @Published private(set) var isPlaying: Bool = false
-    /// The wav we last loaded. Tracked so callers can avoid re-loading
-    /// when the user re-opens the same meeting.
+    /// Last loaded URL. Avoids re-loading when the user re-opens the same meeting.
     @Published private(set) var loadedURL: URL? = nil
-    /// Set when engine setup throws (corrupt wav, missing file,
-    /// sandbox denial). The UI shows a friendly message rather than
-    /// dropping to a silent placeholder.
+    /// Set when engine setup throws (corrupt wav, missing file, sandbox denial).
     @Published private(set) var loadError: String? = nil
 
-    /// Mono mixdown vs. original stereo. Persisted via `UISettings`.
+    /// Mono mixdown vs. stereo. Persisted via UISettings.
     @Published var channelMode: PlaybackChannelMode {
         didSet {
             guard oldValue != channelMode else { return }
@@ -51,23 +37,16 @@ final class AudioPlaybackController: ObservableObject {
     private var audioFile: AVAudioFile?
     private var connectedFormat: AVAudioFormat?
 
-    /// Small enough to keep memory bounded for hour-long recordings,
-    /// large enough that the 8-chunk prefetch covers more than one
-    /// render quantum so the player never starves.
+    /// Bounded for hour-long recordings; 8-chunk prefetch keeps the player fed.
     private static let chunkFrames: AVAudioFrameCount = 16_384
     private static let prefetchChunks = 8
 
-    /// Next frame in the source file to read for the upcoming
-    /// `scheduleBuffer`. Advances as chunks queue up, not as they
-    /// play.
+    /// Next source frame to read for scheduleBuffer. Advances as chunks are queued, not as they play.
     private var scheduledCursor: AVAudioFramePosition = 0
-    /// File-relative frame where the current play segment began
-    /// (after a load / seek / mode-change). Combined with the player
-    /// node's `playerTime` to derive `currentTime`.
+    /// Frame where the current play segment began (after load / seek / mode-change).
+    /// Combined with playerTime to derive currentTime.
     private var playSegmentStartFrame: AVAudioFramePosition = 0
-    /// Incremented whenever scheduling is invalidated (stop, seek,
-    /// mode change). Pending completion callbacks compare against
-    /// their captured epoch and bail when they no longer match.
+    /// Incremented on stop/seek/mode-change. Completion callbacks bail when their captured epoch no longer matches.
     private var scheduleEpoch: Int = 0
 
     private var tickTimer: Timer?
@@ -85,9 +64,7 @@ final class AudioPlaybackController: ObservableObject {
         engine.stop()
     }
 
-    /// Load the wav at `url` into the engine. No-op when `url` is
-    /// already loaded, so swapping tabs on the same meeting doesn't
-    /// reset playback position.
+    /// Load the wav into the engine. No-op when already loaded (tab-swap preserves position).
     func load(url: URL) {
         if loadedURL == url && audioFile != nil { return }
         teardown()
@@ -117,8 +94,7 @@ final class AudioPlaybackController: ObservableObject {
         }
     }
 
-    /// Tear down the player so it can be reloaded for a different
-    /// meeting. Called when the detail view switches stems.
+    /// Tear down the player for a different meeting stem.
     func unload() {
         teardown()
         currentTime = 0
@@ -130,8 +106,7 @@ final class AudioPlaybackController: ObservableObject {
 
     func play() {
         guard audioFile != nil else { return }
-        // Replaying after natural end: rewind first so play doesn't
-        // no-op against an empty schedule.
+        // Rewind before re-play to avoid no-op against an empty schedule.
         if currentTime >= duration - 0.05 {
             restartScheduling(fromTime: 0, resumePlaying: false)
             currentTime = 0
@@ -160,9 +135,7 @@ final class AudioPlaybackController: ObservableObject {
         if isPlaying { pause() } else { play() }
     }
 
-    /// Jump to `time` (seconds). Clamped to the loaded file's bounds
-    /// so out-of-range seeks don't push the engine into a stuck
-    /// state.
+    /// Seek to time (seconds), clamped to file bounds to avoid stuck engine state.
     func seek(to time: TimeInterval) {
         guard audioFile != nil else { return }
         let clamped = max(0, min(time, duration))
@@ -170,9 +143,7 @@ final class AudioPlaybackController: ObservableObject {
         currentTime = clamped
     }
 
-    /// `seek(to:)` and immediately resume playback. The transcript
-    /// tab uses this for click-to-seek so the user hears the line
-    /// they tapped.
+    /// Seek and immediately resume playback (transcript tap-to-seek).
     func playFrom(_ time: TimeInterval) {
         guard audioFile != nil else { return }
         let clamped = max(0, min(time, duration))
@@ -287,8 +258,7 @@ final class AudioPlaybackController: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
-        // Allow the UI to keep ticking during sheet/menu interactions.
-        RunLoop.main.add(t, forMode: .common)
+        RunLoop.main.add(t, forMode: .common) // keep ticking during sheet/menu interactions
         tickTimer = t
     }
 

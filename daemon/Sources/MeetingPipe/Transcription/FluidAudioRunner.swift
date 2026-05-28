@@ -2,22 +2,17 @@ import AVFoundation
 import FluidAudio
 import Foundation
 
-/// Swift-native ASR + diarization via FluidAudio (Parakeet TDT + pyannote-Community-1
-/// on Apple Neural Engine). Wired into `TranscriptionService` but not the
-/// default route yet; flipping the default lands in a follow-up after
-/// ANE residency and sidecar parity are verified against a real recording.
-///
-/// Model state is held for the lifetime of the runner so consecutive
-/// recordings within one daemon session don't re-pay the CoreML compilation
-/// cost. The init does not touch the network; `transcribe(_:_:)` triggers
-/// the first model download lazily via FluidAudio's bundled loader.
+/// Swift-native ASR + diarization via FluidAudio (Parakeet TDT + pyannote on ANE).
+/// Wired into TranscriptionService but not the default yet; a follow-up flips the
+/// default after ANE residency and sidecar parity are verified. Model state is held
+/// for the daemon session lifetime to avoid CoreML recompilation. Network is not
+/// touched at init; first model download is lazy via FluidAudio's bundled loader.
 final class FluidAudioRunner: TranscriptionRunner {
 
     let backendName = "fluidaudio"
 
-    /// Configured Parakeet variant. v3 is multilingual (25 European + Japanese + Chinese);
-    /// v2 is English-only with marginally lower WER on English. The user's
-    /// archive includes en + uk + es + ru, so v3 is the right default.
+    /// Parakeet variant. v3 is multilingual (25 European + JA + ZH); v2 is English-only
+    /// with slightly lower WER on English. User archive is en/uk/es/ru, so v3 is default.
     private let asrVersion: AsrModelVersion
     private let unknownSpeaker: String
 
@@ -40,14 +35,10 @@ final class FluidAudioRunner: TranscriptionRunner {
         let asr = try await ensureAsr()
         let language = Self.resolveLanguage(hint: languageHint)
 
-        // Critical: read + downmix the WAV ourselves rather than letting
-        // FluidAudio's AVAudioConverter-based loader handle stereo. Apple's
-        // AVAudioConverter does NOT reliably downmix stereo to mono when
-        // the source's channel layout isn't explicitly tagged — it can
-        // silently fall through to channel-0-only. Our WAVs are
-        // (mic-L, system-R), so that path would drop the entire remote
-        // side of the call out of the transcript. We compute (L+R)/2 in
-        // Swift and hand the resulting [Float] to both ASR + diarization.
+        // Critical: downmix ourselves instead of letting FluidAudio's AVAudioConverter
+        // handle stereo. AVAudioConverter silently falls through to channel-0-only when
+        // the source WAV has no tagged channel layout; for (mic-L, system-R) that drops
+        // the entire remote side of the call. readMonoFloat32 computes (L+R)/2 explicitly.
         let samples: [Float]
         do {
             samples = try Self.readMonoFloat32(from: wavURL)
@@ -149,9 +140,8 @@ final class FluidAudioRunner: TranscriptionRunner {
 
     // MARK: - Adapters
 
-    /// Map the workflow's language code (en / uk / es / ru / auto / nil) to
-    /// FluidAudio's `Language`. Returns nil for "auto" or unknown codes so
-    /// the SDK falls through to its own detection.
+    /// Map workflow language code (en/uk/es/ru/auto/nil) to FluidAudio Language.
+    /// Returns nil for "auto" or unknown codes so the SDK detects language itself.
     static func resolveLanguage(hint: String?) -> Language? {
         guard let code = hint?.lowercased(), !code.isEmpty, code != "auto" else { return nil }
         return Language(rawValue: code)
@@ -159,10 +149,8 @@ final class FluidAudioRunner: TranscriptionRunner {
 
     static func tokens(from result: ASRResult) -> [AsrToken] {
         guard let timings = result.tokenTimings, !timings.isEmpty else {
-            // No per-token timing: synthesize a single token spanning the
-            // whole utterance so downstream segment-building still works.
-            // This loses word-level alignment for whatever upstream call
-            // didn't request timings, but keeps the schema populated.
+            // No per-token timing: synthesize one token for the whole utterance so
+            // segment-building still works; loses word-level alignment but keeps schema valid.
             let text = result.text.trimmingCharacters(in: .whitespaces)
             guard !text.isEmpty else { return [] }
             return [AsrToken(text: text, start: 0, end: result.duration)]
@@ -176,16 +164,9 @@ final class FluidAudioRunner: TranscriptionRunner {
         }
     }
 
-    /// Loads a WAV and returns it as 16 kHz mono Float32 with both
-    /// channels averaged into the mono stream. Stereo files (mic-L,
-    /// system-R) get an explicit per-frame `(L+R)/2` mix; FluidAudio's
-    /// own loader uses AVAudioConverter for the channel reduction and
-    /// that path is unreliable on macOS when the source WAV has no
-    /// tagged channel layout (it can silently drop to channel 0 only,
-    /// losing the entire system-audio side of the recording).
-    ///
-    /// The on-disk WAV is never modified — we only build an in-memory
-    /// mono copy for ASR + diarization inputs.
+    /// Load a WAV as 16 kHz mono Float32, averaging all channels. Explicit (L+R)/2
+    /// for stereo (mic-L, system-R) avoids AVAudioConverter's unreliable channel
+    /// reduction on untagged-layout WAVs. The on-disk WAV is never modified.
     static func readMonoFloat32(from url: URL) throws -> [Float] {
         let file = try AVAudioFile(forReading: url)
         let format = file.processingFormat
@@ -204,22 +185,16 @@ final class FluidAudioRunner: TranscriptionRunner {
         }
         try file.read(into: inputBuffer)
 
-        // Downmix every channel into mono by simple average. This works
-        // for any channel count (1, 2, 4, ...) and never silently drops
-        // a channel the way an unconfigured AVAudioConverter mixer can.
         let mono = mixDownToMono(inputBuffer)
 
-        // Resample to 16 kHz if the source isn't already there.
-        // Mono → mono via AVAudioConverter is safe (no channel layout
-        // ambiguity), so reuse it for the rate change.
+        // Mono-to-mono AVAudioConverter is safe (no channel layout ambiguity) for the rate step.
         if format.sampleRate == 16_000 {
             return mono
         }
         return try resampleMono(mono, from: format.sampleRate, to: 16_000, url: url)
     }
 
-    /// Visible for tests so we can lock in (L+R)/2 against a synthesized
-    /// stereo buffer. Production callers go through `readMonoFloat32`.
+    /// Visible for tests to verify (L+R)/2 against a synthetic stereo buffer.
     static func mixDownToMono(_ buffer: AVAudioPCMBuffer) -> [Float] {
         let frameCount = Int(buffer.frameLength)
         guard frameCount > 0, let channels = buffer.floatChannelData else { return [] }

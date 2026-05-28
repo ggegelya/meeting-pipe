@@ -1,32 +1,21 @@
 import Foundation
 
-/// Detects the two ways a recordings directory can drift out of sync
-/// with the library list: a `<stem>.wav` that the library can't
-/// surface (because the stem doesn't match the daemon's
-/// `yyyyMMdd-HHmmss` format, so `MeetingStore.parseStem` rejects it)
-/// and a stem whose sidecars exist without an accompanying `.wav`
-/// (which the library silently drops in `MeetingStore.scan`).
-///
-/// The reaper is intentionally read-only: it surfaces a list, it
-/// never deletes. The user resolves the orphan by hand because the
-/// remediation is case-by-case (rename, delete, restore from backup).
+/// Detects two drift states: a .wav whose stem fails MeetingStore.parseStem
+/// (so the library can't surface it), and a stem whose sidecars exist without
+/// a .wav (silently dropped by MeetingStore.scan). Read-only by design; the
+/// user resolves each orphan case-by-case.
 enum OrphanScan {
 
-    /// A wav file present on disk that the library cannot turn into
-    /// a row. Today the only path to this state is a stem that does
-    /// not parse as `yyyyMMdd-HHmmss`.
+    /// A .wav on disk the library cannot surface; currently only stems that fail yyyyMMdd-HHmmss parsing.
     struct WavWithoutRow: Equatable {
         let stem: String
         let url: URL
     }
 
-    /// A stem whose sidecar(s) are on disk without the load-bearing
-    /// `<stem>.wav`. Library rows require the wav; without it the
-    /// sidecars are dead weight.
+    /// A stem whose sidecars exist but whose .wav is missing; the library drops such rows.
     struct RowWithoutWav: Equatable {
         let stem: String
-        /// The orphaned sidecar files (relative to the recordings
-        /// directory). Sorted so the report is deterministic.
+        /// Orphaned sidecar files. Sorted for deterministic reports.
         let sidecars: [URL]
     }
 
@@ -43,8 +32,7 @@ enum OrphanScan {
         }
     }
 
-    /// Pure scan over an in-memory file list. Split from `scan(directory:)`
-    /// so tests don't have to seed real files for every assertion.
+    /// Pure in-memory scan. Split from scan(directory:) so tests don't need real files.
     static func detect(stems: [String: [URL]]) -> Report {
         var wavsWithoutRow: [WavWithoutRow] = []
         var rowsWithoutWav: [RowWithoutWav] = []
@@ -72,9 +60,7 @@ enum OrphanScan {
         )
     }
 
-    /// Read the recordings directory once, group by stem, and run
-    /// `detect`. Missing or unreadable directory returns an empty
-    /// report so the doctor probe can carry on with a friendly note.
+    /// Read directory once, group by stem, run detect. Returns empty report on error.
     static func scan(directory: URL) -> Report {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(

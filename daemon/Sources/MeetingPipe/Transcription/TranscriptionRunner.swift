@@ -1,10 +1,8 @@
 import Foundation
 
-/// On-disk schema for the per-recording transcript sidecar (`<stem>.json`).
-/// This must stay field-for-field identical to what `pipeline/src/mp/transcribe.py`
-/// writes today, because downstream library code reads both. Group P's
-/// migration replaces the *producer* of this file; the file itself does
-/// not change.
+/// Per-recording transcript sidecar schema (<stem>.json). Must stay field-for-field
+/// identical to what pipeline/src/mp/transcribe.py writes; downstream library code
+/// reads both. Group P's migration replaces the producer, not the schema.
 struct TranscriptSidecar: Codable, Equatable {
     var language: String
     var segments: [SidecarSegment]
@@ -47,19 +45,13 @@ struct SidecarWord: Codable, Equatable {
     var end: Double
 }
 
-/// Contract every transcription backend (FluidAudio today; MLX-Whisper-via-pipeline
-/// still owned by the Python subprocess) must satisfy. Async because every
-/// real implementation needs to await model load + inference.
+/// Contract for transcription backends. Async because every real implementation awaits model load + inference.
 protocol TranscriptionRunner: AnyObject {
-    /// Engine identifier written into `TranscriptSidecar.backend`. Surfaces
-    /// in events.jsonl analysis (TECH-P2 acceptance) so dogfood reports can
-    /// distinguish runs by engine.
+    /// Written into TranscriptSidecar.backend; used by events.jsonl analysis (TECH-P2) to distinguish engines.
     var backendName: String { get }
 
-    /// Run ASR + diarization against `wavURL` and produce the sidecar
-    /// payload. `languageHint` is the workflow's configured language code
-    /// (en / uk / es / ru / auto); a runner may ignore it when the engine
-    /// auto-detects.
+    /// Run ASR + diarization and return the sidecar. languageHint is the workflow's
+    /// language code (en/uk/es/ru/auto); runners may ignore it for auto-detection.
     func transcribe(
         wavURL: URL,
         languageHint: String?
@@ -87,10 +79,8 @@ enum TranscriptionError: Error, LocalizedError {
 }
 
 extension TranscriptSidecar {
-    /// Atomic JSON write to disk. Schema validated against the Python
-    /// pipeline's writer in `pipeline/src/mp/transcribe.py`; the encoder
-    /// keys are explicit (snake_case) so the produced file is byte-shape
-    /// interchangeable with the pipeline's output.
+    /// Atomic JSON write. Keys are explicit snake_case so the file is byte-shape
+    /// interchangeable with pipeline/src/mp/transcribe.py output.
     func write(to url: URL) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]

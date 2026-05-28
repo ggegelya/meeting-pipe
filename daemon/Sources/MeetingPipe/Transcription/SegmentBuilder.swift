@@ -1,8 +1,7 @@
 import Foundation
 
-/// Inputs to `SegmentBuilder` are kept FluidAudio-free so the grouping
-/// logic is unit-testable without standing up a model. `FluidAudioRunner`
-/// adapts the SDK's `TokenTiming` / `TimedSpeakerSegment` into these.
+/// FluidAudio-free inputs so grouping logic is unit-testable without a model.
+/// FluidAudioRunner adapts the SDK's TokenTiming / TimedSpeakerSegment into these.
 struct AsrToken: Equatable {
     var text: String
     var start: Double
@@ -15,15 +14,11 @@ struct SpeakerSpan: Equatable {
     var end: Double
 }
 
-/// Groups a flat token stream from a token-and-duration ASR model
-/// (Parakeet TDT) into segments comparable to what Whisper-style VAD
-/// chunking produces. The pipeline's downstream code (diarization fusion,
-/// summary, library) reads the segment shape, not the raw token stream.
+/// Groups a flat Parakeet TDT token stream into segments matching Whisper-style
+/// VAD chunking. Downstream code reads the segment shape, not raw tokens.
 enum SegmentBuilder {
 
-    /// Heuristic thresholds. Picked to match the granularity Whisper /
-    /// MLX-Whisper produce so the downstream library renders the same
-    /// number of paragraph breaks before and after the migration.
+    /// Thresholds tuned to match Whisper/MLX-Whisper paragraph granularity pre/post migration.
     struct Config {
         /// Treat as a hard sentence boundary when a token ends with one of these.
         var sentenceTerminators: Set<Character> = [".", "?", "!"]
@@ -37,10 +32,8 @@ enum SegmentBuilder {
         static let `default` = Config()
     }
 
-    /// Build segments from a flat token stream and a diarization timeline.
-    /// `speakers` may be empty, in which case every segment gets the
-    /// configured fallback speaker label. The fallback matches the Python
-    /// pipeline's `_UNKNOWN_SPEAKER` constant so the schema stays uniform.
+    /// Build segments from tokens and a diarization timeline. Empty speakers list
+    /// assigns the fallback label (matches Python's _UNKNOWN_SPEAKER for schema uniformity).
     static func build(
         tokens: [AsrToken],
         speakers: [SpeakerSpan],
@@ -93,9 +86,8 @@ enum SegmentBuilder {
         return segments
     }
 
-    /// Assign the speaker whose diarization span overlaps the segment by
-    /// the largest absolute duration. Ties are broken by earliest span
-    /// start. Mirrors `assign_speakers` in `pipeline/src/mp/transcribe.py`.
+    /// Assign the speaker with the largest overlap; ties broken by earliest span start.
+    /// Mirrors assign_speakers in pipeline/src/mp/transcribe.py.
     static func assignSpeaker(
         segmentStart: Double,
         segmentEnd: Double,
