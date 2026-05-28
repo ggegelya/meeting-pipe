@@ -28,6 +28,8 @@ Subcommands:
   dogfood <transcript.md>     Run Anthropic + local backends side-by-side
   dogfood --report            Aggregate scored runs into a ship-decision report
   prefetch-model <repo_id>    Pre-download a local-mode MLX model (JSONL progress)
+  serve-local                 Start a persistent mlx_lm.server for the configured
+                              local model and block (launch-time warm path)
   corrections-stats [--dir P] [--json]
                               Aggregate the local correction corpus (Phase 2)
   analyze-detection [--since 7d] [--source PATH] [--output FILE] [--json]
@@ -58,6 +60,9 @@ def main() -> int:
     # only when actually invoked.
     if cmd == "summarize":
         from .summarize import main as run
+        return run(rest)
+    if cmd in {"serve-local", "serve_local"}:
+        from .summarize_local import main as run
         return run(rest)
     if cmd in {"publish-notion", "publish_notion"}:
         from .publish_notion import main as run

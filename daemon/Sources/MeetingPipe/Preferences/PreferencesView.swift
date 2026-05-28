@@ -514,6 +514,10 @@ private struct PromptSectionView: View {
 
 private struct PipelineSectionView: View {
     @ObservedObject var store: ConfigStore
+    @ObservedObject private var ui = UISettings.shared
+    @State private var promptText: String?
+    @State private var promptLoading = false
+    @State private var promptError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -560,9 +564,34 @@ private struct PipelineSectionView: View {
                             .textFieldStyle(.roundedBorder)
                             .font(.system(.body, design: .monospaced))
                     }
+                    SettingsRow("Active model",
+                        sublabel: activeModelSizeHint) {
+                        Text(activeModelName)
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                    }
+                    SettingsRow("Preload at launch",
+                        sublabel: "Warm the model when the app starts so the first summary skips the cold-start. Holds the model in RAM while idle.") {
+                        Toggle("", isOn: $ui.preloadLocalModelAtLaunch)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                        Spacer(minLength: 0)
+                    }
                 }
             } footer: {
                 pipelineBackendFooter
+            }
+
+            SettingsGroup("Summarization prompt") {
+                SettingsRow("System prompt", alignTop: true, showsDivider: false) {
+                    promptPreview
+                }
+            } footer: {
+                Text("Read-only preview of the system prompt sent to the summarizer, with your configured team context and summary language applied.")
             }
 
             SettingsGroup("Languages") {
@@ -664,6 +693,96 @@ private struct PipelineSectionView: View {
         let hours = Double(n) / 80_000.0
         if hours >= 1 { return String(format: "%.1f h", hours) }
         return "\(n / 1000)k chars"
+    }
+
+    private var activeModelName: String {
+        let id = store.summarizationLocalModel
+        return id.isEmpty ? "(none configured)" : id
+    }
+
+    private var activeModelSizeHint: String {
+        if let p = LocalModelPreset.all.first(where: { $0.modelId == store.summarizationLocalModel }) {
+            return "\(p.diskHint) on disk"
+        }
+        return "Custom model; size unknown"
+    }
+
+    @ViewBuilder
+    private var promptPreview: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let text = promptText {
+                ScrollView {
+                    Text(text)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 220)
+            } else if let err = promptError {
+                Text("Couldn't load the prompt: \(err)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Button(promptLoading ? "Loading…" : "View prompt") {
+                    Task { await loadPrompt() }
+                }
+                .disabled(promptLoading)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    @MainActor
+    private func loadPrompt() async {
+        promptLoading = true
+        promptError = nil
+        switch await SummarizationPromptPreview.load() {
+        case .ok(let text): promptText = text
+        case .failed(let err): promptError = err
+        }
+        promptLoading = false
+    }
+}
+
+/// Runs `mp summarize --print-prompt` off-main to fetch the rendered system prompt for the read-only Preferences preview (TECH-A15). Best-effort: carries a message on failure rather than throwing into the view.
+enum SummarizationPromptPreview {
+    enum Outcome {
+        case ok(String)
+        case failed(String)
+    }
+
+    static func load() async -> Outcome {
+        guard let mp = PipelineLauncher.findMP() else {
+            return .failed("`mp` not found. Run scripts/install.sh.")
+        }
+        return await Task.detached(priority: .userInitiated) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: mp.shell)
+            p.arguments = mp.args + ["summarize", "--print-prompt"]
+            p.environment = PipelineLauncher.freshEnvironment()
+            let out = Pipe()
+            let err = Pipe()
+            p.standardOutput = out
+            p.standardError = err
+            do {
+                try p.run()
+            } catch {
+                return .failed(error.localizedDescription)
+            }
+            let outData = out.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            if p.terminationStatus != 0 {
+                let errText = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                return .failed(
+                    errText.isEmpty
+                        ? "mp exited \(p.terminationStatus)"
+                        : errText.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            }
+            let text = String(data: outData, encoding: .utf8) ?? ""
+            return .ok(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }.value
     }
 }
 

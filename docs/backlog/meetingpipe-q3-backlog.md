@@ -303,7 +303,13 @@ Stop and ask: if corrections are persisted but the rendering path is wrong, fix 
 
 Deps: TECH-A11 (typed summary model) lands first so corrections do not have to wrap untyped reads.
 
-**TECH-A15 · Local LLM prompt + model + cold-start polish · S · TECH-A14** [NEW]
+**TECH-A15 · Local LLM prompt + model + cold-start polish · S · TECH-A14** [DONE]
+
+> Resolved 2026-05-28: all three covered. (1) Model name + size: the Pipeline pane now shows an "Active model" row with the resolved local model id and its on-disk size (from the preset disk hint; "custom; size unknown" otherwise). (2) Prompt template read-only: `mp summarize --print-prompt` renders the system prompt with the configured team context + summary language, surfaced via a "View prompt" read-only preview in the Pipeline pane. (3) Cold-start: a new `mp serve-local` warms a persistent `mlx_lm.server` that later `run-all` / `summarize` calls reuse via their health check; a `LocalModelPreloader` starts it at launch (and stops it on quit) behind a new Preferences toggle, default OFF.
+>
+> Stop-and-ask resolution: preloading holds the multi-GB model resident, so per the RAM trigger the toggle defaults OFF and only acts when backend == local AND the model is already cached (the download stays with ModelDownloadSupervisor). Files: `PreferencesView.swift`, `UISettings.swift`, new `LocalModelPreloader.swift`, `App.swift`, `summarize.py`, `summarize_local.py`, `__main__.py`. Tests: `LocalModelPreloaderTests` (gating) + `test_serve_local.py` (server-command, loopback clamp, serve-local exec, print-prompt rendering). Daemon 610 tests green, pipeline 191 green, ruff clean.
+>
+> Note (could not verify here): the "first local summary within 10% of subsequent" bar needs live MLX runs on-device and is owed to runtime dogfood; the cold-start mechanism (reuse a pre-warmed server) is in place. The edit list named `PipelineLauncher.swift` for the preload path; the warm process is instead owned by an AppDelegate-scoped `LocalModelPreloader` (so teardown rides the existing `applicationWillTerminate`) plus the `mp serve-local` command, rather than threading a launch-time spawn through the per-job launcher.
 
 Next.md item: "Local-LLM improvements (prompt tuning, model-size in the UI, faster cold-start) are real but each individually small."
 

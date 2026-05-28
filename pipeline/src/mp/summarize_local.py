@@ -79,6 +79,22 @@ def _loopback_only(host: str) -> str:
     return DEFAULT_HOST
 
 
+def build_server_command(model: str, host: str, port: int) -> list[str]:
+    """Argv for an ``mlx_lm.server`` bound to (host, port) serving ``model``.
+
+    Shared by ``LocalSummaryClient`` (its lazy per-call spawn) and ``mp
+    serve-local`` (the daemon's optional launch-time warm process), so both
+    start the identical server and the warm one is reused by the health check.
+    Prefers the standalone entry point; falls back to ``python -m`` so the user
+    does not have to manage which interpreter has mlx-lm installed.
+    """
+    if shutil.which("mlx_lm.server") is not None:
+        cmd = ["mlx_lm.server"]
+    else:
+        cmd = [sys.executable, "-m", "mlx_lm.server"]
+    return cmd + ["--model", model, "--host", host, "--port", str(port)]
+
+
 class LocalSummaryError(RuntimeError):
     """Raised when the local backend cannot satisfy the request."""
 
@@ -218,18 +234,7 @@ class LocalSummaryClient:
                 "Neither 'mlx_lm.server' nor 'python3' found on PATH. "
                 "Install mlx-lm (`pip install mlx-lm`) before using the local backend."
             )
-        # Prefer the standalone entry point if mlx-lm shipped one;
-        # otherwise invoke through python -m so the user does not have
-        # to manage which interpreter has mlx-lm installed.
-        if shutil.which("mlx_lm.server") is not None:
-            cmd = ["mlx_lm.server"]
-        else:
-            cmd = [sys.executable, "-m", "mlx_lm.server"]
-        cmd += [
-            "--model", self._model,
-            "--host", self._host,
-            "--port", str(self._port),
-        ]
+        cmd = build_server_command(self._model, self._host, self._port)
         log.info("spawning mlx_lm.server: %s", " ".join(cmd))
         # Detach into a new process group so a Ctrl-C in the daemon does
         # not also terminate the model server before we get to clean it up.
@@ -477,3 +482,50 @@ def _largest_balanced_json_object(text: str) -> str | None:
     if best is None:
         return None
     return text[best[1]:best[2]]
+
+
+def main(argv: list[str]) -> int:
+    """``mp serve-local``: start a persistent ``mlx_lm.server`` for the
+    configured local model and stay in the foreground so the parent process
+    (the daemon, optionally, at launch) owns its lifetime.
+
+    This is the warm path for TECH-A15: starting the server ahead of time lets
+    the first ``mp run-all`` / ``mp summarize`` skip the cold-start, because
+    ``LocalSummaryClient._ensure_running`` health-checks the endpoint first and
+    reuses an already-running server instead of spawning its own. We
+    ``execvp`` so this process is *replaced* by the server: the daemon's child
+    handle maps straight onto ``mlx_lm.server`` and terminating the child stops
+    the server, with no extra supervisor layer to leak it.
+    """
+    if argv and argv[0] in {"-h", "--help"}:
+        print("usage: mp serve-local")
+        print("Start mlx_lm.server for the configured local model and block.")
+        return 0
+
+    from .config import Config
+    from .summarize import _parse_local_endpoint
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    cfg = Config.load()
+    host, port = _parse_local_endpoint(cfg.summarization.local_endpoint)
+    host = _loopback_only(host)
+    model = cfg.summarization.local_model
+    cmd = build_server_command(model, host, port)
+    log.info("serve-local: exec %s", " ".join(cmd))
+    try:
+        os.execvp(cmd[0], cmd)
+    except OSError as e:
+        log.error(
+            "serve-local could not exec %s: %s. Install mlx-lm "
+            "(`pip install mlx-lm`) for the local backend.",
+            cmd[0], e,
+        )
+        return 1
+    return 0  # unreachable after a successful execvp
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main(sys.argv[1:]))

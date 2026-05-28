@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var configStore: ConfigStore?
     private var secretsStore: SecretsStore?
     private var secretsCancellable: AnyCancellable?
+    private let localModelPreloader = LocalModelPreloader()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.main.info("MeetingPipe starting")
@@ -95,9 +96,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task.detached {
             await SystemAudioCapture.prewarm()
         }
+
+        // Optional local-model warm (TECH-A15), default off. Reads the backend / model from the Preferences round-trip store (the daemon's read-only Config snapshot doesn't model pipeline-side summarization fields). No-op unless the user opted in and the local model is already cached.
+        if let store = store {
+            localModelPreloader.start(
+                enabled: UISettings.shared.preloadLocalModelAtLaunch,
+                backend: store.summarizationBackend,
+                localModel: store.summarizationLocalModel
+            )
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        localModelPreloader.stop()
         coordinator?.shutdown()
     }
 }

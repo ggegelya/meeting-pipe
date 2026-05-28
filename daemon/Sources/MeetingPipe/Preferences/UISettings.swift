@@ -43,12 +43,18 @@ final class UISettings: ObservableObject {
         }
     }
 
+    /// Opt-in: start the local MLX summarization server at app launch so the first local-backend summary skips the model cold-start (TECH-A15). Default OFF because a warm model holds multiple GB resident even while idle (the task's RAM stop-and-ask). Only acts when the summarization backend is `local` and the model is already cached; the daemon, not the pipeline, reads this.
+    @Published var preloadLocalModelAtLaunch: Bool {
+        didSet { UserDefaults.standard.set(preloadLocalModelAtLaunch, forKey: Keys.preloadLocalModelAtLaunch) }
+    }
+
     private enum Keys {
         static let theme = "mp.ui.theme"
         static let menuBarIconStyle = "mp.ui.menuBarIconStyle"
         static let showRegulatedBadge = "mp.ui.showRegulatedBadge"
         static let verboseLogging = "mp.ui.verboseLogging"
         static let playbackChannelMode = "mp.ui.playbackChannelMode"
+        static let preloadLocalModelAtLaunch = "mp.ui.preloadLocalModelAtLaunch"
     }
 
     private init() {
@@ -62,6 +68,7 @@ final class UISettings: ObservableObject {
         self.playbackChannelMode = PlaybackChannelMode(
             rawValue: d.string(forKey: Keys.playbackChannelMode) ?? ""
         ) ?? .default
+        self.preloadLocalModelAtLaunch = d.bool(forKey: Keys.preloadLocalModelAtLaunch)
     }
 
     /// Apply the theme to `NSApp.appearance`. `nil` restores the system default.

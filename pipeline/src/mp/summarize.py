@@ -416,6 +416,17 @@ def _render_summary_md(s: MeetingSummary) -> str:
 
 
 def main(argv: list[str]) -> int:
+    if argv and argv[0] == "--print-prompt":
+        # Read-only surface for the daemon's Preferences pane (TECH-A15):
+        # render the summarization system prompt with the configured team
+        # context + summary language so the user sees exactly what the model
+        # is told. No transcript, no API call.
+        cfg = Config.load()
+        print(_load_system_prompt(
+            cfg.summarization.team_context,
+            cfg.summarization.summary_language,
+        ))
+        return 0
     if not argv:
         print("usage: mp summarize <transcript.md>", file=sys.stderr)
         return 2
