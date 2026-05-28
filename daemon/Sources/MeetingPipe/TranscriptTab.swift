@@ -2,51 +2,33 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// Speaker-labeled transcript view with click-to-seek + current-line
-/// highlight (TECH-A6). Pulls the segments from `<stem>.json` —
-/// whisperx / mlx-whisper write `{start, end, text, speaker?}` per
-/// segment — and renders them as a scrollable, speaker-grouped list
-/// with a thin play/pause + scrubber bar.
-///
-/// The audio engine lives in `AudioPlaybackController`, owned by the
-/// parent `MeetingDetailView` as a `@StateObject`. We expose it here so
-/// the Audio tab (TECH-A7) can drive the same player without re-loading
-/// the file when the user flips between tabs.
+/// Speaker-labeled transcript with click-to-seek and current-line highlight (TECH-A6). Segments from `<stem>.json` (whisperx/mlx-whisper `{start, end, text, speaker?}`). Uses the parent-owned `AudioPlaybackController` shared with the Audio tab (A7) so flipping tabs keeps the same play head.
 
 // MARK: - Segment model
 
-/// One parsed transcript segment. Pure value type so the lookup logic
-/// is trivially testable without spinning up SwiftUI.
+/// One parsed transcript segment.
 struct TranscriptSegment: Identifiable, Hashable {
     let index: Int
     let start: TimeInterval
     let end: TimeInterval
     let text: String
-    /// Raw speaker label from the JSON, e.g. `"speaker_0"`. Optional —
-    /// diarization may have failed or been disabled for the meeting.
+    /// Raw speaker label from the JSON (e.g. `"speaker_0"`). nil when diarization was disabled or failed.
     let speakerID: String?
 
     var id: Int { index }
 
-    /// Returns true when `time` falls within `[start, end)`. The half-
-    /// open interval avoids two adjacent segments both claiming the
-    /// boundary tick.
+    /// True when `time` falls within `[start, end)`. Half-open so adjacent segments don't both claim the boundary tick.
     func contains(_ time: TimeInterval) -> Bool {
         return time >= start && time < end
     }
 }
 
 enum TranscriptSegmentLookup {
-    /// Index of the segment that contains `time`. When `time` falls in a
-    /// gap between segments (silence, music, etc.) we return the most
-    /// recent segment that ended before `time` so the UI keeps a row
-    /// highlighted instead of flicking to nothing. Returns nil only when
-    /// the input is empty or `time` precedes the first segment.
+    /// Index of the segment containing `time`. Gaps (silence, etc.) return the last segment before `time` so the UI keeps a row highlighted. Returns nil only when the array is empty or `time` precedes the first segment.
     static func index(at time: TimeInterval, in segments: [TranscriptSegment]) -> Int? {
         guard !segments.isEmpty else { return nil }
         if time < segments[0].start { return nil }
-        // Binary search by start time; segments come out of the pipeline
-        // sorted in ascending order.
+        // Binary search; pipeline output is sorted by start time.
         var lo = 0
         var hi = segments.count - 1
         while lo < hi {
@@ -61,9 +43,7 @@ enum TranscriptSegmentLookup {
     }
 }
 
-/// Loader for the on-disk transcript JSON. Pulled out of the view so
-/// reading from disk happens on a detached task, not on the SwiftUI
-/// main actor.
+/// Loads `<stem>.json` off-main and overlays transcript corrections.
 enum TranscriptLoader {
     struct Result {
         let segments: [TranscriptSegment]
@@ -90,8 +70,7 @@ enum TranscriptLoader {
         )
     }
 
-    /// Parses the dict-shaped transcript payload into typed segments.
-    /// Internal so tests can drive it directly from fixtures.
+    /// Parses the transcript JSON payload. Internal so tests can drive it directly.
     static func parse(_ obj: [String: Any]) -> Result {
         let language = obj["language"] as? String
         var out: [TranscriptSegment] = []
@@ -132,8 +111,7 @@ enum TranscriptLoader {
 // MARK: - Display helpers
 
 enum TranscriptDisplay {
-    /// "speaker_0" -> "Speaker 1". One-based because zero-indexing makes
-    /// no sense to a human reading "Speaker 0 said hello".
+    /// Maps `"speaker_0"` to `"Speaker 1"` (one-based for human readability).
     static func displayName(for speakerID: String?) -> String {
         guard let id = speakerID, !id.isEmpty else { return "Unknown" }
         if id.hasPrefix("speaker_"),
@@ -143,7 +121,7 @@ enum TranscriptDisplay {
         return id
     }
 
-    /// Stable tint per speaker so re-ordering doesn't reshuffle colors.
+    /// Stable tint per speaker so list reordering doesn't reshuffle colors.
     static func color(for speakerID: String?) -> Color {
         guard let id = speakerID, !id.isEmpty else { return .secondary }
         let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .green, .indigo, .brown]
@@ -154,8 +132,7 @@ enum TranscriptDisplay {
         return palette[abs(id.hashValue) % palette.count]
     }
 
-    /// "1:23" / "1:02:45" - matches the rest of the Library's duration
-    /// rendering at the row level.
+    /// `mm:ss` / `h:mm:ss` - matches the Library row duration format.
     static func timestamp(_ time: TimeInterval) -> String {
         let total = Int(time.rounded(.down))
         let h = total / 3600
@@ -178,9 +155,7 @@ struct TranscriptTab: View {
     @State private var language: String? = nil
     @State private var loadedForStem: String? = nil
     @State private var loading: Bool = true
-    /// The row the user is editing right now. `nil` when no sheet is
-    /// open. Set by the row's context-menu action; cleared when the
-    /// sheet dismisses.
+    /// Segment whose edit sheet is open; nil when no sheet is showing.
     @State private var editingSegment: TranscriptSegment? = nil
 
     var body: some View {
@@ -224,8 +199,7 @@ struct TranscriptTab: View {
         }
     }
 
-    /// Persist the edit, emit the event, and patch the in-memory
-    /// segment so the row updates without a full reload.
+    /// Persists the edit and patches the in-memory segment so the row updates without a full reload.
     private func saveCorrection(for segment: TranscriptSegment, newText: String) {
         let edited = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         let pipelineOriginal = segment.text
@@ -253,10 +227,7 @@ struct TranscriptTab: View {
                     "original_text": pipelineOriginal,
                     "edited_text": edited,
                   ])
-        // Patch the in-memory list so the row updates immediately.
-        // Reverting to the original drops the override in the store
-        // but the displayed text should still flip back, so we apply
-        // the same source-of-truth resolution the loader does.
+        // Patch in-memory list immediately. Reverting to original drops the override from the store; we apply the same resolution the loader does so the text flips back too.
         if let i = segments.firstIndex(where: { $0.index == segment.index }) {
             segments[i] = TranscriptSegment(
                 index: segment.index,
@@ -307,14 +278,10 @@ private struct TranscriptList: View {
     let segments: [TranscriptSegment]
     let language: String?
     @ObservedObject var playback: AudioPlaybackController
-    /// Called when the user picks "Edit text" from the row's context
-    /// menu. The host owns the sheet presentation; the list just
-    /// reports the request.
+    /// Called on "Edit text" context-menu action; the host owns sheet presentation.
     let onEdit: (TranscriptSegment) -> Void
 
-    /// Index of the segment whose `[start, end)` contains the playback
-    /// head. Updated as a side effect of `playback.currentTime` changes
-    /// via `onChange`, so the binary search runs at most once per tick.
+    /// Index of the segment containing the playback head. Updated via `onChange` so the binary search runs at most once per tick.
     @State private var activeIndex: Int? = nil
 
     var body: some View {
@@ -456,9 +423,7 @@ private struct TranscriptLineEditor: View {
 
 private struct PlaybackBar: View {
     @ObservedObject var playback: AudioPlaybackController
-    /// Local scrubber value while dragging — committed to the player on
-    /// release. Without this, the slider fights the timer tick and
-    /// jumps under the user's finger.
+    /// Scrubber value while dragging; committed on release. Without this the slider fights the timer tick and jumps.
     @State private var dragValue: Double? = nil
 
     var body: some View {

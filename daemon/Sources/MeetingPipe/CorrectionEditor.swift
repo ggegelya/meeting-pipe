@@ -1,24 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// Form-only SwiftUI view that drives a `CorrectionViewModel`. Reused
-/// by `CorrectionWindow` (the standalone editor popped from the
-/// notification + recent-meetings menu) and the Library window's
-/// summary tab (TECH-A5 inline-edit mode).
-///
-/// Owns no headers, footers, or action buttons — call sites compose
-/// those around it. That keeps the shared surface to just the fields
-/// that are common to both flows.
+/// Shared editor form driving a `CorrectionViewModel`. Used by `CorrectionWindow` (standalone) and the Summary tab (TECH-A5 inline). No header, footer, or buttons - call sites compose those.
 struct CorrectionEditorBody: View {
     @ObservedObject var model: CorrectionViewModel
-    /// When the form is embedded in a narrow inline pane (the Library
-    /// summary tab is ~480px wide), drop the outer padding so the
-    /// fields don't get further squeezed; the standalone window's
-    /// wider chrome still uses the default 20pt inset.
+    /// Inline pane (Library ~480px) passes a smaller value to avoid squeezing the fields further; standalone window uses the default 20pt.
     var contentPadding: CGFloat = 20
-    /// The Library tab already shows backend / model in the header
-    /// chip area, so the inline form hides the Notes field's purpose
-    /// hint to reduce visual weight. Standalone window keeps it.
+    /// Library inline form hides the Notes field to reduce visual weight (the header chip already shows backend/model). Standalone window shows it.
     var showsNotesField: Bool = true
 
     var body: some View {

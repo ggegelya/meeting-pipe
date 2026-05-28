@@ -1,27 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Detail pane shown when the library list has more than one row
-/// selected (TECH-A10). Rebuilt as a card stack matching the
-/// Preferences-section anatomy (eyebrow + raised card + footer) per
-/// the chrome-polish audit.
-///
-/// Anatomy top → bottom:
-///   • Lead row: 22pt display count + "meetings selected" + Clear.
-///   • Selection card: first three rows + "+ N more" — keeps the
-///     selection legible without scrolling for a typical multi-select.
-///   • Republish card (signal-blue primary). In-flight runs swap the
-///     button for a 2pt linear progress strip + mono "done / total" +
-///     a Stop button.
-///   • Export card. Footer carries the default destination hint + a
-///     "Choose folder…" trigger.
-///   • Danger card (Move to Trash). Outline-only at rest, fills on
-///     hover; the design system's pulse-500 reserved for destructive
-///     intent.
-///
-/// Sequencing semantics are unchanged: each action runs the rows
-/// sequentially so the daemon's processing queue doesn't fan out.
-/// "Stop" cancels the next iteration; in-flight subprocesses finish.
+/// Multi-selection action pane (TECH-A10). Card stack: lead row, selection preview, Republish, Export, and Danger (Trash). Actions run sequentially so the processing queue doesn't fan out; Stop cancels the next iteration but lets in-flight subprocesses finish.
 
 struct BatchActionsPane: View {
     let meetings: [Meeting]
@@ -77,11 +57,7 @@ struct BatchActionsPane: View {
                 .font(.system(size: 12))
                 .foregroundStyle(Color(MPColors.fgMuted))
             Spacer()
-            // No-op Clear: the actual selection is owned by the list
-            // upstream. Rendered for visual completeness; activating
-            // it would require a callback wired from LibraryRootView.
-            // Out of scope for the polish pass — flagging here so the
-            // wiring lands cleanly later.
+            // No-op placeholder; selection is owned upstream by LibraryRootView. Wiring a callback is out of scope for the polish pass.
             Text(" ")
                 .frame(width: 0)
         }
@@ -97,8 +73,7 @@ struct BatchActionsPane: View {
 
     private var selectionCard: some View {
         cardSection(eyebrow: "Selection") {
-            // Show up to three rows; the rest collapse into a
-            // "+ N more" trailing row so the pane stays compact.
+            // Show up to three rows; remainder collapses to "+ N more".
             let visible = meetings.prefix(3)
             VStack(spacing: 0) {
                 ForEach(Array(visible.enumerated()), id: \.element.id) { idx, m in
@@ -227,9 +202,7 @@ struct BatchActionsPane: View {
 
     // MARK: Card primitives
 
-    /// Eyebrow + raised card pair. The eyebrow lives outside the card
-    /// so the card itself reads as a clean surface (per the
-    /// Preferences-section anatomy the audit references).
+    /// Eyebrow label + raised card. The eyebrow lives outside the card so the card surface stays clean.
     @ViewBuilder
     private func cardSection<Content: View>(
         eyebrow: String,
@@ -254,8 +227,7 @@ struct BatchActionsPane: View {
         }
     }
 
-    /// One row inside a card: leading SF symbol + title + hint
-    /// description. Stable shape across all three action cards.
+    /// Leading icon + title + hint row, consistent across all action cards.
     private func actionRow(
         icon: String,
         iconTint: Color? = nil,
@@ -284,8 +256,7 @@ struct BatchActionsPane: View {
         .padding(.vertical, 10)
     }
 
-    /// Card footer — separated from the row by a 0.5px hairline, holds
-    /// the trigger button OR the in-flight progress strip + Stop.
+    /// Card footer below a 0.5px hairline: trigger button at rest, or progress strip + Stop while running.
     @ViewBuilder
     private func cardFooter<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(spacing: 0) {
@@ -301,8 +272,7 @@ struct BatchActionsPane: View {
         }
     }
 
-    /// Linear progress strip + mono count + Stop, used inside any
-    /// card's footer while its action is running.
+    /// Linear progress strip + mono count + Stop button for any running action.
     private func runningFooter(done: Int, total: Int, onStop: @escaping () -> Void) -> some View {
         HStack(spacing: 8) {
             GeometryReader { geo in
@@ -323,8 +293,7 @@ struct BatchActionsPane: View {
         }
     }
 
-    /// Inline result row shown after a run completes. Stays in the
-    /// footer so the user can see the result without scrolling.
+    /// Inline result row shown after a run completes, in the footer so the result is visible without scrolling.
     @ViewBuilder
     private func finishedRow(succeeded: Int, failed: Int) -> some View {
         HStack(spacing: 5) {
@@ -419,8 +388,7 @@ struct BatchActionsPane: View {
 
 // MARK: - Button styles (local to the batch pane for now)
 
-/// Filled signal-blue primary. Mirrors the design system's primary
-/// button family — flat fill, no shadow, hover darkens.
+/// Filled signal-blue primary button.
 private struct MPPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -437,8 +405,7 @@ private struct MPPrimaryButtonStyle: ButtonStyle {
     }
 }
 
-/// Outlined secondary. 1px strong-border, fg-on-canvas. Used for
-/// non-destructive choose / stop actions.
+/// Outlined secondary button. Used for non-destructive choose/stop actions.
 private struct MPSecondaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -459,8 +426,7 @@ private struct MPSecondaryButtonStyle: ButtonStyle {
     }
 }
 
-/// Pulse-tinted outline. Resting state has no fill — same restraint
-/// the recording HUD uses for the "Stop" button.
+/// Pulse-tinted outline button, no fill at rest (matches the recording HUD's Stop button).
 private struct MPDangerButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label

@@ -1,27 +1,20 @@
 import Foundation
 
-/// Pure-logic ranker for the menu-bar quick-find panel (TECH-A3).
-/// Scores every meeting against a search query and returns the top
-/// matches in descending order. Splitting this out from the view lets
-/// XCTest hammer the ranking without touching SwiftUI.
+/// Pure-logic ranker for the quick-find panel (TECH-A3). Split from the view so XCTest can exercise ranking directly.
 enum QuickFindRanker {
 
-    /// A scored result, paired with the field that produced the best
-    /// hit. The field is shown as a subtitle in the UI so the user can
-    /// tell why the result surfaced.
+    /// A scored result. `hitField` is shown as a subtitle so the user can see why the result surfaced.
     struct Match: Equatable {
         let meeting: Meeting
         let score: Double
         /// e.g. "title", "workflow", "summary". Display-only.
         let hitField: String
 
-        /// Stable so the list view can ForEach without recomputing
-        /// identity from the meeting + score on each keystroke.
+        /// Stable identity so ForEach doesn't recompute on each keystroke.
         var id: String { meeting.stem }
     }
 
-    /// Field-weight schedule. Higher = stronger field. Within a field,
-    /// a prefix match scores higher than a substring match.
+    /// Field-weight schedule. Higher weight = stronger match signal; prefix beats substring within a field.
     private static let fieldWeights: [(field: String, weight: Double)] = [
         ("title", 100),
         ("source", 40),
@@ -29,23 +22,18 @@ enum QuickFindRanker {
         ("summary", 20),
     ]
 
-    /// Recency bias: a meeting from today scores `recencyMaxBonus`
-    /// over an otherwise-identical meeting from a year ago, falling
-    /// off linearly across `recencyHalfLifeDays`.
+    /// Recency bias added to the field score, falling off linearly over `recencyHalfLifeDays`.
     private static let recencyMaxBonus: Double = 8
     private static let recencyHalfLifeDays: Double = 365
 
-    /// Trim, lowercase, collapse repeated whitespace. Empty query
-    /// returns nil so callers can short-circuit (the panel renders the
-    /// most-recent meetings when there's nothing typed yet).
+    /// Trims, lowercases, collapses whitespace. Returns nil for empty input so callers can skip ranking and show recents.
     static func normalizeQuery(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return nil }
         return trimmed.lowercased()
     }
 
-    /// Top-N matches for `query` against `meetings`. Empty query
-    /// returns the newest `limit` meetings unchanged, no scoring.
+    /// Top-N matches. Empty query returns the newest `limit` meetings unscored.
     static func rank(
         query rawQuery: String,
         in meetings: [Meeting],
@@ -64,8 +52,7 @@ enum QuickFindRanker {
                 out.append(match)
             }
         }
-        // Stable sort: score desc, then recency desc, then stem desc
-        // so equal scores still come out the same order across renders.
+        // Stable sort: score desc, then recency desc, then stem desc so equal scores are deterministic across renders.
         out.sort { lhs, rhs in
             if lhs.score != rhs.score { return lhs.score > rhs.score }
             if lhs.meeting.startedAt != rhs.meeting.startedAt {
@@ -77,8 +64,7 @@ enum QuickFindRanker {
         return out
     }
 
-    /// Score one meeting against a normalized query. nil means
-    /// no field matched; the row is dropped.
+    /// Scores one meeting against a normalized query. Returns nil when no field matches (row is dropped).
     static func score(query q: String, against m: Meeting, now: Date) -> Match? {
         var best: (score: Double, field: String)? = nil
 
@@ -100,9 +86,7 @@ enum QuickFindRanker {
     private static func haystack(for field: String, of m: Meeting) -> String? {
         switch field {
         case "title":
-            // Display title is summary > meta > "{source} at HH:mm".
-            // Searching the raw fields covers all three without paying
-            // formatter cost per keystroke.
+            // Search raw title fields (summary > meta) without paying formatter cost per keystroke.
             var parts: [String] = []
             if let s = m.summaryTitle, !s.isEmpty { parts.append(s) }
             if let s = m.meetingTitle, !s.isEmpty { parts.append(s) }
@@ -112,15 +96,13 @@ enum QuickFindRanker {
         case "workflow":
             return m.workflowName?.lowercased()
         case "summary":
-            // searchableText is already lowercased + concatenated.
-            return m.searchableText.isEmpty ? nil : m.searchableText
+            return m.searchableText.isEmpty ? nil : m.searchableText // already lowercased + concatenated
         default:
             return nil
         }
     }
 
-    /// Returns a score for `query` against `haystack`, or nil if no
-    /// match. Both inputs are already normalized.
+    /// Scores `query` against `haystack` (both pre-normalized), or nil for no match.
     private static func scoreField(query q: String, haystack hay: String, weight: Double) -> Double? {
         if hay.hasPrefix(q) {
             return weight * 1.5  // prefix beats substring
@@ -128,8 +110,7 @@ enum QuickFindRanker {
         if hay.contains(q) {
             return weight
         }
-        // Word-boundary boost: cheap check for " <q>" / "\n<q>" / "(<q>"
-        // catches matches that aren't a prefix of the whole field.
+        // Word-boundary boost: catches matches that aren't a prefix of the whole field.
         for sep: Character in [" ", "\n", "(", "[", "-"] {
             if hay.contains(String(sep) + q) { return weight * 1.2 }
         }

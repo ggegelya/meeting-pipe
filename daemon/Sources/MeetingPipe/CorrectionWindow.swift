@@ -1,15 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Editor sheet for grading a published meeting summary.
-///
-/// Two entry points (SPEC §17):
-/// 1. The "Edit summary" action on the done-meeting notification.
-/// 2. The Recent meetings… menu under the status bar.
-///
-/// One window at a time. Reopening with a different stem swaps the
-/// loaded summary in-place rather than stacking sheets. All public
-/// methods must be called on the main thread (matches PreferencesWindow).
+/// Standalone summary-grading window (SPEC §17). Entry points: done-meeting notification and the Recent meetings menu. One window at a time; reopening with a different stem swaps the summary in-place. Must be called on the main thread.
 final class CorrectionWindow {
     private static var shared: CorrectionWindow?
 

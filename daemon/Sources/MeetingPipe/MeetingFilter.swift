@@ -1,14 +1,6 @@
 import Foundation
 
-/// Filter state for the library list (TECH-A14). Pure value type so
-/// SwiftUI re-runs the filter trivially and the unit tests can drive
-/// every branch without rendering anything.
-///
-/// Today's implementation is in-memory: the filter walks
-/// `meetings.searchableText` (built during scan from title + summary
-/// bullets) plus a handful of value predicates. Switching to FTS5
-/// over full transcripts is the TECH-A3 upgrade path; nothing here
-/// blocks it.
+/// Filter state for the library list (TECH-A14). Pure value type; SwiftUI re-runs it trivially and tests drive every branch without rendering. FTS5 over full transcripts is the TECH-A3 upgrade path; nothing here blocks it.
 struct MeetingFilter: Equatable {
     var query: String = ""
     var workflow: String? = nil           // nil = any
@@ -26,9 +18,7 @@ struct MeetingFilter: Equatable {
         var id: String { rawValue }
     }
 
-    /// True when no filter is active and the unfiltered library list
-    /// should be shown verbatim. Used by the view to skip a redundant
-    /// pass over the meetings array.
+    /// True when no filter is active; the view uses this to skip a redundant pass over the meetings array.
     var isEmpty: Bool {
         query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && workflow == nil
@@ -38,8 +28,7 @@ struct MeetingFilter: Equatable {
     }
 }
 
-/// Pure filter applier — split out so tests can hit it without
-/// SwiftUI in the loop.
+/// Pure filter applier, split out so tests can drive it without SwiftUI.
 enum MeetingFilterEngine {
     static func apply(
         _ filter: MeetingFilter,
@@ -65,9 +54,7 @@ enum MeetingFilterEngine {
         }
     }
 
-    /// Split the query on whitespace, lowercase, drop empties. ANDed
-    /// at the call site — typing "client zoom" matches rows whose
-    /// haystack contains both words anywhere.
+    /// Lowercases, splits on whitespace, drops empties. ANDs at the call site ("client zoom" requires both words).
     static func tokenize(_ query: String) -> [String] {
         return query.lowercased()
             .split(whereSeparator: { $0.isWhitespace })
@@ -96,9 +83,7 @@ enum MeetingFilterEngine {
 
 // MARK: - Facet derivation
 
-/// Distinct values surfaced as filter chips. Recomputed off the
-/// current meeting list every time it changes — cheap because the
-/// library has at most a few hundred rows in regular use.
+/// Distinct facet values for filter chips. Recomputed on every list change; cheap given the library's row count.
 struct MeetingFacets: Equatable {
     let workflows: [String]            // distinct workflow names, sorted
     let sources: [SourceFacet]         // distinct source apps, sorted by display name

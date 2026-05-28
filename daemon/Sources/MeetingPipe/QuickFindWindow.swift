@@ -2,15 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// Menu-bar quick-find panel (TECH-A3). A small floating NSPanel that
-/// pops over whatever the user is doing, with a search field at the
-/// top and a ranked match list below. Enter opens the meeting in the
-/// Library window; Esc dismisses; arrow keys move the selection.
-///
-/// All public methods touch AppKit so they must be called on the main
-/// thread; the @objc menu actions in `Coordinator` already satisfy
-/// that, so explicit `@MainActor` annotation is omitted to keep the
-/// type usable from the non-isolated `Coordinator`.
+/// Menu-bar quick-find floating panel (TECH-A3). Enter opens the selected meeting, Esc dismisses, arrows move selection. Not annotated `@MainActor` so it remains usable from the non-isolated `Coordinator`, which already calls it on the main thread.
 final class QuickFindWindow {
 
     private let model: QuickFindModel
@@ -23,9 +15,7 @@ final class QuickFindWindow {
             onDismiss: {}
         )
         self.model = placeholder
-        // Wire the dismiss callback after self is initialized so the
-        // closure can capture this instance without an init-order
-        // crash. The placeholder dismiss is never invoked.
+        // Wire dismiss after init so the closure can capture self without an init-order crash; the placeholder dismiss is never invoked.
         placeholder.onDismiss = { [weak self] in self?.hide() }
     }
 
@@ -63,20 +53,14 @@ final class QuickFindWindow {
     }
 }
 
-/// Backing model for the SwiftUI surface. Holds the query, the current
-/// matches, and the selected row's index; bound to `MeetingStore` so the
-/// match list re-ranks when the library scans new files. Lives across
-/// open/close cycles of the window so a re-open starts with a clean
-/// query. Mutations land on the main queue via `MeetingStore`'s own
-/// publish path and the SwiftUI bindings on the panel.
+/// Backing model for the quick-find panel. Bound to `MeetingStore` so the list re-ranks on library changes. Lives across open/close cycles; mutations land on the main queue via `MeetingStore`'s publish path.
 final class QuickFindModel: ObservableObject {
 
     @Published var query: String = "" {
         didSet { recomputeMatches() }
     }
     @Published private(set) var matches: [QuickFindRanker.Match] = []
-    /// Index into `matches`. Clamped on every recompute so a result
-    /// reshuffle doesn't strand the highlight off the end of the list.
+    /// Clamped on every recompute so a result reshuffle doesn't strand the highlight off the end of the list.
     @Published var selectedIndex: Int = 0
 
     private let meetingStore: MeetingStore
@@ -98,8 +82,7 @@ final class QuickFindModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    /// Force the store to scan, then recompute. Called when the
-    /// window opens so a stale list from yesterday doesn't show up.
+    /// Forces a store scan, then recomputes. Called on open so a stale list from yesterday doesn't appear.
     func refresh() {
         meetingStore.start()
         recomputeMatches()
@@ -157,9 +140,7 @@ struct QuickFindView: View {
         .frame(width: 520, height: 360)
         .background(.regularMaterial)
         .onAppear { queryFocused = true }
-        // Background key handler so arrows + enter + esc work even
-        // when focus is in the search field (which captures most
-        // keystrokes).
+        // Background key handler so arrows/enter/esc work even when focus is in the search field.
         .background(
             KeyCatcher(
                 onDown: { model.moveSelection(by: 1) },
@@ -273,9 +254,7 @@ private struct QuickFindRow: View {
     }()
 }
 
-/// Invisible NSView that swallows arrow / return / escape so the
-/// shared TextField can keep focus while the surrounding panel still
-/// drives the list selection.
+/// Invisible NSView that intercepts arrow/return/escape so the TextField keeps focus while the panel drives list selection.
 private struct KeyCatcher: NSViewRepresentable {
     let onDown: () -> Void
     let onUp: () -> Void

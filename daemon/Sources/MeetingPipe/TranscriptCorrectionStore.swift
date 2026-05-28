@@ -1,25 +1,8 @@
 import Foundation
 
-/// Per-line transcript corrections persisted as a sidecar next to the
-/// recording. The store keeps the user's edits separate from the
-/// pipeline's `<stem>.json` so a re-transcribe (or a future FluidAudio
-/// rerun) doesn't trample the user's words; the sidecar overlays the
-/// pipeline output at load time.
+/// Per-line transcript corrections in `<stem>.transcript_corrections.json`. Keeps user edits separate from the pipeline's `<stem>.json` so re-transcription doesn't trample them; the sidecar overlays pipeline output at load time.
 ///
-/// File: `<stem>.transcript_corrections.json`, shape:
-/// ```json
-/// {
-///   "segments": [
-///     { "index": 3, "original_text": "...", "edited_text": "..." },
-///     ...
-///   ]
-/// }
-/// ```
-/// `index` matches `TranscriptSegment.index` (the segment's position in
-/// the source JSON, zero-based). `original_text` is the snapshot of the
-/// pipeline output at edit time; if the pipeline rewrites the file
-/// later, a downstream tool can diff against the original to detect
-/// drift.
+/// Schema: `{ "segments": [{ "index": 3, "original_text": "...", "edited_text": "..." }, ...] }`. `index` is zero-based, matching `TranscriptSegment.index`. `original_text` is the pipeline snapshot at edit time so downstream tools can detect drift if the pipeline later rewrites the file.
 enum TranscriptCorrectionStore {
 
     struct Correction: Equatable {
@@ -40,14 +23,11 @@ enum TranscriptCorrectionStore {
         }
     }
 
-    /// Sidecar URL for a given stem.
     static func path(stem: String, in directory: URL) -> URL {
         directory.appendingPathComponent("\(stem).transcript_corrections.json")
     }
 
-    /// Read all corrections keyed by segment index. Returns an empty
-    /// dict for a missing or malformed sidecar; an unreadable sidecar
-    /// shouldn't hide the transcript itself.
+    /// Reads corrections keyed by segment index. Returns empty for a missing or malformed sidecar so the transcript itself is never hidden.
     static func read(stem: String, in directory: URL) -> [Int: Correction] {
         let url = path(stem: stem, in: directory)
         guard let data = try? Data(contentsOf: url),
@@ -71,14 +51,7 @@ enum TranscriptCorrectionStore {
         return out
     }
 
-    /// Upsert a correction. `pipelineOriginal` is the text the caller
-    /// sees right now (overlay-applied). If a correction already
-    /// exists for this segment, the previously-stored `originalText`
-    /// is preserved across re-edits so the pipeline-truth snapshot
-    /// doesn't decay as the user keeps editing.
-    ///
-    /// When `edited` matches the resolved original the existing
-    /// override is removed (no point persisting a no-op).
+    /// Upserts a correction. Preserves the earliest `originalText` across re-edits so the pipeline-truth snapshot doesn't decay. Removes the override when `edited` matches the resolved original (no-op).
     @discardableResult
     static func upsert(
         segmentIndex: Int,
@@ -102,7 +75,6 @@ enum TranscriptCorrectionStore {
         return existing
     }
 
-    /// Drop the override for a single segment.
     @discardableResult
     static func remove(
         segmentIndex: Int,
@@ -115,9 +87,7 @@ enum TranscriptCorrectionStore {
         return existing
     }
 
-    /// Overlay corrections onto a list of segments. Pure: no I/O. The
-    /// transcript stays sorted by index because each segment is mapped
-    /// in place.
+    /// Overlays corrections onto segments in-place. Pure, no I/O.
     static func apply(
         corrections: [Int: Correction],
         to segments: [TranscriptSegment]
@@ -139,10 +109,7 @@ enum TranscriptCorrectionStore {
 
     // MARK: - Internal
 
-    /// Atomic temp-file + rename so a crash mid-write never leaves a
-    /// half-formed JSON file. An empty dict deletes the sidecar so the
-    /// next load reads as "no corrections" instead of an empty
-    /// segments array.
+    /// Atomic temp-file + rename so a crash never leaves a half-formed file. An empty dict deletes the sidecar so the next load reads as "no corrections".
     private static func write(
         corrections: [Int: Correction],
         stem: String,

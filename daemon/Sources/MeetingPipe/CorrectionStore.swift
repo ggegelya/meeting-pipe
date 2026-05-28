@@ -1,11 +1,6 @@
 import Foundation
 
-/// On-disk correction record per SPEC §17. Phase 2 collects these
-/// passively as the user grades published meetings; Phase 3 reads the
-/// directory to assemble a LoRA training set.
-///
-/// Schema is locked-in here so the Swift writer and Python reader
-/// (`pipeline/src/mp/corrections.py`) agree without a generated client.
+/// On-disk correction record (SPEC §17). Phase 2 collects grades; Phase 3 reads the directory to assemble a LoRA training set. Schema locked here so the Swift writer and Python reader (`mp/corrections.py`) agree without a generated client.
 enum CorrectionStore {
 
     enum Verdict: String {
@@ -21,8 +16,7 @@ enum CorrectionStore {
         case writeFailed(String)
     }
 
-    /// Absolute path to ~/Library/Application Support/MeetingPipe/corrections.
-    /// Created on demand; subsequent calls are cheap.
+    /// `~/Library/Application Support/MeetingPipe/corrections`, created on demand.
     static func directory() throws -> URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(Endpoints.Paths.correctionsRelative,
@@ -36,14 +30,11 @@ enum CorrectionStore {
         return dir
     }
 
-    /// Path of the JSON file for the given recording stem (e.g. "20260508-1500").
     static func path(forStem stem: String) throws -> URL {
         try directory().appendingPathComponent("\(stem).json")
     }
 
-    /// Load the `<stem>.run.json` sidecar that the pipeline emitted at
-    /// the end of `summarize`. Carries `backend` / `model_id` and the
-    /// transcript path.
+    /// Loads `<stem>.run.json` (carries `backend`, `model_id`, transcript path).
     static func loadRunSidecar(at url: URL) throws -> [String: Any] {
         do {
             let data = try Data(contentsOf: url)
@@ -56,9 +47,7 @@ enum CorrectionStore {
         }
     }
 
-    /// Load `<stem>.summary.json` produced by the summarize stage.
-    /// Returned as a generic JSON dict so re-serialization preserves
-    /// every field exactly, including ones the Swift side does not model.
+    /// Loads `<stem>.summary.json` as a generic dict so re-serialization preserves all fields, including ones Swift doesn't model.
     static func loadOriginalSummary(at url: URL) throws -> [String: Any] {
         do {
             let data = try Data(contentsOf: url)
@@ -71,12 +60,7 @@ enum CorrectionStore {
         }
     }
 
-    /// Write (or overwrite) `<stem>.json` with the given fields.
-    ///
-    /// `correctedSummary` is omitted from the file when nil so a "good"
-    /// or "bad" verdict produces a smaller record than an "edited" one.
-    /// Atomic via temp-file + rename so a crash mid-write never leaves a
-    /// half-formed JSON file that breaks Phase 3 reads.
+    /// Writes `<stem>.json`. `correctedSummary` is omitted when nil (good/bad verdicts produce smaller records than edited ones). Atomic via temp-file + rename so a crash never leaves a half-formed file that breaks Phase 3.
     @discardableResult
     static func write(
         stem: String,
@@ -138,9 +122,7 @@ enum CorrectionStore {
         return final
     }
 
-    /// Read the correction record for a given stem, or nil when absent
-    /// or unreadable. Visible for tests and the future
-    /// "Recent meetings…" menu.
+    /// Reads the correction record for the given stem, or nil when absent/unreadable.
     static func read(stem: String, directoryOverride: URL? = nil) -> [String: Any]? {
         let dir: URL
         do {

@@ -1,43 +1,23 @@
 import AppKit
 import SwiftUI
 
-/// Right-pane detail view: header (editable title, date, workflow chip,
-/// publish-target shortcuts) plus five tabs.
-///
-///   - Summary: renders `<stem>.summary.md` as Markdown read-only, with
-///     an "Edit" toggle that swaps in the shared `CorrectionEditorBody`
-///     (TECH-A5). Save writes a correction record AND overwrites the
-///     summary on disk; "Save & Republish" additionally re-runs
-///     `mp publish-notion` so the published page reflects the edit.
-///   - Transcript: A6 wires speaker-labeled markdown + audio sync.
-///   - Audio: A7 renders the stereo waveform.
-///   - Corrections: A8 renders the correction record.
-///   - Raw files: A9 lists every `<stem>.*` file in the recordings dir.
+/// Right-pane detail view: editable header + five tabs (Summary TECH-A5, Transcript A6, Audio A7, Corrections A8, Raw files A9).
 struct MeetingDetailView: View {
     @EnvironmentObject var libraryModel: LibraryWindowModel
     let meeting: Meeting
 
-    /// Cached so the body never reads from disk synchronously. Reloaded
-    /// off-main on stem change via `.task(id:)`. Without this the body
-    /// hit `Data(contentsOf:)` on every observable change in the
-    /// library model (status, processingCount, model-download progress,
-    /// liveRecordingStem) and beach-balled the UI during recording.
+    /// Loaded off-main via `.task(id:)`. Caching avoids `Data(contentsOf:)` on the main thread on every observable change, which beach-balled the UI during recording.
     @State private var cachedNotionURL: URL? = nil
     @State private var cachedObsidianURL: URL? = nil
     @State private var publishURLsLoadedForStem: String? = nil
 
-    /// Persisted across launches so reopening the window keeps the user
-    /// on their preferred tab. Hidden behind a stem-keyed default would
-    /// be over-engineered for a personal product.
+    /// Persisted so reopening the window keeps the user's tab. A stem-keyed default would be over-engineered for a personal product.
     @AppStorage("MeetingDetailSelectedTab") private var selectedTab: String = Tab.summary.rawValue
 
     @State private var editingTitle: String = ""
     @State private var lastSyncedStem: String = ""
 
-    /// Shared between the Transcript (TECH-A6) and Audio (TECH-A7) tabs
-    /// so click-to-seek from a line keeps the same play head when the
-    /// user flips to the waveform. Re-attached to the new wav on stem
-    /// change via the transcript tab's `.task(id:)`.
+    /// Shared across Transcript (A6) and Audio (A7) so click-to-seek keeps the same play head when flipping tabs. Re-attached on stem change via `.task(id:)`.
     @StateObject private var playback = AudioPlaybackController()
 
     enum Tab: String, CaseIterable {
@@ -85,7 +65,7 @@ struct MeetingDetailView: View {
         .task(id: meeting.stem) { await reloadPublishURLs() }
     }
 
-    // MARK: Header (polished — display title + caption + ghost shortcuts)
+    // MARK: Header
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -98,10 +78,7 @@ struct MeetingDetailView: View {
         }
     }
 
-    /// Topline above the title — workflow chip pinned to the leading
-    /// edge, ghost-icon shortcuts on the trailing edge. Empty topline
-    /// (no workflow, no publish URLs) collapses to zero height so the
-    /// title rises to the top of the pane.
+    /// Workflow chip + ghost shortcuts above the title. Collapses to zero height when neither is present so the title rises to the top.
     @ViewBuilder
     private var titleRow: some View {
         let hasTopline = (meeting.workflowName?.isEmpty == false)
@@ -119,9 +96,7 @@ struct MeetingDetailView: View {
         }
     }
 
-    /// 11pt caption row: full date · duration · source app. Date sits
-    /// in fg-subtle, separators in fg-faint, duration in mono — same
-    /// hierarchy as the row caption so the two surfaces feel paired.
+    /// Full date, duration (mono), and source app. Same hierarchy as the list row caption.
     private var captionRow: some View {
         HStack(spacing: 6) {
             Text(MeetingFormatters.fullDateTime.string(from: meeting.startedAt))
@@ -142,10 +117,7 @@ struct MeetingDetailView: View {
         }
     }
 
-    /// Trailing ghost-icon shortcuts: Notion / Obsidian / Reveal-in-Finder.
-    /// Each is a 26pt hover-tint button (no labels — `.help(...)` is the
-    /// affordance carrier). Order chosen so the most common action
-    /// (Reveal) sits closest to the edge a user's pointer travels to.
+    /// Notion / Obsidian / Reveal-in-Finder ghost icons. Reveal is rightmost since it's the most common action.
     @ViewBuilder
     private var ghostShortcuts: some View {
         HStack(spacing: 2) {
@@ -168,12 +140,8 @@ struct MeetingDetailView: View {
         }
     }
 
-    // MARK: Tab strip (text-only labels, 1.5pt signal underline)
+    // MARK: Tab strip
 
-    /// Replaces SwiftUI's stock segmented `TabView` with a custom strip
-    /// to match the design system's restraint — text labels at 12pt
-    /// medium, no segmented bezel, active tab carries a 1.5pt
-    /// signal-blue underline anchored to the bottom hairline.
     private var tabStrip: some View {
         HStack(spacing: 0) {
             ForEach(Tab.allCases, id: \.rawValue) { tab in
@@ -218,7 +186,7 @@ struct MeetingDetailView: View {
         }
     }
 
-    // MARK: Tabs (placeholders — replaced by A5 / A6 / A7 / A8 / A9)
+    // MARK: Tabs
 
     private var summaryTab: some View {
         SummaryTab(meeting: meeting)
@@ -253,8 +221,7 @@ struct MeetingDetailView: View {
     private func commitTitle() {
         let trimmed = editingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            // Don't let the user blank out the title — restore the
-            // computed display title so the field never goes empty.
+            // Restore the computed display title so the field never goes empty.
             editingTitle = meeting.displayTitle
             return
         }
@@ -264,11 +231,7 @@ struct MeetingDetailView: View {
         writeTitle(trimmed)
     }
 
-    /// Persist the new title to the strongest sidecar that exists:
-    /// summary.json's "title" (when there's an LLM summary on disk),
-    /// otherwise meta.json's "meeting_title" (the source-app-derived
-    /// fallback). The MeetingStore's directory watcher picks up the
-    /// change on the next debounce tick.
+    /// Writes to `summary.json["title"]` when it exists, else `meta.json["meeting_title"]`. The directory watcher picks up the change on the next debounce tick.
     private func writeTitle(_ newTitle: String) {
         let summaryURL = meeting.recordingsDir.appendingPathComponent("\(meeting.stem).summary.json")
         let metaURL = meeting.recordingsDir.appendingPathComponent("\(meeting.stem).meta.json")
@@ -323,9 +286,7 @@ struct MeetingDetailView: View {
     }
 }
 
-/// File-parsing helpers for the publish-target sidecars. Pulled out of
-/// `MeetingDetailView` so they aren't inferred as main-actor-isolated
-/// via View conformance; the loader calls them from a detached Task.
+/// Publish-target sidecar parsers. Kept outside the View so they aren't inferred as main-actor-isolated; the loader calls them from a detached Task.
 enum PublishURLs {
     static func notion(at path: URL) -> URL? {
         guard let data = try? Data(contentsOf: path),
@@ -336,11 +297,7 @@ enum PublishURLs {
         return URL(string: s)
     }
 
-    /// `obsidian://open?vault=<name>&file=<rel>` lets Obsidian pick up
-    /// the note via its registered URL scheme. We derive `rel` by
-    /// trimming the vault prefix off the absolute note path the pipeline
-    /// wrote into `<stem>.obsidian.json`. Returns nil when the sidecar
-    /// doesn't exist or the vault relationship can't be resolved.
+    /// Builds `obsidian://open?vault=...&file=...` from `<stem>.obsidian.json`. Returns nil when the sidecar is missing or the vault relationship can't be resolved.
     static func obsidian(at path: URL) -> URL? {
         guard let data = try? Data(contentsOf: path),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -373,36 +330,17 @@ enum PublishURLs {
 
 // MARK: - Summary tab (TECH-A5)
 
-/// Summary tab. Read-only by default — renders the structured
-/// `<stem>.summary.json` as proper SwiftUI sections (Summary,
-/// Decisions, Actions, Open Questions, Attendees). Inline markdown
-/// inside individual bullets is preserved via `AttributedString`. The
-/// "Edit" button swaps in the shared `CorrectionEditorBody` so the
-/// inline editor shares its field surface with the standalone
-/// correction window.
-///
-/// Save persists a correction record (verdict = edited) AND overwrites
-/// `<stem>.summary.json` so the next read of the row sees the new
-/// content. "Save & Republish" additionally spawns `mp publish-notion`
-/// so the published Notion page reflects the edit; the editor stays
-/// disabled while the subprocess is running.
+/// Summary tab (TECH-A5). Read-only by default; the Edit button swaps in `CorrectionEditorBody`. Save persists a correction record and overwrites `<stem>.summary.json`; "Save & Republish" additionally spawns `mp publish-notion`.
 struct SummaryTab: View {
     @EnvironmentObject var libraryModel: LibraryWindowModel
     let meeting: Meeting
 
-    /// Cached summary payload — loaded asynchronously on stem change so
-    /// the view body never reads from disk synchronously. SwiftUI calls
-    /// body any time an observed object changes; doing IO there pinned
-    /// the main thread during recording.
+    /// Loaded off-main on stem change. Caching avoids disk IO on the main thread, which pinned it during recording.
     @State private var loadedSummary: [String: Any]? = nil
     @State private var loadedForStem: String? = nil
 
-    /// Toggle between rendered summary and the editor form.
     @State private var isEditing = false
-    /// Holds the in-flight editor model so isEditing changes can
-    /// dispose / recreate it cleanly.
     @State private var editorModel: CorrectionViewModel? = nil
-    /// Republish state for the footer button + status label.
     @State private var republishing = false
     @State private var lastRepublishResult: RepublishResult? = nil
 
@@ -423,9 +361,7 @@ struct SummaryTab: View {
             await reloadSummary()
         }
         .onChange(of: meeting.stem) { _, _ in
-            // Switching meetings discards in-flight edits — saving with
-            // unsubmitted changes would be a footgun (the user expects
-            // a fresh row, not their old edits applied to it).
+            // Discard in-flight edits on stem change; applying old edits to the new row would be a footgun.
             isEditing = false
             editorModel = nil
             lastRepublishResult = nil
@@ -440,10 +376,9 @@ struct SummaryTab: View {
                 if let summary = loadedSummary {
                     SummaryRenderedView(summary: summary)
                 } else if loadedForStem == meeting.stem {
-                    // We loaded for this stem and got nothing back.
                     emptyState
                 } else {
-                    // Initial / cross-meeting load still in flight.
+                    // Load still in flight.
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(40)
@@ -484,9 +419,6 @@ struct SummaryTab: View {
         }
     }
 
-    /// Failed-meeting state: the persisted reason plus a one-click Retry,
-    /// so a meeting whose pipeline failed is actionable from the detail
-    /// pane rather than dead-ending at "No summary yet."
     private var failedState: some View {
         VStack(spacing: 14) {
             Image(systemName: "exclamationmark.triangle.fill")
@@ -516,7 +448,6 @@ struct SummaryTab: View {
         .padding(40)
     }
 
-    /// Human label for the failed stage from the error sidecar, if known.
     private var stageLabel: String? {
         guard let raw = meeting.failureStage,
               let stage = PipelineFailureSidecar.Stage(rawValue: raw) else {
@@ -582,9 +513,7 @@ struct SummaryTab: View {
         meeting.recordingsDir.appendingPathComponent("\(meeting.stem).summary.md")
     }
 
-    /// Off-main load of the structured summary, called via `.task(id:)`.
-    /// Done off-main because a busy daemon may have us body-evaluating
-    /// many times per second; reading from disk on body would beach-ball.
+    /// Loads `<stem>.summary.json` off-main. Called via `.task(id:)`; guards against stale stems.
     @MainActor
     private func reloadSummary() async {
         let stem = meeting.stem
@@ -596,7 +525,6 @@ struct SummaryTab: View {
             }
             return obj
         }.value
-        // Stem may have changed mid-load; only commit if still relevant.
         if meeting.stem == stem {
             loadedSummary = parsed
             loadedForStem = stem
@@ -666,16 +594,11 @@ struct SummaryTab: View {
         }
     }
 
-    /// Writes a correction record (verdict=edited) AND overwrites
-    /// `<stem>.summary.json` with the corrected payload so subsequent
-    /// reads (and republish) see the new content. Returns true on
-    /// success; false (with a logged warning) on disk-write failure.
+    /// Writes a correction record (verdict=edited) and overwrites `<stem>.summary.json`. Returns false on disk-write failure.
     private func persistEdit(model: CorrectionViewModel) -> Bool {
         let corrected = model.makeCorrectedSummary()
 
-        // 1. Correction record. Reuses the exact path the standalone
-        //    correction window uses so the LoRA training set sees both
-        //    surfaces identically.
+        // 1. Correction record (same path as the standalone window so the LoRA training set sees both surfaces identically).
         do {
             try CorrectionStore.write(
                 stem: model.stem,
@@ -696,9 +619,7 @@ struct SummaryTab: View {
             return false
         }
 
-        // 2. Overwrite the live summary so the row + Markdown render +
-        //    any future republish all see the corrected version. The
-        //    correction record preserves the original.
+        // 2. Overwrite the live summary so the row, Markdown render, and any future republish see the corrected version (record preserves the original).
         if JSONSerialization.isValidJSONObject(corrected),
            let data = try? JSONSerialization.data(
                withJSONObject: corrected,
@@ -743,11 +664,7 @@ struct SummaryTab: View {
 
 // MARK: - Structured renderer
 
-/// Renders a parsed `<stem>.summary.json` as proper SwiftUI sections.
-/// Replaces the earlier `AttributedString(markdown:)` rendering, which
-/// only supports inline syntax and collapsed everything to one
-/// paragraph. Inline emphasis / code / links inside individual bullets
-/// is still honoured by per-bullet `AttributedString` parsing.
+/// Renders `<stem>.summary.json` as SwiftUI sections. Inline emphasis/code/links inside bullets use per-bullet `AttributedString` parsing.
 struct SummaryRenderedView: View {
     let summary: [String: Any]
 
@@ -858,9 +775,7 @@ struct SummaryRenderedView: View {
         }
     }
 
-    /// Per-bullet inline-markdown parsing. Headings + block-level lists
-    /// don't apply here because each bullet is one paragraph already; we
-    /// just want **bold**, *italic*, `code`, and [links](url) to render.
+    /// Parse inline markdown per bullet (bold, italic, code, links only - each bullet is already one paragraph).
     private func inlineMarkdown(_ s: String) -> AttributedString {
         let opts = AttributedString.MarkdownParsingOptions(
             allowsExtendedAttributes: false,

@@ -2,16 +2,7 @@ import CoreTransferable
 import Foundation
 import UniformTypeIdentifiers
 
-/// Drag-out payload for a Meeting (TECH-A11). Materializes a single
-/// `.md` bundle on demand by concatenating the summary markdown and
-/// (optionally) the transcript markdown the pipeline wrote, then hands
-/// the resulting temp file's URL to AppKit's drag pasteboard so Finder /
-/// Mail / Slack accept it as a file drop.
-///
-/// The bundle file lives under `NSTemporaryDirectory()` and is named
-/// `meetingpipe-<stem>.md` so a re-drag from the same row overwrites
-/// the previous temp file rather than fanning out copies. macOS prunes
-/// `NSTemporaryDirectory()` on its own schedule; we don't sweep it.
+/// Drag-out payload for a Meeting (TECH-A11). Writes a `meetingpipe-<stem>.md` bundle to `NSTemporaryDirectory()` on demand; re-dragging the same row overwrites the previous temp file rather than fanning out copies.
 struct MeetingDragItem: Transferable, Codable {
     let stem: String
     let directoryPath: String
@@ -32,8 +23,7 @@ struct MeetingDragItem: Transferable, Codable {
         }
     }
 
-    /// Build the markdown bundle for this meeting and write it under
-    /// `NSTemporaryDirectory()`. Returns the resulting URL.
+    /// Builds the markdown bundle and writes it to `NSTemporaryDirectory()`.
     func writeBundleToTemp() throws -> URL {
         let body = MeetingMarkdownBundle.build(stem: stem, in: directory)
         let safeStem = stem.replacingOccurrences(of: "/", with: "-")
@@ -44,10 +34,7 @@ struct MeetingDragItem: Transferable, Codable {
     }
 }
 
-/// Renders a meeting's on-disk artefacts into a single markdown document
-/// that survives a Finder / Mail drop without the recipient needing
-/// access to the raw recordings dir. Pure logic — keeps the drag-out
-/// behaviour testable without touching the SwiftUI surface.
+/// Renders a meeting's on-disk artefacts into a single markdown document. Pure logic so drag-out behaviour is testable without SwiftUI.
 enum MeetingMarkdownBundle {
 
     static func build(stem: String, in directory: URL) -> String {

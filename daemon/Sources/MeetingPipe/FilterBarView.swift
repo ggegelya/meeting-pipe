@@ -1,23 +1,6 @@
 import SwiftUI
 
-/// Filter bar above the meeting list — collapsed into a single 36pt
-/// strip after the chrome-polish audit. Anatomy left → right:
-///   • Search input with an inline match-count badge ("14 / 63")
-///     fused to its trailing edge behind a 0.5px hairline. The badge
-///     stays present so the user always sees what their typing is
-///     filtering against.
-///   • Workflow chip — full color-tinted `WorkflowChip`. Primary scope
-///     in the design's chip hierarchy.
-///   • Source / Status / Date — flat `MPRefChip`s carrying inline
-///     values when set. Secondary refinements: visually subordinate
-///     so they don't compete with the workflow chip.
-///   • A text-only "Clear" button at the trailing edge, disabled-styled
-///     when nothing is set.
-///
-/// Behavior is unchanged from the previous three-row layout; the
-/// `MeetingFilter` binding and `MeetingFacets` source-of-truth are the
-/// same. The TECH-A3 FTS5 upgrade can drop in behind
-/// `MeetingFilterEngine.apply` without touching this view.
+/// Single 36pt filter bar: search input with match-count badge, Workflow chip, App/Status/Date ref-chips, and a trailing Clear button. The TECH-A3 FTS5 upgrade drops in behind `MeetingFilterEngine.apply` without touching this view.
 struct FilterBarView: View {
     @Binding var filter: MeetingFilter
     let facets: MeetingFacets
@@ -68,9 +51,7 @@ struct FilterBarView: View {
         )
     }
 
-    /// Show the match-count once *any* filter is active — including
-    /// the search query — so the user has a running confirmation that
-    /// the field is doing something.
+    /// Show the badge once any filter is active so the user sees a running confirmation.
     private var showsMatchCount: Bool { !filter.isEmpty }
 
     // MARK: Chips
@@ -86,9 +67,7 @@ struct FilterBarView: View {
                 }
             }
         } label: {
-            // When a workflow filter is set we render the actual chip
-            // family; when unset we fall back to a ref-chip-styled
-            // "Workflow" affordance so the bar doesn't lose the slot.
+            // Render the actual WorkflowChip when set; fall back to a ref-chip-styled label so the slot is never empty.
             if let wf = filter.workflow {
                 WorkflowChip(name: wf, colorHex: nil)
                     .padding(.horizontal, 2)

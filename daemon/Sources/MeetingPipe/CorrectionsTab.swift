@@ -1,20 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// Corrections tab (TECH-A8). Renders the on-disk correction record
-/// (verdict, edits, notes) and offers two follow-up actions:
-///   - **Re-edit**: switch to the Summary tab so the user can open the
-///     inline editor again. Cheaper than spawning a parallel editor
-///     here — Summary already owns the field surface.
-///   - **Revert**: restore `<stem>.summary.json` from the record's
-///     `original_summary` and delete the correction file. The Summary
-///     tab's read of the JSON picks up the restored content on the
-///     next debounce tick.
+/// Corrections tab (TECH-A8). Renders the on-disk correction record (verdict, edits, notes). Re-edit hands control back to the Summary tab (which owns the field surface). Revert restores `<stem>.summary.json` from `original_summary` and deletes the correction file; the Summary tab picks up the change on the next debounce tick.
 
 struct CorrectionsTab: View {
     let meeting: Meeting
-    /// Binding to the parent's selected-tab @AppStorage so "Re-edit"
-    /// can hand control back to the Summary tab.
+    /// Bound to the parent's selected-tab storage so "Re-edit" can switch to the Summary tab.
     @Binding var selectedTab: String
 
     @State private var record: [String: Any]? = nil
@@ -263,10 +254,7 @@ struct CorrectionsTab: View {
 
 // MARK: - Compact preview
 
-/// Read-only summary preview shared by the original / corrected panes.
-/// Renders the same handful of fields as `SummaryRenderedView` but in a
-/// tighter, side-by-side-friendly layout — full markdown rendering
-/// happens in the Summary tab.
+/// Compact read-only summary preview for the original/corrected side-by-side panes. Full markdown rendering is in the Summary tab.
 struct CorrectionSummaryPreview: View {
     let summary: [String: Any]
 

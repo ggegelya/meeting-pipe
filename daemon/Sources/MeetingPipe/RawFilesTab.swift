@@ -1,11 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Raw files tab (TECH-A9). Lists every sidecar in the recordings
-/// directory whose name shares the meeting's stem, with size + modified
-/// time and a "Reveal in Finder" affordance per row. Useful when
-/// something looks off and you want to poke around the on-disk shape
-/// the pipeline produced, without `cd`-ing into the directory.
+/// Raw files tab (TECH-A9). Lists every sidecar sharing the meeting's stem, with size, modified time, and per-row Reveal in Finder.
 
 struct RawFilesTab: View {
     let meeting: Meeting
@@ -150,8 +146,7 @@ struct RawFileEntry: Identifiable, Equatable {
     }
 }
 
-/// Pure-logic lister, broken out so tests can exercise it against a
-/// scratch directory without rendering anything.
+/// Pure-logic lister, separated from the view so tests can exercise it directly.
 enum RawFilesLister {
     static func list(stem: String, in directory: URL) -> [RawFileEntry] {
         let fm = FileManager.default
@@ -185,8 +180,7 @@ enum RawFilesLister {
     }
 
     static func classify(name: String, stem: String) -> RawFileEntry.Kind {
-        // The Kind ordering doubles as the on-screen sort key, so we
-        // match the most specific suffix first.
+        // Kind ordering doubles as the sort key; match most specific suffix first.
         if name == "\(stem).wav" { return .wav }
         if name == "\(stem).meta.json" { return .meta }
         if name == "\(stem).run.json" { return .run }

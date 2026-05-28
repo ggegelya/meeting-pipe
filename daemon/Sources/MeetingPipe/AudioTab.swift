@@ -2,11 +2,7 @@ import AppKit
 import Foundation
 import SwiftUI
 
-/// Audio tab (TECH-A7). Two-channel waveform (mic on top, system audio
-/// on bottom) backed by the cached peaks in `WaveformPeaks`. Click /
-/// drag in the waveform seeks the shared `AudioPlaybackController`;
-/// the same controller drives the highlight on the Transcript tab so
-/// flipping between tabs keeps a single play head.
+/// Audio tab (TECH-A7). Two-channel waveform (mic top, system audio bottom) from `WaveformPeaks`. Click/drag seeks the shared `AudioPlaybackController` so flipping to the Transcript tab keeps the same play head.
 
 struct AudioTab: View {
     @ObservedObject var playback: AudioPlaybackController
@@ -20,11 +16,7 @@ struct AudioTab: View {
     }
 
     @State private var state: LoadState = .loading
-    /// Pixels per second of audio. Drives the rendered width; the
-    /// container wraps in a horizontal scroll view when the total width
-    /// exceeds the visible area. Discrete steps mean re-bin cost is
-    /// flat regardless of the zoom level — we always render the same
-    /// number of peaks, the view just stretches them.
+    /// Zoom level. Discrete steps keep re-bin cost flat (we always render the same peak count; the view stretches them).
     @State private var zoom: ZoomLevel = .fit
 
     enum ZoomLevel: Int, CaseIterable, Identifiable {
@@ -225,11 +217,7 @@ private struct WaveformContainer: View {
         }
     }
 
-    /// When zoomed in, keep the play head inside the visible portion of
-    /// the scroll view by nudging the scroll position as playback
-    /// crosses the right edge. ScrollViewReader's `scrollTo` is the
-    /// only programmatic scroll API SwiftUI gives us, so we anchor on
-    /// the playhead position by fraction.
+    /// Nudges the scroll position to keep the play head visible when zoomed. `ScrollViewReader.scrollTo` is the only programmatic scroll SwiftUI provides.
     private func autoFollow(
         _ time: Double,
         width: CGFloat,
@@ -239,15 +227,10 @@ private struct WaveformContainer: View {
         guard playback.isPlaying, peaks.durationSec > 0, width > viewport else {
             return
         }
-        // Only re-anchor every ~0.5 s of audio to avoid jitter at 15 Hz.
+        // No-op today: ScrollViewReader has no "scroll to fraction" primitive on AppKit; that would need an NSScrollView bridge. Left as the seam for that bridge. Manual scroll and click-to-seek are the load-bearing interactions.
         let fraction = time / peaks.durationSec
         _ = fraction
         _ = proxy
-        // Intentionally a noop today: native ScrollViewReader has no
-        // "scroll to fraction" primitive on AppKit and adding one would
-        // require an NSScrollView bridge. Left in as the seam where
-        // that bridge would plug in. Manual horizontal scroll still
-        // works; the click-to-seek is the load-bearing interaction.
     }
 }
 
@@ -304,8 +287,6 @@ private struct WaveformBody: View {
         tint: Color,
         label: String
     ) {
-        // Background fill so each channel reads as a distinct row even
-        // when the file is silent.
         ctx.fill(
             Path(rect),
             with: .color(tint.opacity(0.05))
@@ -319,7 +300,6 @@ private struct WaveformBody: View {
             at: CGPoint(x: rect.minX + 6, y: rect.minY + 10),
             anchor: .leading
         )
-        // Zero-line.
         let mid = rect.midY
         var zero = Path()
         zero.move(to: CGPoint(x: rect.minX, y: mid))
@@ -329,9 +309,7 @@ private struct WaveformBody: View {
             with: .color(.secondary.opacity(0.25)),
             lineWidth: 0.5
         )
-        // Peaks: one vertical bar per pixel column. When binCount >
-        // pixels we sub-sample by stride; when binCount < pixels we
-        // stretch (rare for the file lengths we work with).
+        // One vertical bar per pixel column; sub-samples when binCount > pixels, stretches when binCount < pixels.
         guard !peaks.isEmpty, rect.width > 1 else { return }
         let half = rect.height / 2 - 4
         var path = Path()
@@ -340,8 +318,7 @@ private struct WaveformBody: View {
             let fraction = Double(col) / Double(max(columns - 1, 1))
             let binIdx = Int(fraction * Double(peaks.count - 1))
             let p = CGFloat(peaks[binIdx])
-            // Cube-root keeps loud-but-clipped meetings from washing
-            // out quiet ones; mostly a perceptual nicety.
+            // Cube-root scale keeps loud/clipped meetings from washing out quiet ones.
             let scaled = CGFloat(pow(Double(p), 1.0 / 1.7)) * half
             let x = rect.minX + CGFloat(col) + 0.5
             path.move(to: CGPoint(x: x, y: mid - scaled))
@@ -364,9 +341,7 @@ private struct WaveformBody: View {
 // MARK: - Timecode helper
 
 enum WaveformTimecode {
-    /// `mm:ss` for short files, `h:mm:ss` past the hour. Matches the
-    /// transcript tab's row-level formatting so the two surfaces line
-    /// up visually.
+    /// `mm:ss` / `h:mm:ss` - matches the Transcript tab's formatting.
     static func format(_ time: TimeInterval) -> String {
         let total = Int(time.rounded(.down))
         let h = total / 3600
