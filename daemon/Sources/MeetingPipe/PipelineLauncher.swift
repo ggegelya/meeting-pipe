@@ -1,10 +1,20 @@
 import Foundation
 import TOMLKit
 
+/// One live progress sample from a running `mp run-all` (TECH-UX5).
+struct PipelineProgress: Equatable {
+    let stage: String
+    let elapsedSec: Int
+}
+
 /// Pipeline execution contract. Default implementation is `PipelineLauncher`; tests substitute a fake.
 /// `summaryMode == .byo` skips the Anthropic call and writes a paste bundle; the launcher passes `MP_FORCE_BYO=1` in the subprocess env.
 protocol PipelineDriver: AnyObject {
     func runAll(wav: URL, summaryMode: SummaryMode, completion: @escaping (Result<URL?, Error>) -> Void)
+    /// Run-all with a live progress callback parsed from the subprocess heartbeat (TECH-UX5). Defaulted to ignore progress so fakes need not implement it.
+    func runAll(wav: URL, summaryMode: SummaryMode, onProgress: ((PipelineProgress) -> Void)?, completion: @escaping (Result<URL?, Error>) -> Void)
+    /// Terminate the in-flight `run-all` subprocess, if any (TECH-UX5 Cancel). Defaulted no-op.
+    func cancelActiveRun()
     /// Re-run the publish step against an existing `<stem>.summary.json`. Returns the Notion page URL on success (nil when regulated_mode is on).
     func publish(summaryJSON: URL, completion: @escaping (Result<URL?, Error>) -> Void)
     /// Re-run only the summarize step against an existing transcript (Library "Regenerate summary" action).
@@ -18,6 +28,15 @@ extension PipelineDriver {
     func runAll(wav: URL, completion: @escaping (Result<URL?, Error>) -> Void) {
         runAll(wav: wav, summaryMode: .auto, completion: completion)
     }
+
+    /// Default: ignore progress and defer to the plain `runAll`. Fakes that
+    /// only implement the completion form get this for free.
+    func runAll(wav: URL, summaryMode: SummaryMode, onProgress: ((PipelineProgress) -> Void)?, completion: @escaping (Result<URL?, Error>) -> Void) {
+        runAll(wav: wav, summaryMode: summaryMode, completion: completion)
+    }
+
+    /// Default no-op; `PipelineLauncher` overrides.
+    func cancelActiveRun() {}
 
     /// Default no-op stub; `PipelineLauncher` overrides this.
     func publish(summaryJSON: URL, completion: @escaping (Result<URL?, Error>) -> Void) {
@@ -78,6 +97,51 @@ final class PipelineLauncher: PipelineDriver {
         summaryMode: SummaryMode = .auto,
         completion: @escaping (Result<URL?, Error>) -> Void
     ) {
+        runAll(wav: wav, summaryMode: summaryMode, onProgress: nil, completion: completion)
+    }
+
+    /// Sentinel prefix the pipeline prints for live progress (TECH-UX5); mirrors `orchestrate.PROGRESS_SENTINEL`.
+    private static let progressSentinel = "__MP_PROGRESS__"
+
+    /// The in-flight `run-all` process, retained so a user Cancel can terminate it (TECH-UX5). Guarded by `processLock` (set on main, cleared on the termination queue, read on main).
+    private var activeRunProcess: Process?
+    private let processLock = NSLock()
+
+    private func setActiveRunProcess(_ proc: Process?) {
+        processLock.lock(); activeRunProcess = proc; processLock.unlock()
+    }
+
+    /// Terminate the in-flight run-all (TECH-UX5 Cancel). The termination
+    /// handler then reports a non-zero exit, so the row flips to failed/retryable.
+    func cancelActiveRun() {
+        processLock.lock(); let proc = activeRunProcess; processLock.unlock()
+        guard let proc = proc, proc.isRunning else { return }
+        Log.main.warning("pipeline run cancelled by user")
+        proc.terminate()
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10) {
+            if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
+        }
+    }
+
+    /// Parse a `__MP_PROGRESS__ {json}` heartbeat line into a `PipelineProgress`.
+    static func parseProgress(_ line: String) -> PipelineProgress? {
+        guard line.hasPrefix(progressSentinel) else { return nil }
+        let json = line.dropFirst(progressSentinel.count).trimmingCharacters(in: .whitespaces)
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let stage = obj["stage"] as? String else {
+            return nil
+        }
+        let elapsed = (obj["elapsed_s"] as? Int) ?? Int((obj["elapsed_s"] as? Double) ?? 0)
+        return PipelineProgress(stage: stage, elapsedSec: elapsed)
+    }
+
+    func runAll(
+        wav: URL,
+        summaryMode: SummaryMode,
+        onProgress: ((PipelineProgress) -> Void)?,
+        completion: @escaping (Result<URL?, Error>) -> Void
+    ) {
         guard let mpPath = Self.findMP() else {
             completion(.failure(LaunchError.mpNotFound))
             return
@@ -94,6 +158,7 @@ final class PipelineLauncher: PipelineDriver {
             env["MP_FORCE_BYO"] = "1"
         }
         p.environment = env
+        setActiveRunProcess(p)   // TECH-UX5: retained so Cancel can terminate it
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -114,6 +179,16 @@ final class PipelineLauncher: PipelineDriver {
         outPipe.fileHandleForReading.readabilityHandler = { h in
             let d = h.availableData; if d.isEmpty { return }
             try? logHandle?.write(contentsOf: d)
+            // TECH-UX5: scan for the progress heartbeat sentinel without
+            // disturbing the log stream. Each heartbeat is a single flushed
+            // line, so a chunk-split miss just drops one beat (harmless).
+            if let onProgress = onProgress, let s = String(data: d, encoding: .utf8) {
+                for line in s.split(separator: "\n") where line.hasPrefix(Self.progressSentinel) {
+                    if let p = Self.parseProgress(String(line)) {
+                        DispatchQueue.main.async { onProgress(p) }
+                    }
+                }
+            }
         }
         errPipe.fileHandleForReading.readabilityHandler = { h in
             let d = h.availableData; if d.isEmpty { return }
@@ -147,6 +222,7 @@ final class PipelineLauncher: PipelineDriver {
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
             try? logHandle?.close()
+            self.setActiveRunProcess(nil)   // TECH-UX5: run finished/killed
 
             if timedOut.isSet {
                 completion(.failure(LaunchError.timeout(timeoutSeconds)))

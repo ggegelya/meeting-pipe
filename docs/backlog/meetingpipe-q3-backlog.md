@@ -490,7 +490,9 @@ Acceptance:
 
 Deps: none.
 
-**TECH-UX5 · In-app pipeline progress · M · none** [NEW]
+**TECH-UX5 · In-app pipeline progress · M · none** [DONE]
+
+> Resolved 2026-05-28: a `_ProgressHeartbeat` thread in `orchestrate.run_all` (the real `run-all` home, not `__main__.py` as the edit list guessed) emits a `pipeline.stage_progress` event every 5s plus a `__MP_PROGRESS__ {json}` stdout sentinel; the run updates the current stage at each `stage_started` (finalize / diarize_cleanup / summarize / publish). The daemon consumes the live channel through the pipe it already reads: `PipelineLauncher.runAll` gained an `onProgress` overload (defaulted in the `PipelineDriver` protocol so fakes are unaffected) that parses the sentinel via the pure, tested `parseProgress`, plus a retained active `Process` and `cancelActiveRun()`. `SinkDispatcher` exposes `onActiveProgress` + `onActiveStalled` (a 5s timer flags 30s without a heartbeat) and `cancelActiveJob()`; `PipelineJobDispatcher` and the `Coordinator` forward these to a new `LibraryWindowModel.activeProcessing` (@Published) and `cancelProcessing()`. `MeetingRow` renders "Summarizing 0:42" for the active row (passed by `LibraryListView`) or a Stalled pill + Cancel button when the heartbeat lapses. Tests: `test_progress_heartbeat` (2, Python), `parseProgress` (2), `SinkDispatcher` progress-passthrough + cancel (3). The 30s stall timer and the live row UI are not headless-testable (timer threshold + AppKit); the IPC parse, progress fan-out, and cancel wiring are. Note: the durable `stage_progress` event is the analysis record; the stdout sentinel (which also lands in pipeline.log) is the ephemeral live channel.
 
 Audit's `[High] Open`: progress is menu-bar text only; a wedged subprocess is indistinguishable from a slow one without tailing logs.
 

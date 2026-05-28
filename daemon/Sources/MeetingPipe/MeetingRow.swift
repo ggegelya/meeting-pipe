@@ -6,16 +6,21 @@ struct MeetingRow: View, Equatable {
     let meeting: Meeting
     /// Pre-computed by the list; the row never reads `liveRecordingStem` directly.
     let isLiveRecording: Bool
+    /// Live pipeline progress for this row (TECH-UX5); nil unless it is the active job. Pre-matched by the list.
+    let activeProcessing: ActiveProcessing?
     /// Plain closures so the row neither observes nor retains the library model.
     let onRepublish: () async -> Void
     let onRegenerate: () async -> Void
     let onRetry: () -> Result<Void, Error>
     let onSoftDelete: () -> Void
     let onExport: (URL) -> Result<Int, Error>
+    let onCancelProcessing: () -> Void
 
     /// Equates only value-typed fields; closures are excluded because they're re-allocated each render and would defeat `.equatable()`.
     static func == (lhs: MeetingRow, rhs: MeetingRow) -> Bool {
-        lhs.meeting == rhs.meeting && lhs.isLiveRecording == rhs.isLiveRecording
+        lhs.meeting == rhs.meeting
+            && lhs.isLiveRecording == rhs.isLiveRecording
+            && lhs.activeProcessing == rhs.activeProcessing
     }
 
     @State private var inFlight: InFlight? = nil
@@ -55,7 +60,11 @@ struct MeetingRow: View, Equatable {
                     } else if meeting.needsRepublish {
                         republishButton
                     }
-                    trailingPill
+                    if let progress = activeProcessing {
+                        processingIndicator(progress)
+                    } else {
+                        trailingPill
+                    }
                 }
                 trailingWhenStack
             }
@@ -147,6 +156,37 @@ struct MeetingRow: View, Equatable {
     private var regenerateButton: some View {
         Button("Regenerate") { Task { await regenerate() } }
             .controlSize(.small)
+    }
+
+    /// Live pipeline progress for the active row (TECH-UX5): stage + elapsed, or
+    /// a Stalled pill with a Cancel button when the heartbeat lapses.
+    @ViewBuilder
+    private func processingIndicator(_ p: ActiveProcessing) -> some View {
+        if p.stalled {
+            HStack(spacing: 6) {
+                MPStatusPill(kind: .failed, label: "Stalled")
+                Button("Cancel") { onCancelProcessing() }
+                    .controlSize(.small)
+            }
+        } else {
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.small)
+                Text("\(Self.stageLabel(p.stage)) \(MeetingRow.formatDuration(Double(p.elapsedSec)))")
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+            }
+        }
+    }
+
+    /// Maps a pipeline stage id to a present-tense label.
+    static func stageLabel(_ stage: String) -> String {
+        switch stage {
+        case "finalize":        return "Finalizing"
+        case "diarize_cleanup": return "Cleaning up"
+        case "summarize":       return "Summarizing"
+        case "publish":         return "Publishing"
+        default:                return "Processing"
+        }
     }
 
     /// Inline Republish when the local summary is newer than the last publish (TECH-UX2).

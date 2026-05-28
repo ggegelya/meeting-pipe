@@ -14,8 +14,22 @@ final class SinkDispatcher {
     /// Fires once per job at completion (success or failure), on main.
     var onJobCompleted: ((ProcessingJob, Result<URL?, Error>) -> Void)?
 
+    /// Live pipeline progress for the active job (TECH-UX5): (stem, stage+elapsed). Main queue.
+    var onActiveProgress: ((String, PipelineProgress) -> Void)?
+
+    /// Fires once when the active job's pipeline goes 30 s without a heartbeat (TECH-UX5): (stem). Main queue.
+    var onActiveStalled: ((String) -> Void)?
+
+    /// No-heartbeat window before a running pipeline is flagged stalled. The pipeline beats every 5 s, so 30 s is six missed beats.
+    private static let stallThresholdSec: TimeInterval = 30
+
     private var processingJobs: [ProcessingJob] = []
     private var activeJob: ProcessingJob?
+
+    /// Stall tracking for the active pipeline subprocess (TECH-UX5).
+    private var lastProgressAt: Date?
+    private var stallTimer: Timer?
+    private var stalledFired = false
 
     init(
         launcher: PipelineDriver,
@@ -95,7 +109,17 @@ final class SinkDispatcher {
     }
 
     private func invokePipeline(for job: ProcessingJob) {
-        launcher.runAll(wav: job.file, summaryMode: job.summaryMode) { [weak self] result in
+        let stem = SinkDispatcher.sidecarLocation(for: job).stem
+        startStallTracking(stem: stem)
+        launcher.runAll(
+            wav: job.file,
+            summaryMode: job.summaryMode,
+            onProgress: { [weak self] progress in
+                // onProgress already hops to main inside the launcher.
+                self?.lastProgressAt = Date()
+                self?.onActiveProgress?(stem, progress)
+            }
+        ) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 let loc = SinkDispatcher.sidecarLocation(for: job)
@@ -133,6 +157,7 @@ final class SinkDispatcher {
     }
 
     private func completeActiveJob(_ job: ProcessingJob, with result: Result<URL?, Error>) {
+        stopStallTracking()
         onJobCompleted?(job, result)
         activeJob = nil
         if let head = processingJobs.first, head.id == job.id {
@@ -140,6 +165,38 @@ final class SinkDispatcher {
         }
         onQueueDepthChanged?(processingJobs.count)
         startNextJobIfNeeded()
+    }
+
+    // MARK: - Stall tracking + cancel (TECH-UX5)
+
+    private func startStallTracking(stem: String) {
+        lastProgressAt = Date()
+        stalledFired = false
+        stallTimer?.invalidate()
+        stallTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            guard let self = self, let last = self.lastProgressAt, !self.stalledFired else { return }
+            if Date().timeIntervalSince(last) > SinkDispatcher.stallThresholdSec {
+                self.stalledFired = true
+                Log.event(category: "coordinator", action: "pipeline_stalled", attributes: ["stem": stem])
+                self.onActiveStalled?(stem)
+            }
+        }
+    }
+
+    private func stopStallTracking() {
+        stallTimer?.invalidate()
+        stallTimer = nil
+        lastProgressAt = nil
+        stalledFired = false
+    }
+
+    /// Cancel the active pipeline subprocess (TECH-UX5). The launcher terminates
+    /// it; the termination handler then completes the job as a failure (so the
+    /// row becomes retryable).
+    func cancelActiveJob() {
+        guard activeJob != nil else { return }
+        Log.event(category: "coordinator", action: "pipeline_cancelled", attributes: [:])
+        launcher.cancelActiveRun()
     }
 
     private static func sidecarLocation(for job: ProcessingJob) -> (stem: String, dir: URL) {

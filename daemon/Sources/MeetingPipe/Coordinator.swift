@@ -233,14 +233,38 @@ final class Coordinator: NSObject {
         jobDispatcher = PipelineJobDispatcher(
             sinkDispatcher: sinkDispatcher,
             onDone: { [weak self] stem, recordingsDir, pageURL in
+                self?.libraryModel.activeProcessing = nil
                 self?.notifier.notifyDone(
                     stem: stem,
                     recordingsDir: recordingsDir,
                     pageURL: pageURL
                 )
             },
-            onError: { [weak self] message in self?.notifier.notifyError(message) },
-            onQueueDepth: { [weak self] depth in self?.statusBar.setProcessingCount(depth) }
+            onError: { [weak self] message in
+                self?.libraryModel.activeProcessing = nil
+                self?.notifier.notifyError(message)
+            },
+            onQueueDepth: { [weak self] depth in self?.statusBar.setProcessingCount(depth) },
+            onProgress: { [weak self] stem, progress in
+                // Live pipeline progress for the row (TECH-UX5). Preserve a
+                // prior stalled flag if a late beat arrives after stalling.
+                self?.libraryModel.activeProcessing = ActiveProcessing(
+                    stem: stem,
+                    stage: progress.stage,
+                    elapsedSec: progress.elapsedSec,
+                    stalled: false
+                )
+            },
+            onStalled: { [weak self] stem in
+                guard let self = self else { return }
+                let prior = self.libraryModel.activeProcessing
+                self.libraryModel.activeProcessing = ActiveProcessing(
+                    stem: stem,
+                    stage: prior?.stem == stem ? (prior?.stage ?? "") : "",
+                    elapsedSec: prior?.stem == stem ? (prior?.elapsedSec ?? 0) : 0,
+                    stalled: true
+                )
+            }
         )
         // MicGate consumes the recorder's per-buffer mic RMS; the gate
         // is allocation-free and defers its publish off the render
@@ -567,6 +591,11 @@ final class Coordinator: NSObject {
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         library.publishFromPaste(stem: stem, summaryText: summaryText, completion: completion)
+    }
+
+    /// Cancel the active pipeline subprocess (TECH-UX5), e.g. from a stalled row.
+    func cancelActiveJob() {
+        jobDispatcher.cancelActive()
     }
 
     @objc func menuOpenScreenRecordingSettings() {

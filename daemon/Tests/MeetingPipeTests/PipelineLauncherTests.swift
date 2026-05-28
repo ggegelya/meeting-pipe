@@ -87,4 +87,17 @@ final class PipelineLauncherTests: XCTestCase {
         let env = PipelineLauncher.freshEnvironment(secretsURL: secretsURL, baseEnvironment: [:])
         XCTAssertEqual(env["WEIRD_KEY"], "foo=bar=baz")
     }
+
+    // MARK: - progress sentinel parsing (TECH-UX5)
+
+    func test_parseProgress_extracts_stage_and_elapsed() {
+        let p = PipelineLauncher.parseProgress(#"__MP_PROGRESS__ {"stage":"summarize","elapsed_s":42,"beat":8}"#)
+        XCTAssertEqual(p, PipelineProgress(stage: "summarize", elapsedSec: 42))
+    }
+
+    func test_parseProgress_rejects_non_sentinel_and_malformed_lines() {
+        XCTAssertNil(PipelineLauncher.parseProgress("2026-05-29 INFO mp.run_all: summarizing"))
+        XCTAssertNil(PipelineLauncher.parseProgress("__MP_PROGRESS__ not-json"))
+        XCTAssertNil(PipelineLauncher.parseProgress(#"__MP_PROGRESS__ {"elapsed_s":1}"#))
+    }
 }

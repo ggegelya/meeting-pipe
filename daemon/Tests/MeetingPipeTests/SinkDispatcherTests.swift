@@ -14,21 +14,41 @@ final class SinkDispatcherTests: XCTestCase {
     private final class FakeDriver: PipelineDriver {
         private(set) var startedFiles: [URL] = []
         private var completions: [(Result<URL?, Error>) -> Void] = []
+        /// Progress callback the dispatcher handed us for the active run (TECH-UX5).
+        private(set) var capturedProgress: ((PipelineProgress) -> Void)?
+        private(set) var cancelCalled = false
 
         func runAll(
             wav: URL,
             summaryMode: SummaryMode,
             completion: @escaping (Result<URL?, Error>) -> Void
         ) {
+            runAll(wav: wav, summaryMode: summaryMode, onProgress: nil, completion: completion)
+        }
+
+        func runAll(
+            wav: URL,
+            summaryMode: SummaryMode,
+            onProgress: ((PipelineProgress) -> Void)?,
+            completion: @escaping (Result<URL?, Error>) -> Void
+        ) {
             startedFiles.append(wav)
+            capturedProgress = onProgress
             completions.append(completion)
         }
+
+        func cancelActiveRun() { cancelCalled = true }
 
         /// Resolve the head of the in-flight queue.
         func finish(_ result: Result<URL?, Error>) {
             guard !completions.isEmpty else { return }
             let cb = completions.removeFirst()
             cb(result)
+        }
+
+        /// Fire a progress heartbeat as if the subprocess emitted one.
+        func emitProgress(_ progress: PipelineProgress) {
+            capturedProgress?(progress)
         }
     }
 
@@ -225,6 +245,46 @@ final class SinkDispatcherTests: XCTestCase {
         // Enqueue raises to 1; completion drains back to 0.
         XCTAssertTrue(depths.contains(1))
         XCTAssertEqual(depths.last, 0)
+    }
+
+    // MARK: - Live progress + cancel (TECH-UX5)
+
+    func test_progress_heartbeat_fans_out_via_onActiveProgress() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        var progress: [(String, PipelineProgress)] = []
+        dispatcher.onActiveProgress = { progress.append(($0, $1)) }
+
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: 12))
+        drainMain()
+
+        XCTAssertEqual(progress.count, 1)
+        XCTAssertEqual(progress.first?.0, "clip")
+        XCTAssertEqual(progress.first?.1, PipelineProgress(stage: "summarize", elapsedSec: 12))
+    }
+
+    func test_cancel_active_job_terminates_the_run() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        dispatcher.cancelActiveJob()
+        XCTAssertTrue(driver.cancelCalled)
+    }
+
+    func test_cancel_with_no_active_job_is_a_noop() {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        dispatcher.cancelActiveJob()
+        XCTAssertFalse(driver.cancelCalled)
     }
 
     // MARK: - In-process runner pre-pipeline

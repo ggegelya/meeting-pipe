@@ -153,6 +153,8 @@ struct LibraryListView: View {
                         MeetingRow(
                             meeting: meeting,
                             isLiveRecording: libraryModel.liveRecordingStem == meeting.stem,
+                            activeProcessing: libraryModel.activeProcessing?.stem == meeting.stem
+                                ? libraryModel.activeProcessing : nil,
                             onRepublish: { [weak libraryModel] in
                                 _ = await libraryModel?.republishMeeting(stem: meeting.stem)
                             },
@@ -169,6 +171,9 @@ struct LibraryListView: View {
                             onExport: { [weak libraryModel] dest in
                                 libraryModel?.exportMeeting(stem: meeting.stem, to: dest)
                                     ?? .failure(NSError(domain: "LibraryListView", code: 1))
+                            },
+                            onCancelProcessing: { [weak libraryModel] in
+                                libraryModel?.cancelProcessing()
                             }
                         )
                         .equatable()

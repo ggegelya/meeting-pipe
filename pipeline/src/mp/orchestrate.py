@@ -20,6 +20,8 @@ import json
 import logging
 import os
 import sys
+import threading
+import time
 from importlib import resources
 from pathlib import Path
 
@@ -33,6 +35,52 @@ from .summarize import summarize
 from .workflow import apply_overrides as apply_workflow_overrides
 
 log = logging.getLogger("mp.run_all")
+
+# Sentinel prefix for the live progress channel the Swift daemon parses off our
+# stdout (TECH-UX5). The durable record is the `pipeline.stage_progress` event;
+# this line is ephemeral and stripped from the daemon's pipeline.log.
+PROGRESS_SENTINEL = "__MP_PROGRESS__"
+
+
+class _ProgressHeartbeat:
+    """Background heartbeat for `run_all` (TECH-UX5). Every `interval_s` it
+    emits a `pipeline.stage_progress` event and prints a stdout sentinel with
+    the current stage + elapsed, so the daemon can distinguish a slow stage
+    from a wedged one. The stage is updated by the run as it advances."""
+
+    def __init__(self, interval_s: float = 5.0) -> None:
+        self._interval = interval_s
+        self._stage = "starting"
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._started_at = time.monotonic()
+        self._thread = threading.Thread(target=self._run, name="mp-progress", daemon=True)
+
+    def set_stage(self, stage: str) -> None:
+        with self._lock:
+            self._stage = stage
+
+    def start(self) -> "_ProgressHeartbeat":
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        beat = 0
+        while not self._stop.wait(self._interval):
+            beat += 1
+            with self._lock:
+                stage = self._stage
+            elapsed = int(time.monotonic() - self._started_at)
+            events.emit("pipeline", "stage_progress", stage=stage, elapsed_s=elapsed, beat=beat)
+            try:
+                payload = json.dumps({"stage": stage, "elapsed_s": elapsed, "beat": beat})
+                print(f"{PROGRESS_SENTINEL} {payload}", flush=True)
+            except Exception:  # noqa: BLE001 - progress is best-effort
+                pass
 
 
 def _effective_backend(cfg: Config) -> str:
@@ -159,15 +207,24 @@ def run_all(
     log.info("=" * 60)
     events.emit("pipeline", "run_started", wav=str(wav), force_byo=force_byo)
 
+    heartbeat = _ProgressHeartbeat().start()
     try:
-        return _run_all_inner(wav, cfg, force_byo=force_byo)
+        return _run_all_inner(wav, cfg, force_byo=force_byo, heartbeat=heartbeat)
     except Exception as e:
         events.emit("pipeline", "run_failed", wav=str(wav),
                     error=str(e), error_type=type(e).__name__)
         raise
+    finally:
+        heartbeat.stop()
 
 
-def _run_all_inner(wav: Path, cfg: Config, *, force_byo: bool) -> dict:
+def _run_all_inner(
+    wav: Path, cfg: Config, *, force_byo: bool, heartbeat: "_ProgressHeartbeat | None" = None
+) -> dict:
+    def _stage(name: str) -> None:
+        if heartbeat is not None:
+            heartbeat.set_stage(name)
+
     # The Swift daemon writes `<stem>.json` with FluidAudio's transcript
     # before invoking us. We finalize it (channel-aware speaker labels
     # fallback if FluidAudio diarization failed) and continue with
@@ -183,6 +240,7 @@ def _run_all_inner(wav: Path, cfg: Config, *, force_byo: bool) -> dict:
         )
     source = streamed.get("backend") or ("streamed" if streamed.get("streaming") else "daemon")
     log.info("[1/3] finalize (produced by daemon: %s)", source)
+    _stage("finalize")
     events.emit("pipeline", "stage_started", stage="finalize", source=source)
     t = _finalize_streamed_transcript(wav, streamed)
     events.emit("pipeline", "stage_completed", stage="finalize", md=str(t["md"]))
@@ -263,6 +321,7 @@ def _run_all_inner(wav: Path, cfg: Config, *, force_byo: bool) -> dict:
     # summarize, and so it inherits the same cost guards. Failure is
     # non-fatal: a summary on the un-cleaned transcript beats no run.
     if cfg.summarization.diarize_cleanup:
+        _stage("diarize_cleanup")
         events.emit("pipeline", "stage_started", stage="diarize_cleanup")
         try:
             from .diarize_cleanup import cleanup_transcript
@@ -300,6 +359,7 @@ def _run_all_inner(wav: Path, cfg: Config, *, force_byo: bool) -> dict:
         }
 
     log.info("[2/3] summarize")
+    _stage("summarize")
     events.emit("pipeline", "stage_started", stage="summarize")
     s = summarize(t["md"], cfg=cfg)
     events.emit("pipeline", "stage_completed", stage="summarize", md=str(s["md"]))
@@ -323,6 +383,7 @@ def _run_all_inner(wav: Path, cfg: Config, *, force_byo: bool) -> dict:
         log.warning("run sidecar write failed: %s", e)
 
     log.info("[3/3] publish (sinks=%s)", ",".join(cfg.output.sinks) or "none")
+    _stage("publish")
     events.emit("pipeline", "stage_started", stage="publish",
                 sinks=list(cfg.output.sinks))
     pub = publish_fanout(

@@ -68,6 +68,14 @@ final class ProcessingTracker: ObservableObject {
 }
 
 /// SwiftUI-observable mirror of the recording state machine. Threading: all mutations run on main (the Coordinator already enforces this). Rapidly-changing values like processing-queue depth live on `ProcessingTracker` so they don't pull the whole window through a re-render every tick.
+/// Live pipeline-progress snapshot for the active job's row (TECH-UX5).
+struct ActiveProcessing: Equatable {
+    let stem: String
+    let stage: String
+    let elapsedSec: Int
+    let stalled: Bool
+}
+
 final class LibraryWindowModel: ObservableObject {
 
     /// Display-only summary of `AppState`; the UI never branches on the underlying URL / SummaryMode.
@@ -81,6 +89,9 @@ final class LibraryWindowModel: ObservableObject {
     @Published var status: Status = .idle
     /// Stem of the in-flight recording. The list view uses this to pulse the matching row; on-disk status alone can't distinguish "wav being written" from "wav done, pipeline running".
     @Published var liveRecordingStem: String? = nil
+
+    /// Live pipeline progress for the row being processed (TECH-UX5). Nil when no active pipeline job; the list hands the matching row its snapshot.
+    @Published var activeProcessing: ActiveProcessing? = nil
 
     /// Set by the menu-bar Quick Find panel. The root view switches scope to All Meetings, selects the row, then clears this back to nil so the next pick is a fresh edge.
     @Published var pendingSelection: String? = nil
@@ -149,6 +160,11 @@ final class LibraryWindowModel: ObservableObject {
                 cont.resume(returning: result)
             }
         }
+    }
+
+    /// Cancel the active pipeline job (TECH-UX5), e.g. from a stalled row.
+    func cancelProcessing() {
+        coordinator?.cancelActiveJob()
     }
 
     /// Publish a hand-pasted summary (TECH-UX3): writes `<stem>.summary.md` and

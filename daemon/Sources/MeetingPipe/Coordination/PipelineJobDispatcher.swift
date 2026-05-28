@@ -7,28 +7,45 @@ final class PipelineJobDispatcher {
     private let onDone: (_ stem: String, _ recordingsDir: URL, _ pageURL: URL?) -> Void
     private let onError: (String) -> Void
     private let onQueueDepth: (Int) -> Void
+    private let onProgress: (_ stem: String, _ progress: PipelineProgress) -> Void
+    private let onStalled: (_ stem: String) -> Void
 
     init(
         sinkDispatcher: SinkDispatcher,
         onDone: @escaping (_ stem: String, _ recordingsDir: URL, _ pageURL: URL?) -> Void,
         onError: @escaping (String) -> Void,
-        onQueueDepth: @escaping (Int) -> Void
+        onQueueDepth: @escaping (Int) -> Void,
+        onProgress: @escaping (_ stem: String, _ progress: PipelineProgress) -> Void = { _, _ in },
+        onStalled: @escaping (_ stem: String) -> Void = { _ in }
     ) {
         self.sinkDispatcher = sinkDispatcher
         self.onDone = onDone
         self.onError = onError
         self.onQueueDepth = onQueueDepth
+        self.onProgress = onProgress
+        self.onStalled = onStalled
         sinkDispatcher.onQueueDepthChanged = { [weak self] depth in
             self?.onQueueDepth(depth)
         }
         sinkDispatcher.onJobCompleted = { [weak self] job, result in
             self?.route(job: job, result: result)
         }
+        sinkDispatcher.onActiveProgress = { [weak self] stem, progress in
+            self?.onProgress(stem, progress)
+        }
+        sinkDispatcher.onActiveStalled = { [weak self] stem in
+            self?.onStalled(stem)
+        }
     }
 
     /// Append a freshly-flushed recording to the pipeline queue.
     func enqueue(file: URL, summaryMode: SummaryMode) {
         sinkDispatcher.enqueue(file: file, summaryMode: summaryMode)
+    }
+
+    /// Cancel the active pipeline subprocess (TECH-UX5).
+    func cancelActive() {
+        sinkDispatcher.cancelActiveJob()
     }
 
     var queueDepth: Int { sinkDispatcher.queueDepth }
