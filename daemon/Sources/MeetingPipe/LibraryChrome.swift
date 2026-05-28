@@ -208,6 +208,9 @@ struct MPGhostIconButton: View {
         }
         .buttonStyle(.plain)
         .help(help)
+        // VoiceOver reads the same text as the tooltip (TECH-UI-6); the bare
+        // SF Symbol button would otherwise announce nothing meaningful.
+        .accessibilityLabel(help)
         .onHover { hovering = $0 }
     }
 }

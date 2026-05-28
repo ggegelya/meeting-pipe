@@ -612,7 +612,9 @@ Stop and ask: if any existing functionality from the old Edit button does not ma
 
 Deps: none. Coordinate with TECH-UI-6 (same file).
 
-**TECH-UI-6 · Detail-pane toolbar tooltips and a11y · S · TECH-UI-5** [REVISED]
+**TECH-UI-6 · Detail-pane toolbar tooltips and a11y · S · TECH-UI-5** [DONE]
+
+> Resolved 2026-05-28: the shared `MPGhostIconButton` now applies `.accessibilityLabel(help)` so VoiceOver announces the same text as the `.help(...)` tooltip (the bare SF Symbol button announced nothing useful before); this covers the detail toolbar and every other ghost-icon use. The Notion and Obsidian icons already render only when their publish sidecar resolves (`cachedNotionURL` / `cachedObsidianURL`), so a meeting with no resolved sink shows neither; the Finder icon (reveal raw files) is always available and its tooltip was aligned to the acceptance text "Show raw files in Finder". Tooltips read `Open in Notion`, `Open in Obsidian`, `Show raw files in Finder`. View/a11y code, no headless test; build green.
 
 The two existing icons at the top-right of `MeetingDetailView` (the `ghostShortcuts` row: Notion / Obsidian / Reveal-in-Finder) need `.help(_:)` and `.accessibilityLabel(_:)` modifiers. The external-link tooltip dynamically reflects the active sink.
 

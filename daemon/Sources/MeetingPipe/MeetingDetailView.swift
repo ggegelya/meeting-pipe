@@ -234,7 +234,7 @@ struct MeetingDetailView: View {
             }
             MPGhostIconButton(
                 systemImage: "folder",
-                help: "Reveal raw audio in Finder"
+                help: "Show raw files in Finder"
             ) { NSWorkspace.shared.activateFileViewerSelecting([meeting.wavURL]) }
         }
     }
