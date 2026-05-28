@@ -13,11 +13,29 @@ final class MeetingLibraryServiceTests: XCTestCase {
         private(set) var summarizeInputs: [URL] = []
         private(set) var publishInputs: [URL] = []
         private(set) var publishFromPasteInputs: [URL] = []
+        private(set) var previewInputs: [URL] = []
+        private(set) var applePreviewInputs: [URL] = []
         private var summarizeCompletions: [(Result<Void, Error>) -> Void] = []
         private var publishCompletions: [(Result<URL?, Error>) -> Void] = []
         private var publishFromPasteCompletions: [(Result<Void, Error>) -> Void] = []
+        private var previewCompletions: [(Result<Void, Error>) -> Void] = []
 
         func runAll(wav: URL, summaryMode: SummaryMode, completion: @escaping (Result<URL?, Error>) -> Void) {}
+
+        func summarizePreview(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+            previewInputs.append(transcriptMD)
+            previewCompletions.append(completion)
+        }
+
+        func summarizePreviewViaApple(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+            applePreviewInputs.append(transcriptMD)
+            previewCompletions.append(completion)
+        }
+
+        func finishPreview(_ result: Result<Void, Error>) {
+            guard !previewCompletions.isEmpty else { return }
+            previewCompletions.removeFirst()(result)
+        }
 
         func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
             summarizeInputs.append(transcriptMD)
@@ -194,6 +212,69 @@ final class MeetingLibraryServiceTests: XCTestCase {
         service.publishFromPaste(stem: "m", summaryText: "   \n ") { captured = $0 }
         guard case .failure? = captured else { return XCTFail("expected failure for empty paste") }
         XCTAssertTrue(driver.publishFromPasteInputs.isEmpty)
+    }
+
+    // MARK: - local re-run preview (TECH-A16)
+
+    func test_previewSummary_local_backend_uses_mp_summarize_candidate() throws {
+        try touch("m.md")
+        service.previewSummary(stem: "m") { _ in }   // default backend "local"
+        XCTAssertEqual(driver.previewInputs.map { $0.lastPathComponent }, ["m.md"])
+        XCTAssertTrue(driver.applePreviewInputs.isEmpty)
+    }
+
+    func test_previewSummary_apple_backend_uses_apple_summarizer() throws {
+        let appleService = MeetingLibraryService(
+            outputDir: { [unowned self] in self.dir },
+            launcher: driver,
+            notifyError: { _ in },
+            enqueue: { _, _ in },
+            summarizationBackend: { "apple_intelligence" }
+        )
+        try touch("m.md")
+        appleService.previewSummary(stem: "m") { _ in }
+        XCTAssertEqual(driver.applePreviewInputs.map { $0.lastPathComponent }, ["m.md"])
+        XCTAssertTrue(driver.previewInputs.isEmpty)
+    }
+
+    func test_previewSummary_missing_transcript_fails_without_invoking_driver() {
+        var captured: Result<Void, Error>?
+        service.previewSummary(stem: "absent") { captured = $0 }
+        guard case .failure? = captured else { return XCTFail("expected synchronous failure") }
+        XCTAssertTrue(driver.previewInputs.isEmpty)
+        XCTAssertTrue(driver.applePreviewInputs.isEmpty)
+    }
+
+    func test_keepCandidate_promotes_candidate_to_live_summary() throws {
+        try touch("m.summary.candidate.json", contents: "{\"title\":\"new\"}")
+        try touch("m.summary.candidate.md", contents: "# new")
+        try touch("m.summary.json", contents: "{\"title\":\"old\"}")
+        try touch("m.summary.md", contents: "# old")
+
+        guard case .success = service.keepCandidate(stem: "m") else { return XCTFail("expected success") }
+
+        let fm = FileManager.default
+        XCTAssertFalse(fm.fileExists(atPath: dir.appendingPathComponent("m.summary.candidate.json").path))
+        XCTAssertFalse(fm.fileExists(atPath: dir.appendingPathComponent("m.summary.candidate.md").path))
+        let liveJSON = try String(contentsOf: dir.appendingPathComponent("m.summary.json"), encoding: .utf8)
+        XCTAssertTrue(liveJSON.contains("new"))
+        let liveMD = try String(contentsOf: dir.appendingPathComponent("m.summary.md"), encoding: .utf8)
+        XCTAssertEqual(liveMD, "# new")
+    }
+
+    func test_keepCandidate_without_candidate_fails() {
+        guard case .failure = service.keepCandidate(stem: "ghost") else { return XCTFail("expected failure") }
+    }
+
+    func test_discardCandidate_removes_only_the_candidate() throws {
+        try touch("m.summary.candidate.json")
+        try touch("m.summary.candidate.md")
+        try touch("m.summary.json", contents: "{\"title\":\"keep me\"}")
+        service.discardCandidate(stem: "m")
+        let fm = FileManager.default
+        XCTAssertFalse(fm.fileExists(atPath: dir.appendingPathComponent("m.summary.candidate.json").path))
+        XCTAssertFalse(fm.fileExists(atPath: dir.appendingPathComponent("m.summary.candidate.md").path))
+        XCTAssertTrue(fm.fileExists(atPath: dir.appendingPathComponent("m.summary.json").path))
     }
 
     // MARK: - read-only queries

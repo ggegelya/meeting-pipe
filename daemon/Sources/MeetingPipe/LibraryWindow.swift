@@ -167,6 +167,38 @@ final class LibraryWindowModel: ObservableObject {
         coordinator?.cancelActiveJob()
     }
 
+    /// True when the configured backend is on-device (MLX-local or Apple
+    /// Intelligence), so the free local re-run preview is offered (TECH-A16).
+    var canPreviewLocally: Bool {
+        let backend = coordinator?.summarizationBackend ?? "anthropic"
+        return backend == "local" || backend == "apple_intelligence"
+    }
+
+    /// Re-run summarization into a candidate preview (TECH-A16); never publishes.
+    func previewSummary(stem: String) async -> Result<Void, Error> {
+        guard let coordinator = coordinator else {
+            return .failure(NSError(
+                domain: "LibraryWindowModel", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
+            ))
+        }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
+            coordinator.previewSummary(stem: stem) { cont.resume(returning: $0) }
+        }
+    }
+
+    @discardableResult
+    func keepCandidateSummary(stem: String) -> Result<Void, Error> {
+        coordinator?.keepCandidateSummary(stem: stem) ?? .failure(NSError(
+            domain: "LibraryWindowModel", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
+        ))
+    }
+
+    func discardCandidateSummary(stem: String) {
+        coordinator?.discardCandidateSummary(stem: stem)
+    }
+
     /// Publish a hand-pasted summary (TECH-UX3): writes `<stem>.summary.md` and
     /// runs `mp publish-from-paste`. Async-wrapped like `republishMeeting`.
     func publishFromPaste(stem: String, summaryText: String) async -> Result<Void, Error> {

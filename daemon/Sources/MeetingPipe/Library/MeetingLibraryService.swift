@@ -7,17 +7,21 @@ final class MeetingLibraryService {
     private let launcher: PipelineDriver
     private let notifyError: (String) -> Void
     private let enqueue: (URL, SummaryMode) -> Void
+    /// Resolves the configured summarization backend ("local" / "apple_intelligence" / "anthropic" / "auto") so the local re-run preview (TECH-A16) dispatches correctly. Defaulted for tests.
+    private let summarizationBackend: () -> String
 
     init(
         outputDir: @escaping () -> URL,
         launcher: PipelineDriver,
         notifyError: @escaping (String) -> Void,
-        enqueue: @escaping (URL, SummaryMode) -> Void
+        enqueue: @escaping (URL, SummaryMode) -> Void,
+        summarizationBackend: @escaping () -> String = { "local" }
     ) {
         self.outputDir = outputDir
         self.launcher = launcher
         self.notifyError = notifyError
         self.enqueue = enqueue
+        self.summarizationBackend = summarizationBackend
     }
 
     /// Retry the full `mp run-all` pipeline. Enqueues the same subprocess the normal flow uses so the processing badge updates and sidecars get overwritten. Fails immediately if the wav is missing; all other errors surface via the existing pipeline notifier.
@@ -132,6 +136,92 @@ final class MeetingLibraryService {
                     completion(.failure(err))
                 }
             }
+        }
+    }
+
+    // MARK: - Local re-run preview (TECH-A16)
+
+    private func candidateJSON(_ stem: String, in dir: URL) -> URL {
+        dir.appendingPathComponent("\(stem).summary.candidate.json")
+    }
+    private func candidateMD(_ stem: String, in dir: URL) -> URL {
+        dir.appendingPathComponent("\(stem).summary.candidate.md")
+    }
+
+    /// Re-run summarization into a `<stem>.summary.candidate.json` preview, on
+    /// the local backend, without touching the live summary or any sink
+    /// (TECH-A16). Dispatches to the Swift Apple summarizer or `mp summarize
+    /// --candidate` by configured backend. Errors flow through `completion`.
+    func previewSummary(stem: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        let dir = outputDir()
+        let transcriptURL = dir.appendingPathComponent("\(stem).md")
+        guard FileManager.default.fileExists(atPath: transcriptURL.path) else {
+            completion(.failure(NSError(
+                domain: "MeetingLibraryService", code: 1,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "No transcript at \(transcriptURL.lastPathComponent) - cannot re-run"]
+            )))
+            return
+        }
+        Log.event(category: "coordinator", action: "summary_preview_started", attributes: ["stem": stem])
+        let handler: (Result<Void, Error>) -> Void = { result in
+            DispatchQueue.main.async {
+                if case .failure(let err) = result {
+                    Log.event(category: "coordinator", action: "summary_preview_failed",
+                              attributes: ["stem": stem, "error": err.localizedDescription])
+                }
+                completion(result)
+            }
+        }
+        if summarizationBackend() == "apple_intelligence" {
+            launcher.summarizePreviewViaApple(transcriptMD: transcriptURL, completion: handler)
+        } else {
+            launcher.summarizePreview(transcriptMD: transcriptURL, completion: handler)
+        }
+    }
+
+    /// Promote the candidate preview to the live summary (TECH-A16). Does NOT
+    /// publish: the live summary is now newer than the last publish, so the
+    /// inline Republish (TECH-UX2) surfaces for the user to push if they want.
+    @discardableResult
+    func keepCandidate(stem: String) -> Result<Void, Error> {
+        let dir = outputDir()
+        let fm = FileManager.default
+        let candJSON = candidateJSON(stem, in: dir)
+        guard fm.fileExists(atPath: candJSON.path) else {
+            return .failure(NSError(
+                domain: "MeetingLibraryService", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "No candidate summary to keep"]
+            ))
+        }
+        do {
+            try promote(candJSON, to: dir.appendingPathComponent("\(stem).summary.json"))
+            let candMD = candidateMD(stem, in: dir)
+            if fm.fileExists(atPath: candMD.path) {
+                try promote(candMD, to: dir.appendingPathComponent("\(stem).summary.md"))
+            }
+            Log.event(category: "coordinator", action: "summary_preview_kept", attributes: ["stem": stem])
+            return .success(())
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// Discard the candidate preview (TECH-A16). The live summary is untouched.
+    func discardCandidate(stem: String) {
+        let dir = outputDir()
+        try? FileManager.default.removeItem(at: candidateJSON(stem, in: dir))
+        try? FileManager.default.removeItem(at: candidateMD(stem, in: dir))
+        Log.event(category: "coordinator", action: "summary_preview_discarded", attributes: ["stem": stem])
+    }
+
+    /// Atomically replace `live` with `candidate` (consuming the candidate).
+    private func promote(_ candidate: URL, to live: URL) throws {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: live.path) {
+            _ = try fm.replaceItemAt(live, withItemAt: candidate)
+        } else {
+            try fm.moveItem(at: candidate, to: live)
         }
     }
 

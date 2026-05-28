@@ -505,6 +505,14 @@ struct SummaryTab: View {
     @State private var pasteSaving = false
     @State private var pasteError: String? = nil
 
+    /// Local re-run preview (TECH-A16): a candidate summary shown next to the
+    /// current one, never published until Keep. `candidateStem` tracks which
+    /// meeting the candidate belongs to so navigating away cleans it up.
+    @State private var candidate: MeetingSummary? = nil
+    @State private var candidateStem: String? = nil
+    @State private var previewing = false
+    @State private var previewError: String? = nil
+
     enum RepublishResult: Equatable {
         case success(URL?)
         case failure(String)
@@ -526,6 +534,12 @@ struct SummaryTab: View {
             isEditing = false
             editorModel = nil
             lastRepublishResult = nil
+            // TECH-A16: drop any unkept candidate preview (and its sidecar) when
+            // navigating to another meeting.
+            if let s = candidateStem { libraryModel.discardCandidateSummary(stem: s) }
+            candidate = nil
+            candidateStem = nil
+            previewError = nil
         }
         .onChange(of: editToken) { _, _ in
             // TECH-UI-5: the detail-pane menu requested summary editing.
@@ -538,7 +552,9 @@ struct SummaryTab: View {
     private var readOnlyBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
-                if let summary = loadedSummary {
+                if let candidate = candidate, let current = loadedSummary {
+                    comparePane(current: current, candidate: candidate)
+                } else if let summary = loadedSummary {
                     SummaryRenderedView(summary: summary)
                 } else if loadedForStem == meeting.stem {
                     emptyState
@@ -549,19 +565,110 @@ struct SummaryTab: View {
                         .padding(40)
                 }
             }
-            // TECH-UI-5: the bottom-right Edit button moved to the detail-pane
-            // `...` menu ("Edit summary"). The footer now only carries the
-            // republish status badge, so it renders only when there is one.
-            if let result = lastRepublishResult {
-                Divider()
-                HStack {
-                    statusBadge(for: result)
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-            }
+            summaryFooter
         }
+    }
+
+    /// Current vs candidate, stacked, reusing the structured renderer (TECH-A16).
+    private func comparePane(current: MeetingSummary, candidate: MeetingSummary) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("Current", systemImage: "doc.text")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            SummaryRenderedView(summary: current)
+            Divider()
+            Label("New (preview)", systemImage: "sparkles")
+                .font(.headline)
+                .foregroundStyle(Color(MPColors.signal600))
+            SummaryRenderedView(summary: candidate)
+        }
+        .padding(.bottom, 8)
+    }
+
+    /// Footer: re-run/keep/discard for the local preview (TECH-A16), plus the
+    /// republish badge (TECH-UI-5 left only the badge here).
+    @ViewBuilder
+    private var summaryFooter: some View {
+        if candidate != nil {
+            Divider()
+            HStack(spacing: 8) {
+                Text("Previewing a new local summary. Keep replaces the current one (you choose whether to publish).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Discard") { discardPreview() }
+                Button("Keep") { keepPreview() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        } else if libraryModel.canPreviewLocally, loadedSummary != nil {
+            Divider()
+            HStack(spacing: 8) {
+                if let result = lastRepublishResult { statusBadge(for: result) }
+                if let err = previewError {
+                    Label(err, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange).lineLimit(2)
+                }
+                Spacer()
+                if previewing {
+                    ProgressView().controlSize(.small)
+                    Text("Re-running on-device…").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Button("Re-run locally (preview)") { Task { await runPreview() } }
+                        .help("Re-run summarization with the on-device model and compare, without publishing.")
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        } else if let result = lastRepublishResult {
+            Divider()
+            HStack {
+                statusBadge(for: result)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
+    }
+
+    private var candidateURL: URL {
+        meeting.recordingsDir.appendingPathComponent("\(meeting.stem).summary.candidate.json")
+    }
+
+    private func runPreview() async {
+        previewError = nil
+        previewing = true
+        let result = await libraryModel.previewSummary(stem: meeting.stem)
+        previewing = false
+        switch result {
+        case .success:
+            if let loaded = MeetingSummary.load(from: candidateURL) {
+                candidate = loaded
+                candidateStem = meeting.stem
+            } else {
+                previewError = "The re-run produced no readable summary."
+            }
+        case .failure(let err):
+            previewError = err.localizedDescription
+        }
+    }
+
+    private func keepPreview() {
+        if case .failure(let err) = libraryModel.keepCandidateSummary(stem: meeting.stem) {
+            previewError = err.localizedDescription
+            return
+        }
+        candidate = nil
+        candidateStem = nil
+        Task { await reloadSummary() }   // pick up the promoted summary
+    }
+
+    private func discardPreview() {
+        libraryModel.discardCandidateSummary(stem: meeting.stem)
+        candidate = nil
+        candidateStem = nil
     }
 
     @ViewBuilder

@@ -73,8 +73,14 @@ struct AppleIntelligenceSummarizer {
     #endif
 
     /// Read `<stem>.md`, summarize on-device, and write `<stem>.summary.json` plus
-    /// `<stem>.summary.md` in the pipeline's schema.
-    func summarizeFile(transcriptMD: URL, teamContext: String, summaryLanguage: String) async throws {
+    /// `<stem>.summary.md` in the pipeline's schema. `outputSuffix` ("candidate")
+    /// writes a preview sidecar without touching the live summary (TECH-A16).
+    func summarizeFile(
+        transcriptMD: URL,
+        teamContext: String,
+        summaryLanguage: String,
+        outputSuffix: String = ""
+    ) async throws {
         guard let raw = try? String(contentsOf: transcriptMD, encoding: .utf8),
               !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AppleIntelligenceError.emptyTranscript
@@ -82,7 +88,7 @@ struct AppleIntelligenceSummarizer {
         let summary = try await summarize(
             transcript: raw, teamContext: teamContext, summaryLanguage: summaryLanguage
         )
-        try Self.write(summary: summary, transcriptMD: transcriptMD)
+        try Self.write(summary: summary, transcriptMD: transcriptMD, suffix: outputSuffix)
     }
 
     func summarize(transcript: String, teamContext: String, summaryLanguage: String) async throws -> MeetingSummary {
@@ -239,11 +245,13 @@ struct AppleIntelligenceSummarizer {
         return String(chars[b.lo..<b.hi])
     }
 
-    static func write(summary: MeetingSummary, transcriptMD: URL) throws {
+    static func write(summary: MeetingSummary, transcriptMD: URL, suffix: String = "") throws {
         let dir = transcriptMD.deletingLastPathComponent()
         let stem = transcriptMD.deletingPathExtension().lastPathComponent
-        let jsonURL = dir.appendingPathComponent("\(stem).summary.json")
-        let mdURL = dir.appendingPathComponent("\(stem).summary.md")
+        // `suffix` ("candidate") writes a preview sidecar (TECH-A16); empty for the live output.
+        let infix = suffix.isEmpty ? "" : ".\(suffix)"
+        let jsonURL = dir.appendingPathComponent("\(stem).summary\(infix).json")
+        let mdURL = dir.appendingPathComponent("\(stem).summary\(infix).md")
         let data = try JSONSerialization.data(
             withJSONObject: summary.jsonObject(),
             options: [.prettyPrinted, .withoutEscapingSlashes]

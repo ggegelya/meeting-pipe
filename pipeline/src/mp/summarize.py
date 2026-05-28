@@ -166,6 +166,7 @@ def summarize(
     cfg: Config | None = None,
     *,
     client: SummaryClient | None = None,
+    out_suffix: str | None = None,
 ) -> dict[str, Path | str]:
     """Read `<stem>.md` and write `<stem>.summary.json` + `<stem>.summary.md`.
 
@@ -222,8 +223,11 @@ def summarize(
 
     stem = transcript_md.stem
     out_dir = transcript_md.parent
-    json_path = out_dir / f"{stem}.summary.json"
-    md_path = out_dir / f"{stem}.summary.md"
+    # `out_suffix` ("candidate") writes a preview sidecar next to the live one
+    # without overwriting it (TECH-A16); empty for the normal live output.
+    infix = f".{out_suffix}" if out_suffix else ""
+    json_path = out_dir / f"{stem}.summary{infix}.json"
+    md_path = out_dir / f"{stem}.summary{infix}.md"
 
     json_path.write_text(
         summary.model_dump_json(indent=2, exclude_none=False),
@@ -436,15 +440,19 @@ def main(argv: list[str]) -> int:
             cfg.summarization.summary_language,
         ))
         return 0
-    if not argv:
-        print("usage: mp summarize <transcript.md>", file=sys.stderr)
+    # `--candidate` writes a `<stem>.summary.candidate.json/.md` preview without
+    # overwriting the live summary, for the Library's local re-run (TECH-A16).
+    candidate = "--candidate" in argv
+    positional = [a for a in argv if not a.startswith("--")]
+    if not positional:
+        print("usage: mp summarize <transcript.md> [--candidate]", file=sys.stderr)
         return 2
-    md = Path(argv[0]).expanduser().resolve()
+    md = Path(positional[0]).expanduser().resolve()
     if not md.exists():
         print(f"No such file: {md}", file=sys.stderr)
         return 1
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    summarize(md)
+    summarize(md, out_suffix="candidate" if candidate else None)
     return 0
 
 

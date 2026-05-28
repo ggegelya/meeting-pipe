@@ -21,6 +21,10 @@ protocol PipelineDriver: AnyObject {
     func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// Publish a hand-pasted summary (TECH-UX3): runs `mp publish-from-paste <transcript.md>`, which parses the sibling `<stem>.summary.md` the caller wrote and fans out to the sinks.
     func publishFromPaste(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
+    /// Re-run summarize into a `<stem>.summary.candidate.json` preview (TECH-A16), no publish. Defaulted no-op.
+    func summarizePreview(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
+    /// Apple Intelligence candidate-preview re-run (TECH-A16), no publish. Defaulted no-op.
+    func summarizePreviewViaApple(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
 }
 
 extension PipelineDriver {
@@ -59,6 +63,22 @@ extension PipelineDriver {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "publishFromPaste unsupported by this driver"]
+        )))
+    }
+
+    /// Default no-op stub; `PipelineLauncher` overrides this.
+    func summarizePreview(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "summarizePreview unsupported by this driver"]
+        )))
+    }
+
+    /// Default no-op stub; `PipelineLauncher` overrides this.
+    func summarizePreviewViaApple(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "summarizePreviewViaApple unsupported by this driver"]
         )))
     }
 }
@@ -460,6 +480,38 @@ final class PipelineLauncher: PipelineDriver {
     /// so a 5 min cap covers Notion round-trips with headroom.
     func publishFromPaste(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
         runMP(["publish-from-paste", transcriptMD.path], timeout: 5 * 60, completion: completion)
+    }
+
+    /// Re-run summarize into a `<stem>.summary.candidate.json` preview without
+    /// touching the live summary or any sink (TECH-A16), via the configured
+    /// MLX-local backend (`mp summarize --candidate`).
+    func summarizePreview(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        runMP(["summarize", transcriptMD.path, "--candidate"], timeout: 20 * 60, completion: completion)
+    }
+
+    /// Apple Intelligence re-run into a candidate sidecar (TECH-A16): summarize
+    /// on-device in Swift and write `<stem>.summary.candidate.json`, no publish.
+    func summarizePreviewViaApple(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard AppleIntelligenceSummarizer.isAvailable else {
+            completion(.failure(AppleIntelligenceError.unavailable(
+                AppleIntelligenceSummarizer.availabilityReason ?? "unavailable")))
+            return
+        }
+        let wav = transcriptMD.deletingPathExtension().appendingPathExtension("wav")
+        let (teamContext, summaryLanguage) = Self.appleContext(for: wav)
+        Task {
+            do {
+                try await AppleIntelligenceSummarizer().summarizeFile(
+                    transcriptMD: transcriptMD,
+                    teamContext: teamContext,
+                    summaryLanguage: summaryLanguage,
+                    outputSuffix: "candidate"
+                )
+                completion(.success(()))
+            } catch {
+                completion(.failure(error))
+            }
+        }
     }
 
     /// Apple Intelligence completion (TECH-SUM1-APPLE): summarize the finalized

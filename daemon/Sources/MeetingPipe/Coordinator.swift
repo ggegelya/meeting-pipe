@@ -550,6 +550,9 @@ final class Coordinator: NSObject {
         notifyError: { [weak self] message in self?.notifier.notifyError(message) },
         enqueue: { [weak self] file, mode in
             self?.jobDispatcher.enqueue(file: file, summaryMode: mode)
+        },
+        summarizationBackend: { [weak self] in
+            self?.configStore?.summarizationBackend ?? "anthropic"
         }
     )
 
@@ -599,6 +602,27 @@ final class Coordinator: NSObject {
     /// Cancel the active pipeline subprocess (TECH-UX5), e.g. from a stalled row.
     func cancelActiveJob() {
         jobDispatcher.cancelActive()
+    }
+
+    // MARK: - Local re-run summary preview (TECH-A16)
+
+    /// Configured summarization backend, so the UI can gate the local re-run
+    /// preview to `local` / `apple_intelligence`.
+    var summarizationBackend: String {
+        configStore?.summarizationBackend ?? "anthropic"
+    }
+
+    func previewSummary(stem: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        library.previewSummary(stem: stem, completion: completion)
+    }
+
+    @discardableResult
+    func keepCandidateSummary(stem: String) -> Result<Void, Error> {
+        library.keepCandidate(stem: stem)
+    }
+
+    func discardCandidateSummary(stem: String) {
+        library.discardCandidate(stem: stem)
     }
 
     /// Show the first-run onboarding window unless it has already been completed

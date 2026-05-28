@@ -207,3 +207,36 @@ def test_summarize_does_not_retry_on_bad_request(tmp_path: Path, monkeypatch):
 
     # Single call, no retries.
     assert fake_client.messages.create.call_count == 1
+
+
+class _FixedClient:
+    """Injected summary client that returns a canned summary, no network."""
+
+    def summarize(self, *, system_prompt, transcript, model, max_tokens):
+        return _make_summary()
+
+
+def test_summarize_candidate_suffix_writes_preview_without_touching_live(tmp_path: Path):
+    # TECH-A16: --candidate / out_suffix writes a preview sidecar and leaves the
+    # live summary.json untouched (the local re-run preview path).
+    transcript = tmp_path / "20260428-1200.md"
+    transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+
+    out = summarize(transcript, cfg=Config(), client=_FixedClient(), out_suffix="candidate")
+
+    assert out["json"].name == "20260428-1200.summary.candidate.json"
+    assert out["md"].name == "20260428-1200.summary.candidate.md"
+    assert out["json"].exists() and out["md"].exists()
+    assert not (tmp_path / "20260428-1200.summary.json").exists()
+    parsed = MeetingSummary.model_validate_json(out["json"].read_text(encoding="utf-8"))
+    assert parsed.title == "Phase 6 sync"
+
+
+def test_summarize_default_writes_live_sidecars(tmp_path: Path):
+    transcript = tmp_path / "x.md"
+    transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+
+    out = summarize(transcript, cfg=Config(), client=_FixedClient())
+
+    assert out["json"].name == "x.summary.json"
+    assert out["md"].name == "x.summary.md"

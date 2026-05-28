@@ -328,6 +328,38 @@ Stop and ask: if preloading at launch increases idle RAM by more than 1 GB, gate
 
 Deps: TECH-A14.
 
+**TECH-A16 · Local re-run summary preview + compare (no publish) · M · TECH-A15** [DONE]
+
+> Resolved 2026-05-29: shipped behind the candidate-sidecar model so the live summary and every sink are untouched until Keep. `mp summarize --candidate` (new `out_suffix` on `summarize_file`) writes `<stem>.summary.candidate.json/.md`; `AppleIntelligenceSummarizer.summarizeFile/write` gained an `outputSuffix` for the Swift on-device path. `PipelineLauncher.summarizePreview` (MLX, `mp summarize --candidate`) and `summarizePreviewViaApple` (on-device, no publish) are added to the `PipelineDriver` protocol with default no-ops. `MeetingLibraryService.previewSummary(stem:)` dispatches by an injected configured-backend closure (apple -> Swift, else -> mp summarize), and `keepCandidate` (atomic `replaceItemAt` promote, no publish) / `discardCandidate` manage the candidate; `Coordinator` + `LibraryWindowModel` forward them and expose `canPreviewLocally` (gates to `local` / `apple_intelligence`). `MeetingStore` excludes `.summary.candidate.json` from the transcript-json heuristic so the preview is inert to the scan. `SummaryTab` shows a "Re-run locally (preview)" footer button (local/apple + a summary present), a stacked current-vs-candidate compare reusing `SummaryRenderedView`, and Keep / Discard; navigating away discards the candidate. Keep deliberately does not publish, but since the summary is now newer than the last publish the TECH-UX2 inline Republish surfaces. Tests: 2 Python (`--candidate` writes the preview and leaves the live summary; default writes live), 6 Swift (`MeetingLibraryServiceTests`: local-vs-apple dispatch, missing-transcript guard, keep promote, keep-without-candidate, discard). The on-device re-run quality/latency itself needs live MLX/Apple runs (not headless); the candidate plumbing, dispatch, and keep/discard are covered. Daemon 662 / pipeline 227 green; em-dash guard clean.
+
+Local backends (MLX-Qwen and Apple Intelligence) are free and fully on-device, so re-running summarization to iterate on quality (or after editing team-context / the prompt surfaced in TECH-A15) costs nothing and never leaves the Mac. Today the only re-run path is `Regenerate summary`, which is destructive: it overwrites `<stem>.summary.json` and immediately republishes to Notion. There is no way to re-run, look at the result next to the current one, and decide. Add a non-destructive preview, gated to the `local` / `apple_intelligence` backends (where the iterate loop is free), that never publishes.
+
+Behaviour:
+- A "Re-run locally (preview)" action appears in the Summary tab only when the configured summarization backend is `local` or `apple_intelligence` and a summary already exists.
+- The re-run writes a candidate sidecar `<stem>.summary.candidate.json` (+ `.candidate.md`); the live `<stem>.summary.json` and every sink are untouched.
+- The Summary tab shows the current summary and the candidate side by side (reusing `SummaryRenderedView` + the typed `MeetingSummary`), with Keep and Discard.
+- Keep promotes the candidate to `<stem>.summary.json` (+ `.md`) and deletes the candidate. It does NOT publish; because the summary is now newer than the last publish, the existing TECH-UX2 inline Republish surfaces so the user can choose to push it.
+- Discard deletes the candidate; the live summary is unchanged.
+
+Create / edit:
+- `pipeline/src/mp/summarize.py`: a `--candidate` flag (and an `out_suffix` on `summarize_file`) that writes the `.candidate` sidecars instead of the live ones.
+- `daemon/Sources/MeetingPipe/Summarization/AppleIntelligenceSummarizer.swift`: an output-suffix on the writer so the Apple path can produce a candidate (it already returns a `MeetingSummary`).
+- `daemon/Sources/MeetingPipe/PipelineLauncher.swift`: `summarizePreview` (MLX, `mp summarize --candidate`) and `summarizePreviewViaApple`.
+- `daemon/Sources/MeetingPipe/Library/MeetingLibraryService.swift`: `previewSummary(stem:)` (dispatch by injected backend), `keepCandidate(stem:)`, `discardCandidate(stem:)`.
+- `daemon/Sources/MeetingPipe/Coordinator.swift` + `LibraryWindow.swift`: forwarders and the configured-backend accessor for gating.
+- `daemon/Sources/MeetingPipe/MeetingStore.swift`: exclude `.summary.candidate.json` from the transcript-json heuristic.
+- `daemon/Sources/MeetingPipe/MeetingDetailView.swift`: the re-run button + compare + Keep/Discard.
+
+Acceptance:
+- With a local/apple backend, re-running produces a candidate and a side-by-side compare without writing `summary.json` or contacting any sink.
+- Keep replaces the live summary and leaves publishing to the user; Discard restores nothing because the live summary was never touched.
+- The action is hidden for the `anthropic` / `auto` backends.
+- A regulated-mode meeting never publishes from this path.
+
+Stop and ask: if the candidate sidecar would be mistaken for the meeting's transcript JSON or flip the row status, surface it before shipping (it must be inert to the scan except as a transient preview).
+
+Deps: TECH-A15 (backend/model surfacing), TECH-A11 (typed summary model), TECH-UX2 (inline Republish after Keep).
+
 ---
 
 ## Group DIAR · Diarization quality
