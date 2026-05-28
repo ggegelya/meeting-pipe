@@ -268,4 +268,67 @@ final class LifecycleAdapterTests: XCTestCase {
             .map(\.state)
         XCTAssertEqual(titleStates, [.live, .ended])
     }
+
+    func test_browser_adapter_meeting_pwa_reads_live_from_identity_without_hyphen_title() throws {
+        // Solo "New Meeting" via the Google Meet PWA: the window title is
+        // still "Google Meet" (no hyphenated code), so the title matchers
+        // reject it. The adapter must read .live from the PWA identity so
+        // the prompt fires, and must NOT emit a premature .ended from the
+        // bootstrap title (which would close the meeting the instant it
+        // opened).
+        let shareable = ShareableContentSignal(
+            probe: {
+                [ShareableContentSignal.ShareableWindowSummary(
+                    bundleIdentifier: self.meetPWAContext.bundleID,
+                    title: "Google Meet"
+                )]
+            },
+            scheduler: { _, _ in {} }
+        )
+        let adapter = BrowserMeetingLifecycleAdapter(
+            shareableContent: shareable,
+            workspace: WorkspaceSignal(probe: { _ in nil }),
+            windowTitle: WindowTitleSignal(axBus: AXObserverBus(), probe: { _ in "Google Meet" }),
+            titleMatchers: BrowserMeetingLifecycleAdapter.defaultTitleMatchers,
+            eventLog: NoopEventLog()
+        )
+        var events: [PrimarySignalEvent] = []
+        try adapter.start(
+            context: meetPWAContext,
+            handle: LifecycleAdapterHandle(meetingWindow: AXUIElementCreateSystemWide())
+        ) { events.append($0) }
+        defer { adapter.stop() }
+
+        XCTAssertEqual(events.first { $0.kind == .browserTabTitle }?.state, .live)
+        XCTAssertFalse(events.contains { $0.kind == .windowTitleLeftPattern && $0.state == .ended })
+    }
+
+    func test_browser_adapter_regular_browser_does_not_read_live_from_identity() throws {
+        // The identity shortcut is scoped to PWAs. A plain browser with a
+        // non-meeting tab title must not read as live, or every open
+        // browser would raise the prompt.
+        let shareable = ShareableContentSignal(
+            probe: {
+                [ShareableContentSignal.ShareableWindowSummary(
+                    bundleIdentifier: self.chromeContext.bundleID,
+                    title: "Inbox - Gmail"
+                )]
+            },
+            scheduler: { _, _ in {} }
+        )
+        let adapter = BrowserMeetingLifecycleAdapter(
+            shareableContent: shareable,
+            workspace: WorkspaceSignal(probe: { _ in nil }),
+            windowTitle: WindowTitleSignal(axBus: AXObserverBus(), probe: { _ in nil }),
+            titleMatchers: BrowserMeetingLifecycleAdapter.defaultTitleMatchers,
+            eventLog: NoopEventLog()
+        )
+        var events: [PrimarySignalEvent] = []
+        try adapter.start(context: chromeContext, handle: LifecycleAdapterHandle()) {
+            events.append($0)
+        }
+        defer { adapter.stop() }
+
+        XCTAssertFalse(events.contains { $0.kind == .browserTabTitle && $0.state == .live })
+    }
 }

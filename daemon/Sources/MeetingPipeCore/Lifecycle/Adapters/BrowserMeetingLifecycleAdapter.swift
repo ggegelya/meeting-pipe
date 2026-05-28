@@ -140,6 +140,19 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
     ) throws {
         let matchers = titleMatchers
 
+        // A Chromium meeting PWA (Google Meet / Teams / etc. installed as
+        // a standalone app) that the discovery scanner admitted on its
+        // localised name rather than a title match: its window title sits
+        // on a non-hyphenated string ("Meet", "Google Meet", "Meeting
+        // details") for the first seconds of a solo "New Meeting" before
+        // the in-call code appears, so the title matchers reject it. For
+        // such a context the PWA simply owning an on-screen window is the
+        // live signal; the scanner already vetted it as a meeting source
+        // and only ever engages PWA bundles through that gate. Regular
+        // tabbed browsers keep the strict title gate so a non-meeting tab
+        // never reads as live.
+        let isMeetingPWA = BrowserMeetingLifecycleAdapter.isPWABundleID(context.bundleID)
+
         // PRIMARY: a window owned by this bundle still matches a
         // meeting-title pattern in the shareable-content snapshot.
         shareableContent.onChange = { present in
@@ -151,7 +164,7 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
             ))
         }
         shareableContent.start(context: context) { title in
-            matchers.contains { $0(title) }
+            isMeetingPWA || matchers.contains { $0(title) }
         }
 
         // PRIMARY: meeting-app process termination. For a PWA, closing
@@ -175,8 +188,18 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
         // WindowTitleSignal failure degrades to the two signals above
         // rather than failing the engage.
         if let window = handle.meetingWindow {
+            // Suppress an "ended" before the in-call title has ever
+            // matched. During a PWA's solo bootstrap the title sits on a
+            // non-meeting string ("Google Meet") before the hyphenated
+            // code appears; emitting "ended" then would close the meeting
+            // the instant shareable-content opened it. Once the in-call
+            // pattern has been seen, a transition off it still ends the
+            // recording promptly (the user left but kept the window open).
+            var hasMatchedMeetingTitle = false
             windowTitle.onChange = { title in
                 let live = matchers.contains { $0(title) }
+                if live { hasMatchedMeetingTitle = true }
+                guard live || hasMatchedMeetingTitle else { return }
                 sink(PrimarySignalEvent(
                     kind: .windowTitleLeftPattern,
                     state: live ? .live : .ended,
