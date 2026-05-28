@@ -14,6 +14,8 @@ usage: mp <subcommand> [args...]
 
 Subcommands:
   summarize <transcript.md>   Anthropic summarization -> <stem>.summary.json/.md
+  publish <summary.json>      Fan an existing summary out to all configured
+                              sinks (used by the Apple Intelligence backend)
   publish-notion <summary.json>
                               Publish summary to Notion (idempotent)
   publish-from-paste <transcript.md>
@@ -22,6 +24,10 @@ Subcommands:
   run-all <wav>               Run summarize + publish on the daemon-produced
                               `<stem>.json`. ASR + diarization live in Swift
                               (FluidAudio) and are NOT invoked here.
+  cleanup-diarization <transcript.json>
+                              LLM pass that merges same-speaker labels and
+                              reattributes obvious mistakes, then rewrites
+                              `<stem>.json`/.md (TECH-DIAR1)
   doctor                      Preflight check (secrets, config, live API access)
   logs [--since 1h] [--category C] [--action A] [--json]
                               Filter and pretty-print JSONL event streams
@@ -64,6 +70,9 @@ def main() -> int:
     if cmd in {"serve-local", "serve_local"}:
         from .summarize_local import main as run
         return run(rest)
+    if cmd == "publish":
+        from .publish_cmd import main as run
+        return run(rest)
     if cmd in {"publish-notion", "publish_notion"}:
         from .publish_notion import main as run
         return run(rest)
@@ -72,6 +81,9 @@ def main() -> int:
         return run(rest)
     if cmd in {"run-all", "run_all"}:
         from .orchestrate import main as run
+        return run(rest)
+    if cmd in {"cleanup-diarization", "cleanup_diarization"}:
+        from .diarize_cleanup import main as run
         return run(rest)
     if cmd == "doctor":
         from .doctor import main as run

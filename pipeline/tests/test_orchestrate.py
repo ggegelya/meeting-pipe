@@ -225,3 +225,94 @@ def test_no_speech_short_circuits_before_byo(tmp_path: Path, monkeypatch):
     p.assert_not_called()
     assert result["skipped"] == "no_speech"
     assert "manual_bundle" not in result
+
+
+def test_diarize_cleanup_runs_when_enabled(tmp_path: Path, monkeypatch):
+    """When summarization.diarize_cleanup is on and the transcript has
+    multiple speakers, run-all runs the cleanup pass before summarize."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    stem = "20260516-0900"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)  # two speakers
+    cfg = Config()
+    cfg.summarization.diarize_cleanup = True
+    summary_json = tmp_path / f"{stem}.summary.json"
+    summary_json.write_text("{}", encoding="utf-8")
+
+    cleanup_calls = []
+
+    def fake_cleanup(path, cfg=None, **kwargs):
+        cleanup_calls.append(path)
+        return {"json": path, "md": tmp_path / f"{stem}.md",
+                "merges_count": 1, "reattributions_count": 0, "latency_ms": 3}
+
+    with patch("mp.diarize_cleanup.cleanup_transcript", side_effect=fake_cleanup), \
+         patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
+         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+        run_all(wav, cfg=cfg)
+
+    assert len(cleanup_calls) == 1
+
+
+def test_diarize_cleanup_skipped_when_disabled(tmp_path: Path, monkeypatch):
+    """Default config leaves cleanup off; run-all must not invoke it."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    stem = "20260516-0900"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)
+    summary_json = tmp_path / f"{stem}.summary.json"
+    summary_json.write_text("{}", encoding="utf-8")
+
+    cleanup_calls = []
+
+    with patch("mp.diarize_cleanup.cleanup_transcript",
+               side_effect=lambda *a, **k: cleanup_calls.append(1) or {}), \
+         patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
+         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+        run_all(wav, cfg=Config())
+
+    assert cleanup_calls == []
+
+
+def test_apple_intelligence_hands_off_and_writes_sentinel(tmp_path: Path, monkeypatch):
+    """apple_intelligence finalizes, writes the sentinel, and stops before
+    Python summarize/publish so the daemon can summarize on-device."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    stem = "20260516-0900"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)
+    cfg = Config()
+    cfg.summarization.backend = "apple_intelligence"
+
+    with patch("mp.orchestrate.summarize") as s, \
+         patch("mp.orchestrate.publish_fanout") as p:
+        result = run_all(wav, cfg=cfg)
+
+    s.assert_not_called()
+    p.assert_not_called()
+    assert result["skipped"] == "apple_pending"
+    sentinel = tmp_path / f"{stem}.apple_pending.json"
+    assert sentinel.exists()
+    assert result["apple_pending"] == str(sentinel)
+
+
+def test_apple_intelligence_bypasses_long_meeting_guard(tmp_path: Path, monkeypatch):
+    """The long-meeting paste-bundle guard is for Anthropic cost; Apple is
+    on-device and chunks itself, so it hands off rather than writing a bundle
+    even when the transcript exceeds the threshold."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    stem = "20260516-0900"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)
+    cfg = Config()
+    cfg.summarization.backend = "apple_intelligence"
+    cfg.summarization.skip_above_chars = 1  # any non-empty transcript exceeds this
+
+    result = run_all(wav, cfg=cfg)
+
+    assert result["skipped"] == "apple_pending"
+    assert "manual_bundle" not in result

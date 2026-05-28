@@ -332,7 +332,9 @@ Deps: TECH-A14.
 
 ## Group DIAR · Diarization quality
 
-**TECH-DIAR1 · LLM-based diarization cleanup pass · M · TECH-SUM1-PRIMITIVE** [NEW]
+**TECH-DIAR1 · LLM-based diarization cleanup pass · M · TECH-SUM1-PRIMITIVE** [DONE]
+
+> Resolved 2026-05-28: added `pipeline/src/mp/diarize_cleanup.py` consuming the chunking primitive. It renders numbered speaker lines, windows them, asks the LLM for per-segment merge / reattribution edits, and applies only edits whose target label already exists in the transcript (the model can never invent a speaker; out-of-range and no-op edits are dropped). Backend mirrors `summarize._select_backend` (regulated_mode and the apple_intelligence backend both pin cleanup to the on-device MLX path); cleanup-specific Anthropic (tool-use) and local clients, the latter reusing a new additive `LocalSummaryClient.complete` so the warm mlx server is shared rather than re-spawned. Wired as `mp cleanup-diarization <stem>.json` and as a run-all post-step placed after every cost short-circuit and before summarize, gated by a new `summarization.diarize_cleanup` flag (default OFF, config-file only, no Preferences toggle, keeping to the task's Python-only edit list) plus a 2-or-more-distinct-speaker guard (single-speaker is a no-op with no LLM call). The requested `diarize.cleanup` event is emitted as `pipeline` / `diarize_cleanup` (snake_case per CONVENTIONS) with `merges_count`, `reattributions_count`, `latency_ms`. New `test_diarize_cleanup.py` (13 cases) plus 2 run-all wiring tests. Owed to on-device dogfood (no hand-labels or live LLM headless): the measurable-DER-improvement and under-10s-per-30-min acceptance bars.
 
 Next.md idea 5, graded 9/10 (highest leverage on the page). After the FluidAudio + pyannote diarization assigns speaker labels, an LLM post-pass merges clearly-same-speaker chunks and reattributes obvious mistakes (e.g. when one speaker says "thanks Tom", the next utterance is probably from Tom).
 
@@ -356,7 +358,9 @@ Deps: TECH-SUM1-PRIMITIVE (the chunking primitive).
 
 ## Group SUM · Summarization
 
-**TECH-SUM1-PRIMITIVE · Transcript chunking primitive · S · none** [NEW]
+**TECH-SUM1-PRIMITIVE · Transcript chunking primitive · S · none** [DONE]
+
+> Resolved 2026-05-28: added `pipeline/src/mp/chunking.py` with `chunked_windows(...) -> Iterator[ChunkedWindow]`. Word-boundary packing so a word is never split at a window end, step = `max_chars - overlap_chars`, overlap clamped below `max_chars` so the window always advances. `carry_summary` is exposed only on `ChunkedWindow.prompt`; it never mutates `.text`. A ~30k-char transcript at `max_chars=8000` yields 4 windows. New `test_chunking.py` (9 cases) pins the window-count bar, the every-word coverage property (asserted as a subset, since overlap regions can legitimately begin mid-word and contribute leading fragments), and the carry presence/absence. Mirrored in Swift as `TranscriptChunker` for TECH-SUM1-APPLE, with `TranscriptChunkerTests` pinning parity.
 
 A single Python primitive that splits a long transcript into LLM-context-fitting windows with configurable overlap and a configurable "previous-summary as next-window-prefix" injection. Consumed by both TECH-DIAR1 (diarization cleanup) and TECH-SUM1-APPLE (Apple Intelligence backend).
 
@@ -369,7 +373,19 @@ Acceptance:
 
 Deps: none.
 
-**TECH-SUM1-APPLE · Apple Intelligence backend for summarization · L · TECH-SUM1-PRIMITIVE** [NEW]
+**TECH-SUM1-APPLE · Apple Intelligence backend for summarization · L · TECH-SUM1-PRIMITIVE** [DONE]
+
+> Resolved 2026-05-28: full build. `daemon/Sources/MeetingPipe/Summarization/AppleIntelligenceSummarizer.swift` (gated behind `#if canImport(FoundationModels)` + `@available(macOS 26.0, *)`, so no Package.swift platform bump off the macOS 14 floor) chunks via the Swift `TranscriptChunker` mirror, calls the macOS 26 Foundation Model per window with a map-then-reduce reduction, parses tolerantly (whole-reply then largest-balanced-object), and writes `<stem>.summary.json` / `.summary.md` byte-compatible with the Python writer by reusing `MeetingSummary.jsonObject()` (TECH-A11).
+>
+> Chunking stop-and-ask: resolved to a small Swift mirror rather than a subprocess into the Python primitive. The Apple path runs in-process on-device by design; shelling out just to window a string re-adds the dependency the path exists to avoid. The mirror is pinned to the Python algorithm by `TranscriptChunkerTests`.
+>
+> Availability stop-and-ask: Apple Intelligence is a per-device opt-in. Handled by runtime `SystemLanguageModel.availability` gating, surfaced (not crashed) via `availabilityReason` in the Preferences footer and as an `AppleIntelligenceError.unavailable` through the existing failure path. No entitlement the user does not control.
+>
+> Seam: `apple_intelligence` added to the backend picker (local-model rows now scoped to local / auto), to the Python `Summarization.backend` Literal, and to the `workflow_backend` sidecar enum (CONVENTIONS + workflow.py). `summarize._select_backend` refuses it (daemon-only). `run-all` finalizes (plus optional diarization cleanup), writes a `<stem>.apple_pending.json` sentinel and stops; `PipelineLauncher` detects the sentinel after exit 0, summarizes on-device, and fans out via a new `mp publish <summary.json>` subcommand (so a Swift-produced summary still reaches Notion / Obsidian / filesystem). `regulated_mode` keeps forcing the proven local MLX path (apple is overridden to local) and bypasses the long-meeting paste-bundle guard for apple (it is free and chunks itself).
+>
+> Tests: `TranscriptChunkerTests` + `AppleIntelligenceSummarizerTests` (Swift, 624 total green), plus apple-path tests in `test_summarize_backend.py` / `test_orchestrate.py` and a new `test_publish_cmd.py` (Python, 223 total green).
+>
+> Scope decision (explicitly chosen): v1 instructions are Swift-resident; team_context is injected (from config.toml, overridden by the meta sidecar's `workflow_context_prompt`) and language follows the same auto / ISO-code rule as the Python prompt, but the Python `meeting_summary.md` master prompt with its worked examples is not reused. Owed to on-device dogfood (cannot run headless): the quality-vs-local (5 hand-rated), latency-within-2x, and zero-egress (Little Snitch) acceptance bars.
 
 Next.md idea 2, graded 7/10. macOS 26 ships an on-device Foundation Model; 4K context limit means chunked summarization is mandatory. Add as a coexisting backend (alongside Anthropic and local MLX-Qwen); default to the existing backend until the new one proves out.
 

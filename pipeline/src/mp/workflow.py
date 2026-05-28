@@ -57,7 +57,7 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
     nda_mode = bool(meta.get("workflow_nda_mode"))
 
     backend_raw = meta.get("workflow_backend")
-    if isinstance(backend_raw, str) and backend_raw in {"anthropic", "local", "auto"}:
+    if isinstance(backend_raw, str) and backend_raw in {"anthropic", "local", "auto", "apple_intelligence"}:
         if overlay.summarization.backend != backend_raw:
             overlay.summarization.backend = backend_raw  # type: ignore[assignment]
             changed.append(f"backend={backend_raw}")

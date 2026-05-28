@@ -529,14 +529,15 @@ private struct PipelineSectionView: View {
                     SettingsSegmented(
                         selection: $store.summarizationBackend,
                         options: [
-                            ("anthropic", "Anthropic"),
-                            ("local",     "Local MLX"),
-                            ("auto",      "Auto"),
+                            ("anthropic",          "Anthropic"),
+                            ("local",              "Local MLX"),
+                            ("auto",               "Auto"),
+                            ("apple_intelligence", "Apple"),
                         ]
                     )
                     Spacer(minLength: 0)
                 }
-                if store.summarizationBackend != "anthropic" {
+                if store.summarizationBackend == "local" || store.summarizationBackend == "auto" {
                     SettingsRow("Local model",
                         sublabel: localModelHint) {
                         Picker("", selection: localModelPresetBinding) {
@@ -642,6 +643,12 @@ private struct PipelineSectionView: View {
             Text("Audio, transcript, and summary stay on this Mac. No outbound API calls.")
         case "auto":
             Text("Tries Anthropic first; falls back to local if the API fails or the key is missing.")
+        case "apple_intelligence":
+            if let reason = AppleIntelligenceSummarizer.availabilityReason {
+                Text("On-device Apple Intelligence (macOS 26+). Currently unavailable: \(reason).")
+            } else {
+                Text("On-device Apple Intelligence (macOS 26+). No outbound API calls; the system model produces the summary.")
+            }
         default:
             Text("Calls api.anthropic.com. Requires ANTHROPIC_API_KEY in secrets.env.")
         }

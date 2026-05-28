@@ -1,4 +1,5 @@
 import Foundation
+import TOMLKit
 
 /// Pipeline execution contract. Default implementation is `PipelineLauncher`; tests substitute a fake.
 /// `summaryMode == .byo` skips the Anthropic call and writes a paste bundle; the launcher passes `MP_FORCE_BYO=1` in the subprocess env.
@@ -145,6 +146,18 @@ final class PipelineLauncher: PipelineDriver {
             if proc.terminationStatus != 0 {
                 let tail = String(data: stderrTail, encoding: .utf8) ?? ""
                 completion(.failure(LaunchError.nonZeroExit(proc.terminationStatus, tail)))
+                return
+            }
+
+            // Apple Intelligence backend (TECH-SUM1-APPLE): run-all finalized the
+            // transcript and stopped, leaving a sentinel. Produce the summary
+            // on-device in Swift, then fan out via `mp publish`.
+            let appleDir = wav.deletingLastPathComponent()
+            let appleStem = wav.deletingPathExtension().lastPathComponent
+            let sentinel = appleDir.appendingPathComponent("\(appleStem).apple_pending.json")
+            if FileManager.default.fileExists(atPath: sentinel.path) {
+                try? FileManager.default.removeItem(at: sentinel)
+                self.completeViaAppleIntelligence(wav: wav, completion: completion)
                 return
             }
 
@@ -339,6 +352,165 @@ final class PipelineLauncher: PipelineDriver {
                 return
             }
 
+            if proc.terminationStatus != 0 {
+                let tail = String(data: stderrTail, encoding: .utf8) ?? ""
+                completion(.failure(LaunchError.nonZeroExit(proc.terminationStatus, tail)))
+                return
+            }
+            completion(.success(()))
+        }
+
+        do {
+            try p.run()
+        } catch {
+            watchdog.cancel()
+            completion(.failure(error))
+        }
+    }
+
+    /// Apple Intelligence completion (TECH-SUM1-APPLE): summarize the finalized
+    /// transcript on-device in Swift, then `mp publish` to fan out to all sinks.
+    /// Surfaces unavailability / errors through the same `completion` failure path
+    /// the rest of the launcher uses, so the failure-visibility UI catches them.
+    private func completeViaAppleIntelligence(
+        wav: URL,
+        completion: @escaping (Result<URL?, Error>) -> Void
+    ) {
+        let dir = wav.deletingLastPathComponent()
+        let stem = wav.deletingPathExtension().lastPathComponent
+        let transcriptMD = dir.appendingPathComponent("\(stem).md")
+        let summaryJSON = dir.appendingPathComponent("\(stem).summary.json")
+
+        guard AppleIntelligenceSummarizer.isAvailable else {
+            completion(.failure(AppleIntelligenceError.unavailable(
+                AppleIntelligenceSummarizer.availabilityReason ?? "unavailable")))
+            return
+        }
+        let (teamContext, summaryLanguage) = Self.appleContext(for: wav)
+
+        Task {
+            do {
+                try await AppleIntelligenceSummarizer().summarizeFile(
+                    transcriptMD: transcriptMD,
+                    teamContext: teamContext,
+                    summaryLanguage: summaryLanguage
+                )
+            } catch {
+                completion(.failure(error))
+                return
+            }
+            self.runMP(["publish", summaryJSON.path], timeout: 10 * 60) { result in
+                switch result {
+                case .failure(let error):
+                    completion(.failure(error))
+                case .success:
+                    let sidecar = dir.appendingPathComponent("\(stem).notion.json")
+                    if let data = try? Data(contentsOf: sidecar),
+                       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let urlStr = obj["page_url"] as? String,
+                       let url = URL(string: urlStr) {
+                        completion(.success(url))
+                    } else {
+                        completion(.success(nil))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Resolve (team_context, summary_language) for the Apple Intelligence summary:
+    /// global config.toml, with the per-meeting workflow context prompt
+    /// (`<stem>.meta.json` -> `workflow_context_prompt`) overriding team_context.
+    static func appleContext(for wav: URL) -> (teamContext: String, summaryLanguage: String) {
+        var teamContext = ""
+        var summaryLanguage = "auto"
+        let cfgURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/meeting-pipe/config.toml")
+        if let text = try? String(contentsOf: cfgURL, encoding: .utf8),
+           let doc = try? TOMLTable(string: text) {
+            let summ = doc["summarization"]?.table
+            if let s = summ?["team_context"]?.string { teamContext = s }
+            if let s = summ?["summary_language"]?.string { summaryLanguage = s }
+        }
+        let dir = wav.deletingLastPathComponent()
+        let stem = wav.deletingPathExtension().lastPathComponent
+        let meta = dir.appendingPathComponent("\(stem).meta.json")
+        if let data = try? Data(contentsOf: meta),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let ctx = obj["workflow_context_prompt"] as? String, !ctx.isEmpty {
+            teamContext = ctx
+        }
+        return (teamContext, summaryLanguage)
+    }
+
+    /// Spawn `mp <args>` with the standard watchdog + log scaffolding, reporting
+    /// only success / failure (no sidecar parsing). Used by the Apple Intelligence
+    /// publish hand-off; the older per-stage methods predate it and keep their own
+    /// inline copies.
+    private func runMP(
+        _ args: [String],
+        timeout: TimeInterval,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        guard let mpPath = Self.findMP() else {
+            completion(.failure(LaunchError.mpNotFound))
+            return
+        }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: mpPath.shell)
+        p.arguments = mpPath.args + args
+        p.environment = Self.freshEnvironment()
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        p.standardOutput = outPipe
+        p.standardError = errPipe
+
+        let logURL = Log.logsDir.appendingPathComponent("pipeline.log")
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
+        let logHandle = (try? FileHandle(forWritingTo: logURL))
+        _ = try? logHandle?.seekToEnd()
+
+        var stderrTail = Data()
+        let stderrLimit = 4096
+        outPipe.fileHandleForReading.readabilityHandler = { h in
+            let d = h.availableData; if d.isEmpty { return }
+            try? logHandle?.write(contentsOf: d)
+        }
+        errPipe.fileHandleForReading.readabilityHandler = { h in
+            let d = h.availableData; if d.isEmpty { return }
+            try? logHandle?.write(contentsOf: d)
+            stderrTail.append(d)
+            if stderrTail.count > stderrLimit {
+                stderrTail.removeFirst(stderrTail.count - stderrLimit)
+            }
+        }
+
+        let timedOut = TimeoutFlag()
+        let watchdog = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        watchdog.schedule(deadline: .now() + timeout)
+        watchdog.setEventHandler {
+            guard p.isRunning else { return }
+            timedOut.set()
+            Log.main.warning("mp \(args.first ?? "") exceeded \(Int(timeout / 60)) min - terminating")
+            p.terminate()
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 15) {
+                if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+            }
+        }
+        watchdog.resume()
+
+        p.terminationHandler = { proc in
+            watchdog.cancel()
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            try? logHandle?.close()
+            if timedOut.isSet {
+                completion(.failure(LaunchError.timeout(timeout)))
+                return
+            }
             if proc.terminationStatus != 0 {
                 let tail = String(data: stderrTail, encoding: .utf8) ?? ""
                 completion(.failure(LaunchError.nonZeroExit(proc.terminationStatus, tail)))

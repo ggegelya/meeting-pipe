@@ -35,6 +35,16 @@ from .workflow import apply_overrides as apply_workflow_overrides
 log = logging.getLogger("mp.run_all")
 
 
+def _effective_backend(cfg: Config) -> str:
+    """The backend after regulated_mode forcing (which pins everything to
+    local). Used to route the Apple Intelligence hand-off and to bypass the
+    long-meeting cost guard (Apple summarizes on-device via chunking)."""
+    backend = cfg.summarization.backend
+    if cfg.modes.regulated_mode and backend != "local":
+        return "local"
+    return backend
+
+
 def _configure_logging() -> None:
     """Mirror logs to stderr (captured by the Swift launcher) and ~/Library/Logs.
 
@@ -223,8 +233,10 @@ def _run_all_inner(wav: Path, cfg: Config, *, force_byo: bool) -> dict:
 
     # Short-circuit #2b: long-meeting guard. Avoid Anthropic costs on a
     # 1+ hour transcript by handing it to the user for manual processing.
+    # Skipped for Apple Intelligence: it is on-device and free, and chunks
+    # long transcripts itself, so the paste-bundle escape hatch does not apply.
     threshold = cfg.summarization.skip_above_chars
-    if threshold and len(md_text) > threshold:
+    if threshold and len(md_text) > threshold and _effective_backend(cfg) != "apple_intelligence":
         bundle = _write_manual_bundle(t["md"], len(md_text), threshold)
         log.warning(
             "Transcript is %d chars (threshold %d) — skipping summarize + publish.",
@@ -243,6 +255,48 @@ def _run_all_inner(wav: Path, cfg: Config, *, force_byo: bool) -> dict:
             "page_url": None,
             "skipped": "too_long",
             "manual_bundle": str(bundle),
+        }
+
+    # Diarization cleanup (TECH-DIAR1): opt-in LLM pass that tidies the
+    # speaker labels before summarizing. Placed after every skip
+    # short-circuit so it runs only when we are actually going to
+    # summarize, and so it inherits the same cost guards. Failure is
+    # non-fatal: a summary on the un-cleaned transcript beats no run.
+    if cfg.summarization.diarize_cleanup:
+        events.emit("pipeline", "stage_started", stage="diarize_cleanup")
+        try:
+            from .diarize_cleanup import cleanup_transcript
+            cr = cleanup_transcript(t["json"], cfg=cfg)
+            events.emit("pipeline", "stage_completed", stage="diarize_cleanup",
+                        merges=cr["merges_count"],
+                        reattributions=cr["reattributions_count"])
+            md_text = t["md"].read_text(encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            log.warning("diarize cleanup failed (non-fatal): %s", e)
+
+    # Short-circuit #2c: Apple Intelligence hand-off. The macOS 26 Foundation
+    # Model is Swift-only, so we finalize (and optionally clean) the transcript
+    # here, then stop and let the daemon produce the summary on-device and run
+    # `mp publish`. The sentinel is the signal the daemon watches for.
+    if _effective_backend(cfg) == "apple_intelligence":
+        sentinel = wav.parent / f"{wav.stem}.apple_pending.json"
+        sentinel.write_text(
+            json.dumps({"transcript_md": str(t["md"]), "transcript_json": str(t["json"])}),
+            encoding="utf-8",
+        )
+        log.info("Apple Intelligence backend: handing summary off to the daemon.")
+        log.info("Apple-pending sentinel written: %s", sentinel)
+        events.emit("pipeline", "run_skipped", wav=str(wav), reason="apple_pending",
+                    transcript_chars=len(md_text), sentinel=str(sentinel))
+        return {
+            "transcript_json": str(t["json"]),
+            "transcript_md": str(t["md"]),
+            "summary_json": None,
+            "summary_md": None,
+            "page_id": None,
+            "page_url": None,
+            "skipped": "apple_pending",
+            "apple_pending": str(sentinel),
         }
 
     log.info("[2/3] summarize")

@@ -83,6 +83,24 @@ def test_regulated_mode_forces_local_over_auto() -> None:
     assert isinstance(client, LocalSummaryClient)
 
 
+def test_select_backend_apple_raises() -> None:
+    # apple_intelligence is a daemon-side (Swift) backend; the Python
+    # summarizer must refuse it loudly rather than silently degrading.
+    cfg = _local_cfg("apple_intelligence")
+    with pytest.raises(ValueError):
+        _select_backend(cfg)
+
+
+def test_regulated_mode_forces_local_over_apple() -> None:
+    # Under regulated_mode the proven on-device MLX path is forced even when
+    # apple_intelligence is configured, so the zero-egress contract holds via
+    # the path test_regulated_local_zero_egress locks in.
+    cfg = _local_cfg(backend="apple_intelligence", regulated=True)
+    client = _select_backend(cfg)
+    from mp.summarize_local import LocalSummaryClient
+    assert isinstance(client, LocalSummaryClient)
+
+
 def test_parse_local_endpoint_variants() -> None:
     assert _parse_local_endpoint("http://127.0.0.1:8765") == ("127.0.0.1", 8765)
     assert _parse_local_endpoint("https://localhost:9000/v1") == ("localhost", 9000)

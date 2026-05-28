@@ -285,6 +285,15 @@ def _select_backend(cfg: Config) -> SummaryClient:
     if cfg.modes.regulated_mode and backend != "local":
         log.info("regulated_mode=true; forcing local backend (was %s)", backend)
         backend = "local"
+    if backend == "apple_intelligence":
+        # The Apple Intelligence summary is produced in the Swift daemon (the
+        # macOS 26 Foundation Model is Swift-only). run-all hands off before
+        # this is reached; a direct `mp summarize` with this backend is a
+        # misconfiguration, so fail loudly rather than silently degrade.
+        raise ValueError(
+            "summarization.backend='apple_intelligence' runs in the daemon (Swift), "
+            "not the Python summarizer. The daemon produces the summary on-device."
+        )
     if backend == "local":
         from .summarize_local import LocalSummaryClient
         host, port = _parse_local_endpoint(cfg.summarization.local_endpoint)

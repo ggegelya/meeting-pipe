@@ -197,6 +197,34 @@ class LocalSummaryClient:
                 )
                 return self._extract_summary(second_text)
 
+    def complete(
+        self,
+        *,
+        system_prompt: str,
+        user_message: str,
+        max_tokens: int,
+        response_format: dict[str, Any] | None,
+    ) -> str:
+        """Generic single-turn completion against the managed server.
+
+        ``summarize()`` uses the schema-forcing path above; the
+        diarization cleanup pass (TECH-DIAR1) reuses this to run its own
+        prompt + schema on the same warm server instead of duplicating
+        the spawn / health / idle lifecycle. Returns the raw assistant
+        message text (the caller does its own JSON extraction).
+        """
+        with self._lock:
+            self._ensure_running()
+            self._reset_idle_timer()
+            return self._chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                max_tokens=max_tokens,
+                response_format=response_format,
+            )
+
     def close(self) -> None:
         """Shut down the server and stop the idle timer. Idempotent."""
         with self._lock:
@@ -364,7 +392,20 @@ class LocalSummaryClient:
         *,
         messages: list[dict[str, str]],
         max_tokens: int,
+        response_format: dict[str, Any] | None = None,
     ) -> str:
+        if response_format is None:
+            # Default to the MeetingSummary schema so the existing
+            # summarize() call site (which passes no response_format) is
+            # unchanged; the cleanup pass passes its own schema.
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "meeting_summary",
+                    "schema": SUMMARY_TOOL["input_schema"],
+                    "strict": True,
+                },
+            }
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
@@ -382,14 +423,7 @@ class LocalSummaryClient:
             # Token-level constraint via in-process outlines requires
             # loading the model in-process (not via HTTP), which is a
             # separate refactor; this hint is the practical bridge.
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "meeting_summary",
-                    "schema": SUMMARY_TOOL["input_schema"],
-                    "strict": True,
-                },
-            },
+            "response_format": response_format,
         }
         try:
             r = self._http.post(f"{self.base_url}/v1/chat/completions", json=payload)
