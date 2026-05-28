@@ -576,7 +576,9 @@ Deps: none.
 
 **TECH-UI-3 · DROPPED.** Already shipped. Verified in `daemon/Sources/MeetingPipe/LibraryChrome.swift` `WorkflowChip`: workflow color drives both text foreground and 0.16-alpha background tint, with `HexColor.parse` and `MPColors.fgMuted` fallback.
 
-**TECH-UI-4 · Detected language in metadata row · S · TECH-A11** [REVISED]
+**TECH-UI-4 · Detected language in metadata row · S · TECH-A11** [DONE]
+
+> Resolved 2026-05-28: `detected_language` is now lifted into `Meeting.detectedLanguage` during the scan (the header only has `Meeting`, not the loaded `MeetingSummary`), mirroring how `summaryTitle` is lifted. `MeetingDetailView.captionRow` renders an uppercase 2-letter monospaced chip between the duration and the source (`14 May 2026 at 10:54 · 0:31 · EN · Microsoft Teams`), with a `.help(...)` tooltip showing the endonym full name (`English`, `Українська`) via `Locale(identifier: code).localizedString(forLanguageCode:)`; the chip is hidden entirely when unknown. The orphaned `Detected language: en` line and its computed accessor were removed from `SummaryRenderedView`. Two `MeetingStoreTests` pin the model lift (present and absent); full suite green.
 
 The `Detected language: en` text currently sits as a standalone line at the bottom of the summary section, visually orphaned. Move it into `daemon/Sources/MeetingPipe/MeetingDetailView.swift` `captionRow` between `duration` and `sourceDisplayName`. Render uppercase, monospaced, secondary label color, tooltip with the full language name.
 

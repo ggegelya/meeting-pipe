@@ -50,6 +50,9 @@ struct Meeting: Identifiable, Hashable {
     /// True when the summary sidecar is newer than the newest publish sidecar (`.notion.json` / `.obsidian.json`), i.e. the meeting was edited or regenerated since it was last published, so the row offers an inline Republish (TECH-UX2). False when never published. Computed during the scan from prefetched file mtimes; defaulted so test constructors need not supply it.
     var needsRepublish: Bool = false
 
+    /// ISO code from `<stem>.summary.json["detected_language"]`, lifted into the row so the detail header can show a language chip (TECH-UI-4). Nil when unknown. Defaulted so test constructors need not supply it.
+    var detectedLanguage: String? = nil
+
     var id: String { stem } // stems are unique per recording (datetime-derived)
 
     /// Best-effort display label: summary title > meeting title > "{source} at HH:mm" > raw stem. Never empty.
@@ -369,7 +372,8 @@ final class MeetingStore: ObservableObject {
             failureReason: failure?.reason,
             failureStage: failure?.stage.rawValue,
             searchableText: searchable,
-            needsRepublish: MeetingStore.needsRepublish(files: files, summaryURL: summaryURL)
+            needsRepublish: MeetingStore.needsRepublish(files: files, summaryURL: summaryURL),
+            detectedLanguage: (summary?.detectedLanguage).flatMap { $0.isEmpty ? nil : $0 }
         )
         return (meeting, cacheable)
     }

@@ -401,6 +401,27 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(store.performScan(directory: dir).first?.needsRepublish, false)
     }
 
+    // MARK: detected language lift (TECH-UI-4)
+
+    func test_detectedLanguage_lifted_from_summary() throws {
+        let dir = try tempDir()
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"),
+                      "{\"title\":\"x\",\"detected_language\":\"uk\"}")
+        let store = MeetingStore(recordingsDir: dir)
+        XCTAssertEqual(store.performScan(directory: dir).first?.detectedLanguage, "uk")
+    }
+
+    func test_detectedLanguage_nil_when_absent() throws {
+        let dir = try tempDir()
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{\"title\":\"x\"}")
+        let store = MeetingStore(recordingsDir: dir)
+        XCTAssertNil(store.performScan(directory: dir).first?.detectedLanguage)
+    }
+
     // MARK: grouping
 
     func test_group_buckets_today_yesterday_and_older() {

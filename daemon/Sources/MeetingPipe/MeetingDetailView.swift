@@ -108,6 +108,14 @@ struct MeetingDetailView: View {
                     .font(.system(size: 11).monospacedDigit())
                     .foregroundStyle(Color(MPColors.fgSubtle))
             }
+            // Detected-language chip (TECH-UI-4): uppercase ISO code between duration and source, full name on hover. Hidden when unknown.
+            if let langCode = languageChipCode {
+                Text("·").font(.system(size: 11)).foregroundStyle(Color(MPColors.fgFaint))
+                Text(langCode)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+                    .help(languageChipTooltip ?? langCode)
+            }
             if let src = meeting.sourceDisplayName, !src.isEmpty {
                 Text("·").font(.system(size: 11)).foregroundStyle(Color(MPColors.fgFaint))
                 Text(src)
@@ -115,6 +123,22 @@ struct MeetingDetailView: View {
                     .foregroundStyle(Color(MPColors.fgSubtle))
             }
         }
+    }
+
+    /// Uppercased 2-letter language code for the caption chip (TECH-UI-4); nil when unknown so the chip is hidden entirely.
+    private var languageChipCode: String? {
+        guard let code = meeting.detectedLanguage, !code.isEmpty else { return nil }
+        return String(code.prefix(2)).uppercased()
+    }
+
+    /// Full language name for the chip tooltip ("English", "Українська"). Uses the language's own locale for the endonym; nil when not resolvable.
+    private var languageChipTooltip: String? {
+        guard let code = meeting.detectedLanguage, !code.isEmpty else { return nil }
+        let base = String(code.prefix(2)).lowercased()
+        guard let name = Locale(identifier: base).localizedString(forLanguageCode: base), !name.isEmpty else {
+            return nil
+        }
+        return name.prefix(1).uppercased() + name.dropFirst()
     }
 
     /// Notion / Obsidian / Reveal-in-Finder ghost icons. Reveal is rightmost since it's the most common action.
@@ -688,11 +712,7 @@ struct SummaryRenderedView: View {
                     AttendeeChips(names: attendees)
                 }
             }
-            if let lang = detectedLanguage, !lang.isEmpty {
-                Text("Detected language: \(lang)")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
+            // TECH-UI-4: the detected-language indicator moved to the detail header caption row.
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -705,9 +725,6 @@ struct SummaryRenderedView: View {
     private var decisions: [String]      { nonEmpty(summary.decisions) }
     private var questions: [String]      { nonEmpty(summary.questions) }
     private var attendees: [String]      { nonEmpty(summary.attendees) }
-    private var detectedLanguage: String? {
-        summary.detectedLanguage.flatMap { $0.isEmpty ? nil : $0 }
-    }
     private var actions: [ActionItemRow.Action] {
         summary.actions.map { a in
             ActionItemRow.Action(
