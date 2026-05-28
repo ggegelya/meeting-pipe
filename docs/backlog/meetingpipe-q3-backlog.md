@@ -676,7 +676,9 @@ Acceptance: per Q2 addendum lines 164-169.
 
 Deps: none.
 
-**TECH-UI-10 · Waveform playback controls regroup · S · none** [REVISED]
+**TECH-UI-10 · Waveform playback controls regroup · S · none** [DONE]
+
+> Resolved 2026-05-28: stop-and-ask resolved with the user. The premise (the `Fit · 1x · 2x · 4x · 8x` control mixes playback speed and zoom) does not hold: in `AudioTab.swift` that segmented `Picker` is purely a waveform-zoom control (`computeWidth` stretches the rendered width; `.fit`/`.x1` are fit-width, `.x2`-`.x8` multiply it) and `AudioPlaybackController` has no playback-rate concept at all. The user chose "tooltips/tidy only, no new speed feature" over adding an AVAudioEngine rate control. So this added a `.help()` to the zoom segmented control clarifying it is waveform zoom and explicitly noting playback speed is unaffected, plus a `.help()` on the play/pause button; no control was split or removed (there was no speed control to separate out), and no audio-rate feature was introduced. Cosmetic SwiftUI, so no headless test; build green and the change is em-dash-free under the new TECH-UI-2 guard.
 
 Separate playback speed (segmented control `1x | 2x | 4x | 8x`) from waveform zoom (icon buttons `Fit to window` and `Zoom horizontal`).
 

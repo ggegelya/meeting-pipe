@@ -79,6 +79,7 @@ struct AudioTab: View {
             }
             .keyboardShortcut(.space, modifiers: [])
             .buttonStyle(.borderless)
+            .help("Play or pause. The Space bar also toggles.")
 
             Text(WaveformTimecode.format(playback.currentTime))
                 .font(.caption.monospacedDigit())
@@ -106,6 +107,9 @@ struct AudioTab: View {
                 + "Stereo plays the original channels. The on-disk WAV is never modified."
             )
 
+            // Waveform zoom only (TECH-UI-10): Fit shows the whole recording,
+            // 1x to 8x expand it horizontally for fine seeking. This control
+            // does not change playback speed.
             Picker("Zoom", selection: $zoom) {
                 ForEach(ZoomLevel.allCases) { z in
                     Text(z.label).tag(z)
@@ -114,6 +118,7 @@ struct AudioTab: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(width: 220)
+            .help("Waveform zoom. Fit shows the whole recording; 1x to 8x expand it horizontally for fine seeking. Playback speed is unaffected.")
         }
     }
 
