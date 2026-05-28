@@ -50,6 +50,10 @@ struct MeetingRow: View, Equatable {
                 } else {
                     if effectiveStatus == .failed {
                         retryButton
+                    } else if effectiveStatus == .manualPasteReady {
+                        regenerateButton
+                    } else if meeting.needsRepublish {
+                        republishButton
                     }
                     trailingPill
                 }
@@ -136,6 +140,18 @@ struct MeetingRow: View, Equatable {
     /// Inline retry button so the owner can act without opening the context menu.
     private var retryButton: some View {
         Button("Retry") { runRetry() }
+            .controlSize(.small)
+    }
+
+    /// Inline Regenerate on paste-ready rows (TECH-UX2); same action as the context menu.
+    private var regenerateButton: some View {
+        Button("Regenerate") { Task { await regenerate() } }
+            .controlSize(.small)
+    }
+
+    /// Inline Republish when the local summary is newer than the last publish (TECH-UX2).
+    private var republishButton: some View {
+        Button("Republish") { Task { await republish() } }
             .controlSize(.small)
     }
 

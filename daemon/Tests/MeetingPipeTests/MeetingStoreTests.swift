@@ -362,6 +362,45 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(rows.first?.summaryTitle, "done now")
     }
 
+    // MARK: republish staleness (TECH-UX2)
+
+    func test_needsRepublish_true_when_summary_newer_than_publish_sidecar() throws {
+        let dir = try tempDir()
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        let summaryURL = dir.appendingPathComponent("\(stem).summary.json")
+        let notionURL = dir.appendingPathComponent("\(stem).notion.json")
+        try writeFile(summaryURL, "{\"title\":\"x\"}")
+        try writeFile(notionURL, "{\"page_url\":\"https://n\"}")
+        try setMtime(notionURL, Date(timeIntervalSince1970: 1_700_000_000))
+        try setMtime(summaryURL, Date(timeIntervalSince1970: 1_700_000_500))
+        let store = MeetingStore(recordingsDir: dir)
+        XCTAssertEqual(store.performScan(directory: dir).first?.needsRepublish, true)
+    }
+
+    func test_needsRepublish_false_when_publish_is_current() throws {
+        let dir = try tempDir()
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        let summaryURL = dir.appendingPathComponent("\(stem).summary.json")
+        let obsidianURL = dir.appendingPathComponent("\(stem).obsidian.json")
+        try writeFile(summaryURL, "{\"title\":\"x\"}")
+        try writeFile(obsidianURL, "{}")
+        try setMtime(summaryURL, Date(timeIntervalSince1970: 1_700_000_000))
+        try setMtime(obsidianURL, Date(timeIntervalSince1970: 1_700_000_500))
+        let store = MeetingStore(recordingsDir: dir)
+        XCTAssertEqual(store.performScan(directory: dir).first?.needsRepublish, false)
+    }
+
+    func test_needsRepublish_false_when_never_published() throws {
+        let dir = try tempDir()
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{\"title\":\"x\"}")
+        let store = MeetingStore(recordingsDir: dir)
+        XCTAssertEqual(store.performScan(directory: dir).first?.needsRepublish, false)
+    }
+
     // MARK: grouping
 
     func test_group_buckets_today_yesterday_and_older() {

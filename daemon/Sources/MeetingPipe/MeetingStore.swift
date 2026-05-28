@@ -47,6 +47,9 @@ struct Meeting: Identifiable, Hashable {
     /// Lowercased search corpus (TECH-A14): title + summary bullets + decisions + action tasks. Built once per scan so the filter loop never re-reads JSON. Transcripts excluded to keep the corpus bounded; full-transcript search is the FTS5 upgrade (TECH-A3).
     let searchableText: String
 
+    /// True when the summary sidecar is newer than the newest publish sidecar (`.notion.json` / `.obsidian.json`), i.e. the meeting was edited or regenerated since it was last published, so the row offers an inline Republish (TECH-UX2). False when never published. Computed during the scan from prefetched file mtimes; defaulted so test constructors need not supply it.
+    var needsRepublish: Bool = false
+
     var id: String { stem } // stems are unique per recording (datetime-derived)
 
     /// Best-effort display label: summary title > meeting title > "{source} at HH:mm" > raw stem. Never empty.
@@ -365,9 +368,32 @@ final class MeetingStore: ObservableObject {
             status: status,
             failureReason: failure?.reason,
             failureStage: failure?.stage.rawValue,
-            searchableText: searchable
+            searchableText: searchable,
+            needsRepublish: MeetingStore.needsRepublish(files: files, summaryURL: summaryURL)
         )
         return (meeting, cacheable)
+    }
+
+    /// Content-modification date for a file, `.distantPast` when unreadable. The
+    /// directory enumeration prefetched `.contentModificationDateKey`, so this
+    /// is cache-cheap.
+    private static func mtime(of url: URL) -> Date {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+    }
+
+    /// True when a publish sidecar exists and the summary is newer than the
+    /// newest of them, i.e. the meeting changed since its last publish
+    /// (TECH-UX2). A never-published meeting returns false: Republish is for
+    /// re-syncing edits, not first publish.
+    private static func needsRepublish(files: [URL], summaryURL: URL?) -> Bool {
+        guard let summaryURL = summaryURL else { return false }
+        let publishURLs = files.filter {
+            let lc = $0.lastPathComponent
+            return lc.hasSuffix(".notion.json") || lc.hasSuffix(".obsidian.json")
+        }
+        guard !publishURLs.isEmpty else { return false }
+        let latestPublish = publishURLs.map { mtime(of: $0) }.max() ?? .distantPast
+        return mtime(of: summaryURL) > latestPublish
     }
 
     /// Build the lowercased filter haystack from user-visible fields (titles, source app, summary bullets, decisions, action tasks). Internal so tests can drive it directly.

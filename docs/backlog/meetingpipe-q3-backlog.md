@@ -439,7 +439,9 @@ Stop and ask: if the permissions framing in the mockup does not match the actual
 
 Deps: none.
 
-**TECH-UX2 · Regenerate / Republish discoverability · S · none** [NEW]
+**TECH-UX2 · Regenerate / Republish discoverability · S · none** [DONE]
+
+> Resolved 2026-05-28: `MeetingRow` now renders an inline Regenerate button on `.manualPasteReady` rows and an inline Republish button on rows where the local summary is newer than the last publish, mirroring the existing inline Retry (failed takes priority in the if/else chain; the context-menu items stay as the power-user shortcut). The "newer than last publish" signal is a new `Meeting.needsRepublish` computed in `MeetingStore.buildMeeting` from prefetched file mtimes (summary `.summary.json` mtime greater than the newest of `.notion.json` / `.obsidian.json`); never-published meetings return false. Dep resolved: no `lastPublishedAt` sidecar field was added (the stop-and-ask's "verify"), the publish-sidecar mtimes already carry the timestamp. The detail pane already surfaces Republish via the Summary tab's "Save & Republish"; Regenerate/Reprocess land in the TECH-UI-5 toolbar menu. Three `MeetingStoreTests` pin needsRepublish (summary-newer true, publish-current false, never-published false) through the real scan path; full suite green.
 
 Step 5 made Retry discoverable (inline button, failed-state detail pane). Regenerate and Republish are still right-click-only. Apply the same treatment: surface them on rows that need them (Regenerate on rows with `manualPasteReady` status; Republish on rows where the local sidecar is newer than the last publish).
 
