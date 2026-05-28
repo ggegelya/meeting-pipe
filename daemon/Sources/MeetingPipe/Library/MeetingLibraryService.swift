@@ -80,6 +80,61 @@ final class MeetingLibraryService {
         }
     }
 
+    /// Publish a hand-pasted summary for a BYO / long-meeting paste-ready row (TECH-UX3). Writes the pasted text to `<stem>.summary.md`, then runs `mp publish-from-paste`, which parses it, writes `<stem>.summary.json`, and fans out to the sinks; the directory watcher then flips the row to `.done`. Errors flow back through `completion` so the detail pane can show them inline (not as a notification).
+    func publishFromPaste(
+        stem: String,
+        summaryText: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        let dir = outputDir()
+        let transcriptURL = dir.appendingPathComponent("\(stem).md")
+        let summaryMdURL = dir.appendingPathComponent("\(stem).summary.md")
+        let trimmed = summaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            completion(.failure(NSError(
+                domain: "MeetingLibraryService", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Paste a summary before saving."]
+            )))
+            return
+        }
+        guard FileManager.default.fileExists(atPath: transcriptURL.path) else {
+            completion(.failure(NSError(
+                domain: "MeetingLibraryService", code: 1,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "No transcript at \(transcriptURL.lastPathComponent) - cannot publish a pasted summary"]
+            )))
+            return
+        }
+        do {
+            try Data(summaryText.utf8).write(to: summaryMdURL, options: .atomic)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+        Log.writeLine("daemon", "publish-from-paste requested → \(stem)")
+        Log.event(category: "coordinator", action: "publish_from_paste_started", attributes: [
+            "stem": stem,
+        ])
+        launcher.publishFromPaste(transcriptMD: transcriptURL) { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success:
+                    PipelineFailureSidecar.clear(stem: stem, in: dir)
+                    Log.event(category: "coordinator", action: "publish_from_paste_done", attributes: [
+                        "stem": stem,
+                    ])
+                    completion(.success(()))
+                case .failure(let err):
+                    Log.event(category: "coordinator", action: "publish_from_paste_failed", attributes: [
+                        "stem": stem,
+                        "error": err.localizedDescription,
+                    ])
+                    completion(.failure(err))
+                }
+            }
+        }
+    }
+
     /// Move all sidecars for a stem (audio, transcript, summary, run, meta, notion, obsidian, READY_FOR_MANUAL) to the Trash. The directory watcher picks up the deletes and refreshes the list.
     func softDeleteMeeting(stem: String) -> Result<Void, Error> {
         let dir = outputDir()

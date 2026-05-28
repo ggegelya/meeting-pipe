@@ -561,6 +561,14 @@ final class Coordinator: NSObject {
         library.republishMeeting(stem: stem, completion: completion)
     }
 
+    func publishFromPaste(
+        stem: String,
+        summaryText: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        library.publishFromPaste(stem: stem, summaryText: summaryText, completion: completion)
+    }
+
     @objc func menuOpenScreenRecordingSettings() {
         SystemAudioCapture.openScreenRecordingSettings()
     }

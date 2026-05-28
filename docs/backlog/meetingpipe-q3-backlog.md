@@ -456,7 +456,9 @@ Acceptance:
 
 Deps: TECH-A11 if the sidecar shape needs a `lastPublishedAt` field that does not exist yet (verify).
 
-**TECH-UX3 · Long-meeting and BYO in-app completion paths · M · none** [NEW]
+**TECH-UX3 · Long-meeting and BYO in-app completion paths · M · none** [DONE]
+
+> Resolved 2026-05-28: paste-ready rows (`.manualPasteReady`, both BYO and long-meeting) now show a "Paste your summary" panel in the Summary tab (`SummaryTab.byoPasteState`: a Markdown `TextEditor` + "Save & publish"), so no terminal command is needed. Save flows daemon -> pipeline: `LibraryWindowModel.publishFromPaste(stem:summaryText:)` -> `Coordinator` -> `MeetingLibraryService.publishFromPaste`, which writes the pasted text to `<stem>.summary.md` (the file `mp publish-from-paste` reads) and runs the new `PipelineDriver.publishFromPaste(transcriptMD:)` (a `runMP(["publish-from-paste", <stem>.md], timeout: 5 min)`). On success the panel reloads the freshly written `<stem>.summary.json` and the directory watcher flips the row to `.done`. Stop-and-ask honoured: schema-mismatch / publish failures surface inline in the panel (orange Label), not as a notification (the service deliberately does not call `notifyError`). Empty-paste and missing-transcript guards fail before any disk write. Three `MeetingLibraryServiceTests` cover the happy path (writes summary.md + invokes the driver), missing transcript, and empty text; full suite green.
 
 Both currently dead-end at a terminal command (`mp publish-from-paste <stem>.md`). First-class entry points deserve first-class completion paths. Add an in-app paste-back surface: the detail pane for a BYO meeting offers "Paste your summary" with a text editor, and the save button runs `mp publish-from-paste` via the subprocess bridge.
 

@@ -12,8 +12,10 @@ final class MeetingLibraryServiceTests: XCTestCase {
     private final class FakeDriver: PipelineDriver {
         private(set) var summarizeInputs: [URL] = []
         private(set) var publishInputs: [URL] = []
+        private(set) var publishFromPasteInputs: [URL] = []
         private var summarizeCompletions: [(Result<Void, Error>) -> Void] = []
         private var publishCompletions: [(Result<URL?, Error>) -> Void] = []
+        private var publishFromPasteCompletions: [(Result<Void, Error>) -> Void] = []
 
         func runAll(wav: URL, summaryMode: SummaryMode, completion: @escaping (Result<URL?, Error>) -> Void) {}
 
@@ -27,6 +29,11 @@ final class MeetingLibraryServiceTests: XCTestCase {
             publishCompletions.append(completion)
         }
 
+        func publishFromPaste(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+            publishFromPasteInputs.append(transcriptMD)
+            publishFromPasteCompletions.append(completion)
+        }
+
         func finishSummarize(_ result: Result<Void, Error>) {
             guard !summarizeCompletions.isEmpty else { return }
             summarizeCompletions.removeFirst()(result)
@@ -35,6 +42,11 @@ final class MeetingLibraryServiceTests: XCTestCase {
         func finishPublish(_ result: Result<URL?, Error>) {
             guard !publishCompletions.isEmpty else { return }
             publishCompletions.removeFirst()(result)
+        }
+
+        func finishPublishFromPaste(_ result: Result<Void, Error>) {
+            guard !publishFromPasteCompletions.isEmpty else { return }
+            publishFromPasteCompletions.removeFirst()(result)
         }
     }
 
@@ -147,6 +159,41 @@ final class MeetingLibraryServiceTests: XCTestCase {
         wait(for: [drained2], timeout: 1.0)
         guard case .success(let url)? = captured else { return XCTFail("expected success") }
         XCTAssertEqual(url?.absoluteString, "https://notion.example/page")
+    }
+
+    // MARK: - publish-from-paste (TECH-UX3)
+
+    func test_publishFromPaste_writes_summary_md_and_invokes_driver() throws {
+        try touch("m.md")
+        var captured: Result<Void, Error>?
+        service.publishFromPaste(stem: "m", summaryText: "# Notes\n- a") { captured = $0 }
+
+        let mdPath = dir.appendingPathComponent("m.summary.md").path
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mdPath))
+        XCTAssertEqual(try String(contentsOfFile: mdPath, encoding: .utf8), "# Notes\n- a")
+        XCTAssertEqual(driver.publishFromPasteInputs.count, 1)
+        XCTAssertEqual(driver.publishFromPasteInputs.first?.lastPathComponent, "m.md")
+
+        driver.finishPublishFromPaste(.success(()))
+        let drained = expectation(description: "drain")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 1.0)
+        guard case .success? = captured else { return XCTFail("expected success") }
+    }
+
+    func test_publishFromPaste_missing_transcript_fails_without_invoking_driver() {
+        var captured: Result<Void, Error>?
+        service.publishFromPaste(stem: "absent", summaryText: "# Notes") { captured = $0 }
+        guard case .failure? = captured else { return XCTFail("expected synchronous failure") }
+        XCTAssertTrue(driver.publishFromPasteInputs.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("absent.summary.md").path))
+    }
+
+    func test_publishFromPaste_empty_text_fails() {
+        var captured: Result<Void, Error>?
+        service.publishFromPaste(stem: "m", summaryText: "   \n ") { captured = $0 }
+        guard case .failure? = captured else { return XCTFail("expected failure for empty paste") }
+        XCTAssertTrue(driver.publishFromPasteInputs.isEmpty)
     }
 
     // MARK: - read-only queries

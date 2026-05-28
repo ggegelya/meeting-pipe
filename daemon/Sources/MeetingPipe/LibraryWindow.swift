@@ -151,6 +151,22 @@ final class LibraryWindowModel: ObservableObject {
         }
     }
 
+    /// Publish a hand-pasted summary (TECH-UX3): writes `<stem>.summary.md` and
+    /// runs `mp publish-from-paste`. Async-wrapped like `republishMeeting`.
+    func publishFromPaste(stem: String, summaryText: String) async -> Result<Void, Error> {
+        guard let coordinator = coordinator else {
+            return .failure(NSError(
+                domain: "LibraryWindowModel", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
+            ))
+        }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
+            coordinator.publishFromPaste(stem: stem, summaryText: summaryText) { result in
+                cont.resume(returning: result)
+            }
+        }
+    }
+
     /// Re-enqueue the full `mp run-all` pipeline for a stalled/failed meeting.
     @discardableResult
     func retryMeeting(stem: String) -> Result<Void, Error> {

@@ -500,6 +500,11 @@ struct SummaryTab: View {
     @State private var republishing = false
     @State private var lastRepublishResult: RepublishResult? = nil
 
+    /// BYO / long-meeting paste-back (TECH-UX3).
+    @State private var pasteText = ""
+    @State private var pasteSaving = false
+    @State private var pasteError: String? = nil
+
     enum RepublishResult: Equatable {
         case success(URL?)
         case failure(String)
@@ -568,12 +573,69 @@ struct SummaryTab: View {
                 .padding(40)
         } else if meeting.status == .failed {
             failedState
+        } else if meeting.status == .manualPasteReady {
+            byoPasteState
         } else {
             Text("No summary yet.\nIt appears here once the pipeline finishes.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(40)
+        }
+    }
+
+    /// In-app paste-back for BYO / long-meeting rows (TECH-UX3): no terminal
+    /// command. Saving writes `<stem>.summary.md` and runs publish-from-paste;
+    /// failures surface inline (not as a notification).
+    private var byoPasteState: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Paste your summary")
+                    .font(.headline)
+                Text("This meeting was transcribed but left for you to summarize. Paste a Markdown summary below, then Save to parse and publish it through your sinks.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            TextEditor(text: $pasteText)
+                .font(.system(size: 13, design: .monospaced))
+                .frame(minHeight: 180)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6).stroke(Color(MPColors.border))
+                )
+                .disabled(pasteSaving)
+            if let err = pasteError {
+                Label(err, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                if pasteSaving {
+                    ProgressView().controlSize(.small)
+                    Text("Publishing…").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Save & publish") {
+                    Task { await savePaste() }
+                }
+                .disabled(pasteSaving || pasteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func savePaste() async {
+        pasteError = nil
+        pasteSaving = true
+        let result = await libraryModel.publishFromPaste(stem: meeting.stem, summaryText: pasteText)
+        pasteSaving = false
+        switch result {
+        case .success:
+            await reloadSummary()   // pick up the freshly written summary.json
+        case .failure(let err):
+            pasteError = err.localizedDescription
         }
     }
 

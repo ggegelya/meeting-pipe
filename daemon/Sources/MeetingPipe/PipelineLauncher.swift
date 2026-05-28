@@ -9,6 +9,8 @@ protocol PipelineDriver: AnyObject {
     func publish(summaryJSON: URL, completion: @escaping (Result<URL?, Error>) -> Void)
     /// Re-run only the summarize step against an existing transcript (Library "Regenerate summary" action).
     func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
+    /// Publish a hand-pasted summary (TECH-UX3): runs `mp publish-from-paste <transcript.md>`, which parses the sibling `<stem>.summary.md` the caller wrote and fans out to the sinks.
+    func publishFromPaste(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
 }
 
 extension PipelineDriver {
@@ -30,6 +32,14 @@ extension PipelineDriver {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "summarize unsupported by this driver"]
+        )))
+    }
+
+    /// Default no-op stub; `PipelineLauncher` overrides this.
+    func publishFromPaste(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "publishFromPaste unsupported by this driver"]
         )))
     }
 }
@@ -366,6 +376,14 @@ final class PipelineLauncher: PipelineDriver {
             watchdog.cancel()
             completion(.failure(error))
         }
+    }
+
+    /// Publish a hand-pasted summary (TECH-UX3). The caller has already written
+    /// `<stem>.summary.md`; this runs `mp publish-from-paste <transcript.md>`,
+    /// which parses that sibling file and fans out to the sinks. Network-bound,
+    /// so a 5 min cap covers Notion round-trips with headroom.
+    func publishFromPaste(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        runMP(["publish-from-paste", transcriptMD.path], timeout: 5 * 60, completion: completion)
     }
 
     /// Apple Intelligence completion (TECH-SUM1-APPLE): summarize the finalized
