@@ -10,15 +10,14 @@ final class MeetingFilterTests: XCTestCase {
     // MARK: searchableText extraction
 
     func test_searchableText_includes_title_and_bullets() {
-        let summary: [String: Any] = [
-            "title": "Sprint planning",
-            "summary": ["Aligned Q3", "Punted spike"],
-            "decisions": ["Cut auth from this sprint"],
-            "actions": [["task": "Email Lily", "owner": "Heorhii"]],
-            "questions": ["What about NDA mode?"],
-        ]
+        let summary = MeetingSummary(
+            title: "Sprint planning",
+            summary: ["Aligned Q3", "Punted spike"],
+            decisions: ["Cut auth from this sprint"],
+            actions: [MeetingSummary.ActionItem(task: "Email Lily", owner: "Heorhii")],
+            questions: ["What about NDA mode?"]
+        )
         let text = MeetingStore.buildSearchableText(
-            summaryTitle: "Sprint planning",
             meetingTitle: "Sprint planning",
             sourceDisplayName: "Zoom",
             summary: summary
@@ -33,7 +32,6 @@ final class MeetingFilterTests: XCTestCase {
 
     func test_searchableText_tolerates_missing_summary() {
         let text = MeetingStore.buildSearchableText(
-            summaryTitle: nil,
             meetingTitle: "Quick chat",
             sourceDisplayName: nil,
             summary: nil

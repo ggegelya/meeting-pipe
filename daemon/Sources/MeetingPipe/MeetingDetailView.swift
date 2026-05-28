@@ -336,7 +336,7 @@ struct SummaryTab: View {
     let meeting: Meeting
 
     /// Loaded off-main on stem change. Caching avoids disk IO on the main thread, which pinned it during recording.
-    @State private var loadedSummary: [String: Any]? = nil
+    @State private var loadedSummary: MeetingSummary? = nil
     @State private var loadedForStem: String? = nil
 
     @State private var isEditing = false
@@ -518,12 +518,8 @@ struct SummaryTab: View {
     private func reloadSummary() async {
         let stem = meeting.stem
         let url = summaryJsonURL
-        let parsed: [String: Any]? = await Task.detached(priority: .userInitiated) {
-            guard let data = try? Data(contentsOf: url),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return nil
-            }
-            return obj
+        let parsed: MeetingSummary? = await Task.detached(priority: .userInitiated) {
+            MeetingSummary.load(from: url)
         }.value
         if meeting.stem == stem {
             loadedSummary = parsed
@@ -534,7 +530,7 @@ struct SummaryTab: View {
     // MARK: Editor flow
 
     private func beginEditing() {
-        guard let summary = loadSummaryJSON() else {
+        guard let summary = MeetingSummary.load(from: summaryJsonURL) else {
             return
         }
         let model = CorrectionViewModel(
@@ -597,6 +593,7 @@ struct SummaryTab: View {
     /// Writes a correction record (verdict=edited) and overwrites `<stem>.summary.json`. Returns false on disk-write failure.
     private func persistEdit(model: CorrectionViewModel) -> Bool {
         let corrected = model.makeCorrectedSummary()
+        let correctedDict = corrected.jsonObject()
 
         // 1. Correction record (same path as the standalone window so the LoRA training set sees both surfaces identically).
         do {
@@ -607,8 +604,8 @@ struct SummaryTab: View {
                 modelId: model.modelId,
                 backend: model.backend,
                 verdict: .edited,
-                originalSummary: model.originalSummary,
-                correctedSummary: corrected,
+                originalSummary: model.originalSummary.jsonObject(),
+                correctedSummary: correctedDict,
                 notes: model.notes.isEmpty ? nil : model.notes
             )
             Log.event(category: "library", action: "summary_edited", attributes: [
@@ -620,9 +617,9 @@ struct SummaryTab: View {
         }
 
         // 2. Overwrite the live summary so the row, Markdown render, and any future republish see the corrected version (record preserves the original).
-        if JSONSerialization.isValidJSONObject(corrected),
+        if JSONSerialization.isValidJSONObject(correctedDict),
            let data = try? JSONSerialization.data(
-               withJSONObject: corrected,
+               withJSONObject: correctedDict,
                options: [.prettyPrinted, .sortedKeys]
            ) {
             try? data.write(to: summaryJsonURL, options: .atomic)
@@ -644,14 +641,6 @@ struct SummaryTab: View {
 
     // MARK: Disk helpers
 
-    private func loadSummaryJSON() -> [String: Any]? {
-        guard let data = try? Data(contentsOf: summaryJsonURL),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-        return obj
-    }
-
     private func loadRunSidecar() -> [String: Any]? {
         let url = meeting.recordingsDir.appendingPathComponent("\(meeting.stem).run.json")
         guard let data = try? Data(contentsOf: url),
@@ -664,9 +653,9 @@ struct SummaryTab: View {
 
 // MARK: - Structured renderer
 
-/// Renders `<stem>.summary.json` as SwiftUI sections. Inline emphasis/code/links inside bullets use per-bullet `AttributedString` parsing.
+/// Renders a typed `MeetingSummary` as SwiftUI sections. Inline emphasis/code/links inside bullets use per-bullet `AttributedString` parsing.
 struct SummaryRenderedView: View {
-    let summary: [String: Any]
+    let summary: MeetingSummary
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -712,28 +701,26 @@ struct SummaryRenderedView: View {
 
     // MARK: Field accessors
 
-    private var summaryBullets: [String] { stringList(summary["summary"]) }
-    private var decisions: [String]      { stringList(summary["decisions"]) }
-    private var questions: [String]      { stringList(summary["questions"]) }
-    private var attendees: [String]      { stringList(summary["attendees"]) }
+    private var summaryBullets: [String] { nonEmpty(summary.summary) }
+    private var decisions: [String]      { nonEmpty(summary.decisions) }
+    private var questions: [String]      { nonEmpty(summary.questions) }
+    private var attendees: [String]      { nonEmpty(summary.attendees) }
     private var detectedLanguage: String? {
-        (summary["detected_language"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        summary.detectedLanguage.flatMap { $0.isEmpty ? nil : $0 }
     }
     private var actions: [ActionItemRow.Action] {
-        guard let arr = summary["actions"] as? [[String: Any]] else { return [] }
-        return arr.map { dict in
+        summary.actions.map { a in
             ActionItemRow.Action(
-                task: (dict["task"] as? String) ?? "",
-                owner: (dict["owner"] as? String) ?? "",
-                due: (dict["due"] as? String) ?? "",
-                confidence: (dict["confidence"] as? String) ?? "medium"
+                task: a.task,
+                owner: a.owner ?? "",
+                due: a.due ?? "",
+                confidence: a.confidence
             )
         }.filter { !$0.task.isEmpty }
     }
 
-    private func stringList(_ raw: Any?) -> [String] {
-        guard let arr = raw as? [Any] else { return [] }
-        return arr.compactMap { ($0 as? String) }.filter { !$0.isEmpty }
+    private func nonEmpty(_ items: [String]) -> [String] {
+        items.filter { !$0.isEmpty }
     }
 
     // MARK: Section + bullet helpers

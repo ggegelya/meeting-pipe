@@ -220,7 +220,9 @@ Deps: none. (Previously gated on TECH-CAP1; that is now P3/monitor as of 2026-05
 
 ## Group A · Library, store, summary
 
-**TECH-A11 · Typed summary model · M · none** [NEW]
+**TECH-A11 · Typed summary model · M · none** [DONE]
+
+> Resolved 2026-05-28: added `daemon/Sources/MeetingPipe/Library/MeetingSummary.swift` (tolerant `Decodable` mirror of the pipeline schema + `load(from:)` / `init?(jsonObject:)` / `jsonObject()` write bridge). `SummaryRenderedView`, `CorrectionSummaryPreview`, `CorrectionViewModel`, and `MeetingStore.buildSearchableText` now consume the typed model; no summary-field subscript reads remain in the view files (the leftover `[String: Any]` are the correction-record envelope, the run/notion/obsidian sidecars, and the byte-preserving title merge-write / revert paths). The one schema divergence (`detected_language` optional in Swift vs required-with-default in Python) is captured in `docs/decisions/0014-typed-summary-model.md`; Python stays the source. New `MeetingSummaryTests` (8 cases) plus updated `MeetingFilterTests` / `CorrectionsTabTests`; `swift build` green, affected suites green.
 
 The audit's `[Medium] Open` finding: untyped `[String: Any]` summary data is plumbed through four SwiftUI views, with file I/O inside view code. A typo silently shows an empty section. Replace with a typed `MeetingSummary` model.
 

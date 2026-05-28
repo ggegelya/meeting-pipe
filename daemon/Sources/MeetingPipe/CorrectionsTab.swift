@@ -121,8 +121,10 @@ struct CorrectionsTab: View {
 
     @ViewBuilder
     private func summarySections(record: [String: Any]) -> some View {
-        let original = record["original_summary"] as? [String: Any] ?? [:]
-        let corrected = record["corrected_summary"] as? [String: Any]
+        let original = (record["original_summary"] as? [String: Any])
+            .flatMap(MeetingSummary.init(jsonObject:)) ?? MeetingSummary()
+        let corrected = (record["corrected_summary"] as? [String: Any])
+            .flatMap(MeetingSummary.init(jsonObject:))
         if let corrected = corrected {
             HStack(alignment: .top, spacing: 16) {
                 summaryPane(title: "Original", summary: original)
@@ -134,7 +136,7 @@ struct CorrectionsTab: View {
         }
     }
 
-    private func summaryPane(title: String, summary: [String: Any]) -> some View {
+    private func summaryPane(title: String, summary: MeetingSummary) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title)
                 .font(.headline)
@@ -256,26 +258,26 @@ struct CorrectionsTab: View {
 
 /// Compact read-only summary preview for the original/corrected side-by-side panes. Full markdown rendering is in the Summary tab.
 struct CorrectionSummaryPreview: View {
-    let summary: [String: Any]
+    let summary: MeetingSummary
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let title = (summary["title"] as? String), !title.isEmpty {
-                Text(title)
+            if !summary.title.isEmpty {
+                Text(summary.title)
                     .font(.subheadline.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if !bullets("summary").isEmpty {
-                preview(label: "Summary", items: bullets("summary"))
+            if !nonEmpty(summary.summary).isEmpty {
+                preview(label: "Summary", items: nonEmpty(summary.summary))
             }
-            if !bullets("decisions").isEmpty {
-                preview(label: "Decisions", items: bullets("decisions"))
+            if !nonEmpty(summary.decisions).isEmpty {
+                preview(label: "Decisions", items: nonEmpty(summary.decisions))
             }
             if !actionStrings.isEmpty {
                 preview(label: "Actions", items: actionStrings)
             }
-            if !bullets("questions").isEmpty {
-                preview(label: "Open questions", items: bullets("questions"))
+            if !nonEmpty(summary.questions).isEmpty {
+                preview(label: "Open questions", items: nonEmpty(summary.questions))
             }
             if isEmpty {
                 Text("(no content)")
@@ -286,26 +288,24 @@ struct CorrectionSummaryPreview: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func bullets(_ key: String) -> [String] {
-        guard let arr = summary[key] as? [Any] else { return [] }
-        return arr.compactMap { ($0 as? String) }.filter { !$0.isEmpty }
+    private func nonEmpty(_ items: [String]) -> [String] {
+        items.filter { !$0.isEmpty }
     }
 
     private var actionStrings: [String] {
-        guard let arr = summary["actions"] as? [[String: Any]] else { return [] }
-        return arr.compactMap { dict in
-            guard let task = (dict["task"] as? String), !task.isEmpty else { return nil }
-            let owner = (dict["owner"] as? String) ?? ""
-            return owner.isEmpty ? task : "\(task) (\(owner))"
+        summary.actions.compactMap { a in
+            guard !a.task.isEmpty else { return nil }
+            let owner = a.owner ?? ""
+            return owner.isEmpty ? a.task : "\(a.task) (\(owner))"
         }
     }
 
     private var isEmpty: Bool {
-        (summary["title"] as? String).map(\.isEmpty) ?? true
-            && bullets("summary").isEmpty
-            && bullets("decisions").isEmpty
+        summary.title.isEmpty
+            && nonEmpty(summary.summary).isEmpty
+            && nonEmpty(summary.decisions).isEmpty
             && actionStrings.isEmpty
-            && bullets("questions").isEmpty
+            && nonEmpty(summary.questions).isEmpty
     }
 
     private func preview(label: String, items: [String]) -> some View {

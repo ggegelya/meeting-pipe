@@ -240,7 +240,7 @@ final class MeetingStore: ObservableObject {
 
             let meta = metaURL.flatMap { readJSON(at: $0) }
             let run = runURL.flatMap { readJSON(at: $0) }
-            let summary = summaryURL.flatMap { readJSON(at: $0) }
+            let summary: MeetingSummary? = summaryURL.flatMap { MeetingSummary.load(from: $0) }
             // A present summary supersedes the failure sidecar: the meeting was produced, so the error is stale.
             let failure: PipelineFailureSidecar.Failure?
             if summaryURL == nil, let errorURL = errorURL {
@@ -285,7 +285,6 @@ final class MeetingStore: ObservableObject {
             }
 
             let searchable = MeetingStore.buildSearchableText(
-                summaryTitle: summary?["title"] as? String,
                 meetingTitle: meta?["meeting_title"] as? String,
                 sourceDisplayName: meta?["source_display_name"] as? String,
                 summary: summary
@@ -295,7 +294,7 @@ final class MeetingStore: ObservableObject {
                 startedAt: startedAt,
                 wavURL: wav,
                 recordingsDir: directory,
-                summaryTitle: (summary?["title"] as? String),
+                summaryTitle: (summary?.title).flatMap { $0.isEmpty ? nil : $0 },
                 meetingTitle: (meta?["meeting_title"] as? String),
                 sourceBundleID: (meta?["source_bundle_id"] as? String),
                 sourceDisplayName: (meta?["source_display_name"] as? String),
@@ -321,30 +320,19 @@ final class MeetingStore: ObservableObject {
 
     /// Build the lowercased filter haystack from user-visible fields (titles, source app, summary bullets, decisions, action tasks). Internal so tests can drive it directly.
     static func buildSearchableText(
-        summaryTitle: String?,
         meetingTitle: String?,
         sourceDisplayName: String?,
-        summary: [String: Any]?
+        summary: MeetingSummary?
     ) -> String {
         var parts: [String] = []
-        if let s = summaryTitle, !s.isEmpty { parts.append(s) }
+        if let s = summary?.title, !s.isEmpty { parts.append(s) }
         if let s = meetingTitle, !s.isEmpty { parts.append(s) }
         if let s = sourceDisplayName, !s.isEmpty { parts.append(s) }
         if let s = summary {
-            if let arr = s["summary"] as? [Any] {
-                for v in arr { if let str = v as? String { parts.append(str) } }
-            }
-            if let arr = s["decisions"] as? [Any] {
-                for v in arr { if let str = v as? String { parts.append(str) } }
-            }
-            if let arr = s["questions"] as? [Any] {
-                for v in arr { if let str = v as? String { parts.append(str) } }
-            }
-            if let arr = s["actions"] as? [[String: Any]] {
-                for a in arr {
-                    if let task = a["task"] as? String { parts.append(task) }
-                }
-            }
+            parts.append(contentsOf: s.summary.filter { !$0.isEmpty })
+            parts.append(contentsOf: s.decisions.filter { !$0.isEmpty })
+            parts.append(contentsOf: s.questions.filter { !$0.isEmpty })
+            parts.append(contentsOf: s.actions.map { $0.task }.filter { !$0.isEmpty })
         }
         return parts.joined(separator: " \n ").lowercased()
     }

@@ -19,12 +19,14 @@ final class CorrectionWindow {
         let runURL = recordingsDir.appendingPathComponent("\(stem).run.json")
         let summaryURL = recordingsDir.appendingPathComponent("\(stem).summary.json")
         let runMeta: [String: Any]
-        let originalSummary: [String: Any]
         do {
             runMeta = try CorrectionStore.loadRunSidecar(at: runURL)
-            originalSummary = try CorrectionStore.loadOriginalSummary(at: summaryURL)
         } catch {
             Self.presentLoadError(stem: stem, error: error)
+            return
+        }
+        guard let originalSummary = MeetingSummary.load(from: summaryURL) else {
+            Self.presentLoadError(stem: stem, error: CorrectionStore.Error.summaryUnreadable(summaryURL))
             return
         }
 
@@ -79,7 +81,7 @@ final class CorrectionWindow {
             window?.performClose(nil)
         case .saveEdited(let model), .saveBad(let model):
             let verdict: CorrectionStore.Verdict = outcome.isBad ? .bad : .edited
-            let corrected: [String: Any]? = outcome.isBad ? nil : model.makeCorrectedSummary()
+            let corrected: [String: Any]? = outcome.isBad ? nil : model.makeCorrectedSummary().jsonObject()
             do {
                 try CorrectionStore.write(
                     stem: model.stem,
@@ -88,7 +90,7 @@ final class CorrectionWindow {
                     modelId: model.modelId,
                     backend: model.backend,
                     verdict: verdict,
-                    originalSummary: model.originalSummary,
+                    originalSummary: model.originalSummary.jsonObject(),
                     correctedSummary: corrected,
                     notes: model.notes.isEmpty ? nil : model.notes
                 )
@@ -158,7 +160,7 @@ final class CorrectionViewModel: ObservableObject {
     let stem: String
     let recordingsDir: URL
     let runMeta: [String: Any]
-    let originalSummary: [String: Any]
+    let originalSummary: MeetingSummary
 
     @Published var title: String
     @Published var summary: [String]
@@ -173,20 +175,27 @@ final class CorrectionViewModel: ObservableObject {
         stem: String,
         recordingsDir: URL,
         runMeta: [String: Any],
-        originalSummary: [String: Any]
+        originalSummary: MeetingSummary
     ) {
         self.stem = stem
         self.recordingsDir = recordingsDir
         self.runMeta = runMeta
         self.originalSummary = originalSummary
 
-        self.title = (originalSummary["title"] as? String) ?? ""
-        self.summary = Self.stringList(originalSummary["summary"])
-        self.decisions = Self.stringList(originalSummary["decisions"])
-        self.questions = Self.stringList(originalSummary["questions"])
-        self.attendees = Self.stringList(originalSummary["attendees"])
-        self.detectedLanguage = (originalSummary["detected_language"] as? String) ?? "en"
-        self.actions = Self.actionList(originalSummary["actions"])
+        self.title = originalSummary.title
+        self.summary = originalSummary.summary
+        self.decisions = originalSummary.decisions
+        self.questions = originalSummary.questions
+        self.attendees = originalSummary.attendees
+        self.detectedLanguage = originalSummary.detectedLanguage ?? "en"
+        self.actions = originalSummary.actions.map {
+            EditableAction(
+                task: $0.task,
+                owner: $0.owner ?? "",
+                due: $0.due ?? "",
+                confidence: $0.confidence
+            )
+        }
     }
 
     var backend: String { (runMeta["backend"] as? String) ?? "" }
@@ -201,47 +210,29 @@ final class CorrectionViewModel: ObservableObject {
     }
 
     var headerTitle: String {
-        (originalSummary["title"] as? String).map { $0.isEmpty ? stem : $0 } ?? stem
+        originalSummary.title.isEmpty ? stem : originalSummary.title
     }
 
-    func makeCorrectedSummary() -> [String: Any] {
-        let actionDicts: [[String: Any]] = actions
+    func makeCorrectedSummary() -> MeetingSummary {
+        let items = actions
             .filter { !$0.task.trimmingCharacters(in: .whitespaces).isEmpty }
             .map { a in
-                var d: [String: Any] = [
-                    "task": a.task,
-                    "confidence": a.confidence.isEmpty ? "medium" : a.confidence,
-                ]
-                d["owner"] = a.owner.isEmpty ? NSNull() : a.owner
-                d["due"] = a.due.isEmpty ? NSNull() : a.due
-                return d
+                MeetingSummary.ActionItem(
+                    task: a.task,
+                    owner: a.owner.isEmpty ? nil : a.owner,
+                    due: a.due.isEmpty ? nil : a.due,
+                    confidence: a.confidence.isEmpty ? "medium" : a.confidence
+                )
             }
-        return [
-            "title": title,
-            "summary": Self.trimmed(summary),
-            "decisions": Self.trimmed(decisions),
-            "actions": actionDicts,
-            "questions": Self.trimmed(questions),
-            "attendees": Self.trimmed(attendees),
-            "detected_language": detectedLanguage,
-        ]
-    }
-
-    private static func stringList(_ raw: Any?) -> [String] {
-        guard let arr = raw as? [Any] else { return [] }
-        return arr.compactMap { ($0 as? String) }
-    }
-
-    private static func actionList(_ raw: Any?) -> [EditableAction] {
-        guard let arr = raw as? [[String: Any]] else { return [] }
-        return arr.map {
-            EditableAction(
-                task: ($0["task"] as? String) ?? "",
-                owner: ($0["owner"] as? String) ?? "",
-                due: ($0["due"] as? String) ?? "",
-                confidence: ($0["confidence"] as? String) ?? "medium"
-            )
-        }
+        return MeetingSummary(
+            title: title,
+            summary: Self.trimmed(summary),
+            decisions: Self.trimmed(decisions),
+            actions: items,
+            questions: Self.trimmed(questions),
+            attendees: Self.trimmed(attendees),
+            detectedLanguage: detectedLanguage
+        )
     }
 
     private static func trimmed(_ items: [String]) -> [String] {
