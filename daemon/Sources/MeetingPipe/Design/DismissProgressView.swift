@@ -1,13 +1,6 @@
 import AppKit
 
-/// 2pt hairline along the bottom edge of the prompt panel. Drains over
-/// `timeoutSec`; pauses (and dims) on hover so a user reading the panel
-/// doesn't lose it mid-decision. Mirrors the JSX `DismissBar`.
-///
-/// Use: drop into the panel as a subview, anchor to leading/trailing/bottom
-/// with height 2, then call `start(timeoutSec:)`. Call `stop()` on dismiss.
-/// Hover detection happens via the parent panel's tracking — `setPaused`
-/// is wired by the host window.
+/// 2pt progress hairline at the bottom of the prompt panel that drains over `timeoutSec`. Mirrors the JSX `DismissBar`. Anchor leading/trailing/bottom at height 2, call `start(timeoutSec:)`, then `stop()` on dismiss. `setPaused(_:)` is wired by the host window's mouse tracking.
 final class DismissProgressView: NSView {
     private let track = CALayer()    // sunk hairline track
     private let fill  = CALayer()    // signal600 fill that drains
@@ -38,7 +31,7 @@ final class DismissProgressView: NSView {
     override func layout() {
         super.layout()
         track.frame = bounds
-        // fill width is updated by the tick loop.
+        // fill width updated by tick loop
         if startedAt == nil {
             fill.frame = bounds
         }
@@ -53,8 +46,7 @@ final class DismissProgressView: NSView {
         isPaused = false
         fill.opacity = 0.60
         fill.frame = bounds
-        // 60 Hz tick — smooth enough for a slowly-draining bar without
-        // burning a CVDisplayLink. Timer fires on the main runloop.
+        // 60 Hz tick: smooth enough without the cost of a CVDisplayLink. Fires on the main runloop.
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.tick()
         }
@@ -67,8 +59,7 @@ final class DismissProgressView: NSView {
         pauseStart = nil
     }
 
-    /// Wired to the panel's mouse-tracking. Pause = freeze the fill at its
-    /// current width and dim to 30% alpha so it reads as paused, not stalled.
+    /// Freeze the fill at its current width and dim to 30% alpha so it reads as paused, not stalled.
     func setPaused(_ paused: Bool) {
         guard paused != isPaused else { return }
         isPaused = paused
@@ -90,8 +81,7 @@ final class DismissProgressView: NSView {
         let elapsed = raw - elapsedAtPauseStart
         let remaining = max(0, 1 - elapsed / totalDuration)
 
-        // Direct frame set; no implicit animation (we want the fill to
-        // glide smoothly, not hop in CA's default 0.25s curve).
+        // Disable implicit animation so the fill glides smoothly rather than hopping with CA's default 0.25s curve.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         fill.frame = CGRect(x: 0, y: 0,

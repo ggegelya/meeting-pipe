@@ -1,35 +1,26 @@
 import AppKit
 
-/// Small horizontal pill that surfaces the active workflow on the prompt
-/// panel + library row. Visual: emoji or color swatch + name in a rounded
-/// rect, with a hover affordance. Clicking pops up the override menu the
-/// prompt window owns — the chip itself doesn't know about other
-/// workflows; the click is forwarded to a closure the caller sets up.
+/// Horizontal pill showing the active workflow on the prompt panel and library row: emoji or color swatch + name, with a hover affordance. Click is forwarded via `onClick`; the chip has no knowledge of other workflows.
 final class WorkflowChipView: NSButton {
     private var trackingArea: NSTrackingArea?
     private var isHovered = false { didSet { needsDisplay = true } }
     private let titleLabel = NSTextField(labelWithString: "")
     private let leadingGlyph = NSView(frame: .zero)
 
-    /// Resolved workflow color (parsed from hex string by the caller).
-    /// Drives both the leading swatch fill and the chip's left border
-    /// accent. Default is the signal-blue used for the "General" seed.
+    /// Workflow color parsed from hex by the caller. Drives the leading swatch fill. Default is signal-blue ("General" seed).
     var workflowColor: NSColor = MPColors.signal600 {
         didSet { leadingGlyph.layer?.backgroundColor = workflowColor.cgColor }
     }
-    /// Emoji to render instead of a color swatch. Optional; nil falls
-    /// back to a filled circle in `workflowColor`.
+    /// Emoji to render instead of the color swatch. Nil falls back to a filled circle in `workflowColor`.
     var emoji: String? {
         didSet { refreshGlyph() }
     }
-    /// Display name shown next to the glyph. Truncated tail-side.
+    /// Display name shown next to the glyph, truncated tail-side.
     var workflowName: String = "" {
         didSet { titleLabel.stringValue = workflowName }
     }
 
-    /// Caller-provided click handler. The prompt window builds and
-    /// presents an NSMenu of available workflows inside this; we don't
-    /// own that data here.
+    /// Click handler set by the caller (the prompt window builds and presents the workflow NSMenu).
     var onClick: (() -> Void)?
 
     init() {
@@ -103,9 +94,7 @@ final class WorkflowChipView: NSButton {
     @objc private func handleClick() { onClick?() }
 
     private func refreshGlyph() {
-        // When an emoji is set we hide the colored swatch and render the
-        // glyph itself as the leading marker. The chip stays a fixed
-        // height so the action row's vertical rhythm doesn't shift.
+        // Emoji replaces the swatch; chip height stays fixed so the action row's vertical rhythm doesn't shift.
         if let emoji = emoji, !emoji.isEmpty {
             leadingGlyph.layer?.backgroundColor = nil
             leadingGlyph.subviews.forEach { $0.removeFromSuperview() }
@@ -124,8 +113,7 @@ final class WorkflowChipView: NSButton {
     }
 }
 
-/// Parse a hex color string like "#FF6B6B" or "FF6B6B" into NSColor.
-/// Returns nil for malformed input; the caller falls back to a default.
+/// Parse `#FF6B6B` or `FF6B6B` into NSColor. Returns nil for malformed input.
 enum HexColor {
     static func parse(_ raw: String) -> NSColor? {
         var s = raw.trimmingCharacters(in: .whitespaces)

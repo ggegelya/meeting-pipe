@@ -1,27 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// SwiftUI Preferences window opened from the menu bar.
-///
-/// One window at a time — re-opening the menu item brings the existing
-/// window to the front rather than stacking duplicates. The window's
-/// actual content lives in `PreferencesView`
-/// (`Preferences/PreferencesView.swift`); this class only owns the
-/// `NSWindow` lifecycle and the WindowActivationManager handshake so
-/// Cmd+Tab keeps working when Preferences is up.
-///
-/// TECH-E4 swapped the old 540×620 six-tab `TabView` for a 780×660
-/// NavigationSplitView with a sidebar. The model presets table used by
-/// the Pipeline section still lives here so callers can reach it
-/// without crossing into the Preferences/ folder for one struct.
+/// Preferences window (TECH-E4: 780x660 NavigationSplitView, replaced the old 540x620 TabView). One window at a time; re-opening brings it to front. Owns the `NSWindow` lifecycle and the `WindowActivationManager` handshake so Cmd+Tab works while Preferences is up. `LocalModelPreset` lives here so callers don't need to import the Preferences/ folder.
 final class PreferencesWindow {
     private var window: NSWindow?
     private let store: ConfigStore
     private let secrets: SecretsStore
-    /// Shared selection state so callers can deeplink to a specific
-    /// section via `show(initial:)`. SwiftUI re-renders the sidebar
-    /// whenever this updates, so it works both for "open fresh" and
-    /// "already-on-screen, switch tabs" cases.
+    /// Shared selection state for `show(initial:)` deeplinks.
     private let selectionState = PreferencesSelectionState()
 
     init(store: ConfigStore, secrets: SecretsStore) {
@@ -29,10 +14,7 @@ final class PreferencesWindow {
         self.secrets = secrets
     }
 
-    /// Open the Preferences window. If `initial` is provided, the
-    /// sidebar lands on that section instead of `.general`.
-    /// Idempotent: re-opening brings the existing window to front
-    /// rather than stacking duplicates.
+    /// Open the window, optionally deeplinking to `initial`. Idempotent: re-call brings the existing window to front.
     func show(initial: PreferencesItem? = nil) {
         if let item = initial {
             selectionState.current = item
@@ -54,8 +36,7 @@ final class PreferencesWindow {
         let host = NSHostingController(rootView: view)
         let w = NSWindow(contentViewController: host)
         w.title = "MeetingPipe Preferences"
-        // Resizable now — the sidebar layout works at 780×660 default but
-        // benefits from a little extra width on long Notion DB ids.
+        // Resizable: benefits from extra width for long Notion DB IDs.
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         w.setContentSize(NSSize(width: 780, height: 660))
         w.minSize = NSSize(width: 720, height: 560)
@@ -84,18 +65,14 @@ private final class PreferencesWindowDelegate: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) { onClose() }
 }
 
-/// Curated MLX model presets for the Pipeline section's Picker.
-///
-/// Three sizes that span the practical sweet-spot for meeting
-/// summarization on M-series hardware. Larger models exist; users who
-/// want them pick "Custom" and paste a HuggingFace MLX repo id directly.
+/// Curated MLX model presets for the Pipeline picker. Three sizes covering the practical range on M-series; "Custom" accepts any HuggingFace MLX repo id.
 struct LocalModelPreset {
-    let id: String          // Stable picker tag.
-    let label: String       // Human-readable menu entry.
-    let modelId: String     // HuggingFace repo id `mlx-community/...`.
-    let diskHint: String    // Approx download / cache footprint.
-    let speedHint: String   // Rough per-meeting latency on M-series.
-    let qualityHint: String // One-line vibes-summary of expected output quality.
+    let id: String
+    let label: String
+    let modelId: String     // HuggingFace repo id `mlx-community/...`
+    let diskHint: String    // Approx download / cache footprint
+    let speedHint: String   // Rough per-meeting latency on M-series
+    let qualityHint: String
 
     static let customId = "__custom"
 

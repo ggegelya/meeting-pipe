@@ -1,15 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Design tokens — the Swift mirror of `design/colors_and_type.css`.
-///
-/// Single source of truth lives in the CSS file (so the design system docs
-/// and any future web surfaces stay aligned). When a token changes there,
-/// update the matching constant here. Spot-checked by `DesignTokensTests`.
-///
-/// Naming follows the CSS: `--mp-ink-900` -> `MPColors.ink900`.
-/// Use the semantic accessors (`MPColors.fg`, `MPColors.bg`) at call sites
-/// rather than reaching for raw palette steps — they auto-flip in dark mode.
+/// Design tokens mirroring `design/colors_and_type.css`. Source of truth is the CSS file; update here when a token changes there. Spot-checked by `DesignTokensTests`. Naming: `--mp-ink-900` -> `MPColors.ink900`. Prefer the semantic accessors (`MPColors.fg`, `MPColors.bg`) over raw palette steps - they auto-flip in dark mode.
 enum MPColors {
     // MARK: Ink (warm near-blacks for foreground)
     static let ink900 = NSColor(srgbRed: 0x14/255.0, green: 0x16/255.0, blue: 0x1A/255.0, alpha: 1)
@@ -40,11 +32,7 @@ enum MPColors {
     static let pulse500 = NSColor(srgbRed: 0xF5/255.0, green: 0x59/255.0, blue: 0x5E/255.0, alpha: 1)
     static let pulse100 = NSColor(srgbRed: 0xFF/255.0, green: 0xE4/255.0, blue: 0xE4/255.0, alpha: 1)
 
-    // MARK: Semantic states (mirror `--mp-success-*` / `--mp-warning-*` /
-    // `--mp-danger-*` from `colors_and_type.css`). Surfaced as
-    // foreground tints on status pills and inline status rows only —
-    // never as backgrounds for an entire toast (per the design system
-    // guide's "Semantic states appear only in inline status rows").
+    // MARK: Semantic states (mirror `--mp-success-*` / `--mp-warning-*` / `--mp-danger-*`). Foreground tints only - never full toast backgrounds (design rule: "Semantic states appear only in inline status rows").
     static let success600 = NSColor(srgbRed: 0x1F/255.0, green: 0x8F/255.0, blue: 0x4E/255.0, alpha: 1)
     static let success100 = NSColor(srgbRed: 0xDC/255.0, green: 0xF1/255.0, blue: 0xE2/255.0, alpha: 1)
     static let warning600 = NSColor(srgbRed: 0xB2/255.0, green: 0x73/255.0, blue: 0x00/255.0, alpha: 1)
@@ -53,7 +41,7 @@ enum MPColors {
     static let danger100  = NSColor(srgbRed: 0xFC/255.0, green: 0xE4/255.0, blue: 0xE4/255.0, alpha: 1)
 
     // MARK: Semantic — auto-flip on appearance.
-    /// Foreground text. Maps to `--mp-fg` / dark `#F0F1F3`.
+    /// `--mp-fg` / dark `#F0F1F3`.
     static let fg = NSColor(name: "mp.fg") { appearance in
         appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
             ? NSColor(srgbRed: 0xF0/255.0, green: 0xF1/255.0, blue: 0xF3/255.0, alpha: 1)
@@ -109,10 +97,7 @@ enum MPColors {
     }
 }
 
-/// Type tokens. Sizes in points, mirrors `--mp-text-*`. Weights mirror
-/// `--mp-weight-*`. We don't ship Inter Tight in the daemon — system font
-/// (SF Pro) is canonical here per the design README; the display tokens
-/// exist for future surfaces (e.g. summary library) that may load it.
+/// Type tokens mirroring `--mp-text-*` and `--mp-weight-*`. The daemon uses SF Pro (system font), not Inter Tight; the display tokens exist for future surfaces that may load it.
 enum MPType {
     static let textXS:   CGFloat = 11
     static let textSM:   CGFloat = 12
@@ -129,12 +114,11 @@ enum MPType {
     static let medium   = NSFont.Weight.medium
     static let semibold = NSFont.Weight.semibold
 
-    /// Eyebrow label — uppercase, +0.08em tracking.
-    /// Returns an attributed-string ready font + tracking pair.
+    /// Eyebrow label: uppercase, +0.08em tracking.
     static let trackingCaps: CGFloat = 0.08
 }
 
-/// 4-px grid spacing — mirrors `--mp-space-*`. Mac chrome uses 8 / 12 / 16 / 20.
+/// 4-px grid spacing, mirrors `--mp-space-*`.
 enum MPSpace {
     static let s1:  CGFloat = 4
     static let s2:  CGFloat = 8
@@ -148,7 +132,7 @@ enum MPSpace {
     static let s16: CGFloat = 64
 }
 
-/// Corner radii — highly intentional, mac-native. Mirrors `--mp-radius-*`.
+/// Corner radii, mirrors `--mp-radius-*`.
 enum MPRadius {
     static let xs: CGFloat = 4    // chips, tags
     static let sm: CGFloat = 6    // buttons, inputs
@@ -157,17 +141,17 @@ enum MPRadius {
     static let xl: CGFloat = 20   // hero cards
 }
 
-/// Motion — short, snappy, no bounce. Mirrors `--mp-dur-*` and `--mp-ease-out`.
+/// Motion durations and easing, mirrors `--mp-dur-*` and `--mp-ease-out`.
 enum MPMotion {
     static let durFast: TimeInterval = 0.12
     static let durBase: TimeInterval = 0.18   // panel fade-in (matches existing code)
     static let durSlow: TimeInterval = 0.28
 
-    /// Apple's default-ish out curve. Used for fades.
+    /// Apple's default-ish ease-out curve. Used for fades.
     static let easeOut = CAMediaTimingFunction(controlPoints: 0.22, 0.61, 0.36, 1.0)
 }
 
-/// Pre-built fonts honoring the type ramp + weight conventions.
+/// Pre-built fonts matching the type ramp and weight conventions.
 extension NSFont {
     static func mpTitle() -> NSFont   { .systemFont(ofSize: MPType.textLG,   weight: MPType.semibold) } // 17 / semibold — panel title
     static func mpHeading() -> NSFont { .systemFont(ofSize: MPType.textXL,   weight: MPType.semibold) } // 22 / semibold — section header

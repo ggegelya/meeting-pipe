@@ -1,24 +1,13 @@
 import AVFoundation
 import Foundation
 
-/// Reads RMS level from the default mic, publishes a 0...1 scalar on the
-/// main queue. Used by the prompt's `LiveWaveformView` to communicate
-/// "we hear something" without recording.
-///
-/// Privacy: no buffer is persisted. The tap callback computes RMS in
-/// memory and discards the buffer. The prompt's eyebrow copy (`Listening
-/// for level only — nothing is captured until you choose Record.`) makes
-/// the contract explicit to the user.
-///
-/// Threading: `start` / `stop` must be called on the main thread.
+/// Reads RMS level from the default mic and publishes a 0...1 scalar on the main queue. Used by `LiveWaveformView` to show activity without recording. No buffer is persisted - RMS is computed in-tap and discarded. `start`/`stop` must be called on the main thread.
 final class MicLevelMonitor {
     private let engine = AVAudioEngine()
     private var onLevel: ((Float) -> Void)?
     private(set) var isRunning = false
 
-    /// Begin metering. If the engine fails to start (e.g. missing mic
-    /// permission), the callback simply never fires — the waveform will
-    /// stay flat, which is the right visual fallback.
+    /// Begin metering. If the engine fails (e.g. no mic permission), the callback never fires and the waveform stays flat.
     func start(onLevel: @escaping (Float) -> Void) {
         guard !isRunning else { return }
         self.onLevel = onLevel
@@ -26,9 +15,7 @@ final class MicLevelMonitor {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
 
-        // bufferSize=1024 @ 48kHz is ~21ms — plenty of resolution for a
-        // 90ms visual tick, and below the 4096 ceiling AVAudioEngine
-        // enforces on input taps.
+        // 1024 @ 48kHz ~= 21ms: enough resolution for the 90ms visual tick, below AVAudioEngine's 4096 input-tap ceiling.
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self = self,
                   let channelData = buffer.floatChannelData?[0] else { return }
@@ -40,9 +27,7 @@ final class MicLevelMonitor {
                 sumSq += s * s
             }
             let rms = sqrt(sumSq / Float(frameCount))
-            // Light log-shaping: maps quiet-room (~0.001) to ~0.04 and a
-            // typical speaking voice (~0.1) to ~0.7. Avoids the bars sitting
-            // pegged at the bottom in normal conditions.
+            // Log-shape: quiet-room (~0.001) -> ~0.04, speaking voice (~0.1) -> ~0.7, so bars aren't pegged at the bottom in normal conditions.
             let shaped = log10(1 + 9 * min(rms, 1.0))
             DispatchQueue.main.async { self.onLevel?(min(1, max(0, shaped))) }
         }

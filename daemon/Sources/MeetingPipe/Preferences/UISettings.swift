@@ -2,19 +2,7 @@ import AppKit
 import Combine
 import Foundation
 
-/// UI-only preferences persisted via `UserDefaults`.
-///
-/// These flags affect how the daemon *presents* itself — they're never
-/// read by pipeline subprocesses, so they don't belong in
-/// `config.toml`. Keeping cosmetic toggles out of the TOML file means
-/// config.toml stays a smaller, reviewable artefact and the pipeline
-/// side never has to parse them.
-///
-/// One singleton (`UISettings.shared`) backs every consumer; SwiftUI
-/// views observe via `@ObservedObject`, AppKit consumers subscribe to
-/// the individual `@Published` streams via Combine. Reads are cheap;
-/// writes hit `UserDefaults` (in-memory; the OS flushes on its own
-/// cadence).
+/// UI-only preferences persisted via `UserDefaults`. Cosmetic/presentation flags that the pipeline never reads - kept out of `config.toml` so that file stays small and pipeline-parseable. SwiftUI views use `@ObservedObject`; AppKit consumers subscribe to `@Published` streams via Combine.
 final class UISettings: ObservableObject {
     static let shared = UISettings()
 
@@ -22,10 +10,7 @@ final class UISettings: ObservableObject {
         case system, light, dark
     }
 
-    /// Two cosmetic variants of the menu-bar idle icon. `outline` is the
-    /// default (thin ring + waveform bars, current shipping look);
-    /// `filled` drops the ring and renders thicker bars so the icon
-    /// reads heavier on a busy menu bar.
+    /// `outline` (default): thin ring + waveform bars. `filled`: no ring, thicker bars for a heavier look on a busy menu bar.
     enum MenuBarIconStyle: String, CaseIterable {
         case outline, filled
     }
@@ -41,26 +26,17 @@ final class UISettings: ObservableObject {
         didSet { UserDefaults.standard.set(menuBarIconStyle.rawValue, forKey: Keys.menuBarIconStyle) }
     }
 
-    /// Whether to surface a small lock glyph next to the status-bar
-    /// title when the daemon is in regulated mode. Cosmetic: it doesn't
-    /// change behaviour, just the visual signal. Defaults to `true` so
-    /// existing regulated-mode users see the badge immediately.
+    /// Show a lock glyph in the status-bar title when regulated mode is on. Cosmetic only; defaults to `true` so existing users see the badge immediately.
     @Published var showRegulatedBadge: Bool {
         didSet { UserDefaults.standard.set(showRegulatedBadge, forKey: Keys.showRegulatedBadge) }
     }
 
-    /// When on, the daemon logs an info line at startup and exports
-    /// `MP_VERBOSE=1` into the environment so subprocess invocations
-    /// (Python pipeline stages) inherit the flag. Takes effect after a
-    /// daemon restart for env propagation; the in-process `Log.event`
-    /// gate reads the live value.
+    /// Exports `MP_VERBOSE=1` at daemon launch so pipeline subprocesses inherit it. Env propagation requires a restart; the in-process `Log.event` gate reads the live value.
     @Published var verboseLogging: Bool {
         didSet { UserDefaults.standard.set(verboseLogging, forKey: Keys.verboseLogging) }
     }
 
-    /// Library playback channel handling. Default mono mixdown matches
-    /// the dominant headphone-review case (input + output in both ears);
-    /// see ADR 0009.
+    /// Playback channel mode. Default mono mixdown matches the headphone-review case (input + output in both ears); see ADR 0009.
     @Published var playbackChannelMode: PlaybackChannelMode {
         didSet {
             UserDefaults.standard.set(playbackChannelMode.rawValue, forKey: Keys.playbackChannelMode)
@@ -80,9 +56,7 @@ final class UISettings: ObservableObject {
         self.theme = Theme(rawValue: d.string(forKey: Keys.theme) ?? "") ?? .system
         self.menuBarIconStyle = MenuBarIconStyle(rawValue: d.string(forKey: Keys.menuBarIconStyle) ?? "")
             ?? .outline
-        // `object(forKey:)` returns nil if the key was never set, so we
-        // can distinguish "never persisted" (default true) from
-        // "persisted false" (respect the user's choice).
+        // `object(forKey:)` is nil when the key was never written, distinguishing "never persisted" (default true) from an explicitly saved false.
         self.showRegulatedBadge = d.object(forKey: Keys.showRegulatedBadge) as? Bool ?? true
         self.verboseLogging = d.bool(forKey: Keys.verboseLogging)
         self.playbackChannelMode = PlaybackChannelMode(
@@ -90,10 +64,7 @@ final class UISettings: ObservableObject {
         ) ?? .default
     }
 
-    /// Apply the user's theme choice to `NSApp.appearance`. Called on
-    /// launch (after NSApp is set up) and whenever the picker changes.
-    /// `nil` means "follow the system" — equivalent to never having
-    /// touched the override.
+    /// Apply the theme to `NSApp.appearance`. `nil` restores the system default.
     func applyTheme() {
         switch theme {
         case .system: NSApp.appearance = nil

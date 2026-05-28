@@ -1,15 +1,6 @@
 import AppKit
 
-/// Buttons styled per the design system.
-///
-/// `.primary` — filled `signal600`, white text. The one-and-only primary
-///              action on a surface (per the design rule "Signal blue used
-///              surgically").
-/// `.ghost`   — transparent fill, `ink600` border, `fg` text. Secondary
-///              actions of equal weight to primary in size, but lower in
-///              emphasis (e.g. "Record (BYO)" alongside "Record").
-/// `.text`    — bare text with hover tint. Tertiary actions ("Skip",
-///              "Always for X") that should not compete for attention.
+/// Design-system button. `.primary`: filled `signal600`, one-and-only primary action per surface. `.ghost`: `ink600` border, same size as primary but lower emphasis (e.g. "Record (BYO)" alongside "Record"). `.text`: bare text with hover tint for tertiary actions.
 final class MPButton: NSButton {
     enum Style { case primary, ghost, text }
 
@@ -36,10 +27,7 @@ final class MPButton: NSButton {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override var intrinsicContentSize: NSSize {
-        // 26pt control height: unified pill geometry (Roadmap P4.1)
-        // shared with the chevron menu button so the prompt's right-
-        // cluster reads as one coherent control row. Width fits text
-        // plus 14pt horizontal padding either side.
+        // 26pt height: unified pill geometry shared with the chevron menu button (Roadmap P4.1) so the prompt's right cluster reads as one row. Width = text + 14pt padding each side.
         let textSize = (attributedTitle).size()
         let padX: CGFloat = mpStyle == .text ? 8 : 14
         return NSSize(width: ceil(textSize.width) + padX * 2, height: 26)
@@ -83,12 +71,7 @@ final class MPButton: NSButton {
             titleColor = MPColors.fgOnSignal
 
         case .ghost:
-            // Resting fill is a faint surface tint (not clear): on the dark
-            // hudWindow material the bare 1pt border alone wasn't enough
-            // affordance to read as "button" — labels blended into the
-            // body. The tint matches paperRaised (light) / bgRaised (dark)
-            // at low alpha, so the buttons sit on the surface like Notion's
-            // pill controls do.
+            // Resting fill is a faint tint, not clear: on dark hudWindow material the 1pt border alone wasn't enough affordance and labels blended into the body. Matches paperRaised/bgRaised at low alpha.
             let fill: NSColor
             if isPressed { fill = MPColors.ink100 }
             else if isHovered { fill = MPColors.ink50 }

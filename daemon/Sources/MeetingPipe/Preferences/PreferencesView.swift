@@ -1,33 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// Shared selection state for the Preferences window. The Coordinator
-/// holds a single instance and passes it both into `PreferencesView`
-/// (which binds the sidebar to `current`) and `PreferencesWindow.show`,
-/// which can mutate `current` to deeplink an external caller (e.g. the
-/// menu-bar permission-warning row, or the mic-permission-blocked path
-/// in beginRecording) to a specific section. SwiftUI re-renders the
-/// sidebar selection whenever `current` changes, so deeplink works
-/// whether the window is being created fresh or is already on screen.
+/// Shared selection state for the Preferences window. `PreferencesWindow.show(initial:)` mutates `current` to deeplink an external caller (e.g. permission-warning row) to a specific section; SwiftUI re-renders the sidebar whether the window is fresh or already on screen.
 final class PreferencesSelectionState: ObservableObject {
     @Published var current: PreferencesItem = .general
 }
 
-/// Sidebar navigation items for the redesigned Preferences window (TECH-E4).
-/// IA reshuffle per the Claude-Design handoff:
-///   - General      — global hotkeys (lifted from Detection — they're
-///                    system-wide, not detection-specific).
-///   - Recording    — output dir, sample rate, debounce sliders, allowlist
-///                    (merged with the former Detection tab; one mental
-///                    model: "how a meeting becomes a recording").
-///   - Prompt       — prompt timeout + regulated mode (pulled from the
-///                    old Modes tab into the moment-of-detection context).
-///   - Pipeline     - summarization backend, languages, long-meeting threshold.
-///   - Integrations — Anthropic, Notion, mp doctor button.
-///   - Permissions  — the four TCC rows from TECH-E3, restyled to the
-///                    new card chrome.
-///   - Advanced     — open config / reveal / open logs (rescued from
-///                    the old Modes tab where they were marooned).
+/// Sidebar items for the Preferences window (TECH-E4). IA per the Claude-Design handoff: General (hotkeys), Recording (output, debounce, allowlist), Prompt (timeout, regulated mode), Pipeline (summarization), Integrations (Anthropic, Notion), Permissions (TCC), Advanced (config/logs).
 enum PreferencesItem: String, CaseIterable, Identifiable, Hashable {
     case general
     case recording
@@ -51,8 +30,7 @@ enum PreferencesItem: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    /// SF Symbol mapping (the Lucide names from the prototype mapped to
-    /// their SF Symbol equivalents per the design-system guide).
+    /// SF Symbols mapped from the Lucide names in the prototype.
     var systemImage: String {
         switch self {
         case .general:      return "slider.horizontal.3"
@@ -66,11 +44,7 @@ enum PreferencesItem: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
-/// Top-level Preferences SwiftUI view. NavigationSplitView holds the
-/// sidebar (200pt sunk-paper rail) and the detail pane (raised paper
-/// canvas with section content). One section visible at a time; the
-/// sidebar uses signal-blue for the active row, matching the prompt
-/// panel's accent treatment.
+/// Top-level Preferences view. NavigationSplitView with a 200pt sidebar rail and a raised-paper detail pane.
 struct PreferencesView: View {
     @ObservedObject var store: ConfigStore
     @ObservedObject var secrets: SecretsStore
@@ -184,9 +158,7 @@ struct PreferencesView: View {
 
 // MARK: - Sidebar
 
-/// Left rail. 200pt wide, sunk-paper background, signal-blue active
-/// row. Uses SwiftUI List with sidebar style — close enough to the
-/// prototype's button stack that we don't need a custom control.
+/// Sidebar rail: SwiftUI List with `.sidebar` style, signal-blue active row.
 private struct PreferencesSidebar: View {
     @Binding var selection: PreferencesItem
 
@@ -285,10 +257,7 @@ private struct GeneralSectionView: View {
             : "MeetingPipe only starts when you launch it manually."
     }
 
-    /// Two-way binding that calls into SMAppService on change and
-    /// re-reads the real status afterwards. Without the re-read, a
-    /// `requiresApproval` state would leave the toggle wedged "on"
-    /// visually while SMAppService refuses the registration.
+    /// Re-reads SMAppService status after each set so a `requiresApproval` state doesn't leave the toggle wedged "on" visually.
     private var launchAtLoginBinding: Binding<Bool> {
         Binding(
             get: { launchAtLogin },
@@ -534,9 +503,7 @@ private struct PromptSectionView: View {
         }
     }
 
-    /// Show round-minute values as "N min", everything else as raw
-    /// seconds. Keeps the silence-backstop slider readable across its
-    /// 1-to-30-minute range without confusing the user with mixed units.
+    /// Show exact-minute values as "N min", otherwise raw seconds. Keeps the silence-backstop slider readable across its 1-to-30-minute range.
     private static func formatMinutesOrSeconds(_ seconds: Int) -> String {
         if seconds % 60 == 0 { return "\(seconds / 60) min" }
         return "\(seconds) s"
@@ -760,11 +727,7 @@ private struct IntegrationsSectionView: View {
 
 // MARK: - Permissions
 
-/// Reskinned Permissions section (replaces the old PermissionsTab). Same
-/// `PermissionsCenter` source of truth, new chrome: card-per-permission
-/// with icon badge + status pill + Request/Open Settings button, plus
-/// the privacy callout banner at the bottom matching the prototype's
-/// signal-tinted callout block.
+/// Permissions section: one card per TCC permission, icon badge + status pill + Request/Open Settings button, plus a privacy callout at the bottom.
 struct PermissionsSectionView: View {
     @ObservedObject private var center = PermissionsCenter.shared
     @State private var workingKind: PermissionsCenter.Kind? = nil
@@ -774,10 +737,7 @@ struct PermissionsSectionView: View {
             SettingsSectionHeader("Permissions",
                 caption: "The four TCC permissions the daemon needs. None of these send anything off your machine.") {
                 Button {
-                    // Re-check both refreshes status AND clears any
-                    // lingering "toggle on, then re-check" hints, since
-                    // the user is signalling they have come back from
-                    // Settings.
+                    // Also clears deferred hints so the user returning from Settings sees a clean state.
                     for kind in PermissionsCenter.Kind.allCases {
                         center.clearDeferredHint(kind)
                     }
@@ -1038,9 +998,7 @@ private struct AdvancedSectionView: View {
 
 // MARK: - Wrapping HStack
 
-/// Simple wrapping-row layout for the bundle-id tag stack. SwiftUI's
-/// builtin `Layout` API gives us this without an HStack-per-row hack;
-/// caps the row to the container width and overflows onto the next.
+/// Wrapping row layout for the bundle-id tag stack, using SwiftUI's `Layout` API.
 private struct WrappingHStack<Data: RandomAccessCollection, Content: View>: View where Data.Element: Hashable {
     let items: Data
     let spacing: CGFloat

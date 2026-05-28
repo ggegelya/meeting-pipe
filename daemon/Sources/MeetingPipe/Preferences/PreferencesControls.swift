@@ -1,17 +1,6 @@
 import SwiftUI
 
-/// Shared SwiftUI primitives for the redesigned Preferences window.
-///
-/// The visual contract comes from the Claude-Design handoff for TECH-E4:
-/// uppercase group label → raised card with a thin hairline → row stack
-/// with a fixed-width label column and a flexible control column →
-/// optional footer caption below the card. This matches the layout
-/// vocabulary the prompt panel and recording HUD already use, so all
-/// three surfaces feel like the same family.
-///
-/// Spacing values mirror the HTML prototype (`primitives.jsx`) so any
-/// pixel-perfect comparison still holds: 22pt between groups, 14pt
-/// horizontal pad inside rows, 168pt label column, 26pt control height.
+/// Shared SwiftUI primitives for the Preferences window (TECH-E4). Spacing mirrors the HTML prototype (`primitives.jsx`): 22pt between groups, 14pt horizontal pad, 168pt label column, 26pt control height.
 
 // MARK: - SectionHeader
 
@@ -47,9 +36,7 @@ struct SettingsSectionHeader<Trailing: View>: View {
 
 // MARK: - Group card
 
-/// One titled section card. Uppercase eyebrow label, raised-paper card
-/// holding row-stack content, optional footer caption. Pass an empty
-/// label to skip the eyebrow entirely (used by the Permissions section).
+/// Titled section card: uppercase eyebrow label, raised-paper card, optional footer. Pass nil/empty to skip the eyebrow (used by the Permissions section).
 struct SettingsGroup<Content: View, Footer: View>: View {
     let label: String?
     @ViewBuilder var content: () -> Content
@@ -93,17 +80,12 @@ struct SettingsGroup<Content: View, Footer: View>: View {
 
 // MARK: - Row
 
-/// A label+control row inside a SettingsGroup card. The label column is
-/// fixed at 168pt to keep controls vertically aligned across rows; the
-/// control column flexes to fill remaining width.
+/// Label+control row inside a SettingsGroup card. Label column is fixed at 168pt; control column flexes. `showsDivider: false` on the first row in a card.
 struct SettingsRow<Content: View>: View {
     let label: String
     let sublabel: String?
     let alignTop: Bool
     @ViewBuilder var content: () -> Content
-    /// Whether to draw the divider above this row. The first row in a
-    /// card omits it; everything else gets a hairline matching the
-    /// design's `border-faint` token.
     var showsDivider: Bool
 
     init(_ label: String,
@@ -147,8 +129,7 @@ struct SettingsRow<Content: View>: View {
     }
 }
 
-/// Full-width row variant — no label column. Used by the auto-consent
-/// allowlist where the tag stack + add input fill the whole card width.
+/// Full-width row variant (no label column). Used by the auto-consent allowlist.
 struct SettingsFullRow<Content: View>: View {
     @ViewBuilder var content: () -> Content
     var showsDivider: Bool
@@ -174,9 +155,7 @@ struct SettingsFullRow<Content: View>: View {
 
 // MARK: - Segmented
 
-/// Picker-as-segmented-control. SwiftUI's `.segmented` style matches
-/// the design's segmented look closely enough that we don't need a
-/// custom control here.
+/// Picker-as-segmented-control using SwiftUI's `.segmented` style.
 struct SettingsSegmented<Value: Hashable>: View {
     @Binding var selection: Value
     let options: [(value: Value, label: String)]
@@ -195,8 +174,7 @@ struct SettingsSegmented<Value: Hashable>: View {
 
 // MARK: - StatusPill
 
-/// Small pill used for permission status and integration health.
-/// Coloring lives in the Tone enum so callers don't repeat the mapping.
+/// Status pill for permission status and integration health. Color mapping lives in `Tone`.
 struct SettingsStatusPill: View {
     enum Tone {
         case granted
@@ -236,8 +214,7 @@ struct SettingsStatusPill: View {
 
 // MARK: - Tag
 
-/// Bundle-id chip with a remove affordance. Used in the auto-consent
-/// allowlist. Mono font so the bundle id reads as code, not copy.
+/// Bundle-id chip with a remove affordance. Mono font so the id reads as code.
 struct SettingsTag: View {
     let label: String
     let onRemove: (() -> Void)?
@@ -277,9 +254,7 @@ struct SettingsTag: View {
 
 // MARK: - Slider with value badge
 
-/// Slider + monospaced value readout pinned to the right. Matches the
-/// HTML prototype's `Slider` component including the signal-tinted
-/// filled portion of the track.
+/// Slider with a monospaced value readout, signal-tinted track.
 struct SettingsSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
@@ -301,18 +276,7 @@ struct SettingsSlider: View {
 
 // MARK: - HotkeyField
 
-/// Click-to-record hotkey input. Renders the current chord using the
-/// canonical ⌃⌥⇧⌘ glyphs; clicking switches into "press keys…" capture
-/// mode; the next valid chord (modifier(s) + a letter) is parsed,
-/// rendered back into the `ctrl+option+m` text format that
-/// `HotkeyManager.parse` accepts, and committed via the binding. Escape
-/// cancels without changing the value.
-///
-/// Only letter keys are accepted, matching `HotkeyManager.keyCodeFor` —
-/// the parser doesn't handle digits or function keys today, so allowing
-/// the user to "capture" one would silently produce an unbindable
-/// hotkey at daemon start. A non-letter press is ignored and capture
-/// stays armed.
+/// Click-to-record hotkey field. Captures a modifier+letter chord, renders it as ⌃⌥⇧⌘ glyphs, and commits in `ctrl+option+m` format that `HotkeyManager.parse` accepts. Only letters are accepted - digits/function keys are not handled by `HotkeyManager.keyCodeFor`, so a non-letter press is silently ignored and capture stays armed. Escape cancels.
 struct SettingsHotkeyField: View {
     @Binding var text: String
     @State private var isCapturing: Bool = false
@@ -379,9 +343,7 @@ struct SettingsHotkeyField: View {
         }
     }
 
-    /// Drop the event when it produces a complete chord. Returns nil to
-    /// swallow the keystroke so the letter doesn't end up typed into
-    /// whatever field is behind us in the responder chain.
+    /// Returns nil to swallow the keystroke so it doesn't propagate to the field behind us in the responder chain.
     private func handle(event: NSEvent) -> NSEvent? {
         // Escape cancels without writing.
         if event.keyCode == 53 {
@@ -400,8 +362,7 @@ struct SettingsHotkeyField: View {
         if flags.contains(.shift)   { parts.append("shift") }
         if flags.contains(.command) { parts.append("cmd") }
         guard !parts.isEmpty else {
-            // A bare letter would be a global hotkey that steals the
-            // letter from every app. Reject and wait for a modifier.
+            // Bare letter would steal the key from every app; require a modifier.
             return nil
         }
         parts.append(String(ch))
@@ -410,10 +371,7 @@ struct SettingsHotkeyField: View {
         return nil
     }
 
-    /// Render the stored canonical text ("ctrl+option+m") as the macOS
-    /// modifier glyph sequence (⌃⌥M). Falls back to the raw text if the
-    /// string doesn't parse — useful while the user edits the TOML file
-    /// directly with an unusual chord.
+    /// Render `ctrl+option+m` as `⌃⌥M`. Falls back to raw text for unusual chords typed directly in the TOML file.
     static func renderGlyphs(_ raw: String) -> String {
         let parts = raw.lowercased().split(separator: "+").map { $0.trimmingCharacters(in: .whitespaces) }
         var prefix = ""
@@ -437,8 +395,7 @@ struct SettingsHotkeyField: View {
 
 // MARK: - SecretInput
 
-/// Password-style field with an eye toggle to reveal. Used for the two
-/// secrets in the Integrations section.
+/// Password-style field with an eye toggle. Used for secrets in the Integrations section.
 struct SettingsSecretField: View {
     @Binding var text: String
     var placeholder: String = ""

@@ -1,17 +1,6 @@
 import AppKit
 
-/// 4-bar live audio meter rendered in `signal600`. Reads from the mic via
-/// `MicLevelMonitor` (started/stopped by the prompt window's lifecycle).
-///
-/// Visual: 14×8pt bounding box, 2pt-wide bars with 2pt gaps, heights
-/// driven by recent level samples. The newest sample appears on the right;
-/// older samples shift left so the bars feel like a moving sound wave
-/// rather than 4 independent meters.
-///
-/// Privacy: this view is purely visual; the sample buffer is computed and
-/// discarded inside `MicLevelMonitor`. The accompanying eyebrow copy on
-/// the prompt makes the contract explicit ("Listening for level only —
-/// nothing is captured until you choose Record.").
+/// 4-bar waveform meter in `signal600`. 14x8pt bounding box; newest sample on the right, older samples shift left. Purely visual - no buffer persisted (see `MicLevelMonitor`).
 final class LiveWaveformView: NSView {
     private static let barCount = 4
     private static let barWidth: CGFloat = 2
@@ -19,8 +8,7 @@ final class LiveWaveformView: NSView {
     private static let viewHeight: CGFloat = 14
     static let intrinsicWidth: CGFloat = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barGap
 
-    /// Floor: bars never collapse to zero — even silence shows a 2pt baseline,
-    /// matching the JSX prototype's `Math.max(0.18, ...)`.
+    /// Floor: even silence shows a 2pt baseline (matches `Math.max(0.18, ...)` in the JSX prototype).
     private static let levelFloor: Float = 0.18
 
     private var levels: [CGFloat] = Array(repeating: 0.4, count: LiveWaveformView.barCount)
@@ -34,7 +22,7 @@ final class LiveWaveformView: NSView {
         for bar in barLayers {
             bar.backgroundColor = MPColors.signal600.cgColor
             bar.cornerRadius = Self.barWidth / 2
-            bar.anchorPoint = CGPoint(x: 0.5, y: 0.5)   // grow from middle
+            bar.anchorPoint = CGPoint(x: 0.5, y: 0.5)   // bars grow from center
             layer?.addSublayer(bar)
         }
         layoutBars()
@@ -51,12 +39,11 @@ final class LiveWaveformView: NSView {
         layoutBars()
     }
 
-    /// Push a new mic-level sample (0...1). Older samples shift left.
+    /// Push a new level sample (0...1). Older samples shift left.
     func push(level: Float) {
         let clamped = CGFloat(min(1, max(Self.levelFloor, level)))
         levels.removeFirst()
         levels.append(clamped)
-        // Animate bar heights together; the layout itself doesn't move.
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.09)   // matches JSX 90ms tick
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .linear))

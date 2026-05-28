@@ -1,16 +1,6 @@
 import AppKit
 
-/// 24×24 stylized glyph that identifies the meeting source.
-///
-/// The design ships hand-tuned glyphs (`design/assets/app-glyphs/*.svg`) for
-/// the well-known meeting apps so the prompt has a consistent visual
-/// vocabulary. Unknown sources fall back to the signal-blue waveform mark.
-///
-/// Why not `NSWorkspace.shared.icon(forFile:)`? Real macOS app icons (Zoom,
-/// Teams, etc.) are squircle bitmaps with their vendor's branding — they
-/// look noisy next to the calm Paper/Ink/Signal palette. The design's
-/// stylized glyphs are intentionally simpler so the prompt feels like a
-/// system surface, not an alert window crammed with vendor logos.
+/// 24x24 glyph identifying the meeting source (`design/assets/app-glyphs/*.svg`). Unknown sources fall back to the signal-blue waveform mark. Uses hand-tuned SVGs instead of `NSWorkspace.icon(forFile:)` because real app icons (squircle vendor bitmaps) look noisy next to the Paper/Ink/Signal palette.
 final class AppGlyphView: NSImageView {
     init(source: AppSource) {
         super.init(frame: NSRect(x: 0, y: 0, width: 24, height: 24))
@@ -26,21 +16,10 @@ final class AppGlyphView: NSImageView {
 
     // MARK: Glyph resolution
 
-    /// Process-wide cache of decoded glyphs, keyed by filename. The
-    /// library list re-creates `AppGlyphView` instances every time a row
-    /// scrolls back into view, and re-reading the same `zoom.svg` /
-    /// `teams.svg` from the bundle (Bundle URL lookup + NSImage decode)
-    /// per row was the dominant per-row main-thread cost. Loading from
-    /// the cache turns the row glyph into an NSImage retain.
-    ///
-    /// Threading: all access happens from the main run loop. AppGlyphView
-    /// is constructed by NSViewRepresentable.makeNSView (main-actor) and
-    /// directly by AppKit code on main; no other reader exists today.
-    /// If a non-main caller is added later, swap to an NSCache.
+    /// Process-wide glyph cache keyed by filename. Re-reading the same SVG from the bundle on every library scroll was the dominant per-row main-thread cost. Threading: all access is main-thread only (NSViewRepresentable.makeNSView + AppKit); swap to NSCache if a non-main caller is added.
     nonisolated(unsafe) private static var glyphCache: [String: NSImage] = [:]
 
-    /// Bundle-ID first (stable), display-name second (handles browsers and
-    /// odd capitalizations), `_fallback.svg` last.
+    /// Bundle-ID first (stable across localizations), display-name second (handles browsers), `_fallback.svg` last.
     private static func loadGlyph(for source: AppSource) -> NSImage? {
         let name = filename(for: source)
         if let cached = glyphCache[name] { return cached }
@@ -60,11 +39,7 @@ final class AppGlyphView: NSImageView {
         return nil
     }
 
-    /// Maps an `AppSource` to one of the shipped glyph filenames (without
-    /// extension). Mirrors `APP_GLYPH_MAP` in the design's `MeetingPrompt.jsx`
-    /// but keys on bundleID first because it survives localization and
-    /// browser-detected meetings (where displayName is the browser, not
-    /// the meeting app).
+    /// Maps `AppSource` to a glyph filename. Mirrors `APP_GLYPH_MAP` in `MeetingPrompt.jsx`; bundleID takes priority because displayName is the browser name for browser-detected meetings.
     private static func filename(for source: AppSource) -> String {
         switch source.bundleID {
         case "us.zoom.xos": return "zoom"
@@ -73,8 +48,7 @@ final class AppGlyphView: NSImageView {
         case "com.google.meet": return "meet"
         default: break
         }
-        // Browser-detected meetings expose the browser bundle ID; we can't
-        // see the URL here, so fall through to displayName matching.
+        // Browser-detected meetings expose the browser bundle ID; fall through to displayName matching.
         switch source.displayName {
         case "Zoom": return "zoom"
         case "Teams", "Microsoft Teams": return "teams"
