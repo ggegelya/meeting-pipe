@@ -592,7 +592,10 @@ Acceptance:
 
 Deps: TECH-A11 (typed summary model exposes `detectedLanguage: String?` as a first-class field).
 
-**TECH-UI-5 · Inline title rename plus toolbar menu · M · none** [REVISED]
+**TECH-UI-5 · Inline title rename plus toolbar menu · M · none** [DONE]
+
+> Resolved 2026-05-28: the header title is now click-to-rename (static Text -> click or Return swaps to a focused field; `onSubmit` commits via the existing `commitTitle`/`writeTitle` sidecar write, `onExitCommand` (Escape) reverts, focus-loss commits). A hidden zero-size `keyboardShortcut(.return)` button focuses the title when nothing else claims the default action (read-only tabs). A `...` `actionsMenu` lives in the (now always-present) title row next to the ghost shortcuts, with Rename / Edit summary / Edit transcript / Reprocess / Open meta.json / Copy meeting ID / Delete; every item logs `Log.event(category: "detail", action: "toolbar.action", attributes: ["item": ...])`.
+> Stop-and-ask (orphaned actions): the only pre-existing "Edit" button was `SummaryTab`'s edit-summary toggle (not a six-action menu, contra the addendum's premise). It is preserved: "Edit summary" switches to the Summary tab and bumps a `summaryEditToken` that `SummaryTab` observes to enter edit mode, and the bottom-right Edit button was removed (its footer now renders only when there is a republish status badge). Transcript editing is per-line via the Transcript tab's right-click "Edit text...", so "Edit transcript" navigates to that tab rather than toggling a (nonexistent) global mode. Reprocess -> `retryMeeting`, Delete -> `softDeleteMeeting` (confirm alert). No functionality was orphaned; the dead `hasSummaryOnDisk` accessor was removed. Interaction code, so no new headless test; existing `MeetingDetailViewTests` stay green.
 
 Replace the bottom-right `Edit` button on `MeetingDetailView` with two affordances closer to the content: click-to-rename on the title text (TextField over title on click, Return commits, Escape cancels) plus a `...` toolbar button exposing the previously-gated actions (Edit summary, Edit transcript, Reprocess, Delete, Open meta.json, Copy meeting ID).
 

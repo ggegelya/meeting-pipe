@@ -17,6 +17,14 @@ struct MeetingDetailView: View {
     @State private var editingTitle: String = ""
     @State private var lastSyncedStem: String = ""
 
+    /// TECH-UI-5: click-to-rename. The title shows as static text until clicked
+    /// (or Return is pressed with nothing else focused), then swaps to a field.
+    @State private var isRenamingTitle = false
+    @FocusState private var titleFieldFocused: Bool
+    /// Bumped by the toolbar menu's "Edit summary" to ask `SummaryTab` to enter
+    /// edit mode, since that edit state lives inside the child tab.
+    @State private var summaryEditToken = 0
+
     /// Shared across Transcript (A6) and Audio (A7) so click-to-seek keeps the same play head when flipping tabs. Re-attached on stem change via `.task(id:)`.
     @StateObject private var playback = AudioPlaybackController()
 
@@ -70,30 +78,97 @@ struct MeetingDetailView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             titleRow
-            TextField("Untitled meeting", text: $editingTitle, onCommit: commitTitle)
-                .textFieldStyle(.plain)
-                .font(.system(size: 19, weight: .semibold))
-                .lineLimit(2)
+            titleField
             captionRow
         }
     }
 
-    /// Workflow chip + ghost shortcuts above the title. Collapses to zero height when neither is present so the title rises to the top.
+    /// Title as click-to-rename (TECH-UI-5). Static text until clicked, then an
+    /// inline field; Return commits, Escape reverts, focus-loss commits.
     @ViewBuilder
-    private var titleRow: some View {
-        let hasTopline = (meeting.workflowName?.isEmpty == false)
-            || cachedNotionURL != nil
-            || cachedObsidianURL != nil
-        if hasTopline {
-            HStack(spacing: 8) {
-                if let workflow = meeting.workflowName, !workflow.isEmpty {
-                    WorkflowChip(name: workflow, colorHex: meeting.workflowColor)
+    private var titleField: some View {
+        if isRenamingTitle {
+            TextField("Untitled meeting", text: $editingTitle)
+                .textFieldStyle(.plain)
+                .font(.system(size: 19, weight: .semibold))
+                .lineLimit(2)
+                .focused($titleFieldFocused)
+                .onSubmit { commitRename() }
+                .onExitCommand { cancelRename() }
+                .onChange(of: titleFieldFocused) { _, focused in
+                    if !focused && isRenamingTitle { commitRename() }
                 }
-                Spacer(minLength: 0)
-                ghostShortcuts
-            }
-            .frame(minHeight: 18)
+        } else {
+            Text(editingTitle.isEmpty ? "Untitled meeting" : editingTitle)
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(Color(MPColors.fg))
+                .lineLimit(2)
+                .contentShape(Rectangle())
+                .onTapGesture { beginRename() }
+                .help("Click to rename")
+                .background(
+                    // Return focuses the title for rename when nothing else
+                    // claims the default action (read-only tabs). Hidden, zero-size.
+                    Button("") { beginRename() }
+                        .keyboardShortcut(.return, modifiers: [])
+                        .opacity(0)
+                        .frame(width: 0, height: 0)
+                        .accessibilityHidden(true)
+                )
         }
+    }
+
+    /// Workflow chip (left) + ghost shortcuts and the actions menu (right).
+    /// Always present so the `...` menu is reachable even with no workflow/sink.
+    private var titleRow: some View {
+        HStack(spacing: 8) {
+            if let workflow = meeting.workflowName, !workflow.isEmpty {
+                WorkflowChip(name: workflow, colorHex: meeting.workflowColor)
+            }
+            Spacer(minLength: 0)
+            ghostShortcuts
+            actionsMenu
+        }
+        .frame(minHeight: 18)
+    }
+
+    /// Detail-pane `...` actions menu (TECH-UI-5). Each item logs a
+    /// `detail.toolbar.action` event for audit traceability.
+    private var actionsMenu: some View {
+        Menu {
+            Button("Rename") { beginRename() }
+            Divider()
+            Button("Edit summary") {
+                toolbarAction("edit_summary") {
+                    selectedTab = Tab.summary.rawValue
+                    summaryEditToken += 1
+                }
+            }
+            Button("Edit transcript") {
+                toolbarAction("edit_transcript") { selectedTab = Tab.transcript.rawValue }
+            }
+            Button("Reprocess") {
+                toolbarAction("reprocess") { _ = libraryModel.retryMeeting(stem: meeting.stem) }
+            }
+            Divider()
+            Button("Open meta.json") {
+                toolbarAction("open_meta") { openMetaJSON() }
+            }
+            Button("Copy meeting ID") {
+                toolbarAction("copy_id") { copyMeetingID() }
+            }
+            Divider()
+            Button("Delete\u{2026}", role: .destructive) {
+                toolbarAction("delete") { confirmDelete() }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("More actions")
+        .accessibilityLabel("More actions")
     }
 
     /// Full date, duration (mono), and source app. Same hierarchy as the list row caption.
@@ -213,7 +288,7 @@ struct MeetingDetailView: View {
     // MARK: Tabs
 
     private var summaryTab: some View {
-        SummaryTab(meeting: meeting)
+        SummaryTab(meeting: meeting, editToken: summaryEditToken)
             .environmentObject(libraryModel)
     }
 
@@ -239,6 +314,61 @@ struct MeetingDetailView: View {
         if force || lastSyncedStem != meeting.stem {
             editingTitle = meeting.displayTitle
             lastSyncedStem = meeting.stem
+        }
+    }
+
+    // MARK: Rename + toolbar actions (TECH-UI-5)
+
+    private func beginRename() {
+        guard !isRenamingTitle else { return }
+        editingTitle = meeting.displayTitle
+        isRenamingTitle = true
+        titleFieldFocused = true
+    }
+
+    private func commitRename() {
+        guard isRenamingTitle else { return }
+        isRenamingTitle = false
+        commitTitle()
+    }
+
+    private func cancelRename() {
+        editingTitle = meeting.displayTitle
+        isRenamingTitle = false
+    }
+
+    /// Log a `detail.toolbar.action` event then run the action (TECH-UI-5).
+    private func toolbarAction(_ item: String, _ body: () -> Void) {
+        Log.event(category: "detail", action: "toolbar.action", attributes: [
+            "item": item,
+            "stem": meeting.stem,
+        ])
+        body()
+    }
+
+    private func openMetaJSON() {
+        let metaURL = meeting.recordingsDir.appendingPathComponent("\(meeting.stem).meta.json")
+        if FileManager.default.fileExists(atPath: metaURL.path) {
+            NSWorkspace.shared.open(metaURL)
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting([meeting.wavURL])
+        }
+    }
+
+    private func copyMeetingID() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(meeting.stem, forType: .string)
+    }
+
+    private func confirmDelete() {
+        let alert = NSAlert()
+        alert.messageText = "Move \(meeting.displayTitle) to Trash?"
+        alert.informativeText = "Every file for this meeting (audio, transcript, summary, sidecars) goes to the Trash. You can restore from there until the Trash is emptied."
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        if alert.runModal() == .alertFirstButtonReturn {
+            _ = libraryModel.softDeleteMeeting(stem: meeting.stem)
         }
     }
 
@@ -358,6 +488,8 @@ enum PublishURLs {
 struct SummaryTab: View {
     @EnvironmentObject var libraryModel: LibraryWindowModel
     let meeting: Meeting
+    /// Bumped by the detail-pane `...` menu's "Edit summary" to enter edit mode (TECH-UI-5).
+    var editToken: Int = 0
 
     /// Loaded off-main on stem change. Caching avoids disk IO on the main thread, which pinned it during recording.
     @State private var loadedSummary: MeetingSummary? = nil
@@ -390,6 +522,10 @@ struct SummaryTab: View {
             editorModel = nil
             lastRepublishResult = nil
         }
+        .onChange(of: editToken) { _, _ in
+            // TECH-UI-5: the detail-pane menu requested summary editing.
+            beginEditing()
+        }
     }
 
     // MARK: Read-only render
@@ -408,20 +544,18 @@ struct SummaryTab: View {
                         .padding(40)
                 }
             }
-            Divider()
-            HStack {
-                if let result = lastRepublishResult {
+            // TECH-UI-5: the bottom-right Edit button moved to the detail-pane
+            // `...` menu ("Edit summary"). The footer now only carries the
+            // republish status badge, so it renders only when there is one.
+            if let result = lastRepublishResult {
+                Divider()
+                HStack {
                     statusBadge(for: result)
+                    Spacer()
                 }
-                Spacer()
-                Button("Edit") {
-                    beginEditing()
-                }
-                .disabled(!hasSummaryOnDisk)
-                .keyboardShortcut(.defaultAction)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
         }
     }
 
@@ -523,10 +657,6 @@ struct SummaryTab: View {
                     .lineLimit(1)
             }
         }
-    }
-
-    private var hasSummaryOnDisk: Bool {
-        FileManager.default.fileExists(atPath: summaryJsonURL.path)
     }
 
     private var summaryJsonURL: URL {
