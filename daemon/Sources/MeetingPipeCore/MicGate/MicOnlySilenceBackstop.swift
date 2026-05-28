@@ -1,20 +1,6 @@
 import Foundation
 
-/// Mic-only-silence backstop (TECH-C7).
-///
-/// Catches the scenario where the user joins a meeting, every other
-/// participant drops, and the user forgets to stop the recording.
-/// The backstop fires when the writer has been emitting zero-amp
-/// frames (any non-`.hot` MicGateVerdict) AND the system-audio
-/// channel has been silent for longer than the configured window
-/// (default 8 minutes).
-///
-/// Pure-logic type with explicit `ingest(verdict:hasSystemAudio:at:)`
-/// + `reset()`. The host (RecordingStateMachine) feeds events and
-/// stops the recording when `onTriggered` fires.
-///
-/// Threading: not internally synchronised. The host owns single-queue
-/// access (writer thread or main).
+/// Silence backstop (TECH-C7): fires when the mic is non-`.hot` AND system audio has been silent for longer than the configured window (default 8 min), catching the "last person in a call" forgotten-recording scenario. Pure logic; the host (RecordingStateMachine) feeds `ingest` and stops recording on `onTriggered`. Not internally synchronised; host owns queue access.
 public final class MicOnlySilenceBackstop {
 
     public typealias Clock = () -> Date
@@ -36,16 +22,13 @@ public final class MicOnlySilenceBackstop {
         self.clock = clock
     }
 
-    /// Reset to "no accumulated silence". Call at recording start.
+    /// Reset accumulated silence. Call at recording start.
     public func reset() {
         triggered = false
         silenceStart = nil
     }
 
-    /// Feed the current MicGateVerdict + whether the SCStream
-    /// right-channel buffer contains live audio. The host computes
-    /// `hasSystemAudio` from its own buffer-level peak detector;
-    /// the backstop does not have access to the right channel.
+    /// Feed the current verdict and whether the SCStream right channel has live audio. Host computes `hasSystemAudio` via its own peak detector; backstop has no direct right-channel access.
     public func ingest(
         verdict: MicGateVerdict,
         hasSystemAudio: Bool,

@@ -1,26 +1,7 @@
 import CoreAudio
 import Foundation
 
-/// Single-owner registration point for CoreAudio HAL property listeners.
-///
-/// Both `MeetingLifecycleCoordinator` (process-input-running, default
-/// input device changes) and `MicGate` (HAL VAD enable/state, system
-/// input mute) need property listeners on the same AudioObject space.
-/// Centralising registration here keeps the runtime predictable: one
-/// dispatch queue, one place to inspect what's currently subscribed,
-/// one teardown path on shutdown.
-///
-/// The skeleton lands in TECH-C13 step 1. Real registration via
-/// `AudioObjectAddPropertyListenerBlock` is wired in step 2 (PrimaryC13
-/// signals) and TECH-G-MIC step 1 (HAL VAD / system mute probes). For
-/// now the bus only owns the subscription bookkeeping and the test
-/// seam; the production `RealCoreAudioBackend` defaults to a no-op
-/// registration and emits a log line so callers can observe the gap.
-///
-/// Threading: every entry point is serialised on `queue`. Handlers are
-/// dispatched on the same queue, matching the contract that
-/// `AudioObjectAddPropertyListenerBlock`'s dispatch queue parameter
-/// would normally provide.
+/// Single-owner registration point for CoreAudio HAL property listeners. Centralises `MeetingLifecycleCoordinator` (process-input-running, default input device changes) and `MicGate` (HAL VAD enable/state, system input mute) onto one dispatch queue and one teardown path (TECH-C13 step 1; real `AudioObjectAddPropertyListenerBlock` wired in step 2 and TECH-G-MIC step 1). Threading: all entry points serialised on `queue`; handlers dispatched on the same queue.
 public final class CoreAudioHALBus {
 
     /// Identifies a HAL property subscription: the AudioObject plus the
@@ -44,13 +25,8 @@ public final class CoreAudioHALBus {
         }
     }
 
-    /// Concrete backend that performs the real CoreAudio registration.
-    /// Production wires `RealCoreAudioBackend`; tests inject a stub.
+    /// Performs the real CoreAudio registration. Production wires `RealCoreAudioBackend`; tests inject a stub. Returns a teardown closure; should throw on registration error so the bus can surface it to the caller's `EventLog`.
     public protocol Backend: AnyObject {
-        /// Returns a teardown closure that the bus stores against the
-        /// subscription token. Implementations should fail loud if
-        /// registration errors; the bus surfaces the error to the
-        /// caller's `EventLog`.
         func register(_ address: Address, handler: @escaping () -> Void) throws -> () -> Void
     }
 
@@ -85,14 +61,7 @@ public final class CoreAudioHALBus {
         self.eventLog = eventLog
     }
 
-    /// Subscribe to a HAL property. Returns a token the caller stores
-    /// and passes to `unsubscribe` at meeting end.
-    ///
-    /// Per-subscription diagnostic events bracket the registration so a
-    /// `lifecycle_engage_failed` is traceable down to the exact
-    /// AudioObject + selector that returned the OSStatus. On failure,
-    /// `subscribe_failed` reports both the numeric status and its
-    /// four-char code (e.g. 560947818 -> "!obj") before re-throwing.
+    /// Subscribe to a HAL property. On failure, `subscribe_failed` logs the numeric OSStatus and its four-char code (e.g. 560947818 -> "!obj") so a `lifecycle_engage_failed` is traceable to the exact AudioObject + selector.
     public func subscribe(_ address: Address, handler: @escaping () -> Void) throws -> Token {
         let attemptAttrs: [String: Any] = [
             "object_id": address.objectID,
@@ -140,7 +109,7 @@ public final class CoreAudioHALBus {
         }
     }
 
-    /// Tear down every active subscription. Called at daemon shutdown.
+    /// Tear down all active subscriptions. Called at daemon shutdown.
     public func reset() {
         queue.sync {
             for sub in subscriptions.values { sub.teardown() }
@@ -166,11 +135,7 @@ public final class CoreAudioHALBus {
     }
 }
 
-/// Default backend used until the real CoreAudio wiring lands. Records
-/// no listener but returns a teardown so the bus's bookkeeping behaves
-/// identically to production. Step 2 (TECH-C13) and TECH-G-MIC step 1
-/// replace this with a real `AudioObjectAddPropertyListenerBlock`
-/// backend.
+/// No-op backend used until real CoreAudio wiring lands (TECH-C13 step 2, TECH-G-MIC step 1). Records no listener but returns a teardown so bus bookkeeping behaves identically to production.
 public final class NoopCoreAudioBackend: CoreAudioHALBus.Backend {
     public init() {}
 

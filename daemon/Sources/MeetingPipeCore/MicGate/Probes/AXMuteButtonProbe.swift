@@ -1,28 +1,12 @@
 import ApplicationServices
 import Foundation
 
-/// AX mute-button probe. Wraps the meeting-app's mute-button
-/// `AXUIElement` (resolved once by the executable's AX walk) and
-/// emits `MuteLabels.State` transitions whenever the button's
-/// `kAXValueChangedNotification` or `kAXTitleChangedNotification`
-/// fires.
-///
-/// A 1 Hz health poll re-evaluates the button via
-/// `AXUIElementCopyAttributeValue` to absorb Sequoia notification
-/// drops; the poll also tolerates AX hiccups by treating an
-/// unrecognised label as `.unknown` (the consumer keeps the prior
-/// state).
-///
-/// Threading: `start` and `stop` must run on the main queue.
-/// Notifications fire on main via `AXObserverBus`; the poll fires on
-/// the scheduler's queue.
+/// AX mute-button probe. Watches `kAXValueChangedNotification` and `kAXTitleChangedNotification` on the meeting app's mute `AXUIElement`. A 1 Hz health poll absorbs Sequoia notification drops; transient `.unknown` results latch the prior known state (see `evaluate` inline comment). Threading: `start`/`stop` on main; notifications fire on main via `AXObserverBus`; poll fires on the scheduler's queue.
 public final class AXMuteButtonProbe {
 
     public typealias Probe = (AXUIElement) -> AXTextBlob
 
-    /// Tuple shape the recognise / label-extraction code wants. Keeps
-    /// the AX scrape decoupled from the recogniser so the recogniser
-    /// is testable without driving live AX.
+    /// AX attribute bundle passed to `recognize`; decouples the scrape from the recogniser for unit tests.
     public struct AXTextBlob: Equatable {
         public let title: String?
         public let help: String?

@@ -1,23 +1,7 @@
 import Foundation
 import TOMLKit
 
-/// Catalogue of localised mute / unmute labels per meeting client.
-/// Built from `MuteLabels.toml` shipped as a resource of
-/// `MeetingPipeCore`.
-///
-/// `recognize(bundleID:locale:title:help:description:)` is the
-/// AX-side entry point: it takes a button's AX text blob plus the
-/// active locale and returns a `Mute.State`. Used by
-/// `AXMuteButtonProbe` (TECH-G-MIC step 3) when the locale's catalogue
-/// resolves; falls through to `.unknown` for unsupported app/locale
-/// pairs.
-///
-/// The loader does not interpret strings beyond case-insensitive
-/// substring matching with explicit precedence: status_muted /
-/// status_unmuted phrases beat action_unmute / action_mute because
-/// the status phrases are unambiguous (the action verbs are
-/// substrings of each other in some locales, e.g. "unmute" inside
-/// "unmuted").
+/// Localised mute/unmute label catalogue per meeting client, loaded from `MuteLabels.toml`. `recognize` takes a button's AX text blob and active locale and returns `MuteLabels.State` (used by `AXMuteButtonProbe`, TECH-G-MIC step 3). Matching is case-insensitive with explicit precedence: status_muted/status_unmuted beat action_unmute/action_mute because the action verbs are substrings of each other in some locales (e.g. "unmute" inside "unmuted").
 public struct MuteLabels {
 
     public enum State: Equatable {
@@ -50,25 +34,19 @@ public struct MuteLabels {
         }
     }
 
-    /// Keyed by app name (lowercase) -> locale -> entry. Apps are
-    /// the short names in the TOML (`teams`, `zoom`, `slack`, etc.),
-    /// distinct from bundle IDs.
+    /// Keyed by app short name (lowercase, e.g. `teams`, `zoom`) -> locale -> entry. Distinct from bundle IDs.
     public let entries: [String: [String: AppEntry]]
 
     public init(entries: [String: [String: AppEntry]]) {
         self.entries = entries
     }
 
-    /// Entry for a given app + locale. Returns nil when either is
-    /// not in the catalogue. The caller decides whether to fall
-    /// through to RMS-only gating in that case.
+    /// Entry for the given app + locale, or nil (caller falls through to RMS-only gating).
     public func entry(app: String, locale: String) -> AppEntry? {
         entries[app.lowercased()]?[locale.lowercased()]
     }
 
-    /// Recognise the AX text blob against the (app, locale) entry.
-    /// Returns `.unknown` when the entry is missing or the blob
-    /// matches no labels.
+    /// Recognise the AX text blob against the (app, locale) entry. Returns `.unknown` when missing or no label matched.
     public func recognize(
         app: String,
         locale: String,
@@ -89,23 +67,7 @@ public struct MuteLabels {
         return .unknown
     }
 
-    /// Word-boundary substring check. Returns true if `label` appears
-    /// in `blob` flanked by non-letter characters or string
-    /// boundaries on both sides.
-    ///
-    /// Replaces a plain `blob.contains(label)` check that caused
-    /// MicGate to spuriously publish `mutedByApp` and zero the user's
-    /// mic during the 2026-05-20 25-minute Teams meeting. Teams 2
-    /// exposes a status indicator with `kAXTitleAttribute = "Unmuted
-    /// (⌥ ⌘ Q)"` separately from the toggle button labeled "Mute
-    /// mic" / "Unmute mic". The substring `"unmute"` matched the
-    /// `"Unmuted"` prefix and recognise() mis-classified the
-    /// indicator as the `actionUnmute` label (which means "user is
-    /// muted"). Word boundaries make "Unmute" reject "Unmuted"
-    /// because the trailing `d` is a letter.
-    ///
-    /// Caller passes `blob` already lowercased per recognize()'s
-    /// existing contract; the label is lowercased defensively.
+    /// Word-boundary substring check: true if `label` appears in `blob` flanked by non-letter characters or string boundaries. Replaces a plain `contains` that spuriously muted the mic for 25 min during the 2026-05-20 Teams meeting: Teams 2 exposes a status indicator (`kAXTitleAttribute = "Unmuted (⌥ ⌘ Q)"`) alongside the toggle button; `"unmute"` matched the `"Unmuted"` prefix and `recognize` mis-classified the indicator as `actionUnmute` (meaning "user is muted"). Word boundaries make "Unmute" reject "Unmuted" because the trailing `d` is a letter. `blob` is expected lowercased; `label` is lowercased defensively.
     public static func containsAsWord(blob: String, label: String) -> Bool {
         let needle = label.lowercased()
         guard !needle.isEmpty else { return false }
@@ -143,8 +105,7 @@ public enum MuteLabelsLoader {
         }
     }
 
-    /// Load the catalogue from `MuteLabels.toml` shipped with the
-    /// `MeetingPipeCore` resource bundle.
+    /// Load the catalogue from `MuteLabels.toml` in the `MeetingPipeCore` bundle.
     public static func loadDefault() throws -> MuteLabels {
         try loadDefault(bundle: .module)
     }
@@ -160,8 +121,7 @@ public enum MuteLabelsLoader {
         return try load(tomlString: toml)
     }
 
-    /// Parse an arbitrary TOML string. Useful for tests that want to
-    /// pin specific catalogue contents.
+    /// Parse an arbitrary TOML string (for tests pinning specific catalogue contents).
     public static func load(tomlString: String) throws -> MuteLabels {
         let table: TOMLTable
         do {

@@ -1,28 +1,7 @@
 import CoreAudio
 import Foundation
 
-/// HAL voice-activity-detection probe. Watches
-/// `kAudioDevicePropertyVoiceActivityDetectionState` on the default
-/// input device through `CoreAudioHALBus`.
-///
-/// The probe is strictly observational. It READS
-/// `kAudioDevicePropertyVoiceActivityDetectionEnable` to learn
-/// whether the OS already has VAD on; it never writes that property.
-/// Forcing VAD on reconfigures the input device into voice-processing
-/// mode, and on a combined input/output device (a Bluetooth or USB
-/// headset) that drops system audio output until the device is
-/// re-enumerated, with no auto-revert by macOS. That is the same
-/// HAL-state-corruption class `MeetingRecorder` documents for the
-/// VPIO unit, so the probe must never trigger it.
-///
-/// macOS 14.0+ exposes per-device VAD. When VAD is not already
-/// enabled (the common case), on older releases, on USB mics that
-/// don't implement the property, and on virtual devices, the probe
-/// emits `signal:vad_unsupported` once and operates as a no-op so
-/// the RMS gate handles speech detection on its own.
-///
-/// Threading: `start` and `stop` must run on the main queue.
-/// Handlers fire on the bus's serial queue.
+/// HAL VAD probe. Watches `kAudioDevicePropertyVoiceActivityDetectionState` via `CoreAudioHALBus`. Strictly observational: reads `kAudioDevicePropertyVoiceActivityDetectionEnable` to learn whether the OS already has VAD on but never writes it. Writing the enable bit forces the device into voice-processing mode; on a combined input/output device (Bluetooth/USB headset) that silently drops system audio output until re-enumeration with no auto-revert - the same HAL-state-corruption class `MeetingRecorder` documents for the VPIO unit. When VAD is not already enabled (macOS < 14.0, USB mics that omit the property, virtual devices), the probe emits `vad_unsupported` once and operates as a no-op so RMS carries speech detection. Threading: `start`/`stop` on main; handlers on the bus's serial queue.
 public final class HALVoiceActivityProbe {
 
     public typealias EnableProbe = (AudioDeviceID) -> Bool
@@ -112,13 +91,7 @@ public final class HALVoiceActivityProbe {
 
     // MARK: - Default seams
 
-    /// Observational enable check: reports whether the device already
-    /// has `kAudioDevicePropertyVoiceActivityDetectionEnable` set. It
-    /// READS the property and never writes it. Writing it on forces the
-    /// input device into voice-processing mode, which silently drops
-    /// system audio output on combined input/output headsets (see the
-    /// type doc). When VAD is off the probe degrades to `.unsupported`
-    /// and the RMS gate carries speech detection.
+    /// Reads `kAudioDevicePropertyVoiceActivityDetectionEnable` (never writes it - see type doc for the headset audio-drop hazard). Returns false when VAD is off; probe degrades to `.unsupported` and RMS carries speech detection.
     public static let defaultEnableProbe: EnableProbe = { device in
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVoiceActivityDetectionEnable,

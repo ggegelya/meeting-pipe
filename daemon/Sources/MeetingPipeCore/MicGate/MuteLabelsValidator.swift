@@ -1,19 +1,6 @@
 import Foundation
 
-/// Validator skeleton for `MuteLabels.toml`. The shipping form runs
-/// in CI: it scrapes each meeting app's AX subtree per locale and
-/// asserts that at least one TOML label per category resolves. Label
-/// drift (vendor renames a button across a version bump) fails the
-/// CI job and surfaces the missing entry for a TOML update.
-///
-/// The probe is injected so the validator type is unit-testable
-/// without driving live AX. Production wires a probe that runs an
-/// AX walk for the given app + locale and returns the recognised
-/// labels; the validator compares them against the TOML entry.
-///
-/// Step 2 ships the API surface plus a test that locks in the
-/// "missing entry -> failure" path. The CI driver lands in step 6
-/// alongside the remaining locales.
+/// CI validator for `MuteLabels.toml`. Scrapes each app's AX subtree per locale and asserts at least one TOML label per category resolves; label drift (vendor renames a button) fails the job. Probe is injected for unit-testability without live AX. API surface landed in step 2; CI driver with remaining locales lands in step 6.
 public final class MuteLabelsValidator {
 
     public struct Probe {
@@ -21,9 +8,7 @@ public final class MuteLabelsValidator {
         public let app: String
         public let locale: String
 
-        /// Returns the recognised labels (title / help / description)
-        /// for the app's mute button under the given locale. Nil
-        /// when the app isn't installed or AX denied.
+        /// Returns recognised AX labels for the app's mute button, or nil if not installed / AX denied.
         public let scrape: () -> [String]?
 
         public init(

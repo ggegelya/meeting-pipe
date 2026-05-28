@@ -1,34 +1,20 @@
 import Foundation
 
-/// Per-buffer verdict from `MicGate`. Determines whether the writer
-/// should emit live mic samples or zero-amplitude frames for the
-/// current capture buffer.
-///
-/// Each case carries the reasoning chain that justifies it; the
-/// reasons are written into events.jsonl so post-hoc analysis can
-/// reconstruct why the gate flipped.
+/// Per-buffer verdict from `MicGate`. Determines whether the writer emits live mic samples or zero-amplitude frames. Reasons are written to events.jsonl for post-hoc gate-flip analysis.
 public enum MicGateVerdict: Equatable {
-    /// Mic is hot: live samples pass through. The reason names which
-    /// PRIMARY probe satisfied (VAD vs RMS-above-open-threshold).
+    /// Live samples pass through. Reason names the primary probe (VAD vs RMS-above-open-threshold).
     case hot(reason: Reason)
 
-    /// Meeting app reports mute via AX. The writer emits zero-amp
-    /// frames and the audit attribute records the localised label
-    /// that matched.
+    /// Meeting app reports mute via AX; audit attribute records the matched localised label.
     case mutedByApp(axLabel: String, locale: String)
 
-    /// System input mute (Control Center / hardware key / per-device
-    /// property) is engaged. Highest precedence.
+    /// HAL system-input mute (Control Center / hardware key / per-device property). Highest precedence.
     case mutedByHardware
 
-    /// RMS gate is in the closed state. Used when no other PRIMARY
-    /// signal flips and the user is simply silent.
+    /// RMS gate closed; no other primary signal active.
     case silentByRMS(dwellMillis: Int)
 
-    /// No probe gave a confident verdict. The writer still emits
-    /// zero-amp frames (safer than risking ambient capture) and the
-    /// audit log lists every probe's reasoning so the gap can be
-    /// investigated.
+    /// No probe gave a confident verdict. Writer emits zero-amp frames (safer than ambient capture); audit log lists per-probe gaps.
     case uncertain(reasons: [String])
 
     public enum Reason: String, Equatable {
@@ -36,8 +22,7 @@ public enum MicGateVerdict: Equatable {
         case rmsAboveOpenThreshold = "rms_above_open_threshold"
     }
 
-    /// Whether the writer should pass live mic samples for this
-    /// verdict. The only case that admits live audio is `.hot`.
+    /// True only for `.hot`; all other verdicts zero the mic.
     public var passesLiveAudio: Bool {
         if case .hot = self { return true }
         return false

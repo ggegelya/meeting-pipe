@@ -1,20 +1,7 @@
 import ApplicationServices
 import Foundation
 
-/// Production backend for `AXObserverBus`. Caches one `AXObserver` per
-/// PID and multiplexes notification handlers off of it so a single
-/// AX-tree walk satisfies the lifecycle + gate consumers, matching the
-/// "AX tree walked exactly once per meeting" requirement in TECH-C13.
-///
-/// Threading: AXObserver requires a runloop. The backend pins each
-/// observer's run-loop source to the *main* runloop so handlers fire
-/// where AppKit / SwiftUI subscribers can act on them without a hop.
-/// The bus itself adds a defensive `DispatchQueue.main.async` on top,
-/// but pinning here keeps the underlying notification source live.
-///
-/// Each `register` returns a teardown that detaches the notification.
-/// When the observer's handler count drops to zero, its run-loop
-/// source is removed and the observer is discarded.
+/// Production backend for `AXObserverBus`. Caches one `AXObserver` per PID so a single AX-tree walk satisfies lifecycle + gate consumers (TECH-C13 "walked exactly once per meeting"). Run-loop source is pinned to the main runloop because AXObserver requires a runloop and handlers need to fire where AppKit/SwiftUI subscribers can act without a hop; the bus adds a defensive `DispatchQueue.main.async` on top but pinning here keeps the source live. Observer is discarded when handler count reaches zero.
 public final class RealAXBackend: AXObserverBus.Backend {
 
     private final class ObserverEntry {
@@ -88,10 +75,7 @@ public final class RealAXBackend: AXObserverBus.Backend {
     }
 }
 
-/// AXObserver callback signature requires a C function pointer. The
-/// per-handler closure is stored in a retained `HandlerBox` whose
-/// opaque pointer is passed as `userInfo`; the callback unboxes and
-/// invokes it.
+/// AXObserver callback (C function pointer required). Per-handler closure is stored in a retained `HandlerBox` passed as `userInfo`; the callback unboxes and invokes it.
 private func AXBackendCallback(
     _ observer: AXObserver,
     _ element: AXUIElement,

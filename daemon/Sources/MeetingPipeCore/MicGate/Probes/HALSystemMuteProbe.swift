@@ -1,18 +1,7 @@
 import CoreAudio
 import Foundation
 
-/// HAL system-input mute probe. Watches `kAudioObjectPropertyMute`
-/// on the default input device through `CoreAudioHALBus`.
-///
-/// `.mutedByHardware` has the highest precedence in the MicGate
-/// verdict pipeline, so this probe's state is consulted before any
-/// other probe runs. The probe also re-resolves the default-input
-/// device on `kAudioHardwarePropertyDefaultInputDevice` changes (the
-/// HAL VAD enable bit is per-device, so a device switch can flip both
-/// HAL VAD support and HAL system mute simultaneously).
-///
-/// Threading: `start` and `stop` must run on the main queue.
-/// Handlers fire on the bus's serial queue.
+/// HAL system-input mute probe. Watches `kAudioObjectPropertyMute` on the default input device. Highest precedence in the MicGate verdict pipeline. Re-resolves on `kAudioHardwarePropertyDefaultInputDevice` changes because the HAL VAD enable bit is per-device, so a device switch can flip both HAL VAD support and system mute simultaneously. Threading: `start`/`stop` on main; handlers on the bus's serial queue.
 public final class HALSystemMuteProbe {
 
     public typealias Probe = (AudioDeviceID) -> Bool?

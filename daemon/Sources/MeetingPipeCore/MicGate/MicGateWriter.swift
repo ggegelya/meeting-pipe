@@ -1,18 +1,6 @@
 import Foundation
 
-/// Per-buffer writer that converts a `MicGateVerdict` into an
-/// amplitude-shaped buffer the recorder can emit. The writer is
-/// stateless across buffers in the sense that the verdict carries
-/// the truth; it does carry the *previous* verdict so transitions
-/// can apply a 20 ms (configurable) linear fade between live mic
-/// audio and zero-amplitude frames.
-///
-/// The writer never skips frames: skipping breaks sample alignment
-/// with the ScreenCaptureKit right channel (per TECH-G-MIC spec).
-/// The output buffer always has the same length as the input.
-///
-/// Threading: instances are not safe for concurrent use across
-/// queues. The natural owner is the audio tap thread.
+/// Per-buffer writer: applies a `MicGateVerdict` in place with a configurable linear fade (default 20 ms) between hot and muted states. Frames are never skipped - dropping breaks sample alignment with the SCKit right channel (TECH-G-MIC spec). Not thread-safe; natural owner is the audio tap thread.
 public final class MicGateWriter {
 
     public let sampleRate: Double
@@ -41,8 +29,7 @@ public final class MicGateWriter {
         }
     }
 
-    /// Apply the verdict to the buffer in place. Returns the
-    /// transformation kind for the audit log.
+    /// Apply the verdict to `buffer` in place. Returns the transformation kind for the audit log.
     @discardableResult
     public func apply(
         verdict: MicGateVerdict,
@@ -65,8 +52,7 @@ public final class MicGateWriter {
         return startFade(buffer, becomingHot: isHot)
     }
 
-    /// Reset transition state. Call between meetings so a fade in
-    /// progress from a prior session doesn't bleed into the next.
+    /// Reset fade state between meetings to prevent bleed from a prior session.
     public func reset() {
         lastVerdictWasHot = false
         samplesIntoTransition = 0

@@ -1,23 +1,7 @@
 import ApplicationServices
 import Foundation
 
-/// Single-owner registration point for Accessibility observers.
-///
-/// `MeetingLifecycleCoordinator` (Leave-button destruction notifications,
-/// title changes) and `MicGate` (Mute-button value + title changes) both
-/// need to observe AX notifications on the meeting-app process. The bus
-/// gives them one registration path, one dispatch queue, and one teardown
-/// point. Each `subscribe` maps 1:1 to a backend registration keyed by
-/// `Token`; TECH-C13 specced coalescing to one shared `AXObserver` per
-/// PID, but that deduplication was never built.
-///
-/// Real registration via `AXObserverAddNotification` is provided by the
-/// backend; the default `NoopAXBackend` records no observer but returns a
-/// teardown so the bus's accounting matches production.
-///
-/// Threading: every entry point is serialised on `queue`. Handlers are
-/// dispatched on the main queue so subscribers can touch AppKit /
-/// `Coordinator` state without a hop.
+/// Single-owner registration point for Accessibility observers. Gives `MeetingLifecycleCoordinator` (Leave-button/title changes) and `MicGate` (Mute-button value/title changes) one registration path, one queue, one teardown. Each `subscribe` maps 1:1 to a backend `Token`; TECH-C13 specced per-PID coalescing but it was never built. Threading: all entry points serialised on `queue`; handlers dispatched on main so subscribers can touch AppKit/Coordinator state without a hop.
 public final class AXObserverBus {
 
     /// Identifies a single AX subscription on a specific element + name.
@@ -32,10 +16,7 @@ public final class AXObserverBus {
     }
 
     public protocol Backend: AnyObject {
-        /// Returns a teardown closure that the bus stores against the
-        /// subscription token. Implementations should fail loud if
-        /// `AXObserverAddNotification` errors (the bus surfaces the
-        /// error to the caller's `EventLog`).
+        /// Returns a teardown closure; should throw on `AXObserverAddNotification` error so the bus can surface it to the caller's `EventLog`.
         func register(
             pid: pid_t,
             element: AXUIElement,
@@ -75,9 +56,7 @@ public final class AXObserverBus {
         self.eventLog = eventLog
     }
 
-    /// Subscribe to an AX notification on a specific element. Handlers
-    /// fire on the main queue; callers can synchronously touch
-    /// Coordinator state without an extra hop.
+    /// Subscribe to an AX notification on a specific element. Handlers fire on main.
     public func subscribe(
         pid: pid_t,
         element: AXUIElement,
@@ -119,8 +98,7 @@ public final class AXObserverBus {
         }
     }
 
-    /// Tear down every active observer. Called at daemon shutdown and
-    /// after each meeting ends so PIDs that quit don't leak observers.
+    /// Tear down all active observers. Called at shutdown and after each meeting so PIDs that quit don't leak observers.
     public func reset() {
         queue.sync {
             for entry in entries.values { entry.teardown() }
@@ -133,9 +111,7 @@ public final class AXObserverBus {
     }
 }
 
-/// Test/no-op backend: records no observer but returns a teardown so the
-/// bus's bookkeeping behaves identically to a real
-/// `AXObserverAddNotification` backend.
+/// Test/no-op backend: records no observer but returns a teardown so bus bookkeeping is identical to production.
 public final class NoopAXBackend: AXObserverBus.Backend {
     public init() {}
 

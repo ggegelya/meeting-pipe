@@ -1,26 +1,6 @@
 import Foundation
 
-/// Pure-logic RMS hysteresis gate. Consumes per-buffer RMS readings
-/// (in dBFS, negative values, with -inf representing absolute
-/// silence) and emits open / close state transitions with asymmetric
-/// dwell:
-///
-///   - Close at sustained <= `closeThresholdDb` for `closeDwell` ms.
-///   - Open at sustained >= `openThresholdDb` for `openDwell` ms.
-///
-/// Defaults: -55 dBFS / 350 ms close, -45 dBFS / 80 ms open. The
-/// asymmetry biases toward "open quickly when the user starts
-/// talking; close slowly after they stop" so a momentary mic dip
-/// mid-sentence doesn't gate the audio.
-///
-/// The gate is deliberately allocation-free in the hot path so it
-/// can be called from the AVAudioEngine tap callback without
-/// breaking the no-allocations-on-render-thread requirement. All
-/// state lives in stored properties; no arrays, no allocators.
-///
-/// Threading: the gate is `final` but not internally synchronised.
-/// Callers must own per-tap state and not share an instance across
-/// queues. The tap thread is the natural owner.
+/// Pure-logic RMS hysteresis gate. Consumes per-buffer dBFS readings and emits open/close transitions with asymmetric dwell: close at <= -55 dBFS for 350 ms; open at >= -45 dBFS for 80 ms. The asymmetry opens quickly when the user starts talking and closes slowly after they stop, so a momentary mic dip mid-sentence doesn't gate the audio. Allocation-free in the hot path (all state in stored properties) to satisfy the no-allocations-on-render-thread rule. Not internally synchronised; tap thread is the natural owner.
 public final class RMSGateProbe {
 
     public typealias Clock = () -> Date
@@ -63,18 +43,14 @@ public final class RMSGateProbe {
         self.clock = clock
     }
 
-    /// Reset the gate to closed and drop pending dwell. Call at
-    /// meeting start so a prior recording's accumulator doesn't
-    /// bleed into the next session.
+    /// Reset to closed and drop pending dwell. Call at meeting start to prevent accumulator bleed from a prior session.
     public func reset() {
         state = .closed
         closeAccumulationStart = nil
         openAccumulationStart = nil
     }
 
-    /// Feed one RMS reading in dBFS. -infinity is valid (digital
-    /// silence). Returns the new state; transitions also fire
-    /// `onChange`.
+    /// Feed one dBFS reading (-inf is valid for digital silence). Returns new state; transitions also fire `onChange`.
     @discardableResult
     public func ingest(dBFS: Float) -> State {
         let now = clock()

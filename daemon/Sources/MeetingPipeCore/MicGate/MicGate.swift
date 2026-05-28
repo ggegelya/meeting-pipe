@@ -1,28 +1,6 @@
 import Foundation
 
-/// Per-buffer verdict producer for the MicGate subsystem. Fuses HAL
-/// system mute, AX mute label, HAL VAD, and the RMS hysteresis gate
-/// into a `MicGateVerdict` that the writer (TECH-G-MIC step 5) uses
-/// to choose between live mic samples and zero-amplitude frames.
-///
-/// Precedence (per the TECH-G-MIC spec):
-///   1. `.mutedByHardware` wins when HAL system-input mute is true.
-///   2. `.mutedByApp` wins when the AX scrape returns a recognised
-///      `.muted` label.
-///   3. `.silentByRMS` wins when the RMS gate is currently closed.
-///   4. `.hot` wins when HAL VAD reports active or the RMS gate is
-///      currently open.
-///   5. `.uncertain` for any other combination, with reasons listed.
-///
-/// The `decide(state:)` static is pure; tests cover the precedence
-/// matrix without running the timers. `start(...)`, `ingest(rmsDb:)`,
-/// and `stop()` wire the live probes.
-///
-/// Threading: `start` and `stop` must run on the main queue.
-/// `ingest(rmsDb:)` is safe to call from the audio render thread
-/// because the RMS gate is allocation-free and the publish path goes
-/// through a serial dispatch queue that defers the publish off the
-/// render thread.
+/// Per-buffer verdict producer. Fuses HAL system-mute, AX mute label, HAL VAD, and RMS hysteresis into a `MicGateVerdict` (TECH-G-MIC spec). Precedence: mutedByHardware > mutedByApp > silentByRMS > hot > uncertain. `decide(state:)` is pure for test coverage. Threading: `start`/`stop` on main; `ingest(rmsDb:)` is render-thread-safe because the RMS gate is allocation-free and the publish path defers off the render thread via `publishQueue`.
 public final class MicGate {
 
     public struct State: Equatable {
@@ -144,21 +122,12 @@ public final class MicGate {
         continuation.finish()
     }
 
-    /// Audio-tap entry point. The host computes an RMS reading
-    /// per buffer and forwards it here. The gate is allocation-free
-    /// and the publish path defers to `publishQueue` off the render
-    /// thread.
+    /// Audio-tap entry point. Allocation-free; safe on the render thread.
     public func ingest(rmsDb: Float) {
         rmsGate.ingest(dBFS: rmsDb)
     }
 
-    /// Inject an AX mute event from an out-of-band probe. The
-    /// adapter wired by `start()` already feeds AX events into the
-    /// state machine; this entry point lets the host attach
-    /// additional probes (e.g., on windows that only appear after
-    /// `start()` returned, like the Teams 2 compact view) and
-    /// have their events merged into the same precedence chain.
-    /// Threading: caller's queue; `update` serialises internally.
+    /// Merge an AX mute event from an out-of-band probe (e.g. Teams 2 compact view, which appears after `start()` returns) into the same precedence chain. Threading: any queue; `update` serialises internally.
     public func injectAxMuteEvent(_ event: AXMuteButtonProbe.Event) {
         update {
             $0.axMute = event.state

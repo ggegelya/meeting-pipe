@@ -1,7 +1,6 @@
 import Foundation
 
-/// One browser-hosted MicGate surface that exposes no AX mute signal,
-/// described as data for `NoOpMuteAdapter`.
+/// Configuration record for a browser-hosted meeting surface with no AX mute signal.
 public struct NoOpMuteConfig {
     public let bundleIDs: Set<String>
     /// MuteLabels TOML app key, also the events.jsonl surface tag.
@@ -42,10 +41,7 @@ public extension NoOpMuteConfig {
     )
 }
 
-/// MicGate adapter for browser-hosted meetings: browsers expose no
-/// per-tab mic state, so `start` only records the context in
-/// events.jsonl and MicGate falls through to HAL VAD + RMS. One class
-/// in place of the identical MeetMuteAdapter / BrowserMuteAdapter.
+/// MicGate adapter for browser-hosted meetings. Browsers expose no per-tab mic state, so `start` logs the context and MicGate falls through to HAL VAD + RMS. Replaces the byte-identical MeetMuteAdapter / BrowserMuteAdapter pair.
 public final class NoOpMuteAdapter: MicGateAdapter {
     public var bundleIDs: Set<String> { config.bundleIDs }
     public var app: String { config.app }

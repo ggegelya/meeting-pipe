@@ -1,8 +1,6 @@
 import Foundation
 
-/// One native meeting client that exposes an AX mute button, described
-/// as data for `NativeMuteAdapter`. Collapses the byte-identical Teams /
-/// Zoom / Webex / Slack mute adapters into a row.
+/// Configuration record for a native meeting client with an AX mute button. Collapses the byte-identical Teams/Zoom/Webex/Slack adapters into a data row.
 public struct NativeAppMuteConfig {
     public let bundleIDs: Set<String>
     /// MuteLabels TOML app key (`"teams"`, `"zoom"`, `"webex"`, `"slack"`).
@@ -27,10 +25,7 @@ public extension NativeAppMuteConfig {
     )
 }
 
-/// MicGate adapter for native meeting clients that expose an AX mute
-/// button. One parameterized class in place of the byte-identical
-/// Teams / Zoom / Webex / Slack mute adapters; the per-app differences
-/// live in `NativeAppMuteConfig`.
+/// MicGate adapter for native clients with an AX mute button. Per-app differences live in `NativeAppMuteConfig`.
 public final class NativeMuteAdapter: MicGateAdapter {
     public var bundleIDs: Set<String> { config.bundleIDs }
     public var app: String { config.app }

@@ -1,14 +1,7 @@
 import CoreAudio
 import Foundation
 
-/// Production backend for `CoreAudioHALBus`. Wraps
-/// `AudioObjectAddPropertyListenerBlock` and returns a teardown closure
-/// that removes the listener on unsubscribe.
-///
-/// Each subscription gets its own dispatch queue handle so two
-/// subscribers on the same property don't fight over a shared block
-/// pointer. The bus itself serialises handler dispatch onto its own
-/// queue, so this layer doesn't need additional synchronisation.
+/// Production backend for `CoreAudioHALBus`. Wraps `AudioObjectAddPropertyListenerBlock`. Each subscription gets its own dispatch queue so two subscribers on the same property don't share a block pointer; the bus's own queue handles serialisation on top.
 public final class RealCoreAudioBackend: CoreAudioHALBus.Backend {
 
     public init() {}
