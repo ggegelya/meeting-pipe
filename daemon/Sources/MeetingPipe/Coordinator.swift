@@ -735,7 +735,12 @@ final class Coordinator: NSObject {
             activeWorkflow = resolvedWorkflow
             stateMachine.setRecording(file: file, source: source, summaryMode: summaryMode)
             statusBar.setRecording(file: file, source: source, summaryMode: summaryMode, workflow: resolvedWorkflow)
-            recordingHUD.present(source: source, workflow: resolvedWorkflow, startedAt: Date())
+            recordingHUD.present(
+                source: source,
+                workflow: resolvedWorkflow,
+                startedAt: Date(),
+                levelProvider: { [weak self] in self?.recorder.currentMicLevelDb() ?? -120 }
+            )
             notifier.notifyRecordingStarted(file: file)
             Log.writeLine(
                 "daemon",

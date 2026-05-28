@@ -23,17 +23,24 @@ final class RecordingHUDWindow {
     private var degradedBanner: HUDDegradedBanner?
     private var bannerHeightConstraint: NSLayoutConstraint?
 
+    /// Voice-activity meter (TECH-UX8): polls the mic level at 10 Hz so the
+    /// audio render thread never has to push to the UI.
+    private var levelMeter: HUDLevelMeter?
+    private var meterTicker: Timer?
+    private var levelProvider: (() -> Float)?
+
     private static let panelWidth: CGFloat = 60
-    // 132 → 146 for the workflow attribution line (TECH-B9). Allocated unconditionally so the HUD geometry doesn't shift between workflowed and un-workflowed meetings.
-    private static let panelHeight: CGFloat = 146
+    // 132 → 146 for the workflow attribution line (TECH-B9), 146 → 162 for the TECH-UX8 voice-activity meter row. Allocated unconditionally so the HUD geometry doesn't shift between workflowed and un-workflowed meetings.
+    private static let panelHeight: CGFloat = 162
     private static let edgeInset: CGFloat = 16
     // Degraded mode (TECH-UX4): the pill widens into a card so the banner text and retry button fit.
     private static let degradedPanelWidth: CGFloat = 232
     private static let bannerHeight: CGFloat = 60
 
-    func present(source: AppSource?, workflow: Workflow? = nil, startedAt: Date) {
+    func present(source: AppSource?, workflow: Workflow? = nil, startedAt: Date, levelProvider: (() -> Float)? = nil) {
         dismiss(animated: false)
         self.startedAt = startedAt
+        self.levelProvider = levelProvider
 
         let panel = makePanel(source: source, workflow: workflow)
         self.panel = panel
@@ -53,11 +60,23 @@ final class RecordingHUDWindow {
         }
         refreshElapsedLabel()
         pulseDot?.startPulsing()
+
+        // 10 Hz poll for the voice-activity meter (TECH-UX8). Polling keeps
+        // the audio render thread free of any UI push.
+        if levelProvider != nil {
+            meterTicker = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+                guard let self = self, let provider = self.levelProvider else { return }
+                self.levelMeter?.setLevelDb(provider())
+            }
+        }
     }
 
     func dismiss(animated: Bool = true) {
         ticker?.invalidate()
         ticker = nil
+        meterTicker?.invalidate()
+        meterTicker = nil
+        levelProvider = nil
         startedAt = nil
         pulseDot?.stopPulsing()
 
@@ -65,6 +84,7 @@ final class RecordingHUDWindow {
         self.panel = nil
         self.elapsedLabel = nil
         self.pulseDot = nil
+        self.levelMeter = nil
         self.degradedBanner = nil
         self.bannerHeightConstraint = nil
 
@@ -171,6 +191,16 @@ final class RecordingHUDWindow {
         bg.addSubview(elapsed)
         self.elapsedLabel = elapsed
 
+        // Voice-activity meter (TECH-UX8): one segment per 6 dB of mic level.
+        let meter = HUDLevelMeter(frame: .zero)
+        meter.translatesAutoresizingMaskIntoConstraints = false
+        // Tint to the workflow color when one is set (and not NDA), matching the pulse dot.
+        if let wf = workflow, !wf.flags.ndaMode, let color = HexColor.parse(wf.color) {
+            meter.litColor = color
+        }
+        bg.addSubview(meter)
+        self.levelMeter = meter
+
         // Workflow attribution (TECH-B9): hidden when no workflow but still in the view tree so panel height stays constant.
         let workflowLabel = HUDWorkflowLabel(workflow: workflow)
         workflowLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -206,9 +236,14 @@ final class RecordingHUDWindow {
             elapsed.trailingAnchor.constraint(equalTo: bg.trailingAnchor),
             elapsed.topAnchor.constraint(equalTo: dot.bottomAnchor, constant: 4),
 
+            meter.centerXAnchor.constraint(equalTo: bg.centerXAnchor),
+            meter.topAnchor.constraint(equalTo: elapsed.bottomAnchor, constant: 6),
+            meter.widthAnchor.constraint(equalToConstant: 40),
+            meter.heightAnchor.constraint(equalToConstant: 6),
+
             workflowLabel.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 4),
             workflowLabel.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -4),
-            workflowLabel.topAnchor.constraint(equalTo: elapsed.bottomAnchor, constant: 2),
+            workflowLabel.topAnchor.constraint(equalTo: meter.bottomAnchor, constant: 4),
             workflowLabel.heightAnchor.constraint(equalToConstant: 14),
 
             stop.centerXAnchor.constraint(equalTo: bg.centerXAnchor),
@@ -520,5 +555,43 @@ private final class HUDDegradedBanner: NSView {
         ])
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+/// Horizontal voice-activity meter (TECH-UX8): one segment per 6 dB of mic
+/// level over a -60..0 dBFS range. Driven by the HUD's 10 Hz poll timer, so
+/// the audio render thread only stores a Float. Drawn with plain fills; the
+/// 10-rect redraw at 10 Hz is negligible.
+private final class HUDLevelMeter: NSView {
+    private static let segmentCount = 10
+    private static let floorDb: Float = -60
+
+    var litColor: NSColor = MPColors.signal600 { didSet { needsDisplay = true } }
+    private var levelDb: Float = HUDLevelMeter.floorDb
+
+    /// Update the displayed level. Clamped to the meter range; redraws only
+    /// when the level actually moves so a steady tone doesn't thrash the view.
+    func setLevelDb(_ db: Float) {
+        let clamped = max(Self.floorDb, min(0, db))
+        guard abs(clamped - levelDb) > 0.1 else { return }
+        levelDb = clamped
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let n = Self.segmentCount
+        let gap: CGFloat = 1
+        guard bounds.width > 0 else { return }
+        let segW = (bounds.width - gap * CGFloat(n - 1)) / CGFloat(n)
+        guard segW > 0 else { return }
+        let fraction = Double((levelDb - Self.floorDb) / (0 - Self.floorDb))
+        let lit = Int((Double(n) * max(0, min(1, fraction))).rounded())
+        for i in 0..<n {
+            let x = CGFloat(i) * (segW + gap)
+            let rect = NSRect(x: x, y: 0, width: segW, height: bounds.height)
+            let path = NSBezierPath(roundedRect: rect, xRadius: 1, yRadius: 1)
+            (i < lit ? litColor : MPColors.border).setFill()
+            path.fill()
+        }
+    }
 }
 

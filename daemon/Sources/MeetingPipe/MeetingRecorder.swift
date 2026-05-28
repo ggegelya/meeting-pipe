@@ -43,6 +43,14 @@ final class MeetingRecorder {
     /// MicGate's RMS gate. Distinct from the ~1 Hz `onMicLevel` average.
     var onMicRmsDb: ((Float) -> Void)?
 
+    /// Latest per-buffer mic dBFS for the HUD VU meter (TECH-UX8). Written on
+    /// the render thread, read on main via `currentMicLevelDb()`; a plain Float
+    /// so the audio thread neither allocates nor dispatches.
+    private var latestMicLevelDb: Float = -120
+
+    /// Newest mic level in dBFS for the HUD meter. ~`-120` while idle/silent.
+    func currentMicLevelDb() -> Float { latestMicLevelDb }
+
     /// Applies the current MicGate verdict onto each mic tap buffer. Built
     /// at `start()`, released at `stop()`; render-thread only.
     private(set) var micGateWriter: MicGateWriter?
@@ -389,6 +397,11 @@ final class MeetingRecorder {
                 let mean = sumSq / Double(frameLen * channels)
                 let db: Float = mean > 0 ? Float(10.0 * log10(mean)) : -120
                 onMicRmsDb?(db)
+                // TECH-UX8: stash the per-buffer level for the HUD VU meter.
+                // Plain aligned Float store, no allocation or dispatch on the
+                // render thread; the HUD polls it on a 10 Hz main-queue timer
+                // and a torn meter sample is harmless.
+                latestMicLevelDb = db
             }
             // Apply the verdict in place; frame parity is preserved (ADR
             // 0009), muted buffers fade to zero over 20 ms.

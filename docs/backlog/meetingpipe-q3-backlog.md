@@ -534,7 +534,9 @@ Acceptance:
 
 Deps: none.
 
-**TECH-UX8 · Voice-activity meter on the HUD · S · TECH-UX6** [NEW]
+**TECH-UX8 · Voice-activity meter on the HUD · S · TECH-UX6** [DONE]
+
+> Resolved 2026-05-28: added `HUDLevelMeter` to `RecordingHUDWindow`, a 10-segment horizontal meter over -60..0 dBFS (one segment per 6 dB), tinted to the workflow color when set. The HUD polls the level at 10 Hz on a main-queue `meterTicker`; the audio render thread only does a plain Float store. Edit list expansion (named only `RecordingHUDWindow.swift`): the existing `onMicLevel` is ~1 Hz and already owned by the silence detector, so I added `MeetingRecorder.latestMicLevelDb` (written in `processMicBuffer` from the per-buffer dBFS already computed for `onMicRmsDb`, no extra loop / alloc / dispatch) plus a `currentMicLevelDb()` reader, and `Coordinator` passes `levelProvider:` into `present(...)`. The meter sits between the elapsed time and the workflow line; panel height 146 -> 162. No headless test (pure rendering); the 10 Hz update and no-render-alloc bars are structural, the visual needs on-device confirmation.
 
 A small VU-meter style indicator on the HUD that shows the current mic RMS level. Pairs naturally with TECH-UX6. The data is already available from MicGate's RMS probe; this is a rendering task.
 
