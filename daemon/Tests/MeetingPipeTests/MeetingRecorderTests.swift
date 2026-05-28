@@ -216,4 +216,21 @@ final class MeetingRecorderTests: XCTestCase {
         )!
         XCTAssertNil(MeetingRecorder.makeSilenceBuffer(format: format, frames: 0))
     }
+
+    // MARK: - retrySystemAudio guard (TECH-UX4)
+
+    /// The live SCStream retry needs Screen Recording TCC, so only the guard
+    /// is headless-testable: retrying while idle must not fire the degraded or
+    /// recovered callbacks (those drive the HUD banner show/clear).
+    func test_retrySystemAudio_is_a_noop_when_not_recording() {
+        let recorder = MeetingRecorder()
+        var degradedFired = false
+        var recoveredFired = false
+        recorder.onSystemAudioDegraded = { _ in degradedFired = true }
+        recorder.onSystemAudioRecovered = { recoveredFired = true }
+        recorder.retrySystemAudio()
+        XCTAssertFalse(recorder.isRecording)
+        XCTAssertFalse(degradedFired)
+        XCTAssertFalse(recoveredFired)
+    }
 }

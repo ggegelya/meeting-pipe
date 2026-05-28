@@ -84,6 +84,16 @@ final class MeetingRecorder {
     /// `.resumed` once re-armed, `.failed` when it can't be.
     var onConfigurationChange: ((CaptureRecoveryOutcome) -> Void)?
 
+    /// Fired on main when system-audio (SCStream) capture fails to start, so
+    /// the HUD can surface a degraded banner mid-recording (TECH-UX4). The
+    /// string is the failure reason. The mic channel keeps recording.
+    var onSystemAudioDegraded: ((String) -> Void)?
+
+    /// Fired on main when a `retrySystemAudio()` attempt re-arms the SCStream,
+    /// so the HUD can clear its degraded banner. The system channel has a gap
+    /// for the window it was down.
+    var onSystemAudioRecovered: (() -> Void)?
+
     /// Latest MicGate verdict for the writer; single writer (main) / single
     /// reader (render). Default `.uncertain` so an unset before the first
     /// verdict zeroes the buffer rather than leaking raw mic frames.
@@ -233,8 +243,28 @@ final class MeetingRecorder {
             self?.handleConfigurationChange()
         }
 
-        // System audio via SCStream (independent). SCStream's delivered
-        // format may differ from captureFormat; write each PCM buffer as-is.
+        // System audio via SCStream (independent of the mic engine).
+        startSystemCapture(systemURL: systemURL, isRetry: false)
+
+        currentFile = finalURL
+        self.micURL = micURL
+        self.systemURL = systemURL
+        startedAt = Date()
+        Log.recorder.info("recorder started → \(finalURL.path)")
+        Log.writeLine("recorder", "recorder started → \(finalURL.path)")
+        return finalURL
+    }
+
+    // MARK: - System audio (SCStream)
+
+    /// Open the system WAV, wire its serial writer, and start the SCStream.
+    /// Shared by `start()` and `retrySystemAudio()`. On failure the system
+    /// channel is torn down (so the stop-time merge knows there is nothing to
+    /// mix) and `onSystemAudioDegraded` fires on main; a successful retry
+    /// fires `onSystemAudioRecovered`.
+    private func startSystemCapture(systemURL: URL, isRetry: Bool) {
+        // SCStream's delivered format may differ from captureFormat; write
+        // each PCM buffer as-is.
         let systemFile: AVAudioFile?
         do {
             systemFile = try AVAudioFile(
@@ -280,23 +310,35 @@ final class MeetingRecorder {
             do {
                 try await capture.start()
                 Log.writeLine("recorder", "SCStream started")
+                if isRetry {
+                    // Capture the callback value (not self) so the main-queue
+                    // hop doesn't re-capture the non-Sendable recorder.
+                    let recovered = self?.onSystemAudioRecovered
+                    DispatchQueue.main.async { recovered?() }
+                }
             } catch {
-                Log.writeLine("recorder", "WARN: SCStream start failed: \(error.localizedDescription) — recording mic-only")
+                Log.writeLine("recorder", "WARN: SCStream start failed: \(error.localizedDescription), recording mic-only")
                 // Drop the system file so merge knows there's nothing to mix.
                 self?.systemCapture = nil
                 self?.systemFile = nil
                 self?.systemWriter = nil
                 try? FileManager.default.removeItem(at: systemURL)
+                let reason = error.localizedDescription
+                let degraded = self?.onSystemAudioDegraded
+                DispatchQueue.main.async { degraded?(reason) }
             }
         }
+    }
 
-        currentFile = finalURL
-        self.micURL = micURL
-        self.systemURL = systemURL
-        startedAt = Date()
-        Log.recorder.info("recorder started → \(finalURL.path)")
-        Log.writeLine("recorder", "recorder started → \(finalURL.path)")
-        return finalURL
+    /// Re-attempt system-audio capture after an initial SCStream failure
+    /// (TECH-UX4). Main-thread only. No-op when not recording or when the
+    /// system channel is already live. The system WAV picks up from now, so
+    /// the merged recording carries a documented gap for the window it was
+    /// down.
+    func retrySystemAudio() {
+        guard isRecording, systemCapture == nil, let systemURL = systemURL else { return }
+        Log.writeLine("recorder", "retrying system audio capture")
+        startSystemCapture(systemURL: systemURL, isRetry: true)
     }
 
     // MARK: - Mic tap

@@ -257,6 +257,19 @@ final class Coordinator: NSObject {
             case .failed:  self.notifier.notifyCaptureLost()
             }
         }
+        // Surface a system-audio (SCStream) failure on the HUD during the
+        // meeting (TECH-UX4) instead of leaving the user to discover a
+        // half-empty recording afterwards.
+        recorder.onSystemAudioDegraded = { [weak self] reason in
+            guard let self = self else { return }
+            Log.event(category: "recording", action: "degraded", attributes: ["reason": reason])
+            self.recordingHUD.showSystemAudioDegraded()
+        }
+        recorder.onSystemAudioRecovered = { [weak self] in
+            guard let self = self else { return }
+            Log.event(category: "recording", action: "recovered", attributes: [:])
+            self.recordingHUD.clearSystemAudioDegraded()
+        }
         // Route the one-shot backstop trigger through forceStop (on main)
         // so the event log records the reason.
         silenceBackstop.onTriggered = { [weak self] _ in
@@ -1257,5 +1270,11 @@ extension Coordinator: RecordingHUDDelegate {
     func recordingHUDDidRequestStop(_ hud: RecordingHUDWindow) {
         // One stop entry point shared with manual-stop and hotkey-stop.
         toggleManual()
+    }
+
+    func recordingHUDDidRequestRetrySystemAudio(_ hud: RecordingHUDWindow) {
+        // TECH-UX4: re-attempt SCStream capture; the recorder fires
+        // onSystemAudioRecovered to clear the banner on success.
+        recorder.retrySystemAudio()
     }
 }

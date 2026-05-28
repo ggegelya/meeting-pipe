@@ -471,7 +471,9 @@ Stop and ask: if the publish-from-paste roundtrip can fail on schema mismatch, s
 
 Deps: none.
 
-**TECH-UX4 · Degraded recording state on the HUD during meeting · S · none** [NEW]
+**TECH-UX4 · Degraded recording state on the HUD during meeting · S · none** [DONE]
+
+> Resolved 2026-05-28: `MeetingRecorder` now exposes `onSystemAudioDegraded`/`onSystemAudioRecovered` (main queue). The SCStream start path was extracted into a retryable `startSystemCapture(systemURL:isRetry:)`; on failure it tears the system channel down (so the stop-time merge stays mic-only) and fires `onSystemAudioDegraded(reason)`, and a new `retrySystemAudio()` re-arms it (system WAV resumes from now, leaving a documented gap). The HUD grows from the compact pill into a card with a `HUDDegradedBanner` (warning glyph + "System audio not captured" + "Retry system audio" button) via `showSystemAudioDegraded()` / `clearSystemAudioDegraded()`, anchored top-right so a dragged HUD is not yanked. `Coordinator` bridges the callbacks: degraded emits `Log.event(category: "recording", action: "degraded", attributes: ["reason": ...])` and shows the banner; recovered emits `recording.recovered` and clears it; the HUD's retry button routes through the new `recordingHUDDidRequestRetrySystemAudio` delegate to `recorder.retrySystemAudio()`. Headless coverage is the idle-guard test (`retrySystemAudio` is a no-op when not recording); the live banner/retry and the `recording.degraded` event need a real failed SCStream (Screen Recording TCC) on-device.
 
 Today, when system audio capture fails at recording start (TCC race, SCStream init error, etc.), the user finds out only after the meeting when the recording is half-empty. Surface the degraded state on the HUD during recording.
 

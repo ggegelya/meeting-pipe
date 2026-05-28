@@ -3,6 +3,8 @@ import AppKit
 /// Floating recording-status HUD: compact vertical pill, top-right, always-on-top. Exists because the menu-bar coral dot is easy to miss when other apps are foregrounded, and one-click stop is essential for a "this got sensitive, kill it" moment without navigating menus. Draggable via `isMovableByWindowBackground` so the user can move it off a Zoom control or chat avatar.
 protocol RecordingHUDDelegate: AnyObject {
     func recordingHUDDidRequestStop(_ hud: RecordingHUDWindow)
+    /// User tapped "Retry system audio" on the degraded banner (TECH-UX4).
+    func recordingHUDDidRequestRetrySystemAudio(_ hud: RecordingHUDWindow)
 }
 
 /// Threading: every public method must run on the main queue. Same contract
@@ -16,10 +18,18 @@ final class RecordingHUDWindow {
     private var ticker: Timer?
     private var startedAt: Date?
 
+    /// Degraded-state banner (TECH-UX4), hidden until the recorder reports a
+    /// system-audio failure; the panel grows to fit it and shrinks on retry.
+    private var degradedBanner: HUDDegradedBanner?
+    private var bannerHeightConstraint: NSLayoutConstraint?
+
     private static let panelWidth: CGFloat = 60
     // 132 → 146 for the workflow attribution line (TECH-B9). Allocated unconditionally so the HUD geometry doesn't shift between workflowed and un-workflowed meetings.
     private static let panelHeight: CGFloat = 146
     private static let edgeInset: CGFloat = 16
+    // Degraded mode (TECH-UX4): the pill widens into a card so the banner text and retry button fit.
+    private static let degradedPanelWidth: CGFloat = 232
+    private static let bannerHeight: CGFloat = 60
 
     func present(source: AppSource?, workflow: Workflow? = nil, startedAt: Date) {
         dismiss(animated: false)
@@ -55,6 +65,8 @@ final class RecordingHUDWindow {
         self.panel = nil
         self.elapsedLabel = nil
         self.pulseDot = nil
+        self.degradedBanner = nil
+        self.bannerHeightConstraint = nil
 
         guard animated else {
             panel.orderOut(nil)
@@ -67,6 +79,35 @@ final class RecordingHUDWindow {
         }, completionHandler: {
             panel.orderOut(nil)
         })
+    }
+
+    // MARK: Degraded state (TECH-UX4)
+
+    /// Show the "system audio not captured" banner and grow the HUD into a
+    /// card. Idempotent. Main-queue only.
+    func showSystemAudioDegraded() {
+        guard let banner = degradedBanner, let heightC = bannerHeightConstraint, banner.isHidden else { return }
+        banner.isHidden = false
+        heightC.constant = Self.bannerHeight
+        resizePanelAnchoringTopRight(width: Self.degradedPanelWidth, height: Self.panelHeight + Self.bannerHeight)
+    }
+
+    /// Hide the degraded banner and shrink the HUD back to the compact pill.
+    /// Idempotent. Main-queue only.
+    func clearSystemAudioDegraded() {
+        guard let banner = degradedBanner, let heightC = bannerHeightConstraint, !banner.isHidden else { return }
+        banner.isHidden = true
+        heightC.constant = 0
+        resizePanelAnchoringTopRight(width: Self.panelWidth, height: Self.panelHeight)
+    }
+
+    /// Resize keeping the panel's top-right corner fixed, so growing the
+    /// degraded card doesn't yank a HUD the user dragged elsewhere.
+    private func resizePanelAnchoringTopRight(width: CGFloat, height: CGFloat) {
+        guard let panel = panel else { return }
+        let frame = panel.frame
+        let origin = NSPoint(x: frame.maxX - width, y: frame.maxY - height)
+        panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: true, animate: true)
     }
 
     // MARK: Panel construction
@@ -139,6 +180,17 @@ final class RecordingHUDWindow {
         stop.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(stop)
 
+        // Degraded banner (TECH-UX4): zero-height + hidden until needed, pinned
+        // to the bottom so the stop button keeps its resting position when the
+        // banner is collapsed.
+        let banner = HUDDegradedBanner(target: bg, action: #selector(HUDBackgroundView.didClickRetrySystemAudio))
+        banner.translatesAutoresizingMaskIntoConstraints = false
+        banner.isHidden = true
+        bg.addSubview(banner)
+        self.degradedBanner = banner
+        let bannerH = banner.heightAnchor.constraint(equalToConstant: 0)
+        self.bannerHeightConstraint = bannerH
+
         NSLayoutConstraint.activate([
             glyph.centerXAnchor.constraint(equalTo: bg.centerXAnchor),
             glyph.topAnchor.constraint(equalTo: bg.topAnchor, constant: 12),
@@ -160,9 +212,14 @@ final class RecordingHUDWindow {
             workflowLabel.heightAnchor.constraint(equalToConstant: 14),
 
             stop.centerXAnchor.constraint(equalTo: bg.centerXAnchor),
-            stop.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -10),
+            stop.bottomAnchor.constraint(equalTo: banner.topAnchor, constant: -10),
             stop.widthAnchor.constraint(equalToConstant: 30),
             stop.heightAnchor.constraint(equalToConstant: 30),
+
+            banner.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 8),
+            banner.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -8),
+            banner.bottomAnchor.constraint(equalTo: bg.bottomAnchor),
+            bannerH,
         ])
         return bg
     }
@@ -187,6 +244,10 @@ final class RecordingHUDWindow {
 
     fileprivate func handleStop() {
         delegate?.recordingHUDDidRequestStop(self)
+    }
+
+    fileprivate func handleRetrySystemAudio() {
+        delegate?.recordingHUDDidRequestRetrySystemAudio(self)
     }
 
     private static func fallbackGlyph() -> NSImage {
@@ -251,6 +312,7 @@ private final class HUDBackgroundView: NSView {
     }
 
     @objc func didClickStop() { host?.handleStop() }
+    @objc func didClickRetrySystemAudio() { host?.handleRetrySystemAudio() }
 }
 
 /// Core Animation opacity-loop pulse dot; starts with the HUD, stops on dismiss.
@@ -397,5 +459,66 @@ private final class HUDWorkflowLabel: NSView {
         nameLabel.stringValue = wf.name
         ndaLabel.isHidden = !wf.flags.ndaMode
     }
+}
+
+/// Degraded-state banner (TECH-UX4). Warns mid-recording that system-audio
+/// capture failed to start (TCC race, SCStream init error) and offers a
+/// one-click retry. Collapsed to zero height until the recorder reports the
+/// failure, so the resting HUD is unchanged.
+private final class HUDDegradedBanner: NSView {
+    init(target: AnyObject?, action: Selector?) {
+        super.init(frame: .zero)
+        wantsLayer = true
+
+        let divider = NSBox()
+        divider.boxType = .separator
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(divider)
+
+        let icon = NSImageView()
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Warning")
+        icon.contentTintColor = .systemOrange
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        addSubview(icon)
+
+        let label = NSTextField(labelWithString: "System audio not captured")
+        label.font = .systemFont(ofSize: 10, weight: .medium)
+        label.textColor = MPColors.fgMuted
+        label.alignment = .left
+        label.lineBreakMode = .byTruncatingTail
+        label.maximumNumberOfLines = 1
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+
+        let retry = NSButton(title: "Retry system audio", target: target, action: action)
+        retry.bezelStyle = .rounded
+        retry.controlSize = .small
+        retry.font = .systemFont(ofSize: 10, weight: .medium)
+        retry.toolTip = "Re-attempt system-audio capture"
+        retry.setAccessibilityLabel("Retry system audio")
+        retry.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(retry)
+
+        NSLayoutConstraint.activate([
+            divider.leadingAnchor.constraint(equalTo: leadingAnchor),
+            divider.trailingAnchor.constraint(equalTo: trailingAnchor),
+            divider.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            icon.topAnchor.constraint(equalTo: divider.bottomAnchor, constant: 8),
+            icon.widthAnchor.constraint(equalToConstant: 12),
+            icon.heightAnchor.constraint(equalToConstant: 12),
+
+            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 5),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            label.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
+
+            retry.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            retry.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            retry.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 6),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
 }
 
