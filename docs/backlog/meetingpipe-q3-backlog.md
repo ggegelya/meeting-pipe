@@ -15,11 +15,12 @@ These are owed against work already merged. No code change; runtime validation o
 3. **Three Step 5 failure surfaces in daily use** (inline Retry on the failed row, failed-state detail pane, status-bar "N failed" row). Confirms Step 5 commits `f9bfa6e`, `9479551`, `9510e24`.
 4. **Join-muted check.** Join a Teams call already muted; confirm `AXMuteButtonProbe` emits initial muted state at engage (not only on toggle), no spurious `muted_by_app` drops to RMS while staying muted. Confirms the audit's deferred small follow-up.
 
-**P0 - ship next (the open P1 + the structural unblock)**
+**P0 - ship next (the structural unblock)**
 
-1. **TECH-CAP1 Mic/system end-of-call skew investigation** (M). The audit's single open P1, deferred through three steps. Diagnostic event `recorder.intermediate_durations` already fires. Run /investigate, root-cause, fix.
-2. **TECH-H1-FINISH Coordinator slimming round 2** (L). Extract `MeetingLibraryService`, `ConfigRefreshCoordinator`, `PipelineJobDispatcher`. Target under 600 lines (the original under-400 was unrealistic given the device-change recovery work; recalibrate).
-3. **TECH-C6-FINISH Detection regression corpus from real dogfood** (M). 20+ user-recorded traces; harness ready since Step 2.
+1. **TECH-H1-FINISH Coordinator slimming round 2** (L). Extract `MeetingLibraryService`, `ConfigRefreshCoordinator`, `PipelineJobDispatcher`. Target under 600 lines (the original under-400 was unrealistic given the device-change recovery work; recalibrate).
+2. **TECH-C6-FINISH Detection regression corpus from real dogfood** (M). 20+ user-recorded traces; harness ready since Step 2.
+
+TECH-CAP1 (the audit's open P1) was here; deprioritized to P3 on 2026-05-28 (monitor only, see the P3 band and Group C).
 
 **P1 - ship in Q3**
 
@@ -68,6 +69,7 @@ These are owed against work already merged. No code change; runtime validation o
 - TECH-G1 Personal two-Mac Hub (unchanged from Q2: all P0/P1 dogfood bars met first)
 - TECH-D8 Apple Developer ID + notarization (promotion trigger: user decides to ship to a second user; partially overlapped by Q3 launch readiness but the full notarization-in-CI is still parked)
 - Group F compliance docs (BAA template, threat model, retention policy, privacy disclosures) - partially activated by TECH-BRAND8
+- TECH-CAP1 Mic/system end-of-call skew (M, was the open P1). Deprioritized 2026-05-28: user no longer reliably observes the skew in daily use. Monitor across dogfood; promotion trigger: the few-seconds mic/system shift reappears across multiple recordings. Full task spec retained under Group C.
 
 **Critical context for next session**
 
@@ -159,7 +161,9 @@ Deps: none.
 
 ## Group C · Capture and detection
 
-**TECH-CAP1 · Mic / system end-of-call skew investigation · M · none** [NEW]
+**TECH-CAP1 · Mic / system end-of-call skew investigation · M · none** [P3 · MONITOR]
+
+> Status 2026-05-28: deprioritized to P3 (lowest band). The user no longer reliably observes the end-of-call skew in daily use. Do not run the investigation now; monitor across dogfood and promote only if the few-seconds mic/system shift reappears across multiple recordings. The spec below is retained for if/when it is promoted.
 
 The audit's open P1, deferred through three steps. User-reported "few seconds shift" between mic and system audio at end of recording. Diagnostic event `recorder.intermediate_durations` fires before `mergeViaFFmpeg` with `mic_audio_sec`, `system_audio_sec`, `delta_sec`, `wallclock_sec`. Two candidate root causes on the table:
 
@@ -184,7 +188,7 @@ Stop and ask:
 
 Deps: none. Highest leverage open work.
 
-**TECH-C6-FINISH · Detection regression corpus from real dogfood · M · TECH-CAP1** [NEW]
+**TECH-C6-FINISH · Detection regression corpus from real dogfood · M · none** [NEW]
 
 Q2 shipped the corpus harness (`daemon/Tests/MeetingPipeCoreTests/Fixtures/detection-corpus/`, `DetectionCorpusTests`, eight synthetic seed traces). The 20+ real user-recorded traces from the Phase 2 dogfood window are still owed.
 
@@ -202,7 +206,7 @@ Acceptance:
 Stop and ask:
 - If a trace contains a meeting title or attendee name the user does not want in the repo, redact at capture time. Document the redaction approach in `daemon/Tests/MeetingPipeCoreTests/Fixtures/detection-corpus/README.md`.
 
-Deps: TECH-CAP1 should land first so the skew does not contaminate the trace fixtures.
+Deps: none. (Previously gated on TECH-CAP1; that is now P3/monitor as of 2026-05-28. The corpus traces are signal + verdict streams with no audio, so the end-of-call skew cannot contaminate them.)
 
 ---
 
@@ -669,9 +673,9 @@ Deps: none. Coordinate with TECH-A15 (touches the Backend section).
 
 ## Group E · Events and telemetry
 
-**TECH-E4-FINISH · Dogfood analysis script · M · TECH-CAP1, TECH-C6-FINISH** [NEW]
+**TECH-E4-FINISH · Dogfood analysis script · M · TECH-C6-FINISH** [NEW]
 
-The Q2 backlog's TECH-E4 has been blocked on TECH-C13 step 5 (now done) and the corpus (TECH-C6-FINISH). With the open P1 (TECH-CAP1) closed and the corpus populated, the dogfood report can finally be written.
+The Q2 backlog's TECH-E4 has been blocked on TECH-C13 step 5 (now done) and the corpus (TECH-C6-FINISH). With the corpus populated, the dogfood report can finally be written. (TECH-CAP1, formerly a gate here, is now P3/monitor as of 2026-05-28 and no longer blocks this.)
 
 A script reading events.jsonl over a fortnight and reporting against the dogfood bars in the Q2 backlog (capture, detection, transcription, library). Outputs a one-page summary per layer with pass / fail / inconclusive per bar.
 
@@ -683,7 +687,7 @@ Acceptance:
 - Report distinguishes `MeetingLifecycleVerdict` from `MicGateVerdict` evidence per bar.
 - Output is reproducible (same input -> same output).
 
-Deps: TECH-E3 (already done), TECH-CAP1, TECH-C6-FINISH.
+Deps: TECH-E3 (already done), TECH-C6-FINISH. (TECH-CAP1 is now P3/monitor and no longer gates this.)
 
 ---
 
@@ -932,7 +936,7 @@ Capture bar, detection bar, transcription bar, library bar - all unchanged from 
 ## Critical path
 
 1. **P0 runtime acceptance** owed against Q2 merges. User action, no code. Lands first.
-2. **TECH-CAP1** (mic/system end-of-call skew investigation). The open P1. Highest leverage.
+2. **TECH-CAP1** (mic/system end-of-call skew) was the open P1 here; deprioritized to P3/monitor on 2026-05-28 (user no longer reliably observes it), so it is off the critical path. The next real work is the structural unblock below.
 3. **TECH-H1-FINISH + TECH-C16** (Coordinator round 2 + decide-or-delete signals). Closes the audit's architectural debt.
 4. **TECH-C6-FINISH + TECH-E4-FINISH** (corpus + dogfood report). Closes the loop on the acceptance bars.
 5. **TECH-DIAR1 + TECH-SUM1-PRIMITIVE + TECH-SUM1-APPLE** (diarization cleanup + chunking primitive + Apple Intelligence). The next.md ideas worth shipping, in dependency order.
