@@ -137,7 +137,9 @@ Stop and ask: any change to `Log.event` names; any new dependency; any change to
 
 Deps: none. Should land before the god-view extractions in P2 so the new files do not double-extract.
 
-**TECH-C16 · Decide-or-delete: InputDeviceSignal and CalendarContextSignal · S · none** [NEW]
+**TECH-C16 · Decide-or-delete: InputDeviceSignal and CalendarContextSignal · S · none** [DONE]
+
+> Resolved 2026-05-28: both signals DELETED. InputDeviceSignal was redundant with the recorder's shipped device-change auto-resume and telemetry-only with zero consumers; CalendarContextSignal's EventKit probe was never built (default returns nil) and a real one would cost a new Calendar TCC prompt for no verdict value. Decisions in ADR 0010 and ADR 0011. Both signal files plus their test files removed; `swift build` + `swift test` green (573 tests, 0 failures).
 
 Step 2 wired `WorkspaceSignal` and `WindowTitleSignal` into the browser lifecycle adapter. `InputDeviceSignal` and `CalendarContextSignal` remain built but unwired. They ship in the binary and consume zero state-machine paths in production. Decide for each:
 
