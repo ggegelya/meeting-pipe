@@ -1,33 +1,16 @@
 import AppKit
 import SwiftUI
 
-/// Shared chip + button vocabulary used by the polished Library window
-/// chrome (row, filter bar, detail header, batch actions). All four
-/// surfaces lean on the same primitives so the visual family stays
-/// coherent — same chip metrics, same hover treatments, same hairlines.
-///
-/// Tokens-only: no new colors, no new spacing constants. Everything
-/// resolves to `MPColors`, `MPRadius`, `MPSpace`, `MPType` so dark mode
-/// auto-flips and so the design system stays the single source of
-/// truth for visual decisions.
+/// Shared chip and button primitives used across Library chrome (row, filter bar, detail header, batch actions). All tokens resolve to `MPColors`/`MPRadius`/`MPSpace`/`MPType`; no new color or spacing constants.
 
 // MARK: - Workflow chip
 
-/// Color-tinted workflow chip — `.wf` family from the design audit:
-/// 18pt tall, full-rounded, leading 6pt dot in the workflow's color,
-/// background tinted at ~16% of the same hue, label at 11pt medium.
-///
-/// Replaces the prior bordered-rectangle treatment. Used in the row
-/// caption, the filter bar (when a workflow scope is active), and the
-/// detail header's title row.
+/// Color-tinted workflow chip: 18pt capsule, leading 6pt dot, 16% tinted background. Used in the row caption, filter bar, and detail header.
 struct WorkflowChip: View {
     let name: String
     let colorHex: String?
 
-    /// Optional display weight. Compact omits the dot to fit denser
-    /// layouts (the row caption already carries a workflow scope
-    /// hairline upstream); standard keeps it for the filter bar and
-    /// detail header where the chip has to stand on its own.
+    /// Compact omits the dot for denser layouts; standard keeps it where the chip must stand on its own.
     var weight: Weight = .standard
 
     enum Weight { case standard, compact }
@@ -60,13 +43,7 @@ struct WorkflowChip: View {
 
 // MARK: - Status pill
 
-/// 0.5px-stroked status pill with one inline dot — `MPStatusPill`
-/// family from the design audit. No background fill on resting states;
-/// the dot and the label do the work.
-///
-/// `kind` is the visual treatment, not the recording state machine —
-/// callers map their domain status (`Meeting.Status`, etc.) into one
-/// of these tones.
+/// 0.5px-stroked status pill with an inline dot. `kind` is the visual tone; callers map their domain status to it.
 struct MPStatusPill: View {
     let kind: Kind
     let label: String
@@ -100,9 +77,7 @@ struct MPStatusPill: View {
     private var indicator: some View {
         switch kind {
         case .recording:
-            // Same TimelineView-driven dot the toolbar uses, so the
-            // row's pulse stays in lockstep with the toolbar's
-            // recording chip. Steady opacity loop, no scale pulse.
+            // Same TimelineView clock as the toolbar's dot, so both pulses stay phase-locked.
             MPSteadyPulseDot(color: dotColor, size: 5)
         case .processing:
             MPRingSpinner(color: dotColor, size: 7)
@@ -132,11 +107,7 @@ struct MPStatusPill: View {
     }
 }
 
-/// Self-paced 1.6s opacity loop driven by `TimelineView(.animation)`.
-/// Identical timeline to the toolbar's `PulsleDot` so a row's pulse
-/// and the toolbar pulse stay phase-locked (both read the same
-/// `Date.timeIntervalSinceReferenceDate`). No `@State`, no
-/// `withAnimation` — the parent can't perturb it.
+/// 1.6s opacity loop via `TimelineView(.animation)`. Reads the same `timeIntervalSinceReferenceDate` as the toolbar's `PulseDot` so both pulses stay phase-locked. No `@State`/`withAnimation`; parent re-renders can't perturb it.
 struct MPSteadyPulseDot: View {
     let color: Color
     var size: CGFloat = 6
@@ -147,8 +118,7 @@ struct MPSteadyPulseDot: View {
         TimelineView(.animation) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             let phase = (t.truncatingRemainder(dividingBy: Self.periodSec)) / Self.periodSec
-            // 1 .. 0.35 .. 1 envelope. Matches the "steady, not urgent"
-            // motion note in the design system guide.
+            // 1..0.35..1 envelope - "steady, not urgent" per design system.
             let envelope = 0.675 + 0.325 * cos(phase * 2 * .pi)
             Circle()
                 .fill(color)
@@ -159,9 +129,7 @@ struct MPSteadyPulseDot: View {
     }
 }
 
-/// Compact 1s rotation spinner that reads as the processing indicator
-/// inside the status pill. Ring rather than filled disc so it doesn't
-/// over-weight the pill (matches the CSS audit's `.pill--proc` rule).
+/// Compact 1s ring spinner for the processing pill indicator. Ring (not filled disc) so it doesn't over-weight the pill.
 struct MPRingSpinner: View {
     let color: Color
     var size: CGFloat = 7
@@ -182,12 +150,7 @@ struct MPRingSpinner: View {
 
 // MARK: - Ref chip (filter bar)
 
-/// Flat ghost chip used by the filter bar's source/status/date
-/// dropdowns. Visually subordinate to `WorkflowChip` so workflow stays
-/// the primary scope; renders the *value* inline when set, not the
-/// field name — the set state IS the labelled state.
-///
-/// The trailing caret hints at the dropdown without claiming weight.
+/// Flat ghost chip for filter bar dropdowns. Renders the set value inline (not the field name) with a trailing caret hinting at the dropdown.
 struct MPRefChip<Content: View>: View {
     let label: String
     let currentValue: String?
@@ -224,11 +187,7 @@ struct MPRefChip<Content: View>: View {
 
 // MARK: - Ghost icon button
 
-/// 26pt square button with hover tint, no border, no fill at rest.
-/// Used by the detail header's trailing edge for Notion / Obsidian /
-/// Reveal-in-Finder shortcuts and by the batch-actions cards for
-/// secondary triggers. Help-string carries the action name; the icon
-/// alone carries the label visually.
+/// 26pt square ghost icon button with hover tint. Used in the detail header and batch-actions cards; help string carries the label.
 struct MPGhostIconButton: View {
     let systemImage: String
     let help: String

@@ -1,17 +1,6 @@
 import Foundation
 
-/// The coarse selector driven by the smart-folder rail (TECH-B IA
-/// re-architecture).
-///
-/// A scope narrows the entire library to a single bucket before the
-/// in-list filter chips (`MeetingFilter`) run on top. Two surfaces read
-/// from it:
-///   • `LibrarySidebar` renders one row per case and binds the selection.
-///   • `LibraryListView` calls `predicate(_:workflows:)` before letting
-///     `MeetingFilterEngine` apply the user's chip filter.
-///
-/// The "workflow" associated value carries the Workflow.ID rather than
-/// the name so a rename in the editor doesn't silently drop the scope.
+/// Smart-folder rail scope (TECH-B). Narrows the library before filter chips run. The `workflow` case carries `Workflow.ID` rather than the name so a rename can't silently drop the scope.
 enum LibraryScope: Hashable {
     case allMeetings
     case today
@@ -21,7 +10,7 @@ enum LibraryScope: Hashable {
     case untagged
     case workflow(Workflow.ID)
 
-    /// Display label for the rail row and the list header.
+    /// Rail row label and list header.
     var title: String {
         switch self {
         case .allMeetings: return "All meetings"
@@ -34,8 +23,7 @@ enum LibraryScope: Hashable {
         }
     }
 
-    /// SF Symbol used by non-workflow scopes. Workflow scopes render
-    /// their colored dot directly, so this returns nil for them.
+    /// SF Symbol for non-workflow scopes. Nil for workflow scopes (they render a colored dot).
     var systemImage: String? {
         switch self {
         case .allMeetings: return "tray.full"
@@ -46,9 +34,7 @@ enum LibraryScope: Hashable {
         }
     }
 
-    /// True when this scope filters by a specific workflow. The toolbar
-    /// uses this to decide whether to surface the "Edit workflow"
-    /// affordance and whether to host the right-side inspector pane.
+    /// True when the scope is a specific workflow. The toolbar uses this to show the "Edit workflow" button and the inspector pane.
     var isWorkflow: Bool {
         if case .workflow = self { return true }
         return false
@@ -59,12 +45,7 @@ enum LibraryScope: Hashable {
         return nil
     }
 
-    /// Whether a meeting passes this scope. `workflows` must be the
-    /// current store snapshot — needed so the "NDA only" scope can
-    /// resolve a meeting's workflow → flags.ndaMode.
-    ///
-    /// `now` is injected so unit tests can pin the wall clock without
-    /// stubbing `Date.init`.
+    /// True when `meeting` passes this scope. `workflows` must be the current snapshot (needed for NDA resolution). `now` is injected so tests can pin the clock.
     func includes(_ meeting: Meeting, workflows: [Workflow], now: Date = Date()) -> Bool {
         switch self {
         case .allMeetings:
@@ -88,10 +69,7 @@ enum LibraryScope: Hashable {
         }
     }
 
-    /// Workflow lookup by name. The meta sidecar persists the name
-    /// rather than the id (cross-machine portability of recordings was
-    /// the original choice — see TECH-B4); the rail resolves by id so a
-    /// rename can't orphan the row, which means we match by name here.
+    /// Lookup by name because the meta sidecar persists the name, not the id (cross-machine portability - TECH-B4). The rail's scope uses id, so a rename can't orphan it; this lookup bridges the two.
     private static func resolveWorkflow(for meeting: Meeting, in workflows: [Workflow]) -> Workflow? {
         guard let name = meeting.workflowName, !name.isEmpty else { return nil }
         return workflows.first { $0.name == name }

@@ -1,27 +1,15 @@
 import SwiftUI
 
-/// Smart-folder rail: scopes on top, workflows below. Drives
-/// `LibraryScope` selection in the root view.
-///
-/// Workflows are scopes here (not destinations) — selecting one filters
-/// the list and reveals an Edit affordance + inspector pane. The state
-/// pill and record button live in the toolbar, not here, so the rail's
-/// width is spent on navigation rather than chrome.
+/// Smart-folder rail: library scopes on top, workflows below. Selecting a workflow filters the list and opens its inspector. State pill and record button live in the toolbar.
 struct LibrarySidebar: View {
     @Binding var selection: LibraryScope
-    /// Optional — non-nil only when `LibraryWindowModel.workflowStore`
-    /// has been wired. The rail degrades to library-only scopes when
-    /// nil (e.g. headless tests or the very first launch before the
-    /// store is bound).
+    /// Non-nil once the Coordinator has wired the store. Rail degrades to library-only scopes when nil (headless tests, first launch).
     @ObservedObject var workflowStore: WorkflowStore
 
-    /// Per-row counts. Recomputed by `LibraryRootView` whenever the
-    /// meeting store or the workflow store publishes a change.
+    /// Per-row counts, recomputed by `LibraryRootView` on store changes.
     let counts: ScopeCounts
 
-    /// Called when the user clicks "+ New workflow" or any of the
-    /// workflow rows' edit affordances. The root hosts the editor
-    /// sheet so the sidebar doesn't need its own modal state.
+    /// Called on "+ New workflow". The root hosts the editor sheet so the sidebar needs no modal state.
     let onCreateWorkflow: () -> Void
 
     var body: some View {
@@ -73,17 +61,13 @@ struct LibrarySidebar: View {
         .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
     }
 
-    /// Static set of non-workflow scopes that always render in the
-    /// rail's Library section, in display order.
+    /// Non-workflow scopes shown in the Library section, in display order.
     static let librarySections: [LibraryScope] = [
         .allMeetings, .today, .last7Days, .last30Days, .ndaOnly, .untagged,
     ]
 }
 
-/// Plain-data bag handed in from the parent so the sidebar doesn't have
-/// to know how to filter the meeting store itself. The parent owns the
-/// MeetingStore subscription and recomputes whenever its `meetings`
-/// array changes — keeps the rail's render cheap.
+/// Pre-computed count bag handed in from the parent, so the sidebar never touches the meeting store directly.
 struct ScopeCounts: Equatable {
     let total: Int
     let today: Int
@@ -91,9 +75,7 @@ struct ScopeCounts: Equatable {
     let last30: Int
     let nda: Int
     let untagged: Int
-    /// Per-workflow row counts, keyed by workflow id. Workflows missing
-    /// from the dict render as zero rather than hiding the row, so the
-    /// rail stays self-teaching for newly-created workflows.
+    /// Per-workflow counts keyed by id. Missing entries render as zero so new workflows show immediately.
     let perWorkflow: [Workflow.ID: Int]
 
     static let zero = ScopeCounts(
@@ -116,10 +98,7 @@ struct ScopeCounts: Equatable {
         perWorkflow[id] ?? 0
     }
 
-    /// Walk the meeting list once and bucket every row into every scope
-    /// it satisfies. O(n × scopes) but n is at most a few hundred in
-    /// regular use; building once per store mutation is cheap enough
-    /// that we don't bother memoizing partial sums.
+    /// Walk the meeting list once and bucket each row into the scopes it satisfies. O(n × scopes); n is at most a few hundred in normal use.
     static func build(meetings: [Meeting], workflows: [Workflow], now: Date = Date()) -> ScopeCounts {
         var today = 0, last7 = 0, last30 = 0, nda = 0, untagged = 0
         var perWf: [Workflow.ID: Int] = [:]
@@ -136,9 +115,7 @@ struct ScopeCounts: Equatable {
                 default: break
                 }
             }
-            // Per-workflow bucketing is independent of the date / NDA
-            // scopes above; an NDA meeting also counts toward its
-            // workflow's own row.
+            // Workflow bucketing is independent of date/NDA scopes; an NDA meeting still counts toward its workflow.
             if let name = m.workflowName, !name.isEmpty,
                let wf = workflows.first(where: { $0.name == name }) {
                 perWf[wf.id, default: 0] += 1
@@ -201,8 +178,7 @@ private struct WorkflowScopeRow: View {
                     .foregroundStyle(.tertiary)
             }
         } icon: {
-            // Filled dot, workflow color. 8pt to read at the rail's
-            // density without dominating the label.
+            // 8pt filled dot in the workflow color.
             Circle()
                 .fill(swiftUIColor(forHex: workflow.color))
                 .frame(width: 8, height: 8)
@@ -210,18 +186,13 @@ private struct WorkflowScopeRow: View {
     }
 }
 
-/// Convert a workflow's hex string to a SwiftUI color. Falls back to
-/// secondary if the hex doesn't parse — the editor validates on save,
-/// but legacy TOML rows imported from older builds may carry odd values.
+/// Hex → SwiftUI Color, falling back to `.secondary` for malformed input (legacy TOML rows).
 private func swiftUIColor(forHex hex: String) -> Color {
     if let ns = HexColor.parse(hex) { return Color(ns) }
     return Color.secondary
 }
 
-/// Match `WorkflowStore`'s internal ordering: order field first, then
-/// case-insensitive name as the tie-breaker. Kept here as a free
-/// function rather than a static on `WorkflowStore` so the store stays
-/// free of view-layer churn.
+/// Sort by `order` then case-insensitive name. Free function rather than a `WorkflowStore` static to keep the store free of view-layer churn.
 private func workflowOrder(_ a: Workflow, _ b: Workflow) -> Bool {
     if a.order != b.order { return a.order < b.order }
     return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending

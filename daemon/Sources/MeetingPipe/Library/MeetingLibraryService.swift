@@ -1,23 +1,6 @@
 import Foundation
 
-/// Operations on already-recorded meetings on disk: retry, regenerate,
-/// republish, soft-delete, export, and the read-only menu queries
-/// (recent-correctable list, failed count).
-///
-/// Lifted out of `Coordinator` (TECH-H1-FINISH) so the orchestrator can
-/// stay focused on the live recording lifecycle. Every `Log.event` name
-/// and payload is preserved verbatim (category stays `coordinator`) so
-/// the events.jsonl trace is unchanged by the extraction.
-///
-/// Dependencies are injected as plain values/closures rather than a
-/// reference to the Coordinator: `outputDir` resolves the live
-/// recordings directory on each call (so Preferences edits take effect
-/// without a restart), `launcher` runs the summarize/publish subprocess,
-/// `notifyError` surfaces a user-facing banner, and `enqueue` hands a
-/// wav back to the pipeline-job queue.
-///
-/// Threading: every method must run on the main queue, matching the
-/// Coordinator surfaces that call in.
+/// Post-recording operations: retry, regenerate, republish, soft-delete, export, and menu queries. Lifted out of `Coordinator` (TECH-H1-FINISH); `Log.event` category stays `coordinator` so the events.jsonl trace is unchanged. Dependencies are injected as closures: `outputDir` re-resolves on each call so Preferences edits take effect without restart. Threading: all methods must run on main, matching the Coordinator's own threading contract.
 final class MeetingLibraryService {
 
     private let outputDir: () -> URL
@@ -37,13 +20,7 @@ final class MeetingLibraryService {
         self.enqueue = enqueue
     }
 
-    /// Retry the full pipeline for a meeting whose original run never
-    /// produced a summary (daemon was killed mid-transcribe, the
-    /// orchestrator crashed, etc.). Enqueues the same `mp run-all`
-    /// subprocess the normal flow uses, so progress shows up in the
-    /// status-bar processing badge and any sidecars get overwritten.
-    /// Returns failure if the wav file is missing. Every other error
-    /// surfaces as a notifier banner from the existing pipeline path.
+    /// Retry the full `mp run-all` pipeline. Enqueues the same subprocess the normal flow uses so the processing badge updates and sidecars get overwritten. Fails immediately if the wav is missing; all other errors surface via the existing pipeline notifier.
     func retryMeeting(stem: String) -> Result<Void, Error> {
         let dir = outputDir()
         let wavURL = dir.appendingPathComponent("\(stem).wav")
@@ -58,24 +35,13 @@ final class MeetingLibraryService {
         Log.event(category: "coordinator", action: "retry_requested", attributes: [
             "stem": stem,
         ])
-        // The retry supersedes the prior failure: drop the sidecar now so
-        // the meeting leaves the failed set immediately (the status-bar
-        // count, and a recent row, stop showing failed without waiting
-        // for the run). The dispatcher writes a fresh one if it fails too.
+        // Drop the failure sidecar immediately so the row leaves the failed set before the run finishes. The dispatcher writes a fresh sidecar if it fails again.
         PipelineFailureSidecar.clear(stem: stem, in: dir)
         enqueue(wavURL, .auto)
         return .success(())
     }
 
-    /// Regenerate the summary for the given stem by re-running the
-    /// `mp summarize` stage against the existing transcript, then
-    /// re-running publish so the Notion page reflects the new summary.
-    /// Returns the resulting Notion page URL on success.
-    ///
-    /// Workflow / backend override is not yet wired (TECH-B ships the
-    /// workflow data model; backend-override env var is not piped into
-    /// `mp summarize`). For now the regenerate uses whatever the
-    /// configured backend / context resolves to at subprocess time.
+    /// Re-run `mp summarize` against the existing transcript, then republish. Backend-override env var is not yet piped into `mp summarize` (TECH-B); uses the configured backend at subprocess time.
     func regenerateMeeting(
         stem: String,
         completion: @escaping (Result<URL?, Error>) -> Void
@@ -99,14 +65,7 @@ final class MeetingLibraryService {
                 guard let self = self else { return }
                 switch result {
                 case .success:
-                    // Summarize wrote a fresh <stem>.summary.json next to
-                    // the transcript; chain into publish so the Notion
-                    // page picks up the new content too.
-                    //
-                    // A fresh summary means the meeting is no longer lost,
-                    // so drop any failure sidecar an earlier failed run
-                    // left behind. A retry clears via the dispatcher; a
-                    // regenerate bypasses run-all, so it clears here.
+                    // Drop any stale failure sidecar: a retry clears via the dispatcher, but a regenerate bypasses run-all, so it clears here. Then chain into publish.
                     PipelineFailureSidecar.clear(stem: stem, in: dir)
                     self.republishMeeting(stem: stem, completion: completion)
                 case .failure(let err):
@@ -121,11 +80,7 @@ final class MeetingLibraryService {
         }
     }
 
-    /// Move every sidecar associated with a stem (audio, transcript,
-    /// summary, run, meta, notion, obsidian, READY_FOR_MANUAL) to the
-    /// user's Trash. Recoverable from Finder until the user empties the
-    /// Trash. The recordings-dir watcher picks up the deletes and
-    /// refreshes the Library list automatically.
+    /// Move all sidecars for a stem (audio, transcript, summary, run, meta, notion, obsidian, READY_FOR_MANUAL) to the Trash. The directory watcher picks up the deletes and refreshes the list.
     func softDeleteMeeting(stem: String) -> Result<Void, Error> {
         let dir = outputDir()
         let fm = FileManager.default
@@ -162,12 +117,7 @@ final class MeetingLibraryService {
         return .success(())
     }
 
-    /// Copy the standard human-facing artefacts for a stem (summary
-    /// markdown, transcript markdown, summary JSON, raw audio) into a
-    /// user-chosen folder. Missing files are silently skipped; the
-    /// export is best-effort and aimed at sharing rather than archival
-    /// completeness (use Reveal in Finder + a manual copy for the
-    /// latter). Returns the count of files copied on success.
+    /// Copy summary markdown, transcript, summary JSON, and audio to a user-chosen folder. Missing files are silently skipped (best-effort sharing export, not archival). Returns file count.
     func exportMeeting(stem: String, to destination: URL) -> Result<Int, Error> {
         let dir = outputDir()
         let fm = FileManager.default
@@ -184,8 +134,7 @@ final class MeetingLibraryService {
             let src = dir.appendingPathComponent(name)
             guard fm.fileExists(atPath: src.path) else { continue }
             let dst = destination.appendingPathComponent(name)
-            // Overwrite existing destination files so a second export
-            // pass to the same folder refreshes the bundle.
+            // Overwrite so a second export to the same folder refreshes the bundle.
             if fm.fileExists(atPath: dst.path) {
                 _ = try? fm.removeItem(at: dst)
             }
@@ -204,16 +153,7 @@ final class MeetingLibraryService {
         return .success(copied)
     }
 
-    /// Re-run the publish step for the given meeting stem. Spawns the
-    /// same `mp publish-notion` subprocess the orchestrator uses at end
-    /// of pipeline, so success / failure / sidecar updates flow through
-    /// the same code path. Returns the resulting Notion page URL via the
-    /// completion handler, nil under regulated_mode or when the page
-    /// link is not in the sidecar.
-    ///
-    /// Used by the Library window's summary-edit flow (TECH-A5). The
-    /// caller is expected to have already written the corrected summary
-    /// to `<stem>.summary.json` before invoking this.
+    /// Re-run `mp publish-notion` via the same subprocess the orchestrator uses (TECH-A5). Caller must have already written the corrected summary to `<stem>.summary.json`. Returns the Notion page URL, or nil under regulated_mode / when the link is absent from the sidecar.
     func republishMeeting(
         stem: String,
         completion: @escaping (Result<URL?, Error>) -> Void
@@ -252,10 +192,7 @@ final class MeetingLibraryService {
         }
     }
 
-    /// List the last `limit` meetings that have a run sidecar on disk
-    /// (i.e. the summarize stage actually finished). Sorted newest
-    /// first by run-sidecar mtime so the most recent meeting is always
-    /// at the top of the menu.
+    /// Last `limit` meetings with a run sidecar (summarize completed), sorted newest-first by mtime.
     func recentCorrectableMeetings(limit: Int = 10) -> [(stem: String, displayName: String)] {
         let dir = outputDir()
         let fm = FileManager.default
@@ -276,17 +213,13 @@ final class MeetingLibraryService {
         }
         return sorted.prefix(limit).map { url in
             let name = url.lastPathComponent
-            // Strip the trailing ".run.json" suffix.
+            // Strip ".run.json" suffix.
             let stem = String(name.dropLast(".run.json".count))
             return (stem: stem, displayName: stem)
         }
     }
 
-    /// Count of meetings whose last pipeline run failed and that the owner
-    /// has not yet recovered. Backs the status-bar failure row. Scans the
-    /// recordings dir directly (filenames only) so it works while the
-    /// Library window is closed and stays cheap enough to run per menu
-    /// open.
+    /// Count of unrecovered pipeline failures. Filename-only scan so it works while the Library window is closed and is cheap enough to run on every menu open.
     func failedMeetingCount() -> Int {
         let dir = outputDir()
         guard let names = try? FileManager.default.contentsOfDirectory(

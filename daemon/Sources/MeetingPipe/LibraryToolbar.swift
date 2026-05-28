@@ -1,30 +1,13 @@
 import SwiftUI
 
-/// Custom toolbar strip running across the top of the Library window.
-/// Owns the always-visible bits the rail used to hide:
-///   • breadcrumb (Library [→ Workflow])
-///   • optional "Edit workflow" action when a workflow scope is active
-///   • state pill (idle / recording / processing)
-///   • Record / Stop button (signal blue / pulse coral)
-///   • Preferences gear
-///
-/// Placed *below* the title bar rather than inside it. SwiftUI's
-/// `.toolbar` inside a `NavigationSplitView` content column behaves
-/// inconsistently on macOS 14/15 (items get clobbered when the rail
-/// collapses), and the design's reference mockup wants a 44pt strip
-/// with its own background — neither requirement is friendly to
-/// `NSWindow.toolbar`. So we render a plain SwiftUI strip the window
-/// hosts itself, matching the prototype's height + hairline.
+/// Custom 44pt toolbar strip below the title bar: breadcrumb, optional "Edit workflow" button, state pill, Record/Stop button, and Preferences gear. Placed below the title bar rather than inside it because SwiftUI `.toolbar` inside `NavigationSplitView` is unreliable on macOS 14/15 (items get clobbered when the rail collapses), and the design needs a dedicated background strip.
 struct LibraryToolbar: View {
     @ObservedObject var model: LibraryWindowModel
-    /// High-frequency processing-queue counter, observed separately so
-    /// the rail / list / detail never get pulled through a re-render
-    /// when a job ticks. Wired by the root from `model.processing`.
+    /// Observed separately from the model so processing ticks don't re-render the rail, list, or detail. Wired from `model.processing`.
     @ObservedObject var processing: ProcessingTracker
     @ObservedObject var workflowStore: WorkflowStore
     @Binding var selection: LibraryScope
-    /// Pull-down menu trigger for editing the currently-scoped workflow.
-    /// The root view hosts the editor sheet; the toolbar just signals.
+    /// Signals the root to open the editor sheet for the scoped workflow.
     let onEditWorkflow: (Workflow) -> Void
 
     var body: some View {
@@ -106,25 +89,17 @@ struct LibraryToolbar: View {
         }
     }
 
-    /// Workflow associated with the current scope, if any. Used by the
-    /// breadcrumb + Edit button. Distinct from `activeWorkflow` (below)
-    /// which is what's *currently recording* — those usually differ.
+    /// Workflow for the current scope, if any. Used by the breadcrumb and Edit button. Distinct from `activeWorkflow` (the one currently recording).
     private var scopedWorkflow: Workflow? {
         guard case .workflow(let id) = selection else { return nil }
         return workflowStore.workflow(id: id)
     }
 
-    /// Workflow currently driving the recording (or, if idle, the
-    /// scoped workflow as a fallback so the pill still tints reasonably
-    /// when the user is sitting on a workflow scope). Anchor for the
-    /// state pill's color treatment during a live recording.
+    /// Workflow driving the live recording; falls back to the scoped workflow when idle so the pill still tints on a workflow scope.
     private var activeWorkflow: Workflow? {
         if case .recording(let appName) = model.status,
            let liveStem = model.liveRecordingStem {
-            // Live meeting wins. We don't have the workflow id on the
-            // Coordinator side (only the name lands in the sidecar at
-            // record time), so look it up by name. Falls back to the
-            // scoped workflow if the name doesn't resolve.
+            // Only the workflow name lands in the sidecar at record time, so look up by name. Falls back to the scoped workflow if unresolvable.
             if let m = model.meetingStore.meetings.first(where: { $0.stem == liveStem }),
                let name = m.workflowName,
                let wf = workflowStore.workflows.first(where: { $0.name == name }) {
@@ -138,13 +113,7 @@ struct LibraryToolbar: View {
 
 // MARK: - Subviews
 
-/// The always-visible status pill. Three shapes:
-///   • Idle: muted, single dot, "Idle"
-///   • Processing: spinner + "Processing N"
-///   • Recording: workflow tint, pulse dot, name, elapsed timer (mm:ss)
-///
-/// Per the design's hybrid header: the recording variant expands inline
-/// — same control, larger visual presence. It's not a separate widget.
+/// Always-visible status pill: idle (dot + "Idle"), processing (spinner + count), recording (tinted expanded pill + elapsed). The recording variant expands inline; it is not a separate widget.
 struct StatePill: View {
     let status: LibraryWindowModel.Status
     let processingCount: Int
@@ -207,9 +176,7 @@ struct StatePill: View {
         )
     }
 
-    /// Expanded recording shape — the borrowed piece of Pattern C. Tint
-    /// is the workflow color; the dot pulses on a 1.6s opacity loop
-    /// (steady, never scale — per the design system motion notes).
+    /// Expanded recording shape, tinted by the workflow color. The dot pulses on a 1.6s opacity loop (no scale pulse, per the design system motion notes).
     private var recordingShape: some View {
         let wfColor = workflow.flatMap { HexColor.parse($0.color) }
             .map { Color($0) } ?? Color(MPColors.pulse600)
@@ -242,47 +209,20 @@ struct StatePill: View {
         )
     }
 
-    /// Elapsed time for the live recording. Read off
-    /// `LibraryWindowModel.liveRecordingStem` is not enough — the model
-    /// doesn't expose a `startedAt` directly — so we infer from the
-    /// matching meeting row when one exists. The pill degrades to "—:—"
-    /// during the brief window between the recorder writing the wav
-    /// and the meeting store picking it up.
+    /// Elapsed time placeholder. The model does not yet push a live counter; a static value avoids a 1Hz Timer.publish that would re-render the entire toolbar before we measure its cost.
     private var elapsedString: String {
-        // The current implementation doesn't push a live elapsed counter
-        // up through `LibraryWindowModel`. We render a static placeholder
-        // here; the recording shape's job in this commit is to be the
-        // *visual* expanded pill — a follow-up can wire a tick timer
-        // that recomputes once a second. Keeping it static avoids
-        // adding a 1Hz Timer.publish that would re-render the entire
-        // toolbar (and through it, the rail and list) every second
-        // before we measure whether that's acceptable.
         "—:—"
     }
 }
 
-/// Soft 1.6s pulse on the recording dot — opacity only, per the design
-/// system's motion notes ("scale pulses read as urgent; the dot should
-/// feel steady").
-///
-/// Driven by `TimelineView(.animation)` rather than the previous
-/// `@State` + `withAnimation(...).repeatForever(...)` pattern. The old
-/// pattern restarted the animation every time the parent re-rendered
-/// (toolbar status flips, processing ticks before the model split,
-/// etc.), which manifested as a ~1s stutter on the dot. `TimelineView`
-/// reads from a free-running clock and re-evaluates this subtree only;
-/// it never invalidates the parent.
+/// 1.6s opacity-only pulse for the recording dot ("scale pulses read as urgent; the dot should feel steady"). Uses `TimelineView(.animation)` rather than `withAnimation.repeatForever`: the old pattern restarted on every parent re-render, causing a ~1s stutter. TimelineView reads a free-running clock and invalidates only this subtree.
 private struct PulseDot: View {
-    /// One full opacity cycle (fade-out + fade-in). Matches the legacy
-    /// `easeInOut(duration: 1.6).autoreverses` envelope.
+    /// One full opacity cycle, matching the legacy `easeInOut(duration: 1.6).autoreverses` envelope.
     private static let periodSec: Double = 1.6
 
     var body: some View {
         TimelineView(.animation) { context in
-            // Phase ∈ [0, 1) repeats every `periodSec`. A cosine maps
-            // it to a symmetric 0..1..0 envelope without the
-            // `withAnimation` machinery; opacity then drops from 0.35
-            // (at phase 0) toward 0 (at phase 0.5) and back.
+            // Cosine maps phase [0,1) to a 0..1..0 envelope without `withAnimation`.
             let t = context.date.timeIntervalSinceReferenceDate
             let phase = (t.truncatingRemainder(dividingBy: Self.periodSec)) / Self.periodSec
             let envelope = 0.5 + 0.5 * cos(phase * 2 * .pi)   // 0..1..0
@@ -295,18 +235,13 @@ private struct PulseDot: View {
                     .frame(width: 8, height: 8)
             }
         }
-        // 8pt is the visible dot; the 14pt aura around it pulses. Pin
-        // the frame to the aura so adjacent layout doesn't shimmy.
+        // Pin frame to the 14pt aura so adjacent layout doesn't shimmy.
         .frame(width: 14, height: 14)
     }
 }
 
-/// Toolbar's Record button. Signal blue when idle, pulse coral when
-/// recording. Square stop glyph during a live recording mirrors the
-/// status-bar icon.
-/// Hex → SwiftUI Color helper, local to the toolbar so it doesn't pull
-/// from the sidebar's file-private one. Falls back to `.secondary` for
-/// malformed input (legacy TOML rows).
+/// Hex → SwiftUI Color helper. Local to the toolbar; falls back to `.secondary` for malformed input (legacy TOML rows).
+/// Record button: signal blue when idle, pulse coral when recording.
 private func swiftUIColor(forHex hex: String) -> Color {
     if let ns = HexColor.parse(hex) { return Color(ns) }
     return Color.secondary

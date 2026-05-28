@@ -1,33 +1,19 @@
 import AppKit
 import SwiftUI
 
-/// One row in the Library list. Title + source glyph + workflow chip
-/// (when present) + duration + status pill. Right-click exposes the
-/// per-row context menu (TECH-A12).
-///
-/// Deliberately holds NO `@ObservedObject` / `@EnvironmentObject` so
-/// that broadcasts from `LibraryWindowModel` (status flips, processing
-/// queue depth, model-download progress, …) don't invalidate every row
-/// in the list. The list owns the model; it computes `isLiveRecording`
-/// per row and passes plain closures down for the context-menu
-/// actions.
+/// One Library list row (TECH-A12). Holds no `@ObservedObject`/`@EnvironmentObject` so model broadcasts (status flips, processing ticks) don't invalidate every row. The list computes `isLiveRecording` and passes plain closures for context-menu actions.
 struct MeetingRow: View, Equatable {
     let meeting: Meeting
-    /// Pre-computed by the list view. The row never reads
-    /// `liveRecordingStem` itself, so changes elsewhere in the model
-    /// don't bubble through here.
+    /// Pre-computed by the list; the row never reads `liveRecordingStem` directly.
     let isLiveRecording: Bool
-    /// Plain closures so the row neither observes nor strongly retains
-    /// the library model.
+    /// Plain closures so the row neither observes nor retains the library model.
     let onRepublish: () async -> Void
     let onRegenerate: () async -> Void
     let onRetry: () -> Result<Void, Error>
     let onSoftDelete: () -> Void
     let onExport: (URL) -> Result<Int, Error>
 
-    /// Equatable on value-typed fields only — closures are intentionally
-    /// excluded because they're re-allocated by the parent on every
-    /// re-render and would defeat the `.equatable()` optimization.
+    /// Equates only value-typed fields; closures are excluded because they're re-allocated each render and would defeat `.equatable()`.
     static func == (lhs: MeetingRow, rhs: MeetingRow) -> Bool {
         lhs.meeting == rhs.meeting && lhs.isLiveRecording == rhs.isLiveRecording
     }
@@ -41,14 +27,7 @@ struct MeetingRow: View, Equatable {
 
     var body: some View {
         HStack(spacing: 10) {
-            // Drag handle. `.draggable` attached to the *whole* row body
-            // poisons SwiftUI's hit-test on macOS: NSTableView's
-            // tap-to-select gesture loses to the row-wide drag gesture,
-            // and clicks anywhere inside the row content fall through
-            // (only the thin strips between rows still register).
-            // Confining the draggable to the leading glyph matches the
-            // platform convention (Finder, Mail) and leaves the rest of
-            // the row free to drive selection.
+            // `.draggable` on the whole row poisons SwiftUI hit-test: NSTableView's select gesture loses to the row-wide drag and clicks fall through. Confining it to the leading glyph (Finder/Mail convention) leaves the rest of the row free for selection.
             leadingGlyph
                 .frame(width: 22, height: 22)
                 .draggable(MeetingDragItem(meeting: meeting))
@@ -81,10 +60,7 @@ struct MeetingRow: View, Equatable {
         .frame(height: 44)
         .background(rowBackground)
         .overlay(alignment: .leading) {
-            // 2pt signal accent on the leading edge for the active /
-            // live-recording row — the design system's selected-row
-            // treatment ported from the audit. Inset 6pt vertical so
-            // it reads as an accent, not a full divider.
+            // 2pt leading accent for the live-recording row. Inset 6pt vertical so it reads as an accent, not a divider.
             if showsLeadingAccent {
                 RoundedRectangle(cornerRadius: 1)
                     .fill(Color(MPColors.signal600))
@@ -98,9 +74,7 @@ struct MeetingRow: View, Equatable {
 
     // MARK: Row pieces
 
-    /// Caption row: app name · duration · workflow chip. Drops the
-    /// duplicate time stamp (the trailing day/time stack covers that)
-    /// and folds the workflow chip inline as the third token.
+    /// Caption row: app name · duration · workflow chip. The trailing day/time stack covers the timestamp.
     @ViewBuilder
     private var captionLine: some View {
         HStack(spacing: 6) {
@@ -126,9 +100,7 @@ struct MeetingRow: View, Equatable {
         .lineLimit(1)
     }
 
-    /// Trailing mono day/time stack — the audit's collapsed channel.
-    /// "Yest 15:00" reads in two lines stacked, monospaced so a column
-    /// of rows aligns.
+    /// Trailing mono day/time stack. Monospaced so a column of rows aligns.
     private var trailingWhenStack: some View {
         VStack(alignment: .trailing, spacing: 1) {
             Text(relativeDayLabel)
@@ -141,10 +113,7 @@ struct MeetingRow: View, Equatable {
         .frame(minWidth: 44, alignment: .trailing)
     }
 
-    /// Status pill resolved through the design-audit's tone family. NDA
-    /// rows surface as a muted "Local only" pill rather than the
-    /// recording / processing colors — NDA isn't an error, just a
-    /// privacy mode.
+    /// Status pill. NDA rows show "Local only" rather than recording/processing colors; NDA is a privacy mode, not an error.
     @ViewBuilder
     private var trailingPill: some View {
         switch (effectiveStatus, isNDA) {
@@ -166,17 +135,13 @@ struct MeetingRow: View, Equatable {
         }
     }
 
-    /// Inline one-click retry for a failed row: the audit's fix for
-    /// Retry being right-click-only. Sits next to the Failed pill so the
-    /// owner sees the action without opening the context menu.
+    /// Inline retry button so the owner can act without opening the context menu.
     private var retryButton: some View {
         Button("Retry") { runRetry() }
             .controlSize(.small)
     }
 
-    /// Hover text for the failed pill: the persisted reason when the
-    /// failure sidecar supplied one, a generic line for a `.failed` row
-    /// inferred only from the staleness age heuristic.
+    /// Hover text for the failed pill: persisted reason when available, generic fallback for staleness-age-inferred failures.
     private var failureHelpText: String {
         if let reason = meeting.failureReason, !reason.isEmpty {
             return reason
@@ -184,9 +149,7 @@ struct MeetingRow: View, Equatable {
         return "The pipeline did not finish for this meeting."
     }
 
-    /// Leading glyph — swaps to a lock for NDA / local-only meetings
-    /// per the audit (NDA row's source is irrelevant; the privacy mode
-    /// is the salient property).
+    /// Leading glyph; swaps to a lock for NDA meetings (privacy mode trumps source identity).
     @ViewBuilder
     private var leadingGlyph: some View {
         if isNDA {
@@ -198,8 +161,7 @@ struct MeetingRow: View, Equatable {
             AppGlyphRepresentable(source: source)
                 .frame(width: 22, height: 22)
         } else {
-            // Manual recordings (⌃⌥M) carry no source. Use the menubar
-            // ring as a neutral fallback so the row column stays aligned.
+            // Manual recordings (⌃⌥M) have no source; use the waveform ring to keep the column aligned.
             Image(systemName: "waveform.circle")
                 .font(.system(size: 18))
                 .foregroundStyle(.secondary)
@@ -207,9 +169,7 @@ struct MeetingRow: View, Equatable {
         }
     }
 
-    /// Subtle background wash: signal-tinted for the active / live row,
-    /// pulse-tinted for any other live recording. Resting rows stay on
-    /// the canvas — the design system's "hairlines, not fills" rule.
+    /// Pulse-tinted background wash for the live row; resting rows stay on the canvas.
     @ViewBuilder
     private var rowBackground: some View {
         if isLiveRecording {
@@ -222,13 +182,7 @@ struct MeetingRow: View, Equatable {
     private var showsLeadingAccent: Bool { isLiveRecording }
 
     private var isNDA: Bool {
-        // Per TECH-B9 the workflow's `flags.ndaMode` drives this — but
-        // the row doesn't have the WorkflowStore at hand and the
-        // sidecar doesn't (yet) persist the resolved flag. As a
-        // visual-only heuristic we surface the lock when the meeting's
-        // workflow color matches the pulse/danger family AND the
-        // meeting's backend was forced to `local`. Both signals are
-        // already on the meeting row.
+        // TECH-B9: the authoritative flag is `workflow.flags.ndaMode`, but the row has no WorkflowStore and the sidecar doesn't yet persist the resolved flag. Heuristic: lock when backend == "local" and a workflow is set.
         if meeting.backend == "local",
            meeting.workflowName?.isEmpty == false {
             return true
@@ -236,9 +190,7 @@ struct MeetingRow: View, Equatable {
         return false
     }
 
-    /// "Today" / "Yest" / "Mon" / "May 8" — relative-date label for
-    /// the trailing stack. Mirrors the spec mock's mono treatment so
-    /// adjacent rows align.
+    /// "Today" / "Yest" / "Mon" / "May 8" for the trailing mono stack.
     private var relativeDayLabel: String {
         let cal = Calendar.current
         let now = Date()
@@ -372,11 +324,7 @@ struct MeetingRow: View, Equatable {
         alert.runModal()
     }
 
-    /// The on-disk status alone can't tell "wav still being written" from
-    /// "wav done, pipeline running". The list view sets `isLiveRecording`
-    /// when this row's stem matches the daemon's live-recording stem; we
-    /// escalate the pill to `.recording` so the user sees the pulse on
-    /// the actual in-flight meeting.
+    /// On-disk status alone can't distinguish "wav being written" from "pipeline running"; escalate to `.recording` when `isLiveRecording` is set.
     private var effectiveStatus: Meeting.Status {
         isLiveRecording ? .recording : meeting.status
     }
@@ -395,9 +343,7 @@ struct MeetingRow: View, Equatable {
 
 // MARK: - AppGlyphView SwiftUI wrapper
 
-/// `AppGlyphView` is AppKit-only; this bridge lets the SwiftUI row reuse
-/// the same glyph resolution (bundle-id first, displayName fallback) the
-/// MeetingPromptWindow uses.
+/// NSViewRepresentable bridge so the SwiftUI row can reuse `AppGlyphView`'s bundle-id-first glyph resolution.
 private struct AppGlyphRepresentable: NSViewRepresentable {
     let source: AppSource
 
@@ -411,8 +357,7 @@ private struct AppGlyphRepresentable: NSViewRepresentable {
 // MARK: - Color hex helper
 
 extension Color {
-    /// "#RRGGBB" or "RRGGBB" → Color. Returns nil for malformed input so
-    /// the workflow chip falls back to the neutral secondary tone.
+    /// "#RRGGBB" / "RRGGBB" → Color. Nil for malformed input so the chip falls back to the neutral tone.
     init?(hex: String) {
         var s = hex.trimmingCharacters(in: .whitespaces)
         if s.hasPrefix("#") { s.removeFirst() }

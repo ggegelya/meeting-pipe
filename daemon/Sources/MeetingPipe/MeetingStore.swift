@@ -2,16 +2,10 @@ import AppKit
 import Combine
 import Foundation
 
-/// One row in the Library list. Materialized from the on-disk sidecars
-/// that the pipeline writes next to the `<stem>.wav`. Held in memory by
-/// `MeetingStore`; cheap to copy by value because every field is small.
+/// One row in the Library list, materialized from on-disk sidecars alongside `<stem>.wav`.
 struct Meeting: Identifiable, Hashable {
 
-    /// Coarse lifecycle state derived from which sidecars exist on disk.
-    /// `.failed` has a precise signal (a `<stem>.error.json` sidecar from
-    /// a failed run); the other states are inferred from presence /
-    /// absence of `<stem>.summary.json`, `<stem>.READY_FOR_MANUAL.md`,
-    /// etc., with an age fallback for a run that left no sidecar.
+    /// Coarse lifecycle state derived from which sidecars exist on disk. `.failed` uses a precise `<stem>.error.json` signal; other states infer from presence/absence of summary/paste-ready sidecars, with an age fallback when no sidecar was written.
     enum Status: String, Hashable {
         case recording            // currently being written (live)
         case processing           // wav present, no summary yet
@@ -21,12 +15,7 @@ struct Meeting: Identifiable, Hashable {
         case unknown
     }
 
-    /// Beyond this age, a meeting that still has no summary on disk is
-    /// considered stalled (pipeline crashed / daemon was restarted
-    /// mid-transcribe / config error). The row flips from `processing`
-    /// to `failed` so the user can spot it + retry from the context
-    /// menu. Two hours is generous: even a 3 h meeting transcript +
-    /// 32B-Qwen local summary finishes inside that window.
+    /// A meeting with no summary older than this is considered stalled (crash, restart, config error) and flips from `.processing` to `.failed`. Two hours is generous: even a 3-hour transcript + 32B-Qwen local summary finishes inside it.
     static let staleProcessingThresholdSec: TimeInterval = 2 * 60 * 60
 
     let stem: String
@@ -41,9 +30,7 @@ struct Meeting: Identifiable, Hashable {
     let sourceDisplayName: String?
     let sourceKind: AppSourceKind?
 
-    /// Filled when TECH-B starts writing `workflow_name` into the meta
-    /// sidecar. Hidden in the row until non-nil so the chip never shows
-    /// a placeholder.
+    /// Written by TECH-B into the meta sidecar. Nil until set, so the chip never shows a placeholder.
     let workflowName: String?
     let workflowColor: String?
 
@@ -53,27 +40,16 @@ struct Meeting: Identifiable, Hashable {
 
     let status: Status
 
-    /// Persisted reason and stage from the failed pipeline run, when a
-    /// `<stem>.error.json` sidecar is the source of `status == .failed`.
-    /// Both nil for a `.failed` row inferred only from the staleness age
-    /// heuristic, and for every non-failed row.
+    /// From `<stem>.error.json` when that sidecar is the source of `.failed`. Both nil for staleness-age-inferred failures and for non-failed rows.
     let failureReason: String?
     let failureStage: String?
 
-    /// Lowercased corpus used by the in-memory filter bar (TECH-A14):
-    /// display title + summary bullets + decisions + action tasks.
-    /// Built once during scan so the filter loop never re-reads JSON.
-    /// Transcripts are deliberately excluded to keep the corpus
-    /// bounded — full-transcript search is the FTS5 upgrade path
-    /// (TECH-A3).
+    /// Lowercased search corpus (TECH-A14): title + summary bullets + decisions + action tasks. Built once per scan so the filter loop never re-reads JSON. Transcripts excluded to keep the corpus bounded; full-transcript search is the FTS5 upgrade (TECH-A3).
     let searchableText: String
 
-    /// Stable identity. Stems are unique per recording (datetime-derived).
-    var id: String { stem }
+    var id: String { stem } // stems are unique per recording (datetime-derived)
 
-    /// Best-effort human-readable label for the row's primary line.
-    /// Summary title > meta-derived meeting title > "{source} at HH:mm"
-    /// > raw stem. Never empty.
+    /// Best-effort display label: summary title > meeting title > "{source} at HH:mm" > raw stem. Never empty.
     var displayTitle: String {
         if let t = summaryTitle, !t.isEmpty { return t }
         if let t = meetingTitle, !t.isEmpty { return t }
@@ -84,9 +60,7 @@ struct Meeting: Identifiable, Hashable {
         return stem
     }
 
-    /// Returns a synthesized `AppSource` so `AppGlyphView` can pick a
-    /// glyph. Returns nil for meetings recorded without a detected
-    /// source (e.g. manual `⌃⌥M` recordings).
+    /// Synthesized `AppSource` for glyph resolution. Nil for manual recordings (no detected source).
     var appSource: AppSource? {
         guard let bid = sourceBundleID, let name = sourceDisplayName else { return nil }
         return AppSource(
@@ -98,28 +72,14 @@ struct Meeting: Identifiable, Hashable {
     }
 }
 
-/// Lazily-built directory cache + filesystem watcher backing the Library
-/// list view. One instance per recordings directory; held by the
-/// `LibraryWindowModel`.
-///
-/// Threading: rescans run on a private serial queue; published mutations
-/// are dispatched back to the main queue. The dispatch source watching
-/// the directory coalesces a burst of writes into a single rescan via
-/// a 500 ms debounce.
+/// Directory cache + filesystem watcher backing the Library list. Threading: rescans run on a private serial queue; published mutations dispatch to main. A 500 ms debounce coalesces burst writes into a single rescan.
 final class MeetingStore: ObservableObject {
 
     @Published private(set) var meetings: [Meeting] = []
-    /// True for the initial scan. Subsequent rescans don't flip this so
-    /// the list doesn't flash to "loading" each time a file lands.
+    /// True only for the initial scan; subsequent rescans don't flip it so the list doesn't flash to "loading" on each file change.
     @Published private(set) var hasLoadedOnce: Bool = false
 
-    /// Monotonically-increasing counter bumped on every successful
-    /// rescan. Views that derive heavy values from `meetings` (counts,
-    /// facets, groups) cache by this fingerprint instead of comparing
-    /// arrays — comparing two 200-Meeting arrays each render defeats
-    /// the memoization. The counter changes iff the list actually
-    /// re-published, including the case where a meeting in the middle
-    /// flipped status (the whole array is replaced wholesale).
+    /// Monotonically-increasing fingerprint bumped on every successful rescan. Views cache derived values (counts, facets, groups) by this value instead of comparing full arrays; two 200-Meeting array comparisons per render would defeat memoization. Increments even when only a middle row flips status, since the whole array is replaced wholesale.
     @Published private(set) var revision: Int = 0
 
     private let recordingsDir: URL
@@ -130,16 +90,11 @@ final class MeetingStore: ObservableObject {
     private var watcher: DispatchSourceFileSystemObject?
     private var watcherFD: CInt = -1
 
-    /// At most one rescan in flight; further refresh() calls fold into
-    /// a single follow-up scan so a burst of writes (Coordinator drops
-    /// .wav / .json / .summary.json in quick succession) doesn't fan
-    /// out into N+1 scans.
+    /// At most one rescan in flight; further calls fold into a single follow-up so a burst of pipeline writes doesn't fan out into N+1 scans.
     private var scanRunning = false
     private var pendingRescan = false
 
-    /// Debounce window for filesystem events. Half a second balances the
-    /// acceptance criterion (1 s new-meeting visibility) against bursty
-    /// pipeline writes that all land within a couple-of-second window.
+    /// 500 ms debounce balances the 1 s new-meeting visibility target against bursty pipeline writes that land within a few seconds of each other.
     private static let debounceSec: TimeInterval = 0.5
     private var debounceWork: DispatchWorkItem?
 
@@ -151,15 +106,13 @@ final class MeetingStore: ObservableObject {
         detachWatcher()
     }
 
-    /// Begin watching the recordings directory and trigger an initial
-    /// scan. Idempotent.
+    /// Begin watching the recordings directory and trigger an initial scan. Idempotent.
     func start() {
         attachWatcher()
         refresh()
     }
 
-    /// Force a rescan now. Used by manual refresh actions; the filesystem
-    /// watcher calls this internally via the debounce path.
+    /// Force a rescan. Also called internally by the debounced filesystem watcher.
     func refresh() {
         if scanRunning {
             pendingRescan = true
@@ -183,11 +136,7 @@ final class MeetingStore: ObservableObject {
         }
     }
 
-    /// Tear down the directory watcher. Paired with `start()` so the
-    /// LibraryWindow can suspend scanning while it's hidden — closing
-    /// the window doesn't release the model (isReleasedWhenClosed=false),
-    /// and without this the watcher kept firing rescans into a tree
-    /// that nobody could see, dragging the main queue along.
+    /// Tear down the directory watcher. Paired with `start()` so the LibraryWindow can suspend scanning while hidden. Without this the watcher fires rescans into an invisible tree, dragging the main queue along (the model is not released when the window closes).
     func stop() {
         detachWatcher()
         debounceWork?.cancel()
@@ -255,8 +204,7 @@ final class MeetingStore: ObservableObject {
             return []
         }
 
-        // Group every file under its meeting stem (the substring before
-        // the first '.'). One pass — O(N) over the directory.
+        // Group files by stem (substring before the first '.'). One O(N) pass.
         var byStem: [String: [URL]] = [:]
         for url in entries {
             let stem = MeetingStore.stem(of: url)
@@ -267,9 +215,7 @@ final class MeetingStore: ObservableObject {
         var out: [Meeting] = []
         out.reserveCapacity(byStem.count)
         for (stem, files) in byStem {
-            // A row only exists when the wav exists. Without it there's
-            // no "meeting" to surface — leftover sidecars from manual
-            // deletes shouldn't populate the list.
+            // No wav = no meeting row; leftover sidecars from manual deletes shouldn't appear.
             guard let wav = files.first(where: { $0.pathExtension == "wav" }) else {
                 continue
             }
@@ -295,9 +241,7 @@ final class MeetingStore: ObservableObject {
             let meta = metaURL.flatMap { readJSON(at: $0) }
             let run = runURL.flatMap { readJSON(at: $0) }
             let summary = summaryURL.flatMap { readJSON(at: $0) }
-            // A failed pipeline run leaves this sidecar; a successful run
-            // or a regenerate clears it. A present summary supersedes it:
-            // the meeting was produced, so the sidecar is stale debris.
+            // A present summary supersedes the failure sidecar: the meeting was produced, so the error is stale.
             let failure: PipelineFailureSidecar.Failure?
             if summaryURL == nil, let errorURL = errorURL {
                 failure = PipelineFailureSidecar.read(at: errorURL)
@@ -322,14 +266,7 @@ final class MeetingStore: ObservableObject {
             } else if pasteReadyURL != nil {
                 status = .manualPasteReady
             } else {
-                // No summary and no failure sidecar: the row is either in
-                // flight, never started, or stalled (a run that died
-                // without leaving a sidecar). Without per-job liveness
-                // tracking we use age as a proxy: anything older than the
-                // staleness window with no summary is `.failed`; the
-                // live-recording overlay supersedes this for the
-                // actively-recording stem via
-                // `LibraryWindowModel.liveRecordingStem`.
+                // No summary, no failure sidecar: in-flight, never started, or stalled. Use age as a proxy; anything older than the staleness window is `.failed`. The live-recording overlay supersedes this via `LibraryWindowModel.liveRecordingStem`.
                 let age = Date().timeIntervalSince(startedAt)
                 if age > Meeting.staleProcessingThresholdSec {
                     status = .failed
@@ -374,8 +311,7 @@ final class MeetingStore: ObservableObject {
                 searchableText: searchable
             ))
         }
-        // Newest first. Equal starts (rare) fall back to stem so order is
-        // stable across rescans.
+        // Newest first; equal starts fall back to stem for stable ordering.
         out.sort { lhs, rhs in
             if lhs.startedAt != rhs.startedAt { return lhs.startedAt > rhs.startedAt }
             return lhs.stem > rhs.stem
@@ -383,10 +319,7 @@ final class MeetingStore: ObservableObject {
         return out
     }
 
-    /// Build the lowercased haystack the filter bar searches against.
-    /// Concatenates the user-visible fields (titles, source app,
-    /// summary bullets, decisions, action tasks) into a single string.
-    /// Internal so tests can drive it directly.
+    /// Build the lowercased filter haystack from user-visible fields (titles, source app, summary bullets, decisions, action tasks). Internal so tests can drive it directly.
     static func buildSearchableText(
         summaryTitle: String?,
         meetingTitle: String?,
@@ -424,26 +357,13 @@ final class MeetingStore: ObservableObject {
         return name
     }
 
-    /// Parse "YYYYMMDD-HHmmss" → Date in the user's local time. Returns
-    /// nil for stems that don't match the expected pattern (the daemon
-    /// only emits this form, so a miss means the file is unrelated).
-    ///
-    /// Length check guards against `DateFormatter`'s lenient behaviour
-    /// on empty / short inputs, where newer SDKs return a Date anchored
-    /// at the format's start-of-epoch rather than failing. The
-    /// daemon's stem format is exactly 15 chars ("yyyyMMdd-HHmmss")
-    /// so anything shorter can't be a real stem.
+    /// Parse "YYYYMMDD-HHmmss" → local Date. The length guard is required: newer SDKs return an epoch-anchored Date for short inputs rather than failing, and real stems are exactly 15 chars.
     static func parseStem(_ stem: String) -> Date? {
         guard stem.count == 15 else { return nil }
         return MeetingFormatters.stem.date(from: stem)
     }
 
-    /// Stems whose last pipeline run failed and that the owner has not yet
-    /// recovered: a `<stem>.error.json` sidecar is present and no
-    /// `<stem>.summary.json` exists. Pure over a directory listing (no
-    /// JSON parsing) so the status-bar count stays cheap and unit-
-    /// testable. Mirrors `scan`'s precedence, where a present summary
-    /// supersedes a stale failure sidecar.
+    /// Stems with a failure sidecar but no summary (unrecovered failures). Filename-only so the status-bar count stays cheap and unit-testable. Mirrors `scan`'s precedence: a present summary supersedes a stale failure sidecar.
     static func unrecoveredFailureStems(fileNames: [String]) -> [String] {
         var failed: Set<String> = []
         var summarised: Set<String> = []
@@ -463,8 +383,7 @@ final class MeetingStore: ObservableObject {
     }
 }
 
-/// Shared formatters held in one place so list rendering doesn't pay
-/// the DateFormatter construction tax per row. Read-only, thread-safe.
+/// Shared DateFormatter instances. Construction is expensive; one-time init here avoids paying it per row.
 enum MeetingFormatters {
     static let stem: DateFormatter = {
         let f = DateFormatter()
@@ -493,7 +412,7 @@ enum MeetingFormatters {
         return f
     }()
 
-    /// "Mon May 12, 2:31 PM" - the detail header's primary date stamp.
+    /// "Mon May 12, 2:31 PM" - detail header primary date stamp.
     static let fullDateTime: DateFormatter = {
         let f = DateFormatter()
         f.dateStyle = .medium
@@ -501,17 +420,14 @@ enum MeetingFormatters {
         return f
     }()
 
-    /// "Mon" / "Tue" — short weekday, used by the row's trailing
-    /// day/time stack for meetings between two and seven days old.
+    /// "Mon" / "Tue" - row trailing day stack for meetings 2-7 days old.
     static let shortWeekday: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "EEE"
         return f
     }()
 
-    /// "May 8" — short month + day, used for meetings older than a
-    /// week. We don't show the year inline; the date group header
-    /// above the row already carries that context.
+    /// "May 8" - for meetings older than a week. No year inline; the date group header above already carries it.
     static let shortMonthDay: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "MMM d"

@@ -2,13 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// Three-pane Library window — the daemon's primary UI surface beyond
-/// the menu bar. Shell only at TECH-A1: the sidebar is live and wired,
-/// the content + detail panes show placeholders until A2 / A4 land.
-///
-/// Lifecycle mirrors `PreferencesWindow`: one instance held by the
-/// Coordinator, `show()` brings it forward (creating once), Cmd+W hides
-/// rather than releasing so the daemon keeps the configured frame.
+/// Three-pane Library window. Lifecycle mirrors `PreferencesWindow`: one instance held by the Coordinator, `show()` brings it forward (creating once), Cmd+W hides rather than releasing so the daemon keeps the configured frame.
 final class LibraryWindow {
     private var window: NSWindow?
     private let model: LibraryWindowModel
@@ -19,11 +13,7 @@ final class LibraryWindow {
 
     func show() {
         if let w = window {
-            // Re-show counts as a fresh open from the activation
-            // manager's perspective only if the window was hidden
-            // (not visible). Without this guard a second click on
-            // "Open Library..." while the window is already up would
-            // bump the counter past the real open-window count.
+            // Guard: only count as a fresh open if the window was hidden. A second click while already visible would bump the counter past the real open count.
             let wasHidden = !w.isVisible
             w.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -39,23 +29,16 @@ final class LibraryWindow {
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         w.setContentSize(NSSize(width: 900, height: 600))
         w.minSize = NSSize(width: 720, height: 480)
-        // Cmd+W (performClose:) on a window with isReleasedWhenClosed=false
-        // orders it out without deallocating. The daemon keeps running and
-        // the next `show()` brings the same window back with restored state.
+        // Cmd+W orders the window out without deallocating; next show() restores state.
         w.isReleasedWhenClosed = false
-        // Persist size/origin across launches.
         w.setFrameAutosaveName("MeetingPipeLibraryWindow")
-        // setFrameAutosaveName loads on first attach; if there's no saved
-        // frame yet, center the window so first launch is not pinned to the
-        // bottom-left corner.
+        // setFrameAutosaveName loads on first attach; center only when no saved frame exists so first launch isn't pinned to the bottom-left corner.
         if !w.setFrameUsingName("MeetingPipeLibraryWindow") {
             w.center()
         }
 
         let delegate = LibraryWindowDelegate { [weak self] in
-            // Don't null the reference — keeping it lets re-open restore
-            // the same configured frame, and a freshly-built NSWindow would
-            // lose any selection or scroll state once A2 / A4 land.
+            // Keep the reference so re-open restores the same frame and scroll/selection state.
             _ = self
             WindowActivationManager.shared.didCloseWindow()
         }
@@ -79,32 +62,15 @@ private final class LibraryWindowDelegate: NSObject, NSWindowDelegate {
 
 // MARK: - Observable bridge
 
-/// High-frequency processing-queue counter, split off from
-/// `LibraryWindowModel` so a 10-job burst doesn't cascade re-renders
-/// into the rail, list, and detail. Only the toolbar observes this.
-///
-/// `ObservableObject` rather than a property on the parent because
-/// SwiftUI tracks subscriptions per-`ObservableObject`: any `@Published`
-/// on the parent triggers re-renders in every parent subscriber, which
-/// is the pathology we're avoiding.
+/// High-frequency processing-queue counter, split off from `LibraryWindowModel` so bursts don't cascade re-renders into the rail, list, and detail. Only the toolbar observes this. Kept as a separate `ObservableObject` because SwiftUI tracks subscriptions per-object: a `@Published` on the parent would re-render every parent subscriber on every tick.
 final class ProcessingTracker: ObservableObject {
     @Published var count: Int = 0
 }
 
-/// Mirrors the recording state machine into a SwiftUI-observable shape
-/// so the toolbar can render the state pill without subscribing
-/// directly to AppKit setters.
-///
-/// Threading: all mutations run on the main queue (matches Coordinator
-/// threading — every public method on the Coordinator must already run
-/// on main). Properties stay narrow on purpose; rapidly-changing values
-/// like the processing-queue size live on the sibling
-/// `ProcessingTracker` so they don't pull the whole window through a
-/// re-render every tick.
+/// SwiftUI-observable mirror of the recording state machine. Threading: all mutations run on main (the Coordinator already enforces this). Rapidly-changing values like processing-queue depth live on `ProcessingTracker` so they don't pull the whole window through a re-render every tick.
 final class LibraryWindowModel: ObservableObject {
 
-    /// Display-only summary of `AppState`. We don't expose the full state
-    /// because the UI never branches on the underlying URL / SummaryMode.
+    /// Display-only summary of `AppState`; the UI never branches on the underlying URL / SummaryMode.
     enum Status: Equatable {
         case idle
         case prompting(appName: String)
@@ -113,38 +79,22 @@ final class LibraryWindowModel: ObservableObject {
     }
 
     @Published var status: Status = .idle
-    /// Stem of the meeting currently being recorded (live wav write in
-    /// flight). The list view uses this to render the matching row with
-    /// a recording-tinted pulse — the on-disk status alone can't tell
-    /// the difference between "wav still being written" and "wav done,
-    /// pipeline running".
+    /// Stem of the in-flight recording. The list view uses this to pulse the matching row; on-disk status alone can't distinguish "wav being written" from "wav done, pipeline running".
     @Published var liveRecordingStem: String? = nil
 
-    /// Set by the menu-bar Quick Find panel when the user picks a
-    /// meeting. The library root view observes this, switches scope to
-    /// All Meetings, selects the row, and clears the value so the
-    /// next selection is a fresh edge. Cleared back to nil from the
-    /// observing view.
+    /// Set by the menu-bar Quick Find panel. The root view switches scope to All Meetings, selects the row, then clears this back to nil so the next pick is a fresh edge.
     @Published var pendingSelection: String? = nil
 
-    /// Held as a non-`@Published` constant so reads from the toolbar
-    /// don't trigger a republish of the parent model. The toolbar
-    /// observes `processing` directly via its own `@ObservedObject`.
+    /// Non-`@Published` so toolbar reads don't republish the parent model; the toolbar observes it directly via `@ObservedObject`.
     let processing = ProcessingTracker()
 
-    /// Coordinator is held weakly so the model can drive menu actions
-    /// (Start/Stop, Preferences) without creating a retain cycle.
+    /// Weak to avoid a retain cycle; drives menu actions (Start/Stop, Preferences).
     weak var coordinator: Coordinator?
 
-    /// Backing store for the meetings list. Built once with the daemon's
-    /// recordings directory; the list view subscribes to it.
+    /// Backing store for the meetings list; the list view subscribes to it.
     let meetingStore: MeetingStore
 
-    /// Per-context routing rules (TECH-B). Assigned by the Coordinator
-    /// after it builds the store so the Workflows tab can ForEach over
-    /// `workflows` without holding a separate Combine subscription.
-    /// Nil-able so headless tests + the initial-state path don't need to
-    /// thread the store through.
+    /// Assigned by the Coordinator after it builds the store (TECH-B). Nil-able so headless tests and the initial-state path don't need it.
     weak var workflowStore: WorkflowStore?
 
     init(coordinator: Coordinator? = nil, recordingsDir: URL) {
@@ -157,9 +107,7 @@ final class LibraryWindowModel: ObservableObject {
         return false
     }
 
-    /// The recording toggle is enabled in every state except `.stopping`.
-    /// During `.stopping` the recorder is mid-flush and a button press
-    /// would race the async finalize.
+    /// Disabled only in `.stopping`: the recorder is mid-flush and a button press would race the async finalize.
     var canToggleRecording: Bool {
         if case .stopping = status { return false }
         return true
@@ -173,9 +121,7 @@ final class LibraryWindowModel: ObservableObject {
         coordinator?.menuPreferences()
     }
 
-    /// Republish a meeting via the standard `mp publish-notion` subprocess.
-    /// Wraps the Coordinator's callback in a Swift `async` shape so the
-    /// SwiftUI editor can `await` the result and update its UI state.
+    /// Republish via `mp publish-notion`. Async-wraps the Coordinator callback so SwiftUI callers can `await` the result.
     func republishMeeting(stem: String) async -> Result<URL?, Error> {
         guard let coordinator = coordinator else {
             return .failure(NSError(
@@ -190,8 +136,7 @@ final class LibraryWindowModel: ObservableObject {
         }
     }
 
-    /// Regenerate the summary for a meeting via `mp summarize` + republish.
-    /// Same async wrapping pattern as `republishMeeting`.
+    /// Regenerate summary via `mp summarize` then republish. Same async-wrap pattern as `republishMeeting`.
     func regenerateMeeting(stem: String) async -> Result<URL?, Error> {
         guard let coordinator = coordinator else {
             return .failure(NSError(
@@ -206,9 +151,7 @@ final class LibraryWindowModel: ObservableObject {
         }
     }
 
-    /// Re-enqueue the full `mp run-all` pipeline for a stalled meeting.
-    /// Used by the context menu's "Retry pipeline" action when a row
-    /// has aged into `.failed` status without ever producing a summary.
+    /// Re-enqueue the full `mp run-all` pipeline for a stalled/failed meeting.
     @discardableResult
     func retryMeeting(stem: String) -> Result<Void, Error> {
         coordinator?.retryMeeting(stem: stem) ?? .failure(NSError(
@@ -217,7 +160,7 @@ final class LibraryWindowModel: ObservableObject {
         ))
     }
 
-    /// Move every sidecar associated with a stem to the user's Trash.
+    /// Move every sidecar for a stem to the Trash.
     @discardableResult
     func softDeleteMeeting(stem: String) -> Result<Void, Error> {
         coordinator?.softDeleteMeeting(stem: stem) ?? .failure(NSError(
@@ -226,8 +169,7 @@ final class LibraryWindowModel: ObservableObject {
         ))
     }
 
-    /// Copy the standard human-facing artefacts for a stem into the
-    /// chosen destination folder.
+    /// Copy the standard human-facing artefacts for a stem to the chosen folder.
     func exportMeeting(stem: String, to destination: URL) -> Result<Int, Error> {
         coordinator?.exportMeeting(stem: stem, to: destination) ?? .failure(NSError(
             domain: "LibraryWindowModel", code: 1,
@@ -238,41 +180,22 @@ final class LibraryWindowModel: ObservableObject {
 
 // MARK: - Root view
 
-/// Library window root. Smart-folder rail + scoped list + context-aware
-/// detail pane, with a custom toolbar across the top hosting state
-/// pill, record button, and preferences gear.
-///
-/// IA derived from the design bundle's "Pattern B + a borrowed piece of
-/// C" winner: Workflows are filter scopes (not destinations), the
-/// previously-hidden recording state lives in the persistent toolbar,
-/// and a workflow-scope selection promotes a third inspector column.
+/// Library window root: smart-folder rail, scoped list, and context-aware detail pane. Workflows are filter scopes (not destinations); the toolbar hosts the state pill, record button, and preferences gear; a workflow-scope selection promotes a third inspector column.
 struct LibraryRootView: View {
     @ObservedObject var model: LibraryWindowModel
     @ObservedObject var meetingStore: MeetingStore
     @State private var scope: LibraryScope = .allMeetings
     @State private var meetingSelection: Set<Meeting.ID> = []
-    /// Drives the workflow editor sheet. Set non-nil to edit; cleared
-    /// when the sheet dismisses.
+    /// Drives the workflow editor sheet. Set non-nil to edit.
     @State private var editingWorkflow: Workflow? = nil
-    /// Drives the "+ New workflow" sheet. We branch on a separate flag
-    /// rather than overloading `editingWorkflow` so the sheet can
-    /// initialise a stub Workflow lazily inside the sheet builder —
-    /// keeping the rail's button stateless.
+    /// Drives the "+ New workflow" sheet. Separate from `editingWorkflow` so the sheet can initialise a stub lazily, keeping the rail's button stateless.
     @State private var isCreatingWorkflow: Bool = false
-    /// Memoized rail counts. Recomputed only when `meetingStore.revision`
-    /// or the workflow list actually changes. Without this the rail's
-    /// O(meetings × scopes) bucketing ran on every body re-execution,
-    /// which fired for unrelated reasons (status / processing ticks
-    /// before the model split, animation timeline ticks, etc.).
+    /// Memoized rail counts, recomputed only on `meetingStore.revision` or workflow-list changes. Without this the O(meetings × scopes) bucketing ran on every body re-execution (status ticks, animation timeline, etc.).
     @State private var cachedCounts: ScopeCounts = .zero
-    /// Fingerprint paired with `cachedCounts`. (`revision`, workflow ids).
+    /// Fingerprint paired with `cachedCounts`: (revision, workflow ids).
     @State private var lastCountsKey: CountsKey = .empty
 
-    /// Initialiser captures the store explicitly so SwiftUI tracks it as
-    /// an `@ObservedObject` dependency — passing it in from the parent
-    /// rather than reaching through `model.meetingStore` lets us
-    /// re-render the root precisely on `revision` bumps instead of on
-    /// every property of the parent model.
+    /// Captures the store explicitly so SwiftUI tracks it as `@ObservedObject`. Reaching through `model.meetingStore` would re-render on every parent property, not just `revision` bumps.
     init(model: LibraryWindowModel) {
         self.model = model
         self.meetingStore = model.meetingStore
@@ -297,20 +220,14 @@ struct LibraryRootView: View {
             recomputeCounts()
         }
         .onDisappear {
-            // Suspend the directory watcher while the window is hidden.
-            // The window outlives the view via isReleasedWhenClosed=false,
-            // and without this a closed Library would keep rescanning
-            // every time the pipeline wrote a new sidecar — re-firing
-            // the @Published on `meetings` into a tree nobody could see.
+            // Suspend the watcher while hidden. The window outlives the view (isReleasedWhenClosed=false), so without this a closed Library would keep rescanning on every pipeline write.
             meetingStore.stop()
         }
         .onChange(of: meetingStore.revision) { _, _ in recomputeCounts() }
         .onChange(of: model.workflowStore?.workflows.count ?? 0) { _, _ in recomputeCounts() }
         .onChange(of: model.pendingSelection) { _, stem in
             guard let stem else { return }
-            // The menu-bar Quick Find can land while the user is in a
-            // workflow-scoped view; jump to All Meetings so the row is
-            // guaranteed to be visible regardless of the active scope.
+            // Quick Find can fire while a workflow scope is active; switch to All Meetings so the row is always visible.
             scope = .allMeetings
             meetingSelection = [stem]
             model.pendingSelection = nil
@@ -326,9 +243,7 @@ struct LibraryRootView: View {
             if let store = model.workflowStore {
                 NewWorkflowSheet(store: store) { newID in
                     isCreatingWorkflow = false
-                    // After creating, jump straight to the new workflow's
-                    // scope so the rail confirms the action visually and
-                    // the inspector lights up on the right.
+                    // Jump to the new workflow's scope so the rail + inspector confirm the action.
                     if let id = newID { scope = .workflow(id) }
                 }
             }
@@ -357,9 +272,7 @@ struct LibraryRootView: View {
                 detailPane(workflowStore: store)
             }
         } else {
-            // Headless / first-run path before the WorkflowStore has
-            // been wired in by the Coordinator. The rail can't render
-            // without a store; fall back to a sidebar-less list.
+            // WorkflowStore not yet wired; fall back to a sidebar-less list.
             LibraryListView(
                 store: meetingStore,
                 libraryModel: model,
@@ -370,10 +283,7 @@ struct LibraryRootView: View {
         }
     }
 
-    /// Rebuild the rail's counts. Cheap-fingerprint guard so we don't
-    /// rebuild when nothing the rail cares about changed — for example,
-    /// adding a workflow updates `workflows.count`, but tweaking a
-    /// workflow's name does not (and shouldn't trigger a rail recount).
+    /// Rebuild rail counts, guarded by a cheap fingerprint. Adding a workflow changes `workflows.count`; renaming one does not, and shouldn't trigger a recount.
     private func recomputeCounts() {
         let workflows = model.workflowStore?.workflows ?? []
         let key = CountsKey(
@@ -394,11 +304,7 @@ struct LibraryRootView: View {
         static let empty = CountsKey(storeRevision: -1, workflowIDs: [])
     }
 
-    /// Detail column is context-aware:
-    ///   • Multiple meetings selected → batch-actions pane.
-    ///   • Single meeting selected    → MeetingDetailView (today's behaviour).
-    ///   • No meeting, workflow scope → WorkflowInspector.
-    ///   • Otherwise                  → empty-state ("Select a meeting").
+    /// Context-aware detail column: multi-selection shows batch-actions, single shows MeetingDetailView, empty workflow scope shows WorkflowInspector, otherwise empty state.
     @ViewBuilder
     private func detailPane(workflowStore store: WorkflowStore) -> some View {
         let selected = model.meetingStore.meetings.filter { meetingSelection.contains($0.id) }
@@ -424,9 +330,7 @@ struct LibraryRootView: View {
         }
     }
 
-    /// Newest five meetings carrying this workflow's name. Shared
-    /// helper so the inspector doesn't duplicate the filter logic
-    /// already in `MeetingStore`.
+    /// Newest five meetings for this workflow, so the inspector doesn't duplicate MeetingStore's filter logic.
     private func recentMeetings(for workflow: Workflow, workflows: [Workflow]) -> [Meeting] {
         model.meetingStore.meetings
             .filter { ($0.workflowName == workflow.name) }
@@ -438,9 +342,7 @@ struct LibraryRootView: View {
 
 // MARK: - Workflow editor sheets
 
-/// Wraps `WorkflowEditor` in a sheet shell so the existing list-column
-/// editor can be re-used as a modal. The new IA invokes it from the
-/// toolbar's "Edit workflow" button and from the inspector pane.
+/// Wraps `WorkflowEditor` in a sheet shell, invoked from the toolbar's "Edit workflow" button and the inspector pane.
 private struct WorkflowEditorSheet: View {
     let workflow: Workflow
     @ObservedObject var store: WorkflowStore
@@ -465,8 +367,7 @@ private struct WorkflowEditorSheet: View {
     }
 }
 
-/// "+ New workflow" sheet — inserts a stub, hands the resulting id to
-/// the caller so the rail can route to the newly-created scope.
+/// "+ New workflow" sheet. Inserts a stub and returns its id so the rail can route to the new scope.
 private struct NewWorkflowSheet: View {
     @ObservedObject var store: WorkflowStore
     let onClose: (Workflow.ID?) -> Void
