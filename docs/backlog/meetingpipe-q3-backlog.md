@@ -501,7 +501,9 @@ Acceptance:
 
 Deps: none.
 
-**TECH-UX6 · HUD icon for the currently-recording app · S · none** [NEW]
+**TECH-UX6 · HUD icon for the currently-recording app · S · none** [DONE]
+
+> Resolved 2026-05-28: verify-then-close, no behavioural change needed. The HUD already builds `AppGlyphView(source:)` for the recording app (`RecordingHUDWindow.makeContentView`) and falls back to the vector waveform mark when there is no source; `Coordinator.beginRecording` passes the detected `source` into `recordingHUD.present(source:workflow:startedAt:)`, and the four glyph assets (teams, zoom, meet, slack, plus `_fallback`) ship in `Resources/AppGlyphs`. So a Teams/Zoom/Slack call shows that app's glyph, a Meet PWA resolves to the meet glyph via the displayName fall-through (a generic browser meeting lands on `_fallback`, the signal-blue waveform mark, since there is no dedicated browser glyph), and a manual recording shows the waveform-circle fallback. Pinned the previously-`private` source-to-glyph mapping by exposing `AppGlyphView.filename(for:)` as internal and adding `AppGlyphViewTests` (4 cases). No `NSWorkspace.icon(forFile:)` reach, per the design comment.
 
 Next.md idea 6. Detection layer already knows which app it is; the HUD just needs an icon slot. Use the existing `AppGlyphView` (do not reach for `NSWorkspace.shared.icon(forFile:)`; see the design comment in `daemon/Sources/MeetingPipe/Design/AppGlyphView.swift`).
 

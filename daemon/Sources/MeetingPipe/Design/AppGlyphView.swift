@@ -39,8 +39,8 @@ final class AppGlyphView: NSImageView {
         return nil
     }
 
-    /// Maps `AppSource` to a glyph filename. Mirrors `APP_GLYPH_MAP` in `MeetingPrompt.jsx`; bundleID takes priority because displayName is the browser name for browser-detected meetings.
-    private static func filename(for source: AppSource) -> String {
+    /// Maps `AppSource` to a glyph filename. Mirrors `APP_GLYPH_MAP` in `MeetingPrompt.jsx`; bundleID takes priority because displayName is the browser name for browser-detected meetings. Internal (not private) so the HUD/library source-to-glyph contract is unit-testable.
+    static func filename(for source: AppSource) -> String {
         switch source.bundleID {
         case "us.zoom.xos": return "zoom"
         case "com.microsoft.teams", "com.microsoft.teams2": return "teams"
