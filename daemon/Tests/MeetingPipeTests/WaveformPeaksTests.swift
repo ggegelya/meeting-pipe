@@ -16,6 +16,20 @@ final class WaveformPeaksTests: XCTestCase {
         return dir
     }
 
+    // MARK: equatable (TECH-A13 redraw gate)
+
+    func test_equatable_distinguishes_content_not_just_shape() {
+        // The Audio tab gates the static-waveform redraw on WaveformPeaks
+        // equality. It must compare real content: two envelopes with the same
+        // bin count and duration but different samples are NOT equal, otherwise
+        // switching to a same-length meeting would show the previous waveform.
+        let a = WaveformPeaks(left: [0.1, 0.2], right: [0.1, 0.2], durationSec: 10)
+        let b = WaveformPeaks(left: [0.1, 0.2], right: [0.1, 0.2], durationSec: 10)
+        let c = WaveformPeaks(left: [0.9, 0.8], right: [0.9, 0.8], durationSec: 10)
+        XCTAssertEqual(a, b, "identical peaks must compare equal so an idle redraw is skipped")
+        XCTAssertNotEqual(a, c, "same shape, different samples must compare unequal so the redraw fires")
+    }
+
     // MARK: cache round-trip
 
     func test_cache_round_trip_preserves_peaks_and_duration() throws {

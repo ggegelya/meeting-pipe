@@ -259,7 +259,11 @@ Stop and ask: if the directory-watch source already provides a per-file change e
 
 Deps: none.
 
-**TECH-A13 · Render cliffs: in-memory FluidAudio + waveform redraw · M · none** [NEW]
+**TECH-A13 · Render cliffs: in-memory FluidAudio + waveform redraw · M · none** [DONE · waveform half; RAM half deferred]
+
+> Resolved 2026-05-28: waveform-redraw half shipped. `WaveformBody` was split into `StaticWaveform` (the two-channel envelope, behind `.equatable()` so the per-column path stroking only redraws on a peaks/zoom change) and `PlayheadOverlay` (the only view that observes `playback`, redrawing a single 1.5 pt line on the ~15 Hz tick). `WaveformPeaks` is now `Equatable` and the gate compares full content, not a binCount/duration proxy, so switching between two same-duration meetings still redraws. New `WaveformPeaksTests.test_equatable_distinguishes_content_not_just_shape`; `swift build` + waveform suite green. The under-5%-CPU bar needs live profiling (not runnable here) but the 15 Hz full-canvas re-stroke is structurally eliminated.
+>
+> Scope decision (explicitly chosen this session per the stop-and-ask): the FluidAudio RAM half is DEFERRED, so the "under 100 MB for a 90-min pass" bar is NOT met. `AsrManager.transcribe(samples:)` and `DiarizerManager.performCompleteDiarization(samples)` both consume the entire `[Float]`; capping RAM requires switching to FluidAudio's streaming ASR plus a windowed-diarization contract, which is exactly the "different segment-build contract" the stop-and-ask names. Owed as a dedicated follow-up session; `FluidAudioRunner.readMonoFloat32` is unchanged.
 
 Audit's `[Low]` finding. The RAM one matters once any recording exceeds 90 minutes on a 16GB Mac; bump to `[Medium]` per Part 1 of the Q3 review.
 

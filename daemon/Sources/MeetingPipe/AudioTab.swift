@@ -236,10 +236,47 @@ private struct WaveformContainer: View {
 
 // MARK: - Waveform body (Canvas)
 
+/// Composes the static waveform with a thin moving play head. `playback` is a plain
+/// reference here (not `@ObservedObject`) so this view does not re-evaluate on the
+/// ~15 Hz `currentTime` tick: only `PlayheadOverlay` observes playback, and the
+/// expensive per-column stroking lives in `StaticWaveform` behind an `.equatable()`
+/// gate (TECH-A13 waveform redraw budget).
 private struct WaveformBody: View {
     let peaks: WaveformPeaks
     let width: CGFloat
-    @ObservedObject var playback: AudioPlaybackController
+    let playback: AudioPlaybackController
+
+    var body: some View {
+        StaticWaveform(peaks: peaks, width: width)
+            .equatable()
+            .frame(minHeight: 220, maxHeight: .infinity)
+            .overlay {
+                PlayheadOverlay(playback: playback, durationSec: peaks.durationSec)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { v in
+                        seekFromLocation(v.location.x, width: width)
+                    }
+            )
+    }
+
+    private func seekFromLocation(_ x: CGFloat, width: CGFloat) {
+        guard width > 0, peaks.durationSec > 0 else { return }
+        let clamped = max(0, min(x, width))
+        let t = peaks.durationSec * Double(clamped / width)
+        playback.seek(to: t)
+    }
+}
+
+/// The two-channel envelope. Equatable (synthesized over `peaks` + `width`) so SwiftUI
+/// skips the per-column path stroking unless the zoom width or the underlying peaks
+/// actually change. Comparing the full peak content (not a binCount/duration proxy)
+/// keeps it correct when switching between two same-duration meetings.
+private struct StaticWaveform: View, Equatable {
+    let peaks: WaveformPeaks
+    let width: CGFloat
 
     var body: some View {
         Canvas { ctx, size in
@@ -260,24 +297,8 @@ private struct WaveformBody: View {
                 tint: .purple,
                 label: "System"
             )
-            drawPlayhead(ctx: ctx, size: size)
         }
         .frame(width: width)
-        .frame(minHeight: 220, maxHeight: .infinity)
-        .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { v in
-                    seekFromLocation(v.location.x, width: width)
-                }
-        )
-    }
-
-    private func seekFromLocation(_ x: CGFloat, width: CGFloat) {
-        guard width > 0, peaks.durationSec > 0 else { return }
-        let clamped = max(0, min(x, width))
-        let t = peaks.durationSec * Double(clamped / width)
-        playback.seek(to: t)
     }
 
     private func drawChannel(
@@ -326,15 +347,28 @@ private struct WaveformBody: View {
         }
         ctx.stroke(path, with: .color(tint), lineWidth: 1)
     }
+}
 
-    private func drawPlayhead(ctx: GraphicsContext, size: CGSize) {
-        guard peaks.durationSec > 0 else { return }
-        let fraction = min(max(playback.currentTime / peaks.durationSec, 0), 1)
-        let x = CGFloat(fraction) * size.width
-        var line = Path()
-        line.move(to: CGPoint(x: x, y: 0))
-        line.addLine(to: CGPoint(x: x, y: size.height))
-        ctx.stroke(line, with: .color(.red), lineWidth: 1.5)
+/// Just the play head: a 1.5 pt red line at the current-time fraction. The only view
+/// in the waveform stack that observes `playback`, so the ~15 Hz tick redraws one line
+/// rather than the whole canvas.
+private struct PlayheadOverlay: View {
+    @ObservedObject var playback: AudioPlaybackController
+    let durationSec: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            let fraction = durationSec > 0
+                ? min(max(playback.currentTime / durationSec, 0), 1)
+                : 0
+            let x = CGFloat(fraction) * geo.size.width
+            Path { p in
+                p.move(to: CGPoint(x: x, y: 0))
+                p.addLine(to: CGPoint(x: x, y: geo.size.height))
+            }
+            .stroke(Color.red, lineWidth: 1.5)
+        }
+        .allowsHitTesting(false)
     }
 }
 

@@ -5,7 +5,9 @@ import Foundation
 /// per fixed-duration bin per channel. At 50 bins/sec a 60-min meeting is 180k floats -
 /// trivial at 60 fps and within the spec's 2 s render budget. Cache is keyed on
 /// (file size, mtime); any change to the wav invalidates it via the header check.
-struct WaveformPeaks {
+/// `Equatable` so the Audio tab can gate the static waveform redraw on real content
+/// changes (TECH-A13), not a coarse proxy that could skip a needed redraw.
+struct WaveformPeaks: Equatable {
 
     /// ~10 ms resolution at 8x zoom; a 60-min file stays well under 1 MB.
     static let peaksPerSecond: Int = 50
