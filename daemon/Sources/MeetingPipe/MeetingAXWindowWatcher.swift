@@ -3,35 +3,10 @@ import ApplicationServices
 import Foundation
 import MeetingPipeCore
 
-/// Reactive AX subscription so mute clicks from windows that appear
-/// AFTER `MeetingAXHandleBuilder.build` ran are still observed.
-///
-/// Context (TECH-C14): the AX walk in `MeetingAXHandleBuilder.build`
-/// runs once at meeting-start. Teams 2 creates a compact-view
-/// `NSPanel` only when the main meeting window is backgrounded, so
-/// the panel's Mute button is invisible to the walk. Clicking Mute
-/// on that panel never flipped `MicGateVerdict.mutedByApp` because
-/// the panel's button had no observer.
-///
-/// This watcher subscribes to `kAXWindowCreatedNotification` on the
-/// AX application element. Each notification triggers a rescan of
-/// every window's subtree for mute buttons matching the same
-/// predicate `MeetingAXHandleBuilder` uses. Newly-discovered buttons
-/// get their own `AXMuteButtonProbe`; the probe's events are routed
-/// back into `MicGate.injectAxMuteEvent`, which merges them into the
-/// same precedence chain as the primary adapter's events.
-///
-/// Lifecycle: `start()` on `beginRecording` engage, `stop()` on
-/// `stopRecording` disengage. All entry points run on the main
-/// queue (AXObserverBus dispatches handlers there).
-///
-/// Threading: not thread-safe; main-queue only.
+/// Catches mute-button clicks from windows that appear after `MeetingAXHandleBuilder.build` ran (TECH-C14). Teams 2 creates a compact-view `NSPanel` only when the main meeting window is backgrounded; the panel's Mute button missed the initial AX walk so clicks never flipped `MicGateVerdict.mutedByApp`. Subscribes to `kAXWindowCreatedNotification` and rescans every new window's subtree; newly found buttons get their own `AXMuteButtonProbe` routed into `MicGate.injectAxMuteEvent`. Start/stop on `beginRecording`/`stopRecording`. Main-queue only; not thread-safe.
 final class MeetingAXWindowWatcher {
 
-    /// Closure that schedules a delayed `() -> Void` on some queue and
-    /// returns a cancel closure. Default uses `Timer.scheduledTimer`
-    /// on the main runloop; tests inject a manual driver so the retry
-    /// path can be exercised without sleeping.
+    /// Returns a cancel closure. Default uses `Timer.scheduledTimer`; tests inject a manual driver to exercise the retry path without sleeping.
     typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
 
     private let axApp: AXUIElement
@@ -46,21 +21,12 @@ final class MeetingAXWindowWatcher {
     private let subscribeRetryDelay: TimeInterval
 
     private var subscriptionToken: AXObserverBus.Token?
-    /// Probes spun up for buttons discovered after `start()`. Each
-    /// rescan tears the previous set down and rebuilds; AX
-    /// reference equality across walks is unreliable, so re-binding
-    /// to "the same" button is harmless when it happens.
+    /// Each rescan tears the previous set down and rebuilds; AX reference equality across walks is unreliable so re-binding the same button is harmless.
     private var dynamicProbes: [AXMuteButtonProbe] = []
-    /// Rescan count for the event log so we can spot a runaway
-    /// notification storm at a glance.
+    /// Logged on each rescan to spot runaway notification storms.
     private var rescanCount: Int = 0
-    /// How many `start()` -> `attemptSubscribe` cycles have failed in
-    /// the current `start()` lifetime. Reset by `start()`, capped at
-    /// `maxSubscribeAttempts`.
     private var subscribeAttempts: Int = 0
-    /// Pending retry teardown (Timer / DispatchWorkItem cancel). Set
-    /// when a retry is scheduled after a transient backendFailed; nil
-    /// otherwise.
+    /// Non-nil while a retry is pending after a transient `backendFailed`.
     private var cancelPendingRetry: (() -> Void)?
 
     static let defaultScheduler: Scheduler = { delay, action in
@@ -112,15 +78,7 @@ final class MeetingAXWindowWatcher {
         subscribeAttempts = 0
     }
 
-    /// Try to register the `kAXWindowCreatedNotification` subscription.
-    /// On `AXObserverBus.BusError.backendFailed` we schedule one retry
-    /// per attempt up to `maxSubscribeAttempts`; macOS occasionally
-    /// returns `kAXErrorCannotComplete` for an AX application that
-    /// just spawned (e.g., Teams launching alongside the meeting),
-    /// and the latch fix for the transient-unknown mute state masks
-    /// the first-window-created event being missed if we give up
-    /// after one attempt. Three attempts at 1.5 s catches the slow
-    /// path without holding up disengage on a permanently-broken app.
+    /// Register `kAXWindowCreatedNotification`, retrying up to `maxSubscribeAttempts` on `backendFailed`. macOS returns `kAXErrorCannotComplete` for apps that just spawned (e.g. Teams launching alongside the meeting); giving up after one attempt would miss the first-window-created event. Three attempts at 1.5 s catches the slow path without stalling disengage on a permanently-broken app.
     private func attemptSubscribe() {
         subscribeAttempts += 1
         do {
@@ -137,9 +95,7 @@ final class MeetingAXWindowWatcher {
                 "pid": Int(pid),
                 "attempts": subscribeAttempts,
             ])
-            // Run an initial rescan so any compact-view-already-open
-            // case is also covered (rare, but possible if the user
-            // backgrounds Teams before clicking Record).
+            // Initial rescan covers the compact-view-already-open case (user backgrounds Teams before clicking Record).
             handleWindowCreated()
         } catch {
             if subscribeAttempts < maxSubscribeAttempts {
@@ -163,10 +119,7 @@ final class MeetingAXWindowWatcher {
         }
     }
 
-    /// Rescan every window's subtree for mute buttons and rebuild
-    /// the dynamic probe set. Called on each
-    /// `kAXWindowCreatedNotification` and once at start() for the
-    /// already-open case.
+    /// Rescan and rebuild the dynamic probe set. Called on each `kAXWindowCreatedNotification` and once at `start()` for the already-open case.
     private func handleWindowCreated() {
         rescanCount += 1
         let buttons = MeetingAXHandleBuilder.findAllMuteButtons(
@@ -175,10 +128,7 @@ final class MeetingAXWindowWatcher {
             catalogue: catalogue
         )
 
-        // Tear down the previous dynamic set; rebuild from scratch.
-        // AXUIElement reference identity isn't stable across walks
-        // so deduping is unreliable; the brute-force rebuild is
-        // simple and the working set is tiny (1-2 buttons typical).
+        // Rebuild from scratch: AXUIElement identity isn't stable across walks so deduping is unreliable. Working set is tiny (1-2 buttons).
         for probe in dynamicProbes { probe.stop() }
         dynamicProbes.removeAll()
 

@@ -1,21 +1,10 @@
 import ApplicationServices
 import Foundation
 
-/// Best-effort meeting-title extraction.
-///
-/// Walks a meeting app's AX window titles and pulls a human-readable
-/// meeting name out of the window / tab title chrome. Each app has its
-/// own conventions, so the extractors are per-bundle. Failures (AX
-/// denied, no match, junk like a raw room code) return nil and the
-/// pipeline falls back to the LLM-derived title.
-///
-/// Lifted out of `Detector` (TECH-C13 step 5) so the lifecycle context
-/// bridge can resolve titles after Detector is gone.
+/// Best-effort per-bundle extraction of a human-readable meeting name from AX window titles (TECH-C13 step 5). Failures (AX denied, no match, bare room code) return nil so the pipeline falls back to the LLM-derived title.
 enum MeetingTitleResolver {
 
-    /// Walk the AX windows of `pid` and extract the meeting title.
-    /// Returns nil when AX is denied, the read fails, or no window
-    /// title matches the per-bundle pattern.
+    /// Walk AX windows of `pid` and extract the meeting title. Returns nil when AX is denied, read fails, or no window matches.
     static func resolve(bundleID: String, kind: AppSourceKind, pid: pid_t) -> String? {
         guard AXIsProcessTrusted(),
               let titles = MeetingSourceScanner.collectAXWindowTitles(pid: pid) else {
@@ -24,9 +13,7 @@ enum MeetingTitleResolver {
         return extractMeetingTitle(bundleID: bundleID, kind: kind, titles: titles)
     }
 
-    /// Pure function: given a bundle ID and a list of titles, return the
-    /// first useful meeting name we can extract. Trivially unit-testable
-    /// without AX.
+    /// Pure: extract the first useful meeting name from `titles`. Unit-testable without AX.
     static func extractMeetingTitle(bundleID: String, kind: AppSourceKind, titles: [String]) -> String? {
         switch (bundleID, kind) {
         case ("us.zoom.xos", _):
@@ -74,8 +61,7 @@ enum MeetingTitleResolver {
     }
 
     private static func extractSlackTitle(_ t: String) -> String? {
-        // "<Channel> Huddle" → "<Channel>". Slack also uses titles like
-        // "Slack | <Channel> | Huddle" depending on version; cover both.
+        // Covers both "<Channel> Huddle" and "Slack | <Channel> | Huddle" (version-dependent).
         if let topic = firstCaptureGroup(t, pattern: #"^\s*(.+?)\s+Huddle\s*$"#) {
             return topic
         }
@@ -112,7 +98,7 @@ enum MeetingTitleResolver {
             }
         }
 
-        // Zoom web client. Skip if title is just the generic chrome.
+        // Zoom web client; skip generic chrome titles.
         if lower.contains("zoom") {
             if let topic = firstCaptureGroup(t, pattern: #"^\s*(.+?)\s*[|\-]\s*Zoom\s*$"#),
                topic.lowercased() != "zoom" {
@@ -123,9 +109,7 @@ enum MeetingTitleResolver {
         return nil
     }
 
-    /// Google Meet ad-hoc room codes look like `abc-defg-hij`. They make
-    /// terrible Notion titles, so reject them and let the LLM-derived
-    /// title win as a fallback.
+    /// `abc-defg-hij` room codes make terrible Notion titles; reject and let the LLM-derived title win.
     private static func isJustMeetRoomCode(_ s: String) -> Bool {
         return s.range(of: #"^[a-z]{3}-[a-z]{4}-[a-z]{3}$"#, options: .regularExpression) != nil
     }

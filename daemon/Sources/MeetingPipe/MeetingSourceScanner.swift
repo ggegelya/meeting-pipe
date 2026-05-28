@@ -4,26 +4,15 @@ import Foundation
 import MeetingPipeCore
 import TOMLKit
 
-/// Cold-start discovery scan: enumerate every concurrently-running
-/// meeting-app contender, score them, and return the winner.
-///
-/// Lifted out of `Detector` (TECH-C13 step 5) so the discovery scan has
-/// a single home that both `Detector` and `MeetingDiscoveryWatcher` can
-/// drive. The scan is impure (NSWorkspace + AX + HAL reads) but carries
-/// no timing or state-machine concerns; the owner forwards it onto its
-/// own queue. The only retained state is the sticky-winner pin for the
-/// scorer's recency tie-break.
+/// Cold-start discovery scan: enumerate every concurrent meeting-app contender, score them, return the winner (TECH-C13 step 5). Lifted out of `Detector` so `Detector` and `MeetingDiscoveryWatcher` share one scan path. Carries no timing or state; owner provides the queue. Only retained state is the sticky-winner pin for the scorer's recency tie-break.
 final class MeetingSourceScanner {
 
     /// Outcome of one scan pass.
     struct Result {
-        /// The highest-scoring candidate above the disambiguation floor,
-        /// or nil when nothing cleared it.
+        /// Highest-scoring candidate above the disambiguation floor, or nil.
         let winner: MeetingSourceCandidate?
-        /// Number of contenders enumerated this pass.
         let candidateCount: Int
-        /// True when `winner` differs from the previous pass's winner,
-        /// so callers can log a winner-change event without re-deriving it.
+        /// True when `winner` differs from the previous pass, so callers can log a winner-change without re-deriving it.
         let winnerChanged: Bool
     }
 
@@ -34,9 +23,7 @@ final class MeetingSourceScanner {
     /// Meeting-URL fragments used to recognise a browser meeting tab.
     let browserURLFragments: [String]
 
-    /// Cached MuteLabels catalogue for the scorer's mute-button signal.
-    /// Loaded once per process; resolution failure degrades the
-    /// `muteButton` flag to false (other signals carry).
+    /// Loaded once per process; failure degrades `muteButton` to false (other signals carry).
     private static let muteCatalogue: MuteLabels? = {
         do {
             return try MuteLabelsLoader.loadDefault()
@@ -45,8 +32,7 @@ final class MeetingSourceScanner {
         }
     }()
 
-    /// Last scan's winning source, used by the scorer for the
-    /// sticky-bonus tie-break (TECH-C15).
+    /// Last scan's winner for the scorer's sticky-bonus tie-break (TECH-C15).
     private var lastScorerWinner: AppSource?
 
     init() {
@@ -56,19 +42,13 @@ final class MeetingSourceScanner {
         self.browserURLFragments = apps.urlFragments
     }
 
-    /// Drop the sticky-winner pin so the next scan starts unbiased.
-    /// Called by the owner when it tears down (e.g. `Detector.stop()`).
+    /// Drop the sticky-winner pin so the next scan starts unbiased (called by owner on teardown).
     func resetStickyWinner() {
         lastScorerWinner = nil
     }
 
-    /// Run one discovery pass: enumerate contenders, score them, and
-    /// return the winner.
-    ///
-    /// - Parameter keepStickyOnEmpty: when true, a pass that finds no
-    ///   winner keeps the sticky pin (the owner is mid-recording and a
-    ///   transient empty scan must not unbias the next pass). When
-    ///   false, an empty pass clears the pin.
+    /// Run one discovery pass and return the winner.
+    /// - Parameter keepStickyOnEmpty: when true, an empty pass leaves the sticky pin intact (owner is mid-recording; a transient empty scan must not unbias the next pass).
     func scan(keepStickyOnEmpty: Bool) -> Result {
         var candidates = enumerateCandidates()
         let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: lastScorerWinner)
@@ -86,13 +66,7 @@ final class MeetingSourceScanner {
 
     // MARK: Candidate enumeration
 
-    /// Walk `NSWorkspace.runningApplications` and produce one
-    /// `MeetingSourceCandidate` per concurrent meeting-app contender.
-    /// Native bundles always become candidates (signals may be all
-    /// false; the scorer will reject them). Browsers become candidates
-    /// only when at least one of their windows has a meeting-pattern
-    /// title (matches the existing scanBrowserTab filter so we don't
-    /// drag in every running browser).
+    /// Produce one candidate per concurrent meeting-app contender. Native bundles are always included (scorer rejects those with zero signals). Browsers only qualify when at least one window matches a meeting-pattern title.
     private func enumerateCandidates() -> [MeetingSourceCandidate] {
         let axTrusted = AXIsProcessTrusted()
         var candidates: [MeetingSourceCandidate] = []
@@ -119,12 +93,8 @@ final class MeetingSourceScanner {
             }
 
             if browserBundles.contains(bid) {
-                // Browsers are candidates only when at least one of
-                // their windows has a meeting-pattern title. The probe
-                // needs AX trust; without it we can't tell whether a
-                // browser is in a meeting, so it doesn't become a
-                // candidate (native still does because they can win on
-                // audio + button signals alone via the AX walk attempt).
+                // Requires AX trust: without it we can't read window titles to confirm a meeting tab.
+                // Natives are still enqueued without AX because they can win on audio + button signals alone.
                 guard axTrusted,
                       anyWindowMatchesMeetingFragment(pid: pid) else { continue }
                 let source = AppSource(
@@ -144,25 +114,8 @@ final class MeetingSourceScanner {
             }
 
             if BrowserMeetingLifecycleAdapter.isPWABundleID(bid) {
-                // A Chromium "installed PWA" (Google Meet run as a
-                // desktop app, etc.) is its own process under a
-                // per-install bundle ID, in neither TOML list
-                // (TECH-I5). It has no address bar, so its windows
-                // carry the page title rather than a URL; match the
-                // meeting-title patterns instead of the URL fragments
-                // the regular-browser branch above relies on. Treated
-                // as `.browser` kind so the existing browser
-                // end-detection + MicGate fallback paths apply.
-                //
-                // The title matcher is strict (Google Meet requires a
-                // hyphen-bearing meeting code in the title) and rejects
-                // the transient titles the PWA carries while the user
-                // is bootstrapping a solo meeting. Fall back to the
-                // PWA's localised name in that case: it is set by the
-                // app's web manifest at install time and stays "Google
-                // Meet" / "Microsoft Teams" across the meeting
-                // lifecycle, so it is a durable identity signal for an
-                // app the user deliberately installed.
+                // Chromium "installed PWA" (e.g. Google Meet as a desktop app): own process with a per-install bundle ID absent from both TOML lists (TECH-I5). No address bar, so windows carry page titles; match meeting-title patterns rather than URL fragments. Treated as `.browser` so existing browser end-detection and MicGate fallback apply.
+                // Title matcher is strict and rejects transient solo-start titles; fall back to the PWA's localizedName, which the web manifest sets at install time and keeps stable across the meeting lifecycle (e.g. "Google Meet", "Microsoft Teams").
                 guard axTrusted else { continue }
                 let titleMatched = anyWindowMatchesMeetingTitle(pid: pid)
                 let nameMatched = BrowserMeetingLifecycleAdapter
@@ -187,14 +140,8 @@ final class MeetingSourceScanner {
         return candidates
     }
 
-    /// Populate the per-candidate signal tuple. Each signal degrades
-    /// to `false` on AX denied / read failed, so the scorer naturally
-    /// down-weights a candidate whose evidence couldn't be gathered.
-    ///
-    /// `preTitleMatch` short-circuits the per-bundle recognizer:
-    ///   - For browser candidates the caller already filtered by the
-    ///     meeting URL fragment, so we set it true rather than re-walk.
-    ///   - For native candidates pass nil so the recognizer runs.
+    /// Populate the signal tuple. Each signal degrades to false on AX denied / read failure.
+    /// `preTitleMatch` short-circuits the per-bundle recognizer: browsers pass `true` (already filtered by meeting URL/title); natives pass `nil` so the recognizer runs.
     private func collectSignals(
         bundleID: String,
         kind: AppSourceKind,
@@ -207,8 +154,6 @@ final class MeetingSourceScanner {
         if axTrusted {
             let axApp = AXUIElementCreateApplication(pid)
 
-            // titleMatch: browsers were already filtered; natives run
-            // the per-bundle recognizer against every window title.
             if let pre = preTitleMatch {
                 signals.titleMatch = pre
             } else if let titles = MeetingSourceScanner.collectAXWindowTitles(pid: pid) {
@@ -237,11 +182,7 @@ final class MeetingSourceScanner {
             }
         }
 
-        // Process-audio: HAL per-PID query via ProcessAudioSignal's
-        // default probe. Webex is excluded because Cisco documents
-        // Webex holding the mic open after meetings for ultrasound
-        // device discovery; rewarding it for that would push Webex
-        // above threshold long after the call ended.
+        // Webex excluded: Cisco keeps the mic open after meetings for ultrasound device discovery, so a positive audio signal would push Webex above threshold long after the call ends.
         if bundleID != "com.cisco.webexmeetingsapp",
            bundleID != "com.cisco.spark" {
             let context = MeetingLifecycleContext(
@@ -255,10 +196,7 @@ final class MeetingSourceScanner {
             }
         }
 
-        // ShareableContent slot reserved; SCShareableContent is async
-        // and the scan path is synchronous. Left false until a
-        // follow-up adds an async pre-scan that caches the latest
-        // shareable-content set for the synchronous scorer to read.
+        // shareableContentActive left false: SCShareableContent is async and the scan path is synchronous; needs an async pre-scan cache before it can be wired in.
         return signals
     }
 
@@ -282,11 +220,7 @@ final class MeetingSourceScanner {
         return browserURLFragments.contains(where: { lowered.contains($0) })
     }
 
-    /// True when any AX window of `pid` carries a title matching a
-    /// browser meeting-title pattern. The PWA counterpart of
-    /// `anyWindowMatchesMeetingFragment`: a PWA window has no URL in
-    /// its title, so it is matched against the same title patterns
-    /// the browser lifecycle adapter uses.
+    /// True when any AX window of `pid` matches a browser meeting-title pattern. PWA counterpart of `anyWindowMatchesMeetingFragment`: a PWA window has no URL, so it matches title patterns from the browser lifecycle adapter.
     private func anyWindowMatchesMeetingTitle(pid: pid_t) -> Bool {
         guard let titles = MeetingSourceScanner.collectAXWindowTitles(pid: pid) else {
             return false
@@ -298,47 +232,22 @@ final class MeetingSourceScanner {
 
     // MARK: Window-title recognizer
 
-    /// Recognize whether a window title belongs to an *active meeting
-    /// window* for the given app. Distinct from the per-app extractors
-    /// (`extractZoomNativeTitle` etc.): those try to pull a usable topic
-    /// and return nil for valid-but-bare meeting windows. Recognition
-    /// must be permissive about the bare case, because a false negative
-    /// here cuts the recording mid-call.
-    ///
-    /// Returns `true` on positive match. The probe upstream returns true
-    /// if ANY title in the app's window list recognizes; this function
-    /// alone never ends recording.
+    /// True when `title` belongs to an active meeting window for the given app. Distinct from the per-app title extractors: those return nil for bare valid windows; this recognizer must be permissive about bare windows because a false negative here cuts the recording mid-call. Upstream caller ORs across all windows, so a single true is enough.
     static func isActiveMeetingWindow(bundleID: String, kind: AppSourceKind, title: String) -> Bool {
         let lowered = title.lowercased().trimmingCharacters(in: .whitespaces)
 
         switch (bundleID, kind) {
         case ("us.zoom.xos", _):
-            // Active meeting windows always end in "zoom meeting" (with
-            // or without topic prefix). Idle launcher and chrome dialogs
-            // are explicitly rejected so a future title format change
-            // can't sneak through.
+            // Active meeting windows always contain "zoom meeting". Idle launcher and dialogs explicitly rejected.
             if lowered == "zoom" { return false }                    // launcher
             if lowered.hasPrefix("schedule meeting") { return false } // dialog
             if lowered.hasPrefix("join meeting") { return false }     // dialog
             return lowered.contains("zoom meeting")
 
         case ("com.microsoft.teams2", .native), ("com.microsoft.teams", .native):
-            // Teams (May 2026) drops the "Meeting in <X>" / "Meeting with
-            // <X>" lead in favour of just the meeting topic in the title.
-            // Examples observed in the wild:
-            //   - "Echo | Microsoft Teams"   (topic = "Echo")
-            //   - "Standup | Microsoft Teams"
-            //   - Just "Echo" with no suffix (rare; some Teams versions)
-            // The old prefix-based recognizer was too strict and rejected
-            // real meetings, leading to recordings being auto-stopped a
-            // few seconds in. The new contract favours false-positives
-            // (recording continues into a stale chat thread; user clicks
-            // stop or the silence detector catches it after 5 min) over
-            // false-negatives (recording dies mid-call, audio lost).
-            //
-            // Reject only well-known chrome / non-meeting surfaces. Both
-            // the bare "<X>" form and the "<X> | Microsoft Teams" form
-            // share the same chrome blacklist.
+            // Teams (May 2026) dropped the "Meeting in/with <X>" prefix - title is now just the topic (e.g. "Echo | Microsoft Teams", "Standup | Microsoft Teams", or bare "Echo").
+            // Old prefix-based recognizer was too strict and killed recordings mid-call. New contract prefers false-positives (recording into a stale thread; silence detector catches it at 5 min) over false-negatives (audio lost).
+            // Reject only well-known chrome surfaces; both the bare and "| Microsoft Teams" forms share the same blacklist.
             let chrome: Set<String> = [
                 "microsoft teams",
                 "teams",
@@ -360,25 +269,15 @@ final class MeetingSourceScanner {
                 if chrome.contains(lead) { return false }
                 return true
             }
-            // No suffix — Teams sometimes spawns the meeting window with
-            // just the topic. We can't distinguish that from chrome by
-            // title alone, so we trust the blacklist above to filter
-            // chrome and accept everything else as a meeting candidate.
-            // An unknown / empty title is treated as inconclusive (the
-            // upstream probe ORs results across windows; this title
-            // contributes nothing rather than a misleading false).
+            // No suffix - Teams sometimes spawns the meeting window with just the topic. Can't distinguish from chrome by title alone; blacklist above filters known chrome; empty title is inconclusive (upstream ORs across windows so it contributes nothing).
             return !lowered.isEmpty
 
         case ("com.cisco.webexmeetingsapp", _):
-            // Webex active meeting always contains "webex meeting".
-            // Idle is "Webex" or "Cisco Webex".
+            // Active meeting contains "webex meeting"; idle is "Webex" or "Cisco Webex".
             return lowered.contains("webex meeting")
 
         case ("com.tinyspeck.slackmacgap", _):
-            // Slack huddles: "huddle" as a whole word, not as substring
-            // of channel name. Word-boundary regex so "team-huddles"
-            // (plural channel name) does not match: `s` after `huddle`
-            // is alphanumeric, so the trailing word boundary fails.
+            // Word-boundary match so "team-huddles" (plural channel name) doesn't match: trailing `s` is alphanumeric and fails the boundary.
             return title.range(of: #"\bhuddle\b"#, options: [.regularExpression, .caseInsensitive]) != nil
 
         case ("com.skype.skype", _):
@@ -388,16 +287,12 @@ final class MeetingSourceScanner {
             return lowered.contains("google meet")
 
         default:
-            // Unknown native bundle. The probe upstream short-circuits
-            // before reaching the recognizer for unknown shapes, so this
-            // path is dead under normal operation; kept as a safety net.
+            // Unknown native bundle; probe upstream short-circuits before reaching here under normal operation.
             return false
         }
     }
 
-    /// Walk the AX windows of `pid` and return every non-empty window
-    /// title. Returns `nil` when AX reads fail outright (Accessibility
-    /// revoked, process gone), distinct from "found zero windows".
+    /// Walk AX windows of `pid` and return all non-empty titles. Returns `nil` (not `[]`) when AX reads fail outright (Accessibility revoked, process gone).
     static func collectAXWindowTitles(pid: pid_t) -> [String]? {
         let axApp = AXUIElementCreateApplication(pid)
         var windowsRef: CFTypeRef?
@@ -424,7 +319,6 @@ final class MeetingSourceScanner {
     }
 
     private static func loadMeetingApps() -> MeetingApps {
-        // Bundled inside the SPM resource bundle.
         let bundle = Bundle.module
         guard let url = bundle.url(forResource: "meeting_apps", withExtension: "toml"),
               let data = try? String(contentsOf: url, encoding: .utf8),
