@@ -415,7 +415,9 @@ Deps: TECH-SUM1-PRIMITIVE.
 
 ## Group UX · User experience
 
-**TECH-UX1 · First-launch onboarding screen · M · none** [NEW]
+**TECH-UX1 · First-launch onboarding screen · M · none** [DONE]
+
+> Resolved 2026-05-28: added `Onboarding/OnboardingWindow.swift` (the `OnboardingGate` UserDefaults flag, an `OnboardingWindowController` hosting SwiftUI via `NSHostingController`, and the `OnboardingRootView` step navigator with a Skip-from-any-step escape hatch) plus the four steps: `OnboardingStepWelcome` (tagline), `OnboardingStepPermissions` (walks the real four TCCs from `PermissionsCenter` - microphone, screen recording, accessibility, notifications; "calendar" was deleted in TECH-C16 - requesting each via its own Grant button, showing Granted, and routing a deferred denial to System Settings with Retry), `OnboardingStepWorkflow` (Personal / Client work (NDA, local + filesystem) / Internal team presets created via `WorkflowStore`, or "set up later"), and `OnboardingStepTest` (a 60-second manual test recording driven through an injected toggle, reconciled against the live recorder). `Coordinator.presentOnboardingIfNeeded()` shows it on a fresh install; `App.applicationDidFinishLaunching` skips the Screen Recording prewarm in that case so the framed flow requests permissions one at a time instead of the unframed dialog burst (the stale "requests notification authorization" path in `Notifier` is never actually called, so notifications no longer pop at startup either). `OnboardingGateTests` (3) pin the gate; the window/steps are AppKit/SwiftUI so not headless-verified. Doctor note: `mp doctor` already probes microphone / screen-recording / accessibility and reports what is missing, which is the CLI "re-run the permissions step" for a skipped user; `OnboardingGate.reset()` is available for a future "redo setup".
 
 The mockup at `design/ui_kits/macos_app/OnboardingPermissions.jsx` exists; today the real first run fires four unframed TCC dialogs (mic, screen recording, AX, calendar?) in a burst, and dismissing one silently kills the rest.
 

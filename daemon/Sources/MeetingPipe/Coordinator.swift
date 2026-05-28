@@ -40,6 +40,9 @@ final class Coordinator: NSObject {
     /// queue-depth surface (TECH-H1-FINISH). Built in `wireSubsystems()`.
     private var jobDispatcher: PipelineJobDispatcher!
 
+    /// First-run onboarding window (TECH-UX1); retained while shown.
+    private var onboardingController: OnboardingWindowController?
+
     /// Event-driven MicGate + Lifecycle stack (TECH-G-MIC + TECH-C13).
     /// MicGate fuses AX mute, HAL system-mute, HAL VAD, and per-buffer RMS
     /// into one verdict stream the recorder applies in place;
@@ -596,6 +599,20 @@ final class Coordinator: NSObject {
     /// Cancel the active pipeline subprocess (TECH-UX5), e.g. from a stalled row.
     func cancelActiveJob() {
         jobDispatcher.cancelActive()
+    }
+
+    /// Show the first-run onboarding window unless it has already been completed
+    /// (TECH-UX1). The flow requests each TCC one at a time, so the caller skips
+    /// the startup permission prewarm on a fresh install.
+    func presentOnboardingIfNeeded() {
+        guard !OnboardingGate.isCompleted else { return }
+        let controller = OnboardingWindowController(deps: OnboardingDependencies(
+            workflowStore: workflowStore,
+            toggleRecording: { [weak self] in self?.menuStart() },
+            isRecording: { [weak self] in self?.recorder.isRecording ?? false }
+        ))
+        onboardingController = controller
+        controller.show()
     }
 
     @objc func menuOpenScreenRecordingSettings() {

@@ -105,9 +105,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBar.setIdle()
         coordinator.start()  // requests notification authorization via Notifier
 
-        // Pre-warm the Screen Recording TCC check once at startup. Without this, each recording start calls SCShareableContent and re-prompts whenever TCC hasn't seen the binary's signature.
-        Task.detached {
-            await SystemAudioCapture.prewarm()
+        // TECH-UX1: on a fresh install, show the framed onboarding flow (which
+        // requests each TCC one at a time) instead of letting the startup
+        // prewarm fire an unframed Screen Recording dialog. Once onboarding has
+        // been completed, prewarm as before so recording start never re-prompts.
+        if OnboardingGate.isCompleted {
+            Task.detached {
+                await SystemAudioCapture.prewarm()
+            }
+        } else {
+            coordinator.presentOnboardingIfNeeded()
         }
 
         // Optional local-model warm (TECH-A15), default off. Reads the backend / model from the Preferences round-trip store (the daemon's read-only Config snapshot doesn't model pipeline-side summarization fields). No-op unless the user opted in and the local model is already cached.
