@@ -452,6 +452,19 @@ final class StatusBarController {
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit MeetingPipe", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        // TECH-UX7: when auto-restart is on (the default), offer a one-off quit
+        // that does not relaunch. Hidden when the user already disabled
+        // auto-restart, since the plain Quit above already means quit.
+        if !UISettings.shared.disableAutoRestart, let coordinator = coordinator {
+            let quitNoRelaunch = NSMenuItem(
+                title: "Quit (do not relaunch)",
+                action: #selector(Coordinator.menuQuitWithoutRelaunch),
+                keyEquivalent: "q"
+            )
+            quitNoRelaunch.keyEquivalentModifierMask = [.command, .option]
+            quitNoRelaunch.target = coordinator
+            menu.addItem(quitNoRelaunch)
+        }
     }
 
     /// "Recent meetings" submenu, populated lazily via `menuNeedsUpdate` so

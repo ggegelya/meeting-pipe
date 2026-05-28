@@ -11,11 +11,16 @@
     <string>{{INSTALL_PREFIX}}/MeetingPipe.app/Contents/MacOS/MeetingPipe</string>
   </array>
 
-  <!-- Auto-start at login and re-launch if it crashes. -->
+  <!-- Auto-start at login. Relaunch only on a non-zero exit: a clean quit
+       (exit 0) means "quit fully" (TECH-UX7), while a crash or the
+       relaunch-on-quit path (non-zero exit) brings the menu-bar app back. -->
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
 
   <!-- Don't fork-bomb if we're crashing on launch. -->
   <key>ThrottleInterval</key>

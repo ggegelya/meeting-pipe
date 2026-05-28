@@ -573,6 +573,13 @@ final class Coordinator: NSObject {
         SystemAudioCapture.openScreenRecordingSettings()
     }
 
+    /// "Quit (do not relaunch)" (TECH-UX7): a one-off quit that suppresses the
+    /// LaunchAgent relaunch even when the auto-restart preference is on.
+    @objc func menuQuitWithoutRelaunch() {
+        AppDelegate.pendingRelaunchOverride = false
+        NSApp.terminate(nil)
+    }
+
     /// Open the correction sheet for the stem in the menu item's
     /// `representedObject` (submenu built from `recentCorrectableMeetings()`).
     @objc func menuRecentMeeting(_ sender: NSMenuItem) {

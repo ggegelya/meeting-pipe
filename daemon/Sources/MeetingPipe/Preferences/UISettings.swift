@@ -48,6 +48,11 @@ final class UISettings: ObservableObject {
         didSet { UserDefaults.standard.set(preloadLocalModelAtLaunch, forKey: Keys.preloadLocalModelAtLaunch) }
     }
 
+    /// Opt-out of relaunch-on-quit (TECH-UX7). Default OFF: quitting relaunches via the LaunchAgent so the menu-bar app comes back. When ON, "Quit" means quit. The `AppDelegate` reads this to pick the process exit code the LaunchAgent's `KeepAlive = { SuccessfulExit = false }` keys off (non-zero relaunches, zero does not).
+    @Published var disableAutoRestart: Bool {
+        didSet { UserDefaults.standard.set(disableAutoRestart, forKey: Keys.disableAutoRestart) }
+    }
+
     private enum Keys {
         static let theme = "mp.ui.theme"
         static let menuBarIconStyle = "mp.ui.menuBarIconStyle"
@@ -55,6 +60,7 @@ final class UISettings: ObservableObject {
         static let verboseLogging = "mp.ui.verboseLogging"
         static let playbackChannelMode = "mp.ui.playbackChannelMode"
         static let preloadLocalModelAtLaunch = "mp.ui.preloadLocalModelAtLaunch"
+        static let disableAutoRestart = "mp.ui.disableAutoRestart"
     }
 
     private init() {
@@ -69,6 +75,7 @@ final class UISettings: ObservableObject {
             rawValue: d.string(forKey: Keys.playbackChannelMode) ?? ""
         ) ?? .default
         self.preloadLocalModelAtLaunch = d.bool(forKey: Keys.preloadLocalModelAtLaunch)
+        self.disableAutoRestart = d.bool(forKey: Keys.disableAutoRestart)
     }
 
     /// Apply the theme to `NSApp.appearance`. `nil` restores the system default.

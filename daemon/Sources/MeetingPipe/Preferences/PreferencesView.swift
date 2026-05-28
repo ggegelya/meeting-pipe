@@ -215,18 +215,28 @@ private struct GeneralSectionView: View {
 
             SettingsGroup("Startup") {
                 SettingsRow("Launch at login",
-                    sublabel: launchAtLoginSublabel,
-                    showsDivider: false) {
+                    sublabel: launchAtLoginSublabel) {
                     Toggle("", isOn: launchAtLoginBinding)
                         .labelsHidden()
                         .toggleStyle(.switch)
+                    Spacer(minLength: 0)
+                }
+                SettingsRow("Relaunch after quitting",
+                    sublabel: "On: Quit restarts MeetingPipe in the menu bar. Off: Quit fully closes it. Either way a crash still auto-recovers.",
+                    showsDivider: false) {
+                    Toggle("", isOn: Binding(
+                        get: { !ui.disableAutoRestart },
+                        set: { ui.disableAutoRestart = !$0 }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
                     Spacer(minLength: 0)
                 }
             } footer: {
                 if LaunchAtLoginService.requiresApproval {
                     Text("macOS has marked this login item as needing approval. Open System Settings → General → Login Items and re-enable MeetingPipe.")
                 } else {
-                    Text("Registers MeetingPipe with macOS via SMAppService. Listed under System Settings → General → Login Items.")
+                    Text("Registers MeetingPipe with macOS via SMAppService. The relaunch-after-quit behaviour takes effect after the launch agent is reinstalled (re-run scripts/install.sh).")
                 }
             }
 

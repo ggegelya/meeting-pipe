@@ -523,7 +523,9 @@ Acceptance:
 
 Deps: none.
 
-**TECH-UX7 · Opt-out auto-restart on quit · S · none** [NEW]
+**TECH-UX7 · Opt-out auto-restart on quit · S · none** [DONE]
+
+> Resolved 2026-05-28: added `UISettings.disableAutoRestart` (default OFF) plus a Preferences > General > Startup toggle framed positively as "Relaunch after quitting" (ON by default). Mechanism: the LaunchAgent's `KeepAlive` changed from `true` to `{ SuccessfulExit = false }` in `scripts/launchd.plist.template`, so launchd relaunches only on a non-zero exit. `AppDelegate.applicationWillTerminate` now picks the exit code via the pure, unit-tested `AppDelegate.shouldRelaunchOnQuit(override:disableAutoRestart:)` and `exit(EXIT_FAILURE/EXIT_SUCCESS)`: the default Quit relaunches (non-zero) unless the preference disables it, and a one-shot `AppDelegate.pendingRelaunchOverride` lets the new "Quit (do not relaunch)" status-bar item (added in `StatusBarController.populateMenu`, ⌘⌥Q) force exit 0. That alt item is shown only when auto-restart is on, and the menu re-populates on open (`refreshMenuBeforeDisplay`) so it tracks the toggle. Crash recovery is preserved (a crash exits non-zero -> relaunch). Edit-list note: the LaunchAgent lives in `launchd.plist.template`/`install.sh`, not `LaunchAtLoginService.swift` (that wraps the separate SMAppService login item), so the KeepAlive edit landed there. Caveat: existing installs carry `KeepAlive=true`; the new behaviour takes effect after re-running `scripts/install.sh` (surfaced in the General footer). `AppDelegateRelaunchTests` (4 cases) pin the decision; build green.
 
 Next.md idea 8. Today the app auto-restarts on quit (LaunchAgent). Some users prefer "Quit means quit". Add a Preferences toggle plus an alternate "Quit (do not relaunch)" menu item. Default OFF for the primary user.
 

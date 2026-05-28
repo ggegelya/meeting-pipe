@@ -31,6 +31,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var secretsCancellable: AnyCancellable?
     private let localModelPreloader = LocalModelPreloader()
 
+    /// One-shot relaunch override for the next quit (TECH-UX7). `nil` defers to
+    /// the `disableAutoRestart` preference; `false` forces a no-relaunch quit
+    /// (the "Quit (do not relaunch)" menu item). Reset implicitly by process exit.
+    static var pendingRelaunchOverride: Bool? = nil
+
+    /// Whether quitting should ask the LaunchAgent to relaunch us (TECH-UX7).
+    /// Pure so it is unit-testable; the override wins, else the preference
+    /// (default = relaunch). The LaunchAgent uses `KeepAlive = { SuccessfulExit
+    /// = false }`, so a non-zero exit relaunches and exit 0 quits fully.
+    static func shouldRelaunchOnQuit(override: Bool?, disableAutoRestart: Bool) -> Bool {
+        override ?? !disableAutoRestart
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.main.info("MeetingPipe starting")
 
@@ -110,5 +123,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         localModelPreloader.stop()
         coordinator?.shutdown()
+        // TECH-UX7: choose the exit code the LaunchAgent keys off. Non-zero asks
+        // launchd to relaunch (default + crash recovery); zero quits fully.
+        let relaunch = AppDelegate.shouldRelaunchOnQuit(
+            override: AppDelegate.pendingRelaunchOverride,
+            disableAutoRestart: UISettings.shared.disableAutoRestart
+        )
+        exit(relaunch ? EXIT_FAILURE : EXIT_SUCCESS)
     }
 }
