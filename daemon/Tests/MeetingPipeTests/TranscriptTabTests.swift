@@ -137,6 +137,44 @@ final class TranscriptTabTests: XCTestCase {
         XCTAssertEqual(TranscriptDisplay.timestamp(3725), "1:02:05")
     }
 
+    // MARK: load + overlay on reload (TECH-A14)
+
+    func test_load_overlays_a_saved_correction_on_reload() throws {
+        // End-to-end through the same path TranscriptTab uses on reopen:
+        // pipeline JSON on disk + a saved transcript correction -> the loaded
+        // segments show the edited text. This is the "survives a reload" half
+        // of the corrections acceptance against the real loader, not just the
+        // store round-trip.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TranscriptTabTests-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let stem = "20260501-101500"
+
+        let payload: [String: Any] = [
+            "language": "en",
+            "segments": [
+                ["start": 0.0, "end": 1.5, "text": "good morning", "speaker": "speaker_0"],
+                ["start": 1.5, "end": 4.0, "text": "lets start", "speaker": "speaker_1"],
+            ],
+        ]
+        try JSONSerialization.data(withJSONObject: payload)
+            .write(to: dir.appendingPathComponent("\(stem).json"))
+
+        // What TranscriptTab.saveCorrection persists when the user edits a line.
+        _ = try TranscriptCorrectionStore.upsert(
+            segmentIndex: 1,
+            pipelineOriginal: "lets start",
+            edited: "let's start",
+            stem: stem,
+            in: dir
+        )
+
+        let result = try XCTUnwrap(TranscriptLoader.load(stem: stem, in: dir))
+        XCTAssertEqual(result.segments[0].text, "good morning", "untouched segment unchanged")
+        XCTAssertEqual(result.segments[1].text, "let's start", "edited segment overlaid on reload")
+    }
+
     // MARK: helpers
 
     private func seg(_ index: Int, start: TimeInterval, end: TimeInterval) -> TranscriptSegment {

@@ -283,7 +283,9 @@ Stop and ask: if FluidAudio's streaming path requires a different segment-build 
 
 Deps: none. Can run in parallel with TECH-A11 and TECH-A12.
 
-**TECH-A14 · Wire (or verify-then-close) the Corrections tab end-to-end · S · none** [NEW]
+**TECH-A14 · Wire (or verify-then-close) the Corrections tab end-to-end · S · none** [DONE · verified wired]
+
+> Resolved 2026-05-28: verified wired, no rewire needed. The transcript-correction loop is complete: `TranscriptTab.saveCorrection` -> `TranscriptCorrectionStore.upsert` (atomic sidecar, preserves the pipeline-original across re-edits) -> emits `correction` / `transcript_correction` with `original_text` + `edited_text`; `TranscriptLoader.load` overlays the saved corrections on reopen. (Note: the UI "Corrections" tab shows the summary-grading record; the transcript line edits this acceptance targets live in the Transcript tab.) The only gap was a test of the real reload path, now added as `TranscriptTabTests.test_load_overlays_a_saved_correction_on_reload` (store round-trip was already covered by `TranscriptCorrectionStoreTests`). Closed via `docs/decisions/0015-corrections-tab-wired.md`; suites green.
 
 Next.md item: "First step is to actually check whether the Corrections tab is wired end-to-end today - corrections are persisted, but the UI loop may not be complete."
 
