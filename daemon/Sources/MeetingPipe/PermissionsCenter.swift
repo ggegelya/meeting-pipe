@@ -6,23 +6,10 @@ import CoreGraphics
 import Foundation
 import UserNotifications
 
-/// Single source of truth for the four TCC permissions the daemon
-/// touches (Microphone, Screen Recording, Accessibility, Notifications).
-/// Centralizes the probe + request paths so the Preferences UI, the
-/// startup sequence, and the recording gate all read from the same
-/// published state and never disagree.
-///
-/// Threading: every mutation runs on the main queue. Probes are cheap
-/// (no IO besides TCC) so callers can poll. Requests are async and
-/// return the post-request status. The class is intentionally NOT
-/// `@MainActor` so the Coordinator (which isn't main-isolated either)
-/// can read the published state synchronously; mutations stick to the
-/// main queue by convention, matching the rest of the daemon.
+/// Published state for the four TCC permissions the daemon touches. Not `@MainActor` so the Coordinator (also not main-isolated) can read published state synchronously; mutations run on the main queue by convention.
 final class PermissionsCenter: ObservableObject {
 
-    /// Process-wide singleton. The Permissions tab and the Coordinator
-    /// both observe the same instance so a flip surfaced by one
-    /// surface immediately propagates to the other.
+    /// Process-wide singleton shared by the Permissions tab and the Coordinator.
     static let shared = PermissionsCenter()
 
     enum Kind: String, CaseIterable, Identifiable {
@@ -68,22 +55,15 @@ final class PermissionsCenter: ObservableObject {
     @Published private(set) var accessibility: Status = .unknown
     @Published private(set) var notifications: Status = .unknown
 
-    /// Kinds whose last `request*` call could not actually prompt and
-    /// instead fell through to opening System Settings. The Permissions
-    /// tab reads this to show an inline "toggle MeetingPipe on, then
-    /// click Re-check" hint. Cleared when the kind transitions to
-    /// `.granted` or the user clicks Re-check.
+    /// Kinds where the last `request*` call could not prompt and fell through to System Settings. Drives the "toggle MeetingPipe on, then Re-check" hint; cleared on grant or Re-check click.
     @Published private(set) var deferredToSettings: Set<Kind> = []
 
-    /// Re-evaluates fired into this stream every time a probe lifts a
-    /// permission from a non-`.granted` state to `.granted`. Coordinator
-    /// subscribes so the detector picks up an in-progress meeting after
-    /// the user finally grants mic / Accessibility from System Settings.
+    /// Fires when a permission transitions to `.granted`. Coordinator subscribes so the detector can pick up an in-progress meeting immediately after the user grants mic or Accessibility from System Settings.
     let permissionGranted = PassthroughSubject<Kind, Never>()
 
     private var refreshTimer: Timer?
 
-    /// Snapshot any permission by kind. Convenience for the view layer.
+    /// Return the current status for a given kind.
     func status(_ kind: Kind) -> Status {
         switch kind {
         case .microphone:      return microphone
@@ -95,12 +75,7 @@ final class PermissionsCenter: ObservableObject {
 
     // MARK: Probes
 
-    /// Re-read every permission state from TCC. Cheap; called at startup,
-    /// when the Preferences window opens, and on a 2 s timer while that
-    /// window is visible. **Read-only** — must never call any API that
-    /// can surface a TCC dialog (CGRequest*, SCShareableContent on
-    /// macOS 14.4+, requestAuthorization, etc.). The polling refresh
-    /// rides on this.
+    /// Re-read all permission states from TCC. Read-only: must never call any API that can surface a TCC dialog (CGRequest*, SCShareableContent on macOS 14.4+, requestAuthorization, etc.) - polling at 2 s would re-pop the prompt indefinitely.
     func refreshAll() async {
         await refreshMic()
         refreshScreenRecording()
@@ -108,9 +83,7 @@ final class PermissionsCenter: ObservableObject {
         await refreshNotifications()
     }
 
-    /// Begin polling at 2 s. Used by the Preferences "Permissions" tab
-    /// so a grant flipped in System Settings reflects without the user
-    /// re-opening the tab. Stops when `stopPolling` is called.
+    /// Poll at 2 s so a grant flipped in System Settings reflects in the Permissions tab without a re-open.
     func startPolling() {
         stopPolling()
         let t = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
@@ -131,34 +104,18 @@ final class PermissionsCenter: ObservableObject {
         refreshMicSync()
     }
 
-    /// Synchronous mic-permission probe. `AVCaptureDevice
-    /// .authorizationStatus` is a synchronous TCC read; the `async`
-    /// `refreshMic()` wrapper exists only for call-site uniformity
-    /// with the genuinely-async notification probe.
+    /// Synchronous mic probe. The `async` `refreshMic()` wrapper exists only for call-site uniformity with the genuinely-async notification probe.
     func refreshMicSync() {
         let raw = AVCaptureDevice.authorizationStatus(for: .audio)
         commit(\.microphone, kind: .microphone, status: Self.status(forAVAuth: raw))
     }
 
     func refreshScreenRecording() {
-        // Read-only. `CGPreflightScreenCaptureAccess` reflects TCC
-        // state changes immediately — once the user toggles the
-        // System Settings switch, the next call returns the new
-        // verdict without us having to do anything else.
-        //
-        // We deliberately do NOT call `SCShareableContent` here. On
-        // macOS 14.4+ (and certainly on the user's macOS 26)
-        // `SCShareableContent` surfaces the TCC dialog when access
-        // is denied — Apple's "give the user another chance" policy.
-        // Calling it on a 2 s polling tick would re-pop the prompt
-        // indefinitely, which is exactly the regression we're
-        // chasing.
-        //
-        // `permissionState` is the last verdict from the explicit
-        // `prewarm()` path (initial app launch + Request button +
-        // recorder start). When that path saw success, we fold its
-        // verdict in so a fresh launch with cached `.granted` doesn't
-        // briefly flash `.notDetermined` while CGPreflight catches up.
+        // Read-only. CGPreflightScreenCaptureAccess reflects TCC changes immediately without triggering a dialog.
+        // Do NOT call SCShareableContent here: on macOS 14.4+ it surfaces the TCC dialog when access is denied,
+        // so calling it on a 2 s poll would re-pop the prompt indefinitely.
+        // Fold in SystemAudioCapture.permissionState (the last verdict from the prewarm path) so a fresh launch
+        // with a cached .granted verdict doesn't briefly flash .notDetermined while CGPreflight catches up.
         let preflight = CGPreflightScreenCaptureAccess()
         let new: Status
         if preflight || SystemAudioCapture.permissionState == .granted {
@@ -173,9 +130,7 @@ final class PermissionsCenter: ObservableObject {
 
     func refreshAccessibility() {
         let trusted = AXIsProcessTrusted()
-        // AX has no "not determined" — either trusted or not. We fold
-        // both untrusted states into .denied so the UI shows a single
-        // "Open Settings" affordance.
+        // AX has no "not determined"; fold both untrusted states into .denied for a single "Open Settings" affordance.
         let new: Status = trusted ? .granted : .denied
         commit(\.accessibility, kind: .accessibility, status: new)
     }
@@ -197,14 +152,7 @@ final class PermissionsCenter: ObservableObject {
         commit(\.notifications, kind: .notifications, status: new)
     }
 
-    /// Synchronously re-probe the three permissions the menu-bar
-    /// warning row depends on: Microphone, Screen Recording, and
-    /// Accessibility. All three are synchronous, read-only TCC reads
-    /// (no async hop, no dialog). Notifications is intentionally
-    /// excluded: it needs an async `UNUserNotificationCenter` call and
-    /// the menu warning does not depend on it. Lets the status-bar
-    /// menu show a current verdict when the user grants a permission
-    /// in System Settings without opening Preferences.
+    /// Re-probe Microphone, Screen Recording, and Accessibility synchronously (all cheap TCC reads, no dialog). Notifications excluded: it requires an async UNUserNotificationCenter call and the menu-bar warning row doesn't depend on it.
     func refreshMenuRelevantSync() {
         refreshMicSync()
         refreshScreenRecording()
@@ -213,8 +161,7 @@ final class PermissionsCenter: ObservableObject {
 
     // MARK: Requests
 
-    /// Surface the system mic dialog if the user hasn't decided yet;
-    /// otherwise just refresh. Returns the post-request status.
+    /// Surface the system mic dialog if not yet decided; otherwise just refresh. Returns the post-request status.
     @discardableResult
     func requestMic() async -> Status {
         let raw = AVCaptureDevice.authorizationStatus(for: .audio)
@@ -229,21 +176,10 @@ final class PermissionsCenter: ObservableObject {
         return microphone
     }
 
-    /// Surface the Screen Recording dialog (CoreGraphics path — the
-    /// only API that actually adds the bundle to System Settings and
-    /// pops the system prompt on a fresh install).
-    ///
-    /// macOS 15 only prompts the *first* time CGRequestScreenCaptureAccess
-    /// runs for a given (bundle, cdhash). Reinstalls produce a new cdhash
-    /// (adhoc/linker-signed binaries content-hash on rebuild) so the
-    /// re-request usually no-ops and we have to route the user to System
-    /// Settings to flip the toggle for the new identity. Without this
-    /// fallback the Request button silently does nothing.
+    /// Request Screen Recording via CGRequestScreenCaptureAccess (the only API that adds the bundle to System Settings and prompts on first install). macOS 15 only prompts once per (bundle, cdhash); reinstalls produce a new cdhash so the re-request usually no-ops and must fall through to System Settings - without that fallback the Request button silently does nothing.
     @discardableResult
     func requestScreenRecording() async -> Status {
-        // Re-use prewarm so we ride the same code path that the daemon
-        // already trusts at startup. prewarm() handles the
-        // CGRequestScreenCaptureAccess + SCShareableContent fetch.
+        // Reuse prewarm so this rides the same trusted path as startup (CGRequestScreenCaptureAccess + SCShareableContent fetch).
         await SystemAudioCapture.prewarm()
         refreshScreenRecording()
         if screenRecording != .granted {
@@ -252,10 +188,7 @@ final class PermissionsCenter: ObservableObject {
         return screenRecording
     }
 
-    /// Accessibility is special: macOS won't grant programmatically.
-    /// We pop the prompt via `kAXTrustedCheckOptionPrompt` (which adds
-    /// the bundle to the Accessibility list) and open System Settings
-    /// when the user needs to flip the toggle manually.
+    /// macOS won't grant Accessibility programmatically. `kAXTrustedCheckOptionPrompt` adds the bundle to the Accessibility list; System Settings handles the actual toggle.
     @discardableResult
     func requestAccessibility() -> Status {
         let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue()
@@ -265,12 +198,7 @@ final class PermissionsCenter: ObservableObject {
         return accessibility
     }
 
-    /// Notifications behave like a one-shot prompt: macOS only surfaces
-    /// the system dialog the first time `requestAuthorization` runs.
-    /// Subsequent calls (post-decision, post-`tccutil reset` since
-    /// tccutil doesn't manage Notifications at all) return silently
-    /// with the prior verdict. Detect that case up front and route to
-    /// System Settings so the button always does something visible.
+    /// macOS only shows the Notifications dialog once; subsequent `requestAuthorization` calls return the prior verdict silently. `tccutil reset` does not affect Notifications. If already decided, fall through to System Settings so the button always does something visible.
     @discardableResult
     func requestNotifications() async -> Status {
         let center = UNUserNotificationCenter.current()
@@ -290,9 +218,7 @@ final class PermissionsCenter: ObservableObject {
         return notifications
     }
 
-    /// Clear any "fell through to Settings" hint the UI is showing for
-    /// this kind. Called by the Re-check button so a stale hint doesn't
-    /// linger after the user has visited Settings and come back.
+    /// Clear the "fell through to Settings" hint; called by the Re-check button.
     func clearDeferredHint(_ kind: Kind) {
         if deferredToSettings.contains(kind) {
             deferredToSettings.remove(kind)
@@ -306,8 +232,7 @@ final class PermissionsCenter: ObservableObject {
 
     // MARK: System Settings deep links
 
-    /// Open the System Settings pane that owns this permission. Used by
-    /// the "Open Settings" button on rows whose status is `.denied`.
+    /// Open the System Settings pane for the given permission kind.
     func openSystemSettings(for kind: Kind) {
         let urlString: String
         switch kind {
@@ -318,10 +243,8 @@ final class PermissionsCenter: ObservableObject {
         case .accessibility:
             urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
         case .notifications:
-            // macOS Ventura+ moved Notifications under the new System
-            // Settings extension surface. The legacy
-            // `com.apple.preference.notifications` URL silently fails on
-            // 13+ (System Settings opens, the deep link does nothing).
+            // macOS Ventura+ moved Notifications to the extension surface; the legacy
+            // `com.apple.preference.notifications` URL silently fails on 13+ (Settings opens but the deep link does nothing).
             urlString = "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
         }
         if let url = URL(string: urlString) {
@@ -338,16 +261,9 @@ final class PermissionsCenter: ObservableObject {
     ) {
         let prev = self[keyPath: keyPath]
         self[keyPath: keyPath] = status
-        // Notify subscribers when a permission lifts to granted. The
-        // detector subscribes so an in-progress meeting that was
-        // invisible (e.g. mic-blocked KVO returning false) becomes
-        // visible immediately, without waiting for the next Workspace
-        // notification.
         if status == .granted && prev != .granted {
             permissionGranted.send(kind)
-            // Hint becomes irrelevant once the kind actually flipped on;
-            // drop it so the UI doesn't keep the "toggle on, then
-            // re-check" line under a green row.
+            // Drop the deferred hint once the kind flips on; no need to show "toggle on, then re-check" under a green row.
             if deferredToSettings.contains(kind) {
                 deferredToSettings.remove(kind)
             }
@@ -365,10 +281,7 @@ final class PermissionsCenter: ObservableObject {
 
     // MARK: Test seam
 
-    /// Drive a status transition without touching TCC. Exists so the
-    /// XCTest target can assert the `permissionGranted` broadcast
-    /// contract without relying on host-process TCC state, which is
-    /// not controllable from a unit test.
+    /// Inject a status without touching TCC; lets XCTest assert the `permissionGranted` broadcast contract without relying on host-process TCC state.
     func simulateStatusForTesting(_ status: Status, kind: Kind) {
         switch kind {
         case .microphone:      commit(\.microphone, kind: kind, status: status)

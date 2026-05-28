@@ -1,31 +1,9 @@
 import SwiftUI
 
-/// Right-side inspector pane shown when the rail selection is a
-/// workflow scope. Anatomy matches `pattern-b.jsx`'s
-/// `PB_WorkflowInspector`:
-///
-///   ● {emoji} {name}
-///   one-line summary
-///
-///   TRIGGER · "Zoom + Teams · auto"
-///   MODES   · "NDA on · Record system audio"
-///   OUTPUT  · "Notion · Clients DB"
-///   TAGS    · whatever
-///
-///   RECENT
-///     • Customer call — Helix Diagnostics
-///     • QMS audit prep — release 3.2
-///     • Daily Standup — eng team
-///
-///   [ Edit workflow ]
-///
-/// We don't store explicit "tags" on a workflow, and the per-workflow
-/// trigger/modes lines are derived from existing fields rather than
-/// added net-new metadata.
+/// Inspector pane for a workflow rail scope. Shows a header (emoji/color + name), summary rows (Trigger, Modes, Output, Backend), up to 5 recent meetings, and an Edit button. Tags are not stored; trigger/modes lines are derived from existing workflow fields.
 struct WorkflowInspector: View {
     let workflow: Workflow
-    /// Pre-filtered meetings that belong to this workflow. The list view
-    /// already filters by scope, so we just take the first 5 newest.
+    /// Pre-filtered meetings for this workflow scope; only the first 5 newest are shown.
     let recentMeetings: [Meeting]
     let onEdit: () -> Void
 
@@ -151,8 +129,7 @@ struct WorkflowInspector: View {
         return sinks.map { sink -> String in
             switch sink {
             case .notion(let id) where !id.isEmpty:
-                // Database IDs are noisy; show the leading slug so the
-                // user recognises it without taking up the whole row.
+                // Show a leading 8-char slug; full DB IDs are too noisy for a single row.
                 let preview = String(id.prefix(8))
                 return "Notion · \(preview)…"
             case .notion:

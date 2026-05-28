@@ -2,21 +2,7 @@ import Combine
 import Foundation
 import TOMLKit
 
-/// Observable owner of the on-disk workflows directory.
-///
-/// Persistence: one TOML file per workflow at
-/// `~/.config/meeting-pipe/workflows/<id>.toml`. The UUID stays stable
-/// across renames so the matcher's "explicit override" path can pin a
-/// meeting to a workflow even after the user retitles it.
-///
-/// Atomicity: every save writes through a sibling `.writing` file and
-/// then `replaceItemAt`s the canonical name, the same shape `ConfigStore`
-/// uses. A crash mid-write leaves the previous file intact.
-///
-/// Threading: SwiftUI views observe via `@Published`; mutations come
-/// from the main queue (Preferences / Workflows tab edits, B2 migration,
-/// matcher resolution). Disk writes hop to a private queue so the UI
-/// never blocks on flash.
+/// Observable owner of the on-disk workflows directory. One TOML file per workflow at `~/.config/meeting-pipe/workflows/<id>.toml`; UUID is stable across renames so override pins survive retitles. Saves write through a `.writing` sibling then `replaceItemAt` for crash safety. Mutations run on the main queue; disk writes hop to a private queue so the UI never blocks.
 final class WorkflowStore: ObservableObject {
 
     private let directory: URL
@@ -27,22 +13,18 @@ final class WorkflowStore: ObservableObject {
 
     @Published private(set) var workflows: [Workflow] = []
 
-    /// Default workflows path under the user's home dir; matches the
-    /// convention used by `~/.config/meeting-pipe/config.toml`.
+    /// Default workflows directory, sibling to `config.toml`.
     static let defaultDirectory: URL = {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/meeting-pipe/workflows")
     }()
 
-    /// Initialise without loading. Callers explicitly invoke `load` so
-    /// tests can drive the migration path with a fresh-empty directory.
+    /// Does not load on init; callers invoke `load` explicitly so tests can drive migration with a fresh directory.
     init(directory: URL = WorkflowStore.defaultDirectory) {
         self.directory = directory
     }
 
-    /// Materialise every `*.toml` under the workflows directory into
-    /// memory. Idempotent and safe to call after a manual filesystem
-    /// edit — every read replaces the in-memory list wholesale.
+    /// Load all `*.toml` files from the directory, replacing the in-memory list. Safe to call after a manual filesystem edit.
     func load() {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
@@ -66,14 +48,11 @@ final class WorkflowStore: ObservableObject {
         workflows = loaded
     }
 
-    /// Insert or replace a workflow. Saves to disk synchronously on the
-    /// write queue so callers can rely on the file being on disk before
-    /// they return.
+    /// Insert or replace a workflow and persist to disk.
     func upsert(_ workflow: Workflow) throws {
         let w = workflow
         if w.isDefault {
-            // Single-default invariant: clearing the flag on every other
-            // workflow first lets the new default land cleanly.
+            // Clear the flag on every other workflow first to maintain the single-default invariant.
             workflows = workflows.map { existing in
                 guard existing.id != w.id else { return existing }
                 var clone = existing
@@ -89,9 +68,7 @@ final class WorkflowStore: ObservableObject {
         try persistAll()
     }
 
-    /// Remove the workflow with the matching id. No-op when the id isn't
-    /// present. The default workflow can't be removed — `delete` returns
-    /// false in that case so the UI can surface a banner instead.
+    /// Remove the workflow with the given id. Returns false (no-op) when not found or when the workflow is the default.
     @discardableResult
     func delete(id: UUID) throws -> Bool {
         guard let idx = workflows.firstIndex(where: { $0.id == id }) else { return false }
@@ -105,7 +82,7 @@ final class WorkflowStore: ObservableObject {
         return true
     }
 
-    /// Persist the given new order. The wizard's drag-reorder uses this.
+    /// Assign sequential `order` values from the given array and persist.
     func reorder(_ ordered: [Workflow]) throws {
         var rebuilt: [Workflow] = []
         for (i, w) in ordered.enumerated() {
@@ -117,24 +94,19 @@ final class WorkflowStore: ObservableObject {
         try persistAll()
     }
 
-    /// The workflow flagged `isDefault`. Returns nil for a freshly-empty
-    /// store — the matcher logs and falls back to a synthesised "no
-    /// workflow" state in that case rather than crashing.
+    /// The workflow flagged `isDefault`, or nil on a freshly-empty store.
     var defaultWorkflow: Workflow? {
         workflows.first(where: { $0.isDefault })
     }
 
-    /// Lookup by id; nil when not present.
+    /// Lookup by id; nil when absent.
     func workflow(id: UUID) -> Workflow? {
         workflows.first(where: { $0.id == id })
     }
 
     // MARK: - Persistence helpers
 
-    /// Write every in-memory workflow to disk. Cheap enough at our scale
-    /// (single-digit workflows in practice) to round-trip the entire set
-    /// on each save; keeps the file/memory invariants trivial to reason
-    /// about and lets `load` stay idempotent.
+    /// Write all in-memory workflows to disk. Round-tripping the full set on each save is cheap at single-digit counts and keeps load/memory invariants simple.
     private func persistAll() throws {
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -158,10 +130,8 @@ final class WorkflowStore: ObservableObject {
 
     // MARK: - TOML encoding/decoding
     //
-    // TOMLKit's value-bridging works one level at a time, so we walk the
-    // struct by hand. Keeping the schema flat and explicit means a user
-    // who opens the file in their editor sees keys that match the UI
-    // labels — useful when debugging a workflow that won't match.
+    // TOMLKit bridges values one level at a time, so the struct is walked by hand.
+    // Flat, explicit keys mean a user who opens the file sees names that match UI labels.
 
     static func encode(_ wf: Workflow) -> String {
         let doc = TOMLTable()

@@ -1,40 +1,13 @@
 import AppKit
 
-/// On-screen prompt that surfaces when a meeting is detected.
-///
-/// Replaces the older 380×204 top-right card with a Notion-style horizontal
-/// pill, centered horizontally near the top of the screen. The visual
-/// vocabulary tracks Notion's "Start AI Meeting Note" pill but uses our
-/// design tokens (paper/ink/signal) instead of Notion's gray/blue.
-///
-/// Layout, left to right:
-///   [×]  [glyph]   Microsoft Teams         [Record (BYO)] [Record] [⌄]
-///                  Record this meeting?
-///
-/// The chevron `⌄` opens a popup menu with the secondary actions:
-///   - Always for {App}
-///   - Skip
-///   - (when permission denied) Open Screen Recording Settings…
-///
-/// Why a popup menu instead of inline chips: at 480pt wide, four buttons
-/// in a row leaves no breathing room and the `Always for Microsoft Teams`
-/// label is ~190pt by itself. Pushing it under a chevron reads as Notion's
-/// "more options" affordance and keeps the pill compact.
-///
-/// Lifecycle: `present` shows the panel + starts the mic-level monitor.
-/// `dismiss` fades it out + stops the monitor. One panel at a time. The
-/// panel doesn't own outcome state; the delegate carries clicks back to
-/// the Coordinator.
+/// Detection prompt: a Notion-style horizontal pill centered near the top of the screen. Secondary actions (Always, Skip, Screen Recording Settings) live under a chevron menu rather than inline buttons because "Always for Microsoft Teams" alone is ~190pt, leaving no breathing room at 480pt wide. Lifecycle: `present` shows the panel and starts the mic monitor; `dismiss` fades it out and stops the monitor. One panel at a time; the delegate carries outcome clicks back to the Coordinator.
 protocol MeetingPromptDelegate: AnyObject {
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecord source: AppSource)
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseSkip source: AppSource)
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseAlways source: AppSource)
-    /// User chose "Record (BYO)" — the recording proceeds normally, but the
-    /// pipeline writes a manual-paste bundle instead of calling Anthropic.
+    /// User chose "Record (BYO)" - recording proceeds normally but the pipeline writes a manual-paste bundle instead of calling Anthropic.
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecordBYO source: AppSource)
-    /// User picked a workflow from the chip's popup. The prompt stays
-    /// open; the Coordinator stashes the choice as the pending override
-    /// so the next `beginRecording` matcher call returns this workflow.
+    /// User picked a workflow override. Prompt stays open; the Coordinator stashes it so the next `beginRecording` matcher call returns this workflow.
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseWorkflow id: UUID?)
 }
 
@@ -47,14 +20,9 @@ final class MeetingPromptWindow {
     private weak var liveWaveform: LiveWaveformView?
     private weak var dismissProgress: DismissProgressView?
     private weak var workflowChip: WorkflowChipView?
-    /// Snapshot of the workflows available for the override popup.
-    /// Frozen at `present` time so the user picks from a stable list
-    /// (a workflow added mid-prompt wouldn't show up here, which is
-    /// fine — it'd show up on the next meeting).
+    /// Workflows frozen at `present` time so the override popup is stable (a workflow added mid-prompt is fine to miss; it will appear on the next meeting).
     private var availableWorkflows: [Workflow] = []
-    /// Workflow currently displayed on the chip. Updated after the user
-    /// picks from the override popup so the chip reflects the choice
-    /// without a full panel rebuild.
+    /// Workflow displayed on the chip; updated on override pick so the chip reflects the choice without a full panel rebuild.
     private var currentWorkflow: Workflow?
     private let levelMonitor = MicLevelMonitor()
 
@@ -63,19 +31,11 @@ final class MeetingPromptWindow {
     private var dismissDeadline: Date?
     private var dismissRemainingOnPause: TimeInterval?
 
-    // Width grew from 520 → 600 to make room for the workflow chip
-    // (TECH-B5) without crowding the existing action cluster. The
-    // visual rhythm of glyph / text / waveform / chip / actions stays
-    // intact at the wider size.
+    // 520 → 600 to fit the workflow chip (TECH-B5) without crowding the action cluster.
     private static let panelWidth: CGFloat = 600
-    // Tighter than the previous 88pt: the redesign promotes "Record this
-    // meeting?" to the dominant title and demotes the app name to a
-    // small uppercase eyebrow, which is a denser hierarchy that wants
-    // less vertical air. ~30% reduction per Roadmap P4.1.
+    // 88 → 64: denser hierarchy (eyebrow + title) needs less vertical air. Per Roadmap P4.1.
     private static let panelHeight: CGFloat = 64
-    /// Distance from the top of the visible area. Notion's pill sits ~80pt
-    /// down; we match that so the two HUDs read as the same family when
-    /// they appear side-by-side.
+    /// 80pt down matches Notion's pill position so the two HUDs feel like the same family side-by-side.
     private static let topInset: CGFloat = 80
 
     func present(
@@ -170,21 +130,13 @@ final class MeetingPromptWindow {
         let glyph = AppGlyphView(source: source)
         bg.addSubview(glyph)
 
-        // --- Stacked text: eyebrow (app name) + question ------------
-        // Hierarchy inversion vs the prior layout: the question is the
-        // primary call-to-attention, the app name is supporting context.
-        // Reading order: glance left, see "Record this meeting?", check
-        // the eyebrow above for which app, then move right to the action
-        // cluster.
+        // Stacked text: question is the primary CTA; app name is the eyebrow above it.
         let eyebrow = NSTextField(labelWithString: source.displayName.uppercased())
         eyebrow.font = .mpEyebrow()
         eyebrow.textColor = MPColors.ink500
         eyebrow.lineBreakMode = .byTruncatingTail
         eyebrow.translatesAutoresizingMaskIntoConstraints = false
-        // Tracking +0.04em (mac-ish: ~0.4pt at 11pt) for that uppercase
-        // eyebrow rhythm. NSAttributedString is the only way to set
-        // tracking on an NSTextField; the styled string overrides
-        // `stringValue`.
+        // NSAttributedString is the only way to set tracking on NSTextField; it overrides `stringValue`.
         eyebrow.attributedStringValue = NSAttributedString(
             string: source.displayName.uppercased(),
             attributes: [
@@ -219,13 +171,7 @@ final class MeetingPromptWindow {
         bg.addSubview(waveform)
         self.liveWaveform = waveform
 
-        // --- Workflow chip (TECH-B5) ---------------------------------
-        // Renders the workflow the matcher resolved for this meeting.
-        // Tap opens an NSMenu of all workflows; picking one forwards to
-        // the delegate so the Coordinator can stash the override before
-        // Record is clicked. Hidden entirely when no workflow exists
-        // (rare — fresh install before migration, or store deleted by
-        // hand) so a noisy "(none)" pill doesn't pollute the prompt.
+        // Workflow chip (TECH-B5): tap opens the override menu. Hidden when no workflow exists (rare: fresh install before migration, or store deleted by hand) so there is no noisy "(none)" pill.
         let chip = WorkflowChipView()
         chip.onClick = { [weak self, weak bg] in
             guard let self = self, let host = bg else { return }
@@ -264,57 +210,42 @@ final class MeetingPromptWindow {
         self.dismissProgress = progress
         bg.dismissProgress = progress
 
-        // --- Layout --------------------------------------------------
-        // 12pt top/bottom padding; horizontal layout flows left to right.
-        // Close (×) is now pinned to the top-left corner so the action
-        // row starts at the glyph and is no longer offset by it.
+        // Layout: × pinned to top-left corner; action row starts at the glyph.
         let leftEdge: CGFloat = 14
         let rightEdge: CGFloat = 12
-        let textLeading: CGFloat = leftEdge + 32 + 10
-        // glyph(32) + gap(10)
+        let textLeading: CGFloat = leftEdge + 32 + 10 // glyph(32) + gap(10)
 
         NSLayoutConstraint.activate([
-            // × close: smaller (14pt) and pinned to the top-left corner of
-            // the panel padding, off the action row entirely. Muted color
-            // so it reads as chrome, not a competing CTA.
             close.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 6),
             close.topAnchor.constraint(equalTo: bg.topAnchor, constant: 6),
             close.widthAnchor.constraint(equalToConstant: 14),
             close.heightAnchor.constraint(equalToConstant: 14),
 
-            // App glyph: leads the action row; close (×) is in the corner.
             glyph.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: leftEdge),
             glyph.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
             glyph.widthAnchor.constraint(equalToConstant: 32),
             glyph.heightAnchor.constraint(equalToConstant: 32),
 
-            // Eyebrow (small uppercase, top of the stacked text block)
             eyebrow.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: textLeading),
             eyebrow.topAnchor.constraint(equalTo: glyph.topAnchor, constant: 0),
             eyebrow.trailingAnchor.constraint(lessThanOrEqualTo: waveform.leadingAnchor, constant: -8),
 
-            // Question (dominant) under the eyebrow
             question.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: textLeading),
             question.topAnchor.constraint(equalTo: eyebrow.bottomAnchor, constant: 1),
             question.trailingAnchor.constraint(lessThanOrEqualTo: waveform.leadingAnchor, constant: -8),
 
-            // Waveform sits left of the chip + action cluster. When the
-            // chip is hidden the trailing edge falls back through the
-            // chip to recordBYO via the chip's leading constraint.
+            // Waveform sits left of the chip + action cluster; when chip is hidden it falls back to recordBYO via the chip's leading constraint.
             waveform.trailingAnchor.constraint(equalTo: chip.leadingAnchor, constant: -8),
             waveform.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
             waveform.widthAnchor.constraint(equalToConstant: LiveWaveformView.intrinsicWidth),
             waveform.heightAnchor.constraint(equalToConstant: 14),
 
-            // Workflow chip flush against recordBYO. Max width keeps
-            // even a long workflow name from pushing the action cluster
-            // off-canvas; the title label truncates internally.
+            // Max width prevents a long workflow name from pushing the action cluster off-canvas.
             chip.trailingAnchor.constraint(equalTo: recordBYO.leadingAnchor, constant: -10),
             chip.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
             chip.widthAnchor.constraint(lessThanOrEqualToConstant: 160),
 
             // Right cluster: chevron flush right; Record before it; BYO before that.
-            // Unified pill geometry: chevron is 26x26, same height as MPButton.
             chevron.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -rightEdge),
             chevron.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
             chevron.widthAnchor.constraint(equalToConstant: 26),
@@ -393,9 +324,7 @@ final class MeetingPromptWindow {
         dismiss()
     }
 
-    /// Build + present the chevron's popup menu. Held here (not on the
-    /// NSView) so we can read `currentSource` for the "Always for {App}"
-    /// label without piping it through the view hierarchy.
+    /// Build the chevron popup. Held on `MeetingPromptWindow`, not the NSView, to access `currentSource` for the "Always for {App}" label without piping it through the view hierarchy.
     fileprivate func showChevronMenu(from button: NSView) {
         guard let source = currentSource else { return }
         let menu = NSMenu()
@@ -440,9 +369,7 @@ final class MeetingPromptWindow {
         }
     }
 
-    /// Pop up the override menu under the chip. Each row carries the
-    /// workflow's id as its representedObject so the delegate gets the
-    /// pick without a name-lookup round-trip.
+    /// Present the workflow override menu under the chip. Each item carries the workflow id as `representedObject`.
     fileprivate func showWorkflowMenu(from host: NSView) {
         guard let chip = workflowChip, !availableWorkflows.isEmpty else { return }
         let menu = NSMenu()
@@ -480,8 +407,7 @@ final class MeetingPromptWindow {
 
 // MARK: - Background
 
-/// Translucent rounded background. Owns the mouse-tracking that drives
-/// pause-on-hover for the dismiss progress hairline.
+/// Translucent rounded background; owns the mouse-tracking that pauses the auto-dismiss progress bar on hover.
 private final class RoundedBackgroundView: NSView {
     var cornerRadius: CGFloat = MPRadius.lg { didSet { needsLayout = true } }
     weak var host: MeetingPromptWindow?
@@ -546,8 +472,7 @@ private final class RoundedBackgroundView: NSView {
 
 // MARK: - Small chrome controls
 
-/// Round × close button. Treated as "Skip" — same outcome as the Skip menu
-/// item but in the most idiomatic spot (top-left, like Notion).
+/// Round × close button; treated as "Skip" (top-left, matching Notion's idiom).
 private final class CloseButton: NSButton {
     private var trackingArea: NSTrackingArea?
     private var isHovered = false { didSet { needsDisplay = true } }
@@ -603,8 +528,7 @@ private final class CloseButton: NSButton {
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 }
 
-/// Compact chevron-down button that hosts the secondary-actions menu.
-/// Visual: ghost-style fill + a 6×3pt chevron rendered in `fgMuted`.
+/// Compact chevron-down button hosting the secondary-actions menu.
 private final class ChevronMenuButton: NSButton {
     private var trackingArea: NSTrackingArea?
     private var isHovered = false { didSet { needsDisplay = true } }
@@ -660,9 +584,7 @@ private final class ChevronMenuButton: NSButton {
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 }
 
-/// Single-line hint label with an optional click target. Used for the
-/// subline beneath the title — either privacy text (non-clickable) or a
-/// permission-denied warning (clickable → System Settings).
+/// Single-line label with an optional click target; used for the question subline (plain) or the permission-denied warning (clickable to System Settings).
 private final class HintLabel: NSTextField {
     private var clickHandler: (() -> Void)?
 

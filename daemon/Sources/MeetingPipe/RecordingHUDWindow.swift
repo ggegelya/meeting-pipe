@@ -1,21 +1,6 @@
 import AppKit
 
-/// Floating recording-status HUD shown during `.recording`. Compact vertical
-/// pill, top-right of the screen, always-on-top. Two reasons it exists:
-///
-///   1. **Visibility** — the menu-bar icon flips to a coral dot, but that
-///      surface is easy to miss when other apps are foregrounded. The HUD
-///      makes "I am recording right now" unambiguous and at-a-glance.
-///
-///   2. **One-click stop** — the previous flow required clicking the
-///      menu-bar icon, then "Stop Recording". For a panic moment ("oh
-///      this got sensitive, kill it") that's two clicks too many. The
-///      HUD's stop button is the same gesture as Notion's record-pill
-///      stop affordance.
-///
-/// Drag-to-reposition is intentional: if the HUD covers a Zoom control or
-/// a chat avatar, the user moves it. `NSPanel.isMovableByWindowBackground`
-/// gives us that for free.
+/// Floating recording-status HUD: compact vertical pill, top-right, always-on-top. Exists because the menu-bar coral dot is easy to miss when other apps are foregrounded, and one-click stop is essential for a "this got sensitive, kill it" moment without navigating menus. Draggable via `isMovableByWindowBackground` so the user can move it off a Zoom control or chat avatar.
 protocol RecordingHUDDelegate: AnyObject {
     func recordingHUDDidRequestStop(_ hud: RecordingHUDWindow)
 }
@@ -32,11 +17,7 @@ final class RecordingHUDWindow {
     private var startedAt: Date?
 
     private static let panelWidth: CGFloat = 60
-    // 132 → 146 to fit the workflow attribution line under the elapsed
-    // timer (TECH-B9). The line is only rendered when a workflow is
-    // resolved, but the extra 14pt is allocated unconditionally so a
-    // panel transition between workflowed and un-workflowed meetings
-    // doesn't change the HUD's geometry.
+    // 132 → 146 for the workflow attribution line (TECH-B9). Allocated unconditionally so the HUD geometry doesn't shift between workflowed and un-workflowed meetings.
     private static let panelHeight: CGFloat = 146
     private static let edgeInset: CGFloat = 16
 
@@ -56,8 +37,7 @@ final class RecordingHUDWindow {
             panel.animator().alphaValue = 1
         }
 
-        // Update mm:ss every 500ms — half-second cadence is smooth without
-        // being jittery, and it costs nothing.
+        // Half-second cadence is smooth and cheap.
         ticker = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.refreshElapsedLabel()
         }
@@ -118,8 +98,7 @@ final class RecordingHUDWindow {
         bg.cornerRadius = MPRadius.lg
         bg.host = self
 
-        // Top: app glyph (24×24). Falls back to the menubar mark if the
-        // recording was started manually (no source).
+        // App glyph (24x24); falls back to the menubar mark for manual recordings (no source).
         let glyph: NSView
         if let source = source {
             let g = AppGlyphView(source: source)
@@ -135,10 +114,7 @@ final class RecordingHUDWindow {
 
         let dot = PulseDotView(frame: .zero)
         dot.translatesAutoresizingMaskIntoConstraints = false
-        // TECH-B5: tint the pulse to the workflow's color so the user
-        // can confirm-by-glance which routing is live. NDA mode keeps
-        // the recording-coral so the "this is sensitive" signal isn't
-        // diluted by a softer accent color.
+        // TECH-B5: tint the pulse dot to the workflow color. NDA mode keeps recording-coral so the "sensitive" signal isn't diluted by a softer accent.
         if let wf = workflow, !wf.flags.ndaMode,
            let color = HexColor.parse(wf.color) {
             dot.tintColor = color
@@ -154,12 +130,7 @@ final class RecordingHUDWindow {
         bg.addSubview(elapsed)
         self.elapsedLabel = elapsed
 
-        // Workflow attribution line (TECH-B9). Renders the workflow name
-        // when one is resolved and marks NDA mode with a coral suffix so
-        // the user can spot a sensitive routing at a glance. Hidden but
-        // still present in the view tree when no workflow is set, so the
-        // panel's vertical rhythm doesn't shift between workflowed and
-        // un-workflowed meetings.
+        // Workflow attribution (TECH-B9): hidden when no workflow but still in the view tree so panel height stays constant.
         let workflowLabel = HUDWorkflowLabel(workflow: workflow)
         workflowLabel.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(workflowLabel)
@@ -219,8 +190,7 @@ final class RecordingHUDWindow {
     }
 
     private static func fallbackGlyph() -> NSImage {
-        // Same waveform mark used in the menu-bar icon, drawn as a vector
-        // so it scales cleanly inside the 24×24 slot.
+        // Vector waveform mark (same as the menu-bar icon) so it scales cleanly at 24x24.
         let img = NSImage(size: NSSize(width: 24, height: 24), flipped: false) { rect in
             let s = rect.width / 18.0
             let bars: [(x: CGFloat, y: CGFloat, h: CGFloat)] = [
@@ -241,8 +211,7 @@ final class RecordingHUDWindow {
 
 // MARK: - HUD chrome
 
-/// Translucent rounded background. Same hudWindow material as the prompt
-/// panel so the two HUDs feel like the same surface family.
+/// Translucent rounded background using `hudWindow` material, matching the prompt panel.
 private final class HUDBackgroundView: NSView {
     var cornerRadius: CGFloat = MPRadius.lg { didSet { needsLayout = true } }
     weak var host: RecordingHUDWindow?
@@ -284,14 +253,11 @@ private final class HUDBackgroundView: NSView {
     @objc func didClickStop() { host?.handleStop() }
 }
 
-/// Coral pulse dot driven by a Core Animation opacity loop. The animation
-/// runs while the HUD is up and stops on dismiss so it doesn't leak past
-/// the recording lifecycle.
+/// Core Animation opacity-loop pulse dot; starts with the HUD, stops on dismiss.
 private final class PulseDotView: NSView {
     private let dot = CALayer()
 
-    /// Workflow-driven tint (TECH-B5). Defaults to recording-coral so
-    /// manual / unworkflowed recordings keep the original signal.
+    /// Workflow-driven tint (TECH-B5); defaults to recording-coral for manual/unworkflowed recordings.
     var tintColor: NSColor = MPColors.pulse600 {
         didSet { dot.backgroundColor = tintColor.cgColor }
     }
@@ -316,11 +282,7 @@ private final class PulseDotView: NSView {
     }
 
     func startPulsing() {
-        // Opacity-axis pulse (not scale): a recording-status indicator
-        // that subtly grows and shrinks reads as a UI toggle, not as a
-        // live state. Fading-in-and-out at the same physical size feels
-        // like a heartbeat, which is the right metaphor. Design doc
-        // targets a 1.6s loop (autoreverse, so 0.8s in each direction).
+        // Opacity-axis (not scale): scale growth reads as a UI toggle; opacity fade at fixed size feels like a heartbeat. 1.6 s loop (autoreverse, 0.8 s each way).
         let anim = CABasicAnimation(keyPath: "opacity")
         anim.fromValue = 1.0
         anim.toValue = 0.35
@@ -336,8 +298,7 @@ private final class PulseDotView: NSView {
     }
 }
 
-/// Round red stop button with hover/press affordances. The square fill
-/// inside is centered and slightly inset, matching iOS-style record stops.
+/// Round stop button with hover/press affordances; inset square fill matches iOS-style record stops.
 private final class StopButton: NSButton {
     private var trackingArea: NSTrackingArea?
     private var isHovered = false { didSet { needsDisplay = true } }
@@ -390,10 +351,7 @@ private final class StopButton: NSButton {
     }
 }
 
-/// Single-line workflow attribution on the recording HUD (TECH-B9).
-/// Truncates tail-side; NDA mode appends a coral "NDA" suffix so the
-/// user can spot a sensitive routing before they say something they'd
-/// regret hearing back in a non-NDA summary.
+/// Workflow attribution label (TECH-B9). NDA mode appends a coral "NDA" suffix so the user can spot a sensitive routing before saying something they'd regret in a non-NDA summary.
 private final class HUDWorkflowLabel: NSView {
     private let nameLabel = NSTextField(labelWithString: "")
     private let ndaLabel = NSTextField(labelWithString: "NDA")

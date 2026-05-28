@@ -1,31 +1,18 @@
 import AppKit
 import SwiftUI
 
-/// Workflow editor / wizard. Hosted from the Library's rail (`+ New
-/// workflow`), toolbar (`Edit workflow` when a workflow scope is
-/// selected), and inspector pane — all of which present it as a sheet.
-/// The same surface drives create and edit because the form is already
-/// the wizard.
-///
-/// The list-column / detail-column shell that previously hosted this
-/// editor lived under a "Workflows" top-level sidebar tab. That tab was
-/// dropped when workflows became rail scopes; only the editor itself
-/// survives, modal-first.
+/// Workflow editor / wizard, presented as a sheet from the rail, toolbar, or inspector. Drives both create and edit; the old "Workflows" sidebar tab was dropped when workflows became rail scopes.
 
 // MARK: - Editor (TECH-B7 wizard surface)
 
-/// One row in the sinks checklist. Per-sink config (Notion DB id) lives
-/// inline so the user doesn't need to descend into a sub-sheet to wire
-/// up a workflow's destination.
+/// Flat representation of the sinks checkboxes; per-sink config (Notion DB id) lives inline to avoid a sub-sheet.
 private struct SinkSelection: Equatable {
     var notionEnabled: Bool = false
     var notionDatabaseID: String = ""
     var obsidianEnabled: Bool = false
     var filesystemEnabled: Bool = false
 
-    /// Reconstruct the typed array `Workflow.sinks` consumes from the
-    /// checkbox state. Order follows the form's row order so the
-    /// pipeline's fanout runs Notion → Obsidian → Filesystem.
+    /// Rebuild `Workflow.sinks` from checkbox state; order matches the form rows (Notion, Obsidian, Filesystem).
     func toWorkflowSinks() -> [WorkflowSink] {
         var out: [WorkflowSink] = []
         if notionEnabled { out.append(.notion(databaseId: notionDatabaseID)) }
@@ -51,17 +38,11 @@ private struct SinkSelection: Equatable {
     }
 }
 
-/// Full workflow editor / wizard. Same surface drives "New workflow"
-/// (after the list inserts a stub and routes here) and "edit existing
-/// workflow" — there's no separate modal because the inline form is
-/// already the form the wizard would render.
+/// Full workflow editor, shared between create and edit paths.
 struct WorkflowEditor: View {
     let workflow: Workflow
     @ObservedObject var store: WorkflowStore
-    /// Per-workflow Notion DB dropdown source (TECH-B8). Held at the
-    /// editor level so the picker is populated whenever the user opens
-    /// the workflows tab, not just when they explicitly toggle Notion
-    /// on; refresh runs once per editor instance.
+    /// Notion DB list for the picker (TECH-B8). Held at editor level so the picker is populated on open, not only when Notion is toggled on.
     @StateObject private var notionDBs = NotionDatabaseList()
 
     @State private var name: String = ""
@@ -229,13 +210,7 @@ struct WorkflowEditor: View {
         }
     }
 
-    /// Per-workflow Notion DB picker (TECH-B8). Three modes:
-    ///   - Cache populated → segmented row with a Picker over the
-    ///     cached entries plus a "Refresh" affordance.
-    ///   - Cache empty + not loading → "Fetch databases" button + raw
-    ///     TextField fallback so the user can still paste an id by
-    ///     hand even before the first sync.
-    ///   - Loading / failed → status row alongside the same fallback.
+    /// Notion DB picker (TECH-B8). Three states: populated cache shows a Picker + Refresh; empty cache shows a "Fetch databases" button + raw TextField fallback; loading/failed shows a status row alongside the fallback.
     @ViewBuilder
     private var notionDBPicker: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -245,12 +220,7 @@ struct WorkflowEditor: View {
                     ForEach(notionDBs.entries) { db in
                         Text(db.title).tag(db.id)
                     }
-                    // Preserve a manually-pasted id that isn't in the
-                    // cache yet (e.g. a freshly-created DB the user
-                    // wants to point at before refreshing). Without
-                    // this clause, SwiftUI's Picker silently snaps the
-                    // selection back to (none) and the user's input
-                    // would vanish on the next render.
+                    // Preserve a manually-pasted id not yet in the cache; without this clause SwiftUI's Picker silently snaps the selection to (none) and the user's input vanishes on the next render.
                     if !sinks.notionDatabaseID.isEmpty,
                        !notionDBs.entries.contains(where: { $0.id == sinks.notionDatabaseID }) {
                         Text("Custom · \(sinks.notionDatabaseID.prefix(8))…")
