@@ -19,9 +19,7 @@ enum Log {
         return dir
     }
 
-    /// Append-only line writer for permanent records. os.Logger goes to the unified
-    /// log; this writes a tail-able file matching SPEC §9 ("logs all events to
-    /// ~/Library/Logs/MeetingPipe/<category>.log").
+    /// Append-only tail-able log file per SPEC §9. os.Logger goes to the unified log; this writes ~/Library/Logs/MeetingPipe/<category>.log.
     static func writeLine(_ category: String, _ message: String) {
         let url = logsDir.appendingPathComponent("\(category).log")
         let line = "[\(isoFormatter.string(from: Date()))] \(message)\n"
@@ -29,14 +27,7 @@ enum Log {
         appendData(data, to: url)
     }
 
-    /// Structured event log. One JSON object per line in `events.jsonl`,
-    /// alongside the human-readable text logs. The text logs stay tailable
-    /// for live debugging; JSONL is for grepping with `jq` after the fact.
-    ///
-    /// Attribute values must be JSON-serializable (String, Bool, Int,
-    /// Double, Array, Dictionary, or NSNull). A non-serializable value
-    /// drops the event silently rather than crashing the daemon: an event
-    /// log going dark is preferable to a meeting going unrecorded.
+    /// Write one JSON object per line to `events.jsonl` for `jq`-based post-hoc analysis. A non-serializable attribute value drops the event silently rather than crashing the daemon.
     static func event(
         category: String,
         action: String,

@@ -1,11 +1,6 @@
 import Foundation
 
-/// Daemon-side identifiers and external paths.
-///
-/// External API URLs (Notion / Anthropic / HuggingFace) live on the pipeline
-/// side because the daemon never calls them — it spawns `mp` subprocesses
-/// instead. This file collects the daemon-only constants so a rename or
-/// path change is a one-file edit.
+/// Daemon-side identifiers and paths. External API URLs live in the pipeline (the daemon spawns `mp` subprocesses instead of calling them directly).
 enum Endpoints {
     /// CFBundleIdentifier; matches `scripts/install.sh` Info.plist + LaunchAgent label.
     static let bundleID = "com.meetingpipe.daemon"
@@ -17,9 +12,7 @@ enum Endpoints {
     /// `subsystem` used by every `os_log` channel in `Logger.swift`.
     static let logSubsystem = bundleID
 
-    /// Where the LaunchAgent lives, relative to the user's home dir.
-    /// Single source of truth used by both install.sh's heredoc and the
-    /// daemon's `mp doctor` cross-reference.
+    /// LaunchAgent label: single source of truth for install.sh and `mp doctor`.
     static let launchAgentLabel = bundleID
 
     /// On-disk locations the daemon (and pipeline) read/write.

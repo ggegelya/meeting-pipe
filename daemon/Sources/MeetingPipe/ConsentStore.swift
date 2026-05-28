@@ -1,13 +1,11 @@
 import Foundation
 
-/// Persistent "Always for {App}" choices. Spec §3 stores in
-/// ~/Library/Application Support/MeetingPipe/auto_consent.json.
+/// Persistent "Always for {App}" consent store (Spec §3), backed by ~/Library/Application Support/MeetingPipe/auto_consent.json.
 final class ConsentStore {
     private let url: URL
     private var bundles: Set<String>
 
-    /// `customURL` is for testing. Production calls `init()` and lands at
-    /// ~/Library/Application Support/MeetingPipe/auto_consent.json.
+    /// `customURL` overrides the storage path for testing.
     init(url customURL: URL? = nil) {
         if let customURL = customURL {
             self.url = customURL

@@ -5,9 +5,7 @@ import Combine
 final class App {
     static func main() {
         Secrets.loadIfPresent()
-        // CLI subcommands intercept before NSApplication boots so the
-        // menu-bar surface and LaunchAgent path stay separate from
-        // one-shot diagnostic invocations.
+        // CLI subcommands intercept before NSApplication boots so the menu-bar path stays separate from one-shot diagnostic runs.
         let args = CommandLine.arguments
         if args.count > 1, args[1] == "doctor" {
             exit(DoctorCommand.run())
@@ -35,23 +33,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.main.info("MeetingPipe starting")
 
-        // Tag a launch whose cdhash differs from the previous launch
-        // before any other event lands, so dogfood analysis can exclude
-        // the re-grant churn that follows each `--reset-tcc` cycle.
+        // Tag a rebuild-triggered launch before any other event, so dogfood analysis can exclude the TCC re-grant churn that follows each `--reset-tcc` cycle.
         RebuildTagger.runOnce()
 
-        // Apply the user's theme override before any window is created
-        // so the first paint already matches their choice (otherwise the
-        // Library/Preferences windows briefly flash the system
-        // appearance). The recording HUD + prompt panel also read
-        // `NSApp.effectiveAppearance`, so this propagates everywhere.
+        // Apply theme before any window is created so the first paint matches the user's choice. Library, Preferences, HUD, and prompt panel all read NSApp.effectiveAppearance.
         UISettings.shared.applyTheme()
 
-        // Verbose logging is plumbed at startup: log its state to the
-        // unified log so the user can grep for it, and export
-        // `MP_VERBOSE=1` so spawned pipeline subprocesses pick it up via
-        // env without us threading another argv flag through. Toggling
-        // requires a daemon restart to flip the env for new subprocesses.
+        // Export MP_VERBOSE=1 so pipeline subprocesses inherit it without a separate argv flag. Toggling requires a daemon restart to update the env for future spawns.
         if UISettings.shared.verboseLogging {
             Log.main.info("verbose logging: ON")
             setenv("MP_VERBOSE", "1", 1)
@@ -68,9 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             config = Config.defaultFallback()
         }
 
-        // ConfigStore powers the Preferences UI. Failure to read isn't
-        // fatal — the daemon keeps running with the in-memory `config`,
-        // and the user just sees a less-friendly menu.
+        // ConfigStore powers the Preferences UI. Failure is non-fatal; the daemon runs with the in-memory config.
         let store: ConfigStore?
         do {
             store = try ConfigStore()
@@ -80,18 +66,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         self.configStore = store
 
-        // SecretsStore is unfailing: a missing secrets.env is a normal
-        // first-run state, not an error — the file will be created by
-        // the first save from Preferences (with mode 0600).
+        // SecretsStore is unfailing: a missing secrets.env is normal on first run; the file is created (mode 0600) on the first Preferences save.
         let secrets = SecretsStore()
         self.secretsStore = secrets
 
-        // When the user edits secrets via Preferences, mirror the new
-        // values into the daemon's process env immediately so any
-        // future spawn picks them up. PipelineLauncher.freshEnvironment
-        // re-reads the file at spawn time too, but the env mirror is
-        // important for fields the daemon reads directly (none today,
-        // but the contract is clearer this way).
+        // Mirror secrets into process env on each Preferences save so future spawns pick them up immediately. PipelineLauncher.freshEnvironment also re-reads at spawn time; the env mirror keeps the contract explicit.
         self.secretsCancellable = secrets.didPersist.sink { [weak secrets] in
             guard let s = secrets else { return }
             setenv("ANTHROPIC_API_KEY", s.anthropicAPIKey, 1)
@@ -101,11 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusBar = StatusBarController(item: statusItem)
 
-        // Wire the coordinator into the status bar BEFORE setIdle() so the
-        // initial menu build sees a non-nil target. NSMenu auto-disables
-        // items whose target is nil (Cocoa menu validation), which would
-        // otherwise leave Start Recording / Open … greyed out until the
-        // next state change rebuilt the menu.
+        // Wire coordinator into the status bar BEFORE setIdle(): NSMenu auto-disables items with a nil target (Cocoa menu validation), which would leave Start Recording / Open greyed out until the next state change.
         coordinator = Coordinator(
             config: config,
             statusBar: statusBar,
@@ -116,10 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBar.setIdle()
         coordinator.start()  // requests notification authorization via Notifier
 
-        // Pre-warm the Screen Recording TCC check ONCE at startup, not on
-        // every Start Recording click. Without this prewarm, each recording
-        // start would call SCShareableContent again, which re-prompts on
-        // any binary whose signature TCC hasn't seen before.
+        // Pre-warm the Screen Recording TCC check once at startup. Without this, each recording start calls SCShareableContent and re-prompts whenever TCC hasn't seen the binary's signature.
         Task.detached {
             await SystemAudioCapture.prewarm()
         }

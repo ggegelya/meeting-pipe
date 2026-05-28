@@ -1,67 +1,30 @@
 import Foundation
 import TOMLKit
 
-/// Mirrors config.example.toml. Loaded once at startup; mutations don't propagate.
-///
-/// The capture stack (system audio + mic) is fully auto-detected since the
-/// rewrite to ScreenCaptureKit + AVAudioEngine. There are no audio-device
-/// fields here anymore — SCStream taps the system bus regardless of output
-/// device, and AVAudioEngine.inputNode follows the system default input.
+/// Mirrors config.example.toml. Loaded once at startup; mutations don't propagate. No audio-device fields: SCStream taps the system bus regardless of output device; AVAudioEngine.inputNode follows the system default input.
 struct Config {
     struct Recording {
         var outputDir: URL
         var sampleRate: Int
         var autoConsentApps: [String]
-        /// Enable `AVAudioInputNode.setVoiceProcessingEnabled(true)` on
-        /// the mic capture path. Turns on Apple's built-in VoIP DSP:
-        /// noise suppression (the same ML model that backs the system
-        /// "Voice Isolation" mic mode), echo cancellation, and AGC.
-        /// Removes the typing / keyboard / fan / room ambient that the
-        /// raw mic otherwise captures, at the cost of AGC flattening
-        /// dynamic range and the path being mono-only. Default true
-        /// because a meeting recorder is fundamentally a voice-chat
-        /// use case; flip to false in `config.toml` if you'd rather
-        /// have raw audio.
+        /// `AVAudioInputNode.setVoiceProcessingEnabled(true)`: Apple VoIP DSP (noise suppression, echo cancellation, AGC), mono only. Costs dynamic range. Default false - see load() comment.
         var voiceProcessing: Bool
-        /// When true, the recorder pauses mic capture while the user
-        /// is muted in the active meeting client (Teams / Zoom /
-        /// Slack). Detected via Accessibility on the meeting window
-        /// the recording was attributed to — best-effort, so if AX is
-        /// denied or the client's mute control isn't recognised we
-        /// keep recording (current behaviour). Default true because
-        /// the mic-tap-bypasses-app-mute surprise is widely reported.
+        /// Pause mic capture while the user is muted in the meeting client (AX probe, best-effort). Falls back to recording when AX is denied or the mute control is unrecognized.
         var honorAppMute: Bool
     }
 
     struct Detection {
         var debounceStartSec: Double
         var debounceEndSec: Double
-        /// Per-bundle overrides for `debounceEndSec`. Looked up by
-        /// `AppSource.bundleID` at end-debounce arming time. Browser
-        /// sources without an explicit entry fall back to a built-in
-        /// 12-second default (TECH-C4) because tab/window state flickers
-        /// during a call; native apps default to the global value.
+        /// Per-bundle overrides for `debounceEndSec` (TECH-C4). Browser sources without an entry fall back to a built-in 12 s default because tab/window state flickers during a call; native apps use the global value.
         var debounceEndPerBundle: [String: Double]
         var manualHotkey: String
-        /// Stop-only hotkey (TECH-C5). Distinct from `manualHotkey` so
-        /// the user can muscle-memory "stop the recording right now"
-        /// without ever risking a fresh recording start the way the
-        /// toggle hotkey would when the daemon is idle. Default
-        /// `ctrl+option+shift+m`.
+        /// Stop-only hotkey (TECH-C5). Distinct from `manualHotkey` so the user can force-stop without risking an accidental new recording start when the daemon is idle. Default `ctrl+option+shift+m`.
         var forceStopHotkey: String
         var promptTimeoutSec: Double
-        /// After a recording for a bundle ends (or its prompt is
-        /// skipped/timed out), suppress fresh detector-driven prompts
-        /// for the same bundle for this many seconds. Catches the
-        /// "Teams chat surface briefly re-acquires the mic right after
-        /// the call ends and triggers a new prompt" case. The manual
-        /// hotkey always bypasses the cooldown so the user can force a
-        /// fresh recording in the same app at any time.
+        /// Suppress detector-driven prompts for a bundle for this many seconds after a recording/prompt ends. Guards against the Teams post-call mic re-acquisition that fires a spurious new prompt. Manual hotkey always bypasses.
         var repromptCooldownSec: Double
-        /// Window (seconds) for the MicOnlySilenceBackstop (TECH-C7).
-        /// Force-stops a recording after this many seconds of pure
-        /// mic-side silence while the system-audio side is also
-        /// silent. Default 480 (8 minutes).
+        /// MicOnlySilenceBackstop window (TECH-C7): force-stop after this many seconds of combined mic + system-audio silence. Default 480 s.
         var micOnlySilenceSec: TimeInterval
     }
 
@@ -94,11 +57,7 @@ struct Config {
         let outputDirRaw = rec?["output_dir"]?.string ?? "~/Documents/Meetings/raw"
         let sampleRate = rec?["sample_rate"]?.int ?? 16000
         let consent = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string }) ?? []
-        // Default OFF — VPIO's AGC degrades the HAL device's gain
-        // system-wide while the engine is running, so every other app
-        // that shares the mic (Teams, Zoom, FaceTime) hears the user
-        // as extremely quiet for the duration of the recording. Opt in
-        // via TOML when the recording happens in isolation.
+        // Default OFF: VPIO's AGC degrades the HAL device gain system-wide while the engine is running, so other mic users (Teams, Zoom, FaceTime) hear the user as extremely quiet. Opt in via TOML when recording in isolation.
         let voiceProcessing = rec?["voice_processing"]?.bool ?? false
         let honorAppMute = rec?["honor_app_mute"]?.bool ?? true
 
@@ -108,21 +67,14 @@ struct Config {
         let forceStop = det?["force_stop_hotkey"]?.string ?? "ctrl+option+shift+m"
         let promptTimeout = det?["prompt_timeout_sec"]?.double ?? 30
         let repromptCooldown = det?["reprompt_cooldown_sec"]?.double ?? 60
-        // Accept both integer and double TOML literals so `= 120` and
-        // `= 120.0` both parse; the other detection knobs above only
-        // accept .double because their TOML defaults are written as
-        // doubles.
+        // Accept both integer and double TOML literals (`= 120` and `= 120.0`); other detection knobs are doubles-only because their TOML defaults are written as doubles.
         let micOnlySilenceSec: Double = {
             if let d = det?["mic_only_silence_seconds"]?.double { return d }
             if let i = det?["mic_only_silence_seconds"]?.int { return Double(i) }
             return 480
         }()
 
-        // Optional `[detection.debounce_end_per_bundle]` sub-table:
-        //   "us.zoom.xos" = 7
-        //   "com.google.Chrome" = 15
-        // Keys are bundle IDs; values are seconds. Non-numeric entries
-        // are skipped silently so a typo in one row doesn't kill all.
+        // Optional `[detection.debounce_end_per_bundle]` sub-table: bundle ID -> seconds. Non-numeric entries are skipped silently.
         var debounceEndPerBundle: [String: Double] = [:]
         if let overrides = det?["debounce_end_per_bundle"]?.table {
             for (key, value) in overrides {
@@ -188,9 +140,7 @@ struct Config {
     }
 }
 
-/// Reads ~/.config/meeting-pipe/secrets.env (KEY=VALUE per line) into the process env.
-/// Daemon needs ANTHROPIC_API_KEY / NOTION_TOKEN / HF_TOKEN exported when it spawns
-/// the pipeline subprocess.
+/// Reads ~/.config/meeting-pipe/secrets.env (KEY=VALUE per line) into the process env so pipeline subprocesses inherit ANTHROPIC_API_KEY / NOTION_TOKEN / HF_TOKEN.
 enum Secrets {
     static func loadIfPresent() {
         let url = Config.secretsPath

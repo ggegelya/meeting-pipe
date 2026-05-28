@@ -28,11 +28,8 @@ final class ConfigRefreshCoordinator {
     }
 
     static func prefetchDecision(backend: String, modelId: String) -> PrefetchAction {
-        // Only local/auto backends load a local model; anything else
-        // (anthropic) wants the in-flight prefetch cancelled and the UI
-        // reset to idle.
+        // Non-local/auto backends (e.g. anthropic) cancel any in-flight prefetch.
         guard backend == "local" || backend == "auto" else { return .cancelAndIdle }
-        // Local/auto with no model id configured: nothing to prefetch.
         guard !modelId.isEmpty else { return .noop }
         return .ensure(modelId: modelId)
     }
@@ -59,20 +56,15 @@ final class ConfigRefreshCoordinator {
     /// and an eager prefetch, then subscribe to config persistence. Call
     /// once from `Coordinator.start()`.
     func start() {
-        // Status-bar reflects the model-download state. Wired once so we
-        // don't re-subscribe when the supervisor restarts.
+        // Wired once so we don't re-subscribe if the supervisor restarts.
         modelDownload.onStateChange = { [weak self] state in
             self?.onModelDownloadState(state)
         }
-        // Seed the regulated-mode glyph so the lock (if enabled) shows
-        // from boot rather than only after the first config save.
+        // Seed glyph at boot so the lock icon shows before the first config save.
         onRegulatedMode(configStore?.regulatedMode ?? false)
-        // Eager prefetch on launch when already in local/auto mode. No-op
-        // for backend=anthropic (the typical first-time install).
+        // Eager prefetch on launch; no-op for backend=anthropic (typical first install).
         ensureModelPrefetchIfNeeded()
-        // Refresh affected components when the user saves Preferences.
-        // ConfigStore already debounces 500 ms so rebuilds don't pile up
-        // while a slider is dragged.
+        // ConfigStore already debounces 500 ms, so rebuilds don't pile up while a slider is dragged.
         configCancellable = configStore?.didPersist
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.handleConfigPersisted() }
@@ -83,10 +75,7 @@ final class ConfigRefreshCoordinator {
         onRegulatedMode(configStore?.regulatedMode ?? false)
     }
 
-    /// Spawn (or skip) a background `mp prefetch-model` for the configured
-    /// local model. Idempotent and safe to call from any config-change
-    /// path; the supervisor short-circuits when the model is already
-    /// cached or already downloading.
+    /// Spawn (or skip) a background `mp prefetch-model`. Idempotent; the supervisor short-circuits when the model is already cached or downloading.
     func ensureModelPrefetchIfNeeded() {
         guard let store = configStore else { return }
         switch Self.prefetchDecision(

@@ -1,22 +1,6 @@
 import Foundation
 
-/// Routes pipeline-job lifecycle back to the user-facing surfaces. Wraps
-/// the `SinkDispatcher` queue, owning the per-job completion routing
-/// (success -> done notification, failure -> error banner) and the
-/// queue-depth surface (status-bar processing badge).
-///
-/// Lifted out of `Coordinator` (TECH-H1-FINISH): the `onJobCompleted`
-/// and `onQueueDepthChanged` closures used to live inline on the
-/// orchestrator. The side effects are injected as closures rather than a
-/// direct Notifier/StatusBarController reference, so the routing is
-/// testable without those concrete types. The `SinkDispatcher` is owned
-/// by the caller and handed in so its construction (and the
-/// `transcription.engine_resolved` log it triggers via the runner) keeps
-/// its original startup timing.
-///
-/// Threading: matches `SinkDispatcher` - every entry point runs on the
-/// main queue, and per-job completion is dispatched back onto main by the
-/// underlying dispatcher.
+/// Routes pipeline-job lifecycle to user-facing surfaces (TECH-H1-FINISH). Wraps `SinkDispatcher` and owns completion routing (done notification, error banner) and queue-depth surface. Side effects are injected as closures for testability. `SinkDispatcher` is owned by the caller so `transcription.engine_resolved` keeps its original startup timing. Threading: main queue; per-job completion dispatched back onto main by the underlying dispatcher.
 final class PipelineJobDispatcher {
 
     private let sinkDispatcher: SinkDispatcher
@@ -47,7 +31,6 @@ final class PipelineJobDispatcher {
         sinkDispatcher.enqueue(file: file, summaryMode: summaryMode)
     }
 
-    /// Current queue depth, for surfaces that read without subscribing.
     var queueDepth: Int { sinkDispatcher.queueDepth }
 
     private func route(job: ProcessingJob, result: Result<URL?, Error>) {

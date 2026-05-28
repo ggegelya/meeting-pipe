@@ -1,23 +1,12 @@
 import Foundation
 
-/// Origin of the meeting detection. The window-probe end signal needs to
-/// branch on this — native apps and browser tabs require different
-/// heuristics (English meeting-word match vs. meeting URL fragment match).
+/// Origin of the meeting detection. End-detection probes branch on this: native apps use meeting-word matching, browsers use URL fragment matching.
 enum AppSourceKind: Equatable, Hashable {
     case native
     case browser
 }
 
-/// What detected the meeting. Used for "Always for {AppName}" consent
-/// and for selecting the right end-detection probe.
-///
-/// `meetingTitle` is best-effort metadata: the human-readable name the
-/// source app shows for the call (e.g. a Zoom topic, a Calendar event
-/// behind a Google Meet, a Slack huddle channel). Excluded from
-/// `Equatable` and `Hashable` because the title can shift mid-call
-/// (Teams chrome, screen-share titles), and identity-based comparisons
-/// in the state machine ("did the user click Record on this source?")
-/// must stay stable across those transient title flips.
+/// What detected the meeting - used for "Always for {AppName}" consent and end-detection probe selection. `meetingTitle` is excluded from `Equatable`/`Hashable` because it can shift mid-call (Teams chrome, screen-share titles); identity comparisons in the state machine must stay stable across those transient flips.
 struct AppSource: Hashable {
     let bundleID: String
     let displayName: String
@@ -49,24 +38,13 @@ struct AppSource: Hashable {
     }
 }
 
-/// How the post-recording summary should be produced.
-///
-///   - `.auto`: pipeline calls Anthropic and publishes to Notion (default).
-///   - `.byo`: pipeline writes the manual-paste bundle and stops. The user
-///     hand-summarises in their preferred LLM frontend, saves the result
-///     as `<stem>.summary.md`, and runs `mp publish-from-paste`. Useful
-///     for sensitive meetings (don't send transcript to a third-party
-///     API) or when the user wants editorial control over the summary.
+/// How the post-recording summary is produced. `.auto`: Anthropic + Notion publish. `.byo`: writes manual-paste bundle only; user hand-summarizes, saves `<stem>.summary.md`, and runs `mp publish-from-paste`.
 enum SummaryMode: Equatable {
     case auto
     case byo
 }
 
-/// Recording-side state machine. Pipeline processing used to live as a
-/// `.handoff` case here, which blocked the daemon from recording a new
-/// meeting while the previous one was still being transcribed. Pipeline
-/// jobs now live in a separate queue (see `ProcessingJob`) and run
-/// concurrently with whatever recording state we're in.
+/// Recording-side state machine. Pipeline jobs run in a separate queue (`ProcessingJob`) so a new recording can start while a prior one is still being transcribed.
 enum AppState: Equatable {
     case idle
     case prompting(source: AppSource)
@@ -84,10 +62,7 @@ enum AppState: Equatable {
     }
 }
 
-/// One unit of background pipeline work. Created when a recording
-/// finishes flushing and queued for sequential processing — running two
-/// whisper.cpp transcriptions in parallel would just thrash the CPU.
-/// The recording side of the daemon is unaffected by the queue depth.
+/// One unit of background pipeline work. Queued sequentially (two concurrent whisper.cpp runs would thrash the CPU). Recording is unaffected by queue depth.
 struct ProcessingJob: Equatable {
     let id: UUID
     let file: URL

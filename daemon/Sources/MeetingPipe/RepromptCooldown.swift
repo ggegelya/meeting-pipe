@@ -1,36 +1,15 @@
 import Foundation
 
-/// Per-bundle re-prompt suppression. Pure value type so the Coordinator
-/// can keep its end-of-recording / skip / timeout bookkeeping in one
-/// place and tests can drive it without spinning up an entire
-/// state-machine fake.
-///
-/// Motivation: when a Teams call ends, Teams keeps the chat surface
-/// open. The post-call window briefly re-acquires the microphone
-/// (audio session shutdown lag, camera-preview, etc.) and the detector
-/// fires a fresh `.started` event within seconds of the previous end.
-/// Without this gate the user sees a "Record this meeting?" prompt for
-/// a meeting they just finished — and the events log even captures one
-/// such regression at 17:25:40 right after a 17:25:37 stop.
-///
-/// The gate is bundle-scoped and time-bounded. A meeting in a genuinely
-/// new app still prompts immediately; a meeting in the same app after
-/// the cooldown expires also prompts. The manual hotkey explicitly
-/// clears the entry so the user can override at any time.
+/// Per-bundle re-prompt suppression. Pure value type; tests can drive it without a full state-machine fake. Guards against Teams post-call mic re-acquisition: the chat surface briefly re-acquires the mic after a call ends and fires a spurious `.started` event within seconds (events log captured a regression at 17:25:40 right after a 17:25:37 stop). Gate is bundle-scoped and time-bounded; manual hotkey clears the entry.
 struct RepromptCooldown {
     private var lastEnd: [String: Date] = [:]
 
-    /// Note that a recording / prompt for `bundleID` just terminated.
-    /// Called from `stopRecording` flush completion, `user_skipped`,
-    /// and prompt-timeout-into-suppressed transitions.
+    /// Record that a recording or prompt for `bundleID` just terminated. Called from flush completion, `user_skipped`, and prompt-timeout transitions.
     mutating func recordEnd(bundleID: String, at: Date = Date()) {
         lastEnd[bundleID] = at
     }
 
-    /// Drop the entry — used when the user explicitly initiates a
-    /// fresh recording (manual hotkey, "Always for {App}" consent)
-    /// so the next detector-driven detection isn't suppressed by a
-    /// stale end timestamp.
+    /// Drop the entry so a manual-hotkey or "Always for {App}" start isn't blocked by a stale end timestamp.
     mutating func clear(bundleID: String) {
         lastEnd.removeValue(forKey: bundleID)
     }

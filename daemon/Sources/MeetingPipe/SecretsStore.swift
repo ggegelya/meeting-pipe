@@ -1,18 +1,7 @@
 import Combine
 import Foundation
 
-/// Observable wrapper around `~/.config/meeting-pipe/secrets.env`.
-///
-/// Mirrors the role `ConfigStore` plays for `config.toml`, but for the
-/// shell-style KEY=VALUE secrets file. The Preferences UI binds to the
-/// published values; persistence is debounced and atomic and preserves
-/// any keys the UI doesn't model (other env entries, comments).
-///
-/// File mode is enforced as 0600 on every write — the file holds API
-/// keys; if the user runs this on a multi-user box, world-readable
-/// secrets would be a real leak. We don't `chmod` after write; we
-/// ensure the temp file is mode 0600 before the atomic replace, so the
-/// final file inherits the right perms.
+/// Observable wrapper around `~/.config/meeting-pipe/secrets.env`. Preferences UI binds to published values; persistence is debounced, atomic, and preserves keys the UI doesn't model. Mode 0600 is enforced on the temp file before the atomic replace so the final file is never visible world-readable, even momentarily.
 final class SecretsStore: ObservableObject {
     private let secretsURL: URL
     private let writeQueue = DispatchQueue(label: "com.meetingpipe.secretsstore.write", qos: .utility)
@@ -21,19 +10,13 @@ final class SecretsStore: ObservableObject {
     @Published var anthropicAPIKey: String { didSet { scheduleSave() } }
     @Published var notionToken: String { didSet { scheduleSave() } }
 
-    /// Notification fired after a successful disk write — the daemon's
-    /// pipeline launcher re-reads `secrets.env` per-spawn so new values
-    /// take effect on the next recording. Listeners can also nudge any
-    /// in-memory caches.
+    /// Fired after a successful disk write. The pipeline launcher re-reads `secrets.env` per-spawn; listeners can also nudge in-memory caches.
     let didPersist = PassthroughSubject<Void, Never>()
 
     private var saveTimer: Timer?
     private var isInitialized: Bool = false
 
-    /// The full set of lines we read from disk, in order. We mutate the
-    /// values for keys we model and leave everything else (comments,
-    /// foreign keys) untouched. This is the secrets-side equivalent of
-    /// ConfigStore's preserve-unknown-keys behavior.
+    /// Lines read from disk, in order. Modeled keys are updated in-place; comments and unmodeled keys are left untouched (same round-trip contract as ConfigStore).
     private var rawLines: [String] = []
 
     init(secretsURL: URL = Config.secretsPath) {
@@ -74,9 +57,7 @@ final class SecretsStore: ObservableObject {
         }
     }
 
-    /// Project the published values back into `rawLines`, replacing or
-    /// appending the relevant `KEY=VALUE` lines. Visible to tests so
-    /// they can check the round-trip without disk I/O.
+    /// Project published values back into `rawLines` (upsert KEY=VALUE). Visible to tests for round-trip verification without disk I/O.
     func writeBack() {
         rawLines = Self.upsert(lines: rawLines, key: "ANTHROPIC_API_KEY", value: anthropicAPIKey)
         rawLines = Self.upsert(lines: rawLines, key: "NOTION_TOKEN", value: notionToken)
@@ -84,15 +65,11 @@ final class SecretsStore: ObservableObject {
 
     private func persistToDisk() throws {
         let body = rawLines.joined(separator: "\n")
-        // Ensure the file ends with a newline — POSIX text-file convention,
-        // and `set -a; . secrets.env; set +a` is happier with it.
+        // Ensure the file ends with a newline (POSIX convention; `set -a; . secrets.env; set +a` requires it).
         let normalized = body.hasSuffix("\n") ? body : body + "\n"
         let dir = secretsURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let tmp = secretsURL.appendingPathExtension("writing")
-        // Write the temp file with mode 0600 BEFORE the atomic replace
-        // so the final file is never visible to other users on the
-        // system, even momentarily.
         try normalized.data(using: .utf8)?.write(to: tmp, options: .atomic)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
@@ -103,9 +80,7 @@ final class SecretsStore: ObservableObject {
         } else {
             try FileManager.default.moveItem(at: tmp, to: secretsURL)
         }
-        // Belt-and-suspenders: replaceItemAt preserves the destination's
-        // existing perms, so if the file was created earlier with the
-        // wrong mode (e.g. by hand), force 0600 here too.
+        // replaceItemAt preserves the destination's existing perms, so force 0600 again in case the file was created with the wrong mode (e.g. by hand).
         try? FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
             ofItemAtPath: secretsURL.path
@@ -135,8 +110,7 @@ final class SecretsStore: ObservableObject {
         return out
     }
 
-    /// Replace the first KEY= line with the new value, or append a new
-    /// line at the end. Comments and other keys are left untouched.
+    /// Replace the first KEY= line with the new value, or append. Comments and other keys are left untouched.
     static func upsert(lines: [String], key: String, value: String) -> [String] {
         var copy = lines
         let prefix = "\(key)="

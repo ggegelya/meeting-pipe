@@ -1,33 +1,9 @@
 import Foundation
 
-/// Owns the recording-side state machine that drives every transition
-/// in the Coordinator.
-///
-/// The states map to the four meaningful phases the prior monolith
-/// inlined as setters on `Coordinator.state`:
-///
-///   - `.idle` — nothing in flight; the next detector start can prompt.
-///   - `.prompting` / `.suppressed` — a meeting was detected and the
-///     user is either being asked, or has skipped. Both phases share the
-///     "armed" semantics: the detector locked on, the recorder is not
-///     running yet, a prompt-timeout timer may be alive.
-///   - `.recording` — the recorder is holding the input device and
-///     writing buffers.
-///   - `.stopping` — the recorder is flushing; no new actions accepted
-///     briefly.
-///
-/// "Cooling" is owned by the embedded `RepromptCooldown`: a per-bundle
-/// post-end suppression window. The state machine exposes it through a
-/// small facade so the Coordinator's prompt-handling code doesn't reach
-/// into a second collaborator.
-///
-/// Threading: every entry point must run on the main queue. The prompt
-/// timeout timer fires there too, and `onIdleTransition` is dispatched
-/// inline from the state setter's `didSet`.
+/// Recording-side state machine lifted out of `Coordinator`. States: `.idle`, `.prompting`/`.suppressed` (detector locked on, recorder not yet running), `.recording`, `.stopping` (flushing). Embeds `RepromptCooldown` and exposes it via a facade. Threading: main queue only; `onIdleTransition` fires inline from the `current` `didSet`.
 final class DetectionStateMachine {
 
-    /// Fires once per transition to `.idle`. The Coordinator uses this
-    /// to apply config refreshes that were deferred mid-recording.
+    /// Fires on every transition to `.idle`. Used by the Coordinator to apply config refreshes deferred during a recording.
     var onIdleTransition: (() -> Void)?
 
     private(set) var current: AppState = .idle {
@@ -41,9 +17,6 @@ final class DetectionStateMachine {
         }
     }
 
-    /// True iff a detector `.started` event should be acted on. Mirrors
-    /// `AppState.isAcceptingPrompts` so callers don't have to switch on
-    /// the case directly.
     var isAcceptingPrompts: Bool { current.isAcceptingPrompts }
 
     // MARK: - Reprompt-cooldown facade
@@ -88,10 +61,7 @@ final class DetectionStateMachine {
 
     private var promptTimeoutTimer: Timer?
 
-    /// Arm the prompt-timeout timer for a specific source. When the
-    /// timer fires, `action` is invoked on main only if the state is
-    /// still `.prompting(source: source)` — covers the race where the
-    /// user picks Record / Skip after we scheduled the fire.
+    /// Arm the prompt-timeout timer. Action is invoked on main only if state is still `.prompting(source:)` when the timer fires, guarding the race where the user acts after the timer is scheduled.
     func startPromptTimeout(
         for source: AppSource,
         timeoutSec: TimeInterval,
@@ -120,8 +90,7 @@ final class DetectionStateMachine {
         pendingDetectorRefresh = true
     }
 
-    /// Consume the pending-refresh flag iff we're currently idle.
-    /// Returns true when the caller should rebuild the Detector now.
+    /// Consume the pending-refresh flag if idle. Returns true when the caller should rebuild the Detector.
     func consumePendingConfigRefreshIfIdle() -> Bool {
         guard pendingDetectorRefresh, case .idle = current else { return false }
         pendingDetectorRefresh = false

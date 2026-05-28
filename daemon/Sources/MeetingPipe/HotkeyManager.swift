@@ -1,15 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 
-/// Carbon RegisterEventHotKey-based global hotkey. Survives focus changes.
-/// AppKit's NSEvent.addGlobalMonitor only sees keystrokes when the app isn't
-/// frontmost, but doesn't let you intercept them; Carbon does. macOS still
-/// supports Carbon HotKey APIs as of macOS 14.
-///
-/// Supports multiple simultaneous registrations (TECH-C5 added the
-/// force-stop hotkey alongside the manual-toggle one). The single Carbon
-/// event handler dispatches on `EventHotKeyID.id`, so a press of one
-/// hotkey doesn't invoke the others' closures.
+/// Carbon `RegisterEventHotKey`-based global hotkeys. Carbon is used because `NSEvent.addGlobalMonitor` can observe but cannot intercept keystrokes; Carbon can. Still supported on macOS 14+. Supports multiple simultaneous registrations (TECH-C5); the single event handler fans out on `EventHotKeyID.id`.
 final class HotkeyManager {
     private struct Slot {
         let ref: EventHotKeyRef
@@ -17,15 +9,10 @@ final class HotkeyManager {
     }
     private var slots: [UInt32: Slot] = [:]
     private var eventHandlerRef: EventHandlerRef?
-    /// Monotonic counter for the per-slot hot-key id. Carbon needs each
-    /// registered hotkey to have a distinct id so the handler can fan
-    /// out; starts at 1 because zero is sometimes treated as "unset".
+    /// Monotonic slot id counter. Starts at 1; zero is sometimes treated as "unset" by Carbon.
     private var nextID: UInt32 = 1
 
-    /// Register a global hotkey and return its slot id (use with
-    /// `unregister(id:)`). Multiple calls add additional bindings; the
-    /// previous behaviour where each call replaced the only slot was
-    /// only safe with a single hotkey.
+    /// Register a global hotkey and return its slot id (pass to `unregister(id:)`). Each call adds a binding; does not replace existing ones.
     @discardableResult
     func register(keyCode: UInt32, modifiers: UInt32, handler: @escaping () -> Void) -> UInt32? {
         installEventHandlerIfNeeded()
