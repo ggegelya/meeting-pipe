@@ -466,11 +466,4 @@ enum MeetingFormatters {
         f.dateFormat = "EEE"
         return f
     }()
-
-    /// "May 8" - for meetings older than a week. No year inline; the date group header above already carries it.
-    static let shortMonthDay: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d"
-        return f
-    }()
 }

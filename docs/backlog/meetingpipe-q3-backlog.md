@@ -638,7 +638,9 @@ Acceptance: per Q2 addendum lines 141-146.
 
 Deps: none.
 
-**TECH-UI-9 · Relative date formatting in list rows · S · none** [REVISED]
+**TECH-UI-9 · Relative date formatting in list rows · S · none** [DONE]
+
+> Resolved 2026-05-28: added `Util/RelativeMeetingDateFormatter.swift` with a pure `bucket(for:now:calendar:)` (today / yesterday / weekday for 2-7 days / dayMonth same-year / dayMonthYear older) and a locale-aware `string(...)` that renders `Today HH:mm`, `Yesterday HH:mm` (localized + capitalized via `RelativeDateTimeFormatter`), `Wed HH:mm`, `14 May HH:mm` (`setLocalizedDateFormatFromTemplate("dMMM")` so day/month order follows locale), and `14 May 2025` (time omitted). `MeetingRow.trailingWhenStack` collapsed from the two-line day/time stack to this single monospaced line, width reserved at 100 pt for the longest case so the column does not jitter. The now-dead `MeetingFormatters.shortMonthDay` was removed. `RelativeMeetingDateFormatterTests` (7 cases) pins the buckets deterministically plus the time present/absent property; full suite green.
 
 Replace the current cramped abbreviations (`Yest 10:54`, `Wed 17:33`) with `RelativeDateTimeFormatter`-backed output: `Today HH:mm`, `Yesterday HH:mm`, `Wed HH:mm`, `14 May HH:mm`, `14 May 2025`.
 

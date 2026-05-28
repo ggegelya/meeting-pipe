@@ -100,17 +100,15 @@ struct MeetingRow: View, Equatable {
         .lineLimit(1)
     }
 
-    /// Trailing mono day/time stack. Monospaced so a column of rows aligns.
+    /// Trailing relative date + time (TECH-UI-9). Single monospaced line; the
+    /// width is reserved for the longest case ("14 May 2025") so the column
+    /// does not jitter as rows cross date boundaries.
     private var trailingWhenStack: some View {
-        VStack(alignment: .trailing, spacing: 1) {
-            Text(relativeDayLabel)
-                .font(.system(size: 11).monospacedDigit())
-                .foregroundStyle(Color(MPColors.fgMuted))
-            Text(MeetingFormatters.shortTime.string(from: meeting.startedAt))
-                .font(.system(size: 11).monospacedDigit())
-                .foregroundStyle(Color(MPColors.fgSubtle))
-        }
-        .frame(minWidth: 44, alignment: .trailing)
+        Text(RelativeMeetingDateFormatter.string(from: meeting.startedAt))
+            .font(.system(size: 11).monospacedDigit())
+            .foregroundStyle(Color(MPColors.fgMuted))
+            .lineLimit(1)
+            .frame(minWidth: 100, alignment: .trailing)
     }
 
     /// Status pill. NDA rows show "Local only" rather than recording/processing colors; NDA is a privacy mode, not an error.
@@ -188,20 +186,6 @@ struct MeetingRow: View, Equatable {
             return true
         }
         return false
-    }
-
-    /// "Today" / "Yest" / "Mon" / "May 8" for the trailing mono stack.
-    private var relativeDayLabel: String {
-        let cal = Calendar.current
-        let now = Date()
-        let started = meeting.startedAt
-        if cal.isDateInToday(started) { return "Today" }
-        if cal.isDateInYesterday(started) { return "Yest" }
-        if let days = cal.dateComponents([.day], from: cal.startOfDay(for: started), to: cal.startOfDay(for: now)).day,
-           days >= 0, days < 7 {
-            return MeetingFormatters.shortWeekday.string(from: started)
-        }
-        return MeetingFormatters.shortMonthDay.string(from: started)
     }
 
     @ViewBuilder
