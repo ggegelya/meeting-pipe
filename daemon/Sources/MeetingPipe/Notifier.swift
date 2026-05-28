@@ -134,7 +134,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     func notifyStillMeeting() {
         let content = UNMutableNotificationContent()
         content.title = "Still meeting?"
-        content.body = "Recording continues — tap to stop."
+        content.body = "Recording continues - tap to stop."
         content.categoryIdentifier = Self.stillMeetingCategory
         content.sound = .default
         let req = UNNotificationRequest(
@@ -183,7 +183,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             content.categoryIdentifier = Self.permCategory
         case .granted:
             content.body = "Permission is granted but no system audio reached the recorder. Check ~/Library/Logs/MeetingPipe/recorder.log for SCStream errors."
-            // No "Open Settings" action — it's not a permission problem.
+            // No "Open Settings" action - it's not a permission problem.
         }
         content.sound = .default
         let req = UNNotificationRequest(identifier: "perm-stop-\(file.lastPathComponent)", content: content, trigger: nil)

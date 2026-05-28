@@ -41,6 +41,20 @@ jobs:
             exit 1
           fi
           echo "No newly-introduced em-dashes."
+      - name: No em-dashes in daemon UI sources (TECH-UI-2)
+        shell: bash
+        run: |
+          # Whole-file (not diff) guard: the Swift sources and bundled
+          # resources that surface UI strings must stay free of U+2014
+          # entirely, so a backslide is caught even on an untouched line.
+          set -e
+          matches=$(git grep -l $'—' -- daemon/Sources daemon/Resources || true)
+          if [ -n "$matches" ]; then
+            echo "::error::TECH-UI-2: U+2014 (em-dash) found under daemon/Sources or daemon/Resources. Use a hyphen, comma, or rewrite."
+            git grep -n $'—' -- daemon/Sources daemon/Resources || true
+            exit 1
+          fi
+          echo "No em-dashes under daemon/Sources or daemon/Resources."
 
   pipeline:
     name: Pipeline (pytest)

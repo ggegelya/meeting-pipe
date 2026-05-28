@@ -95,7 +95,7 @@ struct RawFileEntry: Identifiable, Equatable {
     var id: String { url.path }
 
     enum Kind: Int, Comparable {
-        case wav = 0          // the recording itself — always first
+        case wav = 0          // the recording itself - always first
         case transcript = 1   // <stem>.json
         case markdownTranscript = 2  // <stem>.md
         case summaryJSON = 3

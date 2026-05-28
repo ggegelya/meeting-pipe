@@ -216,7 +216,7 @@ struct CorrectionsTab: View {
     private func performRevert() {
         guard let rec = record,
               let original = rec["original_summary"] as? [String: Any] else {
-            revertError = "Nothing to revert — record is missing the original summary."
+            revertError = "Nothing to revert - record is missing the original summary."
             return
         }
         let summaryURL = meeting.recordingsDir

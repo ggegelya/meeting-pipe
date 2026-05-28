@@ -211,7 +211,7 @@ struct StatePill: View {
 
     /// Elapsed time placeholder. The model does not yet push a live counter; a static value avoids a 1Hz Timer.publish that would re-render the entire toolbar before we measure its cost.
     private var elapsedString: String {
-        "—:—"
+        "-:-"
     }
 }
 

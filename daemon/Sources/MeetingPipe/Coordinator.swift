@@ -375,7 +375,7 @@ final class Coordinator: NSObject {
         // panic-press can never start a recording, and logged with its own
         // event action.
         if liveForceStopHotkey == liveManualHotkey {
-            Log.main.warning("Force-stop hotkey matches manual hotkey — skipping second registration")
+            Log.main.warning("Force-stop hotkey matches manual hotkey - skipping second registration")
         } else if let parsed = HotkeyManager.parse(liveForceStopHotkey) {
             hotkey.register(keyCode: parsed.keyCode, modifiers: parsed.modifiers) { [weak self] in
                 DispatchQueue.main.async { self?.forceStop(reason: "hotkey") }
@@ -397,7 +397,7 @@ final class Coordinator: NSObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] kind in
                 guard let self = self else { return }
-                Log.main.info("permission granted: \(kind.displayName) — re-evaluating detector")
+                Log.main.info("permission granted: \(kind.displayName) - re-evaluating detector")
                 Log.event(category: "coordinator", action: "permission_granted", attributes: [
                     "kind": kind.rawValue,
                 ])
@@ -971,14 +971,14 @@ final class Coordinator: NSObject {
     }
 
     private func handleSilenceNotify() {
-        Log.writeLine("daemon", "silence: 90s — surfacing 'still meeting?' banner")
+        Log.writeLine("daemon", "silence: 90s - surfacing 'still meeting?' banner")
         Log.event(category: "coordinator", action: "silence_notified")
         notifier.notifyStillMeeting()
     }
 
     private func handleSilenceAutoStop() {
         guard case .recording(let file, let src, let mode) = stateMachine.current else { return }
-        Log.writeLine("daemon", "silence: 5min — auto-stopping recording")
+        Log.writeLine("daemon", "silence: 5min - auto-stopping recording")
         Log.event(category: "coordinator", action: "auto_stop_silence", attributes: [
             "bundle_id": src?.bundleID ?? "manual",
             "file": file.lastPathComponent,

@@ -698,7 +698,7 @@ struct SummaryTab: View {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                 if let url = url {
-                    Button("Republished — view in Notion") {
+                    Button("Republished - view in Notion") {
                         NSWorkspace.shared.open(url)
                     }
                     .buttonStyle(.link)

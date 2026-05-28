@@ -28,7 +28,7 @@ final class AppGlyphView: NSImageView {
             glyphCache[name] = img
             return img
         }
-        // Fallback path — should always exist; if it doesn't, NSImageView
+        // Fallback path - should always exist; if it doesn't, NSImageView
         // just renders blank, which is a graceful degradation.
         if let cached = glyphCache["_fallback"] { return cached }
         if let url = Bundle.module.url(forResource: "_fallback", withExtension: "svg", subdirectory: "AppGlyphs"),

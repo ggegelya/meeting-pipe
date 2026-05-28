@@ -363,7 +363,7 @@ private struct RecordingSectionView: View {
             SettingsGroup("Auto-record allowlist") {
                 SettingsFullRow(showsDivider: false) {
                     if store.autoConsentApps.isEmpty {
-                        Text("No apps yet — every meeting will prompt.")
+                        Text("No apps yet - every meeting will prompt.")
                             .font(.system(size: 12))
                             .foregroundStyle(.tertiary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -480,8 +480,8 @@ private struct PromptSectionView: View {
             SettingsGroup("Regulated mode") {
                 SettingsRow("Skip Notion publish",
                     sublabel: store.regulatedMode
-                        ? "On — Notion publish is disabled for every meeting."
-                        : "Off — meetings publish to Notion normally.",
+                        ? "On - Notion publish is disabled for every meeting."
+                        : "Off - meetings publish to Notion normally.",
                     showsDivider: false) {
                     Toggle("", isOn: $store.regulatedMode)
                         .labelsHidden()
@@ -497,7 +497,7 @@ private struct PromptSectionView: View {
                     Spacer(minLength: 0)
                 }
             } footer: {
-                Text("Use for client / regulated meetings. The pipeline writes summaries to disk only — no transcript or summary is uploaded to Notion.")
+                Text("Use for client / regulated meetings. The pipeline writes summaries to disk only - no transcript or summary is uploaded to Notion.")
             }
         }
     }
@@ -901,7 +901,7 @@ struct PermissionsSectionView: View {
                 .padding(.top, 4)
                 .padding(.bottom, 22)
 
-            Text("Granting Accessibility from System Settings requires a daemon restart for the change to take effect — macOS caches the trust verdict per-process at launch.")
+            Text("Granting Accessibility from System Settings requires a daemon restart for the change to take effect - macOS caches the trust verdict per-process at launch.")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .padding(.leading, 2)
@@ -1118,10 +1118,10 @@ private struct AdvancedSectionView: View {
                     Spacer(minLength: 0)
                 }
             } footer: {
-                Text("Takes effect after restarting MeetingPipe — the env var is set at daemon launch and inherited by every subprocess spawned afterwards.")
+                Text("Takes effect after restarting MeetingPipe - the env var is set at daemon launch and inherited by every subprocess spawned afterwards.")
             }
 
-            Text("MeetingPipe — config lives in `~/.config/meeting-pipe/`. Workflows live in `~/.config/meeting-pipe/workflows/`. Both are plain TOML — safe to edit by hand if you know what you're doing.")
+            Text("MeetingPipe - config lives in `~/.config/meeting-pipe/`. Workflows live in `~/.config/meeting-pipe/workflows/`. Both are plain TOML - safe to edit by hand if you know what you're doing.")
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
                 .padding(.top, 4)

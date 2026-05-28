@@ -147,7 +147,7 @@ final class StatusBarController {
         if let wf = workflow {
             // TECH-B5: show the active workflow so the user can confirm the
             // destination at a glance; NDA mode gets a marker.
-            label += " — \(wf.name)\(wf.flags.ndaMode ? " · NDA" : "")"
+            label += " - \(wf.name)\(wf.flags.ndaMode ? " · NDA" : "")"
         }
         baseTitle = label
         applyTitle()
@@ -229,7 +229,7 @@ final class StatusBarController {
     //   - The idle icon needs to be a TEMPLATE so AppKit auto-tints it
     //     light/dark with the menu-bar appearance.
     //   - The recording icon mixes a template-tinted ring with a fixed-color
-    //     coral dot — NSImage has no partial-template mode, so we have to
+    //     coral dot - NSImage has no partial-template mode, so we have to
     //     composite manually.
     // The SVGs in Resources/ remain the source of truth for the design;
     // these renderers reproduce the same shapes pixel-for-pixel.
@@ -294,7 +294,7 @@ final class StatusBarController {
             ring.lineWidth = 1.4 * s
             ring.stroke()
 
-            // Coral dot — cx=9 cy=9 r=2.6
+            // Coral dot - cx=9 cy=9 r=2.6
             MPColors.pulse600.setFill()
             let dot = NSBezierPath(ovalIn: NSRect(
                 x: (9 - 2.6) * s, y: (9 - 2.6) * s,
@@ -304,7 +304,7 @@ final class StatusBarController {
             return true
         }
         img.isTemplate = false  // Coral dot must keep its color across appearances.
-        img.accessibilityDescription = "MeetingPipe — Recording"
+        img.accessibilityDescription = "MeetingPipe - Recording"
         return img
     }
 
@@ -365,7 +365,7 @@ final class StatusBarController {
         // Screen-Recording shortcut stays for that specific case.
         if hasPendingPermissionIssue() {
             let warn = NSMenuItem(
-                title: "⚠ Permissions need attention — Open Preferences…",
+                title: "⚠ Permissions need attention - Open Preferences…",
                 action: #selector(Coordinator.menuPreferencesPermissions),
                 keyEquivalent: ""
             )

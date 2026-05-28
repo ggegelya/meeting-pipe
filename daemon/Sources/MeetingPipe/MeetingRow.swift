@@ -142,7 +142,7 @@ struct MeetingRow: View, Equatable {
         case (.done, _):
             MPStatusPill(kind: .ready, label: "Ready")
         case (.unknown, _):
-            MPStatusPill(kind: .neutral, label: "—")
+            MPStatusPill(kind: .neutral, label: "-")
         }
     }
 

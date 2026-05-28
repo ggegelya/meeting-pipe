@@ -30,4 +30,14 @@ if printf '%s' "$added" | grep -qF "$EMDASH"; then
   exit 1
 fi
 
+# TECH-UI-2: the daemon's UI sources + bundled resources stay entirely
+# em-dash-free (whole staged tree, not just this diff), matching the CI guard
+# so a backslide on an untouched line is caught locally too.
+ui_emdash=$(git grep --cached -lF "$EMDASH" -- daemon/Sources daemon/Resources || true)
+if [ -n "$ui_emdash" ]; then
+  echo "pre-commit: em-dash in daemon/Sources or daemon/Resources (use a hyphen or rewrite):"
+  git grep --cached -nF "$EMDASH" -- daemon/Sources daemon/Resources || true
+  exit 1
+fi
+
 exit 0

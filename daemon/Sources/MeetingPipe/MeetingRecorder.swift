@@ -189,7 +189,7 @@ final class MeetingRecorder {
             } catch {
                 Log.writeLine(
                     "recorder",
-                    "WARN: setVoiceProcessingEnabled failed: \(error.localizedDescription) — falling back to raw mic"
+                    "WARN: setVoiceProcessingEnabled failed: \(error.localizedDescription) - falling back to raw mic"
                 )
             }
         }
@@ -197,7 +197,7 @@ final class MeetingRecorder {
         // Mic via AVAudioEngine.inputNode (self-pumping).
         let micFormat = engine.inputNode.outputFormat(forBus: 0)
         guard micFormat.sampleRate > 0 else {
-            throw RecorderError.fileCreateFailed("inputNode reports zero sample rate — Microphone permission likely not granted")
+            throw RecorderError.fileCreateFailed("inputNode reports zero sample rate - Microphone permission likely not granted")
         }
         let micFile: AVAudioFile
         do {
@@ -676,7 +676,7 @@ final class MeetingRecorder {
             } catch {
                 Log.writeLine(
                     "recorder",
-                    "WARN: setVoiceProcessingEnabled(false) failed: \(error.localizedDescription) — system mic may stay degraded until app restart"
+                    "WARN: setVoiceProcessingEnabled(false) failed: \(error.localizedDescription) - system mic may stay degraded until app restart"
                 )
             }
             voiceProcessingEnabledForSession = false
@@ -725,7 +725,7 @@ final class MeetingRecorder {
             try? FileManager.default.removeItem(at: micURL)
             try? FileManager.default.removeItem(at: systemURL)
         } else {
-            Log.writeLine("recorder", "WARN: neither mic nor system has audio data — leaving \(final.lastPathComponent) absent")
+            Log.writeLine("recorder", "WARN: neither mic nor system has audio data - leaving \(final.lastPathComponent) absent")
         }
 
         if let started = started {
@@ -834,7 +834,7 @@ final class MeetingRecorder {
     /// looked like "user was the only one talking" (the May 5 18:30 loss).
     private static func mergeViaFFmpeg(mic: URL, system: URL, final: URL) async {
         guard let ffmpeg = Self.findFFmpeg() else {
-            Log.writeLine("recorder", "ERROR: ffmpeg not found — leaving mic.wav as final")
+            Log.writeLine("recorder", "ERROR: ffmpeg not found - leaving mic.wav as final")
             try? FileManager.default.moveItem(at: mic, to: final)
             return
         }
@@ -928,7 +928,7 @@ final class MeetingRecorder {
     }
 
     /// After stop, sanity-check the WAV's audio duration vs wallclock.
-    /// In-process recording should be ~100% — if not, surface it.
+    /// In-process recording should be ~100% - if not, surface it.
     private func checkDurationParity(file url: URL, recordedFor wallclock: TimeInterval) {
         guard let audioSec = Self.audioDurationSec(of: url) else { return }
         let ratio = wallclock > 0 ? audioSec / wallclock : 1.0

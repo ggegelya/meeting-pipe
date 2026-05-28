@@ -20,14 +20,14 @@ enum MPColors {
     static let paperSunk   = NSColor(srgbRed: 0xF4/255.0, green: 0xF2/255.0, blue: 0xEC/255.0, alpha: 1)
     static let paperRaised = NSColor.white
 
-    // MARK: Signal (electric blue — the "live" color)
+    // MARK: Signal (electric blue - the "live" color)
     static let signal700 = NSColor(srgbRed: 0x1B/255.0, green: 0x53/255.0, blue: 0xD6/255.0, alpha: 1)
     static let signal600 = NSColor(srgbRed: 0x26/255.0, green: 0x67/255.0, blue: 0xF0/255.0, alpha: 1) // primary
     static let signal500 = NSColor(srgbRed: 0x3D/255.0, green: 0x80/255.0, blue: 0xFF/255.0, alpha: 1)
     static let signal400 = NSColor(srgbRed: 0x6B/255.0, green: 0xA0/255.0, blue: 0xFF/255.0, alpha: 1)
     static let signal100 = NSColor(srgbRed: 0xE3/255.0, green: 0xEC/255.0, blue: 0xFF/255.0, alpha: 1)
 
-    // MARK: Pulse (recording dot — never decorative)
+    // MARK: Pulse (recording dot - never decorative)
     static let pulse600 = NSColor(srgbRed: 0xE5/255.0, green: 0x48/255.0, blue: 0x4D/255.0, alpha: 1)
     static let pulse500 = NSColor(srgbRed: 0xF5/255.0, green: 0x59/255.0, blue: 0x5E/255.0, alpha: 1)
     static let pulse100 = NSColor(srgbRed: 0xFF/255.0, green: 0xE4/255.0, blue: 0xE4/255.0, alpha: 1)
@@ -40,7 +40,7 @@ enum MPColors {
     static let danger600  = NSColor(srgbRed: 0xC9/255.0, green: 0x2A/255.0, blue: 0x2A/255.0, alpha: 1)
     static let danger100  = NSColor(srgbRed: 0xFC/255.0, green: 0xE4/255.0, blue: 0xE4/255.0, alpha: 1)
 
-    // MARK: Semantic — auto-flip on appearance.
+    // MARK: Semantic - auto-flip on appearance.
     /// `--mp-fg` / dark `#F0F1F3`.
     static let fg = NSColor(name: "mp.fg") { appearance in
         appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
@@ -137,7 +137,7 @@ enum MPRadius {
     static let xs: CGFloat = 4    // chips, tags
     static let sm: CGFloat = 6    // buttons, inputs
     static let md: CGFloat = 10   // cards
-    static let lg: CGFloat = 14   // panels / sheets — matches NSPanel cornerRadius
+    static let lg: CGFloat = 14   // panels / sheets - matches NSPanel cornerRadius
     static let xl: CGFloat = 20   // hero cards
 }
 
@@ -153,10 +153,10 @@ enum MPMotion {
 
 /// Pre-built fonts matching the type ramp and weight conventions.
 extension NSFont {
-    static func mpTitle() -> NSFont   { .systemFont(ofSize: MPType.textLG,   weight: MPType.semibold) } // 17 / semibold — panel title
-    static func mpHeading() -> NSFont { .systemFont(ofSize: MPType.textXL,   weight: MPType.semibold) } // 22 / semibold — section header
-    static func mpBody() -> NSFont    { .systemFont(ofSize: MPType.textBase, weight: MPType.regular)  } // 13 / regular — default body
-    static func mpBodyMedium() -> NSFont { .systemFont(ofSize: MPType.textBase, weight: MPType.medium) } // 13 / medium — button labels
-    static func mpEyebrow() -> NSFont { .systemFont(ofSize: MPType.textXS,   weight: MPType.semibold) } // 11 / semibold — uppercase label
-    static func mpCaption() -> NSFont { .systemFont(ofSize: MPType.textSM,   weight: MPType.regular)  } // 12 / regular — secondary
+    static func mpTitle() -> NSFont   { .systemFont(ofSize: MPType.textLG,   weight: MPType.semibold) } // 17 / semibold - panel title
+    static func mpHeading() -> NSFont { .systemFont(ofSize: MPType.textXL,   weight: MPType.semibold) } // 22 / semibold - section header
+    static func mpBody() -> NSFont    { .systemFont(ofSize: MPType.textBase, weight: MPType.regular)  } // 13 / regular - default body
+    static func mpBodyMedium() -> NSFont { .systemFont(ofSize: MPType.textBase, weight: MPType.medium) } // 13 / medium - button labels
+    static func mpEyebrow() -> NSFont { .systemFont(ofSize: MPType.textXS,   weight: MPType.semibold) } // 11 / semibold - uppercase label
+    static func mpCaption() -> NSFont { .systemFont(ofSize: MPType.textSM,   weight: MPType.regular)  } // 12 / regular - secondary
 }

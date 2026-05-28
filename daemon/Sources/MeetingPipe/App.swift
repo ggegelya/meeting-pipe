@@ -66,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             config = try Config.load()
             Log.main.info("Loaded config from \(Config.defaultPath.path)")
         } catch {
-            Log.main.warning("No config at \(Config.defaultPath.path) — using defaults: \(String(describing: error))")
+            Log.main.warning("No config at \(Config.defaultPath.path) - using defaults: \(String(describing: error))")
             config = Config.defaultFallback()
         }
 

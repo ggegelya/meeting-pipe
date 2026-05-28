@@ -120,7 +120,7 @@ struct WorkflowInspector: View {
     }
 
     private var modesLine: String {
-        workflow.flags.ndaMode ? "NDA on (local-only enforced)" : "—"
+        workflow.flags.ndaMode ? "NDA on (local-only enforced)" : "-"
     }
 
     private var outputLine: String {

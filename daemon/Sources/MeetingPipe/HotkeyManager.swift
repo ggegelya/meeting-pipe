@@ -102,7 +102,7 @@ final class HotkeyManager {
     }
 
     private static func keyCodeFor(_ key: String) -> UInt32? {
-        // Letters only — full coverage is overkill for a single configurable hotkey.
+        // Letters only - full coverage is overkill for a single configurable hotkey.
         let letters: [String: Int] = [
             "a": kVK_ANSI_A, "b": kVK_ANSI_B, "c": kVK_ANSI_C, "d": kVK_ANSI_D,
             "e": kVK_ANSI_E, "f": kVK_ANSI_F, "g": kVK_ANSI_G, "h": kVK_ANSI_H,

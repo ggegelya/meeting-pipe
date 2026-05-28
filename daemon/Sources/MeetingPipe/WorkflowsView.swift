@@ -145,7 +145,7 @@ struct WorkflowEditor: View {
     private var matchingRulesSection: some View {
         Section("Matching rules") {
             if matchingRules.isEmpty {
-                Text("No rules — this workflow matches only when used as the default.")
+                Text("No rules - this workflow matches only when used as the default.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {

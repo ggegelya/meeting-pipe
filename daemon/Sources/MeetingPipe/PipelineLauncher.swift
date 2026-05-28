@@ -86,7 +86,7 @@ final class PipelineLauncher: PipelineDriver {
             case .nonZeroExit(let code, let tail):
                 return "pipeline exited \(code): \(tail)"
             case .timeout(let seconds):
-                return "pipeline timed out after \(Int(seconds / 60)) min — killed to free CPU. The audio file is preserved; re-run `mp run-all <wav>` manually after diagnosing."
+                return "pipeline timed out after \(Int(seconds / 60)) min - killed to free CPU. The audio file is preserved; re-run `mp run-all <wav>` manually after diagnosing."
             }
         }
     }
@@ -208,7 +208,7 @@ final class PipelineLauncher: PipelineDriver {
         watchdog.setEventHandler {
             guard p.isRunning else { return }
             timedOut.set()
-            Log.main.warning("Pipeline exceeded \(Int(timeoutSeconds / 60)) min — terminating")
+            Log.main.warning("Pipeline exceeded \(Int(timeoutSeconds / 60)) min - terminating")
             p.terminate()
             // Escalate to SIGKILL if SIGTERM doesn't take.
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30) {
@@ -320,7 +320,7 @@ final class PipelineLauncher: PipelineDriver {
         watchdog.setEventHandler {
             guard p.isRunning else { return }
             timedOut.set()
-            Log.main.warning("publish-notion exceeded \(Int(publishTimeout / 60)) min — terminating")
+            Log.main.warning("publish-notion exceeded \(Int(publishTimeout / 60)) min - terminating")
             p.terminate()
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 15) {
                 if p.isRunning { kill(p.processIdentifier, SIGKILL) }
@@ -419,7 +419,7 @@ final class PipelineLauncher: PipelineDriver {
         watchdog.setEventHandler {
             guard p.isRunning else { return }
             timedOut.set()
-            Log.main.warning("summarize exceeded \(Int(summarizeTimeout / 60)) min — terminating")
+            Log.main.warning("summarize exceeded \(Int(summarizeTimeout / 60)) min - terminating")
             p.terminate()
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30) {
                 if p.isRunning { kill(p.processIdentifier, SIGKILL) }

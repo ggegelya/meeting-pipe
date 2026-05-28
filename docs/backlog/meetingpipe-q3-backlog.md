@@ -567,7 +567,9 @@ Deps: TECH-UX6.
 
 **TECH-UI-1 · DROPPED.** Misguided per Q3 review. The MeetingRow `leadingGlyph` already uses `AppGlyphRepresentable(source:)` via `daemon/Sources/MeetingPipe/Design/AppGlyphView.swift`, which explicitly documents why `NSWorkspace.shared.icon(forFile:)` was rejected.
 
-**TECH-UI-2 · UI string em-dash audit and CI guard · S · none** [REVISED]
+**TECH-UI-2 · UI string em-dash audit and CI guard · S · none** [DONE]
+
+> Resolved 2026-05-28: swept all 51 U+2014 occurrences across 18 files in `daemon/Sources` (and `daemon/Resources`, none there) to plain hyphens via a single-character replacement that preserves the surrounding spacing, so `git grep -l $'—' daemon/Sources daemon/Resources` is now empty. These were almost all comments and log lines plus a few UI strings (e.g. the `MeetingRow` neutral pill, the `LibraryToolbar` "-:-" timecode placeholder); the build and the full 656-test suite stay green. Added a whole-file (not diff-scoped) CI guard step to the `conventions` job in `ci.yml` and a matching `git grep --cached` check in `scripts/pre-commit`, both scoped to `daemon/Sources`/`daemon/Resources`, so a deliberately-added em-dash there fails CI and is blocked locally even on an untouched line. Note: the existing diff-based pre-commit/CI check was already content-based (it caught added em-dashes in Swift string literals, not "just comments"), so the "(not just comments)" extension was already satisfied; the new value is the whole-file guard. The lone remaining em-dash in this backlog (line ~577) is the task's own quoted bad-example string and is in `docs/`, outside the guard's scope.
 
 Extend the existing pre-commit em-dash check to also cover `.strings` catalogs and Swift string literals (not just comments).
 

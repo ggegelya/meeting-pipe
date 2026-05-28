@@ -120,7 +120,7 @@ final class SecretsStore: ObservableObject {
                 copy[i] = "\(key)=\(value)"
                 return copy
             }
-            // `KEY = value` (with spaces) — uncommon but tolerate it.
+            // `KEY = value` (with spaces) - uncommon but tolerate it.
             if let eq = trimmed.firstIndex(of: "="),
                trimmed[..<eq].trimmingCharacters(in: .whitespaces) == key {
                 copy[i] = "\(key)=\(value)"
