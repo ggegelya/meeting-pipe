@@ -46,6 +46,10 @@ final class Coordinator: NSObject {
     /// status bar stay in one place.
     private let sinkDispatcher: SinkDispatcher
 
+    /// Wraps `sinkDispatcher` and owns the per-job completion routing +
+    /// queue-depth surface (TECH-H1-FINISH). Built in `wireSubsystems()`.
+    private var jobDispatcher: PipelineJobDispatcher!
+
     /// Event-driven MicGate + Lifecycle stack (TECH-G-MIC + TECH-C13).
     /// Replaces the 1 Hz `MuteProbeSubsystem` poll: `MicGate` fuses AX
     /// mute observations, HAL system-input mute, HAL VAD, and per-buffer
@@ -86,13 +90,6 @@ final class Coordinator: NSObject {
     /// See TECH-C14.
     private var axWindowWatcher: MeetingAXWindowWatcher?
 
-    /// Pre-fetches the local-MLX model whenever the user picks a backend
-    /// that needs one. The first meeting in local mode otherwise pays a
-    /// 30s-3min download stall inside `mlx_lm.server`'s first call;
-    /// running the prefetch up front turns that into a visible status-bar
-    /// state instead. No-op when backend is anthropic.
-    private let modelDownload = ModelDownloadSupervisor()
-
     /// Per-context routing rules (TECH-B). Workflows live as TOML files
     /// under `~/.config/meeting-pipe/workflows/`. Held as a published
     /// store so the Workflows tab + the prompt window's chip can both
@@ -129,7 +126,6 @@ final class Coordinator: NSObject {
     /// daemon restart, which is fine for a debug knob.
     private let dryRun: Bool = (ProcessInfo.processInfo.environment["MEETING_PIPE_DRY_RUN"] == "1")
 
-    private var configCancellable: AnyCancellable?
     private var permissionGrantedCancellable: AnyCancellable?
 
     init(
@@ -276,24 +272,23 @@ final class Coordinator: NSObject {
             // adapter through this single hook.
             self?.disengageLifecycle()
         }
-        sinkDispatcher.onQueueDepthChanged = { [weak self] depth in
-            self?.statusBar.setProcessingCount(depth)
-        }
-        sinkDispatcher.onJobCompleted = { [weak self] job, result in
-            guard let self = self else { return }
-            switch result {
-            case .success(let pageURL):
-                let stem = job.file.deletingPathExtension().lastPathComponent
-                let recordingsDir = job.file.deletingLastPathComponent()
-                self.notifier.notifyDone(
+        // PipelineJobDispatcher wraps the SinkDispatcher queue and owns
+        // the per-job completion routing (done notification + error
+        // banner) and the queue-depth badge. Constructing it here wires
+        // the dispatcher callbacks at the same point the inline closures
+        // used to be set (TECH-H1-FINISH).
+        jobDispatcher = PipelineJobDispatcher(
+            sinkDispatcher: sinkDispatcher,
+            onDone: { [weak self] stem, recordingsDir, pageURL in
+                self?.notifier.notifyDone(
                     stem: stem,
                     recordingsDir: recordingsDir,
                     pageURL: pageURL
                 )
-            case .failure(let err):
-                self.notifier.notifyError("Pipeline failed: \(err.localizedDescription)")
-            }
-        }
+            },
+            onError: { [weak self] message in self?.notifier.notifyError(message) },
+            onQueueDepth: { [weak self] depth in self?.statusBar.setProcessingCount(depth) }
+        )
         // MicGate consumes the recorder's per-buffer mic RMS; the gate
         // is allocation-free and defers its publish off the render
         // thread, so calling from the audio tap is safe.
@@ -384,11 +379,6 @@ final class Coordinator: NSObject {
         }
         discoveryWatcher.start()
 
-        // Seed the status bar with the initial regulated-mode flag so
-        // the lock glyph (if the user has it enabled) shows from boot
-        // rather than appearing only after the first config save.
-        statusBar.setRegulatedMode(configStore?.regulatedMode ?? false)
-
         if let parsed = HotkeyManager.parse(liveManualHotkey) {
             hotkey.register(keyCode: parsed.keyCode, modifiers: parsed.modifiers) { [weak self] in
                 DispatchQueue.main.async { self?.toggleManual() }
@@ -413,21 +403,10 @@ final class Coordinator: NSObject {
             Log.main.warning("Could not parse force-stop hotkey: \(self.liveForceStopHotkey)")
         }
 
-        // Refresh affected components when the user saves Preferences.
-        // ConfigStore already debounces 500ms, so we don't pile up rebuilds
-        // while a slider is being dragged.
-        configCancellable = configStore?.didPersist
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.handleConfigPersisted() }
-
-        // Status-bar reflects the model-download state. Wired here once
-        // so we don't have to re-subscribe when the supervisor restarts.
-        modelDownload.onStateChange = { [weak self] state in
-            self?.statusBar.setModelDownload(state)
-        }
-        // Eager prefetch on launch when the user is already in local/auto
-        // mode. No-op for backend=anthropic (the typical first-time install).
-        ensureModelPrefetchIfNeeded()
+        // Seed the regulated-mode glyph, wire the model-download status,
+        // run the eager local-model prefetch, and subscribe to config
+        // persistence. Owned by ConfigRefreshCoordinator (TECH-H1-FINISH).
+        configRefresh.start()
 
         // Subscribe to permission grants so the detector picks up an
         // in-progress meeting the moment Mic / Accessibility flip on.
@@ -550,7 +529,7 @@ final class Coordinator: NSObject {
                 Log.event(category: "coordinator", action: "orphan_recording_recovered", attributes: [
                     "file": url.lastPathComponent,
                 ])
-                self.sinkDispatcher.enqueue(file: url, summaryMode: .auto)
+                self.jobDispatcher.enqueue(file: url, summaryMode: .auto)
             }
         }
     }
@@ -610,219 +589,55 @@ final class Coordinator: NSObject {
         }
     )
 
-    /// Retry the full pipeline for a meeting whose original run never
-    /// produced a summary (daemon was killed mid-transcribe, the
-    /// orchestrator crashed, etc.). Enqueues the same `mp run-all`
-    /// subprocess the normal flow uses, so progress shows up in the
-    /// status-bar processing badge and any sidecars get overwritten.
-    /// Returns failure if the wav file is missing — every other error
-    /// surfaces as a notifier banner from the existing pipeline path.
-    func retryMeeting(stem: String) -> Result<Void, Error> {
-        let dir = liveOutputDir
-        let wavURL = dir.appendingPathComponent("\(stem).wav")
-        guard FileManager.default.fileExists(atPath: wavURL.path) else {
-            return .failure(NSError(
-                domain: "Coordinator", code: 1,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "No audio at \(wavURL.lastPathComponent) - cannot retry"]
-            ))
+    /// Post-recording meeting operations (retry / regenerate / republish
+    /// / soft-delete / export, plus the recent-correctable and
+    /// failed-count menu queries). Extracted in TECH-H1-FINISH; the
+    /// methods below forward to it so external callers keep the same
+    /// Coordinator API.
+    private lazy var library = MeetingLibraryService(
+        outputDir: { [weak self] in
+            self?.liveOutputDir ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        },
+        launcher: launcher,
+        notifyError: { [weak self] message in self?.notifier.notifyError(message) },
+        enqueue: { [weak self] file, mode in
+            self?.jobDispatcher.enqueue(file: file, summaryMode: mode)
         }
-        Log.writeLine("daemon", "retry pipeline → \(stem)")
-        Log.event(category: "coordinator", action: "retry_requested", attributes: [
-            "stem": stem,
-        ])
-        // The retry supersedes the prior failure: drop the sidecar now so
-        // the meeting leaves the failed set immediately (the status-bar
-        // count, and a recent row, stop showing failed without waiting
-        // for the run). The dispatcher writes a fresh one if it fails too.
-        PipelineFailureSidecar.clear(stem: stem, in: dir)
-        sinkDispatcher.enqueue(file: wavURL, summaryMode: .auto)
-        return .success(())
+    )
+
+    /// Config-change responses: eager local-model prefetch, model-download
+    /// status surface, regulated-mode glyph, and the `didPersist`
+    /// subscription. Extracted in TECH-H1-FINISH; started from `start()`.
+    private lazy var configRefresh = ConfigRefreshCoordinator(
+        configStore: configStore,
+        onModelDownloadState: { [weak self] state in self?.statusBar.setModelDownload(state) },
+        onRegulatedMode: { [weak self] flag in self?.statusBar.setRegulatedMode(flag) }
+    )
+
+    func retryMeeting(stem: String) -> Result<Void, Error> {
+        library.retryMeeting(stem: stem)
     }
 
-    /// Regenerate the summary for the given stem by re-running the
-    /// `mp summarize` stage against the existing transcript, then
-    /// re-running publish so the Notion page reflects the new summary.
-    /// Returns the resulting Notion page URL on success.
-    ///
-    /// Workflow / backend override is not yet wired (TECH-B ships the
-    /// workflow data model; backend-override env var is not piped into
-    /// `mp summarize`). For now the regenerate uses whatever the
-    /// configured backend / context resolves to at subprocess time.
     func regenerateMeeting(
         stem: String,
         completion: @escaping (Result<URL?, Error>) -> Void
     ) {
-        let dir = liveOutputDir
-        let transcriptURL = dir.appendingPathComponent("\(stem).md")
-        guard FileManager.default.fileExists(atPath: transcriptURL.path) else {
-            completion(.failure(NSError(
-                domain: "Coordinator", code: 1,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "No transcript at \(transcriptURL.lastPathComponent) — cannot regenerate"]
-            )))
-            return
-        }
-        Log.writeLine("daemon", "regenerate requested → \(stem)")
-        Log.event(category: "coordinator", action: "regenerate_started", attributes: [
-            "stem": stem,
-        ])
-        launcher.summarize(transcriptMD: transcriptURL) { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                switch result {
-                case .success:
-                    // Summarize wrote a fresh <stem>.summary.json next to
-                    // the transcript; chain into publish so the Notion
-                    // page picks up the new content too.
-                    //
-                    // A fresh summary means the meeting is no longer lost,
-                    // so drop any failure sidecar an earlier failed run
-                    // left behind. A retry clears via the dispatcher; a
-                    // regenerate bypasses run-all, so it clears here.
-                    PipelineFailureSidecar.clear(stem: stem, in: dir)
-                    self.republishMeeting(stem: stem, completion: completion)
-                case .failure(let err):
-                    Log.event(category: "coordinator", action: "regenerate_failed", attributes: [
-                        "stem": stem,
-                        "error": err.localizedDescription,
-                    ])
-                    self.notifier.notifyError("Regenerate failed: \(err.localizedDescription)")
-                    completion(.failure(err))
-                }
-            }
-        }
+        library.regenerateMeeting(stem: stem, completion: completion)
     }
 
-    /// Move every sidecar associated with a stem (audio, transcript,
-    /// summary, run, meta, notion, obsidian, READY_FOR_MANUAL) to the
-    /// user's Trash. Recoverable from Finder until the user empties the
-    /// Trash. The recordings-dir watcher picks up the deletes and
-    /// refreshes the Library list automatically.
     func softDeleteMeeting(stem: String) -> Result<Void, Error> {
-        let dir = liveOutputDir
-        let fm = FileManager.default
-        let entries: [URL]
-        do {
-            entries = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil, options: [])
-        } catch {
-            return .failure(error)
-        }
-        let matching = entries.filter { url in
-            MeetingStore.stem(of: url) == stem
-        }
-        guard !matching.isEmpty else {
-            return .failure(NSError(
-                domain: "Coordinator", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "No files found for \(stem)"]
-            ))
-        }
-        var firstFailure: Error?
-        for url in matching {
-            var trashedURL: NSURL?
-            do {
-                try fm.trashItem(at: url, resultingItemURL: &trashedURL)
-            } catch {
-                Log.main.warning("trashItem failed for \(url.lastPathComponent): \(error.localizedDescription)")
-                if firstFailure == nil { firstFailure = error }
-            }
-        }
-        Log.event(category: "coordinator", action: "meeting_deleted", attributes: [
-            "stem": stem,
-            "files_count": matching.count,
-        ])
-        if let err = firstFailure { return .failure(err) }
-        return .success(())
+        library.softDeleteMeeting(stem: stem)
     }
 
-    /// Copy the standard human-facing artefacts for a stem (summary
-    /// markdown, transcript markdown, summary JSON, raw audio) into a
-    /// user-chosen folder. Missing files are silently skipped — the
-    /// export is best-effort and aimed at sharing rather than archival
-    /// completeness (use Reveal in Finder + a manual copy for the
-    /// latter). Returns the count of files copied on success.
     func exportMeeting(stem: String, to destination: URL) -> Result<Int, Error> {
-        let dir = liveOutputDir
-        let fm = FileManager.default
-        let candidates = [
-            "\(stem).summary.md",
-            "\(stem).md",
-            "\(stem).summary.json",
-            "\(stem).wav",
-            "\(stem).notion.json",
-            "\(stem).meta.json",
-        ]
-        var copied = 0
-        for name in candidates {
-            let src = dir.appendingPathComponent(name)
-            guard fm.fileExists(atPath: src.path) else { continue }
-            let dst = destination.appendingPathComponent(name)
-            // Overwrite existing destination files so a second export
-            // pass to the same folder refreshes the bundle.
-            if fm.fileExists(atPath: dst.path) {
-                _ = try? fm.removeItem(at: dst)
-            }
-            do {
-                try fm.copyItem(at: src, to: dst)
-                copied += 1
-            } catch {
-                Log.main.warning("export copy failed: \(name) → \(error.localizedDescription)")
-            }
-        }
-        Log.event(category: "coordinator", action: "meeting_exported", attributes: [
-            "stem": stem,
-            "files_copied": copied,
-            "destination": destination.lastPathComponent,
-        ])
-        return .success(copied)
+        library.exportMeeting(stem: stem, to: destination)
     }
 
-    /// Re-run the publish step for the given meeting stem. Spawns the
-    /// same `mp publish-notion` subprocess the orchestrator uses at end
-    /// of pipeline, so success / failure / sidecar updates flow through
-    /// the same code path. Returns the resulting Notion page URL via the
-    /// completion handler — nil under regulated_mode or when the page
-    /// link is not in the sidecar.
-    ///
-    /// Used by the Library window's summary-edit flow (TECH-A5). The
-    /// caller is expected to have already written the corrected summary
-    /// to `<stem>.summary.json` before invoking this.
     func republishMeeting(
         stem: String,
         completion: @escaping (Result<URL?, Error>) -> Void
     ) {
-        let dir = liveOutputDir
-        let summaryURL = dir.appendingPathComponent("\(stem).summary.json")
-        guard FileManager.default.fileExists(atPath: summaryURL.path) else {
-            completion(.failure(NSError(
-                domain: "Coordinator", code: 1,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "No summary.json for \(stem) — corrected summary must be written before republish"]
-            )))
-            return
-        }
-        Log.writeLine("daemon", "republish requested → \(stem)")
-        Log.event(category: "coordinator", action: "republish_started", attributes: [
-            "stem": stem,
-        ])
-        launcher.publish(summaryJSON: summaryURL) { [weak self] result in
-            DispatchQueue.main.async {
-                switch result {
-                case .success(let url):
-                    Log.event(category: "coordinator", action: "republish_succeeded", attributes: [
-                        "stem": stem,
-                        "page_url": url?.absoluteString ?? NSNull(),
-                    ])
-                case .failure(let err):
-                    Log.event(category: "coordinator", action: "republish_failed", attributes: [
-                        "stem": stem,
-                        "error": err.localizedDescription,
-                    ])
-                    self?.notifier.notifyError("Republish failed: \(err.localizedDescription)")
-                }
-                completion(result)
-            }
-        }
+        library.republishMeeting(stem: stem, completion: completion)
     }
 
     @objc func menuOpenScreenRecordingSettings() {
@@ -838,49 +653,12 @@ final class Coordinator: NSObject {
         CorrectionWindow.present(stem: stem, recordingsDir: liveOutputDir)
     }
 
-    /// List the last `limit` meetings that have a run sidecar on disk
-    /// (i.e. the summarize stage actually finished). Sorted newest
-    /// first by run-sidecar mtime so the most recent meeting is always
-    /// at the top of the menu.
     func recentCorrectableMeetings(limit: Int = 10) -> [(stem: String, displayName: String)] {
-        let dir = liveOutputDir
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(
-            at: dir,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
-        let sidecars = entries.filter { $0.lastPathComponent.hasSuffix(".run.json") }
-        let sorted = sidecars.sorted { lhs, rhs in
-            let lDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate) ?? .distantPast
-            let rDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate) ?? .distantPast
-            return lDate > rDate
-        }
-        return sorted.prefix(limit).map { url in
-            let name = url.lastPathComponent
-            // Strip the trailing ".run.json" suffix.
-            let stem = String(name.dropLast(".run.json".count))
-            return (stem: stem, displayName: stem)
-        }
+        library.recentCorrectableMeetings(limit: limit)
     }
 
-    /// Count of meetings whose last pipeline run failed and that the owner
-    /// has not yet recovered. Backs the status-bar failure row. Scans the
-    /// recordings dir directly (filenames only) so it works while the
-    /// Library window is closed and stays cheap enough to run per menu
-    /// open.
     func failedMeetingCount() -> Int {
-        let dir = liveOutputDir
-        guard let names = try? FileManager.default.contentsOfDirectory(
-            atPath: dir.path
-        ) else {
-            return 0
-        }
-        return MeetingStore.unrecoveredFailureStems(fileNames: names).count
+        library.failedMeetingCount()
     }
 
     // MARK: Live-config readers
@@ -1141,7 +919,7 @@ final class Coordinator: NSObject {
             }
             self.writeMetaSidecar(file: file, source: source)
             self.notifier.notifyProcessing(file: file)
-            self.sinkDispatcher.enqueue(file: file, summaryMode: summaryMode)
+            self.jobDispatcher.enqueue(file: file, summaryMode: summaryMode)
             // Drop the workflow attribution after the sidecar lands so it
             // can't bleed into the next meeting; a fresh resolve runs at
             // the start of the next `beginRecording`.
@@ -1215,33 +993,6 @@ final class Coordinator: NSObject {
                 self.statusBar.setIdle()
             }
         }
-    }
-
-    // MARK: Config refresh
-
-    private func handleConfigPersisted() {
-        ensureModelPrefetchIfNeeded()
-        statusBar.setRegulatedMode(configStore?.regulatedMode ?? false)
-    }
-
-    /// Spawn (or skip) a background `mp prefetch-model` for the configured
-    /// local model. Idempotent and safe to call from any config-change
-    /// path; the supervisor short-circuits when the model is already
-    /// cached or already downloading.
-    private func ensureModelPrefetchIfNeeded() {
-        guard let store = configStore else { return }
-        let backend = store.summarizationBackend
-        guard backend == "local" || backend == "auto" else {
-            // Cancel any in-flight prefetch when the user reverts to
-            // anthropic; no point burning bandwidth for a model the
-            // pipeline won't load.
-            modelDownload.cancel()
-            statusBar.setModelDownload(.idle)
-            return
-        }
-        let modelId = store.summarizationLocalModel
-        guard !modelId.isEmpty else { return }
-        modelDownload.ensure(modelId: modelId)
     }
 
     // MARK: - Silence detection (TECH-C2)
