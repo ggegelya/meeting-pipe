@@ -629,7 +629,10 @@ Acceptance:
 
 Deps: TECH-UI-5 (same file; serial within session).
 
-**TECH-UI-7 · Workflow editor modal title reflects name · S · none** [REVISED]
+**TECH-UI-7 · Workflow editor modal title reflects name · S · none** [DONE]
+
+> Resolved 2026-05-28: `WorkflowEditor` (in `WorkflowsView.swift`) gained an additive `onNameChange` callback (fired on hydrate and on every name keystroke via `.onChange(of: name)`) and a `startsBlank` flag; its name `TextField` placeholder is now `Untitled workflow`. Both sheet shells in `LibraryWindow.swift` keep a `@State liveName` and compute the header: `WorkflowEditorSheet` falls back to the saved `workflow.name` (no first-frame flash) and `NewWorkflowSheet` (which passes `startsBlank: true`) falls back to empty, both rendering `New workflow` when the trimmed name is empty. So a new workflow opens with a blank field (placeholder visible) and a `New workflow` header, typing updates the header live, an existing workflow shows its saved name from the start, and clearing the field reverts the header to `New workflow`.
+> Decision: the new-workflow stub stays persisted as `Untitled workflow` (so abandoning the sheet does not leave a blank-named workflow); `startsBlank` only blanks the editor field for display, which also matches the placeholder. Interaction code, so no headless test; `save()` already rejects an empty name. Build green.
 
 Header reflects the current value of the name field live; falls back to `New workflow` when empty and unsaved, or to the saved name when editing existing. Placeholder inside the field remains `Untitled workflow`.
 

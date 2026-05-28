@@ -42,6 +42,10 @@ private struct SinkSelection: Equatable {
 struct WorkflowEditor: View {
     let workflow: Workflow
     @ObservedObject var store: WorkflowStore
+    /// New workflows start with a blank name field (so the placeholder shows and the sheet header reads "New workflow") even though the persisted stub has a default name (TECH-UI-7).
+    var startsBlank: Bool = false
+    /// Reports the live name field value so the enclosing sheet header can reflect it as the user types (TECH-UI-7).
+    var onNameChange: ((String) -> Void)? = nil
     /// Notion DB list for the picker (TECH-B8). Held at editor level so the picker is populated on open, not only when Notion is toggled on.
     @StateObject private var notionDBs = NotionDatabaseList()
 
@@ -82,6 +86,7 @@ struct WorkflowEditor: View {
         }
         .onAppear(perform: hydrate)
         .onChange(of: workflow.id) { _, _ in hydrate() }
+        .onChange(of: name) { _, newName in onNameChange?(newName) }
         .alert("Delete this workflow?", isPresented: $pendingDeleteAlert) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive, action: deleteSelf)
@@ -113,7 +118,7 @@ struct WorkflowEditor: View {
     private var identitySection: some View {
         Section("Identity") {
             LabeledContent("Name") {
-                TextField("", text: $name)
+                TextField("Untitled workflow", text: $name)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(save)
             }
@@ -335,7 +340,8 @@ struct WorkflowEditor: View {
     // MARK: Form state
 
     private func hydrate() {
-        name = workflow.name
+        name = startsBlank ? "" : workflow.name
+        onNameChange?(name)
         color = workflow.color
         emoji = workflow.emoji ?? ""
         contextPrompt = workflow.contextPrompt

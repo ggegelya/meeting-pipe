@@ -364,10 +364,19 @@ private struct WorkflowEditorSheet: View {
     @ObservedObject var store: WorkflowStore
     let onClose: () -> Void
 
+    /// Live mirror of the editor's name field (TECH-UI-7). Nil until the editor
+    /// reports a value, so the header shows the saved name with no first-frame flash.
+    @State private var liveName: String? = nil
+
+    private var headerTitle: String {
+        let n = liveName ?? workflow.name
+        return n.trimmingCharacters(in: .whitespaces).isEmpty ? "New workflow" : n
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(workflow.name)
+                Text(headerTitle)
                     .font(.headline)
                 Spacer()
                 Button("Done", action: onClose)
@@ -376,7 +385,7 @@ private struct WorkflowEditorSheet: View {
             .padding(.horizontal, 18)
             .padding(.vertical, 12)
             Divider()
-            WorkflowEditor(workflow: workflow, store: store)
+            WorkflowEditor(workflow: workflow, store: store, onNameChange: { liveName = $0 })
                 .padding(20)
         }
         .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 640)
@@ -388,13 +397,21 @@ private struct NewWorkflowSheet: View {
     @ObservedObject var store: WorkflowStore
     let onClose: (Workflow.ID?) -> Void
     @State private var stub: Workflow? = nil
+    /// Live name from the (blank-started) editor field (TECH-UI-7); header reads
+    /// "New workflow" until the user types, then mirrors the field.
+    @State private var liveName: String? = nil
+
+    private var headerTitle: String {
+        let n = (liveName ?? "").trimmingCharacters(in: .whitespaces)
+        return n.isEmpty ? "New workflow" : n
+    }
 
     var body: some View {
         Group {
             if let s = stub {
                 VStack(spacing: 0) {
                     HStack {
-                        Text("New workflow")
+                        Text(headerTitle)
                             .font(.headline)
                         Spacer()
                         Button("Done") { onClose(s.id) }
@@ -403,7 +420,7 @@ private struct NewWorkflowSheet: View {
                     .padding(.horizontal, 18)
                     .padding(.vertical, 12)
                     Divider()
-                    WorkflowEditor(workflow: s, store: store)
+                    WorkflowEditor(workflow: s, store: store, startsBlank: true, onNameChange: { liveName = $0 })
                         .padding(20)
                 }
             } else {
