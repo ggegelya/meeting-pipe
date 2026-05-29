@@ -279,6 +279,16 @@ struct LibraryRootView: View {
             split
         }
         .frame(minWidth: 760)
+        // Cmd+, opens Preferences from the Library window. The status-bar menu's
+        // key equivalent (StatusBarController) is not validated against a key
+        // window in this LSUIElement app (no NSApp.mainMenu), so the Preferences
+        // shortcut is wired into the view hierarchy here.
+        .background(
+            Button("") { model.openPreferences() }
+                .keyboardShortcut(",", modifiers: .command)
+                .opacity(0)
+                .accessibilityHidden(true)
+        )
         .onAppear {
             meetingStore.start()
             recomputeCounts()
