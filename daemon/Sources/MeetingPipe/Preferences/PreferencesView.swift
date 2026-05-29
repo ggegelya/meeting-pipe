@@ -214,24 +214,16 @@ private struct GeneralSectionView: View {
             }
 
             SettingsGroup("Startup") {
-                SettingsRow("Launch at login",
-                    sublabel: launchAtLoginSublabel) {
-                    Toggle("", isOn: launchAtLoginBinding)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                    Spacer(minLength: 0)
-                }
-                SettingsRow("Relaunch after quitting",
+                SettingsToggleRow("Launch at login",
+                    sublabel: launchAtLoginSublabel,
+                    isOn: launchAtLoginBinding)
+                SettingsToggleRow("Relaunch after quitting",
                     sublabel: "On: Quit restarts MeetingPipe in the menu bar. Off: Quit fully closes it. Either way a crash still auto-recovers.",
-                    showsDivider: false) {
-                    Toggle("", isOn: Binding(
+                    isOn: Binding(
                         get: { !ui.disableAutoRestart },
                         set: { ui.disableAutoRestart = !$0 }
-                    ))
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    Spacer(minLength: 0)
-                }
+                    ),
+                    showsDivider: false)
             } footer: {
                 if LaunchAtLoginService.requiresApproval {
                     Text("macOS has marked this login item as needing approval. Open System Settings → General → Login Items and re-enable MeetingPipe.")
@@ -320,21 +312,13 @@ private struct RecordingSectionView: View {
             }
 
             SettingsGroup("Microphone") {
-                SettingsRow("Pause mic when muted",
+                SettingsToggleRow("Pause mic when muted",
                     sublabel: "Pauses mic capture while you're muted in Teams / Zoom / Slack / Webex. Uses the locale catalogue (en, uk, de, es, fr, ja, pt, ru).",
-                    showsDivider: false) {
-                    Toggle("", isOn: $store.honorAppMute)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                    Spacer(minLength: 0)
-                }
-                SettingsRow("Voice processing",
-                    sublabel: "Apple's noise-suppression + AGC. Drops your mic gain system-wide while recording, so other apps hear you quietly. Off by default; flip on only for solo voice memos.") {
-                    Toggle("", isOn: $store.voiceProcessing)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                    Spacer(minLength: 0)
-                }
+                    isOn: $store.honorAppMute,
+                    showsDivider: false)
+                SettingsToggleRow("Voice processing",
+                    sublabel: "Apple's noise-suppression + AGC. Drops your mic gain system-wide while recording, so other apps hear you quietly. Off by default; flip on only for solo voice memos.",
+                    isOn: $store.voiceProcessing)
             } footer: {
                 Text("Voice processing takes effect on the next recording. Mute pausing applies to every meeting.")
             }
@@ -478,24 +462,16 @@ private struct PromptSectionView: View {
             }
 
             SettingsGroup("Regulated mode") {
-                SettingsRow("Skip Notion publish",
+                SettingsToggleRow("Skip Notion publish",
                     sublabel: store.regulatedMode
                         ? "On - Notion publish is disabled for every meeting."
                         : "Off - meetings publish to Notion normally.",
-                    showsDivider: false) {
-                    Toggle("", isOn: $store.regulatedMode)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                    Spacer(minLength: 0)
-                }
-                SettingsRow("Show menu-bar lock",
-                    sublabel: "Append a lock glyph to the status-bar title whenever regulated mode is on.") {
-                    Toggle("", isOn: $ui.showRegulatedBadge)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .disabled(!store.regulatedMode)
-                    Spacer(minLength: 0)
-                }
+                    isOn: $store.regulatedMode,
+                    showsDivider: false)
+                SettingsToggleRow("Show menu-bar lock",
+                    sublabel: "Append a lock glyph to the status-bar title whenever regulated mode is on.",
+                    isOn: $ui.showRegulatedBadge)
+                    .disabled(!store.regulatedMode)
             } footer: {
                 Text("Use for client / regulated meetings. The pipeline writes summaries to disk only - no transcript or summary is uploaded to Notion.")
             }
@@ -536,7 +512,10 @@ private struct PipelineSectionView: View {
 
             SettingsGroup("Summarization") {
                 SettingsRow("Backend", showsDivider: false) {
-                    SettingsSegmented(
+                    // Dropdown (not segmented): four backends in a segmented
+                    // control stretched the window off-screen; a menu stays a
+                    // fixed width regardless of how many backends exist.
+                    SettingsMenuPicker(
                         selection: $store.summarizationBackend,
                         options: [
                             ("anthropic",          "Anthropic"),
@@ -585,13 +564,9 @@ private struct PipelineSectionView: View {
                             .truncationMode(.middle)
                         Spacer(minLength: 0)
                     }
-                    SettingsRow("Preload at launch",
-                        sublabel: "Warm the model when the app starts so the first summary skips the cold-start. Holds the model in RAM while idle.") {
-                        Toggle("", isOn: $ui.preloadLocalModelAtLaunch)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-                        Spacer(minLength: 0)
-                    }
+                    SettingsToggleRow("Preload at launch",
+                        sublabel: "Warm the model when the app starts so the first summary skips the cold-start. Holds the model in RAM while idle.",
+                        isOn: $ui.preloadLocalModelAtLaunch)
                 }
             } footer: {
                 pipelineBackendFooter
@@ -1109,14 +1084,10 @@ private struct AdvancedSectionView: View {
             }
 
             SettingsGroup("Diagnostics") {
-                SettingsRow("Verbose logging",
+                SettingsToggleRow("Verbose logging",
                     sublabel: "Emit extra detail to the unified log and pass MP_VERBOSE=1 to pipeline subprocesses.",
-                    showsDivider: false) {
-                    Toggle("", isOn: $ui.verboseLogging)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                    Spacer(minLength: 0)
-                }
+                    isOn: $ui.verboseLogging,
+                    showsDivider: false)
             } footer: {
                 Text("Takes effect after restarting MeetingPipe - the env var is set at daemon launch and inherited by every subprocess spawned afterwards.")
             }

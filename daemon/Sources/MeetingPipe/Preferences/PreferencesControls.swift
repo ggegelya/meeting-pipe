@@ -129,6 +129,32 @@ struct SettingsRow<Content: View>: View {
     }
 }
 
+/// Label row whose control is a trailing-aligned switch (macOS System Settings
+/// convention). Wraps `SettingsRow` so the divider and 168pt label column match
+/// every other row; the switch hugs the right edge instead of leaving dead space.
+struct SettingsToggleRow: View {
+    let label: String
+    let sublabel: String?
+    @Binding var isOn: Bool
+    var showsDivider: Bool
+
+    init(_ label: String, sublabel: String? = nil, isOn: Binding<Bool>, showsDivider: Bool = true) {
+        self.label = label
+        self.sublabel = sublabel
+        self._isOn = isOn
+        self.showsDivider = showsDivider
+    }
+
+    var body: some View {
+        SettingsRow(label, sublabel: sublabel, showsDivider: showsDivider) {
+            Spacer(minLength: 0)
+            Toggle("", isOn: $isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+        }
+    }
+}
+
 /// Full-width row variant (no label column). Used by the auto-consent allowlist.
 struct SettingsFullRow<Content: View>: View {
     @ViewBuilder var content: () -> Content
@@ -169,6 +195,28 @@ struct SettingsSegmented<Value: Hashable>: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .fixedSize()
+    }
+}
+
+// MARK: - Menu picker
+
+/// Compact dropdown picker. Unlike `SettingsSegmented`, its width is fixed
+/// regardless of option count, so a long or many-option list (e.g. the
+/// summarization backend) doesn't stretch the row and blow out the window.
+struct SettingsMenuPicker<Value: Hashable>: View {
+    @Binding var selection: Value
+    let options: [(value: Value, label: String)]
+    var width: CGFloat = 200
+
+    var body: some View {
+        Picker("", selection: $selection) {
+            ForEach(options.indices, id: \.self) { i in
+                Text(options[i].label).tag(options[i].value)
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .frame(width: width)
     }
 }
 
@@ -395,14 +443,16 @@ struct SettingsHotkeyField: View {
 
 // MARK: - SecretInput
 
-/// Password-style field with an eye toggle. Used for secrets in the Integrations section.
+/// Password-style field with a reveal toggle. The eye sits *beside* the field
+/// (not overlaid on the masked dots) as a distinct bordered button, so it stays
+/// clearly visible and never collides with the text. Tinted when revealing.
 struct SettingsSecretField: View {
     @Binding var text: String
     var placeholder: String = ""
     @State private var isVisible: Bool = false
 
     var body: some View {
-        ZStack(alignment: .trailing) {
+        HStack(spacing: 6) {
             Group {
                 if isVisible {
                     TextField(placeholder, text: $text)
@@ -416,13 +466,22 @@ struct SettingsSecretField: View {
             Button {
                 isVisible.toggle()
             } label: {
-                Image(systemName: isVisible ? "eye.slash" : "eye")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 22, height: 22)
+                Image(systemName: isVisible ? "eye.slash.fill" : "eye.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(isVisible ? Color(MPColors.signal600) : Color(MPColors.fgMuted))
+                    .frame(width: 30, height: 22)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color(MPColors.bgSunk))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .strokeBorder(Color(MPColors.border), lineWidth: 1)
+                    )
             }
             .buttonStyle(.plain)
-            .padding(.trailing, 4)
+            .help(isVisible ? "Hide" : "Reveal")
+            .accessibilityLabel(isVisible ? "Hide secret" : "Reveal secret")
         }
     }
 }

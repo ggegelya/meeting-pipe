@@ -40,6 +40,12 @@ final class PreferencesWindow {
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         w.setContentSize(NSSize(width: 780, height: 660))
         w.minSize = NSSize(width: 720, height: 560)
+        // Bound the window to the screen so a wide control can never push it
+        // off-screen (regression seen when the 4-option backend picker stretched
+        // the Pipeline tab). Still resizable within the screen for long IDs.
+        if let visible = NSScreen.main?.visibleFrame.size {
+            w.maxSize = NSSize(width: visible.width, height: visible.height)
+        }
         w.isReleasedWhenClosed = false
         w.center()
 
