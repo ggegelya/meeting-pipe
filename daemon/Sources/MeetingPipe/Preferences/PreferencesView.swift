@@ -465,7 +465,7 @@ private struct PromptSectionView: View {
                 SettingsToggleRow("Skip Notion publish",
                     sublabel: store.regulatedMode
                         ? "On - Notion publish is disabled for every meeting."
-                        : "Off - meetings publish to Notion normally.",
+                        : "Off - meetings publish to each workflow's own sinks (Notion only if that workflow enables it).",
                     isOn: $store.regulatedMode,
                     showsDivider: false)
                 SettingsToggleRow("Show menu-bar lock",
