@@ -423,7 +423,11 @@ private struct PromptSectionView: View {
                 }
                 SettingsRow("Default action",
                     sublabel: defaultActionSublabel) {
-                    SettingsSegmented(
+                    // Dropdown (not segmented): "Record (BYO)" widened the
+                    // segmented control enough to shove the Prompt tab off-screen
+                    // (same fix as the Pipeline backend picker). A menu stays a
+                    // fixed width regardless of label length.
+                    SettingsMenuPicker(
                         selection: $store.defaultPromptAction,
                         options: [
                             ("skip",   "Skip"),
