@@ -342,6 +342,9 @@ struct LibraryRootView: View {
                     workflows: store.workflows,
                     selection: $meetingSelection
                 )
+                // Floor the center column so the status pill + date can't be
+                // squeezed off the row edge when the window or columns narrow.
+                .navigationSplitViewColumnWidth(min: 360, ideal: 440)
             } detail: {
                 detailPane(workflowStore: store)
             }
