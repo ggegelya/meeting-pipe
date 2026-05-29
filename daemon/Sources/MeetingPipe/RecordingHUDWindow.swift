@@ -18,10 +18,14 @@ final class RecordingHUDWindow {
     private var ticker: Timer?
     private var startedAt: Date?
 
-    /// Degraded-state banner (TECH-UX4), hidden until the recorder reports a
-    /// system-audio failure; the panel grows to fit it and shrinks on retry.
+    /// Degraded-state banner (TECH-UX4). Built lazily only when the recorder
+    /// reports a system-audio failure, so its wide content never inflates the
+    /// borderless panel's fitting width while the pill is in its normal state.
+    private weak var contentView: NSView?
+    private weak var stopButton: NSView?
+    private var stopBottomNormal: NSLayoutConstraint?
+    private var stopBottomToBanner: NSLayoutConstraint?
     private var degradedBanner: HUDDegradedBanner?
-    private var bannerHeightConstraint: NSLayoutConstraint?
 
     /// Voice-activity meter (TECH-UX8): polls the mic level at 10 Hz so the
     /// audio render thread never has to push to the UI.
@@ -86,7 +90,10 @@ final class RecordingHUDWindow {
         self.pulseDot = nil
         self.levelMeter = nil
         self.degradedBanner = nil
-        self.bannerHeightConstraint = nil
+        self.contentView = nil
+        self.stopButton = nil
+        self.stopBottomNormal = nil
+        self.stopBottomToBanner = nil
 
         guard animated else {
             panel.orderOut(nil)
@@ -103,21 +110,38 @@ final class RecordingHUDWindow {
 
     // MARK: Degraded state (TECH-UX4)
 
-    /// Show the "system audio not captured" banner and grow the HUD into a
-    /// card. Idempotent. Main-queue only.
+    /// Add the "system audio not captured" banner and grow the HUD into a card.
+    /// Built lazily (not kept hidden in the tree) so its wide content never
+    /// inflates the compact pill. Idempotent. Main-queue only.
     func showSystemAudioDegraded() {
-        guard let banner = degradedBanner, let heightC = bannerHeightConstraint, banner.isHidden else { return }
-        banner.isHidden = false
-        heightC.constant = Self.bannerHeight
+        guard degradedBanner == nil, let bg = contentView, let stop = stopButton else { return }
+        let banner = HUDDegradedBanner(target: bg, action: #selector(HUDBackgroundView.didClickRetrySystemAudio))
+        banner.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(banner)
+        degradedBanner = banner
+
+        // Re-pin the stop button above the banner for the duration of the card.
+        stopBottomNormal?.isActive = false
+        let stopToBanner = stop.bottomAnchor.constraint(equalTo: banner.topAnchor, constant: -10)
+        stopBottomToBanner = stopToBanner
+        NSLayoutConstraint.activate([
+            banner.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 8),
+            banner.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -8),
+            banner.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -8),
+            banner.heightAnchor.constraint(equalToConstant: Self.bannerHeight),
+            stopToBanner,
+        ])
         resizePanelAnchoringTopRight(width: Self.degradedPanelWidth, height: Self.panelHeight + Self.bannerHeight)
     }
 
-    /// Hide the degraded banner and shrink the HUD back to the compact pill.
+    /// Remove the degraded banner and shrink the HUD back to the compact pill.
     /// Idempotent. Main-queue only.
     func clearSystemAudioDegraded() {
-        guard let banner = degradedBanner, let heightC = bannerHeightConstraint, !banner.isHidden else { return }
-        banner.isHidden = true
-        heightC.constant = 0
+        guard let banner = degradedBanner else { return }
+        banner.removeFromSuperview()   // also removes its constraints, incl. the stop->banner pin
+        degradedBanner = nil
+        stopBottomToBanner = nil
+        stopBottomNormal?.isActive = true
         resizePanelAnchoringTopRight(width: Self.panelWidth, height: Self.panelHeight)
     }
 
@@ -210,16 +234,13 @@ final class RecordingHUDWindow {
         stop.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(stop)
 
-        // Degraded banner (TECH-UX4): zero-height + hidden until needed, pinned
-        // to the bottom so the stop button keeps its resting position when the
-        // banner is collapsed.
-        let banner = HUDDegradedBanner(target: bg, action: #selector(HUDBackgroundView.didClickRetrySystemAudio))
-        banner.translatesAutoresizingMaskIntoConstraints = false
-        banner.isHidden = true
-        bg.addSubview(banner)
-        self.degradedBanner = banner
-        let bannerH = banner.heightAnchor.constraint(equalToConstant: 0)
-        self.bannerHeightConstraint = bannerH
+        // Retain refs so the degraded banner can be added lazily (TECH-UX4):
+        // keeping it out of the tree while collapsed stops its wide content
+        // from inflating the borderless panel's fitting width.
+        self.contentView = bg
+        self.stopButton = stop
+        let stopBottom = stop.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -10)
+        self.stopBottomNormal = stopBottom
 
         NSLayoutConstraint.activate([
             glyph.centerXAnchor.constraint(equalTo: bg.centerXAnchor),
@@ -247,14 +268,9 @@ final class RecordingHUDWindow {
             workflowLabel.heightAnchor.constraint(equalToConstant: 14),
 
             stop.centerXAnchor.constraint(equalTo: bg.centerXAnchor),
-            stop.bottomAnchor.constraint(equalTo: banner.topAnchor, constant: -10),
+            stopBottom,
             stop.widthAnchor.constraint(equalToConstant: 30),
             stop.heightAnchor.constraint(equalToConstant: 30),
-
-            banner.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 8),
-            banner.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -8),
-            banner.bottomAnchor.constraint(equalTo: bg.bottomAnchor),
-            bannerH,
         ])
         return bg
     }

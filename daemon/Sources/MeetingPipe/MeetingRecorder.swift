@@ -400,8 +400,10 @@ final class MeetingRecorder {
                 // TECH-UX8: stash the per-buffer level for the HUD VU meter.
                 // Plain aligned Float store, no allocation or dispatch on the
                 // render thread; the HUD polls it on a 10 Hz main-queue timer
-                // and a torn meter sample is harmless.
-                latestMicLevelDb = db
+                // and a torn meter sample is harmless. Gate by the MicGate
+                // verdict so the meter shows silence when muted/gated, matching
+                // what is actually recorded, rather than the raw (pre-gate) mic.
+                latestMicLevelDb = currentMicGateVerdict.passesLiveAudio ? db : -120
             }
             // Apply the verdict in place; frame parity is preserved (ADR
             // 0009), muted buffers fade to zero over 20 ms.
