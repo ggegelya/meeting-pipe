@@ -1035,13 +1035,14 @@ final class Coordinator: NSObject {
             ])
         }
 
-        // Watch for mute buttons that appear after recording-start (Teams 2
-        // compact view, etc.); events flow back via injectAxMuteEvent.
+        // Authoritative 1 Hz mute-state poll: re-resolves and reads the live
+        // mute button(s) each tick (survives Teams 2 compact-view / backgrounded
+        // window swaps and dropped AX notifications); events flow back via
+        // injectAxMuteEvent. The primary probe above is the foreground fast-path.
         let watcher = MeetingAXWindowWatcher(
             pid: handles.context.pid,
             bundleID: handles.context.bundleID,
             catalogue: muteLabels,
-            axBus: axBus,
             eventLog: LogEventAdapter(),
             onMuteEvent: { [weak self] event in
                 self?.micGate.injectAxMuteEvent(event)

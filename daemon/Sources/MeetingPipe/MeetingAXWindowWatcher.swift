@@ -3,31 +3,56 @@ import ApplicationServices
 import Foundation
 import MeetingPipeCore
 
-/// Catches mute-button clicks from windows that appear after `MeetingAXHandleBuilder.build` ran (TECH-C14). Teams 2 creates a compact-view `NSPanel` only when the main meeting window is backgrounded; the panel's Mute button missed the initial AX walk so clicks never flipped `MicGateVerdict.mutedByApp`. Subscribes to `kAXWindowCreatedNotification` and rescans every new window's subtree; newly found buttons get their own `AXMuteButtonProbe` routed into `MicGate.injectAxMuteEvent`. Start/stop on `beginRecording`/`stopRecording`. Main-queue only; not thread-safe.
+/// Authoritative mute-state backstop for native meeting clients (TECH-C14, rebuilt 2026-05-29).
+///
+/// Why a poller and not a notification subscriber: the original design tried to
+/// attach a second `AXMuteButtonProbe` (value/title-changed observers) to every
+/// mute button found in a window-created rescan. That never worked. `RealAXBackend`
+/// caches one `AXObserver` per PID, so re-registering the same notification on the
+/// same button the primary probe already holds returns `kAXErrorNotificationAlreadyRegistered`
+/// -> `backendFailed` -> the dynamic probe never started (`active_probes: 0` on every
+/// rescan, observed all meeting on 2026-05-29). Worse, a failed subscribe meant the
+/// button's state was never even *read*, and the primary probe's 1 Hz health poll only
+/// re-reads its original cached element - so when Teams 2 moved the live control to a
+/// backgrounded/compact-view window, an unmute went undetected for minutes and the user's
+/// voice was zeroed while they spoke.
+///
+/// This rebuild reads instead of subscribes. Every `pollInterval` it re-resolves the live
+/// mute button(s) via `MeetingAXHandleBuilder.findAllMuteButtons` (a fresh AX-tree walk)
+/// and reads each one's state with a plain `AXUIElementCopyAttributeValue` - which returns
+/// the current value and needs no observer, so it survives window/compact-view swaps and
+/// dropped notifications. The fused state is injected into `MicGate.injectAxMuteEvent`.
+/// The primary notification probe stays as the low-latency foreground fast-path; this is
+/// the robust backstop that catches every mute/unmute transition within `pollInterval`.
+///
+/// Fusion bias is MUTED: if any live button reads `.unmuted` we only record when *all*
+/// known buttons agree unmuted; a single muted button wins. Privacy over capture on a
+/// genuine multi-button disagreement (user's call, 2026-05-29). The common case is a
+/// single button, where the live reading wins outright.
+///
+/// Threading: main-queue only; not thread-safe. `start`/`stop` on `beginRecording`/`stopRecording`.
 final class MeetingAXWindowWatcher {
 
-    /// Returns a cancel closure. Default uses `Timer.scheduledTimer`; tests inject a manual driver to exercise the retry path without sleeping.
+    /// Returns a cancel closure. Default uses `Timer.scheduledTimer`; tests inject a manual driver to step the poll without sleeping.
     typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
 
-    private let axApp: AXUIElement
-    private let pid: pid_t
+    /// Re-resolve + read the current mute-button states from the live AX tree. Injected so tests can feed canned readings without a real app. Default walks the tree.
+    typealias StateResolver = () -> [MuteLabels.State]
+
+    static let defaultPollInterval: TimeInterval = 1.0
+
     private let bundleID: String
-    private let catalogue: MuteLabels
-    private let axBus: AXObserverBus
     private let eventLog: EventLog
     private let onMuteEvent: (AXMuteButtonProbe.Event) -> Void
     private let scheduler: Scheduler
-    private let maxSubscribeAttempts: Int
-    private let subscribeRetryDelay: TimeInterval
+    private let stateResolver: StateResolver
+    private let pollInterval: TimeInterval
+    private let localeResolver: AXMuteButtonProbe.LocaleResolver
 
-    private var subscriptionToken: AXObserverBus.Token?
-    /// Each rescan tears the previous set down and rebuilds; AX reference equality across walks is unreliable so re-binding the same button is harmless.
-    private var dynamicProbes: [AXMuteButtonProbe] = []
-    /// Logged on each rescan to spot runaway notification storms.
-    private var rescanCount: Int = 0
-    private var subscribeAttempts: Int = 0
-    /// Non-nil while a retry is pending after a transient `backendFailed`.
-    private var cancelPendingRetry: (() -> Void)?
+    private var cancelPoll: (() -> Void)?
+    /// Last fused state we injected; suppresses duplicate events so MicGate only sees real transitions.
+    private var lastEmitted: MuteLabels.State?
+    private var pollCount: Int = 0
 
     static let defaultScheduler: Scheduler = { delay, action in
         let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in
@@ -40,134 +65,114 @@ final class MeetingAXWindowWatcher {
         pid: pid_t,
         bundleID: String,
         catalogue: MuteLabels,
-        axBus: AXObserverBus,
         eventLog: EventLog,
         onMuteEvent: @escaping (AXMuteButtonProbe.Event) -> Void,
         scheduler: @escaping Scheduler = MeetingAXWindowWatcher.defaultScheduler,
-        maxSubscribeAttempts: Int = 3,
-        subscribeRetryDelay: TimeInterval = 1.5
+        stateResolver: StateResolver? = nil,
+        localeResolver: @escaping AXMuteButtonProbe.LocaleResolver = AXMuteButtonProbe.defaultLocaleResolver,
+        pollInterval: TimeInterval = MeetingAXWindowWatcher.defaultPollInterval
     ) {
-        self.axApp = AXUIElementCreateApplication(pid)
-        self.pid = pid
         self.bundleID = bundleID
-        self.catalogue = catalogue
-        self.axBus = axBus
         self.eventLog = eventLog
         self.onMuteEvent = onMuteEvent
         self.scheduler = scheduler
-        self.maxSubscribeAttempts = maxSubscribeAttempts
-        self.subscribeRetryDelay = subscribeRetryDelay
+        self.localeResolver = localeResolver
+        self.pollInterval = pollInterval
+        // Capture values (not self) so the default resolver has no retain cycle.
+        let axApp = AXUIElementCreateApplication(pid)
+        self.stateResolver = stateResolver ?? {
+            MeetingAXWindowWatcher.readMuteStates(
+                axApp: axApp, bundleID: bundleID, catalogue: catalogue
+            )
+        }
     }
 
     func start() {
         stop()
-        subscribeAttempts = 0
-        attemptSubscribe()
+        eventLog.emit(category: "coordinator", action: "mute_poller_started", attributes: [
+            "bundle_id": bundleID,
+            "poll_interval_s": pollInterval,
+        ])
+        poll()
     }
 
     func stop() {
-        if let token = subscriptionToken {
-            axBus.unsubscribe(token)
-            subscriptionToken = nil
-        }
-        cancelPendingRetry?()
-        cancelPendingRetry = nil
-        for probe in dynamicProbes { probe.stop() }
-        dynamicProbes.removeAll()
-        rescanCount = 0
-        subscribeAttempts = 0
+        cancelPoll?()
+        cancelPoll = nil
+        lastEmitted = nil
+        pollCount = 0
     }
 
-    /// Register `kAXWindowCreatedNotification`, retrying up to `maxSubscribeAttempts` on `backendFailed`. macOS returns `kAXErrorCannotComplete` for apps that just spawned (e.g. Teams launching alongside the meeting); giving up after one attempt would miss the first-window-created event. Three attempts at 1.5 s catches the slow path without stalling disengage on a permanently-broken app.
-    private func attemptSubscribe() {
-        subscribeAttempts += 1
-        do {
-            let token = try axBus.subscribe(
-                pid: pid,
-                element: axApp,
-                notification: kAXWindowCreatedNotification as String
-            ) { [weak self] in
-                self?.handleWindowCreated()
-            }
-            subscriptionToken = token
-            eventLog.emit(category: "coordinator", action: "ax_watcher_started", attributes: [
+    // MARK: - Poll loop
+
+    private func poll() {
+        pollCount += 1
+        let states = stateResolver()
+        let fused = MeetingAXWindowWatcher.fuse(states)
+
+        if let fused = fused, fused != lastEmitted {
+            // Log only on transition (and the multi-button case) so events.jsonl
+            // isn't flooded at 1 Hz. A change to `.unmuted` here is the signature
+            // of the fix working; a `buttons_found > 1` disagreement is the case
+            // the MUTED bias guards and we want to see if it ever happens.
+            eventLog.emit(category: "micgate", action: "mute_state_polled", attributes: [
                 "bundle_id": bundleID,
-                "pid": Int(pid),
-                "attempts": subscribeAttempts,
+                "poll_count": pollCount,
+                "buttons_found": states.count,
+                "states": states.map { MeetingAXWindowWatcher.label(for: $0) },
+                "fused": MeetingAXWindowWatcher.label(for: fused),
+                "previous": lastEmitted.map { MeetingAXWindowWatcher.label(for: $0) } as Any,
             ])
-            // Initial rescan covers the compact-view-already-open case (user backgrounds Teams before clicking Record).
-            handleWindowCreated()
-        } catch {
-            if subscribeAttempts < maxSubscribeAttempts {
-                eventLog.emit(category: "coordinator", action: "ax_watcher_subscribe_retry", attributes: [
-                    "bundle_id": bundleID,
-                    "attempt": subscribeAttempts,
-                    "max_attempts": maxSubscribeAttempts,
-                    "error": "\(error)",
-                ])
-                cancelPendingRetry = scheduler(subscribeRetryDelay) { [weak self] in
-                    self?.cancelPendingRetry = nil
-                    self?.attemptSubscribe()
-                }
-            } else {
-                eventLog.emit(category: "coordinator", action: "ax_watcher_subscribe_gave_up", attributes: [
-                    "bundle_id": bundleID,
-                    "attempts": subscribeAttempts,
-                    "error": "\(error)",
-                ])
-            }
+            lastEmitted = fused
+            onMuteEvent(AXMuteButtonProbe.Event(
+                state: fused,
+                label: fused == .muted ? "poll:muted" : "poll:unmuted",
+                locale: localeResolver()
+            ))
+        }
+
+        cancelPoll = scheduler(pollInterval) { [weak self] in
+            self?.poll()
         }
     }
 
-    /// Rescan and rebuild the dynamic probe set. Called on each `kAXWindowCreatedNotification` and once at `start()` for the already-open case.
-    private func handleWindowCreated() {
-        rescanCount += 1
+    // MARK: - Pure helpers
+
+    /// MUTED-biased fusion: nil when no button gave a confident reading (don't
+    /// clobber MicGate with `.unknown`); `.unmuted` only when every known button
+    /// agrees unmuted; otherwise `.muted`.
+    static func fuse(_ states: [MuteLabels.State]) -> MuteLabels.State? {
+        let known = states.filter { $0 != .unknown }
+        guard !known.isEmpty else { return nil }
+        return known.allSatisfy { $0 == .unmuted } ? .unmuted : .muted
+    }
+
+    /// Real resolver: fresh AX-tree walk for the live mute button(s), each read
+    /// (not subscribed) via the standard probe blob + locale recogniser.
+    static func readMuteStates(
+        axApp: AXUIElement,
+        bundleID: String,
+        catalogue: MuteLabels
+    ) -> [MuteLabels.State] {
+        guard let app = MeetingAXHandleBuilder.appNameByBundle[bundleID] else { return [] }
+        let locale = AXMuteButtonProbe.defaultLocaleResolver()
         let buttons = MeetingAXHandleBuilder.findAllMuteButtons(
-            in: axApp,
-            bundleID: bundleID,
-            catalogue: catalogue
+            in: axApp, bundleID: bundleID, catalogue: catalogue
         )
-
-        // Rebuild from scratch: AXUIElement identity isn't stable across walks so deduping is unreliable. Working set is tiny (1-2 buttons).
-        for probe in dynamicProbes { probe.stop() }
-        dynamicProbes.removeAll()
-
-        guard let app = MeetingAXHandleBuilder.appNameByBundle[bundleID] else {
-            eventLog.emit(category: "coordinator", action: "ax_watcher_rescan", attributes: [
-                "bundle_id": bundleID,
-                "rescan_count": rescanCount,
-                "mute_buttons_found": 0,
-                "result": "unknown_app",
-            ])
-            return
-        }
-
-        for button in buttons {
-            let probe = AXMuteButtonProbe(
-                app: app,
-                axBus: axBus,
-                catalogue: catalogue,
-                eventLog: eventLog
+        return buttons.map { button in
+            let blob = AXMuteButtonProbe.defaultProbe(button)
+            return catalogue.recognize(
+                app: app, locale: locale,
+                title: blob.title, help: blob.help, description: blob.description
             )
-            probe.onChange = { [weak self] event in
-                self?.onMuteEvent(event)
-            }
-            do {
-                try probe.start(pid: pid, bundleID: bundleID, button: button)
-                dynamicProbes.append(probe)
-            } catch {
-                eventLog.emit(category: "coordinator", action: "ax_watcher_probe_start_failed", attributes: [
-                    "bundle_id": bundleID,
-                    "error": "\(error)",
-                ])
-            }
         }
+    }
 
-        eventLog.emit(category: "coordinator", action: "ax_watcher_rescan", attributes: [
-            "bundle_id": bundleID,
-            "rescan_count": rescanCount,
-            "mute_buttons_found": buttons.count,
-            "active_probes": dynamicProbes.count,
-        ])
+    private static func label(for state: MuteLabels.State) -> String {
+        switch state {
+        case .muted: return "muted"
+        case .unmuted: return "unmuted"
+        case .unknown: return "unknown"
+        }
     }
 }

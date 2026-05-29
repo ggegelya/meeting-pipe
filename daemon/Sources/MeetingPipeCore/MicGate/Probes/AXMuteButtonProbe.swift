@@ -26,6 +26,13 @@ public final class AXMuteButtonProbe {
         public let state: MuteLabels.State
         public let label: String?
         public let locale: String
+
+        /// Public so out-of-band producers (e.g. the mute-state poller) can build events for `MicGate.injectAxMuteEvent`.
+        public init(state: MuteLabels.State, label: String?, locale: String) {
+            self.state = state
+            self.label = label
+            self.locale = locale
+        }
     }
 
     public var onChange: ((Event) -> Void)?
