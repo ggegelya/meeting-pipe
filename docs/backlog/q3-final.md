@@ -75,7 +75,7 @@ TECH-CAP1 (the audit's open P1) was here; deprioritized to P3 on 2026-05-28 (mon
 
 - User locale: 99% English / Ukrainian. Do not default examples to German. `uk` is in MuteLabels.toml; verify any new uk labels with the user.
 - User is vibe-coding: high-level explanations, does not read code. Lean on ARCHITECTURE.md Mermaid diagrams.
-- Identity: commits as `Georgy <g.gegelya@icloud.com>`. No em-dashes in any output. Do not push without permission.
+- Identity: commit with the repository's configured git identity. No em-dashes in any output. Do not push without permission.
 - MicGate runtime knobs live in Preferences > Recording > Microphone and Preferences > Prompt > Stop conditions.
 - This backlog is the source of truth for TECH-* items. Q2 archived to `docs/backlog/q2-final.md`. Q2 UI addendum archived to `docs/backlog/q2-ui-addendum-final.md`. Audit doc reframed to `docs/operational-state-2026-q2.md`. next.md archived to `docs/planning/2026-05-next.md`.
 - Architecture doc renamed to `docs/architecture/signal-fusion-and-mic-gating.md`.
