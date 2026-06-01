@@ -49,13 +49,17 @@ def build_publishers(cfg: Config) -> list[MeetingPublisher]:
 
 def _build_one(name: str, cfg: Config) -> MeetingPublisher | None:
     if name == "notion":
-        # The Notion publisher reads its own auth from env at upsert
-        # time and short-circuits on regulated_mode internally; build
-        # is essentially free.
+        # The Notion publisher takes its token at construction time. Under
+        # regulated_mode we build it with an empty token (no NOTION_TOKEN
+        # required) so an install listing "notion" as a placeholder sink still
+        # constructs. WARNING: upsert() does NOT short-circuit on regulated_mode
+        # (only the module-level publish() does, which fanout never calls), so a
+        # regulated install must not keep "notion" as an active sink. Closing
+        # that gap is tracked in the backlog (regulated egress).
         from .publish_notion import NotionRestPublisher
         from .config import require_env
         if cfg.modes.regulated_mode:
-            log.info("regulated_mode=true; Notion sink will skip on upsert")
+            log.info("regulated_mode=true; building Notion sink with empty token (upsert is not regulated-aware)")
         if not cfg.notion.database_id and not cfg.modes.regulated_mode:
             log.warning("notion.database_id is empty; Notion sink will fail at upsert")
         token = require_env("NOTION_TOKEN") if not cfg.modes.regulated_mode else ""

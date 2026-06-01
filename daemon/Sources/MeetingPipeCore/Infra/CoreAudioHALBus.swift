@@ -1,7 +1,7 @@
 import CoreAudio
 import Foundation
 
-/// Single-owner registration point for CoreAudio HAL property listeners. Centralises `MeetingLifecycleCoordinator` (process-input-running, default input device changes) and `MicGate` (HAL VAD enable/state, system input mute) onto one dispatch queue and one teardown path (TECH-C13 step 1; real `AudioObjectAddPropertyListenerBlock` wired in step 2 and TECH-G-MIC step 1). Threading: all entry points serialised on `queue`; handlers dispatched on the same queue.
+/// Single-owner registration point for CoreAudio HAL property listeners. Centralises `MeetingLifecycleCoordinator` (process-input-running) and `MicGate` (HAL VAD enable/state, system input mute, default-input-device re-resolve) onto one dispatch queue and one teardown path (TECH-C13 step 1; real `AudioObjectAddPropertyListenerBlock` wired in step 2 and TECH-G-MIC step 1). Threading: all entry points serialised on `queue`; handlers dispatched on the same queue.
 public final class CoreAudioHALBus {
 
     /// Identifies a HAL property subscription: the AudioObject plus the

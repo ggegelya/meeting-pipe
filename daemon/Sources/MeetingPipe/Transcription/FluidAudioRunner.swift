@@ -3,10 +3,10 @@ import FluidAudio
 import Foundation
 
 /// Swift-native ASR + diarization via FluidAudio (Parakeet TDT + pyannote on ANE).
-/// Wired into TranscriptionService but not the default yet; a follow-up flips the
-/// default after ANE residency and sidecar parity are verified. Model state is held
-/// for the daemon session lifetime to avoid CoreML recompilation. Network is not
-/// touched at init; first model download is lazy via FluidAudio's bundled loader.
+/// The default (and only) ASR runner, returned by `TranscriptionService.makeRunner()`;
+/// Python does summarize + publish only (ADR 0007). Model state is held for the daemon
+/// session lifetime to avoid CoreML recompilation. Network is not touched at init;
+/// first model download is lazy via FluidAudio's bundled loader.
 final class FluidAudioRunner: TranscriptionRunner {
 
     let backendName = "fluidaudio"

@@ -30,7 +30,7 @@ layer (outlines / lm-format-enforcer) is added in a separate change
 Why a subprocess and not a library import: ``mlx_lm`` keeps the
 loaded model in process memory for the life of the interpreter. A
 short-lived CLI invocation pays a 10-30 s warm-up per call and a
-70 GB-ish memory spike for a 14 B model. Running the server lets us
+~8 GB resident footprint for a 14 B 4-bit model (larger for 32 B). Running the server lets us
 amortize the load across calls and shut it down on idle.
 """
 from __future__ import annotations

@@ -1,9 +1,9 @@
 """`mp run-all <wav>` — fail-fast pipeline orchestration.
 
 Stages:
-  1. transcribe   →  <stem>.json   + <stem>.md
+  1. finalize     →  <stem>.json   + <stem>.md   (finalizes the daemon's FluidAudio transcript)
   2. summarize    →  <stem>.summary.json + <stem>.summary.md
-  3. publish      →  <stem>.notion.json (or skipped under regulated_mode)
+  3. publish      →  per-sink sidecars (e.g. <stem>.notion.json)
 
 Each stage logs to ~/Library/Logs/MeetingPipe/pipeline.log via the root logger
 configured here. Daemon's PipelineLauncher tails this file too.

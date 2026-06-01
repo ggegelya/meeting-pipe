@@ -269,9 +269,11 @@ final class Coordinator: NSObject {
                 )
             }
         )
-        // MicGate consumes the recorder's per-buffer mic RMS; the gate
-        // is allocation-free and defers its publish off the render
-        // thread, so calling from the audio tap is safe.
+        // MicGate consumes the recorder's per-buffer mic RMS on the
+        // render thread. The RMS gate is allocation-free; note that a
+        // verdict change still takes a lock and emits one events.jsonl
+        // line synchronously on this thread (only the verdict stream
+        // yield is deferred).
         recorder.onMicRmsDb = { [weak self] db in
             self?.micGate.ingest(rmsDb: db)
         }

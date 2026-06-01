@@ -4,14 +4,14 @@ Idempotency strategy: after the first POST, we stash the returned `page_id`
 in `<stem>.notion.json` next to the audio. On rerun, we PATCH the existing
 page (properties + body block replacement) instead of creating a new one.
 
-Body structure (SPEC §6 phase 6):
-1. Summary (bulleted list)
-2. Decisions (numbered list)
+Body structure (P4.3 redesign, see `_build_blocks`):
+1. Summary (single callout)
+2. Decisions (numbered list, bold opener)
 3. Action Items (to_do blocks)
-4. Open Questions (bulleted list)
-5. Toggle: "Full transcript" — speaker-labeled MD (skipped if regulated_mode)
+4. Open Questions (collapsed toggle)
+5. Full transcript (collapsed toggle, written only when notion.include_full_transcript is true)
 
-Only the Date, Title, Status, and Source File properties are written. We
+Only the Name (title), Date, and Status properties are written. We
 deliberately keep property writes minimal so the user's database schema only
 needs those columns to exist.
 """
@@ -112,7 +112,10 @@ def publish(
 
     Pass a custom `publisher` to redirect output (e.g. local-only, test
     capture); defaults to `NotionRestPublisher`. Honours `regulated_mode`
-    by short-circuiting before any publisher is instantiated.
+    by short-circuiting before any publisher is instantiated. NOTE: this
+    entry point is used by publish-from-paste only; the run-all / mp publish
+    path goes through publish_router.fanout, which does NOT short-circuit
+    regulated_mode at the sink level.
     """
     cfg = cfg or Config.load()
     # Workflow overlay (TECH-B4). `apply_overrides` derives the stem
@@ -130,7 +133,7 @@ def publish(
 
     summary = MeetingSummary.model_validate_json(summary_json.read_text(encoding="utf-8"))
 
-    # Default the transcript path to <stem>.md (where mp transcribe writes it).
+    # Default the transcript path to <stem>.md (rendered by run-all's finalize stage from the daemon's FluidAudio <stem>.json).
     if transcript_md is None:
         # summary_json is <stem>.summary.json, transcript is <stem>.md
         stem = summary_json.name.removesuffix(".summary.json")
@@ -309,10 +312,10 @@ def _properties(summary: MeetingSummary, cfg: Config) -> dict[str, Any]:
     """Map MeetingSummary → Notion property objects.
 
     The user's DB must have:
-      - Title  (title)
+      - Name   (title)
       - Date   (date)
       - Status (select)
-    Attendees/Source/Bundle are optional — we only set them if present.
+    No other properties are written, so the database needs only those three columns.
     """
     today = datetime.now(timezone.utc).date().isoformat()
     return {

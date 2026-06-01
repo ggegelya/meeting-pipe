@@ -1,6 +1,6 @@
 import Foundation
 
-/// Per-buffer verdict producer. Fuses HAL system-mute, AX mute label, HAL VAD, and RMS hysteresis into a `MicGateVerdict` (TECH-G-MIC spec). Precedence: mutedByHardware > mutedByApp > silentByRMS > hot > uncertain. `decide(state:)` is pure for test coverage. Threading: `start`/`stop` on main; `ingest(rmsDb:)` is render-thread-safe because the RMS gate is allocation-free and the publish path defers off the render thread via `publishQueue`.
+/// Per-buffer verdict producer. Fuses HAL system-mute, AX mute label, HAL VAD, and RMS hysteresis into a `MicGateVerdict` (TECH-G-MIC spec). Precedence: mutedByHardware > mutedByApp > silentByRMS > hot > uncertain. `decide(state:)` is pure for test coverage. Threading: `start`/`stop` on main; `ingest(rmsDb:)` runs on the render thread. The RMS gate is allocation-free, but a verdict transition synchronously takes `lock` and calls `eventLog.emit` on the caller (render) thread; only the AsyncStream yield is deferred to `publishQueue`. Keep `eventLog` cheap or non-blocking on this path.
 public final class MicGate {
 
     public struct State: Equatable {
@@ -122,7 +122,7 @@ public final class MicGate {
         continuation.finish()
     }
 
-    /// Audio-tap entry point. Allocation-free; safe on the render thread.
+    /// Audio-tap entry point. The RMS computation is allocation-free, but a state transition synchronously takes `lock` and emits to `eventLog` on this thread (only the verdict-stream yield is deferred). Safe only if `eventLog` is non-blocking.
     public func ingest(rmsDb: Float) {
         rmsGate.ingest(dBFS: rmsDb)
     }

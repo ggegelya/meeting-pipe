@@ -170,9 +170,10 @@ def summarize(
 ) -> dict[str, Path | str]:
     """Read `<stem>.md` and write `<stem>.summary.json` + `<stem>.summary.md`.
 
-    The transcript path is the speaker-segmented Markdown produced by
-    `mp transcribe`. The .json sidecar is the canonical structured output;
-    the .summary.md is a human-readable rendering for Notion / quick review.
+    The transcript path is the speaker-segmented Markdown produced by the
+    daemon (FluidAudio) and finalized by `mp run-all` (rendered to <stem>.md
+    by markdown.render_markdown). The .json sidecar is the canonical structured
+    output; the .summary.md is a human-readable rendering for Notion / quick review.
 
     Pass a custom `client` to swap the LLM provider or to inject a fake
     in tests; defaults to `AnthropicSummaryClient`.
@@ -274,12 +275,12 @@ def _identify_backend(client: SummaryClient, cfg: Config) -> tuple[str, str]:
 def _select_backend(cfg: Config) -> SummaryClient:
     """Resolve the backend per `summarization.backend`.
 
-    Three modes:
-      "anthropic": current behaviour, requires ANTHROPIC_API_KEY.
-      "local":     never call Anthropic; build a LocalSummaryClient.
-      "auto":      return an AutoFallbackSummaryClient that tries
-                   Anthropic first, falls back to local on
-                   network/auth failure.
+    Four backend values (regulated_mode forces local regardless):
+      "anthropic":          requires ANTHROPIC_API_KEY.
+      "local":              never call Anthropic; build a LocalSummaryClient.
+      "auto":               return a _AutoFallbackClient that tries Anthropic
+                            first, falls back to local on network/auth failure.
+      "apple_intelligence": daemon-only (Swift); raises here if reached directly.
     """
     backend = cfg.summarization.backend
     # regulated_mode is a hard zero-egress guarantee: force the on-device

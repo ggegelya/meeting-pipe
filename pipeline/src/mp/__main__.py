@@ -13,7 +13,7 @@ mp — meeting-pipe pipeline
 usage: mp <subcommand> [args...]
 
 Subcommands:
-  summarize <transcript.md>   Anthropic summarization -> <stem>.summary.json/.md
+  summarize <transcript.md>   Summarize per config backend (anthropic/local/auto) -> <stem>.summary.json/.md
   publish <summary.json>      Fan an existing summary out to all configured
                               sinks (used by the Apple Intelligence backend)
   publish-notion <summary.json>
