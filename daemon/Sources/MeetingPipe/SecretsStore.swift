@@ -87,11 +87,6 @@ final class SecretsStore: ObservableObject {
         )
     }
 
-    /// Render current contents (visible to tests).
-    func currentText() -> String {
-        rawLines.joined(separator: "\n")
-    }
-
     // MARK: - Parsing helpers
 
     private static func parse(lines: [String]) -> [String: String] {

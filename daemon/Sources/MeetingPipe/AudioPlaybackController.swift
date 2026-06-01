@@ -94,16 +94,6 @@ final class AudioPlaybackController: ObservableObject {
         }
     }
 
-    /// Tear down the player for a different meeting stem.
-    func unload() {
-        teardown()
-        currentTime = 0
-        duration = 0
-        isPlaying = false
-        loadedURL = nil
-        loadError = nil
-    }
-
     func play() {
         guard audioFile != nil else { return }
         // Rewind before re-play to avoid no-op against an empty schedule.

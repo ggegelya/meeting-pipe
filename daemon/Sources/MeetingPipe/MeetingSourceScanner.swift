@@ -42,11 +42,6 @@ final class MeetingSourceScanner {
         self.browserURLFragments = apps.urlFragments
     }
 
-    /// Drop the sticky-winner pin so the next scan starts unbiased (called by owner on teardown).
-    func resetStickyWinner() {
-        lastScorerWinner = nil
-    }
-
     /// Run one discovery pass and return the winner.
     /// - Parameter keepStickyOnEmpty: when true, an empty pass leaves the sticky pin intact (owner is mid-recording; a transient empty scan must not unbias the next pass).
     func scan(keepStickyOnEmpty: Bool) -> Result {

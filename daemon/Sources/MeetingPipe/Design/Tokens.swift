@@ -153,10 +153,6 @@ enum MPMotion {
 
 /// Pre-built fonts matching the type ramp and weight conventions.
 extension NSFont {
-    static func mpTitle() -> NSFont   { .systemFont(ofSize: MPType.textLG,   weight: MPType.semibold) } // 17 / semibold - panel title
-    static func mpHeading() -> NSFont { .systemFont(ofSize: MPType.textXL,   weight: MPType.semibold) } // 22 / semibold - section header
-    static func mpBody() -> NSFont    { .systemFont(ofSize: MPType.textBase, weight: MPType.regular)  } // 13 / regular - default body
-    static func mpBodyMedium() -> NSFont { .systemFont(ofSize: MPType.textBase, weight: MPType.medium) } // 13 / medium - button labels
-    static func mpEyebrow() -> NSFont { .systemFont(ofSize: MPType.textXS,   weight: MPType.semibold) } // 11 / semibold - uppercase label
-    static func mpCaption() -> NSFont { .systemFont(ofSize: MPType.textSM,   weight: MPType.regular)  } // 12 / regular - secondary
+    static func mpTitle() -> NSFont   { .systemFont(ofSize: MPType.textLG, weight: MPType.semibold) } // 17 / semibold - panel title
+    static func mpEyebrow() -> NSFont { .systemFont(ofSize: MPType.textXS, weight: MPType.semibold) } // 11 / semibold - uppercase label
 }

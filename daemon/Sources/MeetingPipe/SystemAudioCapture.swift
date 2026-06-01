@@ -124,33 +124,6 @@ final class SystemAudioCapture: NSObject {
         }
     }
 
-    /// Re-probe access via SCShareableContent only - never calls
-    /// CGRequestScreenCaptureAccess. The request API pops the dialog on every
-    /// call for an ungranted bundle; using it on the 2 s polling loop would
-    /// re-pop indefinitely. Only prewarm() may surface the dialog.
-    /// Used by PermissionsCenter.refreshScreenRecording (polling + Re-check).
-    static func reprobeAccess() async {
-        cachedContent = nil
-        permissionState = .unknown
-        let alreadyTrusted = CGPreflightScreenCaptureAccess()
-        do {
-            cachedContent = try await SCShareableContent.excludingDesktopWindows(
-                false,
-                onScreenWindowsOnly: true
-            )
-            permissionState = .granted
-        } catch {
-            // CGPreflight true + SC fail: real denial / transient error - set .denied.
-            // CGPreflight false + SC fail: not yet granted or stale cdhash - keep .unknown
-            // so the UI doesn't fabricate a "denied" verdict on a polling tick.
-            if alreadyTrusted {
-                permissionState = .denied
-            } else {
-                permissionState = .unknown
-            }
-        }
-    }
-
     /// Start capturing system audio. Filter requires a real display; width/height
     /// are set to 2x2 to avoid video processing cost. Only .audio outputs are used.
     func start() async throws {
