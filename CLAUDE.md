@@ -4,8 +4,8 @@
 
 Personal macOS product (single-user, not for sale). Two trees:
 
-- `daemon/` — Swift menu-bar app. Detection, recording, HUD, hotkeys.
-- `pipeline/` — Python ASR + summarize + publish, invoked as `mp <subcommand>`.
+- `daemon/`: Swift menu-bar app. Detection, recording, ASR + diarization (FluidAudio), HUD, hotkeys.
+- `pipeline/`: Python summarize + publish, invoked as `mp <subcommand>`.
 
 ## Orientation — read these when relevant
 
@@ -19,7 +19,7 @@ Personal macOS product (single-user, not for sale). Two trees:
 | `daemon/CLAUDE.md` | Auto-loads when you touch Swift. Short Swift-specific gotchas. |
 | `pipeline/CLAUDE.md` | Auto-loads when you touch Python. Short Python-specific gotchas. |
 
-The Q2 backlog with task IDs like `TECH-E5` lives at `~/Downloads/meetingpipe-q2-backlog.md`. The `/tech-task TECH-<ID>` slash command is the codified delegation contract.
+The active backlog lives in [`docs/backlog/`](./docs/backlog/): the highest-numbered `meetingpipe-q<N>-backlog.md` (currently `meetingpipe-q4-backlog.md`; earlier quarters are archived beside it). Task IDs look like `TECH-E5`. The `/tech-task TECH-<ID>` slash command is the codified delegation contract.
 
 ## Verify before declaring done
 
@@ -36,7 +36,7 @@ CI enforces ruff strictly (any F401 unused import fails). Run ruff locally befor
 
 ## Git workflow
 
-- Identity for these tasks: `Georgy <g.gegelya@icloud.com>`. Use `git -c user.name=Georgy -c user.email=g.gegelya@icloud.com commit ...` if your default identity differs.
+- Commit with the repository's configured git identity (`git config user.name` / `user.email`). Do not hardcode a personal name or email in commits, code, or docs.
 - Work directly on `main`. One logical change per commit. **Do not push** unless asked.
 - Backlog-task commits: subject `TECH-<ID>: <short summary>`. Other commits follow `fix(scope): …` / `feat(scope): …` / `chore(scope): …` — match the existing style for the kind of change.
 - **No em-dashes** in any output (code, commits, docs). Hyphens, commas, or rewrite. Match the existing style of files you don't touch.
@@ -51,10 +51,10 @@ CI enforces ruff strictly (any F401 unused import fails). Run ruff locally befor
 
 ## Out of scope (user is the only user)
 
-Per the Q2 backlog, anything tied to **selling** is deferred: onboarding flows, license keys, telemetry, code signing / notarization / Sparkle, landing site, marketing copy, compliance docs. Don't add them unless a task explicitly calls for them. If the backlog marks a task **P3**, leave it alone.
+Anything tied to **selling** stays deferred: onboarding flows, license keys, telemetry, code signing / notarization / Sparkle, landing site, marketing copy, compliance docs. Don't add them unless a task explicitly calls for them. If the backlog marks a task **P3**, leave it alone. One exception, promoted in the q4 backlog: GitHub repo presence (README, LICENSE, repo metadata) and the app's visual identity are in scope, for contributor visibility.
 
 ## Memory hygiene
 
-Worth saving as project memory across sessions: durable user preferences (commit style, no-em-dash, identity), backlog-wide decisions (skip P3 entirely, …), surprising codebase facts that hurt to relearn.
+Worth saving as project memory across sessions: durable user preferences (commit style, no-em-dash), backlog-wide decisions (skip P3 entirely, …), surprising codebase facts that hurt to relearn.
 
 Not worth saving: file paths (read `ARCHITECTURE.md`), git log state, the current branch's in-progress work (use a plan, not memory), anything in the doc set above (it's authoritative; memory drifts).

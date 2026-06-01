@@ -37,7 +37,7 @@ test: <summary>                # test-only changes
 
 One logical change per commit. Subject line is enough for most commits; add a body only when *why* isn't obvious from the subject. Body lines wrap at ~72 chars.
 
-Git identity for this repo: `Georgy <g.gegelya@icloud.com>`. Use `git -c user.name=Georgy -c user.email=g.gegelya@icloud.com commit …` if your default identity differs.
+Git identity: commit with the repository's configured git identity (`git config user.name` / `user.email`). Do not hardcode a personal name or email.
 
 ### Logging: `Log.event` vs `Log.writeLine`
 
@@ -225,9 +225,9 @@ Absence of the sidecar (`<stem>.meta.json` missing) is valid — the pipeline fa
 
 ## Backlog and task delegation
 
-The Q2 backlog lives at `~/Downloads/meetingpipe-q2-backlog.md`. Task IDs follow `TECH-<letter><number>` (`TECH-C2`, `TECH-E5`, …). When marking a task done in the backlog, prefix the line with `[DONE] ` rather than deleting it — the trail of decisions stays readable.
+The active backlog lives in `docs/backlog/`: the highest-numbered `meetingpipe-q<N>-backlog.md` (currently `meetingpipe-q4-backlog.md`), with earlier quarters archived beside it. Task IDs follow `TECH-<letter><number>` (`TECH-C2`, `TECH-E5`, …). When marking a task done, prefix the line with `[DONE] ` rather than deleting it, so the trail of decisions stays readable.
 
-The delegation prompt at the bottom of that file is the canonical entry contract. The `/tech-task` slash command in `.claude/commands/tech-task.md` is the codified version of it.
+The delegation section at the top of the active backlog is the canonical entry contract. The `/tech-task` slash command in `.claude/commands/tech-task.md` is the codified version of it.
 
 ---
 

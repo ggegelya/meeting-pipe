@@ -37,7 +37,7 @@ Expect: `found_mute:true`, `mute_buttons_found:1` (not 2+), `ax_mute_button_stat
 
 - User locale: 99% English / Ukrainian. Don't default examples to German. `uk` is in MuteLabels.toml; verify any new uk labels with the user.
 - User is vibe-coding: high-level explanations, doesn't read code. Lean on ARCHITECTURE.md Mermaid diagrams.
-- Identity: commits as `Georgy <g.gegelya@icloud.com>`. No em-dashes in any output. Don't push without permission.
+- Identity: commit with the repository's configured git identity. No em-dashes in any output. Don't push without permission.
 - MicGate runtime knobs live in Preferences > Recording > Microphone and Preferences > Prompt > Stop conditions.
 - This backlog is the source of truth for TECH-* items.
 

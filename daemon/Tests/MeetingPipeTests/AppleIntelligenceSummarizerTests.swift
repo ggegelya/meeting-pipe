@@ -50,9 +50,9 @@ final class AppleIntelligenceSummarizerTests: XCTestCase {
             title: "Demo",
             summary: ["one", "two"],
             decisions: ["d"],
-            actions: [MeetingSummary.ActionItem(task: "do it", owner: "Georgy", due: nil, confidence: "high")],
+            actions: [MeetingSummary.ActionItem(task: "do it", owner: "Alex Chen", due: nil, confidence: "high")],
             questions: ["q?"],
-            attendees: ["Georgy"],
+            attendees: ["Alex Chen"],
             detectedLanguage: "en"
         )
         try AppleIntelligenceSummarizer.write(summary: summary, transcriptMD: md)
