@@ -45,14 +45,15 @@ In scope:
 
 - The Swift daemon (`daemon/`): recording, detection, permission handling,
   hotkeys, sidecar files, codesigning identity stability.
-- The Python pipeline (`pipeline/`): transcription, diarization, summarization
-  backend, publishers, the `mp` CLI.
+- The Python pipeline (`pipeline/`): the summarization backend, publishers, and
+  the `mp` CLI. (Transcription and diarization run in the daemon via FluidAudio,
+  per ADR 0007.)
 - The installer and uninstaller scripts in `scripts/`.
 
 Out of scope:
 
-- The Anthropic API, Notion API, Obsidian, Homebrew, `uv`, sherpa-onnx, MLX,
-  `whisperx`, or any other upstream dependency. Please report those to the
+- The Anthropic API, Notion API, Obsidian, Homebrew, `uv`, MLX, FluidAudio,
+  or any other upstream dependency. Please report those to the
   respective projects.
 - macOS itself (TCC, ScreenCaptureKit, AVFoundation behaviour, etc.).
 - Findings that require an attacker who already has root or full-disk access

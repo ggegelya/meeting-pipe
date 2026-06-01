@@ -527,7 +527,7 @@ Everything lives under `~/Library/Logs/MeetingPipe/`:
 - `daemon.log`   — state transitions, recording start/stop, pipeline kick-off
 - `detector.log` — meeting detection events (which app/tab, debounce timing)
 - `recorder.log` — recording lifecycle, duration parity check
-- `pipeline.log`: transcription, summarization, publishing
+- `pipeline.log`: summarization and publishing (transcription runs in the daemon, not here)
 - `events.jsonl`: structured Swift-side events, one JSON object per line
 - `pipeline_events.jsonl`: structured Python-side events
 - `launchd.{out,err}.log` — daemon stdout/stderr
@@ -571,8 +571,10 @@ See [`config.example.toml`](./config.example.toml). Highlights:
   action items.
 - `summarization.skip_above_chars` — long-meeting guard (default 80 000).
 - `summarization.backend`: `"anthropic"` (default), `"local"` (on-device
-  MLX, no outbound calls), or `"auto"` (try Anthropic first, fall back to
-  local on network/auth failure). Switchable in Preferences → Pipeline.
+  MLX, no outbound calls), `"auto"` (try Anthropic first, fall back to local
+  on network/auth failure), or `"apple_intelligence"` (on-device Apple
+  Intelligence, macOS 26+, produced in the daemon). Switchable in
+  Preferences → Pipeline.
 - `summarization.local_model`: MLX model id when backend is `"local"` or
   `"auto"`. Default `mlx-community/Qwen2.5-3B-Instruct-4bit` (~2 GB on
   first use; cached in `~/.cache/huggingface/hub`). Use the preset
@@ -609,10 +611,11 @@ both. Change the system default input in System Settings ▸ Sound to swap mics.
 ## Troubleshooting
 
 **No recording starts when I join a Zoom call.**
-Check `detector.log`. Two-signal AND requires both (a) a known meeting app
-running and (b) some app holding the mic. If you join muted, the mic signal
-doesn't fire — Zoom only opens the input device when you unmute. Use the
-`⌃⌥M` hotkey or set `auto_consent_apps`.
+Detection fuses several signals (the meeting app running and frontmost, its
+audio-process activity, and window-title / screen-share cues) rather than
+requiring the mic to be held, so joining muted still triggers it. If a call
+is missed, confirm the app is listed in `meeting_apps.toml`, then start
+recording manually with the `⌃⌥M` hotkey.
 
 **The recording is silent / very quiet.**
 Check `recorder.log` for the `duration check` line at the end of a recording.
