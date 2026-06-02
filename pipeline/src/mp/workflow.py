@@ -55,6 +55,9 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
     changed: list[str] = []
 
     nda_mode = bool(meta.get("workflow_nda_mode"))
+    # Carry the resolved NDA flag on the config so the egress guard can arm on
+    # it at entry without re-reading the sidecar (TECH-SEC3).
+    overlay.modes.workflow_nda_mode = nda_mode
 
     backend_raw = meta.get("workflow_backend")
     if isinstance(backend_raw, str) and backend_raw in {"anthropic", "local", "auto", "apple_intelligence"}:

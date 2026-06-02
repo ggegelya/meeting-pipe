@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from .config import Config, load_secrets
+from .egress_guard import arm_for_config
 from .publish_router import fanout
 from .workflow import apply_overrides as apply_workflow_overrides
 
@@ -33,6 +34,7 @@ def main(argv: list[str]) -> int:
 
     cfg = Config.load()
     cfg = apply_workflow_overrides(cfg, summary_json)
+    arm_for_config(cfg)  # TECH-SEC3: block non-loopback egress under regulated/NDA
     load_secrets()
 
     stem = summary_json.name.removesuffix(".summary.json")

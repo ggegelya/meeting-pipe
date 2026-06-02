@@ -139,6 +139,11 @@ class OutputCfg(BaseModel):
 
 class Modes(BaseModel):
     regulated_mode: bool = False
+    # Resolved per-meeting flag, set by the workflow overlay (mp.workflow) from
+    # the sidecar's `workflow_nda_mode`. Not read from the global TOML; it rides
+    # on the resolved Config so the egress guard (mp.egress_guard) can arm once
+    # at entry on `regulated_mode or workflow_nda_mode`. (TECH-SEC3)
+    workflow_nda_mode: bool = False
 
 
 class Config(BaseModel):

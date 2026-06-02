@@ -33,6 +33,7 @@ from tenacity import (
 )
 
 from .config import Config, load_secrets, require_env
+from .egress_guard import arm_for_config
 from .schemas import SUMMARY_TOOL, MeetingSummary
 from .services import SummaryClient
 from .workflow import apply_overrides as apply_workflow_overrides
@@ -188,6 +189,7 @@ def summarize(
     # the Library's "Regenerate" action) honours the same per-meeting
     # context / backend overrides that `run-all` would.
     cfg = apply_workflow_overrides(cfg, transcript_md)
+    arm_for_config(cfg)  # TECH-SEC3: block non-loopback egress under regulated/NDA
     load_secrets()
 
     transcript = transcript_md.read_text(encoding="utf-8")

@@ -32,6 +32,7 @@ import anthropic
 from . import events
 from .chunking import chunked_windows
 from .config import Config, load_secrets, require_env
+from .egress_guard import arm_for_config
 from .markdown import render_markdown
 from .workflow import apply_overrides as apply_workflow_overrides
 
@@ -120,6 +121,7 @@ def cleanup_transcript(
     """
     cfg = cfg or Config.load()
     cfg = apply_workflow_overrides(cfg, transcript_json)
+    arm_for_config(cfg)  # TECH-SEC3: block non-loopback egress under regulated/NDA
     load_secrets()
 
     structured = json.loads(transcript_json.read_text(encoding="utf-8"))

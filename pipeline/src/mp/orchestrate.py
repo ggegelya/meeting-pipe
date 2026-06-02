@@ -27,6 +27,7 @@ from pathlib import Path
 
 from .config import Config, load_secrets
 from .corrections import write_run_sidecar
+from .egress_guard import arm_for_config
 from .diarize import assign_speakers_by_channel, is_stereo_recording
 from . import events
 from .markdown import render_markdown
@@ -197,6 +198,9 @@ def run_all(
     # wavs that have no sidecar; otherwise replaces team_context /
     # backend / sinks / notion DB for this single run.
     cfg = apply_workflow_overrides(cfg, wav)
+    # Structural egress backstop (TECH-SEC3): once regulated/NDA is resolved,
+    # block all non-loopback HTTP for the rest of this process.
+    arm_for_config(cfg)
     load_secrets()
 
     if force_byo is None:
