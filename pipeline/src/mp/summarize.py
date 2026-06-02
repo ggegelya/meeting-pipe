@@ -34,6 +34,7 @@ from tenacity import (
 
 from .config import Config, load_secrets, require_env
 from .egress_guard import arm_for_config
+from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
 from .services import SummaryClient
 from .workflow import apply_overrides as apply_workflow_overrides
@@ -69,10 +70,13 @@ def _load_system_prompt(team_context: str, summary_language: str = "auto") -> st
     # Loaded from the package so the installed venv has the prompt available.
     text = resources.files("mp.prompts").joinpath("meeting_summary.md").read_text(encoding="utf-8")
     text = text.replace("{team_context}", team_context or "(no team context configured)")
-    return text.replace(
+    text = text.replace(
         "{summary_language_directive}",
         _summary_language_directive(summary_language),
     )
+    # Prompt-injection boundary (TECH-SEC6): the transcript is wrapped in
+    # untrusted markers in the user message; tell the model not to obey it.
+    return text + "\n\n" + UNTRUSTED_GUIDANCE
 
 
 def _summary_language_directive(summary_language: str) -> str:
@@ -139,7 +143,7 @@ class AnthropicSummaryClient:
                         "role": "user",
                         "content": (
                             "Summarize this meeting. Call `emit_meeting_summary` exactly once.\n\n"
-                            "TRANSCRIPT:\n\n" + transcript
+                            + wrap_untrusted(transcript)
                         ),
                     }
                 ],

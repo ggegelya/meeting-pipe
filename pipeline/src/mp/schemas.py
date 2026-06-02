@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from .prompt_safety import clean_person
 
 
 class ActionItem(BaseModel):
@@ -15,6 +17,14 @@ class ActionItem(BaseModel):
     owner: str | None = None
     due: str | None = None  # ISO 8601 date if extractable
     confidence: Literal["low", "medium", "high"] = "medium"
+
+    @field_validator("owner", mode="after")
+    @classmethod
+    def _scrub_owner(cls, v: str | None) -> str | None:
+        # The owner is model-extracted from an untrusted transcript and flows to
+        # Notion to-dos / Obsidian / the correction corpus. Drop it if it carries
+        # an email, URL, @-mention, or control char rather than forward it. (TECH-SEC6)
+        return clean_person(v)
 
 
 class MeetingSummary(BaseModel):
@@ -25,6 +35,12 @@ class MeetingSummary(BaseModel):
     questions: list[str] = Field(default_factory=list)
     attendees: list[str] = Field(default_factory=list)
     detected_language: str = "en"
+
+    @field_validator("attendees", mode="after")
+    @classmethod
+    def _scrub_attendees(cls, v: list[str]) -> list[str]:
+        # Same untrusted-field scrub as owner: keep only safe display names. (TECH-SEC6)
+        return [cleaned for a in v if (cleaned := clean_person(a)) is not None]
 
 
 # JSON schema delivered to Anthropic's `tools` parameter for structured output.

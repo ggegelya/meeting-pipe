@@ -50,6 +50,7 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
+from .prompt_safety import wrap_untrusted
 from .schemas import MeetingSummary, SUMMARY_TOOL
 
 log = logging.getLogger("mp.summarize_local")
@@ -382,9 +383,11 @@ class LocalSummaryClient:
         return system_prompt + reinforcement + directive
 
     def _compose_user_message(self, transcript: str) -> str:
+        # Fence the transcript as untrusted content (TECH-SEC6); the system
+        # prompt (via _load_system_prompt) explains the markers.
         return (
             "Summarize this meeting. Reply with ONLY the JSON object described "
-            "in the system message.\n\nTRANSCRIPT:\n\n" + transcript
+            "in the system message.\n\n" + wrap_untrusted(transcript)
         )
 
     def _chat_completion(

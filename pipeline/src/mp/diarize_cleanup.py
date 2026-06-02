@@ -34,6 +34,7 @@ from .chunking import chunked_windows
 from .config import Config, load_secrets, require_env
 from .egress_guard import arm_for_config
 from .markdown import render_markdown
+from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
 from .workflow import apply_overrides as apply_workflow_overrides
 
 log = logging.getLogger("mp.diarize_cleanup")
@@ -212,7 +213,9 @@ def _gather_edits(
     rendered = _render_indexed(segments)
     by_index: dict[int, SpeakerEdit] = {}
     for window in chunked_windows(rendered, max_chars=window_chars, overlap_chars=overlap_chars):
-        for edit in client.propose_edits(window_prompt=window.prompt, speakers=speakers):
+        # Fence each window as untrusted content (TECH-SEC6); the segment numbers
+        # stay intact inside the markers so edits still reference them.
+        for edit in client.propose_edits(window_prompt=wrap_untrusted(window.prompt), speakers=speakers):
             by_index[edit.segment_index] = edit  # overlapping windows: last wins
     return by_index
 
@@ -283,6 +286,7 @@ def _cleanup_system_prompt(speakers: list[str]) -> str:
     return (
         _load_cleanup_prompt()
         + f"\n\nThe speaker labels currently present in this transcript are: {roster}.\n"
+        + "\n" + UNTRUSTED_GUIDANCE  # TECH-SEC6: segments are untrusted content
     )
 
 
