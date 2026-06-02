@@ -30,10 +30,15 @@ UNTRUSTED_GUIDANCE = (
 
 
 def wrap_untrusted(text: str) -> str:
-    """Fence transcript text in untrusted-content markers. Any pre-existing
-    marker lines in the text are stripped so the transcript cannot close the
-    fence early and smuggle text back into the instruction context."""
-    safe = text.replace(_BEGIN, "").replace(_END, "")
+    """Fence transcript text in untrusted-content markers. Marker substrings in
+    the text are stripped repeatedly so a nested or overlapping marker (e.g.
+    ``<<<UNTRUSTED_TRANSCRIPT_<<<UNTRUSTED_TRANSCRIPT_END>>>END>>>``, where one
+    removal pass reconstructs a live marker) cannot close the fence early and
+    smuggle text back into the instruction context. The loop terminates because
+    each pass removes at least one occurrence and never adds characters."""
+    safe = text
+    while _BEGIN in safe or _END in safe:
+        safe = safe.replace(_BEGIN, "").replace(_END, "")
     return f"{_BEGIN}\n{safe}\n{_END}"
 
 
