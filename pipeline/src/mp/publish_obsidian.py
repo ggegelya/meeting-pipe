@@ -43,7 +43,7 @@ _HASH_PINNED_GENERATED = "0000-00-00T00:00:00+00:00"
 
 DEFAULT_TEMPLATE = """\
 ---
-title: "{title}"
+title: {title_yaml}
 date: {date}
 attendees: {attendees}
 tags: [meeting, source/meeting-pipe]
@@ -227,8 +227,14 @@ class ObsidianPublisher:
         if transcript_md and transcript_md.exists():
             transcript_section = "## Transcript\n\n" + transcript_md.read_text(encoding="utf-8")
 
+        # The title lands in YAML frontmatter and the H1. Collapse it to one
+        # line, then route the frontmatter copy through _yaml_str so a ':' or a
+        # smuggled newline cannot inject a YAML key. (TECH-SEC7; the Swift
+        # MeetingTitleResolver also strips control chars at the source.)
+        clean_title = _single_line(summary.title)
         return template.format(
-            title=summary.title.replace('"', '\\"'),
+            title=clean_title,
+            title_yaml=_yaml_str(clean_title),
             date=date,
             attendees=attendees_yaml,
             tags="meeting",  # back-compat: older templates may use {tags}
@@ -252,10 +258,23 @@ def _format_action(a: Any) -> str:
     return f"- [ ] **{owner}** {a.task}{suffix} _(confidence: {confidence})_"
 
 
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")  # control chars incl newline / tab / CR
+_WS_RUN_RE = re.compile(r"\s+")
+
+
+def _single_line(s: str) -> str:
+    # Collapse all whitespace (including newlines) to single spaces and strip, so
+    # an interpolated title cannot span lines or carry control chars (TECH-SEC7).
+    return _WS_RUN_RE.sub(" ", s).strip()
+
+
 def _yaml_str(s: str) -> str:
-    # Quote anything with a ":" or YAML-special leading char, and
-    # always escape inner double quotes. Cheap subset of YAML escaping
-    # that covers our finite attendee-name use case.
+    # Quote anything with a ":" or YAML-special leading char, and always escape
+    # inner double quotes. Control chars are neutralized to spaces first so the
+    # result is always a single-line scalar that cannot inject a YAML key via a
+    # newline (TECH-SEC7). Cheap subset of YAML escaping that covers our finite
+    # title / attendee-name use case.
+    s = _CONTROL_RE.sub(" ", s)
     needs_quote = bool(re.search(r'[:\-?#&*!|>\'"%@`]', s)) or s != s.strip()
     if not needs_quote:
         return s

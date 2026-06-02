@@ -14,7 +14,18 @@ enum MeetingTitleResolver {
     }
 
     /// Pure: extract the first useful meeting name from `titles`. Unit-testable without AX.
+    /// The result is scrubbed of control characters at this boundary (TECH-SEC7) so a
+    /// crafted AX window title cannot inject YAML frontmatter keys or break the meta
+    /// sidecar once the title flows into the pipeline.
     static func extractMeetingTitle(bundleID: String, kind: AppSourceKind, titles: [String]) -> String? {
+        guard let raw = rawMeetingTitle(bundleID: bundleID, kind: kind, titles: titles) else {
+            return nil
+        }
+        let clean = sanitizeTitle(raw)
+        return clean.isEmpty ? nil : clean
+    }
+
+    private static func rawMeetingTitle(bundleID: String, kind: AppSourceKind, titles: [String]) -> String? {
         switch (bundleID, kind) {
         case ("us.zoom.xos", _):
             return titles.lazy.compactMap(extractZoomNativeTitle).first
@@ -30,6 +41,16 @@ enum MeetingTitleResolver {
             }
             return nil
         }
+    }
+
+    /// Replace control characters (newlines, tabs, NUL, ...) with spaces and trim, so an
+    /// extracted title is always single-line and safe for YAML frontmatter and the meta
+    /// sidecar (TECH-SEC7). Regular spacing is preserved.
+    static func sanitizeTitle(_ s: String) -> String {
+        let cleaned = String(s.unicodeScalars.map {
+            CharacterSet.controlCharacters.contains($0) ? Character(" ") : Character($0)
+        })
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func extractZoomNativeTitle(_ t: String) -> String? {

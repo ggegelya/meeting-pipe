@@ -176,6 +176,22 @@ def test_yaml_str_escapes_quotes_and_specials() -> None:
     assert _yaml_str('She said "hi"') == '"She said \\"hi\\""'
 
 
+def test_render_note_neutralizes_title_yaml_injection(tmp_path: Path) -> None:
+    # A title carrying a newline must not inject a top-level YAML key into the
+    # frontmatter: it is collapsed to one line and quoted (TECH-SEC7).
+    pub = ObsidianPublisher(vault_path=tmp_path / "vault", attach_audio=False)
+    summary = MeetingSummary(
+        title="Pwned\nmalicious_key: true",
+        summary=["x"],
+        detected_language="en",
+    )
+    body = pub._render_note(summary, None, date="2026-01-01",
+                            generated="2026-01-01T00:00:00+00:00")
+    frontmatter = body.split("---", 2)[1]
+    assert "\nmalicious_key:" not in frontmatter, "newline injected a YAML key"
+    assert 'title: "Pwned malicious_key: true"' in frontmatter
+
+
 def test_slugify_normalizes_to_url_safe() -> None:
     assert _slugify("Sprint Planning Q3!") == "sprint-planning-q3"
     assert _slugify("   leading and trailing   ") == "leading-and-trailing"

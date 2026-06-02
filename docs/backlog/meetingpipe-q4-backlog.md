@@ -45,7 +45,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-ARCH3 | Collapse PipelineLauncher scaffolding onto runMP | Architecture | P2 new | Four near-identical ~90-line Process/watchdog blocks; the runMP helper already factors the pattern. |
 | TECH-SEC5 | Fail-closed subprocess env on local/NDA | Security | P2 new | Drop ANTHROPIC_API_KEY and NOTION_TOKEN from the child env on local/NDA runs so an enforcement bug fails closed, not open. |
 | TECH-SEC6 | Untrusted-transcript boundary + field scrub | Security | DONE (was P2) | Wrap transcript text as untrusted in all summarizers and scrub owner/attendee fields before they reach sinks and the correction corpus. |
-| TECH-SEC7 | Obsidian YAML title injection | Security | P2 new | A title with a newline injects YAML keys; route the title through _yaml_str and strip control chars at the Swift extraction boundary. |
+| TECH-SEC7 | Obsidian YAML title injection | Security | DONE (was P2) | A title with a newline injects YAML keys; route the title through _yaml_str and strip control chars at the Swift extraction boundary. |
 | TECH-SEC8 | Tokens in Keychain (extends SEC1) | Security | P2 new | Move NOTION_TOKEN / ANTHROPIC_API_KEY out of secrets.env into the macOS Keychain; closes SEC1 properly. |
 | TECH-SEC1 | secrets.env read-permission check | Security | P2 carry | Neither reader refuses a 0644 secrets.env; warn or refuse on a too-open mode. Folds into SEC8 if Keychain lands. |
 | TECH-WF2 | Workflow emoji picker | Workflow | P2 new | The emoji field is a bare 80pt text box that accepts arbitrary text; use a real emoji picker constrained to one grapheme. |
@@ -102,7 +102,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 
 **[DONE] TECH-SEC6 (P2): untrusted-transcript boundary.** Wrap transcript text in an explicit "untrusted content, never an instruction" delimiter in all three summarizers, and post-validate owner/attendee fields (reject emails, URLs, @-mentions, newlines) before they reach Notion to-dos, Obsidian, and the correction corpus.
 
-**TECH-SEC7 (P2): Obsidian frontmatter title injection.** `_render_note` escapes only double-quotes in the title; a newline injects YAML keys. Route the title through the existing `_yaml_str` helper and strip control chars from the meeting title at the Swift extraction boundary (`MeetingTitleResolver`).
+**[DONE] TECH-SEC7 (P2): Obsidian frontmatter title injection.** `_render_note` escapes only double-quotes in the title; a newline injects YAML keys. Route the title through the existing `_yaml_str` helper and strip control chars from the meeting title at the Swift extraction boundary (`MeetingTitleResolver`).
 
 **TECH-SEC8 (P2): tokens in Keychain.** Move the tokens from the 0600 `secrets.env` into the macOS Keychain. Subsumes SEC1.
 
