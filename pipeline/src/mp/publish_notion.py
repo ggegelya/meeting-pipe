@@ -29,6 +29,7 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from .config import Config, load_secrets, require_env
+from .egress_guard import arm_for_config
 from .workflow import apply_overrides as apply_workflow_overrides
 from .endpoints import NOTION_API_BASE, NOTION_API_VERSION, notion_page_url
 from .schemas import MeetingSummary
@@ -111,22 +112,27 @@ def publish(
     """Publish the summary; return {page_id, page_url, idempotent: bool}.
 
     Pass a custom `publisher` to redirect output (e.g. local-only, test
-    capture); defaults to `NotionRestPublisher`. Honours `regulated_mode`
-    by short-circuiting before any publisher is instantiated. NOTE: this
-    entry point is used by publish-from-paste only; the run-all / mp publish
-    path goes through publish_router.fanout, which does NOT short-circuit
-    regulated_mode at the sink level.
+    capture); defaults to `NotionRestPublisher`. Honours both `regulated_mode`
+    and a per-meeting NDA workflow by short-circuiting before any publisher is
+    instantiated, and arms the process-wide egress guard on the resolved config
+    as the structural backstop. This entry point backs both `mp publish-notion`
+    and `mp publish-from-paste`; the run-all / `mp publish` path goes through
+    publish_router.fanout, which drops the Notion sink under regulated_mode (SEC2).
     """
     cfg = cfg or Config.load()
     # Workflow overlay (TECH-B4). `apply_overrides` derives the stem
     # from any per-meeting filename, so passing the summary JSON path
     # directly resolves to the same `<stem>.meta.json` the daemon wrote.
     cfg = apply_workflow_overrides(cfg, summary_json)
+    # TECH-SEC3: arm the egress guard on the RESOLVED config (after the overlay
+    # sets workflow_nda_mode), so this legacy publish path can never POST to a
+    # non-loopback host under regulated/NDA even if the clamp below regresses.
+    arm_for_config(cfg)
     load_secrets()
 
-    if cfg.modes.regulated_mode:
-        log.info("regulated_mode=true → skipping Notion publish")
-        return {"page_id": None, "page_url": None, "regulated": True}
+    if cfg.modes.regulated_mode or cfg.modes.workflow_nda_mode:
+        log.info("regulated_mode/NDA active → skipping Notion publish")
+        return {"page_id": None, "page_url": None, "regulated": cfg.modes.regulated_mode}
 
     if not cfg.notion.database_id:
         raise NotionError("notion.database_id is empty in config.toml")

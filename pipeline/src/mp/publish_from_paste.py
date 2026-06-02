@@ -20,7 +20,6 @@ import sys
 from pathlib import Path
 
 from .config import Config
-from .egress_guard import arm_for_config
 from .publish_notion import publish
 from .schemas import ActionItem, MeetingSummary
 from .summarize import _render_summary_md
@@ -182,7 +181,9 @@ def _extract_language_hint(text: str) -> str:
 def publish_from_paste(transcript_md: Path, cfg: Config | None = None) -> dict:
     """Read `<stem>.summary.md` next to the transcript, parse, publish."""
     cfg = cfg or Config.load()
-    arm_for_config(cfg)  # TECH-SEC3: block non-loopback egress under regulated/NDA
+    # Egress enforcement lives in publish() below: it arms the egress guard on
+    # the RESOLVED config (after the workflow overlay sets workflow_nda_mode).
+    # Arming here would run pre-overlay and miss NDA, so do not add it. (TECH-SEC3)
     stem = transcript_md.stem
     summary_md_path = transcript_md.parent / f"{stem}.summary.md"
     summary_json_path = transcript_md.parent / f"{stem}.summary.json"

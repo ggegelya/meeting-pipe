@@ -138,6 +138,26 @@ def test_regulated_mode_skips_notion(tmp_path: Path, monkeypatch):
     assert not (tmp_path / "20260428-1200.notion.json").exists()
 
 
+def test_nda_workflow_skips_notion_and_arms_guard(tmp_path: Path, monkeypatch):
+    # SEC review regression: an NDA workflow (sidecar workflow_nda_mode=true) must
+    # skip the Notion publish on this legacy publish() path too, even when
+    # NOTION_TOKEN is set, and the egress guard must arm on the resolved config as
+    # the structural backstop. Covers `mp publish-notion` and `mp publish-from-paste`.
+    from mp import egress_guard
+
+    summary_path = _write_summary(tmp_path)
+    stem = summary_path.name.removesuffix(".summary.json")
+    (tmp_path / f"{stem}.meta.json").write_text(
+        json.dumps({"workflow_nda_mode": True}), encoding="utf-8"
+    )
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-must-not-be-used")
+
+    result = publish(summary_path, cfg=_cfg())
+    assert result["page_id"] is None, "NDA must skip the Notion publish"
+    assert not (tmp_path / f"{stem}.notion.json").exists()
+    assert egress_guard.is_armed(), "the egress guard must arm on the resolved NDA config"
+
+
 def test_update_deletes_all_children_in_parallel(tmp_path: Path, monkeypatch):
     """The body-replace path must DELETE every existing child.
 
