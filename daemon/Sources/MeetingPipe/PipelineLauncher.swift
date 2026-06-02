@@ -689,6 +689,12 @@ final class PipelineLauncher: PipelineDriver {
         var env = baseEnvironment ?? ProcessInfo.processInfo.environment
         let url = secretsURL ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/meeting-pipe/secrets.env")
+        // TECH-SEC1: warn (do not refuse) when the secrets file is readable by
+        // group or other. Only the SecretsStore writer enforces 0600; a
+        // hand-created file may be 0644. Refusing would brick the pipeline.
+        if Self.secretsFileIsTooOpen(at: url) {
+            Log.main.warning("secrets.env at \(url.path, privacy: .public) is group/other-readable; run: chmod 600 \(url.path, privacy: .public)")
+        }
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return env }
         for raw in text.split(separator: "\n") {
             let line = raw.trimmingCharacters(in: .whitespaces)
@@ -702,6 +708,16 @@ final class PipelineLauncher: PipelineDriver {
             env[key] = value
         }
         return env
+    }
+
+    /// True when `url` grants any group/other permission (more permissive than 0600).
+    /// The SecretsStore writer enforces 0600; this catches a hand-created file. (TECH-SEC1)
+    static func secretsFileIsTooOpen(at url: URL) -> Bool {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let perms = (attrs[.posixPermissions] as? NSNumber)?.uint16Value else {
+            return false
+        }
+        return perms & 0o077 != 0
     }
 
     /// Resolution order: prebuilt venv -> `uv run mp` from the repo's pipeline dir -> bare `mp` on PATH.

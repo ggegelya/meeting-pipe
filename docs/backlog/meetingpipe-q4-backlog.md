@@ -47,7 +47,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-SEC6 | Untrusted-transcript boundary + field scrub | Security | DONE (was P2) | Wrap transcript text as untrusted in all summarizers and scrub owner/attendee fields before they reach sinks and the correction corpus. |
 | TECH-SEC7 | Obsidian YAML title injection | Security | DONE (was P2) | A title with a newline injects YAML keys; route the title through _yaml_str and strip control chars at the Swift extraction boundary. |
 | TECH-SEC8 | Tokens in Keychain (extends SEC1) | Security | P2 new | Move NOTION_TOKEN / ANTHROPIC_API_KEY out of secrets.env into the macOS Keychain; closes SEC1 properly. |
-| TECH-SEC1 | secrets.env read-permission check | Security | P2 carry | Neither reader refuses a 0644 secrets.env; warn or refuse on a too-open mode. Folds into SEC8 if Keychain lands. |
+| TECH-SEC1 | secrets.env read-permission check | Security | DONE (was P2 carry) | Neither reader refuses a 0644 secrets.env; warn or refuse on a too-open mode. Folds into SEC8 if Keychain lands. |
 | TECH-WF2 | Workflow emoji picker | Workflow | P2 new | The emoji field is a bare 80pt text box that accepts arbitrary text; use a real emoji picker constrained to one grapheme. |
 | TECH-WF3 | Workflow color picker | Workflow | P2 new | Replace the #RRGGBB hex field with a native ColorPicker or token-aligned swatches; keep hex as an advanced fallback. |
 | TECH-WF4 | Workflow identity-section layout | Workflow | P2 new | Name / Color / Emoji rows are raggedly aligned (a stray Spacer, mismatched widths); make the section coherent. |
@@ -106,7 +106,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 
 **TECH-SEC8 (P2): tokens in Keychain.** Move the tokens from the 0600 `secrets.env` into the macOS Keychain. Subsumes SEC1.
 
-**TECH-SEC1 (P2, carry): secrets.env read-permission check.** Until SEC8 lands, refuse or warn when `secrets.env` is more permissive than 0600 at read time (today only the writer enforces the mode).
+**[DONE] TECH-SEC1 (P2, carry): secrets.env read-permission check.** Until SEC8 lands, refuse or warn when `secrets.env` is more permissive than 0600 at read time (today only the writer enforces the mode).
 
 ### Concurrency
 

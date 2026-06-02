@@ -19,6 +19,27 @@ final class PipelineLauncherTests: XCTestCase {
         try! contents.write(to: secretsURL, atomically: true, encoding: .utf8)
     }
 
+    // TECH-SEC1: flag a secrets file that is readable by group or other.
+    func testSecretsFileTooOpenFlagsGroupOrOtherReadable() throws {
+        writeSecrets("NOTION_TOKEN=x\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: secretsURL.path)
+        XCTAssertTrue(PipelineLauncher.secretsFileIsTooOpen(at: secretsURL))
+        try FileManager.default.setAttributes([.posixPermissions: 0o640], ofItemAtPath: secretsURL.path)
+        XCTAssertTrue(PipelineLauncher.secretsFileIsTooOpen(at: secretsURL))
+    }
+
+    func testSecretsFile0600IsNotTooOpen() throws {
+        writeSecrets("NOTION_TOKEN=x\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: secretsURL.path)
+        XCTAssertFalse(PipelineLauncher.secretsFileIsTooOpen(at: secretsURL))
+    }
+
+    func testSecretsFileMissingIsNotTooOpen() {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-\(UUID().uuidString).env")
+        XCTAssertFalse(PipelineLauncher.secretsFileIsTooOpen(at: missing))
+    }
+
     func testOverlaysSecretsOnBaseEnv() {
         writeSecrets("""
         ANTHROPIC_API_KEY=sk-ant-fresh

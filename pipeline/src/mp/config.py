@@ -5,6 +5,7 @@ which is fine because both are read-only consumers — config is owned by the us
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import tomllib
@@ -12,6 +13,8 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+log = logging.getLogger("mp.config")
 
 
 def _expand(p: str) -> Path:
@@ -171,6 +174,16 @@ class Config(BaseModel):
         return cls(**raw)
 
 
+def _secrets_too_open(path: Path) -> bool:
+    """True when `path` grants any group/other permission (more permissive than
+    0600). Tokens in a world/group-readable file are exposed to other local
+    users; the writer enforces 0600 but a hand-created file may not. (TECH-SEC1)"""
+    try:
+        return bool(path.stat().st_mode & 0o077)
+    except OSError:
+        return False
+
+
 def load_secrets(path: Path = SECRETS_PATH) -> None:
     """Source ~/.config/meeting-pipe/secrets.env into os.environ.
 
@@ -186,6 +199,13 @@ def load_secrets(path: Path = SECRETS_PATH) -> None:
     """
     if not path.exists():
         return
+    # TECH-SEC1: warn (do not refuse) when the secrets file is readable by group
+    # or other. Only the writer enforces 0600 today; a hand-created file is 0644.
+    if _secrets_too_open(path):
+        log.warning(
+            "%s is group/other-readable; your API tokens are exposed. Run: chmod 600 %s",
+            path, path,
+        )
     for line in path.read_text(encoding="utf-8").splitlines():
         s = line.strip()
         if not s or s.startswith("#"):
