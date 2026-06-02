@@ -43,7 +43,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-PERF4 | Replace the 60 fps dismiss-ring timer | Performance | P2 new | DismissProgressView wakes the main thread 60x/sec for a cosmetic ring; use TimelineView(.animation) or a CA keyframe. |
 | TECH-ARCH2 | Extract MeetingSessionController | Architecture | P2 new | Lift per-meeting verdict plumbing and sidecar writing out of Coordinator; finishes H1-FINISH by construction. |
 | TECH-ARCH3 | Collapse PipelineLauncher scaffolding onto runMP | Architecture | P2 new | Four near-identical ~90-line Process/watchdog blocks; the runMP helper already factors the pattern. |
-| TECH-SEC5 | Fail-closed subprocess env on local/NDA | Security | P2 new | Drop ANTHROPIC_API_KEY and NOTION_TOKEN from the child env on local/NDA runs so an enforcement bug fails closed, not open. |
+| TECH-SEC5 | Fail-closed subprocess env on local/NDA | Security | DONE (was P2) | Drop ANTHROPIC_API_KEY and NOTION_TOKEN from the child env on local/NDA runs so an enforcement bug fails closed, not open. |
 | TECH-SEC6 | Untrusted-transcript boundary + field scrub | Security | DONE (was P2) | Wrap transcript text as untrusted in all summarizers and scrub owner/attendee fields before they reach sinks and the correction corpus. |
 | TECH-SEC7 | Obsidian YAML title injection | Security | DONE (was P2) | A title with a newline injects YAML keys; route the title through _yaml_str and strip control chars at the Swift extraction boundary. |
 | TECH-SEC8 | Tokens in Keychain (extends SEC1) | Security | P2 new | Move NOTION_TOKEN / ANTHROPIC_API_KEY out of secrets.env into the macOS Keychain; closes SEC1 properly. |
@@ -98,7 +98,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 
 **[DONE] TECH-SEC4 (P1): one network actor.** `NotionDatabaseList.fetch` in the daemon POSTs to api.notion.com for the Preferences DB picker, outside the pipeline's enforcement and against `daemon/CLAUDE.md`. Gate the Refresh on regulated/NDA (fall back to the cached/paste path) and emit an event-log line for every daemon-originated request so egress is auditable.
 
-**TECH-SEC5 (P2): fail-closed subprocess env.** In `PipelineLauncher.freshEnvironment`, when a run resolves to local/Apple/NDA, build the child env without `ANTHROPIC_API_KEY` / `NOTION_TOKEN`. An enforcement bug then fails with a missing-credential error instead of silently egressing.
+**[DONE] TECH-SEC5 (P2): fail-closed subprocess env.** In `PipelineLauncher.freshEnvironment`, when a run resolves to local/Apple/NDA, build the child env without `ANTHROPIC_API_KEY` / `NOTION_TOKEN`. An enforcement bug then fails with a missing-credential error instead of silently egressing. Implemented via `cloudSecretPolicy(for:)`: drop ANTHROPIC_API_KEY whenever the summary is on-device (local/apple_intelligence backend, or forced local by regulated/NDA), and drop NOTION_TOKEN only under a zero-egress run (regulated or NDA). A plain on-device summary that still publishes to Notion keeps NOTION_TOKEN, since that egress is intended; this is the one refinement over the spec's blanket "drop both", to avoid breaking a legitimate local-summary to Notion flow.
 
 **[DONE] TECH-SEC6 (P2): untrusted-transcript boundary.** Wrap transcript text in an explicit "untrusted content, never an instruction" delimiter in all three summarizers, and post-validate owner/attendee fields (reject emails, URLs, @-mentions, newlines) before they reach Notion to-dos, Obsidian, and the correction corpus.
 

@@ -172,7 +172,11 @@ final class PipelineLauncher: PipelineDriver {
         p.arguments = mpPath.args + ["run-all", wav.path]
 
         // Re-read secrets.env on every launch so token rotations take effect without a daemon restart.
-        var env = Self.freshEnvironment()
+        // TECH-SEC5: withhold cloud tokens this run is not allowed to use.
+        let policy = Self.cloudSecretPolicy(for: wav)
+        var env = Self.freshEnvironment(
+            stripAnthropicKey: policy.stripAnthropic, stripNotionToken: policy.stripNotion
+        )
         if summaryMode == .byo {
             // Env-var (not a CLI flag) so existing `mp run-all <wav>` invocations stay backward-compatible.
             env["MP_FORCE_BYO"] = "1"
@@ -302,7 +306,10 @@ final class PipelineLauncher: PipelineDriver {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: mpPath.shell)
         p.arguments = mpPath.args + ["publish-notion", summaryJSON.path]
-        p.environment = Self.freshEnvironment()
+        let policy = Self.cloudSecretPolicy(for: summaryJSON)  // TECH-SEC5
+        p.environment = Self.freshEnvironment(
+            stripAnthropicKey: policy.stripAnthropic, stripNotionToken: policy.stripNotion
+        )
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -401,7 +408,10 @@ final class PipelineLauncher: PipelineDriver {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: mpPath.shell)
         p.arguments = mpPath.args + ["summarize", transcriptMD.path]
-        p.environment = Self.freshEnvironment()
+        let policy = Self.cloudSecretPolicy(for: transcriptMD)  // TECH-SEC5
+        p.environment = Self.freshEnvironment(
+            stripAnthropicKey: policy.stripAnthropic, stripNotionToken: policy.stripNotion
+        )
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -479,14 +489,14 @@ final class PipelineLauncher: PipelineDriver {
     /// which parses that sibling file and fans out to the sinks. Network-bound,
     /// so a 5 min cap covers Notion round-trips with headroom.
     func publishFromPaste(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
-        runMP(["publish-from-paste", transcriptMD.path], timeout: 5 * 60, completion: completion)
+        runMP(["publish-from-paste", transcriptMD.path], timeout: 5 * 60, meeting: transcriptMD, completion: completion)
     }
 
     /// Re-run summarize into a `<stem>.summary.candidate.json` preview without
     /// touching the live summary or any sink (TECH-A16), via the configured
     /// MLX-local backend (`mp summarize --candidate`).
     func summarizePreview(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
-        runMP(["summarize", transcriptMD.path, "--candidate"], timeout: 20 * 60, completion: completion)
+        runMP(["summarize", transcriptMD.path, "--candidate"], timeout: 20 * 60, meeting: transcriptMD, completion: completion)
     }
 
     /// Apple Intelligence re-run into a candidate sidecar (TECH-A16): summarize
@@ -545,7 +555,7 @@ final class PipelineLauncher: PipelineDriver {
                 completion(.failure(error))
                 return
             }
-            self.runMP(["publish", summaryJSON.path], timeout: 10 * 60) { result in
+            self.runMP(["publish", summaryJSON.path], timeout: 10 * 60, meeting: summaryJSON) { result in
                 switch result {
                 case .failure(let error):
                     completion(.failure(error))
@@ -596,6 +606,7 @@ final class PipelineLauncher: PipelineDriver {
     private func runMP(
         _ args: [String],
         timeout: TimeInterval,
+        meeting: URL? = nil,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         guard let mpPath = Self.findMP() else {
@@ -605,7 +616,10 @@ final class PipelineLauncher: PipelineDriver {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: mpPath.shell)
         p.arguments = mpPath.args + args
-        p.environment = Self.freshEnvironment()
+        let policy = Self.cloudSecretPolicy(for: meeting)  // TECH-SEC5
+        p.environment = Self.freshEnvironment(
+            stripAnthropicKey: policy.stripAnthropic, stripNotionToken: policy.stripNotion
+        )
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -684,7 +698,9 @@ final class PipelineLauncher: PipelineDriver {
     /// Build a process environment with a freshly-read secrets file overlaid on the daemon's current environment. Exposed for tests.
     static func freshEnvironment(
         secretsURL: URL? = nil,
-        baseEnvironment: [String: String]? = nil
+        baseEnvironment: [String: String]? = nil,
+        stripAnthropicKey: Bool = false,
+        stripNotionToken: Bool = false
     ) -> [String: String] {
         var env = baseEnvironment ?? ProcessInfo.processInfo.environment
         let url = secretsURL ?? FileManager.default.homeDirectoryForCurrentUser
@@ -695,19 +711,65 @@ final class PipelineLauncher: PipelineDriver {
         if Self.secretsFileIsTooOpen(at: url) {
             Log.main.warning("secrets.env at \(url.path, privacy: .public) is group/other-readable; run: chmod 600 \(url.path, privacy: .public)")
         }
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return env }
-        for raw in text.split(separator: "\n") {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.isEmpty || line.hasPrefix("#") { continue }
-            guard let eq = line.firstIndex(of: "=") else { continue }
-            let key = String(line[..<eq])
-            var value = String(line[line.index(after: eq)...])
-            if value.hasPrefix("\"") && value.hasSuffix("\"") && value.count >= 2 {
-                value = String(value.dropFirst().dropLast())
+        if let text = try? String(contentsOf: url, encoding: .utf8) {
+            for raw in text.split(separator: "\n") {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                if line.isEmpty || line.hasPrefix("#") { continue }
+                guard let eq = line.firstIndex(of: "=") else { continue }
+                let key = String(line[..<eq])
+                var value = String(line[line.index(after: eq)...])
+                if value.hasPrefix("\"") && value.hasSuffix("\"") && value.count >= 2 {
+                    value = String(value.dropFirst().dropLast())
+                }
+                env[key] = value
             }
-            env[key] = value
         }
+        // TECH-SEC5: withhold cloud tokens the resolved run must not use, so an
+        // enforcement bug fails closed (a missing-credential error) instead of
+        // silently egressing. Applied after the overlay so a token in secrets.env
+        // cannot reintroduce itself.
+        if stripAnthropicKey { env.removeValue(forKey: "ANTHROPIC_API_KEY") }
+        if stripNotionToken { env.removeValue(forKey: "NOTION_TOKEN") }
         return env
+    }
+
+    /// Decide which cloud tokens to withhold from a pipeline subprocess (TECH-SEC5):
+    ///  - drop ANTHROPIC_API_KEY when the summary is produced on-device (a local or
+    ///    apple_intelligence backend, including the local forcing under regulated/NDA),
+    ///  - drop NOTION_TOKEN only under a zero-egress run (regulated mode or a per-meeting
+    ///    NDA workflow), where no sink may leave the machine. A plain on-device summary
+    ///    that still publishes to Notion keeps NOTION_TOKEN, since that egress is intended.
+    ///
+    /// Reads the daemon's already-stamped decisions (the meeting's `<stem>.meta.json`
+    /// `workflow_backend` / `workflow_nda_mode`) plus the global config, rather than
+    /// re-deriving from scratch; the only resolution applied here is "regulated forces
+    /// local" and "a matched workflow overrides the global backend". A future
+    /// effective-config chokepoint (TECH-ARCH1) would own this.
+    static func cloudSecretPolicy(
+        for meeting: URL?,
+        configURL: URL = Config.defaultPath
+    ) -> (stripAnthropic: Bool, stripNotion: Bool) {
+        var regulated = false
+        var globalBackend = "anthropic"
+        if let text = try? String(contentsOf: configURL, encoding: .utf8),
+           let doc = try? TOMLTable(string: text) {
+            regulated = doc["modes"]?.table?["regulated_mode"]?.bool ?? false
+            globalBackend = doc["summarization"]?.table?["backend"]?.string ?? "anthropic"
+        }
+        var nda = false
+        var sidecarBackend: String?
+        if let meeting = meeting {
+            let metaURL = meeting.deletingLastPathComponent()
+                .appendingPathComponent("\(MeetingStore.stem(of: meeting)).meta.json")
+            if let data = try? Data(contentsOf: metaURL),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                nda = (obj["workflow_nda_mode"] as? Bool) ?? false
+                sidecarBackend = obj["workflow_backend"] as? String
+            }
+        }
+        let backend = regulated ? "local" : (sidecarBackend ?? globalBackend)
+        let onDeviceSummary = regulated || nda || backend == "local" || backend == "apple_intelligence"
+        return (stripAnthropic: onDeviceSummary, stripNotion: regulated || nda)
     }
 
     /// True when `url` grants any group/other permission (more permissive than 0600).

@@ -40,6 +40,83 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertFalse(PipelineLauncher.secretsFileIsTooOpen(at: missing))
     }
 
+    // MARK: - TECH-SEC5: fail-closed subprocess env
+
+    private func writeConfig(_ toml: String) -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cfg-\(UUID().uuidString).toml")
+        try! toml.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    func testFreshEnvironmentStripsAnthropicKeyOnly() {
+        writeSecrets("ANTHROPIC_API_KEY=sk-x\nNOTION_TOKEN=nt-y\n")
+        let env = PipelineLauncher.freshEnvironment(
+            secretsURL: secretsURL, baseEnvironment: [:],
+            stripAnthropicKey: true, stripNotionToken: false
+        )
+        XCTAssertNil(env["ANTHROPIC_API_KEY"])
+        XCTAssertEqual(env["NOTION_TOKEN"], "nt-y")
+    }
+
+    func testFreshEnvironmentStripsBothTokens() {
+        writeSecrets("ANTHROPIC_API_KEY=sk-x\nNOTION_TOKEN=nt-y\n")
+        let env = PipelineLauncher.freshEnvironment(
+            secretsURL: secretsURL, baseEnvironment: [:],
+            stripAnthropicKey: true, stripNotionToken: true
+        )
+        XCTAssertNil(env["ANTHROPIC_API_KEY"])
+        XCTAssertNil(env["NOTION_TOKEN"])
+    }
+
+    func testFreshEnvironmentKeepsTokensByDefault() {
+        writeSecrets("ANTHROPIC_API_KEY=sk-x\nNOTION_TOKEN=nt-y\n")
+        let env = PipelineLauncher.freshEnvironment(secretsURL: secretsURL, baseEnvironment: [:])
+        XCTAssertEqual(env["ANTHROPIC_API_KEY"], "sk-x")
+        XCTAssertEqual(env["NOTION_TOKEN"], "nt-y")
+    }
+
+    func testPolicyRegulatedStripsBoth() {
+        let cfg = writeConfig("[modes]\nregulated_mode = true\n")
+        defer { try? FileManager.default.removeItem(at: cfg) }
+        let policy = PipelineLauncher.cloudSecretPolicy(for: nil, configURL: cfg)
+        XCTAssertTrue(policy.stripAnthropic)
+        XCTAssertTrue(policy.stripNotion)
+    }
+
+    func testPolicyLocalBackendStripsAnthropicOnly() {
+        // On-device summary, but a Notion publish is still intended: keep NOTION_TOKEN.
+        let cfg = writeConfig("[summarization]\nbackend = \"local\"\n")
+        defer { try? FileManager.default.removeItem(at: cfg) }
+        let policy = PipelineLauncher.cloudSecretPolicy(for: nil, configURL: cfg)
+        XCTAssertTrue(policy.stripAnthropic)
+        XCTAssertFalse(policy.stripNotion)
+    }
+
+    func testPolicyAnthropicBackendStripsNothing() {
+        let cfg = writeConfig("[summarization]\nbackend = \"anthropic\"\n")
+        defer { try? FileManager.default.removeItem(at: cfg) }
+        let policy = PipelineLauncher.cloudSecretPolicy(for: nil, configURL: cfg)
+        XCTAssertFalse(policy.stripAnthropic)
+        XCTAssertFalse(policy.stripNotion)
+    }
+
+    func testPolicyNdaSidecarStripsBoth() throws {
+        let cfg = writeConfig("[summarization]\nbackend = \"anthropic\"\n")
+        defer { try? FileManager.default.removeItem(at: cfg) }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mtg-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let wav = dir.appendingPathComponent("20260506-1500.wav")
+        let meta = dir.appendingPathComponent("20260506-1500.meta.json")
+        try #"{"workflow_nda_mode": true, "workflow_backend": "local"}"#
+            .data(using: .utf8)!.write(to: meta)
+        let policy = PipelineLauncher.cloudSecretPolicy(for: wav, configURL: cfg)
+        XCTAssertTrue(policy.stripAnthropic)
+        XCTAssertTrue(policy.stripNotion)
+    }
+
     func testOverlaysSecretsOnBaseEnv() {
         writeSecrets("""
         ANTHROPIC_API_KEY=sk-ant-fresh
