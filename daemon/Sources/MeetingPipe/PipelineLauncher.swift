@@ -724,10 +724,14 @@ final class PipelineLauncher: PipelineDriver {
                 env[key] = value
             }
         }
-        // TECH-SEC5: withhold cloud tokens the resolved run must not use, so an
-        // enforcement bug fails closed (a missing-credential error) instead of
-        // silently egressing. Applied after the overlay so a token in secrets.env
-        // cannot reintroduce itself.
+        // TECH-SEC5: withhold cloud tokens the resolved run must not use, so a
+        // consumer that reads only the process env fails closed (missing
+        // credential) instead of egressing. NOTE: this strips the daemon's
+        // inherited env only; the Python child re-sources secrets.env from disk
+        // via load_secrets(), so a token written there reappears in os.environ.
+        // The egress guard (TECH-SEC3), armed from the resolved config inside the
+        // subprocess, is the authoritative network-layer backstop; this strip is
+        // defense-in-depth.
         if stripAnthropicKey { env.removeValue(forKey: "ANTHROPIC_API_KEY") }
         if stripNotionToken { env.removeValue(forKey: "NOTION_TOKEN") }
         return env

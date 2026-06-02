@@ -101,6 +101,15 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertFalse(policy.stripNotion)
     }
 
+    func testPolicyAppleIntelligenceStripsAnthropicOnly() {
+        // On-device summary (Apple), but a Notion publish is still allowed. (SEC review)
+        let cfg = writeConfig("[summarization]\nbackend = \"apple_intelligence\"\n")
+        defer { try? FileManager.default.removeItem(at: cfg) }
+        let policy = PipelineLauncher.cloudSecretPolicy(for: nil, configURL: cfg)
+        XCTAssertTrue(policy.stripAnthropic)
+        XCTAssertFalse(policy.stripNotion)
+    }
+
     func testPolicyNdaSidecarStripsBoth() throws {
         let cfg = writeConfig("[summarization]\nbackend = \"anthropic\"\n")
         defer { try? FileManager.default.removeItem(at: cfg) }
