@@ -20,6 +20,19 @@ final class MeetingTitleResolverTests: XCTestCase {
         XCTAssertEqual(MeetingTitleResolver.sanitizeTitle("\tEdge\r\n"), "Edge")
     }
 
+    func test_sanitize_strips_unicode_line_separators() {
+        // U+2028 / U+2029 are not in CharacterSet.controlCharacters but must still
+        // be neutralized so the title stays single-line. (SEC review)
+        XCTAssertEqual(MeetingTitleResolver.sanitizeTitle("a\u{2028}b\u{2029}c"), "a b c")
+    }
+
+    func test_sanitize_preserves_zwj_emoji_sequences() {
+        // U+200D ZERO WIDTH JOINER (a format char) must survive so family/role emoji
+        // are not split into separate glyphs. (SEC review regression)
+        let family = "Team \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"
+        XCTAssertEqual(MeetingTitleResolver.sanitizeTitle(family), family)
+    }
+
     func test_clean_title_is_unchanged() {
         let title = MeetingTitleResolver.extractMeetingTitle(
             bundleID: "us.zoom.xos", kind: .native, titles: ["Sprint planning | Zoom Meeting"]

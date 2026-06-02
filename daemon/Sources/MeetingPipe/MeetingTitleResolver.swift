@@ -43,12 +43,25 @@ enum MeetingTitleResolver {
         }
     }
 
-    /// Replace control characters (newlines, tabs, NUL, ...) with spaces and trim, so an
-    /// extracted title is always single-line and safe for YAML frontmatter and the meta
-    /// sidecar (TECH-SEC7). Regular spacing is preserved.
+    /// Scalars to neutralize in a title: line breaks (incl. U+2028 LINE SEPARATOR /
+    /// U+2029 PARAGRAPH SEPARATOR, which are NOT in CharacterSet.controlCharacters)
+    /// plus C0/C1 control chars and DEL. Deliberately excludes Unicode format
+    /// characters (Cf, e.g. U+200D ZERO WIDTH JOINER) so emoji sequences survive.
+    private static let titleUnsafeScalars: CharacterSet = {
+        var set = CharacterSet.newlines
+        set.insert(charactersIn: Unicode.Scalar(0x00)!...Unicode.Scalar(0x1F)!)  // C0 (incl tab)
+        set.insert(Unicode.Scalar(0x7F)!)                                         // DEL
+        set.insert(charactersIn: Unicode.Scalar(0x80)!...Unicode.Scalar(0x9F)!)   // C1
+        return set
+    }()
+
+    /// Replace line breaks and control characters with spaces, then trim, so an
+    /// extracted title is always single-line and safe for YAML frontmatter and the
+    /// meta sidecar (TECH-SEC7). Regular spacing and formatting characters (e.g. the
+    /// ZWJ in emoji sequences) are preserved.
     static func sanitizeTitle(_ s: String) -> String {
         let cleaned = String(s.unicodeScalars.map {
-            CharacterSet.controlCharacters.contains($0) ? Character(" ") : Character($0)
+            titleUnsafeScalars.contains($0) ? Character(" ") : Character($0)
         })
         return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
