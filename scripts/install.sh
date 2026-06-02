@@ -168,8 +168,6 @@ cat >"$APP_BUILD/Contents/Info.plist" <<'PLIST'
     <string>13.0</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>MeetingPipe records meeting audio for transcription. Audio never leaves your Mac.</string>
-    <key>NSAppleEventsUsageDescription</key>
-    <string>MeetingPipe inspects the frontmost browser tab to detect web meetings (Google Meet, Teams Web).</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>MeetingPipe captures system audio (other participants' voices) directly via Apple's process-tap API on macOS 14.2+. The same TCC entitlement gates audio process taps; no screen pixels are read.</string>
 </dict>
@@ -351,10 +349,11 @@ if (( RESET_TCC )); then
     BUNDLE_ID="com.meetingpipe.daemon"
     pkill -KILL -f "MeetingPipe.app/Contents/MacOS/MeetingPipe" 2>/dev/null || true
 
-    # tccutil reset takes (service, bundle_id). Listing the four
-    # services the daemon talks to plus the catch-all `All` for
-    # anything macOS may have added that we don't track here.
-    for service in Microphone ScreenCapture Accessibility AppleEvents \
+    # tccutil reset takes (service, bundle_id). Listing the services the
+    # daemon uses plus the catch-all `All` for anything macOS may have
+    # added that we don't track here. (AppleEvents dropped in TECH-SEC9:
+    # browser detection uses Accessibility, not Apple Events.)
+    for service in Microphone ScreenCapture Accessibility \
                     SystemPolicyAllFiles; do
         if tccutil reset "$service" "$BUNDLE_ID" 2>/dev/null; then
             say "reset TCC: $service for $BUNDLE_ID"

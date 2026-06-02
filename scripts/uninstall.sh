@@ -8,7 +8,7 @@
 # Flags:
 #   --purge        also remove ~/.config/meeting-pipe (config + secrets)
 #   --reset-tcc    also reset macOS TCC permissions for the bundle ID
-#                  (Microphone, ScreenCapture, Accessibility, AppleEvents,
+#                  (Microphone, ScreenCapture, Accessibility,
 #                  plus `tccutil reset All` as a belt-and-suspenders).
 #                  Use this when a permission was denied and macOS now
 #                  refuses to re-prompt on the next install. Without it,
@@ -103,7 +103,7 @@ if (( RESET_TCC )); then
     # before the catch-all so an unfamiliar reader can see exactly which
     # services the daemon talks to; `reset All` after is belt-and-suspenders
     # for anything macOS may have added that we don't track.
-    for service in Microphone ScreenCapture Accessibility AppleEvents \
+    for service in Microphone ScreenCapture Accessibility \
                     SystemPolicyAllFiles; do
         if tccutil reset "$service" "$BUNDLE_ID" 2>/dev/null; then
             echo "  reset TCC: $service for $BUNDLE_ID"

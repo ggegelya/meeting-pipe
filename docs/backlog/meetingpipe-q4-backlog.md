@@ -72,7 +72,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-E4-FINISH | Dogfood analysis script | Tooling | P2 carry | The events.jsonl acceptance-bar report (scripts/dogfood-report) was never built; pipeline/src/mp/dogfood.py is a different A/B harness. |
 | TECH-ARCH4 | Golden-vector fixture for the dual chunkers | Architecture | P3 new | The Swift and Python chunkers must stay identical; pin parity with one shared input/expected fixture across both suites. |
 | TECH-PERF5 | Adaptive backoff on poll timers | Performance | P3 new | The 1 Hz HAL/AX polls and 4 Hz engine tick run all meeting; back off when the listener is delivering. |
-| TECH-SEC9 | Drop unused AppleEvents entitlement | Security | P3 new | NSAppleEventsUsageDescription is declared but browser detection uses Accessibility; remove the capability or document a use site. |
+| TECH-SEC9 | Drop unused AppleEvents entitlement | Security | DONE (was P3) | NSAppleEventsUsageDescription is declared but browser detection uses Accessibility; remove the capability or document a use site. Done: dropped the key from install.sh's Info.plist and removed AppleEvents from the tccutil reset loops in install.sh + uninstall.sh (no AppleEvents API is used in Swift). |
 | TECH-FEAT3 | Speaker enrollment | Feature | P3 new | Label your own voice once so "me vs them" is reliable; leans on the diarization-cleanup work. |
 | TECH-FEAT4 | Cross-meeting action tracking | Feature | P3 new | Extract open action items across meetings and surface the unresolved ones. |
 | TECH-DIST2 | Spike: Swift port of the pipeline | Distribution | P3 new | Evaluate removing Python entirely (gated on MLX-Swift maturity for the local summarizer); would moot DIST1. Overlaps TECH-I7. |
