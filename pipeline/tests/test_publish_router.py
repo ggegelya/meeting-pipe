@@ -102,17 +102,54 @@ def test_build_publishers_unknown_name_raises() -> None:
         build_publishers(cfg)
 
 
-def test_build_publishers_notion_in_regulated_mode_no_token_needed() -> None:
-    # regulated_mode causes the Notion publisher to short-circuit at
-    # upsert time, so build_publishers must not require NOTION_TOKEN
-    # for regulated installs that use the Notion sink as a placeholder.
+def test_build_publishers_notion_in_regulated_mode_is_dropped() -> None:
+    # regulated_mode is a hard zero-egress guarantee. Notion is the one sink
+    # that transmits off-device, so build_publishers must DROP it entirely
+    # rather than build a token-less placeholder that would still POST to
+    # api.notion.com at upsert time (TECH-SEC2).
     cfg = Config.model_validate({
         "output": {"sinks": ["notion"]},
         "modes": {"regulated_mode": True},
     })
     pubs = build_publishers(cfg)
-    assert len(pubs) == 1
-    assert pubs[0].name == "notion"
+    assert pubs == [], "notion sink must be dropped under regulated_mode"
+
+
+def test_build_publishers_regulated_drops_notion_keeps_local_sinks(tmp_path: Path) -> None:
+    # The clamp is surgical: only the egressing sink (notion) is dropped; the
+    # local-only sinks (obsidian, filesystem) still build and run.
+    cfg = Config.model_validate({
+        "output": {"sinks": ["notion", "obsidian", "filesystem"]},
+        "obsidian": {"vault_path": str(tmp_path / "vault")},
+        "filesystem": {"output_dir": str(tmp_path / "out")},
+        "modes": {"regulated_mode": True},
+    })
+    pubs = build_publishers(cfg)
+    assert [p.name for p in pubs] == ["obsidian", "filesystem"]
+
+
+def test_fanout_regulated_mode_issues_no_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # End-to-end zero-egress: driving fanout under regulated_mode with the
+    # default notion sink must not issue any request at all. We arm httpx's
+    # transport to fail on every request, then assert fanout completes with
+    # an empty sink map (notion dropped at build time). A regression that
+    # rebuilt the token-less Notion publisher would POST to api.notion.com
+    # and trip the transport. (TECH-SEC2)
+    import httpx
+
+    def _blocking_handle(self: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        raise AssertionError(f"unexpected egress under regulated_mode: {request.url}")
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _blocking_handle)
+
+    cfg = Config.model_validate({
+        "output": {"sinks": ["notion"]},
+        "modes": {"regulated_mode": True},
+    })
+    summary_json = tmp_path / "20260506-1500.summary.json"
+    _write_summary_json(summary_json)
+    res = fanout(summary_json=summary_json, cfg=cfg, transcript_md=None)
+    assert res["sinks"] == {}, "notion must be dropped, leaving no sinks to run"
 
 
 def test_build_publishers_obsidian_without_vault_path_skips() -> None:

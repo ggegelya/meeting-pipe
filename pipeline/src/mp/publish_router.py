@@ -49,20 +49,21 @@ def build_publishers(cfg: Config) -> list[MeetingPublisher]:
 
 def _build_one(name: str, cfg: Config) -> MeetingPublisher | None:
     if name == "notion":
-        # The Notion publisher takes its token at construction time. Under
-        # regulated_mode we build it with an empty token (no NOTION_TOKEN
-        # required) so an install listing "notion" as a placeholder sink still
-        # constructs. WARNING: upsert() does NOT short-circuit on regulated_mode
-        # (only the module-level publish() does, which fanout never calls), so a
-        # regulated install must not keep "notion" as an active sink. Closing
-        # that gap is tracked in the backlog (regulated egress).
+        # regulated_mode is a hard zero-egress guarantee. Notion is the one
+        # publisher that transmits off-device, so under regulated_mode we DROP
+        # the sink here rather than build it: fanout never constructs a Notion
+        # client and nothing can POST to api.notion.com. This mirrors how
+        # nda_mode strips sinks to filesystem in the workflow overlay
+        # (mp.workflow). The eventual home for this clamp is the effective-config
+        # chokepoint (TECH-ARCH1); until that lands it lives here. (TECH-SEC2)
+        if cfg.modes.regulated_mode:
+            log.info("regulated_mode=true; dropping the Notion sink (zero-egress clamp)")
+            return None
         from .publish_notion import NotionRestPublisher
         from .config import require_env
-        if cfg.modes.regulated_mode:
-            log.info("regulated_mode=true; building Notion sink with empty token (upsert is not regulated-aware)")
-        if not cfg.notion.database_id and not cfg.modes.regulated_mode:
+        if not cfg.notion.database_id:
             log.warning("notion.database_id is empty; Notion sink will fail at upsert")
-        token = require_env("NOTION_TOKEN") if not cfg.modes.regulated_mode else ""
+        token = require_env("NOTION_TOKEN")
         return NotionRestPublisher(token=token, cfg=cfg)
     if name == "obsidian":
         if not cfg.obsidian.vault_path:
