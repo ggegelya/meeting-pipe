@@ -26,7 +26,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-SEC2 | Clamp sinks under global regulated mode | Security | DONE (was P0) | Global regulated mode forces the local LLM but does not strip the Notion sink, so the publish path still transmits meeting content; clamp sinks the way NDA does. |
 | TECH-CONC1 | Move MicGate emit + lock off the render thread | Concurrency | P1 new | Every mic gate flip takes an NSLock and writes events.jsonl synchronously on the audio render thread; defer both and add a CI assertion. |
 | TECH-SEC3 | Process-wide egress firewall under regulated/NDA | Security | DONE (was P1) | Replace seven scattered flag checks with one httpx transport that hard-fails any non-loopback request when regulated or NDA is active. |
-| TECH-SEC4 | Gate or remove the daemon's direct Notion call | Security | P1 new | The daemon POSTs to api.notion.com for the DB picker, outside all egress enforcement and against its own "no Notion from the daemon" rule. |
+| TECH-SEC4 | Gate or remove the daemon's direct Notion call | Security | DONE (was P1) | The daemon POSTs to api.notion.com for the DB picker, outside all egress enforcement and against its own "no Notion from the daemon" rule. |
 | TECH-ARCH1 | Single effective_config() chokepoint | Architecture | P1 new | The regulated/NDA force-local rule is copied across four-plus sites; compute it once so a new code path cannot forget the clamp. |
 | TECH-PERF1 | Stream diarize.py per segment | Performance | P1 new | The channel-aware fallback loads the whole stereo WAV plus two float copies (~2 GB at 3 h); read per-segment instead. |
 | TECH-PERF2 | FluidAudio mono read + free input buffer (was A13 RAM half) | Performance | P1 carry | readMonoFloat32 holds the full clip plus a mono copy across ASR and diarization; halve the peak and free the input buffer early. |
@@ -96,7 +96,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 
 **[DONE] TECH-SEC3 (P1): structural egress firewall.** Install one process-wide httpx event hook (or custom transport) at pipeline entry that raises on any request whose host is not loopback when the resolved config is regulated or carries `workflow_nda_mode`. The Anthropic SDK and Notion both use httpx, so one hook covers every present and future sink. Promote the pattern the zero-egress test already simulates from fixture to runtime guarantee.
 
-**TECH-SEC4 (P1): one network actor.** `NotionDatabaseList.fetch` in the daemon POSTs to api.notion.com for the Preferences DB picker, outside the pipeline's enforcement and against `daemon/CLAUDE.md`. Gate the Refresh on regulated/NDA (fall back to the cached/paste path) and emit an event-log line for every daemon-originated request so egress is auditable.
+**[DONE] TECH-SEC4 (P1): one network actor.** `NotionDatabaseList.fetch` in the daemon POSTs to api.notion.com for the Preferences DB picker, outside the pipeline's enforcement and against `daemon/CLAUDE.md`. Gate the Refresh on regulated/NDA (fall back to the cached/paste path) and emit an event-log line for every daemon-originated request so egress is auditable.
 
 **TECH-SEC5 (P2): fail-closed subprocess env.** In `PipelineLauncher.freshEnvironment`, when a run resolves to local/Apple/NDA, build the child env without `ANTHROPIC_API_KEY` / `NOTION_TOKEN`. An enforcement bug then fails with a missing-credential error instead of silently egressing.
 

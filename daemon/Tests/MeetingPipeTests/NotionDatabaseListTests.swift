@@ -71,4 +71,21 @@ final class NotionDatabaseListTests: XCTestCase {
         XCTAssertEqual(NotionDatabaseList.parse(jsonData: payload("{}")), [])
         XCTAssertEqual(NotionDatabaseList.parse(jsonData: payload(#"{"results": "not an array"}"#)), [])
     }
+
+    // TECH-SEC4: under regulated mode the daemon must not POST to api.notion.com.
+    // refresh() short-circuits to a .failed state and never touches the network.
+    func test_refresh_is_blocked_under_regulated_mode() {
+        let tmpCache = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notion-databases-test-\(UUID().uuidString).json")
+        let list = NotionDatabaseList(cacheURL: tmpCache, isRegulated: { true })
+
+        list.refresh()
+
+        guard case let .failed(message) = list.state else {
+            return XCTFail("expected .failed under regulated mode, got \(list.state)")
+        }
+        XCTAssertTrue(message.lowercased().contains("regulated"),
+                      "the blocked message should explain the regulated-mode gate")
+        XCTAssertTrue(list.entries.isEmpty, "no databases should be fetched under regulated mode")
+    }
 }

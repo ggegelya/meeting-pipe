@@ -259,7 +259,9 @@ struct WorkflowEditor: View {
             )
         }
         .buttonStyle(.borderless)
-        .disabled(notionDBs.state == .loading)
+        // NDA workflows are local-only; don't offer a network DB fetch for them
+        // (the regulated global flag is gated inside refresh()). (TECH-SEC4)
+        .disabled(notionDBs.state == .loading || ndaMode)
     }
 
     @ViewBuilder

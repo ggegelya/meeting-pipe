@@ -25,13 +25,18 @@ final class NotionDatabaseList: ObservableObject {
 
     private let cacheURL: URL
     private let session: URLSession
+    /// Resolves the global regulated-mode flag. Defaults to reading the config
+    /// file at refresh time; tests inject a constant. (TECH-SEC4)
+    private let isRegulated: () -> Bool
 
     init(
         cacheURL: URL = NotionDatabaseList.defaultCacheURL,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        isRegulated: @escaping () -> Bool = { (try? Config.load())?.modes.regulatedMode ?? false }
     ) {
         self.cacheURL = cacheURL
         self.session = session
+        self.isRegulated = isRegulated
         loadCache()
     }
 
@@ -41,12 +46,29 @@ final class NotionDatabaseList: ObservableObject {
     }()
 
     /// Re-fetch from Notion using the token in the process environment. Preferences "Apply" keeps the env in sync with `secrets.env`, so no need to reach into SecretsStore.
+    ///
+    /// Gated on global regulated mode (TECH-SEC4): the daemon's own POST to
+    /// api.notion.com is outside the pipeline's egress firewall, so under
+    /// regulated mode we refuse the network call and fall back to the cached
+    /// list / paste path. Every fetch attempt, allowed or blocked, emits an
+    /// event-log line so daemon-originated egress is auditable. (NDA is a
+    /// per-meeting/workflow flag, not a global daemon state; the DB picker is a
+    /// global Preferences action, so the network gate keys off regulated mode.
+    /// The editor disables this control for an NDA workflow at the call site.)
     func refresh() {
+        if isRegulated() {
+            Log.event(category: "daemon", action: "notion_fetch_blocked",
+                      attributes: ["host": "api.notion.com", "reason": "regulated_mode"])
+            state = .failed("Regulated mode is on: the database list is not fetched over the network. Pick from the cached list or paste a database id.")
+            return
+        }
         let token = ProcessInfo.processInfo.environment["NOTION_TOKEN"] ?? ""
         guard !token.isEmpty else {
             state = .failed("Set NOTION_TOKEN in Preferences -> Integrations first.")
             return
         }
+        Log.event(category: "daemon", action: "notion_fetch_started",
+                  attributes: ["host": "api.notion.com"])
         state = .loading
         Task {
             do {
@@ -54,8 +76,12 @@ final class NotionDatabaseList: ObservableObject {
                 self.entries = fetched
                 self.state = .loaded(fetched)
                 self.persistCache(fetched)
+                Log.event(category: "daemon", action: "notion_fetch_completed",
+                          attributes: ["host": "api.notion.com", "count": fetched.count])
             } catch {
                 self.state = .failed(error.localizedDescription)
+                Log.event(category: "daemon", action: "notion_fetch_failed",
+                          attributes: ["host": "api.notion.com", "error": error.localizedDescription])
             }
         }
     }
