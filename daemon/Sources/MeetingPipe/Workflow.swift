@@ -2,11 +2,12 @@ import Foundation
 
 /// Per-context routing rules: LLM context prompt, publish sinks, summarisation backend, and behavioural toggles (NDA mode). One TOML file per workflow under `~/.config/meeting-pipe/workflows/`; UUID is the filename so renames don't move the file. Exactly one workflow is flagged default; `WorkflowStore` enforces single-default on every save.
 
-/// Summarisation backend. Mirrors `summarization.backend` strings from `config.toml` so the pipeline can apply per-meeting overrides without new branching.
+/// A pinnable summarisation backend. The raw values match `summarization.backend` in `config.toml` and the `workflow_backend` sidecar key, so a pin maps straight through to the pipeline. A workflow that does not pin one (`Workflow.backend == nil`) inherits the global default: the sidecar omits the key and the pipeline keeps `summarization.backend`, which is how a global Apple Intelligence setting stays reachable for normal meetings.
 enum WorkflowBackend: String, Codable, Equatable, CaseIterable {
     case anthropic
     case local
     case auto
+    case appleIntelligence = "apple_intelligence"
 }
 
 /// One publish destination, workflow-scoped. Empty strings fall back to the global config field.
@@ -63,7 +64,8 @@ struct Workflow: Codable, Equatable, Hashable, Identifiable {
     /// Becomes `summarization.team_context` in the pipeline.
     var contextPrompt: String
     var sinks: [WorkflowSink]
-    var backend: WorkflowBackend
+    /// Pinned summarisation backend, or nil to inherit the global default.
+    var backend: WorkflowBackend?
     var flags: WorkflowFlags
     /// Exactly one workflow has this set; the matcher falls back to it when no rule matches.
     var isDefault: Bool
@@ -78,7 +80,7 @@ struct Workflow: Codable, Equatable, Hashable, Identifiable {
         matchingRules: [WorkflowMatchingRule] = [],
         contextPrompt: String = "",
         sinks: [WorkflowSink] = [.notion(databaseId: "")],
-        backend: WorkflowBackend = .anthropic,
+        backend: WorkflowBackend? = nil,
         flags: WorkflowFlags = WorkflowFlags(),
         isDefault: Bool = false,
         order: Int = 0
@@ -96,8 +98,8 @@ struct Workflow: Codable, Equatable, Hashable, Identifiable {
         self.order = order
     }
 
-    /// Effective backend after applying NDA override; surfaced on the workflow chip so the user sees the override before pressing Record.
-    var effectiveBackend: WorkflowBackend {
+    /// Backend to stamp into the meta sidecar, or nil to inherit the global default (the sidecar then omits `workflow_backend`). NDA forces local regardless of the pin so the summary never leaves the Mac. Surfaced on the workflow chip so the user sees the resolution before pressing Record.
+    var effectiveBackend: WorkflowBackend? {
         flags.ndaMode ? .local : backend
     }
 

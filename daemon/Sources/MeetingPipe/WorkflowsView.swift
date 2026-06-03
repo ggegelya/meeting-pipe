@@ -56,7 +56,7 @@ struct WorkflowEditor: View {
     @State private var isDefault: Bool = false
     @State private var matchingRules: [WorkflowMatchingRule] = []
     @State private var sinks = SinkSelection()
-    @State private var backend: WorkflowBackend = .anthropic
+    @State private var backend: WorkflowBackend? = nil
     @State private var ndaMode: Bool = false
     @State private var pendingDeleteAlert: Bool = false
     @State private var saveError: String?
@@ -290,16 +290,28 @@ struct WorkflowEditor: View {
 
     private var backendSection: some View {
         Section("Backend") {
+            // Menu (not segmented): five options overflow the segmented control,
+            // the same reason Preferences uses a menu picker here. (TECH-WF1)
             Picker("", selection: $backend) {
-                Text("Anthropic (cloud)").tag(WorkflowBackend.anthropic)
-                Text("Local MLX").tag(WorkflowBackend.local)
-                Text("Auto (cloud, fall back to local)").tag(WorkflowBackend.auto)
+                Text("Use global default").tag(WorkflowBackend?.none)
+                Text("Anthropic (cloud)").tag(WorkflowBackend?.some(.anthropic))
+                Text("Local MLX").tag(WorkflowBackend?.some(.local))
+                Text("Auto (cloud, fall back to local)").tag(WorkflowBackend?.some(.auto))
+                Text("Apple Intelligence (on-device)").tag(WorkflowBackend?.some(.appleIntelligence))
             }
             .labelsHidden()
-            .pickerStyle(.segmented)
+            .pickerStyle(.menu)
             .disabled(ndaMode)
             if ndaMode {
                 Text("NDA mode forces the local backend; the picker is disabled.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if backend == nil {
+                Text("Inherits the backend from Preferences > Pipeline.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if backend == .appleIntelligence, let reason = AppleIntelligenceSummarizer.availabilityReason {
+                Text("Apple Intelligence is unavailable here: \(reason)")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }

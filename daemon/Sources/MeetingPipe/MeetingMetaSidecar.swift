@@ -22,7 +22,13 @@ enum MeetingMetaSidecar {
                 dict["workflow_emoji"] = emoji
             }
             dict["workflow_context_prompt"] = wf.contextPrompt
-            dict["workflow_backend"] = wf.effectiveBackend.rawValue
+            // Only stamp the backend when the workflow actually pins one (or NDA
+            // forces local). When it inherits, omit the key so the pipeline keeps
+            // the global summarization.backend, which is how a global Apple
+            // Intelligence setting stays reachable. (TECH-WF1)
+            if let backend = wf.effectiveBackend {
+                dict["workflow_backend"] = backend.rawValue
+            }
             dict["workflow_sinks"] = wf.effectiveSinkTypeNames
             if !wf.notionDatabaseID.isEmpty {
                 dict["workflow_notion_database_id"] = wf.notionDatabaseID

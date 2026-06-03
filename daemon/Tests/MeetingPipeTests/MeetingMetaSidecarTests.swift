@@ -66,6 +66,22 @@ final class MeetingMetaSidecarTests: XCTestCase {
         XCTAssertNil(dict["workflow_notion_database_id"])
     }
 
+    func test_workflow_inheriting_backend_omits_key() {
+        // A workflow that does not pin a backend (the new default) must omit
+        // workflow_backend so the pipeline keeps the global
+        // summarization.backend, which is how a global Apple Intelligence
+        // setting stays reachable for normal meetings. (TECH-WF1)
+        let wf = Workflow(name: "Inherits", sinks: [.obsidian])  // backend defaults to nil
+        let dict = MeetingMetaSidecar.build(source: nil, workflow: wf)
+        XCTAssertNil(dict["workflow_backend"])
+    }
+
+    func test_apple_intelligence_backend_is_stamped() {
+        let wf = Workflow(name: "Apple", sinks: [.obsidian], backend: .appleIntelligence)
+        let dict = MeetingMetaSidecar.build(source: nil, workflow: wf)
+        XCTAssertEqual(dict["workflow_backend"] as? String, "apple_intelligence")
+    }
+
     func test_workflow_without_notion_omits_db_key() {
         let wf = Workflow(
             name: "Obsidian-only",

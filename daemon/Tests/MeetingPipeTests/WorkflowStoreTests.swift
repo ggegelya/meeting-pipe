@@ -47,6 +47,36 @@ final class WorkflowStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.workflows[0].order, 1)
     }
 
+    func test_inherited_backend_round_trips_as_nil_and_omits_key() throws {
+        // A workflow that inherits the global default (backend == nil) must not
+        // write a `backend` key, and must reload as nil. (TECH-WF1)
+        let dir = try makeTempDir()
+        let store = WorkflowStore(directory: dir)
+        let id = UUID()
+        let wf = Workflow(id: id, name: "Inherits", sinks: [.filesystem])  // backend defaults to nil
+        try store.upsert(wf)
+
+        let toml = try String(
+            contentsOf: dir.appendingPathComponent("\(id.uuidString).toml"), encoding: .utf8
+        )
+        XCTAssertFalse(toml.contains("backend"), "inherited backend must omit the key")
+
+        let reloaded = WorkflowStore(directory: dir)
+        reloaded.load()
+        XCTAssertNil(reloaded.workflows[0].backend)
+    }
+
+    func test_apple_intelligence_backend_round_trips() throws {
+        let dir = try makeTempDir()
+        let store = WorkflowStore(directory: dir)
+        let id = UUID()
+        let wf = Workflow(id: id, name: "Apple", sinks: [.filesystem], backend: .appleIntelligence)
+        try store.upsert(wf)
+        let reloaded = WorkflowStore(directory: dir)
+        reloaded.load()
+        XCTAssertEqual(reloaded.workflows[0].backend, .appleIntelligence)
+    }
+
     func test_matching_rules_and_notion_sink_round_trip() throws {
         let dir = try makeTempDir()
         let store = WorkflowStore(directory: dir)

@@ -26,7 +26,11 @@ enum WorkflowMigrator {
             matchingRules: [],  // empty rules → default-only fallback
             contextPrompt: legacyTeamContext,
             sinks: [.notion(databaseId: legacyNotionDB)],
-            backend: legacyBackend(configStore: configStore),
+            // Inherit the global summarization.backend rather than pinning the
+            // legacy value. The fallback workflow is what every unmatched
+            // meeting resolves to, so pinning here is what made the global
+            // Apple Intelligence setting unreachable. (TECH-WF1)
+            backend: nil,
             flags: WorkflowFlags(),
             isDefault: true,
             order: 0
@@ -54,10 +58,5 @@ enum WorkflowMigrator {
             return ""
         }
         return summ["team_context"]?.string ?? ""
-    }
-
-    private static func legacyBackend(configStore: ConfigStore?) -> WorkflowBackend {
-        let raw = configStore?.summarizationBackend ?? "anthropic"
-        return WorkflowBackend(rawValue: raw) ?? .anthropic
     }
 }

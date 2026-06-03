@@ -40,7 +40,9 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
 
     Overrides understood:
       - `workflow_context_prompt`  → `summarization.team_context`
-      - `workflow_backend`         → `summarization.backend`
+      - `workflow_backend`         → `summarization.backend` (applied only when
+        present; the daemon omits it when the workflow inherits the global
+        default, so a global `apple_intelligence` setting stays in effect)
       - `workflow_sinks`           → `output.sinks`
       - `workflow_notion_database_id` → `notion.database_id`
       - `workflow_nda_mode`        → forces local backend + filesystem sink

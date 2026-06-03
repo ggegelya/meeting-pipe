@@ -102,6 +102,35 @@ def test_unknown_backend_value_is_ignored(tmp_path: Path) -> None:
     assert result.summarization.backend == cfg.summarization.backend
 
 
+def test_missing_backend_key_preserves_global_default(tmp_path: Path) -> None:
+    # The inherit contract (TECH-WF1): when the daemon omits workflow_backend
+    # because the workflow inherits the global default, the overlay must leave
+    # summarization.backend untouched, so a global apple_intelligence setting
+    # stays in effect for the run.
+    cfg = Config.model_validate({"summarization": {"backend": "apple_intelligence"}})
+    stem = "20260512-inherit"
+    _write_meta(tmp_path, stem, {
+        "workflow_context_prompt": "no backend pinned",
+        # intentionally no workflow_backend key
+    })
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    result = apply_overrides(cfg, wav)
+    assert result.summarization.backend == "apple_intelligence"
+    assert result.summarization.team_context == "no backend pinned"
+
+
+def test_apple_intelligence_backend_override_applies(tmp_path: Path) -> None:
+    # A workflow that pins apple_intelligence overrides a global anthropic.
+    cfg = Config()  # default backend is anthropic
+    stem = "20260512-apple"
+    _write_meta(tmp_path, stem, {"workflow_backend": "apple_intelligence"})
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    result = apply_overrides(cfg, wav)
+    assert result.summarization.backend == "apple_intelligence"
+
+
 def test_empty_sinks_list_is_ignored(tmp_path: Path) -> None:
     # A workflow that ended up with no sinks (UI bug, hand-edited TOML)
     # must not silently strip publishing. Fall back to the global default.

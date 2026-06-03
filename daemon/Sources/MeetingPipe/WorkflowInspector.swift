@@ -144,9 +144,11 @@ struct WorkflowInspector: View {
 
     private var backendLine: String {
         switch workflow.effectiveBackend {
-        case .anthropic: return "Anthropic (cloud)"
-        case .local:     return "Local (on-device)"
-        case .auto:      return "Auto"
+        case .anthropic:         return "Anthropic (cloud)"
+        case .local:             return "Local (on-device)"
+        case .auto:              return "Auto"
+        case .appleIntelligence: return "Apple Intelligence (on-device)"
+        case nil:                return "Global default"
         }
     }
 }

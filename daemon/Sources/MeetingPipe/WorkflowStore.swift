@@ -140,7 +140,11 @@ final class WorkflowStore: ObservableObject {
         doc["color"] = wf.color
         if let e = wf.emoji, !e.isEmpty { doc["emoji"] = e }
         doc["context_prompt"] = wf.contextPrompt
-        doc["backend"] = wf.backend.rawValue
+        // Omit the key when the workflow inherits the global default (TECH-WF1);
+        // a missing key decodes back to nil (inherit).
+        if let backend = wf.backend {
+            doc["backend"] = backend.rawValue
+        }
         doc["is_default"] = wf.isDefault
         doc["order"] = wf.order
 
@@ -182,8 +186,9 @@ final class WorkflowStore: ObservableObject {
         let color = doc["color"]?.string ?? "#3478F6"
         let emoji = doc["emoji"]?.string
         let contextPrompt = doc["context_prompt"]?.string ?? ""
-        let backendRaw = doc["backend"]?.string ?? "anthropic"
-        let backend = WorkflowBackend(rawValue: backendRaw) ?? .anthropic
+        // Missing or unrecognized backend decodes to nil (inherit the global
+        // default); a valid value stays pinned. (TECH-WF1)
+        let backend = doc["backend"]?.string.flatMap(WorkflowBackend.init(rawValue:))
         let isDefault = doc["is_default"]?.bool ?? false
         let order = doc["order"]?.int ?? 0
 

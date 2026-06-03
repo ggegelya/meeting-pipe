@@ -41,7 +41,10 @@ final class WorkflowMigratorTests: XCTestCase {
         XCTAssertEqual(general.name, "General")
         XCTAssertTrue(general.isDefault)
         XCTAssertEqual(general.contextPrompt, "FDA-regulated SaaS team")
-        XCTAssertEqual(general.backend, .auto)
+        // The seeded General inherits the global backend (nil) rather than
+        // pinning it, so a later global change (including Apple Intelligence)
+        // applies without editing the workflow. (TECH-WF1)
+        XCTAssertNil(general.backend)
         XCTAssertEqual(general.notionDatabaseID, "abc123")
     }
 
