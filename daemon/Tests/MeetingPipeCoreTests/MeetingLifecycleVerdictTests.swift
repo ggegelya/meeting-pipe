@@ -51,4 +51,18 @@ final class MeetingLifecycleVerdictTests: XCTestCase {
         )
         XCTAssertNotEqual(MeetingLifecycleVerdict.idle, .inMeeting(context: teamsContext))
     }
+
+    // MARK: - isLive (TECH-C2 silence-gate input)
+
+    func test_isLive_true_for_starting_and_in_meeting() {
+        XCTAssertTrue(MeetingLifecycleVerdict.starting(context: teamsContext).isLive)
+        XCTAssertTrue(MeetingLifecycleVerdict.inMeeting(context: teamsContext).isLive)
+    }
+
+    func test_isLive_false_once_idle_ending_or_ended() {
+        let reason = EndingReason(leadingSignal: "shareable_content_window_gone")
+        XCTAssertFalse(MeetingLifecycleVerdict.idle.isLive)
+        XCTAssertFalse(MeetingLifecycleVerdict.endingProvisional(context: teamsContext, reason: reason).isLive)
+        XCTAssertFalse(MeetingLifecycleVerdict.ended(context: teamsContext, reason: reason).isLive)
+    }
 }

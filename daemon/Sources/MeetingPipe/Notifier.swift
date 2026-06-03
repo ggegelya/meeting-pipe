@@ -11,8 +11,10 @@ protocol NotifierDelegate: AnyObject {
     func notifierDidRequestScreenRecordingSettings(_ notifier: Notifier)
     /// User tapped "Open Settings" on the Accessibility permission warning. Distinct from the Screen Recording variant so the Coordinator can deep-link to the correct pane.
     func notifierDidRequestAccessibilitySettings(_ notifier: Notifier)
-    /// User tapped "Stop recording" or the banner body on the "Still meeting?" notification. Coordinator stops the recording (no-op if state is no longer `.recording`).
+    /// User tapped the explicit "Stop recording" action on the "Still meeting?" notification. Coordinator stops the recording (no-op if state is no longer `.recording`).
     func notifierDidRequestStopRecording(_ notifier: Notifier)
+    /// User tapped "Keep recording", or the banner body, on the "Still meeting?" notification. Coordinator restarts the silence countdown so the recording is not auto-stopped.
+    func notifierDidRequestKeepRecording(_ notifier: Notifier)
     /// User clicked "Looks good" on the published-meeting notification.
     func notifier(
         _ notifier: Notifier,
@@ -44,6 +46,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private static let accessibilityCategory = "MP_ACCESSIBILITY"
     private static let actionOpenAccessibilitySettings = "MP_OPEN_ACCESS_SETTINGS"
     private static let actionStopRecording = "MP_STOP_RECORDING"
+    private static let actionKeepRecording = "MP_KEEP_RECORDING"
     private static let stillMeetingIDPrefix = "still-meeting-"
 
     /// Per-notification state kept so "Looks good" can find the recording without re-deriving paths on click.
@@ -130,11 +133,11 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         post(title: "MeetingPipe error", body: message)
     }
 
-    /// Posted by SilenceDetector after 90 s of unbroken silence. The action button stops immediately; ignoring it lets the 5-minute auto-stop fire on its own.
+    /// Posted by SilenceDetector after 90 s of unbroken silence. "Keep recording" (and a plain banner tap) restart the silence countdown; "Stop recording" ends it now. For a native meeting still tracked live, the auto-stop stands down on its own and this nudge just re-surfaces.
     func notifyStillMeeting() {
         let content = UNMutableNotificationContent()
-        content.title = "Still meeting?"
-        content.body = "Recording continues - tap to stop."
+        content.title = "Still in a meeting?"
+        content.body = "No audio for a while. Recording continues, keep it going or stop."
         content.categoryIdentifier = Self.stillMeetingCategory
         content.sound = .default
         let req = UNNotificationRequest(
@@ -260,10 +263,11 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             intentIdentifiers: [],
             options: []
         )
+        let keep = UNNotificationAction(identifier: Self.actionKeepRecording, title: "Keep recording", options: [])
         let stop = UNNotificationAction(identifier: Self.actionStopRecording, title: "Stop recording", options: [.foreground])
         let stillMeeting = UNNotificationCategory(
             identifier: Self.stillMeetingCategory,
-            actions: [stop],
+            actions: [keep, stop],
             intentIdentifiers: [],
             options: []
         )
@@ -329,10 +333,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             delegate?.notifierDidRequestScreenRecordingSettings(self)
         }
 
-        // TECH-C2: both the action button and a plain banner tap stop the recording.
-        if id.hasPrefix(Self.stillMeetingIDPrefix),
-           action == Self.actionStopRecording || isDefault {
-            delegate?.notifierDidRequestStopRecording(self)
+        // TECH-C2: only the explicit "Stop recording" action stops. "Keep
+        // recording" and a plain banner tap restart the silence countdown, so
+        // an accidental tap can no longer kill an active meeting.
+        if id.hasPrefix(Self.stillMeetingIDPrefix) {
+            if action == Self.actionStopRecording {
+                delegate?.notifierDidRequestStopRecording(self)
+            } else if action == Self.actionKeepRecording || isDefault {
+                delegate?.notifierDidRequestKeepRecording(self)
+            }
         }
         completionHandler()
     }

@@ -38,6 +38,19 @@ public enum MeetingLifecycleVerdict: Equatable {
             return false
         }
     }
+
+    /// True while the meeting is still tracked as live (intent or open), false
+    /// once end-detection is leaning toward or has reached an end. The silence
+    /// auto-stop consults this so it does not kill a meeting end-detection still
+    /// considers active. (TECH-C2 false-positive fix)
+    public var isLive: Bool {
+        switch self {
+        case .starting, .inMeeting:
+            return true
+        case .idle, .endingProvisional, .ended:
+            return false
+        }
+    }
 }
 
 /// Per-meeting identity attached to every non-idle verdict; shared infra keys AX walks and HAL listeners on it.

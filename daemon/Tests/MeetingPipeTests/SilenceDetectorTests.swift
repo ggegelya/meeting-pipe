@@ -182,4 +182,54 @@ final class SilenceDetectorTests: XCTestCase {
         det.observeMic(db: -50, at: t0.addingTimeInterval(120))
         XCTAssertEqual(notifyCount, 0)
     }
+
+    // MARK: - keepAlive (TECH-C2 false-positive fix)
+
+    func test_keep_alive_restarts_the_auto_stop_countdown() {
+        var stopCount = 0
+        let det = makeDetector(onAutoStop: { stopCount += 1 })
+        det.observeMic(db: -80, at: t0)
+        det.observeSystem(db: -80, at: t0)
+        det.observeMic(db: -80, at: t0.addingTimeInterval(290))  // 290 s, no stop yet
+        XCTAssertEqual(stopCount, 0)
+
+        det.keepAlive()  // native gate stood down, or user tapped "Keep recording"
+
+        // The countdown restarts from the next sample, not from t0.
+        det.observeMic(db: -80, at: t0.addingTimeInterval(295))
+        det.observeMic(db: -80, at: t0.addingTimeInterval(594))  // 299 s into the new streak
+        XCTAssertEqual(stopCount, 0, "the old streak must not carry over")
+        det.observeMic(db: -80, at: t0.addingTimeInterval(595))  // 300 s into the new streak
+        XCTAssertEqual(stopCount, 1)
+    }
+
+    func test_keep_alive_lets_the_notify_fire_again() {
+        var notifyCount = 0
+        let det = makeDetector(onNotify: { notifyCount += 1 })
+        det.observeMic(db: -80, at: t0)
+        det.observeSystem(db: -80, at: t0)
+        det.observeMic(db: -80, at: t0.addingTimeInterval(90))   // notify #1
+        XCTAssertEqual(notifyCount, 1)
+        det.keepAlive()
+        det.observeMic(db: -80, at: t0.addingTimeInterval(100))  // restart streak
+        det.observeMic(db: -80, at: t0.addingTimeInterval(190))  // 90 s into new streak
+        XCTAssertEqual(notifyCount, 2)
+    }
+
+    func test_keep_alive_re_arms_after_a_fired_auto_stop() {
+        // The native-gate path: the detector fired the auto-stop, the gate
+        // chose to keep recording, keepAlive must clear didAutoStop so a later
+        // genuine silence can still fire.
+        var stopCount = 0
+        let det = makeDetector(onAutoStop: { stopCount += 1 })
+        det.observeMic(db: -80, at: t0)
+        det.observeSystem(db: -80, at: t0)
+        det.observeMic(db: -80, at: t0.addingTimeInterval(300))  // auto-stop #1
+        XCTAssertEqual(stopCount, 1)
+
+        det.keepAlive()
+        det.observeMic(db: -80, at: t0.addingTimeInterval(305))  // restart streak
+        det.observeMic(db: -80, at: t0.addingTimeInterval(605))  // 300 s later
+        XCTAssertEqual(stopCount, 2)
+    }
 }

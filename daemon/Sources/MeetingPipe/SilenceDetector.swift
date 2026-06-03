@@ -57,6 +57,17 @@ final class SilenceDetector {
         didAutoStop = false
     }
 
+    /// Restart the silence countdown without disturbing the observed levels.
+    /// Called mid-recording when the silence is judged intentional, either the
+    /// native lifecycle gate standing the auto-stop down, or the user tapping
+    /// "Keep recording" on the nudge. The streak re-arms from the next sample,
+    /// the notify can fire again, and a prior auto-stop is cleared. (TECH-C2)
+    func keepAlive() {
+        silenceStartedAt = nil
+        didNotify = false
+        didAutoStop = false
+    }
+
     func observeMic(db: Double, at time: Date = Date()) {
         latestMicDb = db
         evaluate(at: time)

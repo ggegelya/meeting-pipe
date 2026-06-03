@@ -175,6 +175,12 @@ extension Coordinator: NotifierDelegate {
         // One stop entry point shared with hotkey-stop and HUD-stop.
         if case .recording = stateMachine.current { toggleManual() }
     }
+
+    func notifierDidRequestKeepRecording(_ notifier: Notifier) {
+        // "Keep recording" / banner tap on the silence nudge: restart the
+        // silence countdown instead of stopping (TECH-C2).
+        keepRecordingFromNudge()
+    }
 }
 
 extension Coordinator: MeetingPromptDelegate {

@@ -343,12 +343,40 @@ extension Coordinator {
 
     func handleSilenceAutoStop() {
         guard case .recording(let file, let src, let mode) = stateMachine.current else { return }
+        // Stand the backstop down when a native meeting is still tracked live:
+        // the silence is a wait for someone to join, not an end. Re-nudge and
+        // keep recording instead of killing an active meeting (TECH-C2). Browser
+        // / stale-window / manual recordings still stop on schedule.
+        guard SilenceAutoStopPolicy.shouldAutoStop(
+            sourceKind: src?.kind,
+            lifecycleIsLive: lifecycleCoord.current.isLive
+        ) else {
+            Log.writeLine("daemon", "silence: 5min but meeting still live - keeping recording")
+            Log.event(category: "coordinator", action: "auto_stop_silence_skipped", attributes: [
+                "reason": "lifecycle_still_in_meeting",
+                "bundle_id": src?.bundleID ?? "manual",
+                "file": file.lastPathComponent,
+            ])
+            silenceDetector?.keepAlive()
+            notifier.notifyStillMeeting()
+            return
+        }
         Log.writeLine("daemon", "silence: 5min - auto-stopping recording")
         Log.event(category: "coordinator", action: "auto_stop_silence", attributes: [
             "bundle_id": src?.bundleID ?? "manual",
             "file": file.lastPathComponent,
         ])
         stopRecording(file: file, source: src, summaryMode: mode)
+    }
+
+    /// User tapped "Keep recording" on the silence nudge: restart the silence
+    /// countdown so the recording is not auto-stopped. The single override for
+    /// the browser / stale-window meetings the native lifecycle gate cannot
+    /// cover. (TECH-C2)
+    func keepRecordingFromNudge() {
+        guard case .recording = stateMachine.current else { return }
+        Log.event(category: "coordinator", action: "silence_keep_recording")
+        silenceDetector?.keepAlive()
     }
 
     // MARK: - MicGate engage (TECH-G-MIC + TECH-C13)
