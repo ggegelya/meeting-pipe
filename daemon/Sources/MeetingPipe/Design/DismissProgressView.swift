@@ -1,16 +1,22 @@
 import AppKit
 
-/// 2pt progress hairline at the bottom of the prompt panel that drains over `timeoutSec`. Mirrors the JSX `DismissBar`. Anchor leading/trailing/bottom at height 2, call `start(timeoutSec:)`, then `stop()` on dismiss. `setPaused(_:)` is wired by the host window's mouse tracking.
+/// 2pt progress hairline at the bottom of the prompt panel that drains over
+/// `timeoutSec`. Mirrors the JSX `DismissBar`. Anchor leading/trailing/bottom at
+/// height 2, call `start(timeoutSec:)`, then `stop()` on dismiss. `setPaused(_:)`
+/// is wired by the host window's mouse tracking.
+///
+/// TECH-PERF4: the drain is a single CoreAnimation keyframe on the fill layer's
+/// `transform.scale.x` (left-anchored), so it runs on the render server and the
+/// main thread idles between frames instead of waking 60x/sec on a `Timer`.
+/// Pause/resume uses the standard CALayer speed/timeOffset freeze, so no
+/// per-frame work runs while the user hovers the panel.
 final class DismissProgressView: NSView {
     private let track = CALayer()    // sunk hairline track
     private let fill  = CALayer()    // signal600 fill that drains
 
-    private var totalDuration: TimeInterval = 30
-    private var elapsedAtPauseStart: TimeInterval = 0
-    private var pauseStart: Date?
-    private var tickTimer: Timer?
-    private var startedAt: Date?
+    private static let drainKey = "mp.dismiss.drain"
 
+    private var isRunning = false
     private(set) var isPaused: Bool = false
 
     override init(frame frameRect: NSRect) {
@@ -21,6 +27,9 @@ final class DismissProgressView: NSView {
         track.backgroundColor = NSColor.black.withAlphaComponent(0.05).cgColor
         layer?.addSublayer(track)
 
+        // Left-anchored so a scale-x shrink drains the right edge toward the
+        // left, matching the old width-reducing tick.
+        fill.anchorPoint = CGPoint(x: 0, y: 0.5)
         fill.backgroundColor = MPColors.signal600.cgColor
         fill.opacity = 0.60
         layer?.addSublayer(fill)
@@ -31,64 +40,75 @@ final class DismissProgressView: NSView {
     override func layout() {
         super.layout()
         track.frame = bounds
-        // fill width updated by tick loop
-        if startedAt == nil {
-            fill.frame = bounds
+        // Keep the fill geometry in sync with a resize while idle; during a
+        // drain CoreAnimation owns the transform, so leave it untouched.
+        if !isRunning {
+            resetFillGeometry()
         }
     }
 
     func start(timeoutSec: TimeInterval) {
         stop()
-        totalDuration = max(1, timeoutSec)
-        startedAt = Date()
-        elapsedAtPauseStart = 0
-        pauseStart = nil
+        let duration = max(1, timeoutSec)
         isPaused = false
+        isRunning = true
         fill.opacity = 0.60
-        fill.frame = bounds
-        // 60 Hz tick: smooth enough without the cost of a CVDisplayLink. Fires on the main runloop.
-        tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            self?.tick()
-        }
+        resetFillGeometry()
+        fill.speed = 1
+        fill.timeOffset = 0
+        fill.beginTime = 0
+
+        // Settle the model on the drained state so the bar stays empty after the
+        // keyframe finishes, then animate from full to empty over the timeout.
+        fill.transform = CATransform3DMakeScale(0, 1, 1)
+        let anim = CABasicAnimation(keyPath: "transform.scale.x")
+        anim.fromValue = 1.0
+        anim.toValue = 0.0
+        anim.duration = duration
+        anim.timingFunction = CAMediaTimingFunction(name: .linear)
+        anim.fillMode = .forwards
+        anim.isRemovedOnCompletion = false
+        fill.add(anim, forKey: Self.drainKey)
     }
 
     func stop() {
-        tickTimer?.invalidate()
-        tickTimer = nil
-        startedAt = nil
-        pauseStart = nil
+        fill.removeAnimation(forKey: Self.drainKey)
+        fill.speed = 1
+        fill.timeOffset = 0
+        fill.beginTime = 0
+        fill.transform = CATransform3DIdentity
+        isRunning = false
+        isPaused = false
     }
 
-    /// Freeze the fill at its current width and dim to 30% alpha so it reads as paused, not stalled.
+    /// Freeze the fill at its current width and dim to 30% alpha so it reads as
+    /// paused, not stalled. The CALayer speed/timeOffset freeze stops the drain
+    /// without any per-frame work.
     func setPaused(_ paused: Bool) {
         guard paused != isPaused else { return }
         isPaused = paused
+        fill.opacity = paused ? 0.30 : 0.60
+        guard isRunning else { return }
         if paused {
-            pauseStart = Date()
-            fill.opacity = 0.30
-        } else if let start = pauseStart {
-            elapsedAtPauseStart += Date().timeIntervalSince(start)
-            pauseStart = nil
-            fill.opacity = 0.60
+            let pausedTime = fill.convertTime(CACurrentMediaTime(), from: nil)
+            fill.speed = 0
+            fill.timeOffset = pausedTime
+        } else {
+            let pausedTime = fill.timeOffset
+            fill.speed = 1
+            fill.timeOffset = 0
+            fill.beginTime = 0
+            let timeSincePause = fill.convertTime(CACurrentMediaTime(), from: nil) - pausedTime
+            fill.beginTime = timeSincePause
         }
     }
 
-    // MARK: Tick loop
-
-    private func tick() {
-        guard let started = startedAt, !isPaused else { return }
-        let raw = Date().timeIntervalSince(started)
-        let elapsed = raw - elapsedAtPauseStart
-        let remaining = max(0, 1 - elapsed / totalDuration)
-
-        // Disable implicit animation so the fill glides smoothly rather than hopping with CA's default 0.25s curve.
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        fill.frame = CGRect(x: 0, y: 0,
-                            width: bounds.width * CGFloat(remaining),
-                            height: bounds.height)
-        CATransaction.commit()
-
-        if remaining <= 0 { stop() }
+    /// Left-anchored, full-width, vertically centred, identity transform: the
+    /// idle/pre-drain state the keyframe scales down from.
+    private func resetFillGeometry() {
+        fill.anchorPoint = CGPoint(x: 0, y: 0.5)
+        fill.bounds = CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height)
+        fill.position = CGPoint(x: bounds.minX, y: bounds.midY)
+        fill.transform = CATransform3DIdentity
     }
 }
