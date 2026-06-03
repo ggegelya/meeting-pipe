@@ -40,6 +40,9 @@ Subcommands:
                               Aggregate the local correction corpus (Phase 2)
   analyze-detection [--since 7d] [--source PATH] [--output FILE] [--json]
                               Audit detector end-signal reliability
+  ask <query...> [--top N] [--dir P] [--json]
+                              Lexical search over your meeting summaries +
+                              transcripts (on-device, zero-dependency)
 
 Globals:
   --help, -h                  Show this message
@@ -102,6 +105,9 @@ def main() -> int:
         return run(rest)
     if cmd in {"analyze-detection", "analyze_detection"}:
         from .analyze_detection import main as run
+        return run(rest)
+    if cmd == "ask":
+        from .ask import main as run
         return run(rest)
 
     print(f"unknown subcommand: {cmd}\n", file=sys.stderr)

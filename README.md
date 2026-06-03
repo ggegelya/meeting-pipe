@@ -553,6 +553,18 @@ mp logs --since 1d --json | jq 'select(.bundle_id=="us.zoom.xos")'
 `--since` accepts ISO timestamps (`2026-05-06T10:00:00Z`) or short relative
 offsets (`Nh` / `Nm` / `Nd` / `Ns`).
 
+To search across past meetings from the shell, `mp ask` runs a lexical (TF-IDF)
+ranking over your summaries and transcripts, fully on-device with no extra
+dependency:
+
+```bash
+mp ask budget Q3 forecast                           # top meetings, with a snippet
+mp ask "migration to postgres" --top 3 --json       # machine-readable
+```
+
+This is the zero-dependency MVP; on-device semantic (embeddings) search over the
+same library is the planned follow-up.
+
 ---
 
 ## Configuration reference
