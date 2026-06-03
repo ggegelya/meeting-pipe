@@ -40,6 +40,12 @@ final class Coordinator: NSObject {
     /// queue-depth surface (TECH-H1-FINISH). Built in `wireSubsystems()`.
     var jobDispatcher: PipelineJobDispatcher!
 
+    /// Owns one meeting's lifetime (TECH-ARCH2): the verdict consumers, the
+    /// record begin/stop path, prompt-timeout, silence + MicGate engage, and
+    /// meta-sidecar writing. Built post-`super.init`; Coordinator forwards
+    /// detection + delegate events here and keeps the subsystems + UI wiring.
+    var session: MeetingSessionController!
+
     /// First-run onboarding window (TECH-UX1); retained while shown.
     var onboardingController: OnboardingWindowController?
 
@@ -57,43 +63,13 @@ final class Coordinator: NSObject {
     /// forgot" case (TECH-C7).
     let silenceBackstop: MicOnlySilenceBackstop
 
-    /// Latest system-audio dBFS (from `recorder.onSystemLevel`), read by
-    /// the silence backstop. `-120` is the "no audio observed yet" sentinel.
-    var latestSystemLevelDb: Float = -120
-
-    /// Consumes `micGate.verdicts` (started in `start()`, cancelled at
-    /// shutdown); forwards each to the recorder writer + silence backstop.
-    var verdictConsumerTask: Task<Void, Never>?
-
-    /// Consumes `lifecycleCoord.verdicts`; routes `.ended` into the
-    /// recording-end path.
-    var lifecycleConsumerTask: Task<Void, Never>?
-
-    /// Observes window-created events so mute buttons that appear after
-    /// `beginRecording` (Teams 2 compact view, PIP overlays) get watched
-    /// too. Per-meeting (TECH-C14).
-    var axWindowWatcher: MeetingAXWindowWatcher?
-
     /// Per-context routing rules (TECH-B): TOML files under
     /// `~/.config/meeting-pipe/workflows/`. Published so the Workflows tab
     /// and the prompt chip can subscribe.
     let workflowStore: WorkflowStore
 
-    /// Surfaces a missed meeting end (TECH-C2): notify after 90 s of
-    /// mic+system silence, auto-stop after 5 min. Lives for the recording.
-    var silenceDetector: SilenceDetector?
-
     /// Gate the "Screen Recording disabled" banner to once per launch.
     var didNotifyAboutPermissionDenial: Bool = false
-
-    /// Workflow for the in-flight recording (TECH-B3); nil between
-    /// meetings. Read by `writeMetaSidecar`, cleared after flush.
-    var activeWorkflow: Workflow?
-
-    /// User's explicit workflow pick from the prompt chevron (TECH-B5),
-    /// consumed by the next `beginRecording`. Highest matcher precedence,
-    /// so it wins over rule matches.
-    var pendingWorkflowOverride: UUID?
 
     /// Dry-run (`MEETING_PIPE_DRY_RUN`): detection runs and logs, but the
     /// recorder never starts. Verify detection accuracy without producing
@@ -217,6 +193,8 @@ final class Coordinator: NSObject {
         // Post-super.init: wire the model + status bar back to self.
         libraryModel.coordinator = self
         statusBar.libraryModel = libraryModel
+        // The meeting-lifetime owner (TECH-ARCH2); holds an unowned backref.
+        session = MeetingSessionController(coordinator: self)
         wireSubsystems()
     }
 
@@ -226,7 +204,7 @@ final class Coordinator: NSObject {
             // Every path back to idle (record then stop, skip, prompt
             // timeout, stale-prompt end) tears down the lifecycle
             // adapter through this single hook.
-            self?.disengageLifecycle()
+            self?.session.disengageLifecycle()
         }
         // PipelineJobDispatcher wraps the SinkDispatcher queue and owns
         // the per-job completion routing (done notification + error
@@ -303,7 +281,7 @@ final class Coordinator: NSObject {
         // so the event log records the reason.
         silenceBackstop.onTriggered = { [weak self] _ in
             Task { @MainActor in
-                self?.forceStop(reason: "mic_only_silence")
+                self?.session.forceStop(reason: "mic_only_silence")
             }
         }
     }
@@ -314,38 +292,9 @@ final class Coordinator: NSObject {
         recordingHUD.delegate = self
 
         // Drive the recorder writer + silence backstop from the gate's
-        // verdict stream (unbounded, daemon-lifetime; cancelled in shutdown).
-        verdictConsumerTask = Task { [weak self] in
-            guard let self = self else { return }
-            for await verdict in self.micGate.verdicts {
-                await MainActor.run {
-                    self.recorder.setMicGateVerdict(verdict)
-                    let hasSystem = Double(self.latestSystemLevelDb) > Coordinator.systemSilenceThresholdDb
-                    self.silenceBackstop.ingest(verdict: verdict, hasSystemAudio: hasSystem)
-                }
-            }
-        }
-
-        // Lifecycle verdicts: `.starting` raises the prompt,
-        // `.endingProvisional` triggers the compact-view rescue re-walk,
-        // `.ended` closes the recording or dismisses a stale prompt.
-        lifecycleConsumerTask = Task { [weak self] in
-            guard let self = self else { return }
-            for await verdict in self.lifecycleCoord.verdicts {
-                await MainActor.run {
-                    switch verdict {
-                    case .starting(let context):
-                        self.handleMeetingStarted(source: self.appSource(from: context))
-                    case .endingProvisional(let context, _):
-                        self.rescueProvisionalEnd(context: context)
-                    case .ended:
-                        self.handleMeetingEnded()
-                    default:
-                        break
-                    }
-                }
-            }
-        }
+        // verdict stream, and route lifecycle verdicts into prompt/record/end.
+        // Both are unbounded, daemon-lifetime; cancelled in shutdown (TECH-ARCH2).
+        session.startConsumers()
 
         // Funnel every TCC dialog through PermissionsCenter so the
         // Preferences tab and startup share one published state, and the
@@ -360,13 +309,13 @@ final class Coordinator: NSObject {
         }
 
         discoveryWatcher.onDiscovered = { [weak self] source in
-            self?.handleDiscovery(source)
+            self?.session.handleDiscovery(source)
         }
         discoveryWatcher.start()
 
         if let parsed = HotkeyManager.parse(liveManualHotkey) {
             hotkey.register(keyCode: parsed.keyCode, modifiers: parsed.modifiers) { [weak self] in
-                DispatchQueue.main.async { self?.toggleManual() }
+                DispatchQueue.main.async { self?.session.toggleManual() }
             }
             Log.main.info("Hotkey registered: \(self.liveManualHotkey)")
         } else {
@@ -380,7 +329,7 @@ final class Coordinator: NSObject {
             Log.main.warning("Force-stop hotkey matches manual hotkey - skipping second registration")
         } else if let parsed = HotkeyManager.parse(liveForceStopHotkey) {
             hotkey.register(keyCode: parsed.keyCode, modifiers: parsed.modifiers) { [weak self] in
-                DispatchQueue.main.async { self?.forceStop(reason: "hotkey") }
+                DispatchQueue.main.async { self?.session.forceStop(reason: "hotkey") }
             }
             Log.main.info("Force-stop hotkey registered: \(self.liveForceStopHotkey)")
         } else {
@@ -456,10 +405,7 @@ final class Coordinator: NSObject {
         Log.main.info("shutting down")
         discoveryWatcher.stop()
         hotkey.unregister()
-        verdictConsumerTask?.cancel()
-        verdictConsumerTask = nil
-        lifecycleConsumerTask?.cancel()
-        lifecycleConsumerTask = nil
+        session.shutdownConsumers()
         micGate.shutdown()
         lifecycleCoord.shutdown()
         if recorder.isRecording {
@@ -490,12 +436,6 @@ final class Coordinator: NSObject {
             }
         }
     }
-
-    /// System channel "carries audio" above this 1 s RMS floor. Mirrors
-    /// `SilenceDetector.defaultThresholdDb` so the backstop and the 5-min
-    /// auto-stop draw the same line.
-    private static let systemSilenceThresholdDb: Double = SilenceDetector.defaultThresholdDb
-
 
     lazy var quickFindWindow: QuickFindWindow = QuickFindWindow(
         meetingStore: libraryModel.meetingStore,

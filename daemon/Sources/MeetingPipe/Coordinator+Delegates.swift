@@ -5,73 +5,10 @@ import Combine
 import Foundation
 import MeetingPipeCore
 
-extension Coordinator {
-
-    func handleMeetingStarted(source: AppSource) {
-        guard stateMachine.isAcceptingPrompts else { return }
-
-        // Auto-consent (config or persisted "Always").
-        if liveAutoConsentApps.contains(source.bundleID) ||
-           consent.isAutoConsented(bundleID: source.bundleID) {
-            Log.writeLine("daemon", "auto-consent → recording (\(source.bundleID))")
-            Log.event(category: "coordinator", action: "auto_consent", attributes: [
-                "bundle_id": source.bundleID,
-            ])
-            beginRecording(source: source, summaryMode: .auto)
-            return
-        }
-
-        stateMachine.setPrompting(source: source)
-        statusBar.setPrompting(source)
-        // The on-screen panel is the primary surface (not suppressed under
-        // Focus modes); the banner stays off by default. Pass the resolved
-        // workflow + full set so the chip and override menu render (TECH-B5).
-        let promptWorkflow = workflowForPrompt(source: source)
-        promptWindow.present(
-            source: source,
-            workflow: promptWorkflow,
-            availableWorkflows: workflowStore.workflows,
-            autoDismissAfter: livePromptTimeoutSec
-        )
-        startPromptTimeout(for: source)
-        Log.writeLine("daemon", "meeting detected → prompting (\(source.bundleID))")
-        Log.event(category: "coordinator", action: "prompt_shown", attributes: [
-            "bundle_id": source.bundleID,
-            "display_name": source.displayName,
-            "timeout_sec": livePromptTimeoutSec,
-        ])
-    }
-
-    func handleMeetingEnded() {
-        switch stateMachine.current {
-        case .recording(let file, let src, let mode):
-            stopRecording(file: file, source: src, summaryMode: mode)
-        case .prompting, .suppressed:
-            handleMeetingEndedDuringPrompt()
-        default:
-            break
-        }
-    }
-
-    /// Dismiss a stale prompt when the meeting ends before the user
-    /// answers. Reached via the lifecycle `.ended` verdict.
-    func handleMeetingEndedDuringPrompt() {
-        switch stateMachine.current {
-        case .prompting, .suppressed:
-            stateMachine.cancelPromptTimeout()
-            promptWindow.dismiss()
-            stateMachine.setIdle()
-            statusBar.setIdle()
-        default:
-            break
-        }
-    }
-}
-
 extension Coordinator: NotifierDelegate {
     func notifier(_ notifier: Notifier, didChooseRecord source: AppSource) {
         guard case .prompting(let pending) = stateMachine.current, pending == source else { return }
-        beginRecording(source: source, summaryMode: .auto)
+        session.beginRecording(source: source, summaryMode: .auto)
     }
 
     func notifier(_ notifier: Notifier, didChooseSkip source: AppSource) {
@@ -97,7 +34,7 @@ extension Coordinator: NotifierDelegate {
         // Explicit "always": clear the cooldown so a stale skip/end can't
         // block it (as with the manual hotkey path).
         stateMachine.clearCooldown(bundleID: source.bundleID)
-        beginRecording(source: source, summaryMode: .auto)
+        session.beginRecording(source: source, summaryMode: .auto)
     }
 
     func notifier(_ notifier: Notifier, didOpenPage url: URL) {
@@ -173,13 +110,13 @@ extension Coordinator: NotifierDelegate {
 
     func notifierDidRequestStopRecording(_ notifier: Notifier) {
         // One stop entry point shared with hotkey-stop and HUD-stop.
-        if case .recording = stateMachine.current { toggleManual() }
+        if case .recording = stateMachine.current { session.toggleManual() }
     }
 
     func notifierDidRequestKeepRecording(_ notifier: Notifier) {
         // "Keep recording" / banner tap on the silence nudge: restart the
         // silence countdown instead of stopping (TECH-C2).
-        keepRecordingFromNudge()
+        session.keepRecordingFromNudge()
     }
 }
 
@@ -196,12 +133,12 @@ extension Coordinator: MeetingPromptDelegate {
     }
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecordBYO source: AppSource) {
         guard case .prompting(let pending) = stateMachine.current, pending == source else { return }
-        beginRecording(source: source, summaryMode: .byo)
+        session.beginRecording(source: source, summaryMode: .byo)
     }
 
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseWorkflow id: UUID?) {
         // Stash the override for the next beginRecording's matcher.
-        setPendingWorkflowOverride(id)
+        session.setPendingWorkflowOverride(id)
         Log.event(category: "workflow", action: "override_picked", attributes: [
             "workflow_id": id?.uuidString ?? NSNull(),
         ])
@@ -211,7 +148,7 @@ extension Coordinator: MeetingPromptDelegate {
 extension Coordinator: RecordingHUDDelegate {
     func recordingHUDDidRequestStop(_ hud: RecordingHUDWindow) {
         // One stop entry point shared with manual-stop and hotkey-stop.
-        toggleManual()
+        session.toggleManual()
     }
 
     func recordingHUDDidRequestRetrySystemAudio(_ hud: RecordingHUDWindow) {
