@@ -31,6 +31,11 @@ final class StatusBarController {
     private var lastMenuState: AppState = .idle
     /// Cached recording title so the processing badge can append to it.
     private var baseTitle: String = "Idle"
+
+    /// True only in the genuine idle state (not recording / prompting / stopping).
+    /// Gates whether background work (a model download, the processing queue) may
+    /// take the single title clause (TECH-DSN7).
+    private var isIdleState: Bool = true
     /// Pipeline jobs queued or running; shown as a title badge.
     private var processingCount: Int = 0
 
@@ -122,6 +127,7 @@ final class StatusBarController {
     func setIdle() {
         item.button?.image = idleIcon
         baseTitle = "Idle"
+        isIdleState = true
         applyTitle()
         rebuildMenu(state: .idle)
         libraryModel?.status = .idle
@@ -131,6 +137,7 @@ final class StatusBarController {
     func setPrompting(_ source: AppSource) {
         item.button?.image = idleIcon
         baseTitle = "Detected \(source.displayName)"
+        isIdleState = false
         applyTitle()
         rebuildMenu(state: .prompting(source: source))
         libraryModel?.status = .prompting(appName: source.displayName)
@@ -150,6 +157,7 @@ final class StatusBarController {
             label += " - \(wf.name)\(wf.flags.ndaMode ? " · NDA" : "")"
         }
         baseTitle = label
+        isIdleState = false
         applyTitle()
         rebuildMenu(state: .recording(file: file, source: source, summaryMode: summaryMode))
         libraryModel?.status = .recording(appName: source?.displayName)
@@ -159,6 +167,7 @@ final class StatusBarController {
     func setStopping() {
         item.button?.image = idleIcon
         baseTitle = "Stopping…"
+        isIdleState = false
         applyTitle()
         rebuildMenu(state: .idle)
         libraryModel?.status = .stopping
@@ -197,26 +206,38 @@ final class StatusBarController {
         rebuildMenu(state: lastMenuState)
     }
 
+    /// One clause, not a pile-up (TECH-DSN7). The base state is the clause; only
+    /// while idle does background work take its place, by priority: a model
+    /// download (it blocks summaries), then the processing queue. Both also have
+    /// their own surfaces (the download row in this menu, the Library for
+    /// processing), so collapsing the title loses nothing. The regulated lock is
+    /// a single trailing glyph, not a clause.
     private func applyTitle() {
-        let badge = processingCount > 0 ? " · Processing (\(processingCount))" : ""
-        let download = modelDownloadTitleSuffix
         let lock = (regulatedMode && UISettings.shared.showRegulatedBadge) ? " \u{1F512}" : ""
-        item.button?.title = " \(baseTitle)\(badge)\(download)\(lock)"
+        let clause: String
+        if isIdleState, let download = modelDownloadTitleClause {
+            clause = download
+        } else if isIdleState, processingCount > 0 {
+            clause = "Processing (\(processingCount))"
+        } else {
+            clause = baseTitle
+        }
+        item.button?.title = " \(clause)\(lock)"
     }
 
-    /// Compact title suffix: percent only (or "…" when total is unknown);
-    /// the byte breakdown lives in the menu.
-    private var modelDownloadTitleSuffix: String {
+    /// Compact download clause: percent only (or "…" when total is unknown, or
+    /// "failed"); the byte breakdown lives in the menu. `nil` when not downloading.
+    private var modelDownloadTitleClause: String? {
         switch modelDownload {
         case .idle, .completed:
-            return ""
+            return nil
         case .downloading(_, let progress, _, _):
             if let pct = progress {
-                return " · ↓ \(Int(pct * 100))%"
+                return "↓ \(Int(pct * 100))%"
             }
-            return " · ↓ …"
+            return "↓ …"
         case .failed:
-            return " · ↓ failed"
+            return "↓ failed"
         }
     }
 

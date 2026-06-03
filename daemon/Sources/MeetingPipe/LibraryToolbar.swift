@@ -193,9 +193,6 @@ struct StatePill: View {
                     Text(wf.name)
                 }
             }
-            Text("·").foregroundStyle(.secondary)
-            Text(elapsedString)
-                .font(.system(size: 12, weight: .medium).monospacedDigit())
         }
         .padding(.horizontal, 10)
         .frame(height: 26)
@@ -209,10 +206,6 @@ struct StatePill: View {
         )
     }
 
-    /// Elapsed time placeholder. The model does not yet push a live counter; a static value avoids a 1Hz Timer.publish that would re-render the entire toolbar before we measure its cost.
-    private var elapsedString: String {
-        "-:-"
-    }
 }
 
 /// 1.6s opacity-only pulse for the recording dot ("scale pulses read as urgent; the dot should feel steady"). Uses `TimelineView(.animation)` rather than `withAnimation.repeatForever`: the old pattern restarted on every parent re-render, causing a ~1s stutter. TimelineView reads a free-running clock and invalidates only this subtree.

@@ -56,7 +56,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-DSN4 | Identity color | Design | DONE (was P2) | Signal blue reads as generic macOS blue; pick a distinct hue that survives the dark-mode auto-flip. Pairs with REPO2. |
 | TECH-DSN5 | Motion + haptic + opt-in tone | Design | P2 new | Animate exactly three moments; Stop haptic for the consequential action; one opt-in post-call tone; never an in-call chime. |
 | TECH-DSN6 | Persisted NDA flag + row badge | Design | P2 new | The Library infers NDA heuristically, so a row can read "Local only" without the user setting it; persist and read the resolved flag. |
-| TECH-DSN7 | Dead elapsed placeholder + menu-bar title | Design | P2 new | The recording pill shows a permanent "-:-"; the menu-bar title can stack four clauses. Fix or remove. |
+| TECH-DSN7 | Dead elapsed placeholder + menu-bar title | Design | DONE (was P2) | The recording pill shows a permanent "-:-"; the menu-bar title can stack four clauses. Fix or remove. |
 | TECH-FEAT1 | Local-network (LAN) sink | Feature | P2 new | A reachability-aware filesystem publisher for a mounted SMB/NFS share (on-prem, no cloud cost); deepens the regulated story. |
 | TECH-FEAT2 | Local semantic search ("ask my meetings") | Feature | P2 new | On-device RAG over the transcript library using the MLX model already run; the biggest "why this over cloud" answer. |
 | TECH-FEAT5 | Auto/anthropic fallback on 429/500 | Feature | P2 new | The auto backend only falls back on connection/auth errors; a sustained rate-limit fails the run instead of going local. |
@@ -164,7 +164,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 
 **TECH-DSN6 (P2): persisted NDA badge.** Persist the resolved NDA/regulated flag to the sidecar and drive the Library row badge from it; delete the heuristic guess in MeetingRow. A privacy badge must never be inferred.
 
-**TECH-DSN7 (P2): dead placeholder + menu-bar title.** Show the real elapsed time in the recording pill (the HUD already tickers it) or drop the slot; collapse the multi-clause menu-bar title to one clause.
+**[DONE] TECH-DSN7 (P2): dead placeholder + menu-bar title.** Show the real elapsed time in the recording pill (the HUD already tickers it) or drop the slot; collapse the multi-clause menu-bar title to one clause. Done: dropped the dead `"-:-"` slot from the Library recording pill (the separator + the placeholder Text + the `elapsedString` property), so the pill now reads dot + "Recording" + the workflow chip; live elapsed already tickers in the HUD, and wiring a 1 Hz counter into the toolbar would re-render the whole rail for marginal value (Simplicity First). For the menu bar, `applyTitle` now shows exactly one clause instead of stacking up to four: the base state is the clause, and only while genuinely idle (new `isIdleState` flag, false during recording/prompting/stopping) does background work take its place, by priority (a model download, then the processing queue), since both have their own surfaces (the download menu row, the Library). The regulated lock stays as a single trailing glyph, not a clause. Build green, suite 716/0.
 
 **TECH-DSN8 (P3): summary reading polish.** Treat the Summary tab as the app's "paper" moment: measured line length, the MP type ramp, generous vertical rhythm.
 
