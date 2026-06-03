@@ -619,7 +619,7 @@ struct SummaryTab: View {
             HStack(spacing: 8) {
                 if let err = previewError {
                     Label(err, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption).foregroundStyle(.orange).lineLimit(2)
+                        .font(.caption).foregroundStyle(.mpWarning).lineLimit(2)
                 }
                 Spacer()
                 if previewing {
@@ -716,7 +716,7 @@ struct SummaryTab: View {
             if let err = pasteError {
                 Label(err, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.mpWarning)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 8) {
@@ -752,7 +752,7 @@ struct SummaryTab: View {
         VStack(spacing: 14) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 30))
-                .foregroundStyle(.orange)
+                .foregroundStyle(.mpWarning)
             Text("Pipeline failed")
                 .font(.title3.weight(.semibold))
             if let stage = stageLabel {
@@ -1080,16 +1080,16 @@ private struct ActionItemRow: View {
     private var chipRow: [Chip] {
         var chips: [Chip] = []
         if !action.owner.isEmpty {
-            chips.append(Chip(text: action.owner, systemImage: "person", tint: .accentColor))
+            chips.append(Chip(text: action.owner, systemImage: "person", tint: .mpSignal))
         }
         if !action.due.isEmpty {
-            chips.append(Chip(text: action.due, systemImage: "calendar", tint: .orange))
+            chips.append(Chip(text: action.due, systemImage: "calendar", tint: .mpWarning))
         }
         if !action.confidence.isEmpty, action.confidence != "medium" {
             chips.append(Chip(
                 text: action.confidence,
                 systemImage: "gauge",
-                tint: action.confidence == "high" ? .green : .secondary
+                tint: action.confidence == "high" ? .mpSuccess : .secondary
             ))
         }
         return chips

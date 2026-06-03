@@ -241,7 +241,7 @@ private struct QuickFindRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             isSelected
-            ? Color.accentColor.opacity(0.25)
+            ? Color.mpSignal.opacity(0.25)
             : Color.clear
         )
     }

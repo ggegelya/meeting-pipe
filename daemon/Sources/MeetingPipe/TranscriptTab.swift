@@ -124,7 +124,7 @@ enum TranscriptDisplay {
     /// Stable tint per speaker so list reordering doesn't reshuffle colors.
     static func color(for speakerID: String?) -> Color {
         guard let id = speakerID, !id.isEmpty else { return .secondary }
-        let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .green, .indigo, .brown]
+        let palette: [Color] = MPColors.speakerPalette.map { Color(nsColor: $0) }
         if id.hasPrefix("speaker_"),
            let n = Int(id.dropFirst("speaker_".count)) {
             return palette[n % palette.count]
@@ -358,7 +358,7 @@ private struct TranscriptRow: View {
             .background(
                 RoundedRectangle(cornerRadius: 6)
                     .fill(isActive
-                          ? Color.accentColor.opacity(0.18)
+                          ? Color.mpSignal.opacity(0.18)
                           : Color.clear)
                     .padding(.horizontal, 8)
             )

@@ -56,6 +56,54 @@ jobs:
           fi
           echo "No em-dashes under daemon/Sources or daemon/Resources."
 
+  design-tokens:
+    name: Design tokens (TECH-DSN3)
+    # Enforce the MPColors / MPType design tokens. Colors are a whole-file
+    # guard (they were all migrated); fonts are diff-based, since the existing
+    # `.system(size:)` literals predate the token ramp and a mass-rewrite would
+    # risk sub-pixel shifts and lose Dynamic Type, so we only block new ones.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: No raw semantic color literals in daemon UI sources
+        shell: bash
+        run: |
+          # Whole-file guard: the semantic state colors must come from the
+          # tokens (.mpDanger / .mpWarning / .mpSuccess / .mpSignal), not the
+          # generic system .red/.orange/.green/.accentColor. Tokens.swift is the
+          # single allowed source (it defines them plus the speaker palette).
+          set -e
+          matches=$(git grep -nE 'Color\.(red|orange|green|accentColor)|\.foregroundStyle\(\.(red|orange|green)\)|\.foregroundColor\(\.(red|orange|green)\)|\.accentColor|tint: \.(red|orange|green)\b|return \.(red|orange|green)\b' -- 'daemon/Sources/*.swift' ':!daemon/Sources/MeetingPipe/Design/Tokens.swift' || true)
+          if [ -n "$matches" ]; then
+            echo "::error::TECH-DSN3: raw semantic color literal under daemon/Sources. Use the token (.mpDanger / .mpWarning / .mpSuccess / .mpSignal)."
+            echo "$matches"
+            exit 1
+          fi
+          echo "No raw semantic color literals."
+      - name: No newly-introduced raw font-size literals
+        env:
+          BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        shell: bash
+        run: |
+          # Diff-based: only fail on a NEW `.system(size:)` a change adds. Prefer
+          # MPType.textXX for the size, or a Dynamic-Type font (.caption,
+          # .headline) where scaling matters.
+          set -e
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "No base SHA (first push / shallow clone) - skipping diff check."
+            exit 0
+          fi
+          added=$(git diff --unified=0 "$BEFORE"...HEAD -- 'daemon/Sources/*.swift' ':!daemon/Sources/MeetingPipe/Design/Tokens.swift' \
+            | grep -E '^\+' | grep -v '^\+\+\+' || true)
+          if echo "$added" | grep -F '.system(size:' >/dev/null; then
+            echo "::error::TECH-DSN3: new raw .system(size:) font literal. Use MPType.textXX for the size, or a Dynamic-Type font where scaling matters."
+            echo "$added" | grep -nF '.system(size:'
+            exit 1
+          fi
+          echo "No newly-introduced raw font-size literals."
+
   pipeline:
     name: Pipeline (pytest)
     # Pure-Python tests, run on Linux. ASR and diarization are Swift

@@ -148,7 +148,7 @@ struct PreferencesView: View {
             return AnyView(
                 HStack(spacing: 4) {
                     Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundStyle(ok ? Color.green : Color.red)
+                        .foregroundStyle(ok ? Color.mpSuccess : Color.mpDanger)
                     Text(ok ? "Done (exit 0)" : "Failed (exit \(exit))").font(.caption)
                 }
             )

@@ -296,9 +296,9 @@ struct SettingsStatusPill: View {
 
         var fg: Color {
             switch self {
-            case .granted: return .green
-            case .needed:  return .orange
-            case .denied:  return .red
+            case .granted: return .mpSuccess
+            case .needed:  return .mpWarning
+            case .denied:  return .mpDanger
             case .neutral: return .secondary
             }
         }

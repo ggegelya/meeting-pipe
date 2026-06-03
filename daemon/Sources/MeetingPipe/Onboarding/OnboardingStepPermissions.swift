@@ -53,7 +53,7 @@ struct OnboardingStepPermissions: View {
         if status == .granted {
             Label("Granted", systemImage: "checkmark.circle.fill")
                 .font(.caption)
-                .foregroundStyle(.green)
+                .foregroundStyle(.mpSuccess)
         } else if status == .denied && perms.deferredToSettings.contains(kind) {
             Button("Open Settings") { openSettings(kind) }
                 .controlSize(.small)

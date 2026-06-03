@@ -91,7 +91,7 @@ struct CorrectionsTab: View {
             if let err = revertError {
                 Label(err, systemImage: "exclamationmark.triangle")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.mpWarning)
                     .lineLimit(2)
             }
         }
@@ -100,8 +100,8 @@ struct CorrectionsTab: View {
     private func verdictBadge(_ verdict: String) -> some View {
         let (icon, tint, label): (String, Color, String)
         switch verdict {
-        case "good":   (icon, tint, label) = ("hand.thumbsup.fill", .green, "Good")
-        case "bad":    (icon, tint, label) = ("hand.thumbsdown.fill", .red, "Bad")
+        case "good":   (icon, tint, label) = ("hand.thumbsup.fill", .mpSuccess, "Good")
+        case "bad":    (icon, tint, label) = ("hand.thumbsdown.fill", .mpDanger, "Bad")
         case "edited": (icon, tint, label) = ("pencil.circle.fill", .blue, "Edited")
         default:       (icon, tint, label) = ("circle", .secondary, verdict.capitalized)
         }

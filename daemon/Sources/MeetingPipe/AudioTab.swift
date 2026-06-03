@@ -141,7 +141,7 @@ struct AudioTab: View {
         VStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 28))
-                .foregroundStyle(.orange)
+                .foregroundStyle(.mpWarning)
             Text("Couldn't read the waveform.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -289,7 +289,7 @@ private struct StaticWaveform: View, Equatable {
                 ctx: ctx,
                 peaks: peaks.left,
                 rect: CGRect(x: 0, y: 0, width: size.width, height: size.height / 2),
-                tint: .accentColor,
+                tint: .mpSignal,
                 label: "Mic"
             )
             drawChannel(
@@ -371,7 +371,7 @@ private struct PlayheadOverlay: View {
                 p.move(to: CGPoint(x: x, y: 0))
                 p.addLine(to: CGPoint(x: x, y: geo.size.height))
             }
-            .stroke(Color.red, lineWidth: 1.5)
+            .stroke(Color.mpDanger, lineWidth: 1.5)
         }
         .allowsHitTesting(false)
     }

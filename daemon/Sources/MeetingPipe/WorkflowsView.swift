@@ -78,7 +78,7 @@ struct WorkflowEditor: View {
                 if let err = saveError {
                     Text(err)
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(.mpDanger)
                 }
                 actionsRow
             }
@@ -245,7 +245,7 @@ struct WorkflowEditor: View {
             if ndaMode {
                 Text("NDA mode forces filesystem-only; toggles above are ignored at run time.")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.mpWarning)
             }
         }
     }
@@ -318,7 +318,7 @@ struct WorkflowEditor: View {
         case .failed(let err):
             Text(err)
                 .font(.caption)
-                .foregroundStyle(.red)
+                .foregroundStyle(.mpDanger)
                 .lineLimit(2)
         }
     }
@@ -340,7 +340,7 @@ struct WorkflowEditor: View {
             if ndaMode {
                 Text("NDA mode forces the local backend; the picker is disabled.")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.mpWarning)
             } else if backend == nil {
                 Text("Inherits the backend from Preferences > Pipeline.")
                     .font(.caption)
@@ -348,7 +348,7 @@ struct WorkflowEditor: View {
             } else if backend == .appleIntelligence, let reason = AppleIntelligenceSummarizer.availabilityReason {
                 Text("Apple Intelligence is unavailable here: \(reason)")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.mpWarning)
             }
         }
     }

@@ -40,6 +40,18 @@ enum MPColors {
     static let danger600  = NSColor(srgbRed: 0xC9/255.0, green: 0x2A/255.0, blue: 0x2A/255.0, alpha: 1)
     static let danger100  = NSColor(srgbRed: 0xFC/255.0, green: 0xE4/255.0, blue: 0xE4/255.0, alpha: 1)
 
+    // MARK: Speaker palette (TECH-DSN3)
+    /// Categorical per-speaker hues for the transcript view, the one place a
+    /// multi-hue set is legitimate (it labels diarized speakers, not a semantic
+    /// state). Centralised here so the raw-color CI guard can point everything
+    /// else at tokens while this stays a single, intentional source.
+    /// Order matches the historical inline palette so speaker -> colour
+    /// assignments (`palette[n % count]`) don't reshuffle.
+    static let speakerPalette: [NSColor] = [
+        .systemBlue, .systemPurple, .systemPink, .systemOrange,
+        .systemTeal, .systemGreen, .systemIndigo, .systemBrown,
+    ]
+
     // MARK: Semantic - auto-flip on appearance.
     /// `--mp-fg` / dark `#F0F1F3`.
     static let fg = NSColor(name: "mp.fg") { appearance in
@@ -95,6 +107,28 @@ enum MPColors {
             ? NSColor.white.withAlphaComponent(0.05)
             : NSColor.black.withAlphaComponent(0.06)
     }
+}
+
+/// SwiftUI accessors for the fixed semantic state colors (TECH-DSN3), so views
+/// use `.mpDanger` / `.mpWarning` / `.mpSuccess` / `.mpSignal` instead of the
+/// generic system `.red` / `.orange` / `.green` / `.accentColor`. These four
+/// don't auto-flip (they read on both canvases as-is), so a `static let` is safe;
+/// for fg/bg use the appearance-aware `MPColors` accessors directly.
+extension Color {
+    static let mpDanger  = Color(nsColor: MPColors.danger600)
+    static let mpWarning = Color(nsColor: MPColors.warning600)
+    static let mpSuccess = Color(nsColor: MPColors.success600)
+    static let mpSignal  = Color(nsColor: MPColors.signal600)
+}
+
+/// Same tokens as a `ShapeStyle` leading-dot, so `.foregroundStyle(.mpDanger)`
+/// resolves (a bare `.foregroundStyle(_:)` looks the member up on `ShapeStyle`,
+/// not `Color`).
+extension ShapeStyle where Self == Color {
+    static var mpDanger:  Color { .mpDanger }
+    static var mpWarning: Color { .mpWarning }
+    static var mpSuccess: Color { .mpSuccess }
+    static var mpSignal:  Color { .mpSignal }
 }
 
 /// Type tokens mirroring `--mp-text-*` and `--mp-weight-*`. The daemon uses SF Pro (system font), not Inter Tight; the display tokens exist for future surfaces that may load it.
