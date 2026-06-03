@@ -597,7 +597,7 @@ See [`config.example.toml`](./config.example.toml). Highlights:
 - `summarization.local_endpoint`: where `LocalSummaryClient` will spawn
   `mlx_lm.server`. Default `http://127.0.0.1:8765`.
 - `output.sinks`: ordered list of publishers to invoke. Default `["notion"]`.
-  Add `"obsidian"` and/or `"filesystem"` to fan out. Each sink fails
+  Add `"obsidian"`, `"filesystem"`, and/or `"lan"` to fan out. Each sink fails
   independently; one going down does not block the others.
 - `obsidian.vault_path`: required when `"obsidian"` is in `sinks`. The
   publisher writes to `<vault>/<obsidian.folder>/<date> <slug>.md` with
@@ -606,6 +606,12 @@ See [`config.example.toml`](./config.example.toml). Highlights:
   points at a custom template (the built-in template covers the common
   case).
 - `filesystem.output_dir`: where the filesystem sink drops the three files.
+- `lan.mount_path`: target directory on an already-mounted SMB/NFS share for
+  the `"lan"` sink. Same three files as the filesystem sink, but written
+  atomically and only after a reachability check (it never creates the mount
+  root itself, so a down share fails loudly instead of writing to local disk).
+  On-prem, no cloud egress, so it survives regulated mode. `lan.host` is an
+  optional label used only in the unreachable error.
 - `modes.regulated_mode`: when `true`, the Notion sink no-ops at upsert
   time. Pair with `summarization.backend = "local"` for full zero-egress
   (every outbound HTTP request would assert in tests).

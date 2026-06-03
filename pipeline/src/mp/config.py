@@ -127,6 +127,20 @@ class FilesystemCfg(BaseModel):
     output_dir: str = "~/Documents/Meetings/published"
 
 
+class LanCfg(BaseModel):
+    """LAN sink (TECH-FEAT1). Writes the same files as the filesystem sink,
+    but to a mounted SMB/NFS share, with a reachability check and atomic writes
+    so a half-written file never appears on a share other tools watch.
+
+    `mount_path` is the target directory on the already-mounted share. The
+    publisher never creates the mount root itself (that would silently fall back
+    to local disk if the share were down). `host` is informational, used only in
+    the unreachable error message. On-prem, no cloud metering, so this sink is
+    allowed under regulated mode (only the cloud Notion sink is clamped)."""
+    mount_path: str = "/Volumes/meetings"
+    host: str = ""
+
+
 class OutputCfg(BaseModel):
     """Multi-sink fan-out (P3.4). `sinks` is the ordered list of
     publisher names to invoke after summarize. Order is execution
@@ -157,6 +171,7 @@ class Config(BaseModel):
     notion: NotionCfg = Field(default_factory=NotionCfg)
     obsidian: ObsidianCfg = Field(default_factory=ObsidianCfg)
     filesystem: FilesystemCfg = Field(default_factory=FilesystemCfg)
+    lan: LanCfg = Field(default_factory=LanCfg)
     output: OutputCfg = Field(default_factory=OutputCfg)
     modes: Modes = Field(default_factory=Modes)
 

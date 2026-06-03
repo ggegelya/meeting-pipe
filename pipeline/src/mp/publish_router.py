@@ -79,6 +79,15 @@ def _build_one(name: str, cfg: Config) -> MeetingPublisher | None:
     if name == "filesystem":
         from .publish_fs import FilesystemPublisher
         return FilesystemPublisher(output_dir=Path(cfg.filesystem.output_dir).expanduser())
+    if name == "lan":
+        # TECH-FEAT1: on-prem mounted share. Allowed under regulated mode
+        # (effective_sinks only clamps the cloud Notion sink); the reachability
+        # check fires at upsert time, not config-load time.
+        from .publish_lan import LanPublisher
+        return LanPublisher(
+            mount_path=Path(cfg.lan.mount_path).expanduser(),
+            host=cfg.lan.host,
+        )
     raise PublisherBuildError(f"unknown sink in output.sinks: {name!r}")
 
 
