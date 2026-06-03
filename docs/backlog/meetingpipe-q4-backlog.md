@@ -28,7 +28,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-SEC3 | Process-wide egress firewall under regulated/NDA | Security | DONE (was P1) | Replace seven scattered flag checks with one httpx transport that hard-fails any non-loopback request when regulated or NDA is active. |
 | TECH-SEC4 | Gate or remove the daemon's direct Notion call | Security | DONE (was P1) | The daemon POSTs to api.notion.com for the DB picker, outside all egress enforcement and against its own "no Notion from the daemon" rule. |
 | TECH-ARCH1 | Single effective_config() chokepoint | Architecture | DONE (was P1) | The regulated/NDA force-local rule is copied across four-plus sites; compute it once so a new code path cannot forget the clamp. |
-| TECH-PERF1 | Stream diarize.py per segment | Performance | P1 new | The channel-aware fallback loads the whole stereo WAV plus two float copies (~2 GB at 3 h); read per-segment instead. |
+| TECH-PERF1 | Stream diarize.py per segment | Performance | DONE (was P1) | The channel-aware fallback loads the whole stereo WAV plus two float copies (~2 GB at 3 h); read per-segment instead. |
 | TECH-PERF2 | FluidAudio mono read + free input buffer (was A13 RAM half) | Performance | P1 carry | readMonoFloat32 holds the full clip plus a mono copy across ASR and diarization; halve the peak and free the input buffer early. |
 | TECH-WF1 | Workflow backend unification + inherit | Workflow | P1 new | The per-workflow picker omits Apple Intelligence and always overrides the global backend; add it plus a "use global default" option. |
 | TECH-DSN1 | Preferences IA pass | Design | P1 new | Seven panes, ~44 controls; collapse the local-MLX cluster behind a disclosure, cut cosmetic toggles, move regulated mode out of Prompt. |
@@ -116,7 +116,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 
 ### Performance
 
-**TECH-PERF1 (P1): stream diarize.py.** Replace the single `sf.read` plus two `astype(float32)` copies with per-segment `sf.read(start=, stop=)`, computing RMS per window. Cuts the ~2 GB peak on a 3-hour stereo file to a few MB, exactly in the degraded fallback path you least want to also OOM.
+**[DONE] TECH-PERF1 (P1): stream diarize.py.** Replace the single `sf.read` plus two `astype(float32)` copies with per-segment `sf.read(start=, stop=)`, computing RMS per window. Cuts the ~2 GB peak on a 3-hour stereo file to a few MB, exactly in the degraded fallback path you least want to also OOM. Done: rewrote `assign_speakers_by_channel` to open a `soundfile.SoundFile`, scan the right channel block-wise for the silence gate, then `seek`/`read` per segment. Kept `dtype="int16"` with a local `.astype(float32)` on each bounded slice so per-segment RMS is identical and `min_other_rms`/`dominance_ratio` keep their int16-magnitude meaning. Added a clamp-path test; the existing channel-aware suite stays green.
 
 **TECH-PERF2 (P1, carry of A13 RAM half): FluidAudio memory.** The final WAV is already 16 kHz mono; read it into a mono buffer directly for the common case and scope the input PCM buffer so it is freed before `asr.transcribe` / `runDiarization`. Halves the readMonoFloat32 peak. (The waveform half of A13 shipped; this is the deferred RAM half.)
 

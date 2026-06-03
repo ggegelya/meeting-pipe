@@ -211,3 +211,14 @@ def test_assign_speakers_by_channel_falls_back_on_mono_input(tmp_path):
     transcript = [{"start": 0.0, "end": 1.0, "text": "Hello."}]
     out = assign_speakers_by_channel(transcript, wav)
     assert out[0]["speaker"] == USER_SPEAKER
+
+
+def test_assign_speakers_by_channel_clamps_segment_past_end(tmp_path):
+    """Streaming read (TECH-PERF1): a segment whose end runs past the file
+    length must clamp to the available frames rather than seek out of range,
+    and still produce a valid label without raising."""
+    wav = tmp_path / "short.wav"
+    _write_stereo_wav(wav, l_segments=[(0.0, 2.0)], r_segments=[(1.0, 2.0)], total_seconds=2)
+    transcript = [{"start": 0.0, "end": 10.0, "text": "Runs past the end."}]
+    out = assign_speakers_by_channel(transcript, wav)
+    assert out[0]["speaker"] in (USER_SPEAKER, OTHER_SPEAKER)

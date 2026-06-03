@@ -52,43 +52,60 @@ def assign_speakers_by_channel(
     import numpy as np
     import soundfile as sf  # type: ignore
 
-    audio, sr = sf.read(str(wav), dtype="int16", always_2d=True)
-    if audio.shape[1] != 2:
-        # Caller should have checked is_stereo_recording first; defend
-        # against future config drift by collapsing to a single label.
-        return [{**s, "speaker": USER_SPEAKER} for s in transcript_segments]
+    # Stream the WAV instead of reading the whole clip plus two float32 copies
+    # (~2 GB peak on a 3-hour stereo file, in the exact degraded fallback we
+    # least want to also OOM). Reads stay int16 with a local float32 cast on
+    # bounded slices, so every RMS value, and therefore `min_other_rms` and
+    # `dominance_ratio`, keeps its int16-magnitude meaning. (TECH-PERF1)
+    with sf.SoundFile(str(wav)) as f:
+        if f.channels != 2:
+            # Caller should have checked is_stereo_recording first; defend
+            # against future config drift by collapsing to a single label.
+            return [{**s, "speaker": USER_SPEAKER} for s in transcript_segments]
+        sr = f.samplerate
+        total_frames = f.frames
 
-    L = audio[:, 0].astype(np.float32)
-    R = audio[:, 1].astype(np.float32)
+        # Decide once whether the right channel ever had real audio, scanning
+        # it block-wise so we never hold more than one block in RAM. If not,
+        # all segments go to USER_SPEAKER, much more useful than spurious OTHER
+        # attributions on silence/noise. (float64 accumulation is a touch more
+        # accurate than the old whole-channel float32 mean; the silence floor
+        # has orders-of-magnitude margin, so it cannot flip the threshold.)
+        sumsq_r = 0.0
+        count_r = 0
+        for block in f.blocks(blocksize=1 << 20, dtype="int16", always_2d=True):
+            r = block[:, 1].astype(np.float64)
+            sumsq_r += float(r @ r)
+            count_r += r.shape[0]
+        overall_r_rms = (sumsq_r / count_r) ** 0.5 if count_r else 0.0
+        other_channel_present = overall_r_rms >= min_other_rms
 
-    # Decide once whether the right channel ever had real audio. If
-    # not, all segments go to USER_SPEAKER — much more useful than
-    # spurious OTHER attributions on silence/noise.
-    overall_r_rms = float(np.sqrt(np.mean(R * R))) if R.size > 0 else 0.0
-    other_channel_present = overall_r_rms >= min_other_rms
-
-    out: list[dict] = []
-    for seg in transcript_segments:
-        seg = dict(seg)
-        if not other_channel_present:
-            seg["speaker"] = USER_SPEAKER
+        out: list[dict] = []
+        for seg in transcript_segments:
+            seg = dict(seg)
+            if not other_channel_present:
+                seg["speaker"] = USER_SPEAKER
+                out.append(seg)
+                continue
+            start_i = max(0, int(float(seg.get("start", 0)) * sr))
+            end_i = min(total_frames, int(float(seg.get("end", 0)) * sr))
+            if end_i <= start_i:
+                seg["speaker"] = USER_SPEAKER
+                out.append(seg)
+                continue
+            # Read only this segment's window. int16 + a local float32 cast
+            # leaves the per-segment RMS identical to the old whole-file slice.
+            f.seek(start_i)
+            chunk = f.read(frames=end_i - start_i, dtype="int16", always_2d=True)
+            l_chunk = chunk[:, 0].astype(np.float32)
+            r_chunk = chunk[:, 1].astype(np.float32)
+            l_rms = float(np.sqrt(np.mean(l_chunk * l_chunk)))
+            r_rms = float(np.sqrt(np.mean(r_chunk * r_chunk)))
+            if l_rms > dominance_ratio * r_rms:
+                seg["speaker"] = USER_SPEAKER
+            elif r_rms > dominance_ratio * l_rms:
+                seg["speaker"] = OTHER_SPEAKER
+            else:
+                seg["speaker"] = USER_SPEAKER if l_rms >= r_rms else OTHER_SPEAKER
             out.append(seg)
-            continue
-        start_i = max(0, int(float(seg.get("start", 0)) * sr))
-        end_i = min(audio.shape[0], int(float(seg.get("end", 0)) * sr))
-        if end_i <= start_i:
-            seg["speaker"] = USER_SPEAKER
-            out.append(seg)
-            continue
-        l_chunk = L[start_i:end_i]
-        r_chunk = R[start_i:end_i]
-        l_rms = float(np.sqrt(np.mean(l_chunk * l_chunk)))
-        r_rms = float(np.sqrt(np.mean(r_chunk * r_chunk)))
-        if l_rms > dominance_ratio * r_rms:
-            seg["speaker"] = USER_SPEAKER
-        elif r_rms > dominance_ratio * l_rms:
-            seg["speaker"] = OTHER_SPEAKER
-        else:
-            seg["speaker"] = USER_SPEAKER if l_rms >= r_rms else OTHER_SPEAKER
-        out.append(seg)
     return out
