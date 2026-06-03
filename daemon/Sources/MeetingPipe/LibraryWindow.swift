@@ -96,6 +96,12 @@ final class LibraryWindowModel: ObservableObject {
     /// Set by the menu-bar Quick Find panel. The root view switches scope to All Meetings, selects the row, then clears this back to nil so the next pick is a fresh edge.
     @Published var pendingSelection: String? = nil
 
+    /// Set by the menu-bar "Manage Workflows ..." item (TECH-WF5). The root view
+    /// opens the workflow editor sheet, then clears this back to false. Gives
+    /// workflow management a findable top-level home instead of being reachable
+    /// only by selecting a rail scope and clicking the pencil.
+    @Published var pendingOpenNewWorkflow: Bool = false
+
     /// Non-`@Published` so toolbar reads don't republish the parent model; the toolbar observes it directly via `@ObservedObject`.
     let processing = ProcessingTracker()
 
@@ -305,6 +311,13 @@ struct LibraryRootView: View {
             scope = .allMeetings
             meetingSelection = [stem]
             model.pendingSelection = nil
+        }
+        .onChange(of: model.pendingOpenNewWorkflow) { _, open in
+            // TECH-WF5: the "Manage Workflows ..." menu item lands here. Open the
+            // editor (the rail behind it lists the existing workflows for edit).
+            guard open else { return }
+            isCreatingWorkflow = true
+            model.pendingOpenNewWorkflow = false
         }
         .sheet(item: $editingWorkflow, onDismiss: { editingWorkflow = nil }) { wf in
             if let store = model.workflowStore {

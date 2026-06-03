@@ -432,6 +432,16 @@ final class StatusBarController {
         quickFind.target = coordinator
         menu.addItem(quickFind)
 
+        // TECH-WF5: top-level entry for workflow management; previously reachable
+        // only by selecting a Library rail scope and clicking the pencil.
+        let manageWorkflows = NSMenuItem(
+            title: "Manage Workflows…",
+            action: #selector(Coordinator.menuManageWorkflows),
+            keyEquivalent: ""
+        )
+        manageWorkflows.target = coordinator
+        menu.addItem(manageWorkflows)
+
         if let coordinator = coordinator,
            let recentItem = recentMeetingsMenuItem(coordinator: coordinator) {
             menu.addItem(recentItem)

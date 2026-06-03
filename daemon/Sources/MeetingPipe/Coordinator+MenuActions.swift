@@ -39,6 +39,13 @@ extension Coordinator {
         quickFindWindow.show()
     }
 
+    /// Open the Library and present the workflow editor (TECH-WF5): a findable
+    /// top-level home for workflow management, instead of only the rail pencil.
+    @objc func menuManageWorkflows() {
+        libraryModel.pendingOpenNewWorkflow = true
+        libraryWindow.show()
+    }
+
     /// Open the Library window and select the given stem (from Quick Find).
     func openMeeting(stem: String) {
         libraryModel.pendingSelection = stem

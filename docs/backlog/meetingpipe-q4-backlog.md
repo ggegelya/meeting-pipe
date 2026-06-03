@@ -51,7 +51,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-WF2 | Workflow emoji picker | Workflow | DONE (was P2) | The emoji field is a bare 80pt text box that accepts arbitrary text; use a real emoji picker constrained to one grapheme. |
 | TECH-WF3 | Workflow color picker | Workflow | DONE (was P2) | Replace the #RRGGBB hex field with a native ColorPicker or token-aligned swatches; keep hex as an advanced fallback. |
 | TECH-WF4 | Workflow identity-section layout | Workflow | DONE (was P2) | Name / Color / Emoji rows are raggedly aligned (a stray Spacer, mismatched widths); make the section coherent. |
-| TECH-WF5 | Workflow discoverability | Workflow | P2 new | Editing a workflow is buried behind selecting a Library scope and an unlabeled pencil; give it a findable home. |
+| TECH-WF5 | Workflow discoverability | Workflow | DONE (was P2) | Editing a workflow is buried behind selecting a Library scope and an unlabeled pencil; give it a findable home. |
 | TECH-DSN3 | Token-enforcement pass | Design | P2 new | 126 raw .system fonts and 22 raw colors bypass the token system; enforce tokens, unify to one button language, add a CI guard. |
 | TECH-DSN4 | Identity color | Design | DONE (was P2) | Signal blue reads as generic macOS blue; pick a distinct hue that survives the dark-mode auto-flip. Pairs with REPO2. |
 | TECH-DSN5 | Motion + haptic + opt-in tone | Design | P2 new | Animate exactly three moments; Stop haptic for the consequential action; one opt-in post-call tone; never an in-call chime. |
@@ -148,7 +148,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 
 **[DONE] TECH-WF4 (P2): identity-section layout.** Fix the ragged alignment in the Identity section (the color row ends in a Spacer, emoji is width-80, name is full-width); give the rows a consistent field width. Done: dropped the stray `Spacer`, gave the Color and Emoji controls a shared `identityFieldWidth` (150) so they line up, and moved the colour preview to a `colorSwatch` left of the hex field (a muted placeholder ring when the hex is empty/unparseable, so the row height never jumps). Name stays full-width as the primary field. Build green.
 
-**TECH-WF5 (P2): discoverability.** Workflow editing is only reachable by selecting a workflow filter-scope in the Library rail and clicking an unlabeled pencil. Add a labeled "Manage Workflows ..." entry (menu and/or a dedicated surface). Overlaps DSN1.
+**[DONE] TECH-WF5 (P2): discoverability.** Workflow editing is only reachable by selecting a workflow filter-scope in the Library rail and clicking an unlabeled pencil. Add a labeled "Manage Workflows ..." entry (menu and/or a dedicated surface). Overlaps DSN1. Done: added a "Manage Workflows ..." item to the status-bar menu (after Quick Find), wired through a new `Coordinator.menuManageWorkflows` to a `LibraryWindowModel.pendingOpenNewWorkflow` flag the `LibraryWindow` observes (mirroring the existing `pendingSelection` pattern): it opens the Library and presents the workflow editor sheet, with the rail behind it listing the existing workflows for edit. The status-bar menu is the app's primary menu (LSUIElement, no `NSApp.mainMenu`), so that is the findable top-level home. Note on the spec's premise: the rail pencil is in fact already labeled "Edit workflow"; the real gap was the absence of any top-level entry, which this closes. Build green, suite 716/0.
 
 ### Design and UX
 
