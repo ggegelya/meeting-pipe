@@ -236,12 +236,11 @@ struct MeetingRow: View, Equatable {
     private var showsLeadingAccent: Bool { isLiveRecording }
 
     private var isNDA: Bool {
-        // TECH-B9: the authoritative flag is `workflow.flags.ndaMode`, but the row has no WorkflowStore and the sidecar doesn't yet persist the resolved flag. Heuristic: lock when backend == "local" and a workflow is set.
-        if meeting.backend == "local",
-           meeting.workflowName?.isEmpty == false {
-            return true
-        }
-        return false
+        // TECH-DSN6: read the resolved zero-egress flag the daemon now persists
+        // into the sidecar (an NDA workflow or global regulated mode at record
+        // time). A privacy badge must never be inferred, so the old
+        // backend == "local" heuristic is gone.
+        meeting.isZeroEgress
     }
 
     @ViewBuilder

@@ -66,6 +66,19 @@ final class MeetingMetaSidecarTests: XCTestCase {
         XCTAssertNil(dict["workflow_notion_database_id"])
     }
 
+    func test_regulated_mode_written_top_level_even_without_workflow() {
+        // TECH-DSN6: the global zero-egress flag rides at the top level so a
+        // manual, workflow-less recording under regulated mode still badges and
+        // stays fail-closed on reprocess.
+        let dict = MeetingMetaSidecar.build(source: nil, workflow: nil, regulatedMode: true)
+        XCTAssertEqual(dict["regulated_mode"] as? Bool, true)
+    }
+
+    func test_regulated_mode_omitted_when_false() {
+        let dict = MeetingMetaSidecar.build(source: zoomSource(), workflow: nil, regulatedMode: false)
+        XCTAssertNil(dict["regulated_mode"])
+    }
+
     func test_workflow_inheriting_backend_omits_key() {
         // A workflow that does not pin a backend (the new default) must omit
         // workflow_backend so the pipeline keeps the global

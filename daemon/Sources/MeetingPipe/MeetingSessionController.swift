@@ -311,7 +311,11 @@ final class MeetingSessionController {
     /// it here keeps the sidecar a single atomic file: the pipeline
     /// reads `<stem>.meta.json` once and gets every per-meeting knob.
     func writeMetaSidecar(file: URL, source: AppSource?) {
-        let dict = MeetingMetaSidecar.build(source: source, workflow: activeWorkflow)
+        let dict = MeetingMetaSidecar.build(
+            source: source,
+            workflow: activeWorkflow,
+            regulatedMode: coordinator.configStore?.regulatedMode ?? false
+        )
         if dict.isEmpty { return }
         let stem = file.deletingPathExtension().lastPathComponent
         let sidecar = file.deletingLastPathComponent().appendingPathComponent("\(stem).meta.json")

@@ -53,7 +53,19 @@ struct Meeting: Identifiable, Hashable {
     /// ISO code from `<stem>.summary.json["detected_language"]`, lifted into the row so the detail header can show a language chip (TECH-UI-4). Nil when unknown. Defaulted so test constructors need not supply it.
     var detectedLanguage: String? = nil
 
+    /// Resolved zero-egress flags read from `<stem>.meta.json` (TECH-DSN6): the
+    /// workflow's NDA flag and the global regulated flag captured at record time.
+    /// The Library badge reads these instead of inferring NDA from the backend.
+    /// Defaulted so test constructors need not supply them.
+    var workflowNDAMode: Bool? = nil
+    var regulatedMode: Bool? = nil
+
     var id: String { stem } // stems are unique per recording (datetime-derived)
+
+    /// True when the meeting was recorded zero-egress, i.e. forced on-device and
+    /// local-only by an NDA workflow or global regulated mode. Drives the
+    /// "Local only" privacy badge, which must never be inferred (TECH-DSN6).
+    var isZeroEgress: Bool { (workflowNDAMode ?? false) || (regulatedMode ?? false) }
 
     /// Best-effort display label: summary title > meeting title > "{source} at HH:mm" > raw stem. Never empty.
     var displayTitle: String {
@@ -374,7 +386,9 @@ final class MeetingStore: ObservableObject {
             failureStage: failure?.stage.rawValue,
             searchableText: searchable,
             needsRepublish: MeetingStore.needsRepublish(files: files, summaryURL: summaryURL),
-            detectedLanguage: (summary?.detectedLanguage).flatMap { $0.isEmpty ? nil : $0 }
+            detectedLanguage: (summary?.detectedLanguage).flatMap { $0.isEmpty ? nil : $0 },
+            workflowNDAMode: (meta?["workflow_nda_mode"] as? Bool),
+            regulatedMode: (meta?["regulated_mode"] as? Bool)
         )
         return (meeting, cacheable)
     }

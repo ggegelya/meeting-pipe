@@ -218,6 +218,7 @@ Current keys (May 2026):
 | `workflow_sinks` | array of strings | subset of `["notion", "obsidian", "filesystem"]` |
 | `workflow_notion_database_id` | string? | per-workflow Notion DB |
 | `workflow_nda_mode` | bool | forces backend=local + sinks=filesystem |
+| `regulated_mode` | bool? | global zero-egress at record time (TECH-DSN6); top-level (not under a workflow), written only when true. Drives the Library "Local only" badge and is folded into the overlay fail-closed, same effect as `workflow_nda_mode` |
 
 Absence of the sidecar (`<stem>.meta.json` missing) is valid — the pipeline falls back to global config + LLM-derived title.
 

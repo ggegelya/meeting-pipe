@@ -46,6 +46,8 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
       - `workflow_sinks`           → `output.sinks`
       - `workflow_notion_database_id` → `notion.database_id`
       - `workflow_nda_mode`        → forces local backend + filesystem sink
+      - `regulated_mode`           → global zero-egress at record time (TECH-DSN6);
+        folded in fail-closed, same effect as `workflow_nda_mode`
     """
     meta = _read_meta(any_meeting_path)
     if not meta:
@@ -60,6 +62,15 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
     # Carry the resolved NDA flag on the config so the egress guard can arm on
     # it at entry without re-reading the sidecar (TECH-SEC3).
     overlay.modes.workflow_nda_mode = nda_mode
+
+    # TECH-DSN6: a meeting recorded under global regulated mode persists
+    # `regulated_mode` in the sidecar. Fold it in fail-closed, so a reprocess
+    # (and the Library badge, which reads the same flag) stays zero-egress even
+    # if the global config flag has since been turned off.
+    if bool(meta.get("regulated_mode")) and not overlay.modes.regulated_mode:
+        overlay.modes.regulated_mode = True
+        changed.append("regulated_mode (from sidecar)")
+    zero_egress = nda_mode or overlay.modes.regulated_mode
 
     backend_raw = meta.get("workflow_backend")
     if isinstance(backend_raw, str) and backend_raw in {"anthropic", "local", "auto", "apple_intelligence"}:
@@ -86,17 +97,18 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
             overlay.notion.database_id = notion_db
             changed.append("notion.database_id")
 
-    # NDA is a belt-and-braces enforcement: even if the daemon-supplied
-    # backend/sinks already reflect it (they should, via `effectiveBackend`),
-    # we re-apply here so a misconfigured workflow (NDA + backend=anthropic
-    # somewhere upstream) still keeps the meeting on-device.
-    if nda_mode:
+    # Zero-egress (NDA or regulated) is a belt-and-braces enforcement: even if
+    # the daemon-supplied backend/sinks already reflect it (they should, via
+    # `effectiveBackend` / effective_sinks), we re-apply here so a misconfigured
+    # workflow (NDA + backend=anthropic somewhere upstream) still keeps the
+    # meeting on-device.
+    if zero_egress:
         if overlay.summarization.backend != "local":
             overlay.summarization.backend = "local"  # type: ignore[assignment]
-            changed.append("nda_mode→backend=local")
+            changed.append("zero_egress→backend=local")
         if overlay.output.sinks != ["filesystem"]:
             overlay.output.sinks = ["filesystem"]
-            changed.append("nda_mode→sinks=filesystem")
+            changed.append("zero_egress→sinks=filesystem")
 
     if changed:
         wf_name = meta.get("workflow_name") or "(unnamed)"

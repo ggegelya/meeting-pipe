@@ -3,9 +3,19 @@ import Foundation
 /// Pure builder for `<stem>.meta.json`. Canonical Swift-to-Python contract: the pipeline reads these keys via `mp.workflow.apply_overrides`. Unit-testable without a Coordinator.
 enum MeetingMetaSidecar {
 
-    /// Build the JSON-serializable dictionary for a finished recording. Returns an empty dict when neither source nor workflow is available; caller skips the write so the pipeline's no-sidecar fallback (LLM-derived title, global config) stays intact.
-    static func build(source: AppSource?, workflow: Workflow?) -> [String: Any] {
+    /// Build the JSON-serializable dictionary for a finished recording. Returns an empty dict when neither source nor workflow is available (and not regulated); caller skips the write so the pipeline's no-sidecar fallback (LLM-derived title, global config) stays intact.
+    ///
+    /// `regulatedMode` is the global flag at record time (TECH-DSN6). Persisting it
+    /// makes the resolved zero-egress state (`regulated_mode || workflow_nda_mode`)
+    /// readable: the Library badge stops inferring NDA, and a reprocess stays
+    /// fail-closed even if the global flag later flips.
+    static func build(source: AppSource?, workflow: Workflow?, regulatedMode: Bool = false) -> [String: Any] {
         var dict: [String: Any] = [:]
+        // Global zero-egress state at record time. Top-level (not under the
+        // workflow block) since it applies even to a manual, workflow-less run.
+        if regulatedMode {
+            dict["regulated_mode"] = true
+        }
         if let source = source {
             dict["source_bundle_id"] = source.bundleID
             dict["source_display_name"] = source.displayName

@@ -69,6 +69,29 @@ def test_nda_mode_forces_local_and_filesystem(tmp_path: Path) -> None:
     assert result.output.sinks == ["filesystem"]
 
 
+def test_regulated_mode_from_sidecar_forces_local_and_filesystem(tmp_path: Path) -> None:
+    # TECH-DSN6: a meeting recorded under global regulated mode persists
+    # `regulated_mode` in the sidecar. A reprocess stays zero-egress (fail-closed)
+    # even when the current global config has regulated_mode off (the default).
+    cfg = Config()
+    assert cfg.modes.regulated_mode is False
+    stem = "20260512-080000"
+    _write_meta(tmp_path, stem, {
+        "regulated_mode": True,
+        # Leaked cloud backend/sinks must still be overridden.
+        "workflow_backend": "anthropic",
+        "workflow_sinks": ["notion"],
+    })
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    result = apply_overrides(cfg, wav)
+    assert result.modes.regulated_mode is True
+    assert result.summarization.backend == "local"
+    assert result.output.sinks == ["filesystem"]
+    # Original cfg untouched.
+    assert cfg.modes.regulated_mode is False
+
+
 def test_overlay_works_for_summary_and_transcript_paths(tmp_path: Path) -> None:
     cfg = Config()
     stem = "20260512-101530"
