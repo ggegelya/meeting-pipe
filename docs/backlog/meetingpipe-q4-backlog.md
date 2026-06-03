@@ -33,7 +33,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-WF1 | Workflow backend unification + inherit | Workflow | DONE (was P1) | The per-workflow picker omits Apple Intelligence and always overrides the global backend; add it plus a "use global default" option. |
 | TECH-DSN1 | Preferences IA pass | Design | DONE (was P1) | Seven panes, ~44 controls; collapse the local-MLX cluster behind a disclosure, cut cosmetic toggles, move regulated mode out of Prompt. |
 | TECH-DSN2 | Detail-pane tabs + one republish path | Design | DONE (was P1) | Five tabs (two are debug surfaces) and 5+ overlapping republish/reprocess controls; reduce to three tabs and one canonical republish. |
-| TECH-REPO1 | GitHub repo presence | Identity | P1 new | README hero, LICENSE, CONTRIBUTING, repo description / topics / social preview, for contributor visibility. |
+| TECH-REPO1 | GitHub repo presence | Identity | DONE (was P1) | README hero, LICENSE, CONTRIBUTING, repo description / topics / social preview, for contributor visibility. |
 | TECH-REPO2 | App visual identity | Identity | P1 new | A signal color that is unmistakably MeetingPipe (not generic system blue) plus icon polish; the MacPaw-grade identity. |
 | TECH-H1-FINISH | Coordinator under 600 lines | Architecture | P1 carry | Still 1371 lines; only three extractions landed. See TECH-ARCH2. |
 | TECH-C6-FINISH | Real detection-trace corpus | Detection | P1 carry | Still nine synthetic seeds; need 20+ real dogfood traces so detection cannot silently regress. |
@@ -204,7 +204,7 @@ The pipeline is already "summarize + publish only" (ADR 0007). The realistic opt
 
 ### Identity and repo presence (promoted)
 
-**TECH-REPO1 (P1): GitHub repo presence.** README hero, a LICENSE file, CONTRIBUTING, and repo metadata (description, topics, social-preview image). This is the in-scope slice of branding, justified by contributor visibility, distinct from the deferred launch band.
+**[DONE] TECH-REPO1 (P1): GitHub repo presence.** README hero, a LICENSE file, CONTRIBUTING, and repo metadata (description, topics, social-preview image). This is the in-scope slice of branding, justified by contributor visibility, distinct from the deferred launch band. Done: added a centered README hero (tagline + CI / platform / MIT-license badges; used a text hero rather than the `currentColor` logo SVG, which is invisible on GitHub's dark theme) and fixed the clone placeholder to `ggegelya/meeting-pipe`; wrote `CONTRIBUTING.md` (setup, verify table, the Swift/Python sidecar contract, no-em-dash rule, commit/PR conventions, scope). The MIT `LICENSE` already exists with a generic "meeting-pipe contributors" copyright, so no change. Owed by the user (outward-facing GitHub mutations, not run from here): `gh repo edit ggegelya/meeting-pipe --description "..." --add-topic ...` and the manual social-preview image upload.
 
 **TECH-REPO2 (P1): app visual identity.** Land the distinct signal color (DSN4) and polish the app icon / menu-bar glyph so the app reads as a crafted niche tool, not a default Mac app. The taste already exists in the HUD and tokens; this is consistent application plus a real identity mark.
 
