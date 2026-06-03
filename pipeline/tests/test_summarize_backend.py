@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+import anthropic
 import httpx
 import pytest
 
@@ -219,3 +220,58 @@ def test_summarize_closes_self_created_local_client(
     monkeypatch.setattr("mp.summarize._select_backend", lambda _cfg: spy)
     summarize(md, cfg=_local_cfg(backend="local"))
     assert spy.closed is True
+
+
+# ----- Auto fallback on rate-limit / server error (TECH-FEAT5) -----
+
+def _anthropic_status_error(cls: type[anthropic.APIStatusError], code: int) -> anthropic.APIStatusError:
+    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    return cls("boom", response=httpx.Response(code, request=req), body=None)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        _anthropic_status_error(anthropic.RateLimitError, 429),
+        _anthropic_status_error(anthropic.InternalServerError, 500),
+    ],
+    ids=["rate_limit_429", "server_error_500"],
+)
+def test_auto_falls_back_to_local_on_429_and_5xx(
+    monkeypatch: pytest.MonkeyPatch, exc: anthropic.APIStatusError
+) -> None:
+    # A sustained 429 / 5xx (after the SDK's own retries) must drop to the local
+    # backend, not fail the run.
+    from mp.schemas import MeetingSummary
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    class _RaisingAnthropic:
+        def __init__(self, **_: Any) -> None: ...
+
+        def summarize(self, **_: Any) -> MeetingSummary:
+            raise exc
+
+    class _FakeLocal:
+        def __init__(self, **_: Any) -> None: ...
+
+        def __enter__(self) -> "_FakeLocal":
+            return self
+
+        def __exit__(self, *_: Any) -> None: ...
+
+        def summarize(self, **_: Any) -> MeetingSummary:
+            return MeetingSummary(
+                title="Local", summary=["b"], decisions=[], actions=[],
+                questions=[], attendees=[], detected_language="en",
+            )
+
+    monkeypatch.setattr("mp.summarize.AnthropicSummaryClient", _RaisingAnthropic)
+    monkeypatch.setattr("mp.summarize_local.LocalSummaryClient", _FakeLocal)
+
+    client = _AutoFallbackClient(_local_cfg(backend="auto"))
+    result = client.summarize(
+        system_prompt="sys", transcript="A: hi.", model="claude-x", max_tokens=100,
+    )
+    assert result.title == "Local"
+    assert client.last_used_backend == "local"

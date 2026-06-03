@@ -59,7 +59,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-DSN7 | Dead elapsed placeholder + menu-bar title | Design | DONE (was P2) | The recording pill shows a permanent "-:-"; the menu-bar title can stack four clauses. Fix or remove. |
 | TECH-FEAT1 | Local-network (LAN) sink | Feature | P2 new | A reachability-aware filesystem publisher for a mounted SMB/NFS share (on-prem, no cloud cost); deepens the regulated story. |
 | TECH-FEAT2 | Local semantic search ("ask my meetings") | Feature | P2 new | On-device RAG over the transcript library using the MLX model already run; the biggest "why this over cloud" answer. |
-| TECH-FEAT5 | Auto/anthropic fallback on 429/500 | Feature | P2 new | The auto backend only falls back on connection/auth errors; a sustained rate-limit fails the run instead of going local. |
+| TECH-FEAT5 | Auto/anthropic fallback on 429/500 | Feature | DONE (was P2) | The auto backend only falls back on connection/auth errors; a sustained rate-limit fails the run instead of going local. |
 | TECH-DIST1 | Bundle runtime for a drag-n-drop installer | Distribution | P2 new | Embed a standalone Python plus ffmpeg and notarize, so a clean Mac (no Homebrew, no Python) can install by dragging the app. |
 | TECH-DOC1 | Merge GLOSSARY into ARCHITECTURE | Docs | P2 new | Fold the glossary into an ARCHITECTURE "## Glossary" section, rewire the five references, delete GLOSSARY.md. |
 | TECH-DOC2 | Merge SPEC into README + ADRs | Docs | P2 new | Move surviving rationale to a README "Why it is shaped this way" section, dedupe the schema tables into CONVENTIONS, rewire six refs, delete SPEC.md. |
@@ -174,7 +174,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 
 **TECH-FEAT2 (P2): local semantic search.** On-device RAG over the transcript library using the MLX model already in-process: "ask my meetings" with no new egress surface. The single biggest reason to use this over a cloud tool.
 
-**TECH-FEAT5 (P2): auto fallback on rate-limit.** `_AutoFallbackClient` catches only connection/timeout/auth errors; extend it to fall back to local on 429/500 so a busy Anthropic does not fail the whole run. Note the default backend is `anthropic` (no fallback at all), so consider defaulting installs to `auto`.
+**[DONE] TECH-FEAT5 (P2): auto fallback on rate-limit.** `_AutoFallbackClient` catches only connection/timeout/auth errors; extend it to fall back to local on 429/500 so a busy Anthropic does not fail the whole run. Note the default backend is `anthropic` (no fallback at all), so consider defaulting installs to `auto`. Done: added `anthropic.RateLimitError` (429) and `anthropic.InternalServerError` (5xx) to the `_AutoFallbackClient.summarize` except clause, so once `_create_message`'s own tenacity retries are exhausted, a sustained busy-Anthropic drops to the local backend instead of raising. Added a parametrized test (both exceptions -> `last_used_backend == "local"`) with fake Anthropic/local clients. Left the default backend as `anthropic` deliberately: flipping the sole user's install to `auto` is a silent behaviour change better made as an explicit opt-in, so it is noted here, not done. Ruff clean, suite 265/0.
 
 **TECH-FEAT3 (P3): speaker enrollment.** Label the user's own voice once for reliable "me vs them"; builds on diarization cleanup.
 

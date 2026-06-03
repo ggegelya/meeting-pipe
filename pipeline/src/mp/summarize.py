@@ -343,9 +343,10 @@ def _parse_local_endpoint(endpoint: str) -> tuple[str, int]:
 
 class _AutoFallbackClient:
     """`SummaryClient` that tries Anthropic first, falls back to local
-    on network/auth failure. Built once per `summarize()` call so the
-    Anthropic auth check is deferred until first use; that lets the
-    fallback fire even when ANTHROPIC_API_KEY is unset.
+    on network / auth / rate-limit / server-error failure (TECH-FEAT5).
+    Built once per `summarize()` call so the Anthropic auth check is
+    deferred until first use; that lets the fallback fire even when
+    ANTHROPIC_API_KEY is unset.
     """
 
     def __init__(self, cfg: Config) -> None:
@@ -377,7 +378,12 @@ class _AutoFallbackClient:
                 self.last_used_model = model
                 return result
             except (anthropic.APIConnectionError, anthropic.APITimeoutError,
-                    anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
+                    anthropic.AuthenticationError, anthropic.PermissionDeniedError,
+                    anthropic.RateLimitError, anthropic.InternalServerError) as e:
+                # TECH-FEAT5: also fall back on a sustained 429 (RateLimitError)
+                # or 5xx (InternalServerError). `_create_message` already retries
+                # these with backoff; once that is exhausted, a busy Anthropic
+                # should drop to local rather than fail the whole run.
                 log.warning("Anthropic backend failed (%s); falling back to local", e)
         else:
             log.warning("ANTHROPIC_API_KEY not set; using local backend")
