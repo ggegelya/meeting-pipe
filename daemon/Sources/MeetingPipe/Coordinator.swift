@@ -270,10 +270,10 @@ final class Coordinator: NSObject {
             }
         )
         // MicGate consumes the recorder's per-buffer mic RMS on the
-        // render thread. The RMS gate is allocation-free; note that a
-        // verdict change still takes a lock and emits one events.jsonl
-        // line synchronously on this thread (only the verdict stream
-        // yield is deferred).
+        // render thread. The RMS gate is allocation-free, and a verdict
+        // change now defers its lock, the events.jsonl emit, and the
+        // verdict-stream yield onto MicGate's serial queue, so nothing
+        // touches the file system on this thread (TECH-CONC1).
         recorder.onMicRmsDb = { [weak self] db in
             self?.micGate.ingest(rmsDb: db)
         }

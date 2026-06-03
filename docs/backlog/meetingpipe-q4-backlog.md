@@ -24,7 +24,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | ID | Task | Category | Status | Description |
 |---|---|---|---|---|
 | TECH-SEC2 | Clamp sinks under global regulated mode | Security | DONE (was P0) | Global regulated mode forces the local LLM but does not strip the Notion sink, so the publish path still transmits meeting content; clamp sinks the way NDA does. |
-| TECH-CONC1 | Move MicGate emit + lock off the render thread | Concurrency | P1 new | Every mic gate flip takes an NSLock and writes events.jsonl synchronously on the audio render thread; defer both and add a CI assertion. |
+| TECH-CONC1 | Move MicGate emit + lock off the render thread | Concurrency | DONE (was P1) | Every mic gate flip takes an NSLock and writes events.jsonl synchronously on the audio render thread; defer both and add a CI assertion. |
 | TECH-SEC3 | Process-wide egress firewall under regulated/NDA | Security | DONE (was P1) | Replace seven scattered flag checks with one httpx transport that hard-fails any non-loopback request when regulated or NDA is active. |
 | TECH-SEC4 | Gate or remove the daemon's direct Notion call | Security | DONE (was P1) | The daemon POSTs to api.notion.com for the DB picker, outside all egress enforcement and against its own "no Notion from the daemon" rule. |
 | TECH-ARCH1 | Single effective_config() chokepoint | Architecture | DONE (was P1) | The regulated/NDA force-local rule is copied across four-plus sites; compute it once so a new code path cannot forget the clamp. |
@@ -110,7 +110,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 
 ### Concurrency
 
-**TECH-CONC1 (P1): render-thread safety.** On every mic gate transition, `MicGate.publish` takes an NSLock and calls `eventLog.emit`, which does a synchronous `events.jsonl` file write, on the audio render thread; only the AsyncStream yield is deferred. Move both the emit and the lock onto `publishQueue`, and add a debug-build assertion that fails if `events.jsonl` is written from the tap thread. (The comments now say this honestly; this task makes it true.)
+**[DONE] TECH-CONC1 (P1): render-thread safety.** On every mic gate transition, `MicGate.publish` takes an NSLock and calls `eventLog.emit`, which does a synchronous `events.jsonl` file write, on the audio render thread; only the AsyncStream yield is deferred. Move both the emit and the lock onto `publishQueue`, and add a debug-build assertion that fails if `events.jsonl` is written from the tap thread. (The comments now say this honestly; this task makes it true.) Done: moved the entire `publish` body (dedupe lock, `eventLog.emit`, yield) onto `publishQueue` via `async [weak self, continuation]`; tagged `publishQueue` with a `DispatchSpecificKey` and added a `#if DEBUG` assertion in the emit block (no reliable render-thread predicate exists, so the assertion is a positive "must be on publishQueue" check at the only render-thread emit path). Fixed the now-false threading comments in `MicGate.swift` and `Coordinator.swift`. Updated the emit test to wait for the async drain and added `test_emit_runs_off_the_calling_thread`.
 
 **TECH-CONC2 (P2): strict-concurrency island.** Enable Swift 6 strict concurrency for `MeetingPipeCore` (already nearly Sendable-clean) and the recorder's shared verdict/level fields, rather than a wholesale migration. Converts the riskiest prose invariants into checked ones.
 

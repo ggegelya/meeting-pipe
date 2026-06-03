@@ -1,6 +1,6 @@
 import Foundation
 
-/// Per-buffer verdict producer. Fuses HAL system-mute, AX mute label, HAL VAD, and RMS hysteresis into a `MicGateVerdict` (TECH-G-MIC spec). Precedence: mutedByHardware > mutedByApp > silentByRMS > hot > uncertain. `decide(state:)` is pure for test coverage. Threading: `start`/`stop` on main; `ingest(rmsDb:)` runs on the render thread. The RMS gate is allocation-free, but a verdict transition synchronously takes `lock` and calls `eventLog.emit` on the caller (render) thread; only the AsyncStream yield is deferred to `publishQueue`. Keep `eventLog` cheap or non-blocking on this path.
+/// Per-buffer verdict producer. Fuses HAL system-mute, AX mute label, HAL VAD, and RMS hysteresis into a `MicGateVerdict` (TECH-G-MIC spec). Precedence: mutedByHardware > mutedByApp > silentByRMS > hot > uncertain. `decide(state:)` is pure for test coverage. Threading: `start`/`stop` on main; `ingest(rmsDb:)` runs on the render thread. The RMS gate is allocation-free, and a verdict transition defers the `lock`, the synchronous `eventLog.emit` (an `events.jsonl` write), and the AsyncStream yield all onto `publishQueue`, so nothing touches the file system on the render thread (TECH-CONC1).
 public final class MicGate {
 
     public struct State: Equatable {
@@ -36,7 +36,15 @@ public final class MicGate {
     private let continuation: AsyncStream<MicGateVerdict>.Continuation
     private let lock = NSLock()
     private var lastVerdict: MicGateVerdict = .uncertain(reasons: ["not_started"])
-    private let publishQueue = DispatchQueue(label: "MeetingPipeCore.MicGate")
+    // Serial queue that owns the dedupe lock, the eventLog.emit, and the
+    // verdict-stream yield. Tagged with a specific key so a DEBUG assertion can
+    // prove the events.jsonl write never runs on the audio render thread.
+    private static let publishQueueKey = DispatchSpecificKey<Void>()
+    private let publishQueue: DispatchQueue = {
+        let queue = DispatchQueue(label: "MeetingPipeCore.MicGate")
+        queue.setSpecific(key: MicGate.publishQueueKey, value: ())
+        return queue
+    }()
 
     private let eventLog: EventLog
     private let catalogue: MuteLabels
@@ -122,7 +130,7 @@ public final class MicGate {
         continuation.finish()
     }
 
-    /// Audio-tap entry point. The RMS computation is allocation-free, but a state transition synchronously takes `lock` and emits to `eventLog` on this thread (only the verdict-stream yield is deferred). Safe only if `eventLog` is non-blocking.
+    /// Audio-tap entry point. The RMS computation is allocation-free; a state transition's lock, `eventLog.emit`, and verdict-stream yield are all deferred to `publishQueue`, so this stays render-thread-safe regardless of how heavy `eventLog` is (TECH-CONC1).
     public func ingest(rmsDb: Float) {
         rmsGate.ingest(dBFS: rmsDb)
     }
@@ -176,15 +184,26 @@ public final class MicGate {
     }
 
     private func publish(_ verdict: MicGateVerdict) {
-        let shouldEmit: Bool = lock.withLock {
-            if verdict == lastVerdict { return false }
-            lastVerdict = verdict
-            return true
-        }
-        guard shouldEmit else { return }
-        let attrs = attributes(for: verdict)
-        eventLog.emit(category: "micgate", action: "verdict_changed", attributes: attrs)
-        publishQueue.async { [continuation] in
+        // Everything here, the dedupe lock and the synchronous events.jsonl
+        // write in eventLog.emit, must stay off the audio render thread
+        // (TECH-CONC1). Hop to the serial publishQueue, which also keeps the
+        // emit ordered ahead of the verdict-stream yield as before.
+        publishQueue.async { [weak self, continuation] in
+            guard let self else { return }
+            let shouldEmit: Bool = self.lock.withLock {
+                if verdict == self.lastVerdict { return false }
+                self.lastVerdict = verdict
+                return true
+            }
+            guard shouldEmit else { return }
+            #if DEBUG
+            assert(
+                DispatchQueue.getSpecific(key: MicGate.publishQueueKey) != nil,
+                "MicGate.eventLog.emit must run on publishQueue, never the audio render thread (TECH-CONC1)"
+            )
+            #endif
+            let attrs = self.attributes(for: verdict)
+            self.eventLog.emit(category: "micgate", action: "verdict_changed", attributes: attrs)
             continuation.yield(verdict)
         }
     }

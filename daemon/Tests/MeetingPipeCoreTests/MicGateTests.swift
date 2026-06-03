@@ -122,8 +122,46 @@ final class MicGateIntegrationTests: XCTestCase {
             catalogue: Self.catalogue, halBus: halBus, axBus: axBus, eventLog: log
         )
         try gate.start(context: teamsContext, handle: MicGateAdapterHandle())
+
+        // emit is deferred to the gate's serial publishQueue (TECH-CONC1);
+        // wait a tick for it to drain before asserting.
+        let exp = expectation(description: "emit")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { exp.fulfill() }
+        wait(for: [exp], timeout: 1.0)
+
         gate.stop()
         XCTAssertTrue(log.entries.contains { $0.action == "verdict_changed" })
+    }
+
+    /// The dedupe lock and the synchronous events.jsonl write in
+    /// `eventLog.emit` must never run on the thread that drives a verdict
+    /// change (the audio render thread in production). Drive a change from a
+    /// tagged queue and prove emit ran somewhere else. (TECH-CONC1)
+    func test_emit_runs_off_the_calling_thread() {
+        let halBus = CoreAudioHALBus()
+        let axBus = AXObserverBus()
+        let exp = expectation(description: "emit")
+        var ranOnCallerQueue = true
+        let log = ThreadProbeEventLog { onCaller in
+            ranOnCallerQueue = onCaller
+            exp.fulfill()
+        }
+        let gate = MicGate(catalogue: Self.catalogue, halBus: halBus, axBus: axBus, eventLog: log)
+        defer { gate.shutdown() }
+
+        let caller = DispatchQueue(label: "test.micgate.caller")
+        caller.setSpecific(key: ThreadProbeEventLog.callerKey, value: ())
+        caller.async {
+            gate.injectAxMuteEvent(
+                AXMuteButtonProbe.Event(state: .muted, label: "Unmute", locale: "en")
+            )
+        }
+
+        wait(for: [exp], timeout: 1.0)
+        XCTAssertFalse(
+            ranOnCallerQueue,
+            "eventLog.emit must run off the caller (render) thread (TECH-CONC1)"
+        )
     }
 
     /// Out-of-band AX mute events fed via injectAxMuteEvent must
@@ -152,5 +190,21 @@ final class MicGateIntegrationTests: XCTestCase {
             gate.current,
             .mutedByApp(axLabel: "Unmute", locale: "en")
         )
+    }
+}
+
+/// EventLog stub that reports whether `emit` ran on a queue the test tagged
+/// with `callerKey`. Used to prove the events.jsonl write is deferred off the
+/// calling thread (TECH-CONC1).
+private final class ThreadProbeEventLog: EventLog {
+    static let callerKey = DispatchSpecificKey<Void>()
+    private let onEmit: (_ ranOnCaller: Bool) -> Void
+
+    init(onEmit: @escaping (_ ranOnCaller: Bool) -> Void) {
+        self.onEmit = onEmit
+    }
+
+    func emit(category: String, action: String, attributes: [String: Any]) {
+        onEmit(DispatchQueue.getSpecific(key: ThreadProbeEventLog.callerKey) != nil)
     }
 }
