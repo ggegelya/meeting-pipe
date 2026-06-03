@@ -115,6 +115,10 @@ struct WorkflowEditor: View {
 
     // MARK: Sections
 
+    /// Shared trailing-control width so the Color and Emoji rows line up under
+    /// the Name field instead of each picking its own size (TECH-WF4).
+    private static let identityFieldWidth: CGFloat = 150
+
     private var identitySection: some View {
         Section("Identity") {
             LabeledContent("Name") {
@@ -123,23 +127,33 @@ struct WorkflowEditor: View {
                     .onSubmit(save)
             }
             LabeledContent("Color") {
-                HStack {
+                HStack(spacing: 8) {
+                    colorSwatch
                     TextField("#RRGGBB", text: $color)
                         .textFieldStyle(.roundedBorder)
-                        .frame(width: 110)
                         .font(.system(.body, design: .monospaced))
-                    if let parsed = HexColor.parse(color) {
-                        Circle().fill(Color(parsed)).frame(width: 16, height: 16)
-                    }
-                    Spacer()
+                        .frame(width: Self.identityFieldWidth)
                 }
             }
             LabeledContent("Emoji") {
                 TextField("optional", text: $emoji)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 80)
+                    .frame(width: Self.identityFieldWidth)
             }
         }
+    }
+
+    /// Live colour preview for the Color row; a muted placeholder ring when the
+    /// hex is empty or unparseable so the row height stays constant.
+    private var colorSwatch: some View {
+        Group {
+            if let parsed = HexColor.parse(color) {
+                Circle().fill(Color(parsed))
+            } else {
+                Circle().strokeBorder(Color.secondary.opacity(0.35), lineWidth: 1)
+            }
+        }
+        .frame(width: 16, height: 16)
     }
 
     private var matchingRulesSection: some View {
