@@ -2,6 +2,7 @@ import Accelerate
 import AVFoundation
 import Foundation
 import MeetingPipeCore
+import os
 
 /// In-process recorder: captures mic and system audio as two independent
 /// WAV files, merged with a short ffmpeg `amix` at stop.
@@ -44,13 +45,11 @@ final class MeetingRecorder {
     /// MicGate's RMS gate. Distinct from the ~1 Hz `onMicLevel` average.
     var onMicRmsDb: ((Float) -> Void)?
 
-    /// Latest per-buffer mic dBFS for the HUD VU meter (TECH-UX8). Written on
-    /// the render thread, read on main via `currentMicLevelDb()`; a plain Float
-    /// so the audio thread neither allocates nor dispatches.
-    private var latestMicLevelDb: Float = -120
-
-    /// Newest mic level in dBFS for the HUD meter. ~`-120` while idle/silent.
-    func currentMicLevelDb() -> Float { latestMicLevelDb }
+    /// Newest mic level in dBFS for the HUD meter (TECH-UX8). ~`-120` while
+    /// idle/silent. Stored in the lock-guarded `gateAccess` (TECH-CONC2)
+    /// alongside the verdict: both are written on the render thread and read on
+    /// main, so they share one lock rather than two unsynchronized fields.
+    func currentMicLevelDb() -> Float { gateAccess.withLock { $0.levelDb } }
 
     /// Applies the current MicGate verdict onto each mic tap buffer. Built
     /// at `start()`, released at `stop()`; render-thread only.
@@ -103,10 +102,20 @@ final class MeetingRecorder {
     /// for the window it was down.
     var onSystemAudioRecovered: (() -> Void)?
 
-    /// Latest MicGate verdict for the writer; single writer (main) / single
-    /// reader (render). Default `.uncertain` so an unset before the first
-    /// verdict zeroes the buffer rather than leaking raw mic frames.
-    private var currentMicGateVerdict: MicGateVerdict = .uncertain(reasons: ["not_started"])
+    /// Cross-thread mic-gate state (TECH-CONC2): the latest verdict (main writes
+    /// it via `setMicGateVerdict`; the render thread reads it to gate each
+    /// buffer) and the HUD VU level (render writes, main reads). A non-`.hot`
+    /// verdict carries `String` payloads, so a torn read across threads is a real
+    /// use-after-free hazard, not a benign stale sample. An uncontended
+    /// `os_unfair_lock` closes it without a render-thread allocation: verdict
+    /// flips are human-scale (mute/unmute), rare against the per-buffer read.
+    /// Default `.uncertain` so an unset before the first verdict zeroes the
+    /// buffer rather than leaking raw mic frames.
+    private struct GateAccess {
+        var verdict: MicGateVerdict = .uncertain(reasons: ["not_started"])
+        var levelDb: Float = -120
+    }
+    private let gateAccess = OSAllocatedUnfairLock(initialState: GateAccess())
 
     /// True when VoiceProcessing was enabled this session. macOS does NOT
     /// auto-revert it on stop: the VPIO unit's system-wide AGC leaves the
@@ -161,7 +170,7 @@ final class MeetingRecorder {
         systemAccumFrames = 0
         // Reset so a prior session's fade/verdict can't bleed in; the
         // writer itself is rebuilt below once the sample rate is bound.
-        currentMicGateVerdict = .uncertain(reasons: ["not_started"])
+        gateAccess.withLock { $0.verdict = .uncertain(reasons: ["not_started"]) }
         // No converter until a device change introduces a format mismatch.
         micConverter = nil
         captureRecoveryFailed = false
@@ -396,18 +405,20 @@ final class MeetingRecorder {
             let mean = bufSumSq / Double(bufSamples)
             let db: Float = mean > 0 ? Float(10.0 * log10(mean)) : -120
             onMicRmsDb?(db)
-            // TECH-UX8: stash the per-buffer level for the HUD VU meter.
-            // Plain aligned Float store, no allocation or dispatch on the
-            // render thread; the HUD polls it on a 10 Hz main-queue timer
-            // and a torn meter sample is harmless. Gate by the MicGate
-            // verdict so the meter shows silence when muted/gated, matching
-            // what is actually recorded, rather than the raw (pre-gate) mic.
-            latestMicLevelDb = currentMicGateVerdict.passesLiveAudio ? db : -120
+            // TECH-CONC2/UX8: read the gate verdict and stash the HUD VU level
+            // under one lock acquisition, so the render thread never tears a
+            // multi-word verdict the main thread is mid-write. The level is
+            // gated by the verdict so the meter shows silence when muted,
+            // matching what is actually recorded; the HUD polls it at 10 Hz.
+            let verdict = gateAccess.withLock { access -> MicGateVerdict in
+                access.levelDb = access.verdict.passesLiveAudio ? db : -120
+                return access.verdict
+            }
             // Apply the verdict in place; frame parity is preserved (ADR
             // 0009), muted buffers fade to zero over 20 ms.
             if let writer = micGateWriter {
                 let bufPtr = UnsafeMutableBufferPointer(start: data[0], count: frameLen)
-                writer.apply(verdict: currentMicGateVerdict, to: bufPtr)
+                writer.apply(verdict: verdict, to: bufPtr)
             }
         }
 
@@ -739,16 +750,16 @@ final class MeetingRecorder {
 
     // MARK: - MicGate verdict (TECH-G-MIC)
 
-    /// Latch a verdict for the mic tap. Written on main, read lock-free on
-    /// the render thread; a stale read is fine (20 ms fade + re-read next
-    /// buffer).
+    /// Latch a verdict for the mic tap. Written on main, read on the render
+    /// thread under `gateAccess` (TECH-CONC2); a stale read is fine (20 ms fade
+    /// + re-read next buffer), but a torn one is not, hence the lock.
     func setMicGateVerdict(_ verdict: MicGateVerdict) {
-        currentMicGateVerdict = verdict
+        gateAccess.withLock { $0.verdict = verdict }
     }
 
     /// Snapshot of the most recent verdict. Visible to integration
     /// tests that drive `setMicGateVerdict` directly.
-    var debugCurrentMicGateVerdict: MicGateVerdict { currentMicGateVerdict }
+    var debugCurrentMicGateVerdict: MicGateVerdict { gateAccess.withLock { $0.verdict } }
 
     // MARK: - RMS level emission (TECH-C2)
 

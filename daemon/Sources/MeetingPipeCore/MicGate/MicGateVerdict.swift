@@ -1,7 +1,12 @@
 import Foundation
 
 /// Per-buffer verdict from `MicGate`. Determines whether the writer emits live mic samples or zero-amplitude frames. Reasons are written to events.jsonl for post-hoc gate-flip analysis.
-public enum MicGateVerdict: Equatable {
+///
+/// `Sendable` is explicit (TECH-CONC2): the verdict crosses thread boundaries
+/// through `MicGate.verdicts` (an AsyncStream consumed on a Task) and is latched
+/// into the recorder, read on the audio render thread. The conformance makes
+/// "safe to hand across threads" a compiler-checked invariant.
+public enum MicGateVerdict: Equatable, Sendable {
     /// Live samples pass through. Reason names the primary probe (VAD vs RMS-above-open-threshold).
     case hot(reason: Reason)
 
@@ -17,7 +22,7 @@ public enum MicGateVerdict: Equatable {
     /// No probe gave a confident verdict. Writer emits zero-amp frames (safer than ambient capture); audit log lists per-probe gaps.
     case uncertain(reasons: [String])
 
-    public enum Reason: String, Equatable {
+    public enum Reason: String, Equatable, Sendable {
         case voiceActivityDetected = "vad_active"
         case rmsAboveOpenThreshold = "rms_above_open_threshold"
     }

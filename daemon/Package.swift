@@ -29,7 +29,15 @@ let package = Package(
             name: "MeetingPipeCore",
             dependencies: [.product(name: "TOMLKit", package: "TOMLKit")],
             path: "Sources/MeetingPipeCore",
-            resources: [.process("MicGate/Resources")]
+            resources: [.process("MicGate/Resources")],
+            // TECH-CONC2: targeted strict-concurrency checking for the core
+            // module: it verifies Sendable across the real concurrency
+            // boundaries (the verdict AsyncStreams, Task captures) without
+            // flagging every benign immutable `static let` DI seam, which a
+            // `complete`-mode sweep would (that is the wholesale migration the
+            // task scopes out). Kept off the AppKit executable, so it stays an
+            // island around where the cross-thread risk actually lives.
+            swiftSettings: [.unsafeFlags(["-strict-concurrency=targeted"])]
         ),
         .executableTarget(
             name: "MeetingPipe",
