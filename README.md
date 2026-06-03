@@ -8,7 +8,7 @@ Personal-use, single-Mac, no cloud database.
 
 [![CI](https://github.com/ggegelya/meeting-pipe/actions/workflows/ci.yml/badge.svg)](https://github.com/ggegelya/meeting-pipe/actions/workflows/ci.yml)
 [![Platform](https://img.shields.io/badge/macOS-14%2B_Apple_Silicon-1a1b1e)](https://www.apple.com/macos/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-2667f0)](./LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-0e8c82)](./LICENSE)
 
 </div>
 

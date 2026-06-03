@@ -7,7 +7,7 @@
 // macOS install ships with Swift + AppKit, so the installer needs zero extra
 // dependencies. The shapes below mirror the SVG one-for-one — when the design
 // SVG changes, mirror the change here. The design tokens (#FBFAF7 paper,
-// #2667F0 signal600, #14161A ink900, etc.) are duplicated rather than imported
+// #0E8C82 signal600, #14161A ink900, etc.) are duplicated rather than imported
 // from the daemon target so this script can run standalone.
 
 import AppKit
@@ -24,7 +24,7 @@ let outIcns = URL(fileURLWithPath: args[1])
 let paperTop    = NSColor(srgbRed: 1.0,        green: 1.0,        blue: 1.0,        alpha: 1)
 let paperBottom = NSColor(srgbRed: 0xF4/255.0, green: 0xF2/255.0, blue: 0xEC/255.0, alpha: 1)
 let ink900      = NSColor(srgbRed: 0x14/255.0, green: 0x16/255.0, blue: 0x1A/255.0, alpha: 1)
-let signal600   = NSColor(srgbRed: 0x26/255.0, green: 0x67/255.0, blue: 0xF0/255.0, alpha: 1)
+let signal600   = NSColor(srgbRed: 0x0E/255.0, green: 0x8C/255.0, blue: 0x82/255.0, alpha: 1)
 let hairline    = NSColor(srgbRed: 0x14/255.0, green: 0x16/255.0, blue: 0x1A/255.0, alpha: 0.10)
 
 func renderIcon(size: CGFloat) -> NSImage {

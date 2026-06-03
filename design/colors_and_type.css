@@ -31,16 +31,16 @@
   --mp-paper-sunk:   #F4F2EC;   /* recessed wells */
   --mp-paper-raised: #FFFFFF;   /* cards, sheets */
 
-  /* Signal -- electric blue. The "live" color. Use only for:
+  /* Signal, teal. The "live"/on-air color. Use only for:
        - active recording state
        - primary action buttons
        - playhead / waveform highlight
      Never as a decorative gradient or background fill on large surfaces. */
-  --mp-signal-700: #1B53D6;
-  --mp-signal-600: #2667F0;     /* primary */
-  --mp-signal-500: #3D80FF;
-  --mp-signal-400: #6BA0FF;
-  --mp-signal-100: #E3ECFF;     /* tinted backgrounds only */
+  --mp-signal-700: #0A6F67;
+  --mp-signal-600: #0E8C82;     /* primary */
+  --mp-signal-500: #14A89B;
+  --mp-signal-400: #4FC7BC;
+  --mp-signal-100: #DCF1EF;     /* tinted backgrounds only */
 
   /* Pulse -- warm coral. Reserved for the recording dot only.
      Borrowed from the universal "REC" red but warmer + less alarmed. */
@@ -198,7 +198,7 @@
         0 12px 32px rgba(0, 0, 0, 0.50),
         0 24px 60px rgba(0, 0, 0, 0.45);
 
-    --mp-signal-100: rgba(38, 103, 240, 0.18);
+    --mp-signal-100: rgba(14, 140, 130, 0.18);
     --mp-pulse-100:  rgba(229, 72, 77, 0.18);
   }
 }

@@ -155,7 +155,7 @@ The design system is built on three motifs:
   reads gentler against paper.
 - **Paper** (`#FBFAF7` base) for canvas. `#FFFFFF` reserved for raised cards
   and sheets, so layering is legible.
-- **Signal** (`#2667F0`) for the primary action and live capture indicator.
+- **Signal** (`#0E8C82`) for the primary action and live capture indicator.
   Used at 100% (button fill, focus ring) or as a 4–10% tint
   (selected row, mention).
 - **Pulse** (`#E5484D`) is reserved exclusively for the recording dot and the

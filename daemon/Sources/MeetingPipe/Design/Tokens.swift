@@ -20,12 +20,12 @@ enum MPColors {
     static let paperSunk   = NSColor(srgbRed: 0xF4/255.0, green: 0xF2/255.0, blue: 0xEC/255.0, alpha: 1)
     static let paperRaised = NSColor.white
 
-    // MARK: Signal (electric blue - the "live" color)
-    static let signal700 = NSColor(srgbRed: 0x1B/255.0, green: 0x53/255.0, blue: 0xD6/255.0, alpha: 1)
-    static let signal600 = NSColor(srgbRed: 0x26/255.0, green: 0x67/255.0, blue: 0xF0/255.0, alpha: 1) // primary
-    static let signal500 = NSColor(srgbRed: 0x3D/255.0, green: 0x80/255.0, blue: 0xFF/255.0, alpha: 1)
-    static let signal400 = NSColor(srgbRed: 0x6B/255.0, green: 0xA0/255.0, blue: 0xFF/255.0, alpha: 1)
-    static let signal100 = NSColor(srgbRed: 0xE3/255.0, green: 0xEC/255.0, blue: 0xFF/255.0, alpha: 1)
+    // MARK: Signal (teal - the "live"/on-air color)
+    static let signal700 = NSColor(srgbRed: 0x0A/255.0, green: 0x6F/255.0, blue: 0x67/255.0, alpha: 1)
+    static let signal600 = NSColor(srgbRed: 0x0E/255.0, green: 0x8C/255.0, blue: 0x82/255.0, alpha: 1) // primary
+    static let signal500 = NSColor(srgbRed: 0x14/255.0, green: 0xA8/255.0, blue: 0x9B/255.0, alpha: 1)
+    static let signal400 = NSColor(srgbRed: 0x4F/255.0, green: 0xC7/255.0, blue: 0xBC/255.0, alpha: 1)
+    static let signal100 = NSColor(srgbRed: 0xDC/255.0, green: 0xF1/255.0, blue: 0xEF/255.0, alpha: 1)
 
     // MARK: Pulse (recording dot - never decorative)
     static let pulse600 = NSColor(srgbRed: 0xE5/255.0, green: 0x48/255.0, blue: 0x4D/255.0, alpha: 1)
