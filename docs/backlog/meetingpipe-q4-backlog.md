@@ -37,7 +37,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-REPO2 | App visual identity | Identity | P1 new | A signal color that is unmistakably MeetingPipe (not generic system blue) plus icon polish; the MacPaw-grade identity. |
 | TECH-H1-FINISH | Coordinator under 600 lines | Architecture | P1 carry | Still 1371 lines; only three extractions landed. See TECH-ARCH2. |
 | TECH-C6-FINISH | Real detection-trace corpus | Detection | P1 carry | Still nine synthetic seeds; need 20+ real dogfood traces so detection cannot silently regress. |
-| TECH-VALID1 | On-device acceptance for A15/A16/DIAR1/SUM1-APPLE/UX4 | Validation | P0 carry | Five Q3 tasks shipped code but their quality / latency / zero-egress / degraded-banner bars were never validated on a real Mac. |
+| TECH-VALID1 | On-device acceptance for A15/A16/DIAR1/SUM1-APPLE/UX4 | Validation | DONE: scaffolding (runtime acceptance owed) | Five Q3 tasks shipped code but their quality / latency / zero-egress / degraded-banner bars were never validated on a real Mac. |
 | TECH-CONC2 | Strict-concurrency island for MeetingPipeCore | Concurrency | P2 new | Turn on Swift 6 strict concurrency for the core module and the recorder's shared fields, where the real cross-thread risk lives. |
 | TECH-PERF3 | Vectorize render-thread RMS (vDSP) | Performance | P2 new | Two scalar sum-of-squares passes per mic buffer on the hot path; use vDSP_svesq once. |
 | TECH-PERF4 | Replace the 60 fps dismiss-ring timer | Performance | P2 new | DismissProgressView wakes the main thread 60x/sec for a cosmetic ring; use TimelineView(.animation) or a CA keyframe. |
@@ -211,7 +211,7 @@ The pipeline is already "summarize + publish only" (ADR 0007). The realistic opt
 ### Carried-over Q3 items (unchanged specs)
 
 - **TECH-C6-FINISH (P1):** 20+ real detection traces; the corpus has nine synthetic seeds. Add the `detection-corpus/README.md` redaction note required by the stop-and-ask before real traces land.
-- **TECH-VALID1 (P0):** run the owed on-device validations for A15 (local cold-start within 10%), A16 (re-run quality/latency), DIAR1 (DER and under-10s), SUM1-APPLE (quality vs local, latency within 2x, zero egress via Little Snitch), UX4 (live degraded banner and `recording.degraded` event on a real failed SCStream). These are runtime acceptance, not code.
+- **TECH-VALID1 (P0):** run the owed on-device validations for A15 (local cold-start within 10%), A16 (re-run quality/latency), DIAR1 (DER and under-10s), SUM1-APPLE (quality vs local, latency within 2x, zero egress via Little Snitch), UX4 (live degraded banner and `recording.degraded` event on a real failed SCStream). These are runtime acceptance, not code. **Scaffolding done:** wrote `docs/validation/valid1-acceptance-runbook.md` (per-bar command + threshold + where to read the result + a results table) and `scripts/valid1_check.py`, a stdlib-only helper that reads `events.jsonl` / `pipeline_events.jsonl` to make UX4 a hard pass/fail and to print run/stage timings for the A15/A16/DIAR1 reads. The five measurements themselves remain **owed by the user** on a real Apple-Silicon Mac (cold-start, DER, Apple-Intelligence quality, Little-Snitch zero-egress, a real failed SCStream).
 - **TECH-UI-X1 (P2):** split MeetingDetailView per tab (target under 250 lines). Pairs with DSN2.
 - **TECH-UI-X2 (P2):** split PreferencesView per section (target under 200 lines). Pairs with DSN1.
 - **TECH-T2 (P2):** snapshot tests for three SwiftUI views, gated by macOS Appearance.
