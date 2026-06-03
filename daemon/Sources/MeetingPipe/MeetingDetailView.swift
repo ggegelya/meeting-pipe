@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Right-pane detail view: editable header + five tabs (Summary TECH-A5, Transcript A6, Audio A7, Corrections A8, Raw files A9).
+/// Right-pane detail view: editable header + three tabs (Summary TECH-A5, Transcript A6, Audio A7). Corrections (A8) is a sheet off the "..." menu and Raw files (A9) was dropped in the DSN2 IA pass.
 struct MeetingDetailView: View {
     @EnvironmentObject var libraryModel: LibraryWindowModel
     let meeting: Meeting
@@ -25,6 +25,9 @@ struct MeetingDetailView: View {
     /// edit mode, since that edit state lives inside the child tab.
     @State private var summaryEditToken = 0
 
+    /// Corrections moved from a tab to a sheet off the "..." menu (DSN2).
+    @State private var showCorrectionsSheet = false
+
     /// Shared across Transcript (A6) and Audio (A7) so click-to-seek keeps the same play head when flipping tabs. Re-attached on stem change via `.task(id:)`.
     @StateObject private var playback = AudioPlaybackController()
 
@@ -32,16 +35,12 @@ struct MeetingDetailView: View {
         case summary
         case transcript
         case audio
-        case corrections
-        case raw
 
         var label: String {
             switch self {
             case .summary:     return "Summary"
             case .transcript:  return "Transcript"
             case .audio:       return "Audio"
-            case .corrections: return "Corrections"
-            case .raw:         return "Raw files"
             }
         }
 
@@ -50,8 +49,6 @@ struct MeetingDetailView: View {
             case .summary:     return "text.alignleft"
             case .transcript:  return "text.bubble"
             case .audio:       return "waveform"
-            case .corrections: return "pencil"
-            case .raw:         return "folder"
             }
         }
     }
@@ -71,6 +68,29 @@ struct MeetingDetailView: View {
         .onChange(of: meeting.stem) { _, _ in syncEditingTitle(force: true) }
         .onChange(of: meeting.displayTitle) { _, _ in syncEditingTitle(force: false) }
         .task(id: meeting.stem) { await reloadPublishURLs() }
+        .sheet(isPresented: $showCorrectionsSheet) { correctionsSheet }
+    }
+
+    /// Corrections surface, presented as a sheet from the "..." menu (DSN2). The
+    /// "Re-edit" action closes the sheet and jumps to the Summary tab's editor.
+    private var correctionsSheet: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Corrections").font(.headline)
+                Spacer()
+                Button("Done") { showCorrectionsSheet = false }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(16)
+            Divider()
+            CorrectionsTab(meeting: meeting) {
+                showCorrectionsSheet = false
+                selectedTab = Tab.summary.rawValue
+                summaryEditToken += 1
+            }
+            .environmentObject(libraryModel)
+        }
+        .frame(width: 720, height: 560)
     }
 
     // MARK: Header
@@ -146,6 +166,15 @@ struct MeetingDetailView: View {
             }
             Button("Edit transcript") {
                 toolbarAction("edit_transcript") { selectedTab = Tab.transcript.rawValue }
+            }
+            Button("Corrections\u{2026}") {
+                toolbarAction("corrections") { showCorrectionsSheet = true }
+            }
+            Divider()
+            // The two canonical verbs (DSN2). Republish re-pushes the existing
+            // summary to its sinks; Reprocess re-runs the whole pipeline.
+            Button("Republish") {
+                toolbarAction("republish") { Task { _ = await libraryModel.republishMeeting(stem: meeting.stem) } }
             }
             Button("Reprocess") {
                 toolbarAction("reprocess") { _ = libraryModel.retryMeeting(stem: meeting.stem) }
@@ -279,8 +308,6 @@ struct MeetingDetailView: View {
         case Tab.summary.rawValue:     summaryTab
         case Tab.transcript.rawValue:  transcriptTab
         case Tab.audio.rawValue:       audioTab
-        case Tab.corrections.rawValue: correctionsTab
-        case Tab.raw.rawValue:         rawTab
         default:                       summaryTab
         }
     }
@@ -298,14 +325,6 @@ struct MeetingDetailView: View {
 
     private var audioTab: some View {
         AudioTab(playback: playback, meeting: meeting)
-    }
-
-    private var correctionsTab: some View {
-        CorrectionsTab(meeting: meeting, selectedTab: $selectedTab)
-    }
-
-    private var rawTab: some View {
-        RawFilesTab(meeting: meeting)
     }
 
     // MARK: Title editing
@@ -497,8 +516,6 @@ struct SummaryTab: View {
 
     @State private var isEditing = false
     @State private var editorModel: CorrectionViewModel? = nil
-    @State private var republishing = false
-    @State private var lastRepublishResult: RepublishResult? = nil
 
     /// BYO / long-meeting paste-back (TECH-UX3).
     @State private var pasteText = ""
@@ -512,11 +529,6 @@ struct SummaryTab: View {
     @State private var candidateStem: String? = nil
     @State private var previewing = false
     @State private var previewError: String? = nil
-
-    enum RepublishResult: Equatable {
-        case success(URL?)
-        case failure(String)
-    }
 
     var body: some View {
         Group {
@@ -533,7 +545,6 @@ struct SummaryTab: View {
             // Discard in-flight edits on stem change; applying old edits to the new row would be a footgun.
             isEditing = false
             editorModel = nil
-            lastRepublishResult = nil
             // TECH-A16: drop any unkept candidate preview (and its sidecar) when
             // navigating to another meeting.
             if let s = candidateStem { libraryModel.discardCandidateSummary(stem: s) }
@@ -585,8 +596,8 @@ struct SummaryTab: View {
         .padding(.bottom, 8)
     }
 
-    /// Footer: re-run/keep/discard for the local preview (TECH-A16), plus the
-    /// republish badge (TECH-UI-5 left only the badge here).
+    /// Footer: re-run/keep/discard for the local preview (TECH-A16). Republish
+    /// feedback moved to the row altitude in DSN2 (the needs-republish badge).
     @ViewBuilder
     private var summaryFooter: some View {
         if candidate != nil {
@@ -606,7 +617,6 @@ struct SummaryTab: View {
         } else if libraryModel.canPreviewLocally, loadedSummary != nil {
             Divider()
             HStack(spacing: 8) {
-                if let result = lastRepublishResult { statusBadge(for: result) }
                 if let err = previewError {
                     Label(err, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundStyle(.orange).lineLimit(2)
@@ -619,14 +629,6 @@ struct SummaryTab: View {
                     Button("Re-run locally (preview)") { Task { await runPreview() } }
                         .help("Re-run summarization with the on-device model and compare, without publishing.")
                 }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-        } else if let result = lastRepublishResult {
-            Divider()
-            HStack {
-                statusBadge(for: result)
-                Spacer()
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -797,37 +799,6 @@ struct SummaryTab: View {
         }
     }
 
-    @ViewBuilder
-    private func statusBadge(for result: RepublishResult) -> some View {
-        switch result {
-        case .success(let url):
-            HStack(spacing: 4) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                if let url = url {
-                    Button("Republished - view in Notion") {
-                        NSWorkspace.shared.open(url)
-                    }
-                    .buttonStyle(.link)
-                    .font(.caption)
-                } else {
-                    Text("Republished")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        case .failure(let err):
-            HStack(spacing: 4) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                Text("Republish failed: \(err)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
-    }
-
     private var summaryJsonURL: URL {
         meeting.recordingsDir.appendingPathComponent("\(meeting.stem).summary.json")
     }
@@ -874,19 +845,6 @@ struct SummaryTab: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
         }
-        .disabled(republishing)
-        .overlay(alignment: .top) {
-            if republishing {
-                ProgressView("Republishing…")
-                    .progressViewStyle(.linear)
-                    .padding(8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color(NSColor.controlBackgroundColor))
-                    )
-                    .padding(8)
-            }
-        }
     }
 
     private func footer(model: CorrectionViewModel) -> some View {
@@ -896,20 +854,14 @@ struct SummaryTab: View {
                 editorModel = nil
             }
             Spacer()
+            // DSN2: one republish path. Save just persists the edit; republish
+            // is the single canonical "..." menu / row affordance (the row's
+            // needs-republish badge lights up once the summary is newer).
             Button("Save") {
                 _ = persistEdit(model: model)
                 isEditing = false
             }
-            Button("Save & Republish") {
-                Task {
-                    if persistEdit(model: model) {
-                        await runRepublish(stem: model.stem)
-                        isEditing = false
-                    }
-                }
-            }
             .keyboardShortcut(.defaultAction)
-            .disabled(libraryModel.coordinator == nil)
         }
     }
 
@@ -948,18 +900,6 @@ struct SummaryTab: View {
             try? data.write(to: summaryJsonURL, options: .atomic)
         }
         return true
-    }
-
-    private func runRepublish(stem: String) async {
-        republishing = true
-        let result = await libraryModel.republishMeeting(stem: stem)
-        republishing = false
-        switch result {
-        case .success(let url):
-            lastRepublishResult = .success(url)
-        case .failure(let err):
-            lastRepublishResult = .failure(err.localizedDescription)
-        }
     }
 
     // MARK: Disk helpers

@@ -251,7 +251,7 @@ struct MeetingRow: View, Equatable {
         let transcriptExists = FileManager.default.fileExists(atPath:
             meeting.recordingsDir.appendingPathComponent("\(meeting.stem).md").path)
 
-        Button("Re-publish to Notion") {
+        Button("Republish") {
             Task { await republish() }
         }
         .disabled(!summaryExists || inFlight != nil)
@@ -262,7 +262,7 @@ struct MeetingRow: View, Equatable {
         .disabled(!transcriptExists || inFlight != nil)
 
         if meeting.status == .failed {
-            Button("Retry pipeline") {
+            Button("Reprocess") {
                 runRetry()
             }
         }

@@ -5,8 +5,9 @@ import SwiftUI
 
 struct CorrectionsTab: View {
     let meeting: Meeting
-    /// Bound to the parent's selected-tab storage so "Re-edit" can switch to the Summary tab.
-    @Binding var selectedTab: String
+    /// Invoked by "Re-edit" to hand control back to the Summary tab's editor.
+    /// The parent (a sheet off the "..." menu) closes the sheet and switches tab.
+    var onReedit: () -> Void
 
     @State private var record: [String: Any]? = nil
     @State private var loadedForStem: String? = nil
@@ -155,7 +156,7 @@ struct CorrectionsTab: View {
                 confirmingRevert = true
             }
             Button("Re-edit in Summary tab") {
-                selectedTab = MeetingDetailView.Tab.summary.rawValue
+                onReedit()
             }
             .keyboardShortcut(.defaultAction)
         }
