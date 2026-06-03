@@ -233,4 +233,37 @@ final class MeetingRecorderTests: XCTestCase {
         XCTAssertFalse(degradedFired)
         XCTAssertFalse(recoveredFired)
     }
+
+    // MARK: - sumOfSquares (TECH-PERF3)
+
+    /// The vectorized (vDSP_svesq) sum-of-squares must match a plain scalar
+    /// reference over a varying mono buffer, since it now feeds both the gate
+    /// dBFS and the ~1 Hz accumulator.
+    func test_sumOfSquares_matches_scalar_reference_mono() {
+        let fill: (Int) -> Float = { Float($0 % 100) / 100.0 - 0.5 }
+        let buffer = makeFloatBuffer(frames: 2048, fill: fill)
+        var ref: Double = 0
+        for i in 0..<2048 { let s = Double(fill(i)); ref += s * s }
+        let (sumSq, samples) = MeetingRecorder.sumOfSquares(buffer)
+        XCTAssertEqual(samples, 2048)
+        XCTAssertEqual(sumSq, ref, accuracy: 1e-3)
+    }
+
+    /// All channels are summed (the gate only cares whether anything was loud).
+    func test_sumOfSquares_sums_all_channels() {
+        let buffer = makeFloatBuffer(frames: 128, channels: 2) { _ in 0.5 }
+        let (sumSq, samples) = MeetingRecorder.sumOfSquares(buffer)
+        XCTAssertEqual(samples, 256)                          // 128 frames x 2 channels
+        XCTAssertEqual(sumSq, 256 * 0.25, accuracy: 1e-4)     // 0.5^2 per sample
+    }
+
+    /// The dBFS the gate derives from the mean must be the textbook value: a
+    /// half-amplitude constant is -6.02 dBFS.
+    func test_sumOfSquares_mean_yields_expected_dbfs() {
+        let buffer = makeFloatBuffer(frames: 512) { _ in 0.5 }
+        let (sumSq, samples) = MeetingRecorder.sumOfSquares(buffer)
+        let mean = sumSq / Double(samples)
+        XCTAssertEqual(mean, 0.25, accuracy: 1e-5)
+        XCTAssertEqual(10.0 * log10(mean), -6.0206, accuracy: 0.01)
+    }
 }

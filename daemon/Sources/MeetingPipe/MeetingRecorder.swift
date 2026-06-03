@@ -1,3 +1,4 @@
+import Accelerate
 import AVFoundation
 import Foundation
 import MeetingPipeCore
@@ -303,8 +304,11 @@ final class MeetingRecorder {
             // SystemAudioCapture hands us a fresh buffer (not reused), so
             // unlike the mic tap it needs no deep copy.
             self.systemWriter?.enqueue(pcm)
+            // TECH-PERF3: same vectorized sum-of-squares helper as the mic path.
+            let (sysSumSq, sysSamples) = Self.sumOfSquares(pcm)
             self.accumulateAndEmit(
-                buffer: pcm,
+                addSumSq: sysSumSq,
+                addSamples: sysSamples,
                 sumSq: &self.systemAccumSumSq,
                 frames: &self.systemAccumFrames,
                 threshold: Int(SystemAudioCapture.captureFormat.sampleRate),
@@ -380,31 +384,25 @@ final class MeetingRecorder {
             Log.writeLine("recorder", "mic tap first fired: frames=\(buffer.frameLength)")
         }
 
+        // TECH-PERF3: one vectorized sum-of-squares pass per buffer (vDSP),
+        // reused for both the gate dBFS and the ~1 Hz accumulator. Replaces the
+        // two scalar passes that ran here and in `accumulateAndEmit`.
+        let (bufSumSq, bufSamples) = Self.sumOfSquares(buffer)
+
         // RMS BEFORE the verdict is applied, so MicGate's RMS gate sees the
-        // live level not the zeroed output. Allocation-free pointer loop.
-        if let data = buffer.floatChannelData, buffer.frameLength > 0 {
+        // live level not the zeroed output.
+        if let data = buffer.floatChannelData, buffer.frameLength > 0, bufSamples > 0 {
             let frameLen = Int(buffer.frameLength)
-            let channels = Int(buffer.format.channelCount)
-            if channels > 0 {
-                var sumSq: Double = 0
-                for ch in 0..<channels {
-                    let ptr = data[ch]
-                    for i in 0..<frameLen {
-                        let s = Double(ptr[i])
-                        sumSq += s * s
-                    }
-                }
-                let mean = sumSq / Double(frameLen * channels)
-                let db: Float = mean > 0 ? Float(10.0 * log10(mean)) : -120
-                onMicRmsDb?(db)
-                // TECH-UX8: stash the per-buffer level for the HUD VU meter.
-                // Plain aligned Float store, no allocation or dispatch on the
-                // render thread; the HUD polls it on a 10 Hz main-queue timer
-                // and a torn meter sample is harmless. Gate by the MicGate
-                // verdict so the meter shows silence when muted/gated, matching
-                // what is actually recorded, rather than the raw (pre-gate) mic.
-                latestMicLevelDb = currentMicGateVerdict.passesLiveAudio ? db : -120
-            }
+            let mean = bufSumSq / Double(bufSamples)
+            let db: Float = mean > 0 ? Float(10.0 * log10(mean)) : -120
+            onMicRmsDb?(db)
+            // TECH-UX8: stash the per-buffer level for the HUD VU meter.
+            // Plain aligned Float store, no allocation or dispatch on the
+            // render thread; the HUD polls it on a 10 Hz main-queue timer
+            // and a torn meter sample is harmless. Gate by the MicGate
+            // verdict so the meter shows silence when muted/gated, matching
+            // what is actually recorded, rather than the raw (pre-gate) mic.
+            latestMicLevelDb = currentMicGateVerdict.passesLiveAudio ? db : -120
             // Apply the verdict in place; frame parity is preserved (ADR
             // 0009), muted buffers fade to zero over 20 ms.
             if let writer = micGateWriter {
@@ -417,8 +415,10 @@ final class MeetingRecorder {
         // writer. Frame parity (ADR 0009) holds: the queue never drops.
         micWriter?.enqueue(buffer)
 
+        // Fold the SAME sum-of-squares into the ~1 Hz level accumulator.
         accumulateAndEmit(
-            buffer: buffer,
+            addSumSq: bufSumSq,
+            addSamples: bufSamples,
             sumSq: &micAccumSumSq,
             frames: &micAccumFrames,
             threshold: Int(fileFormat.sampleRate),
@@ -752,31 +752,40 @@ final class MeetingRecorder {
 
     // MARK: - RMS level emission (TECH-C2)
 
-    /// Fold one buffer into the running sum-of-squares; at ~1 s, emit dBFS
-    /// on main. Channels are summed (the gate only cares if anything was loud).
+    /// Sum of squares of every sample across all channels, via vDSP_svesq (one
+    /// vectorized, allocation-free pass per channel). Returns the running-sum
+    /// contribution plus the sample count for the dBFS mean. Render-thread safe
+    /// (TECH-PERF3). Per-channel sums are accumulated in `Double`, so the ~1 s
+    /// average keeps full precision even though `vDSP_svesq` returns `Float`.
+    static func sumOfSquares(_ buffer: AVAudioPCMBuffer) -> (sumSq: Double, samples: Int) {
+        guard let data = buffer.floatChannelData else { return (0, 0) }
+        let frameLen = Int(buffer.frameLength)
+        let channels = Int(buffer.format.channelCount)
+        guard frameLen > 0, channels > 0 else { return (0, 0) }
+        var total: Double = 0
+        for ch in 0..<channels {
+            var chSum: Float = 0
+            vDSP_svesq(data[ch], 1, &chSum, vDSP_Length(frameLen))
+            total += Double(chSum)
+        }
+        return (total, frameLen * channels)
+    }
+
+    /// Fold a precomputed per-buffer sum-of-squares into the running total; at
+    /// ~1 s, emit dBFS on main. Channels are summed (the gate only cares if
+    /// anything was loud). The squares are computed once by `sumOfSquares`
+    /// (TECH-PERF3), so this no longer re-scans the buffer.
     private func accumulateAndEmit(
-        buffer: AVAudioPCMBuffer,
+        addSumSq: Double,
+        addSamples: Int,
         sumSq: inout Double,
         frames: inout Int,
         threshold: Int,
         callback: ((Float) -> Void)?
     ) {
-        guard let cb = callback,
-              let data = buffer.floatChannelData else { return }
-        let frameLen = Int(buffer.frameLength)
-        let channels = Int(buffer.format.channelCount)
-        guard frameLen > 0, channels > 0 else { return }
-
-        var localSum: Double = 0
-        for ch in 0..<channels {
-            let ptr = data[ch]
-            for i in 0..<frameLen {
-                let s = Double(ptr[i])
-                localSum += s * s
-            }
-        }
-        sumSq += localSum
-        frames += frameLen * channels
+        guard let cb = callback, addSamples > 0 else { return }
+        sumSq += addSumSq
+        frames += addSamples
 
         if frames >= max(threshold, 1) {
             let mean = sumSq / Double(frames)
