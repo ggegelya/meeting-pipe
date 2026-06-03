@@ -35,7 +35,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-DSN2 | Detail-pane tabs + one republish path | Design | DONE (was P1) | Five tabs (two are debug surfaces) and 5+ overlapping republish/reprocess controls; reduce to three tabs and one canonical republish. |
 | TECH-REPO1 | GitHub repo presence | Identity | DONE (was P1) | README hero, LICENSE, CONTRIBUTING, repo description / topics / social preview, for contributor visibility. |
 | TECH-REPO2 | App visual identity | Identity | P1 new | A signal color that is unmistakably MeetingPipe (not generic system blue) plus icon polish; the MacPaw-grade identity. |
-| TECH-H1-FINISH | Coordinator under 600 lines | Architecture | P1 carry | Still 1371 lines; only three extractions landed. See TECH-ARCH2. |
+| TECH-H1-FINISH | Coordinator under 600 lines | Architecture | DONE (was P1) | Still 1371 lines; only three extractions landed. See TECH-ARCH2. |
 | TECH-C6-FINISH | Real detection-trace corpus | Detection | DONE: scaffolding (real traces owed) | Still nine synthetic seeds; need 20+ real dogfood traces so detection cannot silently regress. |
 | TECH-VALID1 | On-device acceptance for A15/A16/DIAR1/SUM1-APPLE/UX4 | Validation | DONE: scaffolding (runtime acceptance owed) | Five Q3 tasks shipped code but their quality / latency / zero-egress / degraded-banner bars were never validated on a real Mac. |
 | TECH-CONC2 | Strict-concurrency island for MeetingPipeCore | Concurrency | P2 new | Turn on Swift 6 strict concurrency for the core module and the recorder's shared fields, where the real cross-thread risk lives. |
@@ -136,7 +136,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 
 **TECH-ARCH4 (P3): chunker golden vectors.** A checked-in input/expected-windows fixture exercised by both the Swift `TranscriptChunker` and Python `chunked_windows` suites, so the "must stay identical" comment is enforced by CI.
 
-**TECH-H1-FINISH (P1, carry):** the under-600-line bar is unmet (Coordinator is 1371). Subsumed by ARCH2; track here until that lands.
+**[DONE] TECH-H1-FINISH (P1, carry):** the under-600-line bar is unmet (Coordinator is 1371). Subsumed by ARCH2; track here until that lands. Done: hit the bar with a **pure file-split** (chosen over the riskier ARCH2 type-extraction). `Coordinator.swift` is now 542 lines: it keeps the stored properties, `init`, `wireSubsystems`, `start` (the two verdict-consumer Tasks), `shutdown`, the startup helpers, and the lazy stores. The methods moved verbatim into three same-type extension files, `Coordinator+Session.swift` (recording lifecycle: begin/stop, sidecar, prompt-timeout, silence, mic-gate, lifecycle, meeting-start/end handlers, live-config readers), `Coordinator+MenuActions.swift` (menu actions + MeetingLibraryService forwarders), and `Coordinator+Delegates.swift` (the three UI-delegate conformances). The only logic-adjacent edits were mechanical: `private` -> internal on the members touched across files (stored props, the lazy stores, `LogEventAdapter`, the moved funcs). Zero behavior change; build green and the full 699-test suite passes. **TECH-ARCH2 stays open** as the real decomposition (extract a `MeetingSessionController` type that owns the meeting lifetime); the binding constraint (no unverifiable hot-path risk for a vibe-coding user) made the file-split the right call for the line-count bar.
 
 ### Workflow editor
 
