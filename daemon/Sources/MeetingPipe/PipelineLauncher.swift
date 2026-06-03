@@ -162,326 +162,68 @@ final class PipelineLauncher: PipelineDriver {
         onProgress: ((PipelineProgress) -> Void)?,
         completion: @escaping (Result<URL?, Error>) -> Void
     ) {
-        guard let mpPath = Self.findMP() else {
-            completion(.failure(LaunchError.mpNotFound))
-            return
-        }
-
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: mpPath.shell)
-        p.arguments = mpPath.args + ["run-all", wav.path]
-
-        // Re-read secrets.env on every launch so token rotations take effect without a daemon restart.
-        // TECH-SEC5: withhold cloud tokens this run is not allowed to use.
-        let policy = Self.cloudSecretPolicy(for: wav)
-        var env = Self.freshEnvironment(
-            stripAnthropicKey: policy.stripAnthropic, stripNotionToken: policy.stripNotion
-        )
-        if summaryMode == .byo {
-            // Env-var (not a CLI flag) so existing `mp run-all <wav>` invocations stay backward-compatible.
-            env["MP_FORCE_BYO"] = "1"
-        }
-        p.environment = env
-        setActiveRunProcess(p)   // TECH-UX5: retained so Cancel can terminate it
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        p.standardOutput = outPipe
-        p.standardError = errPipe
-
-        // Pipeline log co-located with daemon logs so the user can tail one place.
-        let logURL = Log.logsDir.appendingPathComponent("pipeline.log")
-        if !FileManager.default.fileExists(atPath: logURL.path) {
-            FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        }
-        let logHandle = (try? FileHandle(forWritingTo: logURL))
-        _ = try? logHandle?.seekToEnd()
-
-        var stderrTail = Data()
-        let stderrLimit = 4096
-
-        outPipe.fileHandleForReading.readabilityHandler = { h in
-            let d = h.availableData; if d.isEmpty { return }
-            try? logHandle?.write(contentsOf: d)
-            // TECH-UX5: scan for the progress heartbeat sentinel without
-            // disturbing the log stream. Each heartbeat is a single flushed
-            // line, so a chunk-split miss just drops one beat (harmless).
-            if let onProgress = onProgress, let s = String(data: d, encoding: .utf8) {
-                for line in s.split(separator: "\n") where line.hasPrefix(Self.progressSentinel) {
-                    if let p = Self.parseProgress(String(line)) {
-                        DispatchQueue.main.async { onProgress(p) }
-                    }
+        // Env-var (not a CLI flag) so existing `mp run-all <wav>` invocations stay backward-compatible.
+        let extraEnv = (summaryMode == .byo) ? ["MP_FORCE_BYO": "1"] : [:]
+        runMP(
+            ["run-all", wav.path],
+            timeout: maxRuntime,
+            meeting: wav,
+            onProgress: onProgress,
+            retainForCancel: true,
+            extraEnv: extraEnv
+        ) { result in
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success:
+                // Apple Intelligence backend (TECH-SUM1-APPLE): run-all finalized the
+                // transcript and stopped, leaving a sentinel. Produce the summary
+                // on-device in Swift, then fan out via `mp publish`.
+                let appleDir = wav.deletingLastPathComponent()
+                let appleStem = wav.deletingPathExtension().lastPathComponent
+                let sentinel = appleDir.appendingPathComponent("\(appleStem).apple_pending.json")
+                if FileManager.default.fileExists(atPath: sentinel.path) {
+                    try? FileManager.default.removeItem(at: sentinel)
+                    self.completeViaAppleIntelligence(wav: wav, completion: completion)
+                    return
                 }
+                // Orchestrator writes <wav-stem>.notion.json with page_url; read it back as the success value.
+                let stem = wav.deletingPathExtension().lastPathComponent
+                let sidecar = wav.deletingLastPathComponent().appendingPathComponent("\(stem).notion.json")
+                completion(.success(Self.readPageURL(from: sidecar)))
             }
-        }
-        errPipe.fileHandleForReading.readabilityHandler = { h in
-            let d = h.availableData; if d.isEmpty { return }
-            try? logHandle?.write(contentsOf: d)
-            stderrTail.append(d)
-            if stderrTail.count > stderrLimit {
-                stderrTail.removeFirst(stderrTail.count - stderrLimit)
-            }
-        }
-
-        // Watchdog: on overrun SIGTERM then SIGKILL after a grace period; terminationHandler routes killed status to LaunchError.timeout.
-        // timedOut is set only by the timer and read only by the handler, so no lock is needed.
-        let timedOut = TimeoutFlag()
-        let watchdog = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
-        watchdog.schedule(deadline: .now() + self.maxRuntime)
-        let timeoutSeconds = self.maxRuntime
-        watchdog.setEventHandler {
-            guard p.isRunning else { return }
-            timedOut.set()
-            Log.main.warning("Pipeline exceeded \(Int(timeoutSeconds / 60)) min - terminating")
-            p.terminate()
-            // Escalate to SIGKILL if SIGTERM doesn't take.
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30) {
-                if p.isRunning { kill(p.processIdentifier, SIGKILL) }
-            }
-        }
-        watchdog.resume()
-
-        p.terminationHandler = { proc in
-            watchdog.cancel()
-            outPipe.fileHandleForReading.readabilityHandler = nil
-            errPipe.fileHandleForReading.readabilityHandler = nil
-            try? logHandle?.close()
-            self.setActiveRunProcess(nil)   // TECH-UX5: run finished/killed
-
-            if timedOut.isSet {
-                completion(.failure(LaunchError.timeout(timeoutSeconds)))
-                return
-            }
-
-            if proc.terminationStatus != 0 {
-                let tail = String(data: stderrTail, encoding: .utf8) ?? ""
-                completion(.failure(LaunchError.nonZeroExit(proc.terminationStatus, tail)))
-                return
-            }
-
-            // Apple Intelligence backend (TECH-SUM1-APPLE): run-all finalized the
-            // transcript and stopped, leaving a sentinel. Produce the summary
-            // on-device in Swift, then fan out via `mp publish`.
-            let appleDir = wav.deletingLastPathComponent()
-            let appleStem = wav.deletingPathExtension().lastPathComponent
-            let sentinel = appleDir.appendingPathComponent("\(appleStem).apple_pending.json")
-            if FileManager.default.fileExists(atPath: sentinel.path) {
-                try? FileManager.default.removeItem(at: sentinel)
-                self.completeViaAppleIntelligence(wav: wav, completion: completion)
-                return
-            }
-
-            // Orchestrator writes <wav-stem>.notion.json with page_url; read it back as the success value.
-            let stem = wav.deletingPathExtension().lastPathComponent
-            let sidecar = wav.deletingLastPathComponent().appendingPathComponent("\(stem).notion.json")
-            if let data = try? Data(contentsOf: sidecar),
-               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let urlStr = obj["page_url"] as? String,
-               let url = URL(string: urlStr) {
-                completion(.success(url))
-            } else {
-                completion(.success(nil))
-            }
-        }
-
-        do {
-            try p.run()
-        } catch {
-            watchdog.cancel()
-            completion(.failure(error))
         }
     }
 
     /// Spawn `mp publish-notion <summary.json>` and return the resulting page URL (from `<stem>.notion.json`).
-    /// Reuses the same secrets + watchdog scaffolding as `runAll`. Never sets `MP_FORCE_BYO` - publish is identical regardless of how the summary was produced.
+    /// Never sets `MP_FORCE_BYO` - publish is identical regardless of how the summary was produced.
+    /// Publish is far quicker than transcribe + summarize; 10 min is generous headroom for Notion's API on a slow link.
     func publish(
         summaryJSON: URL,
         completion: @escaping (Result<URL?, Error>) -> Void
     ) {
-        guard let mpPath = Self.findMP() else {
-            completion(.failure(LaunchError.mpNotFound))
-            return
-        }
-
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: mpPath.shell)
-        p.arguments = mpPath.args + ["publish-notion", summaryJSON.path]
-        let policy = Self.cloudSecretPolicy(for: summaryJSON)  // TECH-SEC5
-        p.environment = Self.freshEnvironment(
-            stripAnthropicKey: policy.stripAnthropic, stripNotionToken: policy.stripNotion
-        )
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        p.standardOutput = outPipe
-        p.standardError = errPipe
-
-        let logURL = Log.logsDir.appendingPathComponent("pipeline.log")
-        if !FileManager.default.fileExists(atPath: logURL.path) {
-            FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        }
-        let logHandle = (try? FileHandle(forWritingTo: logURL))
-        _ = try? logHandle?.seekToEnd()
-
-        var stderrTail = Data()
-        let stderrLimit = 4096
-
-        outPipe.fileHandleForReading.readabilityHandler = { h in
-            let d = h.availableData; if d.isEmpty { return }
-            try? logHandle?.write(contentsOf: d)
-        }
-        errPipe.fileHandleForReading.readabilityHandler = { h in
-            let d = h.availableData; if d.isEmpty { return }
-            try? logHandle?.write(contentsOf: d)
-            stderrTail.append(d)
-            if stderrTail.count > stderrLimit {
-                stderrTail.removeFirst(stderrTail.count - stderrLimit)
+        runMP(["publish-notion", summaryJSON.path], timeout: 10 * 60, meeting: summaryJSON) { result in
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success:
+                let stem = summaryJSON.lastPathComponent.replacingOccurrences(
+                    of: ".summary.json", with: ""
+                )
+                let sidecar = summaryJSON.deletingLastPathComponent()
+                    .appendingPathComponent("\(stem).notion.json")
+                completion(.success(Self.readPageURL(from: sidecar)))
             }
-        }
-
-        // Publish is far quicker than transcribe + summarize; 10 min is generous headroom for Notion's API on a slow link.
-        let publishTimeout: TimeInterval = 10 * 60
-        let timedOut = TimeoutFlag()
-        let watchdog = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
-        watchdog.schedule(deadline: .now() + publishTimeout)
-        watchdog.setEventHandler {
-            guard p.isRunning else { return }
-            timedOut.set()
-            Log.main.warning("publish-notion exceeded \(Int(publishTimeout / 60)) min - terminating")
-            p.terminate()
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 15) {
-                if p.isRunning { kill(p.processIdentifier, SIGKILL) }
-            }
-        }
-        watchdog.resume()
-
-        p.terminationHandler = { proc in
-            watchdog.cancel()
-            outPipe.fileHandleForReading.readabilityHandler = nil
-            errPipe.fileHandleForReading.readabilityHandler = nil
-            try? logHandle?.close()
-
-            if timedOut.isSet {
-                completion(.failure(LaunchError.timeout(publishTimeout)))
-                return
-            }
-
-            if proc.terminationStatus != 0 {
-                let tail = String(data: stderrTail, encoding: .utf8) ?? ""
-                completion(.failure(LaunchError.nonZeroExit(proc.terminationStatus, tail)))
-                return
-            }
-
-            let stem = summaryJSON.lastPathComponent.replacingOccurrences(
-                of: ".summary.json", with: ""
-            )
-            let sidecar = summaryJSON.deletingLastPathComponent()
-                .appendingPathComponent("\(stem).notion.json")
-            if let data = try? Data(contentsOf: sidecar),
-               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let urlStr = obj["page_url"] as? String,
-               let url = URL(string: urlStr) {
-                completion(.success(url))
-            } else {
-                completion(.success(nil))
-            }
-        }
-
-        do {
-            try p.run()
-        } catch {
-            watchdog.cancel()
-            completion(.failure(error))
         }
     }
 
     /// Spawn `mp summarize <transcript.md>`. Uses the per-stage entry point (not orchestrate's run-all) so config + secrets are resolved the same way. Overwrites `<stem>.summary.json` and `<stem>.summary.md` in-place.
+    /// Bounded by LLM round-trip or local model latency. 20 min covers the worst legitimate run (Qwen 32B, ~2-4 min) with headroom for long-meeting prompts.
     func summarize(
         transcriptMD: URL,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        guard let mpPath = Self.findMP() else {
-            completion(.failure(LaunchError.mpNotFound))
-            return
-        }
-
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: mpPath.shell)
-        p.arguments = mpPath.args + ["summarize", transcriptMD.path]
-        let policy = Self.cloudSecretPolicy(for: transcriptMD)  // TECH-SEC5
-        p.environment = Self.freshEnvironment(
-            stripAnthropicKey: policy.stripAnthropic, stripNotionToken: policy.stripNotion
-        )
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        p.standardOutput = outPipe
-        p.standardError = errPipe
-
-        let logURL = Log.logsDir.appendingPathComponent("pipeline.log")
-        if !FileManager.default.fileExists(atPath: logURL.path) {
-            FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        }
-        let logHandle = (try? FileHandle(forWritingTo: logURL))
-        _ = try? logHandle?.seekToEnd()
-
-        var stderrTail = Data()
-        let stderrLimit = 4096
-
-        outPipe.fileHandleForReading.readabilityHandler = { h in
-            let d = h.availableData; if d.isEmpty { return }
-            try? logHandle?.write(contentsOf: d)
-        }
-        errPipe.fileHandleForReading.readabilityHandler = { h in
-            let d = h.availableData; if d.isEmpty { return }
-            try? logHandle?.write(contentsOf: d)
-            stderrTail.append(d)
-            if stderrTail.count > stderrLimit {
-                stderrTail.removeFirst(stderrTail.count - stderrLimit)
-            }
-        }
-
-        // Bounded by LLM round-trip or local model latency. 20 min covers the worst legitimate run (Qwen 32B, ~2-4 min) with headroom for long-meeting prompts.
-        let summarizeTimeout: TimeInterval = 20 * 60
-        let timedOut = TimeoutFlag()
-        let watchdog = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
-        watchdog.schedule(deadline: .now() + summarizeTimeout)
-        watchdog.setEventHandler {
-            guard p.isRunning else { return }
-            timedOut.set()
-            Log.main.warning("summarize exceeded \(Int(summarizeTimeout / 60)) min - terminating")
-            p.terminate()
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30) {
-                if p.isRunning { kill(p.processIdentifier, SIGKILL) }
-            }
-        }
-        watchdog.resume()
-
-        p.terminationHandler = { proc in
-            watchdog.cancel()
-            outPipe.fileHandleForReading.readabilityHandler = nil
-            errPipe.fileHandleForReading.readabilityHandler = nil
-            try? logHandle?.close()
-
-            if timedOut.isSet {
-                completion(.failure(LaunchError.timeout(summarizeTimeout)))
-                return
-            }
-
-            if proc.terminationStatus != 0 {
-                let tail = String(data: stderrTail, encoding: .utf8) ?? ""
-                completion(.failure(LaunchError.nonZeroExit(proc.terminationStatus, tail)))
-                return
-            }
-            completion(.success(()))
-        }
-
-        do {
-            try p.run()
-        } catch {
-            watchdog.cancel()
-            completion(.failure(error))
-        }
+        runMP(["summarize", transcriptMD.path], timeout: 20 * 60, meeting: transcriptMD, completion: completion)
     }
 
     /// Publish a hand-pasted summary (TECH-UX3). The caller has already written
@@ -561,14 +303,7 @@ final class PipelineLauncher: PipelineDriver {
                     completion(.failure(error))
                 case .success:
                     let sidecar = dir.appendingPathComponent("\(stem).notion.json")
-                    if let data = try? Data(contentsOf: sidecar),
-                       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let urlStr = obj["page_url"] as? String,
-                       let url = URL(string: urlStr) {
-                        completion(.success(url))
-                    } else {
-                        completion(.success(nil))
-                    }
+                    completion(.success(Self.readPageURL(from: sidecar)))
                 }
             }
         }
@@ -599,14 +334,20 @@ final class PipelineLauncher: PipelineDriver {
         return (teamContext, summaryLanguage)
     }
 
-    /// Spawn `mp <args>` with the standard watchdog + log scaffolding, reporting
-    /// only success / failure (no sidecar parsing). Used by the Apple Intelligence
-    /// publish hand-off; the older per-stage methods predate it and keep their own
-    /// inline copies.
+    /// The single `mp <args>` spawn primitive (TECH-ARCH3): watchdog + log
+    /// scaffolding, reporting only success / failure. `runAll` / `publish` /
+    /// `summarize` layer their sidecar reads on top of this in their own success
+    /// closures, so the four near-identical Process blocks collapse to one.
+    ///   - onProgress: scan stdout for the `__MP_PROGRESS__` heartbeat (run-all).
+    ///   - retainForCancel: retain the process so `cancelActiveRun()` can terminate it (run-all).
+    ///   - extraEnv: overlaid on the resolved env (e.g. `MP_FORCE_BYO` for byo runs).
     private func runMP(
         _ args: [String],
         timeout: TimeInterval,
         meeting: URL? = nil,
+        onProgress: ((PipelineProgress) -> Void)? = nil,
+        retainForCancel: Bool = false,
+        extraEnv: [String: String] = [:],
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         guard let mpPath = Self.findMP() else {
@@ -616,16 +357,22 @@ final class PipelineLauncher: PipelineDriver {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: mpPath.shell)
         p.arguments = mpPath.args + args
-        let policy = Self.cloudSecretPolicy(for: meeting)  // TECH-SEC5
-        p.environment = Self.freshEnvironment(
+        // Re-read secrets.env on every launch so token rotations take effect without a daemon restart.
+        // TECH-SEC5: withhold cloud tokens this run is not allowed to use.
+        let policy = Self.cloudSecretPolicy(for: meeting)
+        var env = Self.freshEnvironment(
             stripAnthropicKey: policy.stripAnthropic, stripNotionToken: policy.stripNotion
         )
+        for (k, v) in extraEnv { env[k] = v }
+        p.environment = env
+        if retainForCancel { setActiveRunProcess(p) }   // TECH-UX5: retained so Cancel can terminate it
 
         let outPipe = Pipe()
         let errPipe = Pipe()
         p.standardOutput = outPipe
         p.standardError = errPipe
 
+        // Pipeline log co-located with daemon logs so the user can tail one place.
         let logURL = Log.logsDir.appendingPathComponent("pipeline.log")
         if !FileManager.default.fileExists(atPath: logURL.path) {
             FileManager.default.createFile(atPath: logURL.path, contents: nil)
@@ -638,6 +385,16 @@ final class PipelineLauncher: PipelineDriver {
         outPipe.fileHandleForReading.readabilityHandler = { h in
             let d = h.availableData; if d.isEmpty { return }
             try? logHandle?.write(contentsOf: d)
+            // TECH-UX5: scan for the progress heartbeat sentinel without
+            // disturbing the log stream. Each heartbeat is a single flushed
+            // line, so a chunk-split miss just drops one beat (harmless).
+            if let onProgress = onProgress, let s = String(data: d, encoding: .utf8) {
+                for line in s.split(separator: "\n") where line.hasPrefix(Self.progressSentinel) {
+                    if let parsed = Self.parseProgress(String(line)) {
+                        DispatchQueue.main.async { onProgress(parsed) }
+                    }
+                }
+            }
         }
         errPipe.fileHandleForReading.readabilityHandler = { h in
             let d = h.availableData; if d.isEmpty { return }
@@ -648,6 +405,7 @@ final class PipelineLauncher: PipelineDriver {
             }
         }
 
+        // Watchdog: on overrun SIGTERM then SIGKILL after a grace period; terminationHandler routes killed status to LaunchError.timeout.
         let timedOut = TimeoutFlag()
         let watchdog = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         watchdog.schedule(deadline: .now() + timeout)
@@ -656,7 +414,7 @@ final class PipelineLauncher: PipelineDriver {
             timedOut.set()
             Log.main.warning("mp \(args.first ?? "") exceeded \(Int(timeout / 60)) min - terminating")
             p.terminate()
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 15) {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30) {
                 if p.isRunning { kill(p.processIdentifier, SIGKILL) }
             }
         }
@@ -667,6 +425,7 @@ final class PipelineLauncher: PipelineDriver {
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
             try? logHandle?.close()
+            if retainForCancel { self.setActiveRunProcess(nil) }   // TECH-UX5: run finished/killed
             if timedOut.isSet {
                 completion(.failure(LaunchError.timeout(timeout)))
                 return
@@ -685,6 +444,18 @@ final class PipelineLauncher: PipelineDriver {
             watchdog.cancel()
             completion(.failure(error))
         }
+    }
+
+    /// Read `page_url` from an orchestrator sidecar (`<stem>.notion.json`), nil if
+    /// absent/regulated. Shared by the run-all / publish / Apple-publish success paths.
+    static func readPageURL(from sidecar: URL) -> URL? {
+        guard let data = try? Data(contentsOf: sidecar),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let urlStr = obj["page_url"] as? String,
+              let url = URL(string: urlStr) else {
+            return nil
+        }
+        return url
     }
 
     /// One-way flag for the watchdog-to-terminationHandler signal. Uses NSLock because Swift stdlib has no public atomic Bool; cheap for a one-shot flip.
