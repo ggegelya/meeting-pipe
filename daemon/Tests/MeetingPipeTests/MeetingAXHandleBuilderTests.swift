@@ -142,4 +142,50 @@ final class MeetingAXHandleBuilderTests: XCTestCase {
                             "missing MuteLabels app mapping for \(bid)")
         }
     }
+
+    // MARK: In-call window scoping (preferWindowsWithLeave)
+
+    func test_scope_drops_stale_window_without_leave_on_disagreement() {
+        // The 2026-06-03 bug: a stale hub window (mute=muted, no Leave) alongside
+        // the live in-call window (mute=unmuted, has Leave). Scoping must drop the
+        // stale window so the MUTED-biased fusion never sees its `.muted`.
+        let scoped = MeetingAXHandleBuilder.preferWindowsWithLeave([
+            (value: MuteLabels.State.muted, hasLeave: false),
+            (value: MuteLabels.State.unmuted, hasLeave: true),
+        ])
+        XCTAssertEqual(scoped, [.unmuted])
+    }
+
+    func test_scope_keeps_every_leave_bearing_window() {
+        let scoped = MeetingAXHandleBuilder.preferWindowsWithLeave([
+            (value: MuteLabels.State.unmuted, hasLeave: true),
+            (value: MuteLabels.State.muted, hasLeave: false),
+            (value: MuteLabels.State.muted, hasLeave: true),
+        ])
+        XCTAssertEqual(scoped, [.unmuted, .muted])
+    }
+
+    func test_scope_falls_back_to_all_when_no_window_has_leave() {
+        // No Leave control found anywhere (a compact view the matcher missed, an
+        // AX hiccup): keep every reading so the poller degrades to its
+        // pre-scoping behaviour instead of returning nothing and silencing the
+        // gate.
+        let scoped = MeetingAXHandleBuilder.preferWindowsWithLeave([
+            (value: MuteLabels.State.muted, hasLeave: false),
+            (value: MuteLabels.State.unmuted, hasLeave: false),
+        ])
+        XCTAssertEqual(scoped, [.muted, .unmuted])
+    }
+
+    func test_scope_single_leave_window_passes_through() {
+        let scoped = MeetingAXHandleBuilder.preferWindowsWithLeave([
+            (value: MuteLabels.State.unmuted, hasLeave: true),
+        ])
+        XCTAssertEqual(scoped, [.unmuted])
+    }
+
+    func test_scope_empty_input_is_empty() {
+        let scoped: [MuteLabels.State] = MeetingAXHandleBuilder.preferWindowsWithLeave([])
+        XCTAssertEqual(scoped, [])
+    }
 }

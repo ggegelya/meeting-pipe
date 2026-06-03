@@ -18,16 +18,23 @@ import MeetingPipeCore
 /// voice was zeroed while they spoke.
 ///
 /// This rebuild reads instead of subscribes. Every `pollInterval` it re-resolves the live
-/// mute button(s) via `MeetingAXHandleBuilder.findAllMuteButtons` (a fresh AX-tree walk)
-/// and reads each one's state with a plain `AXUIElementCopyAttributeValue` - which returns
-/// the current value and needs no observer, so it survives window/compact-view swaps and
-/// dropped notifications. The fused state is injected into `MicGate.injectAxMuteEvent`.
-/// The primary notification probe stays as the low-latency foreground fast-path; this is
-/// the robust backstop that catches every mute/unmute transition within `pollInterval`.
+/// mute button(s) via `MeetingAXHandleBuilder.findMeetingWindowMuteButtons` (a fresh
+/// AX-tree walk, scoped to the in-call window) and reads each one's state with a plain
+/// `AXUIElementCopyAttributeValue` - which returns the current value and needs no observer,
+/// so it survives window/compact-view swaps and dropped notifications. The fused state is
+/// injected into `MicGate.injectAxMuteEvent`. The primary notification probe stays as the
+/// low-latency foreground fast-path; this is the robust backstop that catches every
+/// mute/unmute transition within `pollInterval`.
 ///
-/// Fusion bias is MUTED: if any live button reads `.unmuted` we only record when *all*
-/// known buttons agree unmuted; a single muted button wins. Privacy over capture on a
-/// genuine multi-button disagreement (user's call, 2026-05-29). The common case is a
+/// Window scoping: the read is limited to the window(s) that also hold a Leave control, so
+/// a stale mic toggle in Teams 2's backgrounded hub / pre-join window is never read (it
+/// zeroed a live mic mid-sentence on 2026-06-03 before this scoping). Mute and Leave travel
+/// together in the meeting-controls toolbar; `findMeetingWindowMuteButtons` falls back to
+/// every window when no Leave control is found, so the gate is never blinded.
+///
+/// Fusion bias is MUTED: across the scoped window(s), `.unmuted` only when every known
+/// button agrees unmuted; a single muted button wins. Privacy over capture on a genuine
+/// in-window multi-button disagreement (user's call, 2026-05-29). The common case is a
 /// single button, where the live reading wins outright.
 ///
 /// Threading: main-queue only; not thread-safe. `start`/`stop` on `beginRecording`/`stopRecording`.
@@ -156,7 +163,7 @@ final class MeetingAXWindowWatcher {
     ) -> [MuteLabels.State] {
         guard let app = MeetingAXHandleBuilder.appNameByBundle[bundleID] else { return [] }
         let locale = AXMuteButtonProbe.defaultLocaleResolver()
-        let buttons = MeetingAXHandleBuilder.findAllMuteButtons(
+        let buttons = MeetingAXHandleBuilder.findMeetingWindowMuteButtons(
             in: axApp, bundleID: bundleID, catalogue: catalogue
         )
         return buttons.map { button in

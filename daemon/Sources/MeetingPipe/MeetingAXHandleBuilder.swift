@@ -138,8 +138,10 @@ enum MeetingAXHandleBuilder {
 
     /// Walk every window of an axApp and return every mute button
     /// the existing `matchesMute` predicate accepts. Used by
-    /// `MeetingAXWindowWatcher` to rediscover buttons after a new
-    /// window appears mid-meeting (Teams 2 compact view, etc.).
+    /// `MeetingSourceScanner` for the "a mute button exists" detection
+    /// signal. The mute-state poller uses the leave-scoped
+    /// `findMeetingWindowMuteButtons` instead, so a stale hub-window toggle
+    /// can't be read as the live mute state.
     static func findAllMuteButtons(
         in axApp: AXUIElement,
         bundleID: String,
@@ -155,6 +157,47 @@ enum MeetingAXHandleBuilder {
             }
         }
         return result
+    }
+
+    /// Mute button(s) scoped to the live in-call window(s): every window that
+    /// exposes a mute button AND a Leave/hang-up control. Teams 2 keeps a
+    /// second window (the main hub / pre-join) whose mic toggle goes stale and
+    /// reads `muted` while the in-call control reads `unmuted`; fed to
+    /// `MeetingAXWindowWatcher`'s MUTED-biased fusion, that stale button zeroed
+    /// a live mic mid-sentence (2026-06-03). Mute and Leave share the
+    /// meeting-controls toolbar and travel together into compact / popped-out
+    /// views, so the Leave button marks the real call window. Falls back to
+    /// every window's mute button when no window exposes a Leave control, so a
+    /// missed Leave walk degrades to the old all-windows read instead of
+    /// blinding the gate.
+    static func findMeetingWindowMuteButtons(
+        in axApp: AXUIElement,
+        bundleID: String,
+        catalogue: MuteLabels
+    ) -> [AXUIElement] {
+        guard let app = appNameByBundle[bundleID] else { return [] }
+        var entries: [(value: AXUIElement, hasLeave: Bool)] = []
+        for window in listWindows(axApp: axApp) {
+            guard let mute = findButton(in: window, depth: 0, predicate: { el in
+                matchesMute(app: app, catalogue: catalogue, element: el)
+            }) else { continue }
+            let hasLeave = findButton(in: window, depth: 0, predicate: { el in
+                matchesLeave(bundleID: bundleID, element: el)
+            }) != nil
+            entries.append((mute, hasLeave))
+        }
+        return preferWindowsWithLeave(entries)
+    }
+
+    /// Keep only entries whose window also exposes a Leave control; if none
+    /// does, keep all. Pure, so the in-call-window scoping rule is unit-tested
+    /// without a live AX tree. The all-or-nothing fallback is deliberate: a
+    /// read that finds no Leave button anywhere (a compact view the leave
+    /// matcher missed, an AX hiccup) must not return an empty set and silence
+    /// the poller; it degrades to the pre-scoping all-windows behaviour.
+    static func preferWindowsWithLeave<T>(_ entries: [(value: T, hasLeave: Bool)]) -> [T] {
+        let scoped = entries.filter { $0.hasLeave }.map { $0.value }
+        return scoped.isEmpty ? entries.map { $0.value } : scoped
     }
 
     /// Walk every window of an axApp and return every leave button the
