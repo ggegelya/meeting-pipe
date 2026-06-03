@@ -130,6 +130,72 @@ final class FluidAudioRunnerAudioMixdownTests: XCTestCase {
         let mono = FluidAudioRunner.mixDownToMono(buffer)
         XCTAssertEqual(mono, [0.1, -0.2, 0.3])
     }
+
+    /// Write `channelData` (one [Float] per channel) to a 16-bit PCM WAV, the
+    /// same encoding the daemon records. Returns the file URL.
+    private func writePCM16Wav(channelData: [[Float]], sampleRate: Double = 16_000) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("perf2-\(UUID().uuidString).wav")
+        let channels = AVAudioChannelCount(channelData.count)
+        let frames = AVAudioFrameCount(channelData.first?.count ?? 0)
+        let format = try XCTUnwrap(
+            AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: sampleRate,
+                channels: channels,
+                interleaved: false
+            )
+        )
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+        buffer.frameLength = frames
+        let dst = try XCTUnwrap(buffer.floatChannelData)
+        for (c, samples) in channelData.enumerated() {
+            for (i, sample) in samples.enumerated() { dst[c][i] = sample }
+        }
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: Int(channels),
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+        ]
+        let outFile = try AVAudioFile(forWriting: url, settings: settings)
+        try outFile.write(from: buffer)
+        return url
+    }
+
+    /// End-to-end read of an already-16kHz-mono WAV: readMonoFloat32 returns
+    /// the written PCM (within int16 quantization). This is the common fast
+    /// path, and the one where the input PCM buffer is now scoped to free
+    /// before return. There was no direct readMonoFloat32 coverage before.
+    /// (TECH-PERF2)
+    func test_readMonoFloat32_roundtrips_16k_mono() throws {
+        let samples: [Float] = [0.0, 0.25, -0.5, 0.75]
+        let url = try writePCM16Wav(channelData: [samples])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let read = try FluidAudioRunner.readMonoFloat32(from: url)
+        XCTAssertEqual(read.count, samples.count)
+        for (i, sample) in samples.enumerated() {
+            XCTAssertEqual(read[i], sample, accuracy: 1e-4)
+        }
+    }
+
+    /// End-to-end read of a 16kHz stereo WAV (the production mic-L, system-R
+    /// shape): readMonoFloat32 must return (L+R)/2 per frame. (TECH-PERF2)
+    func test_readMonoFloat32_mixes_16k_stereo() throws {
+        let left: [Float] = [1.0, 0.0, 0.5, -0.5]
+        let right: [Float] = [0.0, 1.0, -0.5, 0.5]
+        let url = try writePCM16Wav(channelData: [left, right])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let read = try FluidAudioRunner.readMonoFloat32(from: url)
+        XCTAssertEqual(read.count, 4)
+        for (i, expected) in [Float(0.5), 0.5, 0.0, 0.0].enumerated() {
+            XCTAssertEqual(read[i], expected, accuracy: 1e-4)
+        }
+    }
 }
 
 final class TranscriptionServiceRoutingTests: XCTestCase {

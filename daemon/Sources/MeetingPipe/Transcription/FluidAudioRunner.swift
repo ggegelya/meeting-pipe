@@ -173,19 +173,25 @@ final class FluidAudioRunner: TranscriptionRunner {
         let frameCount = AVAudioFrameCount(file.length)
         guard frameCount > 0 else { return [] }
 
-        guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
-            throw TranscriptionError.audioReadFailed(
-                url,
-                underlying: NSError(
-                    domain: "FluidAudioRunner",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "could not allocate input buffer"]
+        // Scope the full-clip PCM buffer to this closure so it is released the
+        // moment the mono [Float] exists, rather than living alongside the
+        // resampler's input/output buffers (or the array the ASR and
+        // diarization stages then hold). Halves the readMonoFloat32 peak.
+        // (TECH-PERF2)
+        let mono: [Float] = try {
+            guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+                throw TranscriptionError.audioReadFailed(
+                    url,
+                    underlying: NSError(
+                        domain: "FluidAudioRunner",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "could not allocate input buffer"]
+                    )
                 )
-            )
-        }
-        try file.read(into: inputBuffer)
-
-        let mono = mixDownToMono(inputBuffer)
+            }
+            try file.read(into: inputBuffer)
+            return mixDownToMono(inputBuffer)
+        }()
 
         // Mono-to-mono AVAudioConverter is safe (no channel layout ambiguity) for the rate step.
         if format.sampleRate == 16_000 {
