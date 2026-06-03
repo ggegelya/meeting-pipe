@@ -31,7 +31,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-PERF1 | Stream diarize.py per segment | Performance | DONE (was P1) | The channel-aware fallback loads the whole stereo WAV plus two float copies (~2 GB at 3 h); read per-segment instead. |
 | TECH-PERF2 | FluidAudio mono read + free input buffer (was A13 RAM half) | Performance | DONE (was P1 carry) | readMonoFloat32 holds the full clip plus a mono copy across ASR and diarization; halve the peak and free the input buffer early. |
 | TECH-WF1 | Workflow backend unification + inherit | Workflow | DONE (was P1) | The per-workflow picker omits Apple Intelligence and always overrides the global backend; add it plus a "use global default" option. |
-| TECH-DSN1 | Preferences IA pass | Design | P1 new | Seven panes, ~44 controls; collapse the local-MLX cluster behind a disclosure, cut cosmetic toggles, move regulated mode out of Prompt. |
+| TECH-DSN1 | Preferences IA pass | Design | DONE (was P1) | Seven panes, ~44 controls; collapse the local-MLX cluster behind a disclosure, cut cosmetic toggles, move regulated mode out of Prompt. |
 | TECH-DSN2 | Detail-pane tabs + one republish path | Design | P1 new | Five tabs (two are debug surfaces) and 5+ overlapping republish/reprocess controls; reduce to three tabs and one canonical republish. |
 | TECH-REPO1 | GitHub repo presence | Identity | P1 new | README hero, LICENSE, CONTRIBUTING, repo description / topics / social preview, for contributor visibility. |
 | TECH-REPO2 | App visual identity | Identity | P1 new | A signal color that is unmistakably MeetingPipe (not generic system blue) plus icon polish; the MacPaw-grade identity. |
@@ -152,7 +152,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 
 ### Design and UX
 
-**TECH-DSN1 (P1): Preferences IA.** Seven panes, ~44 controls. Collapse the local-MLX cluster (model id, endpoint, active model, preload, custom preset) behind a "Configure local model ..." disclosure or into Advanced; cut the two cosmetic toggles; move regulated mode out of the Prompt pane (it is a privacy/publishing concept). Pairs with UI-X2.
+**[DONE] TECH-DSN1 (P1): Preferences IA.** Seven panes, ~44 controls. Collapse the local-MLX cluster (model id, endpoint, active model, preload, custom preset) behind a "Configure local model ..." disclosure or into Advanced; cut the two cosmetic toggles; move regulated mode out of the Prompt pane (it is a privacy/publishing concept). Pairs with UI-X2. Done: added a `SettingsDisclosure` primitive and collapsed the five local-MLX controls behind a "Configure local model" disclosure (backend picker stays visible); cut the two cosmetic toggles (the menu-bar icon outline/filled segmented control in General and the "Show menu-bar lock" toggle); moved the Regulated-mode group from the Prompt pane into Permissions (the privacy/egress surface). All seven panes remain, so PreferencesSelectionStateTests stays green.
 
 **TECH-DSN2 (P1): detail-pane tabs + republish.** Reduce the five detail tabs to three (drop "Raw files", demote "Corrections" to the "..." menu). Define two verbs only (Republish, Reprocess) and expose each once per altitude; remove the inline row buttons and the "Save & Republish" compound.
 

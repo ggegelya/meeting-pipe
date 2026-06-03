@@ -155,6 +155,70 @@ struct SettingsToggleRow: View {
     }
 }
 
+/// Expandable row inside a SettingsGroup card: a tappable header (label +
+/// chevron) that discloses nested rows below it. Collapsed, a whole cluster
+/// reads as one row; expanded, the nested SettingsRows render with their own
+/// dividers. Matches the SettingsRow divider and 14pt padding so it sits flush
+/// in the card.
+struct SettingsDisclosure<Content: View>: View {
+    let label: String
+    let sublabel: String?
+    @Binding var isExpanded: Bool
+    var showsDivider: Bool
+    @ViewBuilder var content: () -> Content
+
+    init(_ label: String,
+         sublabel: String? = nil,
+         isExpanded: Binding<Bool>,
+         showsDivider: Bool = true,
+         @ViewBuilder content: @escaping () -> Content) {
+        self.label = label
+        self.sublabel = sublabel
+        self._isExpanded = isExpanded
+        self.showsDivider = showsDivider
+        self.content = content
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if showsDivider {
+                Rectangle()
+                    .fill(Color(MPColors.borderFaint))
+                    .frame(height: 1)
+            }
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { isExpanded.toggle() }
+            } label: {
+                HStack(alignment: .center, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(label)
+                            .font(.system(size: 13))
+                        if let sublabel = sublabel {
+                            Text(sublabel)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .frame(width: 168, alignment: .leading)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if isExpanded {
+                content()
+            }
+        }
+    }
+}
+
 /// Full-width row variant (no label column). Used by the auto-consent allowlist.
 struct SettingsFullRow<Content: View>: View {
     @ViewBuilder var content: () -> Content

@@ -6,7 +6,7 @@ final class PreferencesSelectionState: ObservableObject {
     @Published var current: PreferencesItem = .general
 }
 
-/// Sidebar items for the Preferences window (TECH-E4). IA per the Claude-Design handoff: General (hotkeys), Recording (output, debounce, allowlist), Prompt (timeout, regulated mode), Pipeline (summarization), Integrations (Anthropic, Notion), Permissions (TCC), Advanced (config/logs).
+/// Sidebar items for the Preferences window (TECH-E4). IA per the Claude-Design handoff, refined in DSN1: General (hotkeys, appearance), Recording (output, debounce, allowlist), Prompt (timeout, stop conditions), Pipeline (summarization), Integrations (Anthropic, Notion), Permissions (TCC, regulated mode), Advanced (config/logs).
 enum PreferencesItem: String, CaseIterable, Identifiable, Hashable {
     case general
     case recording
@@ -91,7 +91,7 @@ struct PreferencesView: View {
                 }
             )
         case .permissions:
-            PermissionsSectionView()
+            PermissionsSectionView(store: store)
         case .advanced:
             AdvancedSectionView()
         }
@@ -200,17 +200,9 @@ private struct GeneralSectionView: View {
                     )
                     Spacer(minLength: 0)
                 }
-                SettingsRow("Menu-bar icon",
-                    sublabel: "Outline keeps the ring around the waveform; filled drops the ring for a chunkier glyph.") {
-                    SettingsSegmented(
-                        selection: $ui.menuBarIconStyle,
-                        options: [
-                            (.outline, "Outline"),
-                            (.filled,  "Filled"),
-                        ]
-                    )
-                    Spacer(minLength: 0)
-                }
+                // Menu-bar icon style (outline vs filled) was a cosmetic-only
+                // toggle; cut in the DSN1 IA pass. The glyph stays at its
+                // default; UISettings.menuBarIconStyle remains for the status bar.
             }
 
             SettingsGroup("Startup") {
@@ -405,7 +397,6 @@ private struct RecordingSectionView: View {
 
 private struct PromptSectionView: View {
     @ObservedObject var store: ConfigStore
-    @ObservedObject private var ui = UISettings.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -464,21 +455,9 @@ private struct PromptSectionView: View {
             } footer: {
                 Text("Independent of the existing 5-minute silence auto-stop, which triggers when BOTH mic and system audio go silent.")
             }
-
-            SettingsGroup("Regulated mode") {
-                SettingsToggleRow("Skip Notion publish",
-                    sublabel: store.regulatedMode
-                        ? "On - Notion publish is disabled for every meeting."
-                        : "Off - meetings publish to each workflow's own sinks (Notion only if that workflow enables it).",
-                    isOn: $store.regulatedMode,
-                    showsDivider: false)
-                SettingsToggleRow("Show menu-bar lock",
-                    sublabel: "Append a lock glyph to the status-bar title whenever regulated mode is on.",
-                    isOn: $ui.showRegulatedBadge)
-                    .disabled(!store.regulatedMode)
-            } footer: {
-                Text("Use for client / regulated meetings. The pipeline writes summaries to disk only - no transcript or summary is uploaded to Notion.")
-            }
+            // Regulated mode moved to the Permissions pane in the DSN1 IA pass:
+            // it is a privacy / egress control, not a prompt concern. The
+            // cosmetic "Show menu-bar lock" toggle was cut at the same time.
         }
     }
 
@@ -508,6 +487,7 @@ private struct PipelineSectionView: View {
     @State private var promptText: String?
     @State private var promptLoading = false
     @State private var promptError: String?
+    @State private var showLocalModelConfig = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -531,46 +511,53 @@ private struct PipelineSectionView: View {
                     Spacer(minLength: 0)
                 }
                 if store.summarizationBackend == "local" || store.summarizationBackend == "auto" {
-                    SettingsRow("Local model",
-                        sublabel: localModelHint) {
-                        Picker("", selection: localModelPresetBinding) {
-                            ForEach(LocalModelPreset.all, id: \.id) { preset in
-                                Text(preset.label).tag(preset.id)
+                    // The local-MLX cluster (preset, model id, endpoint, active
+                    // model, preload) is collapsed behind a disclosure so the
+                    // common case (just pick a backend) stays uncluttered. (DSN1)
+                    SettingsDisclosure("Configure local model",
+                        sublabel: "Model preset, endpoint, active model, and preload.",
+                        isExpanded: $showLocalModelConfig) {
+                        SettingsRow("Local model",
+                            sublabel: localModelHint) {
+                            Picker("", selection: localModelPresetBinding) {
+                                ForEach(LocalModelPreset.all, id: \.id) { preset in
+                                    Text(preset.label).tag(preset.id)
+                                }
+                                Text("Custom").tag(LocalModelPreset.customId)
                             }
-                            Text("Custom").tag(LocalModelPreset.customId)
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .fixedSize()
+                            Spacer(minLength: 0)
                         }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .fixedSize()
-                        Spacer(minLength: 0)
-                    }
-                    if currentLocalModelPresetId == LocalModelPreset.customId {
-                        SettingsRow("Model id",
-                            sublabel: "HuggingFace MLX repo id.") {
-                            TextField("mlx-community/...", text: $store.summarizationLocalModel)
+                        if currentLocalModelPresetId == LocalModelPreset.customId {
+                            SettingsRow("Model id",
+                                sublabel: "HuggingFace MLX repo id.") {
+                                TextField("mlx-community/...", text: $store.summarizationLocalModel)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.system(.body, design: .monospaced))
+                            }
+                        }
+                        SettingsRow("Endpoint URL",
+                            sublabel: "Local mlx_lm.server target.") {
+                            TextField("http://127.0.0.1:8765", text: $store.summarizationLocalEndpoint)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(.body, design: .monospaced))
                         }
+                        SettingsRow("Active model",
+                            sublabel: activeModelSizeHint) {
+                            Text(activeModelName)
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 0)
+                        }
+                        SettingsToggleRow("Preload at launch",
+                            sublabel: "Warm the model when the app starts so the first summary skips the cold-start. Holds the model in RAM while idle.",
+                            isOn: $ui.preloadLocalModelAtLaunch)
                     }
-                    SettingsRow("Endpoint URL",
-                        sublabel: "Local mlx_lm.server target.") {
-                        TextField("http://127.0.0.1:8765", text: $store.summarizationLocalEndpoint)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.body, design: .monospaced))
-                    }
-                    SettingsRow("Active model",
-                        sublabel: activeModelSizeHint) {
-                        Text(activeModelName)
-                            .font(.system(.body, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer(minLength: 0)
-                    }
-                    SettingsToggleRow("Preload at launch",
-                        sublabel: "Warm the model when the app starts so the first summary skips the cold-start. Holds the model in RAM while idle.",
-                        isOn: $ui.preloadLocalModelAtLaunch)
                 }
             } footer: {
                 pipelineBackendFooter
@@ -844,6 +831,7 @@ private struct IntegrationsSectionView: View {
 
 /// Permissions section: one card per TCC permission, icon badge + status pill + Request/Open Settings button, plus a privacy callout at the bottom.
 struct PermissionsSectionView: View {
+    @ObservedObject var store: ConfigStore
     @ObservedObject private var center = PermissionsCenter.shared
     @State private var workingKind: PermissionsCenter.Kind? = nil
 
@@ -874,6 +862,20 @@ struct PermissionsSectionView: View {
                         onOpenSettings: { perform(action: .openSettings, on: kind) }
                     )
                 }
+            }
+
+            // Regulated mode lives here (moved out of Prompt in the DSN1 IA
+            // pass): it is a privacy / egress control, alongside the TCC
+            // permissions and the on-device privacy note.
+            SettingsGroup("Regulated mode") {
+                SettingsToggleRow("Skip Notion publish",
+                    sublabel: store.regulatedMode
+                        ? "On - Notion publish is disabled for every meeting."
+                        : "Off - meetings publish to each workflow's own sinks (Notion only if that workflow enables it).",
+                    isOn: $store.regulatedMode,
+                    showsDivider: false)
+            } footer: {
+                Text("Use for client / regulated meetings. The pipeline writes summaries to disk only - no transcript or summary is uploaded to Notion.")
             }
 
             privacyCallout
