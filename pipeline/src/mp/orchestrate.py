@@ -25,7 +25,7 @@ import time
 from importlib import resources
 from pathlib import Path
 
-from .config import Config, load_secrets
+from .config import Config, effective_backend, load_secrets
 from .corrections import write_run_sidecar
 from .egress_guard import arm_for_config
 from .diarize import assign_speakers_by_channel, is_stereo_recording
@@ -82,16 +82,6 @@ class _ProgressHeartbeat:
                 print(f"{PROGRESS_SENTINEL} {payload}", flush=True)
             except Exception:  # noqa: BLE001 - progress is best-effort
                 pass
-
-
-def _effective_backend(cfg: Config) -> str:
-    """The backend after regulated_mode forcing (which pins everything to
-    local). Used to route the Apple Intelligence hand-off and to bypass the
-    long-meeting cost guard (Apple summarizes on-device via chunking)."""
-    backend = cfg.summarization.backend
-    if cfg.modes.regulated_mode and backend != "local":
-        return "local"
-    return backend
 
 
 def _configure_logging() -> None:
@@ -298,7 +288,7 @@ def _run_all_inner(
     # Skipped for Apple Intelligence: it is on-device and free, and chunks
     # long transcripts itself, so the paste-bundle escape hatch does not apply.
     threshold = cfg.summarization.skip_above_chars
-    if threshold and len(md_text) > threshold and _effective_backend(cfg) != "apple_intelligence":
+    if threshold and len(md_text) > threshold and effective_backend(cfg) != "apple_intelligence":
         bundle = _write_manual_bundle(t["md"], len(md_text), threshold)
         log.warning(
             "Transcript is %d chars (threshold %d) — skipping summarize + publish.",
@@ -341,7 +331,7 @@ def _run_all_inner(
     # Model is Swift-only, so we finalize (and optionally clean) the transcript
     # here, then stop and let the daemon produce the summary on-device and run
     # `mp publish`. The sentinel is the signal the daemon watches for.
-    if _effective_backend(cfg) == "apple_intelligence":
+    if effective_backend(cfg) == "apple_intelligence":
         sentinel = wav.parent / f"{wav.stem}.apple_pending.json"
         sentinel.write_text(
             json.dumps({"transcript_md": str(t["md"]), "transcript_json": str(t["json"])}),

@@ -174,6 +174,39 @@ class Config(BaseModel):
         return cls(**raw)
 
 
+def effective_backend(cfg: Config) -> str:
+    """The summarization backend after the regulated/NDA force-local rule.
+
+    `regulated_mode` (global) and `workflow_nda_mode` (per-meeting, set by the
+    workflow overlay) are both hard zero-egress guarantees: each pins the
+    on-device path regardless of the configured backend, so no transcript can
+    leave the machine. This is the single chokepoint (TECH-ARCH1) that
+    replaces the copies of the same `if regulated and backend != local`
+    block in summarize._select_backend, orchestrate, and
+    diarize_cleanup._select_cleanup_backend. Callers keep their own
+    apple_intelligence / auto handling on top of the value returned here.
+    """
+    backend = cfg.summarization.backend
+    if (cfg.modes.regulated_mode or cfg.modes.workflow_nda_mode) and backend != "local":
+        return "local"
+    return backend
+
+
+def effective_sinks(cfg: Config) -> list[str]:
+    """The output sinks after the regulated/NDA egress clamp.
+
+    Notion is the one publisher that transmits off-device, so under a
+    zero-egress mode (`regulated_mode` or `workflow_nda_mode`) it is dropped
+    here, the single chokepoint (TECH-ARCH1) that build_publishers routes
+    through. This folds in the TECH-SEC2 clamp that previously lived inline in
+    publish_router._build_one. Local-only sinks (obsidian, filesystem) are
+    preserved in their configured order.
+    """
+    if cfg.modes.regulated_mode or cfg.modes.workflow_nda_mode:
+        return [s for s in cfg.output.sinks if s != "notion"]
+    return list(cfg.output.sinks)
+
+
 def _secrets_too_open(path: Path) -> bool:
     """True when `path` grants any group/other permission (more permissive than
     0600). Tokens in a world/group-readable file are exposed to other local

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import events
-from .config import Config
+from .config import Config, effective_sinks
 from .schemas import MeetingSummary
 from .services import MeetingPublisher
 
@@ -40,7 +40,10 @@ def build_publishers(cfg: Config) -> list[MeetingPublisher]:
     the user added "obsidian" to sinks but forgot to set vault_path.
     """
     out: list[MeetingPublisher] = []
-    for name in cfg.output.sinks:
+    # effective_sinks applies the regulated/NDA egress clamp once (drops the
+    # Notion sink under a zero-egress mode), so _build_one no longer carries
+    # its own copy of that check. (TECH-ARCH1, folding in TECH-SEC2.)
+    for name in effective_sinks(cfg):
         pub = _build_one(name, cfg)
         if pub is not None:
             out.append(pub)
@@ -49,16 +52,10 @@ def build_publishers(cfg: Config) -> list[MeetingPublisher]:
 
 def _build_one(name: str, cfg: Config) -> MeetingPublisher | None:
     if name == "notion":
-        # regulated_mode is a hard zero-egress guarantee. Notion is the one
-        # publisher that transmits off-device, so under regulated_mode we DROP
-        # the sink here rather than build it: fanout never constructs a Notion
-        # client and nothing can POST to api.notion.com. This mirrors how
-        # nda_mode strips sinks to filesystem in the workflow overlay
-        # (mp.workflow). The eventual home for this clamp is the effective-config
-        # chokepoint (TECH-ARCH1); until that lands it lives here. (TECH-SEC2)
-        if cfg.modes.regulated_mode:
-            log.info("regulated_mode=true; dropping the Notion sink (zero-egress clamp)")
-            return None
+        # The zero-egress clamp that used to drop this sink lives in
+        # config.effective_sinks now (TECH-ARCH1 / TECH-SEC2): build_publishers
+        # routes through it, so a "notion" name reaching here is already
+        # allowed to egress.
         from .publish_notion import NotionRestPublisher
         from .config import require_env
         if not cfg.notion.database_id:

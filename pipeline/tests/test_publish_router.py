@@ -128,6 +128,21 @@ def test_build_publishers_regulated_drops_notion_keeps_local_sinks(tmp_path: Pat
     assert [p.name for p in pubs] == ["obsidian", "filesystem"]
 
 
+def test_build_publishers_workflow_nda_mode_drops_notion(tmp_path: Path) -> None:
+    # The egress clamp now lives in config.effective_sinks (TECH-ARCH1) and
+    # fires under workflow_nda_mode too, not only regulated_mode. Before this,
+    # _build_one checked regulated_mode alone; NDA reached the same outcome
+    # only because the workflow overlay rewrote sinks upstream. Routing through
+    # effective_sinks makes the clamp robust at the build site itself.
+    cfg = Config.model_validate({
+        "output": {"sinks": ["notion", "filesystem"]},
+        "filesystem": {"output_dir": str(tmp_path / "out")},
+        "modes": {"workflow_nda_mode": True},
+    })
+    pubs = build_publishers(cfg)
+    assert [p.name for p in pubs] == ["filesystem"]
+
+
 def test_fanout_regulated_mode_issues_no_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # End-to-end zero-egress: driving fanout under regulated_mode with the
     # default notion sink must not issue any request at all. We arm httpx's

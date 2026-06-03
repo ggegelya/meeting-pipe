@@ -32,7 +32,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from .config import Config, load_secrets, require_env
+from .config import Config, effective_backend, load_secrets, require_env
 from .egress_guard import arm_for_config
 from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
@@ -288,14 +288,13 @@ def _select_backend(cfg: Config) -> SummaryClient:
                             first, falls back to local on network/auth failure.
       "apple_intelligence": daemon-only (Swift); raises here if reached directly.
     """
-    backend = cfg.summarization.backend
-    # regulated_mode is a hard zero-egress guarantee: force the on-device
-    # path regardless of the configured backend, mirroring how nda_mode
-    # forces local in workflow.apply_overrides. Without this the default
-    # backend="anthropic" would still send a confidential transcript out.
-    if cfg.modes.regulated_mode and backend != "local":
-        log.info("regulated_mode=true; forcing local backend (was %s)", backend)
-        backend = "local"
+    # The regulated/NDA force-local rule lives in one place now
+    # (config.effective_backend, TECH-ARCH1). Apply it, then keep this site's
+    # own apple_intelligence / auto handling below.
+    backend = effective_backend(cfg)
+    if backend != cfg.summarization.backend:
+        log.info("zero-egress mode active; forcing local backend (was %s)",
+                 cfg.summarization.backend)
     if backend == "apple_intelligence":
         # The Apple Intelligence summary is produced in the Swift daemon (the
         # macOS 26 Foundation Model is Swift-only). run-all hands off before

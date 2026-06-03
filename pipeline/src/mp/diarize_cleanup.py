@@ -31,7 +31,7 @@ import anthropic
 
 from . import events
 from .chunking import chunked_windows
-from .config import Config, load_secrets, require_env
+from .config import Config, effective_backend, load_secrets, require_env
 from .egress_guard import arm_for_config
 from .markdown import render_markdown
 from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
@@ -385,10 +385,13 @@ def _select_cleanup_backend(cfg: Config) -> CleanupClient:
     the cleanup pass to the on-device MLX path (the Swift Foundation Model
     only summarizes; cleanup runs in Python and stays local for it).
     """
-    backend = cfg.summarization.backend
-    if cfg.modes.regulated_mode and backend != "local":
-        log.info("regulated_mode=true; forcing local cleanup backend (was %s)", backend)
-        backend = "local"
+    # Shared regulated/NDA force-local rule via the single chokepoint
+    # (config.effective_backend, TECH-ARCH1); the apple/auto collapse below is
+    # this site's own (cleanup runs in Python even when the summary is Apple).
+    backend = effective_backend(cfg)
+    if backend != cfg.summarization.backend:
+        log.info("zero-egress mode active; forcing local cleanup backend (was %s)",
+                 cfg.summarization.backend)
     if backend == "apple_intelligence":
         log.info("apple_intelligence backend; running cleanup on the local MLX backend")
         backend = "local"
