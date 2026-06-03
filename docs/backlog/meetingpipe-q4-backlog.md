@@ -49,7 +49,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-SEC8 | Tokens in Keychain (extends SEC1) | Security | P2 new | Move NOTION_TOKEN / ANTHROPIC_API_KEY out of secrets.env into the macOS Keychain; closes SEC1 properly. |
 | TECH-SEC1 | secrets.env read-permission check | Security | DONE (was P2 carry) | Neither reader refuses a 0644 secrets.env; warn or refuse on a too-open mode. Folds into SEC8 if Keychain lands. |
 | TECH-WF2 | Workflow emoji picker | Workflow | P2 new | The emoji field is a bare 80pt text box that accepts arbitrary text; use a real emoji picker constrained to one grapheme. |
-| TECH-WF3 | Workflow color picker | Workflow | P2 new | Replace the #RRGGBB hex field with a native ColorPicker or token-aligned swatches; keep hex as an advanced fallback. |
+| TECH-WF3 | Workflow color picker | Workflow | DONE (was P2) | Replace the #RRGGBB hex field with a native ColorPicker or token-aligned swatches; keep hex as an advanced fallback. |
 | TECH-WF4 | Workflow identity-section layout | Workflow | DONE (was P2) | Name / Color / Emoji rows are raggedly aligned (a stray Spacer, mismatched widths); make the section coherent. |
 | TECH-WF5 | Workflow discoverability | Workflow | P2 new | Editing a workflow is buried behind selecting a Library scope and an unlabeled pencil; give it a findable home. |
 | TECH-DSN3 | Token-enforcement pass | Design | P2 new | 126 raw .system fonts and 22 raw colors bypass the token system; enforce tokens, unify to one button language, add a CI guard. |
@@ -144,7 +144,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 
 **TECH-WF2 (P2): emoji picker.** Replace the free `TextField("optional")` (width 80, accepts any text) with a real emoji picker (system Character palette via `orderFrontCharacterPalette`, or a curated grid) constrained to one grapheme.
 
-**TECH-WF3 (P2): color picker.** Replace the `#RRGGBB` hex field with SwiftUI's native `ColorPicker` or a token-aligned swatch palette; keep hex as an advanced fallback.
+**[DONE] TECH-WF3 (P2): color picker.** Replace the `#RRGGBB` hex field with SwiftUI's native `ColorPicker` or a token-aligned swatch palette; keep hex as an advanced fallback. Done: the Color row now leads with a native `ColorPicker` (its built-in swatch replaces the WF4 placeholder ring), bound via a `colorBinding` that parses the model's hex for the swatch and writes an sRGB `#RRGGBB` back on pick. Added the inverse helper `HexColor.hexString(from:)` (sRGB components -> upper-case hex) next to the existing `parse`. The monospaced hex field stays inline as the advanced fallback for paste / power users. Build green.
 
 **[DONE] TECH-WF4 (P2): identity-section layout.** Fix the ragged alignment in the Identity section (the color row ends in a Spacer, emoji is width-80, name is full-width); give the rows a consistent field width. Done: dropped the stray `Spacer`, gave the Color and Emoji controls a shared `identityFieldWidth` (150) so they line up, and moved the colour preview to a `colorSwatch` left of the hex field (a muted placeholder ring when the hex is empty/unparseable, so the row height never jumps). Name stays full-width as the primary field. Build green.
 

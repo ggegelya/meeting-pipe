@@ -128,7 +128,9 @@ struct WorkflowEditor: View {
             }
             LabeledContent("Color") {
                 HStack(spacing: 8) {
-                    colorSwatch
+                    ColorPicker("", selection: colorBinding, supportsOpacity: false)
+                        .labelsHidden()
+                    // Hex stays as an advanced fallback for power users and paste.
                     TextField("#RRGGBB", text: $color)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
@@ -143,17 +145,14 @@ struct WorkflowEditor: View {
         }
     }
 
-    /// Live colour preview for the Color row; a muted placeholder ring when the
-    /// hex is empty or unparseable so the row height stays constant.
-    private var colorSwatch: some View {
-        Group {
-            if let parsed = HexColor.parse(color) {
-                Circle().fill(Color(parsed))
-            } else {
-                Circle().strokeBorder(Color.secondary.opacity(0.35), lineWidth: 1)
-            }
-        }
-        .frame(width: 16, height: 16)
+    /// Bridges the model's `#RRGGBB` string to SwiftUI's native `ColorPicker`
+    /// (TECH-WF3): parse for the swatch, write the sRGB hex back on pick. Falls
+    /// back to the signal hue when the field is empty or mid-edit.
+    private var colorBinding: Binding<Color> {
+        Binding(
+            get: { HexColor.parse(color).map { Color(nsColor: $0) } ?? Color(nsColor: MPColors.signal600) },
+            set: { color = HexColor.hexString(from: NSColor($0)) }
+        )
     }
 
     private var matchingRulesSection: some View {

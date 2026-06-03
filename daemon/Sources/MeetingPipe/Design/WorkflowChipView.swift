@@ -124,4 +124,15 @@ enum HexColor {
         let b = CGFloat(v & 0xFF) / 255.0
         return NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
     }
+
+    /// Inverse of `parse`: an upper-case `#RRGGBB` string from a colour, read in
+    /// the sRGB space. Used by the workflow editor's native ColorPicker to write
+    /// the model's hex back (TECH-WF3).
+    static func hexString(from color: NSColor) -> String {
+        let rgb = color.usingColorSpace(.sRGB) ?? color
+        let r = Int((rgb.redComponent * 255).rounded())
+        let g = Int((rgb.greenComponent * 255).rounded())
+        let b = Int((rgb.blueComponent * 255).rounded())
+        return String(format: "#%02X%02X%02X", r, g, b)
+    }
 }
