@@ -443,7 +443,14 @@ private final class StopButton: NSButton {
     }
     override func mouseEntered(with event: NSEvent) { isHovered = true }
     override func mouseExited(with event: NSEvent) { isHovered = false; isPressed = false }
-    override func mouseDown(with event: NSEvent) { isPressed = true; super.mouseDown(with: event); isPressed = false }
+    override func mouseDown(with event: NSEvent) {
+        isPressed = true
+        // TECH-DSN5: a firm trackpad detent for the consequential Stop action
+        // (no-op on hardware without a Force Touch trackpad).
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+        super.mouseDown(with: event)
+        isPressed = false
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         let ring: NSColor

@@ -224,6 +224,14 @@ private struct GeneralSectionView: View {
                 }
             }
 
+            SettingsGroup("Sound") {
+                // TECH-DSN5: one opt-in, default-off post-call completion tone.
+                SettingsToggleRow("Play a tone when a meeting finishes",
+                    sublabel: "A short system tone when the summary is ready. Off by default, and never during a call.",
+                    isOn: $ui.playCompletionTone,
+                    showsDivider: false)
+            }
+
             SettingsGroup("Hotkeys") {
                 SettingsRow("Manual toggle",
                     sublabel: "Start or stop a recording from anywhere.",

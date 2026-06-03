@@ -215,6 +215,12 @@ final class Coordinator: NSObject {
             sinkDispatcher: sinkDispatcher,
             onDone: { [weak self] stem, recordingsDir, pageURL in
                 self?.libraryModel.activeProcessing = nil
+                // TECH-DSN5: opt-in, default-off completion tone (the summary is
+                // ready). Never plays during a call; separate from the done
+                // notification's sound, which Focus can suppress.
+                if UISettings.shared.playCompletionTone {
+                    NSSound(named: "Glass")?.play()
+                }
                 self?.notifier.notifyDone(
                     stem: stem,
                     recordingsDir: recordingsDir,

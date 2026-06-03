@@ -53,6 +53,11 @@ final class UISettings: ObservableObject {
         didSet { UserDefaults.standard.set(disableAutoRestart, forKey: Keys.disableAutoRestart) }
     }
 
+    /// Opt-in (TECH-DSN5): play one short system tone when a meeting finishes processing (the summary is ready). Default OFF so the app stays silent unless asked; never plays during a call. The done notification's sound is separate and may be suppressed by Focus, so this is the reliable audible "done" cue for those who want it.
+    @Published var playCompletionTone: Bool {
+        didSet { UserDefaults.standard.set(playCompletionTone, forKey: Keys.playCompletionTone) }
+    }
+
     private enum Keys {
         static let theme = "mp.ui.theme"
         static let menuBarIconStyle = "mp.ui.menuBarIconStyle"
@@ -61,6 +66,7 @@ final class UISettings: ObservableObject {
         static let playbackChannelMode = "mp.ui.playbackChannelMode"
         static let preloadLocalModelAtLaunch = "mp.ui.preloadLocalModelAtLaunch"
         static let disableAutoRestart = "mp.ui.disableAutoRestart"
+        static let playCompletionTone = "mp.ui.playCompletionTone"
     }
 
     private init() {
@@ -76,6 +82,7 @@ final class UISettings: ObservableObject {
         ) ?? .default
         self.preloadLocalModelAtLaunch = d.bool(forKey: Keys.preloadLocalModelAtLaunch)
         self.disableAutoRestart = d.bool(forKey: Keys.disableAutoRestart)
+        self.playCompletionTone = d.bool(forKey: Keys.playCompletionTone)
     }
 
     /// Apply the theme to `NSApp.appearance`. `nil` restores the system default.

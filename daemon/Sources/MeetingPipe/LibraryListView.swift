@@ -183,6 +183,10 @@ struct LibraryListView: View {
             }
         }
         .listStyle(.inset)
+        // TECH-DSN5: settle the selection rather than snapping it. One of the
+        // three sanctioned animation moments (with the HUD degraded grow/shrink
+        // and the prompt fade-in); restraint elsewhere is deliberate.
+        .animation(.easeOut(duration: MPMotion.durFast), value: selection)
     }
 
 }
