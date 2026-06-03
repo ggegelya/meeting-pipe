@@ -138,11 +138,33 @@ struct WorkflowEditor: View {
                 }
             }
             LabeledContent("Emoji") {
-                TextField("optional", text: $emoji)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: Self.identityFieldWidth)
+                HStack(spacing: 8) {
+                    Button {
+                        NSApp.orderFrontCharacterPalette(nil)
+                    } label: {
+                        Image(systemName: "face.smiling")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Open the emoji & symbols palette")
+                    TextField("optional", text: $emoji)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: Self.identityFieldWidth)
+                        .onChange(of: emoji) { _, newValue in
+                            let constrained = Self.constrainToOneEmoji(newValue)
+                            if constrained != newValue { emoji = constrained }
+                        }
+                }
             }
         }
+    }
+
+    /// Keep the Emoji field to a single grapheme (TECH-WF2): the system palette
+    /// or a paste can drop in several, so keep the last one so a fresh pick
+    /// replaces the old. A grapheme cluster (flag, ZWJ family) counts as one.
+    static func constrainToOneEmoji(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let last = trimmed.last else { return "" }
+        return String(last)
     }
 
     /// Bridges the model's `#RRGGBB` string to SwiftUI's native `ColorPicker`
