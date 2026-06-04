@@ -579,17 +579,37 @@ final class MeetingSessionController {
         }
     }
 
+    /// Serial queue for cross-process AX tree walks that would otherwise run on
+    /// the main thread at recording-start. Mirrors `MeetingDiscoveryWatcher.scanQueue`.
+    private static let axWalkQueue = DispatchQueue(
+        label: "com.meetingpipe.session.ax-walk",
+        qos: .userInitiated
+    )
+
     /// Late-arm the Leave-button signal at recording-start: the
     /// discovery-time walk usually runs before the call UI renders the
     /// button. Idempotent; a still-missing button leaves the recording on
     /// the silence backstop.
+    ///
+    /// The AX tree walk (a cross-process DFS over every window) runs OFF the
+    /// main thread so it can't stall the run loop right after the HUD appears,
+    /// then hops back to main to arm. This is end-detection only, so arming a
+    /// beat later (the call just started) is harmless. The mic-gate engage
+    /// deliberately stays synchronous: its verdict gates the very first buffers
+    /// and the recorder zeros the mic until that first verdict, so deferring it
+    /// would clip the start of the recording.
     func armLifecycleLeaveButton(source: AppSource?) {
         guard let source = source else { return }
-        guard let handles = MeetingAXHandleBuilder.build(source: source, catalogue: coordinator.muteLabels),
-              let leaveButton = handles.lifecycle.leaveButton else {
-            return
+        let catalogue = coordinator.muteLabels
+        Self.axWalkQueue.async { [weak self] in
+            guard
+                let handles = MeetingAXHandleBuilder.build(source: source, catalogue: catalogue),
+                let leaveButton = handles.lifecycle.leaveButton
+            else { return }
+            DispatchQueue.main.async {
+                self?.coordinator.lifecycleCoord.armLeaveButton(leaveButton)
+            }
         }
-        coordinator.lifecycleCoord.armLeaveButton(leaveButton)
     }
 
     /// Rescue a provisional end caused by the Teams 2 compact-view swap,
