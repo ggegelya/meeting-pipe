@@ -63,6 +63,7 @@ struct WorkflowEditor: View {
     @State private var ndaMode: Bool = false
     @State private var pendingDeleteAlert: Bool = false
     @State private var saveError: String?
+    @State private var colorPopoverOpen: Bool = false
 
     var body: some View {
         ScrollView {
@@ -133,8 +134,7 @@ struct WorkflowEditor: View {
             }
             LabeledContent("Color") {
                 HStack(spacing: 8) {
-                    ColorPicker("", selection: colorBinding, supportsOpacity: false)
-                        .labelsHidden()
+                    colorSwatchButton
                     // Hex stays as an advanced fallback for power users and paste.
                     TextField("", text: $color, prompt: Text("#RRGGBB"))
                         .textFieldStyle(.roundedBorder)
@@ -172,15 +172,64 @@ struct WorkflowEditor: View {
         return String(last)
     }
 
-    /// Bridges the model's `#RRGGBB` string to SwiftUI's native `ColorPicker`
-    /// (TECH-WF3): parse for the swatch, write the sRGB hex back on pick. Falls
-    /// back to the signal hue when the field is empty or mid-edit.
-    private var colorBinding: Binding<Color> {
-        Binding(
-            get: { HexColor.parse(color).map { Color(nsColor: $0) } ?? Color(nsColor: MPColors.signal600) },
-            set: { color = HexColor.hexString(from: NSColor($0)) }
-        )
+    /// A swatch button that opens a small palette popover anchored to the field
+    /// (TECH-WF3), replacing the native `ColorPicker` whose shared system panel
+    /// floated detached at a screen corner. The hex field beside it stays the
+    /// precise fallback for any colour not in the palette.
+    private var colorSwatchButton: some View {
+        Button {
+            colorPopoverOpen = true
+        } label: {
+            RoundedRectangle(cornerRadius: 5)
+                .fill(HexColor.parse(color).map { Color(nsColor: $0) } ?? Color(nsColor: MPColors.signal600))
+                .frame(width: 38, height: 22)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $colorPopoverOpen, arrowEdge: .bottom) {
+            colorPalettePopover
+        }
     }
+
+    private var colorPalettePopover: some View {
+        let columns = Array(repeating: GridItem(.fixed(26), spacing: 8), count: 6)
+        return LazyVGrid(columns: columns, spacing: 8) {
+            ForEach(Self.colorPalette, id: \.self) { hex in
+                Button {
+                    color = hex
+                    colorPopoverOpen = false
+                } label: {
+                    Circle()
+                        .fill(Color(nsColor: HexColor.parse(hex) ?? .gray))
+                        .frame(width: 24, height: 24)
+                        .overlay(
+                            Circle().strokeBorder(
+                                isSelectedColor(hex) ? Color.primary : Color.secondary.opacity(0.25),
+                                lineWidth: isSelectedColor(hex) ? 2 : 1
+                            )
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(hex)
+            }
+        }
+        .padding(12)
+        .frame(width: 220)
+    }
+
+    private func isSelectedColor(_ hex: String) -> Bool {
+        color.trimmingCharacters(in: .whitespaces).uppercased() == hex.uppercased()
+    }
+
+    /// Curated palette for the swatch popover: the MeetingPipe signal teal first,
+    /// then a spread of distinct hues. Any other colour stays reachable via hex.
+    private static let colorPalette: [String] = [
+        "#0E8C82", "#14A89B", "#3478F6", "#5E5CE6", "#AF52DE", "#FF2D55",
+        "#E5484D", "#FF6074", "#FF9500", "#FFCC00", "#34C759", "#8E8E93",
+    ]
 
     private var matchingRulesSection: some View {
         Section("Matching rules") {
