@@ -82,6 +82,13 @@ final class MeetingRecorder {
     /// Retries queued for the current device-change event.
     private var configurationRecoveryAttempts = 0
 
+    /// Watches the mic tap for a stall that posts no `AVAudioEngineConfigurationChange`
+    /// (a silent device takeover / HAL hiccup). A ~1 Hz main-queue timer samples
+    /// `micFires`; if it stalls while the engine still claims to be running,
+    /// capture is re-armed via the same path as a device change. Torn down in `stop()`.
+    private let tapLivenessMonitor = MicTapLivenessMonitor()
+    private var tapLivenessTimer: DispatchSourceTimer?
+
     /// Outcome of reacting to a mid-recording input device change.
     enum CaptureRecoveryOutcome {
         case resumed
@@ -270,6 +277,7 @@ final class MeetingRecorder {
         startedAt = Date()
         Log.recorder.info("recorder started → \(finalURL.path)")
         Log.writeLine("recorder", "recorder started → \(finalURL.path)")
+        startTapLivenessWatchdog()
         return finalURL
     }
 
@@ -584,6 +592,51 @@ final class MeetingRecorder {
         onConfigurationChange?(.failed)
     }
 
+    // MARK: - Mic tap liveness watchdog
+
+    /// Start the ~1 Hz watchdog that re-arms capture if the mic tap stops
+    /// delivering buffers without a device-change notification. Re-baselines
+    /// the monitor to the current counter; cancelled in `stop()`.
+    private func startTapLivenessWatchdog() {
+        tapLivenessMonitor.reset(count: micFires)
+        tapLivenessTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 1.0, repeating: 1.0)
+        timer.setEventHandler { [weak self] in self?.checkTapLiveness() }
+        tapLivenessTimer = timer
+        timer.resume()
+    }
+
+    /// One watchdog tick: if the engine still claims to be running but no mic
+    /// buffers have arrived for the stall window, re-arm capture. On the main
+    /// queue, the same thread the device-change recovery it reuses runs on.
+    private func checkTapLiveness() {
+        guard isRecording, engine.isRunning else { return }
+        guard tapLivenessMonitor.sample(count: micFires) else { return }
+        Log.event(category: "recorder", action: "mic_tap_stall_detected", attributes: [
+            "mic_fires": Int(micFires),
+            "stall_after_s": tapLivenessMonitor.stallAfter,
+        ])
+        Log.writeLine("recorder", "mic tap stalled with no device-change notification - re-arming capture")
+        recoverFromTapStall()
+        tapLivenessMonitor.reset(count: micFires)
+    }
+
+    /// Re-arm the mic tap after a silent stall, reusing the device-change
+    /// recovery (stop engine, swap tap, restart). The input format usually has
+    /// not changed, so this re-installs the same-format tap and restarts.
+    private func recoverFromTapStall() {
+        guard isRecording, let fileFormat = micFileFormat else { return }
+        let rawLive = engine.inputNode.outputFormat(forBus: 0)
+        let liveFormat = rawLive.sampleRate > 0 ? rawLive : fileFormat
+        recoverCapture(
+            fileFormat: fileFormat,
+            liveFormat: liveFormat,
+            needsConverter: liveFormat != fileFormat,
+            gapStart: Date()
+        )
+    }
+
     /// Resample a tap buffer to the file format with a pre-built
     /// converter (set up when a device change altered the input format).
     /// The converter is stateful; reuse the one instance across calls.
@@ -644,6 +697,11 @@ final class MeetingRecorder {
         self.lastSystemFires = systemFires
         self.micFires = 0
         self.systemFires = 0
+
+        // Stop the tap-liveness watchdog before teardown so it can't re-arm a
+        // recorder that is shutting down.
+        tapLivenessTimer?.cancel()
+        tapLivenessTimer = nil
 
         // Await the SCStream start before teardown, else we stop() a stream
         // that hasn't fully started and orphan it.
