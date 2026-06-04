@@ -24,6 +24,9 @@ say()  { printf "\033[1;34m==>\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m!!\033[0m %s\n" "$*" >&2; }
 die()  { printf "\033[1;31mxx\033[0m %s\n" "$*" >&2; exit 1; }
 
+# Shared two-pass app-bundle signing (also used by install.sh).
+source "$REPO_ROOT/scripts/lib/sign-app.sh"
+
 if [[ ! -d "$APP" ]]; then
     die "$APP missing. Run scripts/install.sh first for the cold-install path."
 fi
@@ -55,15 +58,7 @@ done
 # macOS to honor existing Notifications / Mic grants when the user
 # toggles the Screen Recording switch once for the new cdhash).
 say "Re-signing"
-RESOURCE_BUNDLE="$APP/Contents/MacOS/MeetingPipe_MeetingPipe.bundle"
-if [[ -d "$RESOURCE_BUNDLE" ]]; then
-    codesign --force --sign - \
-        --identifier com.meetingpipe.daemon.resources \
-        "$RESOURCE_BUNDLE" >/dev/null
-fi
-codesign --force --sign - \
-    --identifier com.meetingpipe.daemon \
-    "$APP" >/dev/null
+sign_app_with_resources "$APP"
 
 # `kickstart -k` sends SIGTERM and immediately respawns under the same
 # LaunchAgent label, bypassing the 10 s ThrottleInterval that would

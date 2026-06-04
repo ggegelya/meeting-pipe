@@ -65,6 +65,9 @@ say()  { printf "\033[1;34m==>\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m!!\033[0m %s\n" "$*" >&2; }
 die()  { printf "\033[1;31mxx\033[0m %s\n" "$*" >&2; exit 1; }
 
+# Shared two-pass app-bundle signing (also used by rebuild.sh).
+source "$REPO_ROOT/scripts/lib/sign-app.sh"
+
 # 1. Prereqs ---------------------------------------------------------------
 
 [[ "$(uname -s)" == "Darwin" ]] || die "macOS only."
@@ -217,49 +220,7 @@ mdimport "$APP" >/dev/null 2>&1 || true
 # for the SVG glyphs + meeting_apps.toml, and
 # MeetingPipe_MeetingPipeCore.bundle for the MicGate MuteLabels.toml).
 say "Re-signing app bundle with stable identifier"
-
-for RESOURCE_BUNDLE in "$APP/Contents/MacOS/"*.bundle; do
-    [[ -d "$RESOURCE_BUNDLE" ]] || continue
-    BUNDLE_NAME="$(basename "$RESOURCE_BUNDLE" .bundle)"
-    BUNDLE_ID="com.meetingpipe.daemon.resources.$(tr '[:upper:]' '[:lower:]' <<<"$BUNDLE_NAME")"
-    if [[ ! -f "$RESOURCE_BUNDLE/Info.plist" ]]; then
-        cat >"$RESOURCE_BUNDLE/Info.plist" <<BUNDLE_PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleIdentifier</key>
-    <string>$BUNDLE_ID</string>
-    <key>CFBundleName</key>
-    <string>$BUNDLE_NAME</string>
-    <key>CFBundlePackageType</key>
-    <string>BNDL</string>
-    <key>CFBundleSupportedPlatforms</key>
-    <array>
-        <string>MacOSX</string>
-    </array>
-</dict>
-</plist>
-BUNDLE_PLIST
-    fi
-    codesign --force --sign - --identifier "$BUNDLE_ID" "$RESOURCE_BUNDLE"
-done
-
-codesign --force --sign - \
-    --identifier com.meetingpipe.daemon \
-    "$APP"
-
-# Sanity-check the result so a future codesign incompatibility surfaces
-# at install time, not at the next reinstall when the user wonders why
-# permissions broke again. `Info.plist=bound` and a stable Identifier
-# are the two properties we care about for TCC stability.
-SIGN_INFO=$(codesign -dvv "$APP" 2>&1)
-if ! grep -q "Identifier=com.meetingpipe.daemon$" <<<"$SIGN_INFO"; then
-    warn "codesign Identifier mismatch — permissions may not survive reinstall"
-fi
-if ! grep -q "Info.plist entries=" <<<"$SIGN_INFO"; then
-    warn "codesign Info.plist not bound — permissions may not survive reinstall"
-fi
+sign_app_with_resources "$APP"
 
 # Re-point DAEMON_BIN at the installed bundle so the LaunchAgent points
 # at the long-lived ~/Applications copy, not the .build/release one
