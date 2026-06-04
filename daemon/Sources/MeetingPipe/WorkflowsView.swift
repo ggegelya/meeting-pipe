@@ -46,6 +46,9 @@ struct WorkflowEditor: View {
     var startsBlank: Bool = false
     /// Reports the live name field value so the enclosing sheet header can reflect it as the user types (TECH-UI-7).
     var onNameChange: ((String) -> Void)? = nil
+    /// Called after a successful Save so the host sheet can dismiss; Save now
+    /// commits *and* closes instead of silently persisting with no visible change.
+    var onCommit: (() -> Void)? = nil
     /// Notion DB list for the picker (TECH-B8). Held at editor level so the picker is populated on open, not only when Notion is toggled on.
     @StateObject private var notionDBs = NotionDatabaseList()
 
@@ -122,7 +125,9 @@ struct WorkflowEditor: View {
     private var identitySection: some View {
         Section("Identity") {
             LabeledContent("Name") {
-                TextField("Untitled workflow", text: $name)
+                // `prompt:` (not the title arg) so the placeholder doesn't render
+                // as leaked label text beside the field in this LabeledContent/Form.
+                TextField("", text: $name, prompt: Text("Untitled workflow"))
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(save)
             }
@@ -131,7 +136,7 @@ struct WorkflowEditor: View {
                     ColorPicker("", selection: colorBinding, supportsOpacity: false)
                         .labelsHidden()
                     // Hex stays as an advanced fallback for power users and paste.
-                    TextField("#RRGGBB", text: $color)
+                    TextField("", text: $color, prompt: Text("#RRGGBB"))
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
                         .frame(width: Self.identityFieldWidth)
@@ -146,7 +151,7 @@ struct WorkflowEditor: View {
                     }
                     .buttonStyle(.bordered)
                     .help("Open the emoji & symbols palette")
-                    TextField("optional", text: $emoji)
+                    TextField("", text: $emoji, prompt: Text("optional"))
                         .textFieldStyle(.roundedBorder)
                         .frame(width: Self.identityFieldWidth)
                         .onChange(of: emoji) { _, newValue in
@@ -438,6 +443,7 @@ struct WorkflowEditor: View {
         do {
             try store.upsert(clone)
             saveError = nil
+            onCommit?()
         } catch {
             saveError = error.localizedDescription
         }

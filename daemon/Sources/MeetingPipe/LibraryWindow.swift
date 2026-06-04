@@ -453,13 +453,14 @@ private struct WorkflowEditorSheet: View {
                 Text(headerTitle)
                     .font(.headline)
                 Spacer()
-                Button("Done", action: onClose)
-                    .keyboardShortcut(.defaultAction)
+                Button("Cancel", action: onClose)
+                    .keyboardShortcut(.cancelAction)
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 12)
             Divider()
-            WorkflowEditor(workflow: workflow, store: store, onNameChange: { liveName = $0 })
+            // Save commits and closes; Cancel above discards unsaved edits.
+            WorkflowEditor(workflow: workflow, store: store, onNameChange: { liveName = $0 }, onCommit: onClose)
                 .padding(20)
         }
         .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 640)
@@ -488,13 +489,20 @@ private struct NewWorkflowSheet: View {
                         Text(headerTitle)
                             .font(.headline)
                         Spacer()
-                        Button("Done") { onClose(s.id) }
-                            .keyboardShortcut(.defaultAction)
+                        Button("Cancel") {
+                            // The stub was persisted on open; discard it so a
+                            // cancelled "New workflow" doesn't orphan an
+                            // "Untitled workflow" in the rail.
+                            _ = try? store.delete(id: s.id)
+                            onClose(nil)
+                        }
+                        .keyboardShortcut(.cancelAction)
                     }
                     .padding(.horizontal, 18)
                     .padding(.vertical, 12)
                     Divider()
-                    WorkflowEditor(workflow: s, store: store, startsBlank: true, onNameChange: { liveName = $0 })
+                    // Save commits (keeping the stub, renamed) and closes.
+                    WorkflowEditor(workflow: s, store: store, startsBlank: true, onNameChange: { liveName = $0 }, onCommit: { onClose(s.id) })
                         .padding(20)
                 }
             } else {
