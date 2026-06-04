@@ -39,10 +39,11 @@ extension Coordinator {
         quickFindWindow.show()
     }
 
-    /// Open the Library and present the workflow editor (TECH-WF5): a findable
-    /// top-level home for workflow management, instead of only the rail pencil.
+    /// Open the Library (TECH-WF5): a findable top-level home for workflow
+    /// management. The WORKFLOWS rail there is the manager (edit any workflow, or
+    /// "+ New workflow"). Deliberately does NOT auto-open the New sheet, which
+    /// persists an orphan "Untitled workflow" stub if closed without naming.
     @objc func menuManageWorkflows() {
-        libraryModel.pendingOpenNewWorkflow = true
         libraryWindow.show()
     }
 
