@@ -184,8 +184,12 @@ struct WorkflowEditor: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach($matchingRules) { $rule in
-                    matchingRuleRow($rule: $rule)
+                // Iterate by value/id, not a positional `$matchingRules`
+                // binding: removing a row inside a binding-based ForEach makes
+                // SwiftUI read a now-missing index on the next render and crash
+                // (the per-row "minus" delete button hit this).
+                ForEach(matchingRules) { rule in
+                    matchingRuleRow(id: rule.id)
                 }
                 .onDelete { offsets in
                     matchingRules.remove(atOffsets: offsets)
@@ -203,23 +207,36 @@ struct WorkflowEditor: View {
         }
     }
 
-    private func matchingRuleRow(@Binding rule: WorkflowMatchingRule) -> some View {
+    private func matchingRuleRow(id: UUID) -> some View {
         HStack(alignment: .top, spacing: 8) {
             VStack(spacing: 4) {
-                TextField("bundle id", text: $rule.bundleID)
+                TextField("bundle id", text: ruleBinding(id, \.bundleID))
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
-                TextField("title regex (optional)", text: $rule.titleRegex)
+                TextField("title regex (optional)", text: ruleBinding(id, \.titleRegex))
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
             }
             Button(role: .destructive) {
-                matchingRules.removeAll { $0.id == rule.id }
+                matchingRules.removeAll { $0.id == id }
             } label: {
                 Image(systemName: "minus.circle")
             }
             .buttonStyle(.borderless)
         }
+    }
+
+    /// Id-keyed binding into `matchingRules`, so a row never holds a positional
+    /// binding that goes stale when a different row is removed (TECH-WF crash fix).
+    private func ruleBinding(_ id: UUID, _ keyPath: WritableKeyPath<WorkflowMatchingRule, String>) -> Binding<String> {
+        Binding(
+            get: { matchingRules.first(where: { $0.id == id })?[keyPath: keyPath] ?? "" },
+            set: { newValue in
+                if let i = matchingRules.firstIndex(where: { $0.id == id }) {
+                    matchingRules[i][keyPath: keyPath] = newValue
+                }
+            }
+        )
     }
 
     private var contextSection: some View {
