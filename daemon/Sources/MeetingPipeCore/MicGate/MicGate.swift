@@ -11,7 +11,6 @@ public final class MicGate {
         public var halVad: Bool?
         public var rmsState: RMSGateProbe.State
         public var rmsCloseDwellMillis: Int
-        public var rmsSustainedOpen: Bool
 
         public init(
             halSystemMute: Bool? = nil,
@@ -20,8 +19,7 @@ public final class MicGate {
             axLocale: String? = nil,
             halVad: Bool? = nil,
             rmsState: RMSGateProbe.State = .closed,
-            rmsCloseDwellMillis: Int = 0,
-            rmsSustainedOpen: Bool = false
+            rmsCloseDwellMillis: Int = 0
         ) {
             self.halSystemMute = halSystemMute
             self.axMute = axMute
@@ -30,7 +28,6 @@ public final class MicGate {
             self.halVad = halVad
             self.rmsState = rmsState
             self.rmsCloseDwellMillis = rmsCloseDwellMillis
-            self.rmsSustainedOpen = rmsSustainedOpen
         }
     }
 
@@ -98,9 +95,6 @@ public final class MicGate {
         }
         self.rmsGate.onChange = { [weak self] gateState in
             self?.update { $0.rmsState = gateState }
-        }
-        self.rmsGate.onSustainedOpenChange = { [weak self] sustained in
-            self?.update { $0.rmsSustainedOpen = sustained }
         }
     }
 
@@ -171,14 +165,6 @@ public final class MicGate {
     public static func decide(state: State) -> MicGateVerdict {
         if state.halSystemMute == true { return .mutedByHardware }
         if case .muted = state.axMute {
-            // Capture-first: sustained live voice overrides a stale or wrong
-            // app-mute read. Teams' compact/mini window can hide the live mute
-            // control, latching a stale `.muted`; trusting sustained voice
-            // recovers the mic. Hardware mute already returned above, so it
-            // still forces silence over this.
-            if state.rmsSustainedOpen {
-                return .hot(reason: .rmsOverridesAppMute)
-            }
             return .mutedByApp(
                 axLabel: state.axLabel ?? "",
                 locale: state.axLocale ?? ""

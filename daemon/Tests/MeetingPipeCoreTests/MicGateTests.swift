@@ -87,52 +87,6 @@ final class MicGateDecideTests: XCTestCase {
         // Open gate is hot, not uncertain.
         XCTAssertEqual(MicGate.decide(state: state), .hot(reason: .rmsAboveOpenThreshold))
     }
-
-    // MARK: - Capture-first override (S1: Teams compact/mini window)
-
-    func test_sustained_voice_overrides_stale_app_mute() {
-        // axMute is latched .muted (the live mute control became unreadable),
-        // but the user is clearly speaking. Capture-first: live voice wins.
-        let state = MicGate.State(
-            halSystemMute: false,
-            axMute: .muted,
-            axLabel: "Unmute",
-            axLocale: "en",
-            halVad: nil,
-            rmsState: .open,
-            rmsSustainedOpen: true
-        )
-        XCTAssertEqual(MicGate.decide(state: state), .hot(reason: .rmsOverridesAppMute))
-    }
-
-    func test_app_mute_holds_without_sustained_voice() {
-        // A momentary RMS spike (not sustained) must NOT override app-mute, so
-        // incidental noise while genuinely muted is still gated.
-        let state = MicGate.State(
-            halSystemMute: false,
-            axMute: .muted,
-            axLabel: "Unmute",
-            axLocale: "en",
-            rmsState: .open,
-            rmsSustainedOpen: false
-        )
-        XCTAssertEqual(
-            MicGate.decide(state: state),
-            .mutedByApp(axLabel: "Unmute", locale: "en")
-        )
-    }
-
-    func test_hardware_mute_wins_over_sustained_voice_override() {
-        // HAL hardware mute is the always-silent escape hatch, above the override.
-        let state = MicGate.State(
-            halSystemMute: true,
-            axMute: .muted,
-            halVad: nil,
-            rmsState: .open,
-            rmsSustainedOpen: true
-        )
-        XCTAssertEqual(MicGate.decide(state: state), .mutedByHardware)
-    }
 }
 
 final class MicGateIntegrationTests: XCTestCase {
