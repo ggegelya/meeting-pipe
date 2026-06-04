@@ -25,6 +25,9 @@ public enum MicGateVerdict: Equatable, Sendable {
     public enum Reason: String, Equatable, Sendable {
         case voiceActivityDetected = "vad_active"
         case rmsAboveOpenThreshold = "rms_above_open_threshold"
+        /// Sustained live voice overrode a stale/unreadable app-mute read
+        /// (capture-first; HAL hardware mute still forces silence above this).
+        case rmsOverridesAppMute = "rms_overrides_app_mute"
     }
 
     /// True only for `.hot`; all other verdicts zero the mic.

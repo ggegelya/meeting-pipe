@@ -11,6 +11,7 @@ public final class MicGate {
         public var halVad: Bool?
         public var rmsState: RMSGateProbe.State
         public var rmsCloseDwellMillis: Int
+        public var rmsSustainedOpen: Bool
 
         public init(
             halSystemMute: Bool? = nil,
@@ -19,7 +20,8 @@ public final class MicGate {
             axLocale: String? = nil,
             halVad: Bool? = nil,
             rmsState: RMSGateProbe.State = .closed,
-            rmsCloseDwellMillis: Int = 0
+            rmsCloseDwellMillis: Int = 0,
+            rmsSustainedOpen: Bool = false
         ) {
             self.halSystemMute = halSystemMute
             self.axMute = axMute
@@ -28,6 +30,7 @@ public final class MicGate {
             self.halVad = halVad
             self.rmsState = rmsState
             self.rmsCloseDwellMillis = rmsCloseDwellMillis
+            self.rmsSustainedOpen = rmsSustainedOpen
         }
     }
 
@@ -96,6 +99,9 @@ public final class MicGate {
         self.rmsGate.onChange = { [weak self] gateState in
             self?.update { $0.rmsState = gateState }
         }
+        self.rmsGate.onSustainedOpenChange = { [weak self] sustained in
+            self?.update { $0.rmsSustainedOpen = sustained }
+        }
     }
 
     public func start(context: MeetingLifecycleContext, handle: MicGateAdapterHandle) throws {
@@ -144,6 +150,18 @@ public final class MicGate {
         }
     }
 
+    /// Discredit the app-mute read: clears `axMute` so `decide` falls through to
+    /// the live VAD/RMS signals instead of latching a stale `.muted`. Used by the
+    /// window watcher when the live mute control can no longer be read (e.g. Teams
+    /// switched to its compact/mini window and the original element went stale).
+    public func clearAxMute() {
+        update {
+            $0.axMute = nil
+            $0.axLabel = nil
+            $0.axLocale = nil
+        }
+    }
+
     public var current: MicGateVerdict {
         lock.withLock { lastVerdict }
     }
@@ -153,6 +171,14 @@ public final class MicGate {
     public static func decide(state: State) -> MicGateVerdict {
         if state.halSystemMute == true { return .mutedByHardware }
         if case .muted = state.axMute {
+            // Capture-first: sustained live voice overrides a stale or wrong
+            // app-mute read. Teams' compact/mini window can hide the live mute
+            // control, latching a stale `.muted`; trusting sustained voice
+            // recovers the mic. Hardware mute already returned above, so it
+            // still forces silence over this.
+            if state.rmsSustainedOpen {
+                return .hot(reason: .rmsOverridesAppMute)
+            }
             return .mutedByApp(
                 axLabel: state.axLabel ?? "",
                 locale: state.axLocale ?? ""

@@ -535,6 +535,9 @@ final class MeetingSessionController {
             eventLog: LogEventAdapter(),
             onMuteEvent: { [weak self] event in
                 self?.coordinator.micGate.injectAxMuteEvent(event)
+            },
+            onMuteCleared: { [weak self] in
+                self?.coordinator.micGate.clearAxMute()
             }
         )
         watcher.start()

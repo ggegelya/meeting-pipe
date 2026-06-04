@@ -63,13 +63,20 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         var events: [AXMuteButtonProbe.Event] = []
     }
 
+    /// Counts `onMuteCleared` calls (the blind-recovery clear).
+    final class ClearCounter {
+        var count = 0
+    }
+
     // MARK: - Fixtures
 
     private func makeWatcher(
         resolver: @escaping MeetingAXWindowWatcher.StateResolver,
         scheduler: @escaping MeetingAXWindowWatcher.Scheduler,
         sink: EventSink,
-        log: EventLog = NoopEventLog()
+        log: EventLog = NoopEventLog(),
+        clears: ClearCounter? = nil,
+        blindClearThreshold: Int = 3
     ) -> MeetingAXWindowWatcher {
         MeetingAXWindowWatcher(
             pid: 4242,
@@ -77,10 +84,12 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
             catalogue: MuteLabels(entries: [:]),
             eventLog: log,
             onMuteEvent: { sink.events.append($0) },
+            onMuteCleared: { clears?.count += 1 },
             scheduler: scheduler,
             stateResolver: resolver,
             localeResolver: { "en" },
-            pollInterval: 1.0
+            pollInterval: 1.0,
+            blindClearThreshold: blindClearThreshold
         )
     }
 
@@ -208,5 +217,88 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
 
         watcher.start()
         XCTAssertEqual(sink.events.map(\.state), [.muted])
+    }
+
+    // MARK: - Blind recovery (S1: Teams compact/mini window)
+
+    func test_blind_polls_after_muted_clear_the_stale_mute() {
+        // Start muted, then the live control becomes unreadable (mini window):
+        // every later poll is blind. After blindClearThreshold blind polls the
+        // latched .muted is cleared so MicGate stops zeroing the mic.
+        let resolver = ScriptedResolver([[.muted], []]) // muted once, then blind forever
+        let scheduler = ManualScheduler()
+        let sink = EventSink()
+        let clears = ClearCounter()
+        let log = RecordingEventLog()
+        let watcher = makeWatcher(
+            resolver: resolver.make(), scheduler: scheduler.make(),
+            sink: sink, log: log, clears: clears, blindClearThreshold: 3
+        )
+
+        watcher.start()       // poll 1: .muted (latched)
+        scheduler.fire()      // poll 2: blind #1
+        scheduler.fire()      // poll 3: blind #2
+        XCTAssertEqual(clears.count, 0, "not yet at the threshold")
+        scheduler.fire()      // poll 4: blind #3 -> clear
+        XCTAssertEqual(clears.count, 1)
+        XCTAssertTrue(log.entries.contains { $0.action == "mute_state_cleared_blind" })
+
+        // Further blind polls must not re-clear.
+        scheduler.fire()
+        XCTAssertEqual(clears.count, 1)
+    }
+
+    func test_confident_readings_never_clear() {
+        let resolver = ScriptedResolver([[.muted]]) // always a confident muted read
+        let scheduler = ManualScheduler()
+        let sink = EventSink()
+        let clears = ClearCounter()
+        let watcher = makeWatcher(
+            resolver: resolver.make(), scheduler: scheduler.make(),
+            sink: sink, clears: clears, blindClearThreshold: 3
+        )
+
+        watcher.start()
+        for _ in 0..<5 { scheduler.fire() }
+        XCTAssertEqual(clears.count, 0, "a readable mute is a real mute; never clear it")
+    }
+
+    func test_blind_without_prior_muted_does_not_clear() {
+        // A latched .unmuted going blind is benign: nothing to clear.
+        let resolver = ScriptedResolver([[.unmuted], []])
+        let scheduler = ManualScheduler()
+        let sink = EventSink()
+        let clears = ClearCounter()
+        let watcher = makeWatcher(
+            resolver: resolver.make(), scheduler: scheduler.make(),
+            sink: sink, clears: clears, blindClearThreshold: 3
+        )
+
+        watcher.start()
+        for _ in 0..<5 { scheduler.fire() }
+        XCTAssertEqual(clears.count, 0)
+    }
+
+    func test_confident_reading_resets_the_blind_streak() {
+        // muted, blind, blind, muted(confident) resets the streak; it then takes
+        // a fresh full streak of blind polls to clear.
+        let resolver = ScriptedResolver([[.muted], [], [], [.muted], []])
+        let scheduler = ManualScheduler()
+        let sink = EventSink()
+        let clears = ClearCounter()
+        let watcher = makeWatcher(
+            resolver: resolver.make(), scheduler: scheduler.make(),
+            sink: sink, clears: clears, blindClearThreshold: 3
+        )
+
+        watcher.start()       // .muted
+        scheduler.fire()      // blind #1
+        scheduler.fire()      // blind #2
+        scheduler.fire()      // .muted confident -> streak reset
+        XCTAssertEqual(clears.count, 0)
+        scheduler.fire()      // blind #1
+        scheduler.fire()      // blind #2
+        scheduler.fire()      // blind #3 -> clear
+        XCTAssertEqual(clears.count, 1)
     }
 }

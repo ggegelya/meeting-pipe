@@ -37,6 +37,13 @@ import MeetingPipeCore
 /// in-window multi-button disagreement (user's call, 2026-05-29). The common case is a
 /// single button, where the live reading wins outright.
 ///
+/// Blind recovery: if the scoped walk returns no confident reading for
+/// `blindClearThreshold` consecutive polls while a `.muted` was the last state we
+/// injected, the latched mute is no longer trustworthy (the live control moved into a
+/// view our matchers don't recognise, e.g. the compact/mini bar). We call `onMuteCleared`
+/// so MicGate drops the stale `.muted` and lets live voice through, instead of zeroing the
+/// mic for the rest of the call (observed 2026-06-03, an unmute in the mini window ignored).
+///
 /// Threading: main-queue only; not thread-safe. `start`/`stop` on `beginRecording`/`stopRecording`.
 final class MeetingAXWindowWatcher {
 
@@ -51,15 +58,24 @@ final class MeetingAXWindowWatcher {
     private let bundleID: String
     private let eventLog: EventLog
     private let onMuteEvent: (AXMuteButtonProbe.Event) -> Void
+    /// Called when the live mute control has been unreadable for
+    /// `blindClearThreshold` consecutive polls while a `.muted` was latched, so
+    /// MicGate can stop honouring a stale app-mute (Teams compact/mini window).
+    private let onMuteCleared: () -> Void
     private let scheduler: Scheduler
     private let stateResolver: StateResolver
     private let pollInterval: TimeInterval
     private let localeResolver: AXMuteButtonProbe.LocaleResolver
+    private let blindClearThreshold: Int
 
     private var cancelPoll: (() -> Void)?
     /// Last fused state we injected; suppresses duplicate events so MicGate only sees real transitions.
     private var lastEmitted: MuteLabels.State?
     private var pollCount: Int = 0
+    /// Consecutive polls with no confident reading (walk found nothing / all unknown).
+    private var consecutiveBlindPolls: Int = 0
+    /// True once we've cleared a latched `.muted` for the current blind streak; reset on the next confident reading.
+    private var clearedWhileBlind: Bool = false
 
     static let defaultScheduler: Scheduler = { delay, action in
         let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in
@@ -74,17 +90,21 @@ final class MeetingAXWindowWatcher {
         catalogue: MuteLabels,
         eventLog: EventLog,
         onMuteEvent: @escaping (AXMuteButtonProbe.Event) -> Void,
+        onMuteCleared: @escaping () -> Void = {},
         scheduler: @escaping Scheduler = MeetingAXWindowWatcher.defaultScheduler,
         stateResolver: StateResolver? = nil,
         localeResolver: @escaping AXMuteButtonProbe.LocaleResolver = AXMuteButtonProbe.defaultLocaleResolver,
-        pollInterval: TimeInterval = MeetingAXWindowWatcher.defaultPollInterval
+        pollInterval: TimeInterval = MeetingAXWindowWatcher.defaultPollInterval,
+        blindClearThreshold: Int = 3
     ) {
         self.bundleID = bundleID
         self.eventLog = eventLog
         self.onMuteEvent = onMuteEvent
+        self.onMuteCleared = onMuteCleared
         self.scheduler = scheduler
         self.localeResolver = localeResolver
         self.pollInterval = pollInterval
+        self.blindClearThreshold = blindClearThreshold
         // Capture values (not self) so the default resolver has no retain cycle.
         let axApp = AXUIElementCreateApplication(pid)
         self.stateResolver = stateResolver ?? {
@@ -108,6 +128,8 @@ final class MeetingAXWindowWatcher {
         cancelPoll = nil
         lastEmitted = nil
         pollCount = 0
+        consecutiveBlindPolls = 0
+        clearedWhileBlind = false
     }
 
     // MARK: - Poll loop
@@ -117,25 +139,48 @@ final class MeetingAXWindowWatcher {
         let states = stateResolver()
         let fused = MeetingAXWindowWatcher.fuse(states)
 
-        if let fused = fused, fused != lastEmitted {
-            // Log only on transition (and the multi-button case) so events.jsonl
-            // isn't flooded at 1 Hz. A change to `.unmuted` here is the signature
-            // of the fix working; a `buttons_found > 1` disagreement is the case
-            // the MUTED bias guards and we want to see if it ever happens.
-            eventLog.emit(category: "micgate", action: "mute_state_polled", attributes: [
-                "bundle_id": bundleID,
-                "poll_count": pollCount,
-                "buttons_found": states.count,
-                "states": states.map { MeetingAXWindowWatcher.label(for: $0) },
-                "fused": MeetingAXWindowWatcher.label(for: fused),
-                "previous": lastEmitted.map { MeetingAXWindowWatcher.label(for: $0) } as Any,
-            ])
-            lastEmitted = fused
-            onMuteEvent(AXMuteButtonProbe.Event(
-                state: fused,
-                label: fused == .muted ? "poll:muted" : "poll:unmuted",
-                locale: localeResolver()
-            ))
+        if let fused = fused {
+            // A confident reading: the live control is visible again, so any
+            // blind streak is over.
+            consecutiveBlindPolls = 0
+            clearedWhileBlind = false
+            if fused != lastEmitted {
+                // Log only on transition (and the multi-button case) so events.jsonl
+                // isn't flooded at 1 Hz. A change to `.unmuted` here is the signature
+                // of the fix working; a `buttons_found > 1` disagreement is the case
+                // the MUTED bias guards and we want to see if it ever happens.
+                eventLog.emit(category: "micgate", action: "mute_state_polled", attributes: [
+                    "bundle_id": bundleID,
+                    "poll_count": pollCount,
+                    "buttons_found": states.count,
+                    "states": states.map { MeetingAXWindowWatcher.label(for: $0) },
+                    "fused": MeetingAXWindowWatcher.label(for: fused),
+                    "previous": lastEmitted.map { MeetingAXWindowWatcher.label(for: $0) } as Any,
+                ])
+                lastEmitted = fused
+                onMuteEvent(AXMuteButtonProbe.Event(
+                    state: fused,
+                    label: fused == .muted ? "poll:muted" : "poll:unmuted",
+                    locale: localeResolver()
+                ))
+            }
+        } else if lastEmitted == .muted, !clearedWhileBlind {
+            // No confident reading while a `.muted` is latched: the live mute
+            // control likely moved into a view our matchers don't recognise
+            // (Teams compact/mini bar). After a few blind polls, clear the stale
+            // mute so MicGate stops zeroing the mic and live voice gets through.
+            consecutiveBlindPolls += 1
+            if consecutiveBlindPolls >= blindClearThreshold {
+                clearedWhileBlind = true
+                eventLog.emit(category: "micgate", action: "mute_state_cleared_blind", attributes: [
+                    "bundle_id": bundleID,
+                    "poll_count": pollCount,
+                    "blind_polls": consecutiveBlindPolls,
+                    "previous": "muted",
+                ])
+                lastEmitted = nil
+                onMuteCleared()
+            }
         }
 
         cancelPoll = scheduler(pollInterval) { [weak self] in
