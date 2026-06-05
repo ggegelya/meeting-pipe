@@ -125,4 +125,37 @@ final class CoreAudioHALBusTests: XCTestCase {
         XCTAssertEqual(attempts.count, 1)
         XCTAssertEqual(attempts.first?.attributes["object_id"], String(0xfeed))
     }
+
+    /// Regression: a handler that re-enters the bus must not dead-lock.
+    /// `HALSystemMuteProbe` rebinds its mute listener from inside the
+    /// default-input-device-changed handler (unsubscribe old + subscribe new).
+    /// Handlers are dispatched on the bus's serial queue, and subscribe/
+    /// unsubscribe used a plain `queue.sync`, so the re-entrant call waited on
+    /// the queue it was already running on -> `EXC_BREAKPOINT`. This was the
+    /// daemon's recurring crash on audio-device changes. The timeout bounds the
+    /// hang so a regression fails instead of wedging CI.
+    func test_reentrant_subscribe_unsubscribe_from_handler_does_not_deadlock() throws {
+        let backend = RecordingBackend()
+        let bus = CoreAudioHALBus(backend: backend)
+        let priorToken = try bus.subscribe(address()) {}
+
+        let done = expectation(description: "re-entrant calls complete")
+        var newToken: CoreAudioHALBus.Token?
+        _ = try bus.subscribe(address()) { [weak bus] in
+            // Runs on the bus's serial queue. Mirror rebindCurrentDeviceThrowing:
+            // drop the stale listener and register a fresh one, both re-entrant.
+            guard let bus = bus else { return }
+            bus.unsubscribe(priorToken)
+            newToken = try? bus.subscribe(self.address()) {}
+            done.fulfill()
+        }
+
+        // Fire the "device changed" handler (registration index 1).
+        backend.registrations[1].fire()
+        wait(for: [done], timeout: 2.0)
+
+        XCTAssertNotNil(newToken, "re-entrant subscribe returned a token")
+        // priorToken removed; the device listener + the freshly bound one remain.
+        XCTAssertEqual(bus.activeSubscriptionCount, 2)
+    }
 }

@@ -53,12 +53,31 @@ public final class CoreAudioHALBus {
     private let backend: Backend
     private let eventLog: EventLog
     private let queue = DispatchQueue(label: "MeetingPipeCore.CoreAudioHALBus")
+    /// Marks `queue` so a re-entrant call from inside a handler can detect it
+    /// and run inline instead of dead-locking on `queue.sync`. Per-instance, so
+    /// being on a *different* bus's queue is correctly treated as off-queue.
+    private let queueKey = DispatchSpecificKey<UInt8>()
     private var subscriptions: [Token: Subscription] = [:]
     private var nextID: UInt64 = 0
 
     public init(backend: Backend = NoopCoreAudioBackend(), eventLog: EventLog = NoopEventLog()) {
         self.backend = backend
         self.eventLog = eventLog
+        queue.setSpecific(key: queueKey, value: 1)
+    }
+
+    /// Serialise `body` on `queue`. Handlers are dispatched on `queue`
+    /// (`subscribe` below), and a handler may call back into `subscribe` /
+    /// `unsubscribe` (e.g. `HALSystemMuteProbe` rebinding the mute listener when
+    /// the default input device changes). A plain `queue.sync` from there would
+    /// wait on the queue it is already running on -> `EXC_BREAKPOINT`. When
+    /// already on `queue`, run inline; the serial queue still guarantees mutual
+    /// exclusion on `subscriptions`.
+    private func onQueue<T>(_ body: () throws -> T) rethrows -> T {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            return try body()
+        }
+        return try queue.sync(execute: body)
     }
 
     /// Subscribe to a HAL property. On failure, `subscribe_failed` logs the numeric OSStatus and its four-char code (e.g. 560947818 -> "!obj") so a `lifecycle_engage_failed` is traceable to the exact AudioObject + selector.
@@ -71,7 +90,7 @@ public final class CoreAudioHALBus {
         ]
         eventLog.emit(category: "halbus", action: "subscribe_attempt", attributes: attemptAttrs)
         do {
-            let token = try queue.sync { () throws -> Token in
+            let token = try onQueue { () throws -> Token in
                 let teardown = try backend.register(address, handler: { [queue] in
                     queue.async(execute: handler)
                 })
@@ -99,7 +118,7 @@ public final class CoreAudioHALBus {
     }
 
     public func unsubscribe(_ token: Token) {
-        queue.sync {
+        onQueue {
             guard let sub = subscriptions.removeValue(forKey: token) else { return }
             sub.teardown()
             eventLog.emit(category: "halbus", action: "unsubscribed", attributes: [
@@ -111,14 +130,14 @@ public final class CoreAudioHALBus {
 
     /// Tear down all active subscriptions. Called at daemon shutdown.
     public func reset() {
-        queue.sync {
+        onQueue {
             for sub in subscriptions.values { sub.teardown() }
             subscriptions.removeAll()
         }
     }
 
     public var activeSubscriptionCount: Int {
-        queue.sync { subscriptions.count }
+        onQueue { subscriptions.count }
     }
 
     private func fourCC(_ code: UInt32) -> String {
