@@ -133,7 +133,10 @@ final class MeetingPromptWindow {
         // Stacked text: question is the primary CTA; app name is the eyebrow above it.
         let eyebrow = NSTextField(labelWithString: source.displayName.uppercased())
         eyebrow.font = .mpEyebrow()
-        eyebrow.textColor = MPColors.ink500
+        // fgMuted (appearance-aware) instead of the fixed ink500 palette step:
+        // ink500 stays dark in dark mode, so on the dark HUD material the app
+        // name washed out to ~2.3:1. fgMuted flips to ink300 in dark for ~6:1.
+        eyebrow.textColor = MPColors.fgMuted
         eyebrow.lineBreakMode = .byTruncatingTail
         eyebrow.translatesAutoresizingMaskIntoConstraints = false
         // NSAttributedString is the only way to set tracking on NSTextField; it overrides `stringValue`.
@@ -141,7 +144,7 @@ final class MeetingPromptWindow {
             string: source.displayName.uppercased(),
             attributes: [
                 .font: NSFont.mpEyebrow(),
-                .foregroundColor: MPColors.ink500,
+                .foregroundColor: MPColors.fgMuted,
                 .kern: 0.4,
             ]
         )
