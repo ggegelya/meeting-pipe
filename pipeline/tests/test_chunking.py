@@ -1,9 +1,20 @@
 """Tests for the transcript chunking primitive (TECH-SUM1-PRIMITIVE)."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from mp.chunking import _CARRY_HEADER, ChunkedWindow, chunked_windows
+
+# TECH-ARCH4: the golden parity fixture is owned next to the Swift suite (it is
+# a test resource of the daemon's MeetingPipeTests target) and read here too, so
+# one checked-in file pins both chunkers.
+_GOLDEN = (
+    Path(__file__).resolve().parents[2]
+    / "daemon" / "Tests" / "MeetingPipeTests" / "Fixtures" / "chunking-golden.json"
+)
 
 
 def _transcript(word_count: int, prefix: str = "w") -> str:
@@ -95,3 +106,24 @@ def test_window_is_frozen() -> None:
     w = ChunkedWindow(index=0, text="x", is_first=True, is_last=True)
     with pytest.raises(Exception):
         w.text = "y"  # type: ignore[misc]
+
+
+def _golden_cases() -> list:
+    doc = json.loads(_GOLDEN.read_text(encoding="utf-8"))
+    return [pytest.param(case, id=case["name"]) for case in doc["cases"]]
+
+
+@pytest.mark.parametrize("case", _golden_cases())
+def test_golden_vector_parity_with_swift(case: dict) -> None:
+    # TECH-ARCH4: the checked-in golden windows (shared with the Swift
+    # TranscriptChunkerTests) must reproduce exactly, pinning Swift/Python parity.
+    windows = list(chunked_windows(
+        case["transcript"],
+        max_chars=case["max_chars"],
+        overlap_chars=case["overlap_chars"],
+    ))
+    got = [
+        {"index": w.index, "text": w.text, "is_first": w.is_first, "is_last": w.is_last}
+        for w in windows
+    ]
+    assert got == case["expected"]

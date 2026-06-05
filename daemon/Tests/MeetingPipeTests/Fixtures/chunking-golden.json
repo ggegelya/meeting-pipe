@@ -1,0 +1,101 @@
+{
+  "_comment": "TECH-ARCH4 golden parity fixture for the dual transcript chunkers. Generated from pipeline/src/mp/chunking.py. Both the Python test_chunking.py and the Swift TranscriptChunkerTests load this file and assert their chunker reproduces these windows exactly, so the two implementations cannot silently diverge. Regenerate from the Python primitive; do not hand-edit.",
+  "cases": [
+    {
+      "name": "ascii_small_overlap",
+      "transcript": "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima",
+      "max_chars": 25,
+      "overlap_chars": 8,
+      "expected": [
+        {
+          "index": 0,
+          "text": "alpha bravo charlie",
+          "is_first": true,
+          "is_last": false
+        },
+        {
+          "index": 1,
+          "text": " charlie delta echo",
+          "is_first": false,
+          "is_last": false
+        },
+        {
+          "index": 2,
+          "text": "lta echo foxtrot golf",
+          "is_first": false,
+          "is_last": false
+        },
+        {
+          "index": 3,
+          "text": "rot golf hotel india",
+          "is_first": false,
+          "is_last": false
+        },
+        {
+          "index": 4,
+          "text": "el india juliet kilo lima",
+          "is_first": false,
+          "is_last": true
+        }
+      ]
+    },
+    {
+      "name": "single_window",
+      "transcript": "just a few words",
+      "max_chars": 8000,
+      "overlap_chars": 200,
+      "expected": [
+        {
+          "index": 0,
+          "text": "just a few words",
+          "is_first": true,
+          "is_last": true
+        }
+      ]
+    },
+    {
+      "name": "ukrainian_small_overlap",
+      "transcript": "привіт як справи це коротка зустріч про бюджет команди сьогодні",
+      "max_chars": 20,
+      "overlap_chars": 6,
+      "expected": [
+        {
+          "index": 0,
+          "text": "привіт як справи це",
+          "is_first": true,
+          "is_last": false
+        },
+        {
+          "index": 1,
+          "text": "ави це коротка",
+          "is_first": false,
+          "is_last": false
+        },
+        {
+          "index": 2,
+          "text": "оротка зустріч про",
+          "is_first": false,
+          "is_last": false
+        },
+        {
+          "index": 3,
+          "text": "іч про бюджет",
+          "is_first": false,
+          "is_last": false
+        },
+        {
+          "index": 4,
+          "text": "бюджет команди",
+          "is_first": false,
+          "is_last": false
+        },
+        {
+          "index": 5,
+          "text": "оманди сьогодні",
+          "is_first": false,
+          "is_last": true
+        }
+      ]
+    }
+  ]
+}

@@ -62,4 +62,38 @@ final class TranscriptChunkerTests: XCTestCase {
         XCTAssertTrue(withCarry.contains("earlier we agreed X"))
         XCTAssertTrue(withCarry.hasSuffix(window.text))
     }
+
+    func test_golden_vector_parity_with_python() throws {
+        // TECH-ARCH4: the checked-in golden windows (shared with the Python
+        // test_chunking.py via the same chunking-golden.json) must reproduce
+        // exactly, so the Swift and Python chunkers cannot silently diverge.
+        struct Window: Decodable, Equatable {
+            let index: Int
+            let text: String
+            let isFirst: Bool
+            let isLast: Bool
+        }
+        struct Case: Decodable {
+            let name: String
+            let transcript: String
+            let maxChars: Int
+            let overlapChars: Int
+            let expected: [Window]
+        }
+        struct Doc: Decodable { let cases: [Case] }
+
+        guard let url = Bundle.module.url(forResource: "chunking-golden", withExtension: "json") else {
+            return XCTFail("chunking-golden.json not found in the test bundle")
+        }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let doc = try decoder.decode(Doc.self, from: Data(contentsOf: url))
+        XCTAssertFalse(doc.cases.isEmpty)
+        for testCase in doc.cases {
+            let got = TranscriptChunker
+                .windows(testCase.transcript, maxChars: testCase.maxChars, overlapChars: testCase.overlapChars)
+                .map { Window(index: $0.index, text: $0.text, isFirst: $0.isFirst, isLast: $0.isLast) }
+            XCTAssertEqual(got, testCase.expected, "golden parity mismatch in case \(testCase.name)")
+        }
+    }
 }
