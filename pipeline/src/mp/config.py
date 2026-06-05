@@ -98,6 +98,12 @@ class Summarization(BaseModel):
     # and stays on-device under regulated_mode. Run on demand any time via
     # `mp cleanup-diarization <stem>.json`.
     diarize_cleanup: bool = False
+    # TECH-FEAT3 speaker enrollment (MVP): the display name to stamp on the
+    # user's own speaker at finalization. The "me" speaker is the channel-
+    # assigned mic speaker (`speaker_user`) when present, else the dominant
+    # speaker by spoken time. Empty = no enrollment (labels stay
+    # speaker_user / speaker_other). Set once; reused on every meeting.
+    user_label: str = ""
 
 
 class NotionCfg(BaseModel):

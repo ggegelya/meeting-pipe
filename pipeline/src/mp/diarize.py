@@ -109,3 +109,56 @@ def assign_speakers_by_channel(
                 seg["speaker"] = USER_SPEAKER if l_rms >= r_rms else OTHER_SPEAKER
             out.append(seg)
     return out
+
+
+def _dominant_speaker(segments: list[dict]) -> str | None:
+    """The speaker with the most total spoken time, or None when no segment
+    carries a usable label. Ties break by first appearance."""
+    durations: dict[str, float] = {}
+    order: list[str] = []
+    for seg in segments:
+        spk = seg.get("speaker")
+        if not spk or spk == "Speaker?":
+            continue
+        if spk not in durations:
+            durations[spk] = 0.0
+            order.append(spk)
+        durations[spk] += max(0.0, float(seg.get("end", 0)) - float(seg.get("start", 0)))
+    if not durations:
+        return None
+    # Highest total duration; on a tie, the earliest-appearing speaker.
+    return max(order, key=lambda spk: (durations[spk], -order.index(spk)))
+
+
+def label_me_speaker(
+    segments: list[dict],
+    user_label: str,
+    *,
+    channel_me: str = USER_SPEAKER,
+) -> list[dict]:
+    """TECH-FEAT3 speaker-enrollment MVP: stamp the user's enrolled display
+    name on their own speaker, so "me vs them" reads as a real name.
+
+    Picks the "me" speaker structurally, no voiceprint needed:
+      - the channel-assigned mic speaker (`speaker_user`) when present, the
+        reliable stereo path since the mic channel is always the user; else
+      - the dominant speaker by total spoken time, a best-effort fallback for
+        FluidAudio's merged-audio labels or a mono recording.
+
+    Returns a new segment list with the chosen speaker relabeled to
+    `user_label`. No-op (segments copied unchanged) when `user_label` is empty
+    or no speaker qualifies. The name is enrolled once in config
+    (`summarization.user_label`) and reused on every meeting.
+    """
+    label = user_label.strip()
+    if not label or not segments:
+        return [dict(s) for s in segments]
+
+    present = {s.get("speaker") for s in segments if s.get("speaker")}
+    me = channel_me if channel_me in present else _dominant_speaker(segments)
+    if me is None or me == label:
+        return [dict(s) for s in segments]
+    return [
+        {**s, "speaker": label} if s.get("speaker") == me else dict(s)
+        for s in segments
+    ]

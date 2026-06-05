@@ -28,7 +28,7 @@ from pathlib import Path
 from .config import Config, effective_backend, load_secrets
 from .corrections import set_publish_state, write_run_sidecar
 from .egress_guard import arm_for_config
-from .diarize import assign_speakers_by_channel, is_stereo_recording
+from .diarize import assign_speakers_by_channel, is_stereo_recording, label_me_speaker
 from . import events
 from .markdown import render_markdown
 from .publish_router import fanout as publish_fanout, publish_state
@@ -236,7 +236,7 @@ def _run_all_inner(
     log.info("[1/3] finalize (produced by daemon: %s)", source)
     _stage("finalize")
     events.emit("pipeline", "stage_started", stage="finalize", source=source)
-    t = _finalize_streamed_transcript(wav, streamed)
+    t = _finalize_streamed_transcript(wav, streamed, user_label=cfg.summarization.user_label)
     events.emit("pipeline", "stage_completed", stage="finalize", md=str(t["md"]))
 
     # Short-circuit #1: empty transcript (silent audio, broken capture).
@@ -445,7 +445,7 @@ def _streamed_segments_have_speakers(streamed: dict) -> bool:
     return labelled >= max(1, len(segs) // 2)
 
 
-def _finalize_streamed_transcript(wav: Path, streamed: dict) -> dict[str, Path]:
+def _finalize_streamed_transcript(wav: Path, streamed: dict, *, user_label: str = "") -> dict[str, Path]:
     """Finalize the daemon transcript so downstream stages see clean
     `<stem>.json` + `<stem>.md`. FluidAudio normally provides speaker
     labels; when it didn't (diarization failed), fall back to a channel-
@@ -456,7 +456,8 @@ def _finalize_streamed_transcript(wav: Path, streamed: dict) -> dict[str, Path]:
 
     if _streamed_segments_have_speakers(streamed):
         log.info("FluidAudio sidecar already labelled segments; finalizing as-is")
-        structured = {**streamed, "finalized": True}
+        segments = label_me_speaker(streamed.get("segments") or [], user_label)  # TECH-FEAT3
+        structured = {**streamed, "segments": segments, "finalized": True}
         json_path.write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
         md_path.write_text(render_markdown(structured), encoding="utf-8")
         return {"json": json_path, "md": md_path}
@@ -480,6 +481,8 @@ def _finalize_streamed_transcript(wav: Path, streamed: dict) -> dict[str, Path]:
         labelled = [{**s, "speaker": "Speaker?"} for s in streamed["segments"]]
     else:
         labelled = list(streamed["segments"])
+
+    labelled = label_me_speaker(labelled, user_label)  # TECH-FEAT3 speaker enrollment
 
     structured = {
         **streamed,
