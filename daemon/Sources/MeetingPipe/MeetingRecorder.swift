@@ -704,12 +704,24 @@ final class MeetingRecorder {
         tapLivenessTimer = nil
 
         // Await the SCStream start before teardown, else we stop() a stream
-        // that hasn't fully started and orphan it.
-        await systemStartTask?.value
+        // that hasn't fully started and orphan it. Bounded so a stuck start
+        // can't hang stop().
+        let startTask = systemStartTask
+        if await runWithTimeout(seconds: 5, { await startTask?.value }) == false {
+            Log.writeLine("recorder", "WARN: system audio start-await timed out at stop - proceeding")
+            Log.event(category: "recorder", action: "system_capture_start_await_timed_out", attributes: [:])
+        }
         systemStartTask = nil
 
-        // Halt capture before closing files.
-        await systemCapture?.stop()
+        // Halt capture before closing files. ScreenCaptureKit's stopCapture has
+        // hung for minutes (2026-06-05, a meeting wedged in "stopping..."), so
+        // bound it: stop() always proceeds to the merge. A short / racy
+        // system.wav is fine - the ffmpeg merge pads to the longer input.
+        let capture = systemCapture
+        if await runWithTimeout(seconds: 5, { await capture?.stop() }) == false {
+            Log.writeLine("recorder", "WARN: system audio stop timed out - proceeding with merge")
+            Log.event(category: "recorder", action: "system_capture_stop_timed_out", attributes: [:])
+        }
         systemCapture = nil
         // Stop observing device changes before teardown so it can't trigger
         // a recovery attempt.
