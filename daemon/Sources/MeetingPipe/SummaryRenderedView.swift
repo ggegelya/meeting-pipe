@@ -5,8 +5,13 @@ import SwiftUI
 struct SummaryRenderedView: View {
     let summary: MeetingSummary
 
+    /// TECH-DSN8: cap the prose column to a readable measure (~70 characters at
+    /// the body size) so the summary reads like paper rather than running the
+    /// full pane width. Left-aligned within the pane via the outer frame.
+    private let readingMeasure: CGFloat = 640
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: MPSpace.s6) {
             if !summaryBullets.isEmpty {
                 section(title: "Summary", systemImage: "doc.text") {
                     bulletList(summaryBullets, numbered: false)
@@ -19,7 +24,7 @@ struct SummaryRenderedView: View {
             }
             if !actions.isEmpty {
                 section(title: "Action items", systemImage: "checklist") {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: MPSpace.s2) {
                         ForEach(Array(actions.enumerated()), id: \.offset) { _, a in
                             ActionItemRow(action: a)
                         }
@@ -38,7 +43,8 @@ struct SummaryRenderedView: View {
             }
             // TECH-UI-4: the detected-language indicator moved to the detail header caption row.
         }
-        .padding(20)
+        .padding(MPSpace.s5)
+        .frame(maxWidth: readingMeasure, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .textSelection(.enabled)
     }
@@ -72,8 +78,8 @@ struct SummaryRenderedView: View {
         systemImage: String,
         @ViewBuilder content: () -> C
     ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: MPSpace.s3) {
+            HStack(spacing: MPSpace.s2) {
                 Image(systemName: systemImage)
                     .foregroundStyle(.secondary)
                     .font(.subheadline)
@@ -88,9 +94,9 @@ struct SummaryRenderedView: View {
 
     @ViewBuilder
     private func bulletList(_ items: [String], numbered: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: MPSpace.s2) {
             ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: MPSpace.s2) {
                     Text(numbered ? "\(idx + 1)." : "•")
                         .foregroundStyle(.tertiary)
                         .font(.callout.monospacedDigit())
@@ -125,8 +131,8 @@ private struct ActionItemRow: View {
     let action: Action
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+        VStack(alignment: .leading, spacing: MPSpace.s1) {
+            HStack(alignment: .firstTextBaseline, spacing: MPSpace.s2) {
                 Image(systemName: "circle")
                     .foregroundStyle(.tertiary)
                     .font(.caption)
@@ -143,7 +149,7 @@ private struct ActionItemRow: View {
                 }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, MPSpace.s1)
     }
 
     private var taskAttributed: AttributedString {
