@@ -69,7 +69,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-T2 | Snapshot tests for three SwiftUI views | Tests | P2 carry | No snapshot harness yet; add swift-snapshot-testing gated by Appearance. |
 | TECH-I6 | Partial-publish visibility | Observability | P2 carry | Scoped down: fanout already returns per-sink results; only a sidecar publish_state field and a per-row indicator remain. |
 | TECH-W2 | Workflow precedence test | Tests | P2 carry | Near-noop: the acceptance bar is already met by WorkflowMatcherTests.test_ties_break_by_order_ascending; move or close. |
-| TECH-E4-FINISH | Dogfood analysis script | Tooling | P2 carry | The events.jsonl acceptance-bar report (scripts/dogfood-report) was never built; pipeline/src/mp/dogfood.py is a different A/B harness. |
+| TECH-E4-FINISH | Dogfood analysis script | Tooling | DONE (was P2) | The events.jsonl acceptance-bar report (scripts/dogfood-report) was never built; pipeline/src/mp/dogfood.py is a different A/B harness. |
 | TECH-ARCH4 | Golden-vector fixture for the dual chunkers | Architecture | P3 new | The Swift and Python chunkers must stay identical; pin parity with one shared input/expected fixture across both suites. |
 | TECH-PERF5 | Adaptive backoff on poll timers | Performance | P3 new | The 1 Hz HAL/AX polls and 4 Hz engine tick run all meeting; back off when the listener is delivering. |
 | TECH-SEC9 | Drop unused AppleEvents entitlement | Security | DONE (was P3) | NSAppleEventsUsageDescription is declared but browser detection uses Accessibility; remove the capability or document a use site. Done: dropped the key from install.sh's Info.plist and removed AppleEvents from the tccutil reset loops in install.sh + uninstall.sh (no AppleEvents API is used in Swift). |
@@ -220,7 +220,7 @@ The pipeline is already "summarize + publish only" (ADR 0007). The realistic opt
 - **TECH-T2 (P2):** snapshot tests for three SwiftUI views, gated by macOS Appearance.
 - **TECH-I6 (P2):** scoped down to the sidecar `publish_state` field plus a per-row indicator; the per-sink result map already exists in `fanout`.
 - **TECH-W2 (P2):** near-noop; `WorkflowMatcherTests.test_ties_break_by_order_ascending` already pins order-ascending precedence. Move the assertion into the W2-blessed file or close W2.
-- **TECH-E4-FINISH (P2):** the events.jsonl acceptance-bar report script.
+- **[DONE] TECH-E4-FINISH (P2):** the events.jsonl acceptance-bar report script. Done: `scripts/dogfood_report.py` (stdlib-only, runs on a clean Mac), reads `events.jsonl` + `pipeline_events.jsonl` and reports detection (lifecycle verdicts + ends by leading signal), mic-gate verdict transitions, and pipeline run/stage/sink outcomes with per-stage timing stats; `--since` / `--json` / `--out`. Distinct from the A/B `dogfood.py`. Pure `build_report`/`render_markdown` unit-tested in `test_dogfood_report.py` (4 cases); validated live against the real 125k-event log. Named with an underscore to match the repo's Python-script convention and to be importable by the test.
 - **TECH-UX3/UX5/UX7/UX8:** if any Q3 P2 UX item is still open, re-confirm against current code before scheduling; UX5 and several others landed in Q3 with documented name drift only.
 
 ### Deferred (P3, unchanged trail)
