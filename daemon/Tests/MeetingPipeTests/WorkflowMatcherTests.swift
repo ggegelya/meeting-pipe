@@ -88,6 +88,18 @@ final class WorkflowMatcherTests: XCTestCase {
         XCTAssertEqual(result?.name, "B")
     }
 
+    func test_w2_ties_break_by_order_independent_of_array_position() {
+        // TECH-W2 acceptance pin: when several workflows match at the same score,
+        // the lowest `order` wins regardless of where it sits in the array (the
+        // tie-break is order-based, not insertion-order-based). The winner here
+        // is deliberately in the middle so array position cannot mask the rule.
+        let high = wf("High", rules: [WorkflowMatchingRule(bundleID: "us.zoom.xos")], order: 9)
+        let low = wf("Low", rules: [WorkflowMatchingRule(bundleID: "us.zoom.xos")], order: 1)
+        let mid = wf("Mid", rules: [WorkflowMatchingRule(bundleID: "us.zoom.xos")], order: 5)
+        let result = WorkflowMatcher.resolve(source: zoomSource(), workflows: [high, low, mid])
+        XCTAssertEqual(result?.name, "Low")
+    }
+
     func test_manual_recording_falls_back_to_default() {
         // Manual = nil source. Any bundle/title rules can't apply.
         let rule = wf("Zoom", rules: [WorkflowMatchingRule(bundleID: "us.zoom.xos")], order: 0)
