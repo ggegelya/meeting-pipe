@@ -76,7 +76,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-FEAT3 | Speaker enrollment | Feature | DONE: MVP (voiceprint follow-up filed) | Label your own voice once so "me vs them" is reliable; leans on the diarization-cleanup work. |
 | TECH-FEAT3-VOICEPRINT | Full speaker enrollment (voiceprint) | Feature | P3 new (FEAT3 follow-up) | Promote the FEAT3 heuristic MVP to a real voiceprint match so "me" holds on mono/merged audio and when the user is not the dominant speaker. |
 | TECH-FEAT4 | Cross-meeting action tracking | Feature | DONE (was P3) | Extract open action items across meetings and surface the unresolved ones. |
-| TECH-DIST2 | Spike: Swift port of the pipeline | Distribution | P3 new | Evaluate removing Python entirely (gated on MLX-Swift maturity for the local summarizer); would moot DIST1. Overlaps TECH-I7. |
+| TECH-DIST2 | Spike: Swift port of the pipeline | Distribution | DONE (was P3) | Evaluate removing Python entirely (gated on MLX-Swift maturity for the local summarizer); would moot DIST1. Overlaps TECH-I7. |
 | TECH-DOC4 | Delete Q2 archives + fix design READMEs | Docs | DONE (was P3) | Remove the two all-DONE Q2 archives (git preserves them) and trim the deleted-architecture prose in design/README.md and the ui_kits README. |
 | TECH-DOC5 | Superseding ADRs | Docs | DONE (was P3) | Record that ADR 0001 (HAL tap) is superseded by ScreenCaptureKit and ADR 0002 is partially superseded by ADR 0007. |
 | TECH-DSN8 | Summary-tab reading polish | Design | DONE (was P3) | Make the summary the app's "paper" moment: measured line length, the type ramp, generous rhythm. |
@@ -190,7 +190,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 
 **TECH-DIST1 (P2): bundle a runtime.** There is no drag-n-drop installer today; install needs Homebrew plus uv plus ffmpeg, and a clean Mac has no usable Python 3 (Apple removed it; the CLT shim is 3.9, below the required 3.11+). Bundle a relocatable Python (python-build-standalone) plus the pipeline wheels and a static ffmpeg into the app, and notarize. This is also what locked-down regulated Macs need, since they often cannot install Homebrew.
 
-**TECH-DIST2 (P3): Swift-port spike.** Evaluate porting the pipeline (now summarize + publish only) to Swift to drop Python entirely. The hard blocker is the local MLX summarizer (mlx_lm is Python; MLX-Swift LM tooling is less mature). Would moot DIST1. Overlaps TECH-I7.
+**[DONE] TECH-DIST2 (P3): Swift-port spike.** Evaluate porting the pipeline (now summarize + publish only) to Swift to drop Python entirely. The hard blocker is the local MLX summarizer (mlx_lm is Python; MLX-Swift LM tooling is less mature). Would moot DIST1. Overlaps TECH-I7. Done: wrote the evaluation at `docs/spikes/dist2-swift-port-of-the-pipeline.md` (a spike, no decision). Component-by-component, everything except the local MLX backend is a low-risk Swift rewrite over HTTP + file IO + the already-mirrored chunker; the local backend is the blocker (it would mean adopting and maintaining the immature MLX-Swift LM stack, putting the privacy differentiator at risk). Recommendation: defer the port, pursue DIST1 (bundle the runtime) near-term; reopen when MLX-Swift LM tooling is production-ready or Apple Intelligence proves out as the sole on-device summarizer (the TECH-I7 trigger). ADR 0007 stands until then.
 
 ### Distribution note on Python
 
