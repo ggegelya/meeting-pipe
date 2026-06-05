@@ -2,11 +2,13 @@
 
 | Property            | Value              |
 | ------------------- | ------------------ |
-| **Status**          | Accepted           |
+| **Status**          | Accepted; partially superseded by ADR 0007 |
 | **Date**            | 2026-05-18         |
 | **Decision Makers** | Project owner      |
 | **Technical Area**  | Transcription      |
 | **Related Tasks**   | TECH-P0, TECH-P1, TECH-P2, TECH-P3 |
+
+> **Superseding note (TECH-DOC5).** Partially superseded by [ADR 0007](./0007-python-sidecar.md). The FluidAudio (Parakeet-TDT + pyannote) engine choice stands, but ASR and diarization no longer run from the Python sidecar: ADR 0007 moved transcription in-process into the Swift daemon, and the Python pipeline now only summarizes and publishes.
 
 ## Context
 

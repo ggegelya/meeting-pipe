@@ -77,7 +77,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-FEAT4 | Cross-meeting action tracking | Feature | P3 new | Extract open action items across meetings and surface the unresolved ones. |
 | TECH-DIST2 | Spike: Swift port of the pipeline | Distribution | P3 new | Evaluate removing Python entirely (gated on MLX-Swift maturity for the local summarizer); would moot DIST1. Overlaps TECH-I7. |
 | TECH-DOC4 | Delete Q2 archives + fix design READMEs | Docs | DONE (was P3) | Remove the two all-DONE Q2 archives (git preserves them) and trim the deleted-architecture prose in design/README.md and the ui_kits README. |
-| TECH-DOC5 | Superseding ADRs | Docs | P3 new | Record that ADR 0001 (HAL tap) is superseded by ScreenCaptureKit and ADR 0002 is partially superseded by ADR 0007. |
+| TECH-DOC5 | Superseding ADRs | Docs | DONE (was P3) | Record that ADR 0001 (HAL tap) is superseded by ScreenCaptureKit and ADR 0002 is partially superseded by ADR 0007. |
 | TECH-DSN8 | Summary-tab reading polish | Design | P3 new | Make the summary the app's "paper" moment: measured line length, the type ramp, generous rhythm. |
 | TECH-DSN9 | Preferences layout polish | Design | P2 new | Loose vertical spacing and inconsistent element alignment across the General/Recording/Prompt/Pipeline panes; Integrations/Permissions/Advanced already read clean. A per-pane consistency pass, not a rebuild. |
 | TECH-BRAND1..9 | Launch readiness band | Brand | Deferred | Domains, trademark, landing page, demo GIF, screenshots, OG card, compliance pages. Selling is tertiary; do not pull forward without an explicit launch decision. |
@@ -203,7 +203,7 @@ The pipeline is already "summarize + publish only" (ADR 0007). The realistic opt
 
 **[DONE] TECH-DOC4 (P3): delete Q2 archives, fix design READMEs.** Remove q2-final.md and q2-ui-addendum-final.md (git preserves them; the addendum is also written against a path layout that never existed). Trim the deleted-architecture prose (two-signal AND, WhisperX, three-tab Preferences) from design/README.md and design/ui_kits/macos_app/README.md. Done: git-rm'd both Q2 archives and repointed the active backlog header; rewrote design/README.md "Architecture in one breath" (verdict fusion not two-signal AND, stereo WAV not mono, on-device FluidAudio not Python WhisperX, plus the local backend + multi-sink) and the Preferences surface (seven panes), and fixed the ui_kits README Preferences row (split view, seven panes).
 
-**TECH-DOC5 (P3): superseding ADRs.** Record that ADR 0001 (CoreAudio HAL tap) is superseded by ScreenCaptureKit/SCStream, and note ADR 0002 is partially superseded by ADR 0007.
+**[DONE] TECH-DOC5 (P3): superseding ADRs.** Record that ADR 0001 (CoreAudio HAL tap) is superseded by ScreenCaptureKit/SCStream, and note ADR 0002 is partially superseded by ADR 0007. Done: set ADR 0001 Status to "Superseded by ScreenCaptureKit (SCStream)" and ADR 0002 Status to "Accepted; partially superseded by ADR 0007", each with a short superseding-note blockquote after the property table (0001: the live capture path is SCStream; 0002: the FluidAudio engine choice stands but transcription moved in-process per ADR 0007).
 
 ### Identity and repo presence (promoted)
 

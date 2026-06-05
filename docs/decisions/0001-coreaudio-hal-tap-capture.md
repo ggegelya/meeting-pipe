@@ -2,11 +2,13 @@
 
 | Property            | Value              |
 | ------------------- | ------------------ |
-| **Status**          | Accepted           |
+| **Status**          | Superseded by ScreenCaptureKit (SCStream) |
 | **Date**            | 2026-05-18         |
 | **Decision Makers** | Project owner      |
 | **Technical Area**  | Capture            |
 | **Related Tasks**   | TECH-C1            |
+
+> **Superseding note (TECH-DOC5).** The HAL ProcessTap capture path described here was replaced by ScreenCaptureKit (`SCStream` with `capturesAudio = true`) for system-audio capture: the Apple-recommended path since macOS 13, no aggregate device, and it excludes the daemon's own process audio. This ADR is retained for the rationale trail; the live capture path is ScreenCaptureKit.
 
 ## Context
 
