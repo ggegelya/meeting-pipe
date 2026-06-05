@@ -16,8 +16,8 @@ struct SettingsSectionHeader<Trailing: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .firstTextBaseline, spacing: MPSpace.s4) {
+            VStack(alignment: .leading, spacing: MPSpace.s1) {
                 Text(title)
                     .font(.system(size: 22, weight: .semibold))
                 if let caption = caption {
@@ -51,7 +51,7 @@ struct SettingsGroup<Content: View, Footer: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: MPSpace.s2) {
             if let label = label, !label.isEmpty {
                 Text(label.uppercased())
                     .font(.system(size: 11, weight: .semibold))
@@ -124,7 +124,7 @@ struct SettingsRow<Content: View>: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.vertical, MPSpace.s3)
         }
     }
 }
