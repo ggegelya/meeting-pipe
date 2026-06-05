@@ -1,6 +1,6 @@
 import Foundation
 
-/// On-disk correction record (SPEC §17). Phase 2 collects grades; Phase 3 reads the directory to assemble a LoRA training set. Schema locked here so the Swift writer and Python reader (`mp/corrections.py`) agree without a generated client.
+/// On-disk correction record (see ADR 0015). Phase 2 collects grades; Phase 3 reads the directory to assemble a LoRA training set. Schema locked here so the Swift writer and Python reader (`mp/corrections.py`) agree without a generated client.
 enum CorrectionStore {
 
     enum Verdict: String {

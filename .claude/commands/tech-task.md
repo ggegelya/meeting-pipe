@@ -17,7 +17,7 @@ You're picking up a single backlog task: $ARGUMENTS
 6. Verify before declaring done:
    - **Swift edits:** `cd daemon && swift build` and (with full Xcode) `swift test`.
    - **Python edits:** `cd pipeline && uv run --extra dev ruff check src tests` and `uv run --extra dev pytest -q`.
-   - Update README.md or SPEC.md if user-visible behaviour or contracts changed.
+   - Update README.md if user-visible behaviour or contracts changed.
 7. Mark the task `[DONE]` in the active backlog file (prefix the `**TECH-...` line; keep the trail, don't delete).
 8. Commit on `main` (no branch) using the repository's configured git identity:
    ```bash

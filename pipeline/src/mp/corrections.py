@@ -1,6 +1,6 @@
 """Correction loop: file format, run-sidecar IO, and ``mp corrections-stats``.
 
-§17 of SPEC.md is the source of truth for the on-disk contract.
+ADR 0015 (corrections tab) is the rationale; this schema is the on-disk contract lock.
 
 Two artifacts live next to each meeting and feed Phase 3 training:
 

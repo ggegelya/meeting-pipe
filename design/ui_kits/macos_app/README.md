@@ -13,7 +13,7 @@ near-future surfaces:
 | `Notification.jsx` | `Notifier.swift` | `notifyDone` / `notifyRecordingStarted` body strings |
 | `PreferencesWindow.jsx` | `PreferencesWindow.swift` | the SwiftUI `TabView` (Recording / Detection / Modes) |
 | `SummaryLibrary.jsx` | *(anticipated)* | derived from filename patterns + Notion summary schema |
-| `OnboardingPermissions.jsx` | *(anticipated)* | the four-permission grant list in `SPEC.md` §8 |
+| `OnboardingPermissions.jsx` | *(anticipated)* | the four-permission grant list (Microphone, Screen Recording, Accessibility, Notifications); see the README install steps |
 
 `index.html` shows them composed against a faux desktop so you can see how the
 menu bar, dropdown, and prompt sit on screen together.

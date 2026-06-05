@@ -1,7 +1,7 @@
 """Pydantic models for the summary JSON.
 
-§10 of SPEC.md is the source of truth. Field names and types are locked-in:
-Notion publishing assumes this exact shape.
+ADR 0014 (typed summary model) is the rationale; these models are the lock.
+Field names and types are locked-in; Notion publishing assumes this exact shape.
 """
 from __future__ import annotations
 

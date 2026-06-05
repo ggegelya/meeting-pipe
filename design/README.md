@@ -16,7 +16,7 @@ patterns each time.
 | Source | Where | Read on demand via |
 |---|---|---|
 | Codebase (Swift menu-bar app + Python pipeline) | `github.com/ggegelya/meeting-pipe` | `github_get_tree`, `github_read_file` |
-| Spec | `meeting-pipe/SPEC.md` | (read in setup) |
+| Architecture | `meeting-pipe/ARCHITECTURE.md` | (read in setup) |
 | README | `meeting-pipe/README.md` | (read in setup) |
 
 No design files, Figma, or pre-existing brand were attached. Identity,
@@ -71,7 +71,7 @@ Notion.
 
 ## CONTENT FUNDAMENTALS
 
-The codebase has a strong, opinionated voice — read the SPEC and the inline
+The codebase has a strong, opinionated voice - read ARCHITECTURE.md and the inline
 comments and you can hear the author. The product copy should match.
 
 ### Voice
@@ -256,7 +256,7 @@ The design system is built on three motifs:
 - **Fixed window sizes** for product UI — preferences is exactly 480×560,
   prompt is exactly 380 × auto. Web pages are responsive; mac apps are not.
 - **Top-right anchor** for floating prompts (16px inset). This is the same
-  anchor Notion's web prompts use — explicit precedent in `SPEC.md`.
+  anchor Notion's web prompts use - explicit precedent in `ARCHITECTURE.md`.
 - Sidebar widths in marketing: 240–280; reading column: 640–720.
 - Status bar: always 22pt height (mac-mandated).
 

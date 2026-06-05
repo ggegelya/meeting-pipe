@@ -1,5 +1,5 @@
 # Native macOS apps that count as "in a meeting" when running.
-# Source: §5 of SPEC.md.
+# Source: detection logic in ARCHITECTURE.md and ADR 0008 (verdict fusion).
 [native]
 bundle_ids = [
     "us.zoom.xos",

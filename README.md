@@ -38,7 +38,7 @@ cd meeting-pipe
 
 Then `⌃⌥M` to record manually, or join any meeting and answer the prompt.
 Detailed install steps, requirements, and the configuration reference live
-below. Architecture rationale is in [`SPEC.md`](./SPEC.md).
+below. The design rationale is in [Why it is shaped this way](#why-it-is-shaped-this-way) and the [ADRs](./docs/decisions/).
 
 ---
 
@@ -85,6 +85,22 @@ opt-in per-meeting — useful for sensitive calls or when you'd rather
 hand-summarise. After the recording finishes, save your summary as
 `<stem>.summary.md` next to the transcript and run
 `mp publish-from-paste <stem>.md` to push it to Notion.
+
+---
+
+## Why it is shaped this way
+
+The README covers how to use the app; this section covers the load-bearing design decisions. The long form lives in the [ADRs](./docs/decisions/).
+
+- **The daemon owns detection, recording, and transcription; the Python pipeline only summarizes and publishes.** ASR and diarization run in-process via FluidAudio (Parakeet TDT + pyannote) on the Apple Neural Engine, fast enough that a streaming-during-the-call design was not worth its complexity. The pipeline runs out-of-process so summarize + publish never blocks the daemon, and it ships no torch / whisperx dependency. See [ADR 0007](./docs/decisions/0007-python-sidecar.md).
+- **System audio is captured with ScreenCaptureKit, the mic with AVAudioEngine, and the two are written as one stereo WAV** (mic left, system right) so diarization and silent-system detection stay possible. No aggregate devices, no BlackHole, no ffmpeg subprocess. See [ADR 0009](./docs/decisions/0009-stereo-on-disk-mono-on-playback.md).
+- **Detection fuses several signals, never one.** An open meeting app is not a live call, and a held mic does not survive joining muted, so the lifecycle subsystem fuses per-process audio, ScreenCaptureKit windows, and the Accessibility Leave button into one verdict through a debounced promotion rule. See [ADR 0008](./docs/decisions/0008-verdict-fusion-architecture.md).
+- **Summarization calls the Anthropic Messages API directly, not Claude Code; publishing uses the Notion REST API, not MCP.** Both run headless and unattended, so the deterministic API surfaces beat the interactive ones.
+- **Privacy is a setting, not a fork.** `summarization.backend = "local"` runs MLX-Qwen on Metal with no outbound call; `modes.regulated_mode = true` clamps every sink to on-disk. Together they make a fully zero-egress pipeline.
+
+Non-goals, by design: video capture, a live in-call transcript, multi-user sharing, cross-platform, and a mobile companion.
+
+The subsystem map and sequence diagrams are in [ARCHITECTURE.md](./ARCHITECTURE.md); the event-log and sidecar schemas are in [CONVENTIONS.md](./CONVENTIONS.md).
 
 ---
 

@@ -1,6 +1,6 @@
 # Architecture
 
-Fast subsystem map for finding code. For the *why* behind shape decisions, see [`SPEC.md`](./SPEC.md). For terminology, see the [Glossary](#glossary) below. For coding patterns, see [`CONVENTIONS.md`](./CONVENTIONS.md).
+Fast subsystem map for finding code. For the *why* behind shape decisions, see the README ["Why it is shaped this way"](./README.md#why-it-is-shaped-this-way) and the [ADRs](./docs/decisions/). For terminology, see the [Glossary](#glossary) below. For coding patterns, see [`CONVENTIONS.md`](./CONVENTIONS.md).
 
 ```
 meeting-pipe/
@@ -364,7 +364,7 @@ lifecycle verdict .ended (or hotkey, or silence backstop)
 
 - **`<stem>.meta.json`** — the only Swift→Python contract surface. Schema lives in `MeetingMetaSidecar.swift` (writer) and `mp.workflow.apply_overrides` (reader). Don't add keys to one without the other.
 - **`<stem>.error.json`** is the daemon-internal failure sidecar. Written when a pipeline run fails (transcribe / summarize / launch) with the failed stage and reason; read by the Library to mark the meeting row failed until the owner retries. Cleared on the next successful run. Not a Swift to Python contract: the daemon both writes and reads it.
-- **Event log** (`events.jsonl` from Swift + `pipeline_events.jsonl` from Python): one JSON object per line, fields `{ts, category, action, ...attrs}`. Categories Swift writes: `axbus`, `coordinator`, `correction`, `detector`, `doctor`, `halbus`, `library`, `lifecycle`, `main`, `micgate`, `recorder`, `signal`, `transcription`, `workflow`. Categories Python writes: `pipeline`, `publisher`. See [`CONVENTIONS.md`](./CONVENTIONS.md#event-log-schema).
+- **Event log** (`events.jsonl` from Swift + `pipeline_events.jsonl` from Python): one JSON object per line, fields `{ts, category, action, ...attrs}`. Schema and the full category list live in [`CONVENTIONS.md`](./CONVENTIONS.md#event-log-schema).
 - **Logs directory** (`~/Library/Logs/MeetingPipe/`) — both event logs, plus `daemon.log`, `detector.log`, `recording.log`, `pipeline.log`, `launchd.out.log`, `launchd.err.log`.
 
 ---

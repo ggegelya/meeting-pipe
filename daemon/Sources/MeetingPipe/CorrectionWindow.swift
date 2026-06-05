@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Standalone summary-grading window (SPEC §17). Entry points: done-meeting notification and the Recent meetings menu. One window at a time; reopening with a different stem swaps the summary in-place. Must be called on the main thread.
+/// Standalone summary-grading window (see ADR 0015). Entry points: done-meeting notification and the Recent meetings menu. One window at a time; reopening with a different stem swaps the summary in-place. Must be called on the main thread.
 final class CorrectionWindow {
     private static var shared: CorrectionWindow?
 

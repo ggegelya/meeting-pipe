@@ -1,4 +1,4 @@
-// OnboardingPermissions — anticipated surface; visualizes the four-permission grant flow from SPEC.md §8.
+// OnboardingPermissions - anticipated surface; visualizes the four-permission grant flow (Microphone, Screen Recording, Accessibility, Notifications).
 const OnboardingPermissions = () => (
   <div style={{ width: 520, padding: 32, background: "var(--mp-bg)", fontFamily: "var(--mp-font-sans)", color: "var(--mp-fg)", borderRadius: 14, border: "1px solid var(--mp-border)", boxShadow: "var(--mp-shadow-lg)" }}>
     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>

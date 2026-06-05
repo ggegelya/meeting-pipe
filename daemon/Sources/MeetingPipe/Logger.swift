@@ -19,7 +19,7 @@ enum Log {
         return dir
     }
 
-    /// Append-only tail-able log file per SPEC §9. os.Logger goes to the unified log; this writes ~/Library/Logs/MeetingPipe/<category>.log.
+    /// Append-only tail-able log file (logging conventions in CONVENTIONS.md). os.Logger goes to the unified log; this writes ~/Library/Logs/MeetingPipe/<category>.log.
     static func writeLine(_ category: String, _ message: String) {
         let url = logsDir.appendingPathComponent("\(category).log")
         let line = "[\(isoFormatter.string(from: Date()))] \(message)\n"
