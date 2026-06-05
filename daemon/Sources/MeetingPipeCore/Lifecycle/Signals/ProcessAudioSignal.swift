@@ -27,6 +27,8 @@ public final class ProcessAudioSignal {
     public private(set) var lastValue: Bool?
 
     public static let defaultPollInterval: TimeInterval = 1.0
+    /// TECH-PERF5: the backed-off poll rate used while the HAL listener is delivering.
+    public static let defaultSlowPollInterval: TimeInterval = 5.0
 
     private let halBus: CoreAudioHALBus
     private let eventLog: EventLog
@@ -34,10 +36,13 @@ public final class ProcessAudioSignal {
     private let scheduler: Scheduler
     private let resolver: ProcessObjectResolver
     private let pollInterval: TimeInterval
+    private let slowPollInterval: TimeInterval
 
     private var context: MeetingLifecycleContext?
     private var halToken: CoreAudioHALBus.Token?
     private var cancelPoll: (() -> Void)?
+    private var cadence: AdaptivePollCadence
+    private var currentPollInterval: TimeInterval = 0
 
     /// Set on first unresolved probe in a streak; clears when the probe resolves or `stop()` is called. Prevents 1 Hz log spam.
     private var unresolvedLogged = false
@@ -48,7 +53,8 @@ public final class ProcessAudioSignal {
         probe: @escaping Probe = ProcessAudioSignal.defaultProbe,
         scheduler: @escaping Scheduler = ProcessAudioSignal.defaultScheduler,
         resolver: @escaping ProcessObjectResolver = ProcessAudioSignal.defaultResolver,
-        pollInterval: TimeInterval = ProcessAudioSignal.defaultPollInterval
+        pollInterval: TimeInterval = ProcessAudioSignal.defaultPollInterval,
+        slowPollInterval: TimeInterval = ProcessAudioSignal.defaultSlowPollInterval
     ) {
         self.halBus = halBus
         self.eventLog = eventLog
@@ -56,6 +62,8 @@ public final class ProcessAudioSignal {
         self.scheduler = scheduler
         self.resolver = resolver
         self.pollInterval = pollInterval
+        self.slowPollInterval = slowPollInterval
+        self.cadence = AdaptivePollCadence(fast: pollInterval, slow: slowPollInterval)
     }
 
     public func start(context: MeetingLifecycleContext) throws {
@@ -75,6 +83,7 @@ public final class ProcessAudioSignal {
             )
             do {
                 halToken = try halBus.subscribe(address) { [weak self] in
+                    self?.cadence.noteListener()   // TECH-PERF5: listener is delivering
                     self?.evaluate(reason: "listener")
                 }
             } catch {
@@ -92,18 +101,35 @@ public final class ProcessAudioSignal {
             ])
         }
 
-        cancelPoll = scheduler(pollInterval) { [weak self] in
-            self?.evaluate(reason: "poll")
-        }
+        cadence = AdaptivePollCadence(fast: pollInterval, slow: slowPollInterval)
+        startPoll(interval: cadence.initialInterval)
         evaluate(reason: "initial")
     }
 
     public func stop() {
         if let token = halToken { halBus.unsubscribe(token); halToken = nil }
         cancelPoll?(); cancelPoll = nil
+        currentPollInterval = 0
         context = nil
         lastValue = nil
         unresolvedLogged = false
+    }
+
+    /// Arm (or re-arm) the fallback poll at `interval`, adapting the rate to the
+    /// HAL listener's health (TECH-PERF5): fast while the listener is quiet, slow
+    /// once it has delivered. The re-arm happens only here, on the poll callback's
+    /// own thread, so the timer is never scheduled from the listener thread.
+    private func startPoll(interval: TimeInterval) {
+        cancelPoll?()
+        currentPollInterval = interval
+        cancelPoll = scheduler(interval) { [weak self] in
+            guard let self = self else { return }
+            self.evaluate(reason: "poll")
+            let next = self.cadence.intervalAfterPoll()
+            if next != self.currentPollInterval {
+                self.startPoll(interval: next)
+            }
+        }
     }
 
     /// Re-read the probe and emit `onChange` if the value flipped. `internal` so tests can drive without a scheduler.

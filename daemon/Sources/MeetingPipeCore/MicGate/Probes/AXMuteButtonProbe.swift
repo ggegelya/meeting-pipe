@@ -39,6 +39,9 @@ public final class AXMuteButtonProbe {
     public private(set) var lastEvent: Event?
 
     public static let defaultPollInterval: TimeInterval = 1.0
+    /// TECH-PERF5: the backed-off health-poll rate used while the AX
+    /// value/title notifications are delivering.
+    public static let defaultSlowPollInterval: TimeInterval = 5.0
 
     private let app: String
     private let axBus: AXObserverBus
@@ -48,12 +51,15 @@ public final class AXMuteButtonProbe {
     private let scheduler: Scheduler
     private let localeResolver: LocaleResolver
     private let pollInterval: TimeInterval
+    private let slowPollInterval: TimeInterval
 
     private var element: AXUIElement?
     private var pid: pid_t = 0
     private var bundleID: String = ""
     private var tokens: [AXObserverBus.Token] = []
     private var cancelPoll: (() -> Void)?
+    private var cadence: AdaptivePollCadence
+    private var currentPollInterval: TimeInterval = 0
 
     public init(
         app: String,
@@ -63,7 +69,8 @@ public final class AXMuteButtonProbe {
         probe: @escaping Probe = AXMuteButtonProbe.defaultProbe,
         scheduler: @escaping Scheduler = AXMuteButtonProbe.defaultScheduler,
         localeResolver: @escaping LocaleResolver = AXMuteButtonProbe.defaultLocaleResolver,
-        pollInterval: TimeInterval = AXMuteButtonProbe.defaultPollInterval
+        pollInterval: TimeInterval = AXMuteButtonProbe.defaultPollInterval,
+        slowPollInterval: TimeInterval = AXMuteButtonProbe.defaultSlowPollInterval
     ) {
         self.app = app
         self.axBus = axBus
@@ -73,6 +80,8 @@ public final class AXMuteButtonProbe {
         self.scheduler = scheduler
         self.localeResolver = localeResolver
         self.pollInterval = pollInterval
+        self.slowPollInterval = slowPollInterval
+        self.cadence = AdaptivePollCadence(fast: pollInterval, slow: slowPollInterval)
     }
 
     public func start(
@@ -91,20 +100,37 @@ public final class AXMuteButtonProbe {
             let token = try axBus.subscribe(
                 pid: pid, element: button, notification: notification as String
             ) { [weak self] in
+                self?.cadence.noteListener()   // TECH-PERF5: notification is delivering
                 self?.evaluate(reason: "notification")
             }
             tokens.append(token)
         }
-        cancelPoll = scheduler(pollInterval) { [weak self] in
-            self?.evaluate(reason: "health_poll")
-        }
+        cadence = AdaptivePollCadence(fast: pollInterval, slow: slowPollInterval)
+        startPoll(interval: cadence.initialInterval)
         evaluate(reason: "initial")
+    }
+
+    /// Arm (or re-arm) the health poll at `interval`, backing the rate off while
+    /// the AX value/title notifications are delivering and speeding back up once
+    /// they go quiet (TECH-PERF5). Re-armed only from the poll callback's thread.
+    private func startPoll(interval: TimeInterval) {
+        cancelPoll?()
+        currentPollInterval = interval
+        cancelPoll = scheduler(interval) { [weak self] in
+            guard let self = self else { return }
+            self.evaluate(reason: "health_poll")
+            let next = self.cadence.intervalAfterPoll()
+            if next != self.currentPollInterval {
+                self.startPoll(interval: next)
+            }
+        }
     }
 
     public func stop() {
         for token in tokens { axBus.unsubscribe(token) }
         tokens.removeAll()
         cancelPoll?(); cancelPoll = nil
+        currentPollInterval = 0
         element = nil
         pid = 0
         bundleID = ""

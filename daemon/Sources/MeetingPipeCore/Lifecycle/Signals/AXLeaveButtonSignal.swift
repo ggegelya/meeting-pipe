@@ -24,30 +24,39 @@ public final class AXLeaveButtonSignal {
     public var isArmed: Bool { element != nil }
 
     public static let defaultPollInterval: TimeInterval = 1.0
+    /// TECH-PERF5: the backed-off health-poll rate used while the AX destruction
+    /// notification is delivering.
+    public static let defaultSlowPollInterval: TimeInterval = 5.0
 
     private let axBus: AXObserverBus
     private let eventLog: EventLog
     private let probe: Probe
     private let scheduler: Scheduler
     private let pollInterval: TimeInterval
+    private let slowPollInterval: TimeInterval
 
     private var element: AXUIElement?
     private var context: MeetingLifecycleContext?
     private var axToken: AXObserverBus.Token?
     private var cancelPoll: (() -> Void)?
+    private var cadence: AdaptivePollCadence
+    private var currentPollInterval: TimeInterval = 0
 
     public init(
         axBus: AXObserverBus,
         eventLog: EventLog = NoopEventLog(),
         probe: @escaping Probe = AXLeaveButtonSignal.defaultProbe,
         scheduler: @escaping Scheduler = AXLeaveButtonSignal.defaultScheduler,
-        pollInterval: TimeInterval = AXLeaveButtonSignal.defaultPollInterval
+        pollInterval: TimeInterval = AXLeaveButtonSignal.defaultPollInterval,
+        slowPollInterval: TimeInterval = AXLeaveButtonSignal.defaultSlowPollInterval
     ) {
         self.axBus = axBus
         self.eventLog = eventLog
         self.probe = probe
         self.scheduler = scheduler
         self.pollInterval = pollInterval
+        self.slowPollInterval = slowPollInterval
+        self.cadence = AdaptivePollCadence(fast: pollInterval, slow: slowPollInterval)
     }
 
     public func start(
@@ -62,12 +71,28 @@ public final class AXLeaveButtonSignal {
             element: leaveButton,
             notification: kAXUIElementDestroyedNotification as String
         ) { [weak self] in
+            self?.cadence.noteListener()   // TECH-PERF5: notification is delivering
             self?.evaluate(reason: "destroyed_notification")
         }
-        cancelPoll = scheduler(pollInterval) { [weak self] in
-            self?.evaluate(reason: "health_poll")
-        }
+        cadence = AdaptivePollCadence(fast: pollInterval, slow: slowPollInterval)
+        startPoll(interval: cadence.initialInterval)
         evaluate(reason: "initial")
+    }
+
+    /// Arm (or re-arm) the health poll at `interval`, backing the rate off while
+    /// the AX destruction notification is delivering and speeding back up once it
+    /// goes quiet (TECH-PERF5). Re-armed only from the poll callback's own thread.
+    private func startPoll(interval: TimeInterval) {
+        cancelPoll?()
+        currentPollInterval = interval
+        cancelPoll = scheduler(interval) { [weak self] in
+            guard let self = self else { return }
+            self.evaluate(reason: "health_poll")
+            let next = self.cadence.intervalAfterPoll()
+            if next != self.currentPollInterval {
+                self.startPoll(interval: next)
+            }
+        }
     }
 
     /// Arm, or re-arm, on `leaveButton`. Two callers: (1) recording-start late-arm when the discovery walk
@@ -95,6 +120,7 @@ public final class AXLeaveButtonSignal {
     public func stop() {
         if let token = axToken { axBus.unsubscribe(token); axToken = nil }
         cancelPoll?(); cancelPoll = nil
+        currentPollInterval = 0
         context = nil
         element = nil
         lastState = nil
