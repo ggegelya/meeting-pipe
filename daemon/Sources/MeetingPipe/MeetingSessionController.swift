@@ -85,8 +85,8 @@ final class MeetingSessionController {
                         self.handleMeetingStarted(source: self.appSource(from: context))
                     case .endingProvisional(let context, _):
                         self.rescueProvisionalEnd(context: context)
-                    case .ended:
-                        self.handleMeetingEnded()
+                    case .ended(_, let reason):
+                        self.handleMeetingEnded(reason: reason)
                     default:
                         break
                     }
@@ -398,11 +398,25 @@ final class MeetingSessionController {
         ])
     }
 
-    func handleMeetingEnded() {
+    func handleMeetingEnded(reason: EndingReason) {
         switch coordinator.stateMachine.current {
         case .recording(let file, let src, let mode):
+            // Recording-stop honors every end, including uncorroborated ones: a
+            // missed real end (recording runs forever) is worse than a rare late
+            // stop. This path is deliberately unchanged.
             stopRecording(file: file, source: src, summaryMode: mode)
         case .prompting, .suppressed:
+            // A bare leave-button invalidation with zero corroboration is the
+            // Teams compact/mini-window swap, not a real end (PromptEndPolicy).
+            // Acting on it here used to tear down an explicit Skip and re-open the
+            // prompt every ~minute for the whole call.
+            guard PromptEndPolicy.clearsPromptState(reason: reason) else {
+                Log.event(category: "coordinator", action: "prompt_end_ignored_unconfirmed", attributes: [
+                    "leading_signal": reason.leadingSignal,
+                    "state": DetectionStateMachine.label(coordinator.stateMachine.current),
+                ])
+                return
+            }
             handleMeetingEndedDuringPrompt()
         default:
             break
