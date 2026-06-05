@@ -11,6 +11,7 @@ from mp.publish_router import (
     PublisherBuildError,
     build_publishers,
     fanout,
+    publish_state,
 )
 from mp.schemas import MeetingSummary
 
@@ -201,3 +202,17 @@ def test_default_output_sinks_is_notion_only() -> None:
     # they edit `output.sinks`.
     cfg = Config()
     assert cfg.output.sinks == ["notion"]
+
+
+def test_publish_state_classifies_fanout_result() -> None:
+    # TECH-I6: full when all sinks succeed, partial when mixed, none when all
+    # fail or nothing ran.
+    assert publish_state({"sinks": {}}) == "none"
+    assert publish_state({}) == "none"
+    assert publish_state(
+        {"sinks": {"notion": {"page_id": "x"}, "filesystem": {"ok": True}}}
+    ) == "full"
+    assert publish_state(
+        {"sinks": {"notion": {"error": "boom"}, "filesystem": {"ok": True}}}
+    ) == "partial"
+    assert publish_state({"sinks": {"notion": {"error": "boom"}}}) == "none"

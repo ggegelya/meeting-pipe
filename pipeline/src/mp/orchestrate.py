@@ -26,12 +26,12 @@ from importlib import resources
 from pathlib import Path
 
 from .config import Config, effective_backend, load_secrets
-from .corrections import write_run_sidecar
+from .corrections import set_publish_state, write_run_sidecar
 from .egress_guard import arm_for_config
 from .diarize import assign_speakers_by_channel, is_stereo_recording
 from . import events
 from .markdown import render_markdown
-from .publish_router import fanout as publish_fanout
+from .publish_router import fanout as publish_fanout, publish_state
 from .summarize import summarize
 from .workflow import apply_overrides as apply_workflow_overrides
 
@@ -362,6 +362,7 @@ def _run_all_inner(
     # summary, plus enough metadata for the Phase 2 correction loop to
     # round-trip the original summary without guessing. Best-effort; a
     # write failure is logged but does not block publish.
+    sidecar: Path | None = None
     try:
         sidecar = write_run_sidecar(
             recordings_dir=Path(t["md"]).parent,
@@ -388,6 +389,14 @@ def _run_all_inner(
     events.emit("pipeline", "stage_completed", stage="publish",
                 page_url=pub.get("page_url"),
                 failures=[name for name, _ in pub.get("failures", [])])
+
+    # Record the publish outcome onto the run sidecar so the Library can badge a
+    # partial / failed publish (TECH-I6). Best-effort, like the run-sidecar write.
+    if sidecar is not None:
+        try:
+            set_publish_state(sidecar, publish_state(pub))
+        except Exception as e:  # noqa: BLE001
+            log.warning("publish_state update failed: %s", e)
 
     log.info("done: page_url=%s", pub.get("page_url"))
     events.emit("pipeline", "run_completed", wav=str(wav),

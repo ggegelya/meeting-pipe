@@ -81,6 +81,26 @@ def write_run_sidecar(
     return out
 
 
+def set_publish_state(sidecar_path: Path, publish_state: str) -> None:
+    """Record the resolved publish outcome onto an existing run sidecar (TECH-I6).
+
+    The run sidecar is written before publish (it snapshots backend + model);
+    once `fanout` returns, this merges a ``publish_state`` key so the Library can
+    badge a partial or failed publish. Atomic and best-effort: a missing or
+    unreadable sidecar is a no-op.
+    """
+    try:
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(payload, dict):
+        return
+    payload["publish_state"] = publish_state
+    tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, sidecar_path)
+
+
 def read_run_sidecar(path: Path) -> dict[str, Any] | None:
     """Best-effort read; returns ``None`` on any IO / parse failure.
 

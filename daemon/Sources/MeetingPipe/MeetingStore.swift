@@ -60,6 +60,12 @@ struct Meeting: Identifiable, Hashable {
     var workflowNDAMode: Bool? = nil
     var regulatedMode: Bool? = nil
 
+    /// Publish outcome from `<stem>.run.json["publish_state"]` (TECH-I6): "full"
+    /// / "partial" / "none", nil for never-published rows. The pipeline writes it
+    /// after fanout; drives the Library partial-publish badge. Defaulted so test
+    /// constructors need not supply it.
+    var publishState: String? = nil
+
     var id: String { stem } // stems are unique per recording (datetime-derived)
 
     /// True when the meeting was recorded zero-egress, i.e. forced on-device and
@@ -388,7 +394,8 @@ final class MeetingStore: ObservableObject {
             needsRepublish: MeetingStore.needsRepublish(files: files, summaryURL: summaryURL),
             detectedLanguage: (summary?.detectedLanguage).flatMap { $0.isEmpty ? nil : $0 },
             workflowNDAMode: (meta?["workflow_nda_mode"] as? Bool),
-            regulatedMode: (meta?["regulated_mode"] as? Bool)
+            regulatedMode: (meta?["regulated_mode"] as? Bool),
+            publishState: (run?["publish_state"] as? String)
         )
         return (meeting, cacheable)
     }

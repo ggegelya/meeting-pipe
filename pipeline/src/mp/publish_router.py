@@ -158,3 +158,21 @@ def fanout(
         "failures": failures,
     }
     return out
+
+
+def publish_state(result: dict[str, Any]) -> str:
+    """Classify a `fanout` result for the Library row indicator (TECH-I6).
+
+    ``"full"`` when every sink succeeded, ``"partial"`` when some succeeded and
+    some failed, ``"none"`` when every sink failed or none ran. A failed sink is
+    recorded in the per-sink map as a dict carrying an ``error`` key.
+    """
+    sinks = result.get("sinks") or {}
+    if not sinks:
+        return "none"
+    failed = sum(1 for r in sinks.values() if isinstance(r, dict) and r.get("error"))
+    if failed == 0:
+        return "full"
+    if failed >= len(sinks):
+        return "none"
+    return "partial"

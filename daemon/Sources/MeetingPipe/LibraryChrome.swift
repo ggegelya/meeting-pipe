@@ -55,6 +55,7 @@ struct MPStatusPill: View {
         case failed
         case nda
         case neutral
+        case warning   // partial / failed publish (TECH-I6)
     }
 
     var body: some View {
@@ -94,6 +95,7 @@ struct MPStatusPill: View {
         case .failed:     return Color(MPColors.pulse500)
         case .nda:        return Color(MPColors.fgSubtle)
         case .neutral:    return Color(MPColors.fgSubtle)
+        case .warning:    return Color(MPColors.warning600)
         }
     }
 

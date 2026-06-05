@@ -386,3 +386,22 @@ def test_orchestrate_tolerates_summarize_without_meta(tmp_path: Path, monkeypatc
     data = json.loads((tmp_path / f"{stem}.run.json").read_text(encoding="utf-8"))
     assert data["backend"] == ""
     assert data["model"] == ""
+
+
+def test_set_publish_state_merges_into_run_sidecar(tmp_path):
+    from mp.corrections import set_publish_state
+
+    sidecar = tmp_path / "20260101-1000.run.json"
+    sidecar.write_text('{"stem": "20260101-1000", "backend": "local"}', encoding="utf-8")
+    set_publish_state(sidecar, "partial")
+    data = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert data["publish_state"] == "partial"
+    assert data["backend"] == "local"
+
+
+def test_set_publish_state_noop_when_sidecar_missing(tmp_path):
+    from mp.corrections import set_publish_state
+
+    target = tmp_path / "missing.run.json"
+    set_publish_state(target, "full")
+    assert not target.exists()

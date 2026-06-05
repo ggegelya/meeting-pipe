@@ -140,7 +140,16 @@ struct MeetingRow: View, Equatable {
             MPStatusPill(kind: .failed, label: "Failed")
                 .help(failureHelpText)
         case (.done, _):
-            MPStatusPill(kind: .ready, label: "Ready")
+            switch meeting.publishState {
+            case "partial":
+                MPStatusPill(kind: .warning, label: "Partial")
+                    .help("Published to some targets; at least one sink failed.")
+            case "none":
+                MPStatusPill(kind: .warning, label: "Unpublished")
+                    .help("Every publish target failed for this meeting.")
+            default:
+                MPStatusPill(kind: .ready, label: "Ready")
+            }
         case (.unknown, _):
             MPStatusPill(kind: .neutral, label: "-")
         }

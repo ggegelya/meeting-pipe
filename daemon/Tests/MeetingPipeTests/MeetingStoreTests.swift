@@ -66,6 +66,28 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(captured.first?.status, .done)
     }
 
+    func test_publish_state_read_from_run_sidecar() throws {
+        // TECH-I6: the pipeline records publish_state on <stem>.run.json after
+        // fanout; the row reads it for the partial-publish badge.
+        let dir = try tempDir()
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{\"title\":\"x\"}")
+        try writeFile(dir.appendingPathComponent("\(stem).run.json"),
+                      "{\"stem\":\"\(stem)\",\"publish_state\":\"partial\"}")
+        let store = MeetingStore(recordingsDir: dir)
+        let exp = expectation(description: "scan")
+        var captured: [Meeting] = []
+        let cancel = store.$meetings.dropFirst().sink { meetings in
+            captured = meetings
+            exp.fulfill()
+        }
+        store.start()
+        wait(for: [exp], timeout: 2.0)
+        cancel.cancel()
+        XCTAssertEqual(captured.first?.publishState, "partial")
+    }
+
     func test_status_manual_paste_when_ready_marker_present() throws {
         let dir = try tempDir()
         let stem = "20260511-143110"
