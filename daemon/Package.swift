@@ -17,7 +17,9 @@ let package = Package(
         // sidecar. The runner is wired through TranscriptionService and is
         // not the default path yet (the Python pipeline still wins) until a
         // follow-up session validates ANE residency and sidecar parity.
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.4")
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.4"),
+        // TECH-T2: Appearance-gated snapshot tests for a few SwiftUI views.
+        .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.17.0")
     ],
     targets: [
         // Shared lifecycle + gate infrastructure (TECH-C13, TECH-G-MIC).
@@ -53,7 +55,10 @@ let package = Package(
         ),
         .testTarget(
             name: "MeetingPipeTests",
-            dependencies: ["MeetingPipe"],
+            dependencies: [
+                "MeetingPipe",
+                .product(name: "SnapshotTesting", package: "swift-snapshot-testing")
+            ],
             path: "Tests/MeetingPipeTests",
             resources: [
                 .process("Fixtures")
