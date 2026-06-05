@@ -74,7 +74,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-PERF5 | Adaptive backoff on poll timers | Performance | P3 new | The 1 Hz HAL/AX polls and 4 Hz engine tick run all meeting; back off when the listener is delivering. |
 | TECH-SEC9 | Drop unused AppleEvents entitlement | Security | DONE (was P3) | NSAppleEventsUsageDescription is declared but browser detection uses Accessibility; remove the capability or document a use site. Done: dropped the key from install.sh's Info.plist and removed AppleEvents from the tccutil reset loops in install.sh + uninstall.sh (no AppleEvents API is used in Swift). |
 | TECH-FEAT3 | Speaker enrollment | Feature | P3 new | Label your own voice once so "me vs them" is reliable; leans on the diarization-cleanup work. |
-| TECH-FEAT4 | Cross-meeting action tracking | Feature | P3 new | Extract open action items across meetings and surface the unresolved ones. |
+| TECH-FEAT4 | Cross-meeting action tracking | Feature | DONE (was P3) | Extract open action items across meetings and surface the unresolved ones. |
 | TECH-DIST2 | Spike: Swift port of the pipeline | Distribution | P3 new | Evaluate removing Python entirely (gated on MLX-Swift maturity for the local summarizer); would moot DIST1. Overlaps TECH-I7. |
 | TECH-DOC4 | Delete Q2 archives + fix design READMEs | Docs | DONE (was P3) | Remove the two all-DONE Q2 archives (git preserves them) and trim the deleted-architecture prose in design/README.md and the ui_kits README. |
 | TECH-DOC5 | Superseding ADRs | Docs | DONE (was P3) | Record that ADR 0001 (HAL tap) is superseded by ScreenCaptureKit and ADR 0002 is partially superseded by ADR 0007. |
@@ -181,7 +181,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 
 **TECH-FEAT3 (P3): speaker enrollment.** Label the user's own voice once for reliable "me vs them"; builds on diarization cleanup.
 
-**TECH-FEAT4 (P3): cross-meeting action tracking.** Surface unresolved action items across meetings.
+**[DONE] TECH-FEAT4 (P3): cross-meeting action tracking.** Surface unresolved action items across meetings. Done as the stdlib-only `mp actions` MVP (`actions.py`, registered in `__main__.py` + USAGE), mirroring `mp ask`: scans every `<stem>.summary.json` for the `MeetingSummary.actions` the summarizer already extracts (ADR 0014), aggregates them across the library, filters by `--owner` / `--due-before` / `--min-confidence`, sorts soonest-deadline-first, and prints text or `--json`. No new dependency, no new egress. `test_actions.py` (discover, malformed-skip, filters, JSON sort, empty). Since the schema has no resolved/done flag, every extracted action counts as open; a done flag + the UI to set it is the named follow-up. README documents it next to `mp ask`.
 
 ### Distribution
 

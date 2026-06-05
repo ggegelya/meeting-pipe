@@ -43,6 +43,8 @@ Subcommands:
   ask <query...> [--top N] [--dir P] [--json]
                               Lexical search over your meeting summaries +
                               transcripts (on-device, zero-dependency)
+  actions [--owner N] [--due-before D] [--min-confidence C] [--json]
+                              List open action items across all your meetings
 
 Globals:
   --help, -h                  Show this message
@@ -108,6 +110,9 @@ def main() -> int:
         return run(rest)
     if cmd == "ask":
         from .ask import main as run
+        return run(rest)
+    if cmd == "actions":
+        from .actions import main as run
         return run(rest)
 
     print(f"unknown subcommand: {cmd}\n", file=sys.stderr)
