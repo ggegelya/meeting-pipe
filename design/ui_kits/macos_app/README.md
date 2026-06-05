@@ -11,7 +11,7 @@ near-future surfaces:
 | `MenuBarDropdown.jsx` | `StatusBarController.swift` | the `rebuildMenu()` function |
 | `MeetingPrompt.jsx` | `MeetingPromptWindow.swift` | the 380×180 `NSPanel` content view |
 | `Notification.jsx` | `Notifier.swift` | `notifyDone` / `notifyRecordingStarted` body strings |
-| `PreferencesWindow.jsx` | `PreferencesWindow.swift` | the SwiftUI `TabView` (Recording / Detection / Modes) |
+| `PreferencesWindow.jsx` | `Preferences/PreferencesView.swift` | the SwiftUI split view (General / Recording / Prompt / Pipeline / Integrations / Permissions / Advanced) |
 | `SummaryLibrary.jsx` | *(anticipated)* | derived from filename patterns + Notion summary schema |
 | `OnboardingPermissions.jsx` | *(anticipated)* | the four-permission grant list (Microphone, Screen Recording, Accessibility, Notifications); see the README install steps |
 

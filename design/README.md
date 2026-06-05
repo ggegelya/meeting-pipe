@@ -34,18 +34,12 @@ futuristic, simple*. **All of it is open to your edits.**
 distributed as `MeetingPipe.app`. There is no website, no mobile companion, no
 web UI.
 
-**Architecture in one breath.** A Swift menu-bar daemon detects meetings via
-two-signal AND (a known meeting app + microphone in use), shows a floating
-HUD-style prompt asking whether to record, captures system audio via
-ScreenCaptureKit and the user's mic via AVAudioEngine, mixes them to a 16 kHz
-mono WAV, and hands off to a Python pipeline that runs WhisperX + pyannote
-(both gated locally), summarizes via the Anthropic API, and publishes to
-Notion.
+**Architecture in one breath.** A Swift menu-bar daemon detects meetings by fusing several signals (per-process audio, ScreenCaptureKit windows, the Accessibility Leave button) into one verdict, shows a floating HUD-style prompt asking whether to record, captures system audio via ScreenCaptureKit and the user's mic via AVAudioEngine, writes them as a stereo WAV (mic left, system right), and transcribes on-device with FluidAudio (Parakeet TDT + pyannote) on the Apple Neural Engine. A short-lived Python pipeline then summarizes via the Anthropic API (or a local MLX model) and publishes to Notion, Obsidian, or the filesystem.
 
 **Surfaces today.**
 1. Status-bar icon + drop-down menu (`waveform.circle`, "Idle" / "Recording" / …).
 2. Floating "Meeting detected" prompt panel (top-right, 380×180, `hudWindow`).
-3. SwiftUI Preferences window (480×560, three tabs: Recording / Detection / Modes).
+3. SwiftUI Preferences window (seven panes: General / Recording / Prompt / Pipeline / Integrations / Permissions / Advanced).
 4. Banner notifications via `UNUserNotificationCenter`.
 
 **Surfaces this system anticipates.**
