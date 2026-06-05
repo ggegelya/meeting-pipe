@@ -1,6 +1,6 @@
 # Conventions
 
-Patterns this codebase uses consistently. Match them rather than inventing parallel ones. For terminology, see [`GLOSSARY.md`](./GLOSSARY.md). For the subsystem map, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+Patterns this codebase uses consistently. Match them rather than inventing parallel ones. For terminology, see the [Glossary](./ARCHITECTURE.md#glossary). For the subsystem map, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ---
 

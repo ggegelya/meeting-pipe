@@ -61,7 +61,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 | TECH-FEAT2 | Local semantic search ("ask my meetings") | Feature | DONE: lexical MVP (vector RAG deferred) | On-device RAG over the transcript library using the MLX model already run; the biggest "why this over cloud" answer. |
 | TECH-FEAT5 | Auto/anthropic fallback on 429/500 | Feature | DONE (was P2) | The auto backend only falls back on connection/auth errors; a sustained rate-limit fails the run instead of going local. |
 | TECH-DIST1 | Bundle runtime for a drag-n-drop installer | Distribution | P2 new | Embed a standalone Python plus ffmpeg and notarize, so a clean Mac (no Homebrew, no Python) can install by dragging the app. |
-| TECH-DOC1 | Merge GLOSSARY into ARCHITECTURE | Docs | P2 new | Fold the glossary into an ARCHITECTURE "## Glossary" section, rewire the five references, delete GLOSSARY.md. |
+| TECH-DOC1 | Merge GLOSSARY into ARCHITECTURE | Docs | DONE (was P2) | Fold the glossary into an ARCHITECTURE "## Glossary" section, rewire the five references, delete GLOSSARY.md. |
 | TECH-DOC2 | Merge SPEC into README + ADRs | Docs | P2 new | Move surviving rationale to a README "Why it is shaped this way" section, dedupe the schema tables into CONVENTIONS, rewire six refs, delete SPEC.md. |
 | TECH-DOC3 | Trim the signal-fusion doc | Docs | P2 new | Fix the stale file tree (actor wording, deleted signals, per-vendor adapters, InternalSpeechProbe, Locale path, Thresholds.swift); keep the durable "why". |
 | TECH-UI-X1 | Extract MeetingDetailView per tab | Architecture | P2 carry | MeetingDetailView is ~1206 lines; split per tab (target under 250). |
@@ -195,7 +195,7 @@ The pipeline is already "summarize + publish only" (ADR 0007). The realistic opt
 
 ### Docs (finish the consolidation started in Q4)
 
-**TECH-DOC1 (P2): GLOSSARY into ARCHITECTURE.** Append the glossary as an ARCHITECTURE "## Glossary" section, repoint the five references (ARCHITECTURE self-link, CLAUDE.md, CONVENTIONS.md, daemon/CLAUDE.md, pipeline/CLAUDE.md, tech-task.md) to `ARCHITECTURE.md#glossary`, delete GLOSSARY.md.
+**[DONE] TECH-DOC1 (P2): GLOSSARY into ARCHITECTURE.** Append the glossary as an ARCHITECTURE "## Glossary" section, repoint the five references (ARCHITECTURE self-link, CLAUDE.md, CONVENTIONS.md, daemon/CLAUDE.md, pipeline/CLAUDE.md, tech-task.md) to `ARCHITECTURE.md#glossary`, delete GLOSSARY.md. Done: appended the 33-term glossary as ARCHITECTURE.md `## Glossary` (em-dashes converted to hyphens to satisfy the added-line em-dash guard), repointed all six refs (ARCHITECTURE self-link to `#glossary`; CONVENTIONS.md, root + daemon + pipeline CLAUDE.md, and tech-task.md to `ARCHITECTURE.md#glossary`), deleted GLOSSARY.md.
 
 **TECH-DOC2 (P2): SPEC into README + ADRs.** Fold the surviving user-relevant rationale into a concise README "Why it is shaped this way" section, confirm the architectural why is covered by ADRs 0007/0008/0009, move the duplicated event-log and sidecar schema tables to CONVENTIONS as the single owner (replace the copies in ARCHITECTURE and SPEC with links), rewire the six SPEC references, then delete SPEC.md. Also fix SPEC's own stale content if any survives the merge (it documents three backends, the Whisper/sherpa stack, and a stale repo layout).
 

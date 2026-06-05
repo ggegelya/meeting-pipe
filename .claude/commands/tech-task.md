@@ -9,7 +9,7 @@ You're picking up a single backlog task: $ARGUMENTS
    - [`CLAUDE.md`](CLAUDE.md) at the repo root for git workflow, verification, and conventions worth knowing.
    - [`ARCHITECTURE.md`](ARCHITECTURE.md) for the subsystem map.
    - [`CONVENTIONS.md`](CONVENTIONS.md) for code patterns, the event log, and sidecar schemas.
-   - [`GLOSSARY.md`](GLOSSARY.md) for any term in the task description you don't recognise.
+   - [`ARCHITECTURE.md#glossary`](ARCHITECTURE.md#glossary) for any term in the task description you don't recognise.
    - `daemon/CLAUDE.md` if the task touches Swift, `pipeline/CLAUDE.md` if it touches Python. Both load automatically when you read files in those subtrees.
 3. Read the existing files the task points at (file paths in the backlog entry are authoritative; check they still exist before editing).
 4. Implement the task. Stop and ask before introducing any new dependency, before extending a global stylesheet, or before extending an existing pattern flagged in CLAUDE.md as needing approval.

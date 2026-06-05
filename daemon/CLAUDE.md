@@ -1,6 +1,6 @@
 # daemon/ — Swift menu-bar app
 
-Loaded when you touch files in this subtree. The full subsystem map is in [`../ARCHITECTURE.md`](../ARCHITECTURE.md); patterns in [`../CONVENTIONS.md`](../CONVENTIONS.md); terms in [`../GLOSSARY.md`](../GLOSSARY.md). This file is the short list of things that bite if you forget them.
+Loaded when you touch files in this subtree. The full subsystem map is in [`../ARCHITECTURE.md`](../ARCHITECTURE.md); patterns in [`../CONVENTIONS.md`](../CONVENTIONS.md); terms in [`../ARCHITECTURE.md#glossary`](../ARCHITECTURE.md#glossary). This file is the short list of things that bite if you forget them.
 
 ## Build + test
 

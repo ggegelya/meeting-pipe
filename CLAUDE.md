@@ -13,7 +13,7 @@ Personal macOS product (single-user, not for sale). Two trees:
 |---|---|
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Where code lives. Subsystem map + data flow + key invariants. Read before non-trivial work. |
 | [`CONVENTIONS.md`](./CONVENTIONS.md) | Swift + Python patterns + event-log schema + sidecar contract. The "match this" doc. |
-| [`GLOSSARY.md`](./GLOSSARY.md) | Project terms (workflow, lockon, BYO, regulated, sidecar, RMS fallback, …). Skim when a term is unfamiliar. |
+| [`ARCHITECTURE.md#glossary`](./ARCHITECTURE.md#glossary) | Project terms (workflow, lockon, BYO, regulated, sidecar, RMS fallback, …). Skim when a term is unfamiliar. |
 | [`SPEC.md`](./SPEC.md) | Architectural *why*. Read when the question is "why is it shaped this way?" |
 | [`README.md`](./README.md) | Operating guide (the *how*). Edit when user-visible behaviour or surfaces change. |
 | `daemon/CLAUDE.md` | Auto-loads when you touch Swift. Short Swift-specific gotchas. |
