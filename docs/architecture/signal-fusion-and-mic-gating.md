@@ -28,29 +28,28 @@ The device-scope sibling `kAudioDevicePropertyDeviceIsRunningSomewhere` is CORRO
 
 ### A.2 Recommended architecture
 
-The fusion layer is a single Swift actor that owns a typed event bus, not a set of booleans. **One coherent verdict object, `MeetingLifecycleVerdict`, is the only thing the recording state machine consumes.**
+The fusion layer is a single `final class` (`MeetingLifecycleCoordinator`), serialized by an internal `NSLock` plus a dedicated dispatch queue, that owns a typed event bus, not a set of booleans. **One coherent verdict object, `MeetingLifecycleVerdict`, is the only thing the recording state machine consumes.**
 
 ```
 Sources/MeetingPipeCore/Lifecycle/
-  MeetingLifecycleCoordinator.swift     // actor; owns the verdict
+  MeetingLifecycleCoordinator.swift     // final class + NSLock; owns the verdict
   MeetingLifecycleVerdict.swift         // enum + reasoning payload
+  PromotionEngine.swift                 // pure fusion rule: provisional -> confirmed
   Signals/
     ProcessAudioSignal.swift            // HAL per-process IsRunningInput
-    InputDeviceSignal.swift             // HAL device IsRunningSomewhere
     ShareableContentSignal.swift        // SCShareableContent window polling
     AXLeaveButtonSignal.swift           // cached AXUIElementRef + health poll
     WindowTitleSignal.swift             // AX title change + browser tab title
     WorkspaceSignal.swift               // NSWorkspace + NSRunningApplication
-    CalendarContextSignal.swift         // EventKit hysteresis hints
   Adapters/
-    TeamsLifecycleAdapter.swift
-    ZoomLifecycleAdapter.swift
-    WebexLifecycleAdapter.swift
+    LifecycleAdapter.swift              // protocol
+    NativeLifecycleAdapter.swift        // Teams, Zoom, Webex (one config-driven adapter)
     BrowserMeetingLifecycleAdapter.swift // Meet, Teams web, Webex web, Slack PWA
-  Infra/
-    CoreAudioHALBus.swift               // shared property-listener registrar
-    AXObserverBus.swift                 // shared AXObserver registrar + cache
-    EventLog.swift                      // events.jsonl emitter
+
+Sources/MeetingPipeCore/Infra/           // shared by Lifecycle and MicGate
+  CoreAudioHALBus.swift                 // shared property-listener registrar
+  AXObserverBus.swift                   // shared AXObserver registrar + cache
+  EventLog.swift                        // events.jsonl emitter
 ```
 
 `MeetingLifecycleVerdict` is an enum with associated values that carry the reasoning. Cases: `.idle`, `.starting(adapter: AdapterID, startedAt: Date)`, `.inMeeting(adapter: AdapterID, since: Date, audioObjectID: AudioObjectID?, axRoot: AXUIElement?)`, `.endingProvisional(adapter: AdapterID, leadingSignal: SignalKind, at: Date)`, `.ended(adapter: AdapterID, confirmedBy: [SignalKind], at: Date)`. The `endingProvisional` state exists for the 200 to 800 ms window between SCShareableContent showing the meeting window gone and the audio process confirming release; the state machine stops the recording only on `.ended`.
@@ -85,9 +84,7 @@ The structural fact that determines this entire design is that **no public macOS
 
 **HAL Voice Activity Detection** (`kAudioDevicePropertyVoiceActivityDetectionEnable`, `kAudioDevicePropertyVoiceActivityDetectionState`, scope `kAudioDevicePropertyScopeInput`, element `kAudioObjectPropertyElementMain`, macOS 14.0+) is PRIMARY. WWDC23 session 10235 "What's new in voice processing" (timestamps 11:37 and 12:31) documents the API; the state is observable via `AudioObjectAddPropertyListenerBlock`, latency is roughly 100 to 300 ms from speech onset, and the detection operates on echo-cancelled input regardless of any process's mute state. The property is supported on the built-in mic on Apple Silicon; third-party USB mics that do not route through Apple's voice-processing path may return `kAudioHardwareUnknownPropertyError` on enable, and the daemon detects this at startup and falls through to RMS-only gating for that device.
 
-**RMS energy gate inside the existing AVAudioEngine input-tap** is PRIMARY. The canonical implementation is an allocation-free, lock-free vDSP-based RMS computation per buffer with asymmetric hysteresis: close-to-silent on a sustained 350 ms window below -55 dBFS, open-to-hot on a sustained 80 ms window above -45 dBFS. The thresholds and dwell times are tuned for room-noise floors in office and home settings and exposed as compile-time constants in `MicGate/Thresholds.swift`. The tap callback runs on the audio render thread; the gate uses two `os_unfair_lock`-free atomic state variables and a small ring buffer of dB values, no allocations, no logging from the callback.
-
-**AVAudioInputNode `setMutedSpeechActivityEventListener`** is PRIMARY for the daemon's own engine and provides a free corroboration that the RMS gate is correctly identifying speech, because the daemon can mute its own voice-processing input and use this listener as a ground-truth speech-detector that runs in parallel to RMS. This is a daemon-internal calibration signal, not a meeting-app mute signal.
+**RMS energy gate inside the existing AVAudioEngine input-tap** is PRIMARY. The canonical implementation is an allocation-free, lock-free vDSP-based RMS computation per buffer with asymmetric hysteresis: close-to-silent on a sustained 350 ms window below -55 dBFS, open-to-hot on a sustained 80 ms window above -45 dBFS. The thresholds and dwell times are init parameters on `RMSGateProbe` (defaults -55 / -45 dBFS), tuned for room-noise floors in office and home settings. The tap callback runs on the audio render thread; the gate is allocation-free with all state in stored properties and owned by the tap thread (no lock). A verdict transition's lock, the `events.jsonl` write, and the AsyncStream yield are all deferred onto `MicGate.publishQueue`, so nothing touches the file system on the render thread (TECH-CONC1).
 
 **Accessibility observation of the meeting-app mute button** is PRIMARY when the locale TOML covers the user's locale and the AX scrape returns a recognized label, otherwise CORROBORATING when scrape returns an unrecognized label, otherwise unavailable. The pattern is the same caching architecture as Section A.2: walk to the Mute/Unmute button once, retain the `AXUIElementRef`, register `kAXValueChangedNotification` and `kAXTitleChangedNotification`, and health-poll at 1 Hz to absorb Sequoia destruction-notification dropouts. The button's `AXTitle` or `AXValue` distinguishes muted (label is "Unmute" or its locale equivalent) from hot (label is "Mute").
 
@@ -101,26 +98,23 @@ For browser-hosted meetings, **no per-tab mute signal exists at any public API s
 
 ```
 Sources/MeetingPipeCore/MicGate/
-  MicGate.swift                       // actor; owns the verdict
+  MicGate.swift                       // final class + NSLock; owns the verdict
   MicGateVerdict.swift                // enum + reasoning
   MicGateWriter.swift                 // applies verdict to the L channel
+  MicOnlySilenceBackstop.swift        // force-stop a mic-only silent recording
+  MuteLabelsLoader.swift
+  MuteLabelsValidator.swift           // CI tool, see B.5
   Probes/
     HALVoiceActivityProbe.swift       // kAudioDevicePropertyVoiceActivityDetectionState
     RMSGateProbe.swift                // vDSP RMS + hysteresis inside the tap
     AXMuteButtonProbe.swift           // localized AX scrape, cached element
     HALSystemMuteProbe.swift          // kAudioObjectPropertyMute on input device
-    InternalSpeechProbe.swift         // AVAudioInputNode muted-speech listener
-  Locale/
+  Resources/
     MuteLabels.toml                   // checked-in, per-app, per-locale
-    MuteLabelsLoader.swift
-    MuteLabelsValidator.swift         // CI tool, see B.5
   Adapters/
-    TeamsMuteAdapter.swift
-    ZoomMuteAdapter.swift
-    WebexMuteAdapter.swift
-    MeetMuteAdapter.swift
-    SlackMuteAdapter.swift
-    BrowserMuteAdapter.swift          // generic browser fallback
+    MicGateAdapter.swift              // protocol
+    NativeMuteAdapter.swift           // Teams, Zoom, Webex, Slack, Meet (AX-driven)
+    NoOpMuteAdapter.swift             // unknown clients: HAL VAD + RMS only
 ```
 
 `MicGateVerdict` is an enum carrying audit-log reasoning:
@@ -135,7 +129,7 @@ enum MicGateVerdict {
 }
 ```
 
-The verdict is recomputed on every signal change. HAL VAD, HAL system mute, and AX button-state changes are event-driven via `AudioObjectAddPropertyListenerBlock` and `AXObserver`. The RMS gate is event-driven from the audio render thread and posts state changes via a single-producer single-consumer atomic. AX button-state has a 1 Hz health-poll fallback for Sequoia notification dropouts. There is no other polling.
+The verdict is recomputed on every signal change. HAL VAD, HAL system mute, and AX button-state changes are event-driven via `AudioObjectAddPropertyListenerBlock` and `AXObserver`. The RMS gate is event-driven from the audio render thread and hands state changes to `MicGate` off the render thread; the lock and the `events.jsonl` write run on `MicGate.publishQueue` (TECH-CONC1). AX button-state has a 1 Hz health-poll fallback for Sequoia notification dropouts. There is no other polling.
 
 Precedence rules. `mutedByHardware` wins if HAL system-input-mute is true. Otherwise `mutedByApp` wins if AX scrape returns a "muted" label that matches the locale TOML. Otherwise `silentByRMS` wins if RMS has been below the close threshold for the sustained dwell. Otherwise `hot` if VAD is active or RMS is above the open threshold. Otherwise `uncertain` with reasons listed. The precedence is deterministic and audit-logged.
 
@@ -167,7 +161,7 @@ This is the audit trail the user needs to validate behavior in regulated-life-sc
 
 ### B.4 Localization strategy
 
-The project ships `Sources/MeetingPipeCore/MicGate/Locale/MuteLabels.toml` keyed by app and locale:
+The project ships `Sources/MeetingPipeCore/MicGate/Resources/MuteLabels.toml` keyed by app and locale:
 
 ```
 [teams.en]
@@ -204,43 +198,3 @@ The shared verdict observation pattern means the daemon does the AX walk once, r
 The two coordinators are independent state machines that share infrastructure. `MeetingLifecycleCoordinator` consumes signals from `ProcessAudioSignal`, `ShareableContentSignal`, `AXLeaveButtonSignal`, and corroborators, and surfaces `MeetingLifecycleVerdict` to the recorder. `MicGate` consumes signals from `HALVoiceActivityProbe`, `RMSGateProbe`, `AXMuteButtonProbe`, and `HALSystemMuteProbe`, and surfaces `MicGateVerdict` to the writer. Both write to `events.jsonl`. The recorder closes the WAV on `MeetingLifecycleVerdict.ended`; the writer applies `MicGateVerdict` to the left channel on every buffer. Neither subsystem polls the AX tree; both register on cached element references obtained from a shared one-time walk; both subscribe to a shared HAL property-listener bus; both emit through a shared event log.
 
 The architecture meets every constraint: public Apple APIs only, no private AX, no Electron DevTools, no reverse-engineered IPC, no kernel involvement, no System Extension, no paid Developer ID required for the daemon to function (TCC grants survive across rebuilds with ad-hoc signing), and every signal is independently reproducible via Console.app, `log stream`, `sample`, AVFoundation event listeners, or Accessibility Inspector.
-
----
-
-## Backlog updates
-
-**TECH-G-MIC · MicGate verdict subsystem · L · TECH-C13**
-
-Spec. Replace MeetingMuteProbe with MicGate, a verdict-fusion subsystem that determines whether the recorded left channel should contain microphone audio or zero-amplitude frames at each buffer boundary. The verdict fuses HAL Voice Activity Detection on the default input device, an RMS energy gate inside the existing AVAudioEngine input tap with asymmetric hysteresis (close at sustained -55 dBFS for 350 ms, open at sustained -45 dBFS for 80 ms), Accessibility observation of the meeting-app Mute button against a locale TOML covering en, es, fr, de, ja, pt, ru, and HAL system-input-mute via kAudioObjectPropertyMute. The verdict is one of hot, mutedByApp, mutedByHardware, silentByRMS, uncertain, with reasoning attached. The writer emits zero-amplitude frames with a 20 ms fade on transitions whenever the verdict is anything but hot. The Mute button AXUIElementRef is obtained from a single AX-tree walk at meeting start, retained for the meeting lifetime, observed via kAXValueChangedNotification and kAXTitleChangedNotification on a shared AXObserver per PID, and health-polled at 1 Hz via AXUIElementCopyAttributeValue to absorb Sequoia destruction-notification dropouts. HAL VAD is enabled at meeting start via kAudioDevicePropertyVoiceActivityDetectionEnable on the default input device and observed via kAudioDevicePropertyVoiceActivityDetectionState through the shared CoreAudioHALBus. Every verdict transition is logged as one line to events.jsonl with from, to, rmsDB, vadActive, axLabel, locale, and adapter fields. Browser-hosted meetings and unrecognized locales fall through to HAL-VAD-plus-RMS-only, which produces silentByRMS when the user is not speaking.
-
-Files. Sources/MeetingPipeCore/MicGate/MicGate.swift, MicGateVerdict.swift, MicGateWriter.swift, Probes/HALVoiceActivityProbe.swift, Probes/RMSGateProbe.swift, Probes/AXMuteButtonProbe.swift, Probes/HALSystemMuteProbe.swift, Probes/InternalSpeechProbe.swift, Locale/MuteLabels.toml, Locale/MuteLabelsLoader.swift, Locale/MuteLabelsValidator.swift, Adapters/TeamsMuteAdapter.swift, Adapters/ZoomMuteAdapter.swift, Adapters/WebexMuteAdapter.swift, Adapters/MeetMuteAdapter.swift, Adapters/SlackMuteAdapter.swift, Adapters/BrowserMuteAdapter.swift, Infra/CoreAudioHALBus.swift, Infra/AXObserverBus.swift, Infra/EventLog.swift. Remove Sources/MeetingPipeCore/MeetingMuteProbe.swift and its references.
-
-Acceptance. With Teams in German locale, joining a call and toggling mute, events.jsonl shows micgate transitions hot to mutedByApp with axLabel "Stummschaltung aufheben" and locale "de". With Meet in any browser, joining a call and remaining silent, events.jsonl shows micgate transitions to silentByRMS within 400 ms of speech cessation, and the recorded left channel contains zero-amplitude frames with sample alignment preserved against the right channel (verified by frame-count equality between channels in the resulting WAV). With Control Center mic muted, events.jsonl shows mutedByHardware. With a USB mic that does not support HAL VAD, the daemon logs signal:vad_unsupported once at startup and operates correctly on RMS only.
-
-Stop-and-ask. If the TOML for any of the seven locales returns zero matches against a live Teams 2.x install during initial integration. If HAL VAD enable returns kAudioHardwareUnknownPropertyError on the user's built-in mic on their Apple Silicon target. If frame-count equality fails between left and right channels by more than one frame in any 10-minute recording.
-
-Deps. TECH-C13.
-
-**TECH-C13 · MeetingLifecycleCoordinator verdict subsystem · L · none**
-
-Spec. Replace the existing Teams-AX-Leave-button-plus-title-pattern end detector with MeetingLifecycleCoordinator, a verdict-fusion subsystem that surfaces a single MeetingLifecycleVerdict to RecordingStateMachine. The coordinator consumes PRIMARY signals from ShareableContentSignal (SCShareableContent polled at 2 Hz when a meeting is active, 1 Hz otherwise, filtered by owningApplication.bundleIdentifier and a locale-tolerant title regex), ProcessAudioSignal (per-process kAudioProcessPropertyIsRunningInput on the meeting-app AudioObject, listener registered plus 1 Hz polling fallback, excluded as primary for Webex), AXLeaveButtonSignal (cached AXUIElementRef on the Leave button, observed via kAXUIElementDestroyedNotification, health-polled at 1 Hz with kAXErrorInvalidUIElement treated as authoritative), and SCStream stopped signals when the daemon owns a stream. Corroborating signals are WorkspaceSignal (NSWorkspaceDidTerminateApplicationNotification, NSRunningApplication KVO), AX title-change on the meeting window, CGWindowList HUD-window disappearance polled at 0.5 Hz, EventKit scheduled-end hysteresis, and optional Graph presence or Slack user_huddle_changed when the user provides cloud tokens. The verdict transitions through .idle, .starting, .inMeeting, .endingProvisional (any one PRIMARY satisfied), and .ended (a second PRIMARY confirming or 2.0 second debounce elapsing with the leading signal still satisfied). RecordingStateMachine consumes the verdict via AsyncStream and closes the WAV on .ended. The 2.0 second debounce absorbs the post-call chat surface mic-grab cleanly without RepromptCooldown. The cached AX Leave-button reference is obtained from the same AX-tree walk that TECH-G-MIC uses for the Mute button, through the shared AXObserverBus. HAL property listeners are registered through the shared CoreAudioHALBus. Every signal change and verdict transition is logged to events.jsonl.
-
-Files. Sources/MeetingPipeCore/Lifecycle/MeetingLifecycleCoordinator.swift, MeetingLifecycleVerdict.swift, Signals/ProcessAudioSignal.swift, Signals/InputDeviceSignal.swift, Signals/ShareableContentSignal.swift, Signals/AXLeaveButtonSignal.swift, Signals/WindowTitleSignal.swift, Signals/WorkspaceSignal.swift, Signals/CalendarContextSignal.swift, Adapters/TeamsLifecycleAdapter.swift, Adapters/ZoomLifecycleAdapter.swift, Adapters/WebexLifecycleAdapter.swift, Adapters/BrowserMeetingLifecycleAdapter.swift, Infra/CoreAudioHALBus.swift, Infra/AXObserverBus.swift, Infra/EventLog.swift. Remove the existing Teams-AX-Leave-button-only detector and the window-title-pattern matcher.
-
-Acceptance. Joining and leaving a Teams 2.x call in English produces events.jsonl entries inMeeting then endingProvisional with leadingSignal "shareable_content_window_gone" within 800 ms of clicking Leave, then ended within 2.0 seconds total with confirmedBy containing both "shareable_content_window_gone" and "process_audio_is_running_input_false". The WAV closes cleanly with no audio from the post-call chat surface present in the file. Joining and leaving a Zoom call produces the same transitions with the Zoom adapter. Joining and leaving a Webex call produces .ended with confirmedBy containing "shareable_content_window_gone" and "ax_leave_button_invalid" but never "process_audio_is_running_input_false" (Webex ultrasound retention by design). Joining and leaving a Google Meet call in Chrome produces .ended with leadingSignal "browser_tab_title_left_meet_pattern". The AX tree is walked exactly once per meeting (verified by an assertion counter exposed in debug builds). kAXUIElementDestroyedNotification dropout on Sequoia does not prevent .ended within 2.5 seconds of Leave (verified by killing the notification path in a test build and confirming the health-poll path fires).
-
-Stop-and-ask. If SCShareableContent returns empty arrays at daemon startup (Screen Recording TCC not granted; surface SetupRequired state instead of running with degraded signals). If kAudioProcessPropertyIsRunningInput listener never fires for the Teams or Zoom process on the user's Mac (file FB and fall back to 1 Hz polling for that PID; do not ship a polling-only path silently). If the post-call chat surface mic-grab exceeds 2.0 seconds on the user's specific Teams build (extend the debounce to 3.0 seconds after measurement, not before).
-
-Deps. None.
-
-**TECH-LIB-MIX · Library playback mono mixdown · S · none**
-
-Spec. The library window's audio playback defaults to a real-time mono mixdown of the stereo WAV instead of stereo playback. The on-disk WAV stays stereo (mic-L, system-R) for diarization and silent-system-audio detectability per the existing design. The mixdown is computed in the playback path as 0.5 times left plus 0.5 times right per sample, applied through an AVAudioMixerNode pan-to-center configuration on the player node, with no modification to the source file. A toggle in the library window's playback controls switches between mono mixdown (default) and original stereo for users who explicitly want the channel separation. The toggle state is persisted per library, not globally. The mixdown avoids the "input in left ear, output in right ear" listening confusion that the stereo-on-headphones default produces.
-
-Files. Sources/MeetingPipeLibrary/Playback/LibraryPlayer.swift, Sources/MeetingPipeLibrary/Playback/PlaybackChannelMode.swift, Sources/MeetingPipeLibrary/Views/PlaybackControlsView.swift, Sources/MeetingPipeLibrary/Storage/LibraryPreferences.swift.
-
-Acceptance. Opening any existing stereo recording in the library and clicking play produces mono audio on both ears by default. The on-disk WAV is byte-identical before and after playback (verified by SHA-256). The stereo toggle in the playback controls switches to original stereo and persists across library window close and reopen. The mixdown introduces no audible clipping on recordings where left and right are both near full-scale (verified by playing back a test recording of a loud call).
-
-Stop-and-ask. If AVAudioMixerNode pan-to-center produces audible phase artifacts on any test recording (switch to explicit per-buffer 0.5L plus 0.5R summation in an AVAudioSourceNode render block, not a mixer pan).
-
-Deps. None.
