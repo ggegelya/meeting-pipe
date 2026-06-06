@@ -178,4 +178,18 @@ final class MuteLabelsLoaderTests: XCTestCase {
             .unknown
         )
     }
+
+    /// Cross-locale precedence regression (TECH-MIC5 review): webex.es action_mute
+    /// "Silenciar" is a whole word inside webex.pt action_unmute "Cancelar
+    /// silenciar". A muted user whose client shows Portuguese labels, read under a
+    /// non-pt locale, must resolve `.muted` (action_unmute wins globally), not
+    /// `.unmuted` from the alphabetically-earlier es substring match.
+    func test_cross_locale_fallback_uses_global_precedence_not_first_match() throws {
+        let catalogue = try MuteLabelsLoader.loadDefault()
+        let state = catalogue.recognize(
+            app: "webex", locale: "en",
+            title: "Cancelar silenciar", help: nil, description: nil
+        )
+        XCTAssertEqual(state, .muted, "action_unmute must outrank a cross-locale action_mute substring")
+    }
 }

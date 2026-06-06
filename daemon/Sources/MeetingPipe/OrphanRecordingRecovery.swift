@@ -69,14 +69,69 @@ enum OrphanRecordingRecovery {
             .max()
     }
 
-    /// Merge orphan intermediates into final .wav files. Sequential to avoid concurrent ffmpeg swarms.
-    static func recover(stems: [String], in directory: URL) async -> [URL] {
-        var recovered: [URL] = []
+    /// Outcome of recovering orphan stems.
+    struct Recovered {
+        /// Merged finals safe to auto-process: regulated orphans were gated at
+        /// capture, and pre-MIC4 / legacy orphans carry no capture-mode marker.
+        var ready: [URL] = []
+        /// Capture-first finals quarantined because their mute timeline was lost
+        /// in the interruption, so they cannot be redacted and must not be
+        /// auto-published un-redacted (TECH-MIC5 review).
+        var quarantined: [URL] = []
+    }
+
+    /// Merge orphan intermediates into final .wav files. Sequential to avoid
+    /// concurrent ffmpeg swarms. Capture-first orphans with no mute timeline are
+    /// quarantined (fail closed) instead of returned for auto-processing.
+    static func recover(stems: [String], in directory: URL) async -> Recovered {
+        var result = Recovered()
         for stem in stems {
-            if let url = await MeetingRecorder.recoverOrphan(stem: stem, in: directory) {
-                recovered.append(url)
+            guard let url = await MeetingRecorder.recoverOrphan(stem: stem, in: directory) else { continue }
+            let quarantineNeeded = shouldQuarantine(stem: stem, final: url, in: directory)
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(stem).capturemode"))
+            if quarantineNeeded {
+                if let kept = quarantine(url) {
+                    result.quarantined.append(kept)
+                }
+            } else {
+                result.ready.append(url)
             }
         }
-        return recovered
+        return result
+    }
+
+    /// Whether a recovered orphan must be quarantined rather than auto-processed:
+    /// a capture-first recording (per its start-time `<stem>.capturemode` marker)
+    /// whose mute timeline was lost because `stop()` never ran. Such a recording
+    /// is lossless and cannot be redacted, so publishing it would leak muted
+    /// audio (TECH-MIC5 review). Regulated orphans were gated at capture, and
+    /// pre-MIC4 / legacy orphans carry no marker; neither is quarantined.
+    static func shouldQuarantine(stem: String, final: URL, in directory: URL) -> Bool {
+        let markerURL = directory.appendingPathComponent("\(stem).capturemode")
+        let mode = (try? String(contentsOf: markerURL, encoding: .utf8)).flatMap(CaptureMode.init(marker:))
+        return mode == .captureFirst && MuteTimelineFile.read(forFinal: final) == nil
+    }
+
+    /// Move a quarantined orphan to the app-private originals directory (kept for
+    /// manual recovery, out of the Library scan and every pipeline glob), 0600.
+    private static func quarantine(_ url: URL) -> URL? {
+        let dest = MuteRedactor.originalsURL(for: url)
+        do {
+            try FileManager.default.createDirectory(
+                at: MuteRedactor.originalsDirectory(), withIntermediateDirectories: true
+            )
+            try? FileManager.default.removeItem(at: dest)
+            try FileManager.default.moveItem(at: url, to: dest)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dest.path)
+            Log.event(category: "coordinator", action: "orphan_quarantined", attributes: [
+                "file": url.lastPathComponent,
+                "reason": "capture_first_no_timeline",
+            ])
+            Log.writeLine("daemon", "quarantined capture-first orphan (mute timeline lost in the interruption); kept for manual recovery, not auto-published: \(url.lastPathComponent)")
+            return dest
+        } catch {
+            Log.writeLine("daemon", "WARN: could not quarantine orphan \(url.lastPathComponent): \(error.localizedDescription)")
+            return nil
+        }
     }
 }

@@ -67,16 +67,24 @@ public struct MuteLabels {
             let state = MuteLabels.match(blob: blob, entry: entry)
             if state != .unknown { return state }
         }
-        // Cross-locale fallback. Sorted for a deterministic result if two
-        // locales' labels both match (vanishingly rare given real button text).
+        // Cross-locale fallback with GLOBAL category precedence (TECH-MIC5
+        // review). A first-locale-with-any-match scan could invert the state when
+        // one locale's action verb is a word inside another locale's
+        // opposite-polarity label (webex.es "Silenciar" sits inside webex.pt
+        // "Cancelar silenciar"). Ranking categories across all locales (status
+        // beats action; action_unmute, meaning "currently muted", beats
+        // action_mute) makes the correct polarity win regardless of locale order.
         guard let localeMap = entries[app.lowercased()] else { return .unknown }
-        let resolved = locale.lowercased()
-        for otherLocale in localeMap.keys.sorted() where otherLocale != resolved {
-            if let entry = localeMap[otherLocale] {
-                let state = MuteLabels.match(blob: blob, entry: entry)
-                if state != .unknown { return state }
+        let others = localeMap.filter { $0.key != locale.lowercased() }.values
+        func anyMatches(_ labels: (AppEntry) -> [String]) -> Bool {
+            others.contains { entry in
+                labels(entry).contains { MuteLabels.containsAsWord(blob: blob, label: $0) }
             }
         }
+        if anyMatches({ $0.statusMuted }) { return .muted }
+        if anyMatches({ $0.statusUnmuted }) { return .unmuted }
+        if anyMatches({ $0.actionUnmute }) { return .muted }
+        if anyMatches({ $0.actionMute }) { return .unmuted }
         return .unknown
     }
 

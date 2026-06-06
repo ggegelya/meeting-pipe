@@ -107,6 +107,35 @@ final class MuteRedactorTests: XCTestCase {
                              "system (right) channel must be untouched by mic redaction")
     }
 
+    func test_redactIfNeeded_is_idempotent_and_keeps_the_original_across_reruns() async throws {
+        try XCTSkipIf(MeetingRecorder.findFFmpeg() == nil, "ffmpeg not available")
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("redact-\(UUID().uuidString)")
+        let originals = dir.appendingPathComponent("originals")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let wav = dir.appendingPathComponent("rec.wav")
+        try writeStereoWav(at: wav, seconds: 1.0, left: 0.5, right: 0.5)
+        let fullBytes = try Data(contentsOf: wav)
+        MuteTimelineFile.write(spans: [MuteTimeline.Span(startSec: 0.0, endSec: 0.5)], forFinal: wav)
+
+        // First pass redacts and moves the full recording aside.
+        let firstPass = await MuteRedactor.redactIfNeeded(wav: wav, originalsDir: originals)
+        XCTAssertTrue(firstPass)
+        let keptOriginal = originals.appendingPathComponent("rec.wav")
+        XCTAssertEqual(try Data(contentsOf: keptOriginal), fullBytes, "the kept original is the un-redacted full recording")
+        let redactedBytes = try Data(contentsOf: wav)
+
+        // Second pass (reprocess / retry) must be a no-op that does NOT clobber
+        // the kept original with the already-redacted file.
+        let secondPass = await MuteRedactor.redactIfNeeded(wav: wav, originalsDir: originals)
+        XCTAssertFalse(secondPass, "a second pass must no-op")
+        XCTAssertEqual(try Data(contentsOf: keptOriginal), fullBytes,
+                       "the kept original must survive a re-run unchanged")
+        XCTAssertEqual(try Data(contentsOf: wav), redactedBytes, "the canonical WAV stays the redacted one")
+    }
+
     // MARK: - helpers
 
     private func writeStereoWav(at url: URL, seconds: Double, left: Float, right: Float) throws {

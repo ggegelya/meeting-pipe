@@ -23,4 +23,11 @@ final class CaptureModeTests: XCTestCase {
         XCTAssertTrue(CaptureMode.captureFirst.capturesLosslessly)
         XCTAssertFalse(CaptureMode.regulatedGate.capturesLosslessly)
     }
+
+    func test_marker_round_trips() {
+        XCTAssertEqual(CaptureMode(marker: CaptureMode.captureFirst.marker), .captureFirst)
+        XCTAssertEqual(CaptureMode(marker: CaptureMode.regulatedGate.marker), .regulatedGate)
+        XCTAssertEqual(CaptureMode(marker: " capture_first\n"), .captureFirst, "tolerates trailing whitespace")
+        XCTAssertNil(CaptureMode(marker: "nonsense"))
+    }
 }

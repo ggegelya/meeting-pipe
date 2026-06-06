@@ -34,4 +34,22 @@ enum CaptureMode: Equatable {
 
     /// True when the mic is captured losslessly (no real-time zeroing).
     var capturesLosslessly: Bool { self == .captureFirst }
+
+    /// Stable on-disk token written at recording start (`<stem>.capturemode`) so
+    /// orphan recovery, after a crash where `stop()` never wrote the mute
+    /// timeline, can still apply the right privacy posture (TECH-MIC5 review).
+    var marker: String {
+        switch self {
+        case .captureFirst: return "capture_first"
+        case .regulatedGate: return "regulated_gate"
+        }
+    }
+
+    init?(marker: String) {
+        switch marker.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "capture_first": self = .captureFirst
+        case "regulated_gate": self = .regulatedGate
+        default: return nil
+        }
+    }
 }

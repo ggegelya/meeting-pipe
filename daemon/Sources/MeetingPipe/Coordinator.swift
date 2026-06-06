@@ -431,14 +431,22 @@ final class Coordinator: NSObject {
         let stems = OrphanRecordingRecovery.scanOrphanStems(in: dir)
         guard !stems.isEmpty else { return }
         Task { @MainActor [weak self] in
-            let recovered = await OrphanRecordingRecovery.recover(stems: stems, in: dir)
+            let result = await OrphanRecordingRecovery.recover(stems: stems, in: dir)
             guard let self = self else { return }
-            for url in recovered {
+            for url in result.ready {
                 Log.writeLine("daemon", "recovered orphaned recording → \(url.lastPathComponent)")
                 Log.event(category: "coordinator", action: "orphan_recording_recovered", attributes: [
                     "file": url.lastPathComponent,
                 ])
                 self.jobDispatcher.enqueue(file: url, summaryMode: .auto)
+            }
+            if !result.quarantined.isEmpty {
+                // Fail-closed capture-first orphans were kept aside, not published
+                // (TECH-MIC5 review). Tell the user so they can recover manually.
+                let n = result.quarantined.count
+                self.notifier.notifyError(
+                    "\(n) interrupted recording\(n == 1 ? "" : "s") were kept for review but not auto-published: the mute timeline was lost when the app stopped unexpectedly, so muted moments could not be removed. They are in the MeetingPipe originals folder."
+                )
             }
         }
     }

@@ -66,6 +66,15 @@ enum MuteRedactor {
         }
         let dir = originalsDir ?? originalsDirectory()
         guard FileManager.default.fileExists(atPath: wav.path) else { return false }
+        // Idempotency (TECH-MIC5 review): if the full original was already moved
+        // aside by a prior pass, this WAV is the redacted artifact already. A
+        // re-run (reprocess / retry) must NOT move the redacted file over the
+        // kept original, or the full recording is lost. Reap the stale timeline
+        // and no-op.
+        if FileManager.default.fileExists(atPath: originalsURL(for: wav, in: dir).path) {
+            try? FileManager.default.removeItem(at: MuteTimelineFile.url(forFinal: wav))
+            return false
+        }
         let channels = channelCount(of: wav) ?? 2
         guard let filter = buildFilter(spans: timeline.spans, channels: channels) else { return false }
         guard let ffmpeg = MeetingRecorder.findFFmpeg() else {
@@ -110,6 +119,10 @@ enum MuteRedactor {
             Log.writeLine("recorder", "WARN: could not promote redacted artifact for \(wav.lastPathComponent), restored full recording")
             return false
         }
+
+        // Reap the timeline so a re-run no-ops at the read guard above; the kept
+        // original is the recovery source from here on (TECH-MIC5 review).
+        try? FileManager.default.removeItem(at: MuteTimelineFile.url(forFinal: wav))
 
         Log.event(category: "recorder", action: "mute_redacted", attributes: [
             "file": wav.lastPathComponent,

@@ -119,4 +119,54 @@ final class OrphanRecordingRecoveryTests: XCTestCase {
         let stems = OrphanRecordingRecovery.scanOrphanStems(in: dir, now: now)
         XCTAssertEqual(stems, ["recent"])
     }
+
+    // MARK: - Capture-first orphan quarantine (TECH-MIC5 review)
+
+    private func writeMarker(_ mode: CaptureMode, stem: String, in dir: URL) throws {
+        try mode.marker.write(
+            to: dir.appendingPathComponent("\(stem).capturemode"),
+            atomically: true, encoding: .utf8
+        )
+    }
+
+    func test_shouldQuarantine_true_for_capture_first_orphan_without_timeline() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try writeMarker(.captureFirst, stem: "rec", in: dir)
+        XCTAssertTrue(
+            OrphanRecordingRecovery.shouldQuarantine(stem: "rec", final: dir.appendingPathComponent("rec.wav"), in: dir),
+            "a lossless capture-first orphan with no timeline cannot be redacted and must not auto-publish"
+        )
+    }
+
+    func test_shouldQuarantine_false_when_a_timeline_exists() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let final = dir.appendingPathComponent("rec.wav")
+        try writeMarker(.captureFirst, stem: "rec", in: dir)
+        MuteTimelineFile.write(spans: [MuteTimeline.Span(startSec: 0, endSec: 1)], forFinal: final)
+        XCTAssertFalse(
+            OrphanRecordingRecovery.shouldQuarantine(stem: "rec", final: final, in: dir),
+            "a recording that reached stop() has a timeline and is redactable"
+        )
+    }
+
+    func test_shouldQuarantine_false_for_regulated_orphan() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try writeMarker(.regulatedGate, stem: "rec", in: dir)
+        XCTAssertFalse(
+            OrphanRecordingRecovery.shouldQuarantine(stem: "rec", final: dir.appendingPathComponent("rec.wav"), in: dir),
+            "regulated orphans were gated at capture; safe to process"
+        )
+    }
+
+    func test_shouldQuarantine_false_for_legacy_orphan_without_marker() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        XCTAssertFalse(
+            OrphanRecordingRecovery.shouldQuarantine(stem: "rec", final: dir.appendingPathComponent("rec.wav"), in: dir),
+            "a pre-MIC4 orphan has no marker and was gated at capture"
+        )
+    }
 }

@@ -217,6 +217,13 @@ final class MeetingRecorder {
 
         Log.writeLine("recorder", "start: final=\(finalURL.lastPathComponent) mic=\(micURL.lastPathComponent) system=\(systemURL.lastPathComponent) voiceProcessing=\(voiceProcessing)")
 
+        // Persist the capture mode (TECH-MIC5 review). If a crash orphans this
+        // recording before stop() writes the mute timeline, orphan recovery reads
+        // this marker to fail closed for capture-first (quarantine the lossless
+        // recording, never auto-publish it un-redacted). Removed on a clean stop.
+        let modeMarkerURL = outputDir.appendingPathComponent("\(stamp).capturemode")
+        try? captureMode.marker.write(to: modeMarkerURL, atomically: true, encoding: .utf8)
+
         // Set BEFORE reading inputNode.outputFormat: voice processing
         // changes the node's output format, so reading first would write a
         // file whose declared format mismatches the tap buffers. A throw
@@ -928,6 +935,11 @@ final class MeetingRecorder {
                 "muted_spans": muteTimeline.spans.count,
             ])
         }
+        // Clean finish: drop the start-time capture-mode marker (only orphan
+        // recovery after a crash needs it).
+        try? FileManager.default.removeItem(
+            at: final.deletingPathExtension().appendingPathExtension("capturemode")
+        )
 
         if let started = started {
             checkDurationParity(file: final, recordedFor: Date().timeIntervalSince(started))
