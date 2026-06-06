@@ -52,7 +52,12 @@ public final class NativeMuteAdapter: MicGateAdapter {
     ) throws {
         probe.onChange = sink
         if let button = handle.muteButton {
-            try probe.start(pid: context.pid, bundleID: context.bundleID, button: button)
+            try probe.start(
+                pid: context.pid,
+                bundleID: context.bundleID,
+                button: button,
+                resolveElement: handle.resolveMuteButton
+            )
         }
     }
 

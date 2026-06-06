@@ -263,8 +263,36 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         XCTAssertEqual(clears.count, 0, "a readable mute is a real mute; never clear it")
     }
 
-    func test_blind_without_prior_muted_does_not_clear() {
-        // A latched .unmuted going blind is benign: nothing to clear.
+    func test_blind_from_start_still_clears_the_latch() {
+        // TECH-MIC6: the live control is never matchable in this UI build, so the
+        // watcher never gets a confident read. The old rescue was gated on the
+        // watcher's own `lastEmitted == .muted` and so was structurally
+        // unreachable here (it fired 0 times in 19 days) precisely when a stale
+        // `.muted` from the primary probe needed clearing. Decoupled, a blind
+        // streak from the start still clears.
+        let resolver = ScriptedResolver([[]]) // blind on every poll
+        let scheduler = ManualScheduler()
+        let sink = EventSink()
+        let clears = ClearCounter()
+        let watcher = makeWatcher(
+            resolver: resolver.make(), scheduler: scheduler.make(),
+            sink: sink, clears: clears, blindClearThreshold: 3
+        )
+
+        watcher.start()       // blind #1
+        scheduler.fire()      // blind #2
+        XCTAssertEqual(clears.count, 0, "not yet at the threshold")
+        scheduler.fire()      // blind #3 -> clear
+        XCTAssertEqual(clears.count, 1)
+        // Idempotent: a sustained blind streak clears once, not every poll.
+        scheduler.fire()
+        XCTAssertEqual(clears.count, 1)
+    }
+
+    func test_clear_is_idempotent_after_an_unmuted_read() {
+        // A latched `.unmuted` going blind clears too (decoupled from
+        // lastEmitted), but `clearAxMute` is idempotent so it is a harmless no-op
+        // when nothing muted is latched. Fires once per blind streak.
         let resolver = ScriptedResolver([[.unmuted], []])
         let scheduler = ManualScheduler()
         let sink = EventSink()
@@ -274,9 +302,9 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
             sink: sink, clears: clears, blindClearThreshold: 3
         )
 
-        watcher.start()
-        for _ in 0..<5 { scheduler.fire() }
-        XCTAssertEqual(clears.count, 0)
+        watcher.start()                 // .unmuted (confident)
+        for _ in 0..<5 { scheduler.fire() } // blind thereafter
+        XCTAssertEqual(clears.count, 1, "cleared once after the blind threshold")
     }
 
     func test_confident_reading_resets_the_blind_streak() {

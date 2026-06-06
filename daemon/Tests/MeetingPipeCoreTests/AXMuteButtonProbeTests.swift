@@ -140,6 +140,69 @@ final class AXMuteButtonProbeTests: XCTestCase {
         XCTAssertEqual(events.map(\.state), [.unknown])
     }
 
+    // MARK: - Re-arm on a stale element (TECH-MIC6)
+
+    func test_consecutive_unknown_reresolves_the_element() throws {
+        var resolveCalls = 0
+        let probe = AXMuteButtonProbe(
+            app: "teams", axBus: AXObserverBus(), catalogue: Self.catalogue,
+            probe: { _ in .init(title: "Mic is not available", help: nil, description: nil) },
+            scheduler: { _, _ in {} }, localeResolver: { "en" }, rearmThreshold: 3
+        )
+        try probe.start(
+            pid: 1, bundleID: "com.microsoft.teams2", button: stubElement(),
+            resolveElement: { resolveCalls += 1; return self.stubElement() }
+        )
+        // start() ran one initial evaluate -> unknown #1.
+        probe.evaluate(reason: "u2") // unknown #2
+        XCTAssertEqual(resolveCalls, 0, "no re-resolve before N consecutive unknowns")
+        probe.evaluate(reason: "u3") // unknown #3 -> threshold -> re-resolve
+        XCTAssertEqual(resolveCalls, 1)
+    }
+
+    func test_known_reading_resets_the_reresolve_streak() throws {
+        var label: String? = "Mic is not available" // .unknown
+        var resolveCalls = 0
+        let probe = AXMuteButtonProbe(
+            app: "teams", axBus: AXObserverBus(), catalogue: Self.catalogue,
+            probe: { _ in .init(title: label, help: nil, description: nil) },
+            scheduler: { _, _ in {} }, localeResolver: { "en" }, rearmThreshold: 3
+        )
+        try probe.start(
+            pid: 1, bundleID: "com.microsoft.teams2", button: stubElement(),
+            resolveElement: { resolveCalls += 1; return self.stubElement() }
+        )
+        probe.evaluate(reason: "u2")    // unknown #2
+        label = "Unmute"                // confident .muted -> resets the streak
+        probe.evaluate(reason: "known")
+        label = "Mic is not available"
+        probe.evaluate(reason: "u1")    // unknown #1 again
+        probe.evaluate(reason: "u2")    // unknown #2
+        XCTAssertEqual(resolveCalls, 0, "a confident read resets the streak before the threshold")
+    }
+
+    func test_reresolve_preserves_the_latched_state() throws {
+        var label: String? = "Unmute" // .muted
+        var events: [AXMuteButtonProbe.Event] = []
+        let probe = AXMuteButtonProbe(
+            app: "teams", axBus: AXObserverBus(), catalogue: Self.catalogue,
+            probe: { _ in .init(title: label, help: nil, description: nil) },
+            scheduler: { _, _ in {} }, localeResolver: { "en" }, rearmThreshold: 2
+        )
+        probe.onChange = { events.append($0) }
+        try probe.start(
+            pid: 1, bundleID: "com.microsoft.teams2", button: stubElement(),
+            resolveElement: { self.stubElement() }
+        )
+        XCTAssertEqual(events.map(\.state), [.muted])
+
+        label = "Mic is not available" // .unknown
+        probe.evaluate(reason: "u1")   // unknown #1
+        probe.evaluate(reason: "u2")   // unknown #2 -> re-resolve, latch must hold
+        XCTAssertEqual(events.map(\.state), [.muted], "re-resolve must not disturb the latched verdict")
+        XCTAssertEqual(probe.lastEvent?.state, .muted)
+    }
+
     func test_stop_releases_two_ax_subscriptions() throws {
         let bus = AXObserverBus()
         let probe = makeProbe(bus: bus, probe: { _ in

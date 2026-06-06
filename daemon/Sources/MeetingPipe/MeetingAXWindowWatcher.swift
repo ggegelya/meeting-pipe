@@ -164,11 +164,18 @@ final class MeetingAXWindowWatcher {
                     locale: localeResolver()
                 ))
             }
-        } else if lastEmitted == .muted, !clearedWhileBlind {
-            // No confident reading while a `.muted` is latched: the live mute
-            // control likely moved into a view our matchers don't recognise
-            // (Teams compact/mini bar). After a few blind polls, clear the stale
-            // mute so MicGate stops zeroing the mic and live voice gets through.
+        } else if !clearedWhileBlind {
+            // No confident reading: the live mute control is unreadable (moved
+            // into a compact/mini bar, or never matchable in this UI build).
+            // Any latched `.muted` is no longer trustworthy, so after a few blind
+            // polls clear it. TECH-MIC6: this used to be gated on the watcher's
+            // own `lastEmitted == .muted`, which is only set from a confident
+            // read, so when the control was never matchable the rescue was
+            // unreachable, which is exactly when it is needed (it fired 0 times
+            // in 19 days). Decoupled, it also clears a stale `.muted` the primary
+            // probe latched (which this watcher can't observe). `onMuteCleared`
+            // routes to `MicGate.clearAxMute`, idempotent, so it is a no-op when
+            // nothing is latched.
             consecutiveBlindPolls += 1
             if consecutiveBlindPolls >= blindClearThreshold {
                 clearedWhileBlind = true
@@ -176,7 +183,7 @@ final class MeetingAXWindowWatcher {
                     "bundle_id": bundleID,
                     "poll_count": pollCount,
                     "blind_polls": consecutiveBlindPolls,
-                    "previous": "muted",
+                    "previous": lastEmitted.map { MeetingAXWindowWatcher.label(for: $0) } as Any,
                 ])
                 lastEmitted = nil
                 onMuteCleared()

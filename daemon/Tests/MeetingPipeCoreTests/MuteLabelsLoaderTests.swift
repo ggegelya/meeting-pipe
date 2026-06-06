@@ -142,4 +142,40 @@ final class MuteLabelsLoaderTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Cross-locale fallback (TECH-MIC6 locale durability)
+
+    /// A uk label read while the locale resolver reports "en" (wrong locale, or
+    /// the user switched UI language mid-session) still resolves via the
+    /// cross-locale fallback instead of blinding the gate.
+    func test_recognize_falls_back_across_locales() throws {
+        let catalogue = try MuteLabelsLoader.loadDefault()
+        let state = catalogue.recognize(
+            app: "teams", locale: "en",
+            title: "Увімкнути мікрофон", help: nil, description: nil
+        )
+        XCTAssertEqual(state, .muted, "a uk label must resolve even when the resolved locale is en")
+    }
+
+    /// The resolved locale is tried first, so the common case is unaffected.
+    func test_recognize_prefers_the_resolved_locale() throws {
+        let catalogue = try MuteLabelsLoader.loadDefault()
+        XCTAssertEqual(
+            catalogue.recognize(app: "teams", locale: "en", title: "Unmute", help: nil, description: nil),
+            .muted
+        )
+    }
+
+    /// An unrecognised label stays `.unknown` after exhausting every locale, so
+    /// the fallback can't manufacture a false reading.
+    func test_recognize_unknown_label_stays_unknown_across_locales() throws {
+        let catalogue = try MuteLabelsLoader.loadDefault()
+        XCTAssertEqual(
+            catalogue.recognize(
+                app: "teams", locale: "en",
+                title: "Mic is not available", help: nil, description: nil
+            ),
+            .unknown
+        )
+    }
 }

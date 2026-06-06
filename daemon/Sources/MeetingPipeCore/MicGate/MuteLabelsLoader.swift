@@ -46,7 +46,11 @@ public struct MuteLabels {
         entries[app.lowercased()]?[locale.lowercased()]
     }
 
-    /// Recognise the AX text blob against the (app, locale) entry. Returns `.unknown` when missing or no label matched.
+    /// Recognise the AX text blob against the app's labels. Tries the resolved
+    /// locale first (most specific), then every other locale for the app, so a
+    /// wrong locale reading or an app showing English labels under a non-English
+    /// UI still resolves instead of blinding the gate (TECH-MIC6 locale
+    /// durability). Returns `.unknown` when no locale's labels matched.
     public func recognize(
         app: String,
         locale: String,
@@ -54,16 +58,36 @@ public struct MuteLabels {
         help: String?,
         description: String?
     ) -> State {
-        guard let entry = entry(app: app, locale: locale) else { return .unknown }
         let blob = [title, help, description]
             .compactMap { $0?.lowercased() }
             .joined(separator: " | ")
         if blob.isEmpty { return .unknown }
 
-        if entry.statusMuted.contains(where: { MuteLabels.containsAsWord(blob: blob, label: $0) }) { return .muted }
-        if entry.statusUnmuted.contains(where: { MuteLabels.containsAsWord(blob: blob, label: $0) }) { return .unmuted }
-        if entry.actionUnmute.contains(where: { MuteLabels.containsAsWord(blob: blob, label: $0) }) { return .muted }
-        if entry.actionMute.contains(where: { MuteLabels.containsAsWord(blob: blob, label: $0) }) { return .unmuted }
+        if let entry = entry(app: app, locale: locale) {
+            let state = MuteLabels.match(blob: blob, entry: entry)
+            if state != .unknown { return state }
+        }
+        // Cross-locale fallback. Sorted for a deterministic result if two
+        // locales' labels both match (vanishingly rare given real button text).
+        guard let localeMap = entries[app.lowercased()] else { return .unknown }
+        let resolved = locale.lowercased()
+        for otherLocale in localeMap.keys.sorted() where otherLocale != resolved {
+            if let entry = localeMap[otherLocale] {
+                let state = MuteLabels.match(blob: blob, entry: entry)
+                if state != .unknown { return state }
+            }
+        }
+        return .unknown
+    }
+
+    /// Match a lowercased blob against one app+locale entry. Status strings beat
+    /// action verbs because the action verbs are substrings of each other in
+    /// some locales (e.g. "unmute" inside "unmuted").
+    static func match(blob: String, entry: AppEntry) -> State {
+        if entry.statusMuted.contains(where: { containsAsWord(blob: blob, label: $0) }) { return .muted }
+        if entry.statusUnmuted.contains(where: { containsAsWord(blob: blob, label: $0) }) { return .unmuted }
+        if entry.actionUnmute.contains(where: { containsAsWord(blob: blob, label: $0) }) { return .muted }
+        if entry.actionMute.contains(where: { containsAsWord(blob: blob, label: $0) }) { return .unmuted }
         return .unknown
     }
 

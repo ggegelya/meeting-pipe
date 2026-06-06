@@ -113,9 +113,19 @@ enum MeetingAXHandleBuilder {
             foundMute: mute != nil
         )
 
+        // Re-arm resolver for the primary probe (TECH-MIC6): the same
+        // leave-scoped walk the window watcher uses, so a re-render or
+        // compact-view swap that staled the cached element recovers a live one.
+        let bundleID = source.bundleID
+        let resolveMute: () -> AXUIElement? = {
+            MeetingAXHandleBuilder.findMeetingWindowMuteButtons(
+                in: axApp, bundleID: bundleID, catalogue: catalogue
+            ).first
+        }
+
         return Handles(
             lifecycle: LifecycleAdapterHandle(leaveButton: leave, meetingWindow: meetingWindow),
-            micGate: MicGateAdapterHandle(muteButton: mute),
+            micGate: MicGateAdapterHandle(muteButton: mute, resolveMuteButton: resolveMute),
             context: context
         )
     }

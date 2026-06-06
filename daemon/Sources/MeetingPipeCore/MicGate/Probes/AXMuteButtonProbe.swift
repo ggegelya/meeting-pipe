@@ -42,6 +42,11 @@ public final class AXMuteButtonProbe {
     /// TECH-PERF5: the backed-off health-poll rate used while the AX
     /// value/title notifications are delivering.
     public static let defaultSlowPollInterval: TimeInterval = 5.0
+    /// TECH-MIC6: consecutive `.unknown` reads before the probe re-resolves its
+    /// cached element via a fresh tree walk. At the ~1 Hz health-poll rate a
+    /// stale element keeps (no notifications back the cadence off), so this is
+    /// ~5 s of an unreadable control before a recovery attempt.
+    public static let defaultRearmThreshold: Int = 5
 
     private let app: String
     private let axBus: AXObserverBus
@@ -52,6 +57,7 @@ public final class AXMuteButtonProbe {
     private let localeResolver: LocaleResolver
     private let pollInterval: TimeInterval
     private let slowPollInterval: TimeInterval
+    private let rearmThreshold: Int
 
     private var element: AXUIElement?
     private var pid: pid_t = 0
@@ -60,6 +66,12 @@ public final class AXMuteButtonProbe {
     private var cancelPoll: (() -> Void)?
     private var cadence: AdaptivePollCadence
     private var currentPollInterval: TimeInterval = 0
+    /// Re-resolve the live mute button via a fresh tree walk; injected at `start`
+    /// by the daemon (TECH-MIC6). Nil when the caller cannot re-walk (then the
+    /// probe just keeps latching, the pre-MIC6 behaviour).
+    private var resolveElement: (() -> AXUIElement?)?
+    /// Consecutive `.unknown` reads since the last confident state.
+    private var consecutiveUnknown: Int = 0
 
     public init(
         app: String,
@@ -70,7 +82,8 @@ public final class AXMuteButtonProbe {
         scheduler: @escaping Scheduler = AXMuteButtonProbe.defaultScheduler,
         localeResolver: @escaping LocaleResolver = AXMuteButtonProbe.defaultLocaleResolver,
         pollInterval: TimeInterval = AXMuteButtonProbe.defaultPollInterval,
-        slowPollInterval: TimeInterval = AXMuteButtonProbe.defaultSlowPollInterval
+        slowPollInterval: TimeInterval = AXMuteButtonProbe.defaultSlowPollInterval,
+        rearmThreshold: Int = AXMuteButtonProbe.defaultRearmThreshold
     ) {
         self.app = app
         self.axBus = axBus
@@ -81,18 +94,22 @@ public final class AXMuteButtonProbe {
         self.localeResolver = localeResolver
         self.pollInterval = pollInterval
         self.slowPollInterval = slowPollInterval
+        self.rearmThreshold = max(1, rearmThreshold)
         self.cadence = AdaptivePollCadence(fast: pollInterval, slow: slowPollInterval)
     }
 
     public func start(
         pid: pid_t,
         bundleID: String,
-        button: AXUIElement
+        button: AXUIElement,
+        resolveElement: (() -> AXUIElement?)? = nil
     ) throws {
         stop()
         self.element = button
         self.pid = pid
         self.bundleID = bundleID
+        self.resolveElement = resolveElement
+        self.consecutiveUnknown = 0
         for notification in [
             kAXValueChangedNotification,
             kAXTitleChangedNotification
@@ -135,6 +152,8 @@ public final class AXMuteButtonProbe {
         pid = 0
         bundleID = ""
         lastEvent = nil
+        resolveElement = nil
+        consecutiveUnknown = 0
     }
 
     func evaluate(reason: String) {
@@ -147,6 +166,19 @@ public final class AXMuteButtonProbe {
         )
         let label = labelFromBlob(blob)
         let event = Event(state: state, label: label, locale: locale)
+
+        // TECH-MIC6: a cached element that goes stale (Teams 2 re-render, compact
+        // view, "Mic is not available") reads `.unknown` forever. Count the
+        // streak and, past the threshold, re-resolve via a fresh tree walk so the
+        // read recovers instead of latching the prior state until the call ends.
+        // The latch below still holds the prior state across the streak; the
+        // re-arm just retargets the element it reads.
+        if state == .unknown {
+            noteUnknownAndMaybeRearm(reason: reason)
+        } else {
+            consecutiveUnknown = 0
+        }
+
         if event == lastEvent { return }
 
         // Suppress transient `.unknown` once a real state was
@@ -185,6 +217,29 @@ public final class AXMuteButtonProbe {
             "previous": previous.map { "\($0.state) / \($0.label as Any)" } as Any
         ])
         onChange?(event)
+    }
+
+    /// Count the `.unknown` streak and, once it crosses `rearmThreshold`,
+    /// re-resolve the cached element via the injected fresh-tree-walk resolver
+    /// (TECH-MIC6). The element is swapped so the next read targets the live
+    /// control; the value/title notifications are deliberately NOT re-subscribed
+    /// (RealAXBackend caches one AXObserver per pid and re-registering proved
+    /// fragile, see `MeetingAXWindowWatcher`), so the health poll reads the fresh
+    /// element and the window watcher remains the independent backstop. The
+    /// counter resets each attempt so re-resolution is throttled to one walk per
+    /// `rearmThreshold` polls rather than every poll.
+    private func noteUnknownAndMaybeRearm(reason: String) {
+        consecutiveUnknown += 1
+        guard consecutiveUnknown >= rearmThreshold, let resolve = resolveElement else { return }
+        consecutiveUnknown = 0
+        guard let fresh = resolve() else { return }
+        element = fresh
+        eventLog.emit(category: "micgate", action: "ax_mute_button_rearmed", attributes: [
+            "bundle_id": bundleID,
+            "pid": Int(pid),
+            "app": app,
+            "reason": reason,
+        ])
     }
 
     private func labelFromBlob(_ blob: AXTextBlob) -> String? {
