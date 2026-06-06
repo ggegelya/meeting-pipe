@@ -54,8 +54,11 @@ public final class MicOnlySilenceBackstop {
 
     private func isSilent(_ verdict: MicGateVerdict) -> Bool {
         switch verdict {
-        case .hot:
-            return false
+        case .hot(let reason):
+            // The confidently-unmuted floor (TECH-MIC5) reports `.hot` to keep
+            // audio, but the user is quiet, so it still counts as silence for the
+            // forgotten-recording backstop. Real activity (VAD / RMS) does not.
+            return reason == .confidentlyUnmuted
         case .silentByRMS, .mutedByApp, .mutedByHardware, .uncertain:
             return true
         }

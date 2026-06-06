@@ -25,6 +25,10 @@ public enum MicGateVerdict: Equatable, Sendable {
     public enum Reason: String, Equatable, Sendable {
         case voiceActivityDetected = "vad_active"
         case rmsAboveOpenThreshold = "rms_above_open_threshold"
+        /// A confident app-unmute keeps audio even when the RMS gate is closed,
+        /// so a quiet-but-unmuted moment is never dropped (TECH-MIC5 floor). The
+        /// silence backstop still treats this as quiet.
+        case confidentlyUnmuted = "confidently_unmuted"
     }
 
     /// True only for `.hot`; all other verdicts zero the mic under the regulated

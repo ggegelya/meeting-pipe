@@ -73,6 +73,14 @@ final class SinkDispatcher {
 
     /// Run the in-process transcription runner, write `<stem>.json`, then invoke the Python pipeline. Runner failure is a hard job failure: the pipeline no longer carries its own ASR.
     private func runDaemonTranscription(job: ProcessingJob) async {
+        // TECH-MIC5: redact muted spans from the canonical WAV before any
+        // consumer reads it. Both this on-device transcription and the Python
+        // pipeline read `job.file`, so redacting here makes the redacted artifact
+        // the one everything downstream sees (ADR 0016). No-op unless a
+        // capture-first mute timeline exists; the full recording is moved aside
+        // for recovery and is never destroyed on failure.
+        await MuteRedactor.redactIfNeeded(wav: job.file)
+
         Log.event(category: "transcription", action: "engine_started", attributes: [
             "file": job.file.lastPathComponent,
             "engine": transcriptionRunner.backendName,

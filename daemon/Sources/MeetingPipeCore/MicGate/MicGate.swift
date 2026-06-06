@@ -185,6 +185,13 @@ public final class MicGate {
             )
         }
         if state.rmsState == .closed && state.halVad != true {
+            // Confidently-unmuted floor (TECH-MIC5): a confident app-unmute keeps
+            // audio even when the RMS gate is closed, so a quiet-but-unmuted
+            // moment is never dropped. A distinct reason lets the silence
+            // backstop still count it as quiet (the user just isn't talking).
+            if case .unmuted = state.axMute {
+                return .hot(reason: .confidentlyUnmuted)
+            }
             return .silentByRMS(dwellMillis: state.rmsCloseDwellMillis)
         }
         if state.halVad == true {

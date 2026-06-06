@@ -30,7 +30,22 @@ final class MicGateDecideTests: XCTestCase {
         )
     }
 
-    func test_silent_by_rms_when_gate_closed_and_no_vad() {
+    func test_silent_by_rms_when_gate_closed_and_no_confident_unmute() {
+        // No confident app-unmute (axMute nil): a closed gate with no VAD is
+        // silentByRMS. (A confident `.unmuted` instead floors to .hot, below.)
+        let state = MicGate.State(
+            halSystemMute: false,
+            axMute: nil,
+            halVad: false,
+            rmsState: .closed,
+            rmsCloseDwellMillis: 400
+        )
+        XCTAssertEqual(MicGate.decide(state: state), .silentByRMS(dwellMillis: 400))
+    }
+
+    /// TECH-MIC5 floor: a confident `.unmuted` keeps audio even when the RMS gate
+    /// is closed (quiet), so a quiet-but-unmuted moment is never dropped.
+    func test_confidently_unmuted_keeps_audio_when_quiet() {
         let state = MicGate.State(
             halSystemMute: false,
             axMute: .unmuted,
@@ -38,7 +53,9 @@ final class MicGateDecideTests: XCTestCase {
             rmsState: .closed,
             rmsCloseDwellMillis: 400
         )
-        XCTAssertEqual(MicGate.decide(state: state), .silentByRMS(dwellMillis: 400))
+        XCTAssertEqual(MicGate.decide(state: state), .hot(reason: .confidentlyUnmuted))
+        XCTAssertTrue(MicGate.decide(state: state).passesLiveAudio)
+        XCTAssertFalse(MicGate.decide(state: state).indicatesMute)
     }
 
     func test_hot_vad_when_vad_active_and_gate_closed() {

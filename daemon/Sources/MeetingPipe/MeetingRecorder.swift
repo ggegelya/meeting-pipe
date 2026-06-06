@@ -1118,7 +1118,7 @@ final class MeetingRecorder {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? UInt64) ?? 0
     }
 
-    private static func findFFmpeg() -> String? {
+    static func findFFmpeg() -> String? {
         if let override = ProcessInfo.processInfo.environment["MEETINGPIPE_FFMPEG"],
            FileManager.default.isExecutableFile(atPath: override) {
             return override

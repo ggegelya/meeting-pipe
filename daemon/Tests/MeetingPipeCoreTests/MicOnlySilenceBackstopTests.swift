@@ -75,6 +75,26 @@ final class MicOnlySilenceBackstopTests: XCTestCase {
         XCTAssertFalse(triggered, "User speaking must reset the accumulator")
     }
 
+    func test_confidently_unmuted_floor_still_counts_as_silence() {
+        // TECH-MIC5: the confidently-unmuted floor reports .hot to keep audio,
+        // but the user is quiet, so the forgotten-recording backstop must still
+        // fire on a long unmuted-but-silent stretch (it would not if .hot blanket
+        // reset the accumulator).
+        let backstop = MicOnlySilenceBackstop(windowSeconds: 480)
+        var firedAt: Date?
+        backstop.onTriggered = { firedAt = $0 }
+
+        let start = Date(timeIntervalSince1970: 0)
+        backstop.ingest(verdict: .hot(reason: .confidentlyUnmuted), hasSystemAudio: false, at: start)
+        backstop.ingest(
+            verdict: .hot(reason: .confidentlyUnmuted),
+            hasSystemAudio: false,
+            at: start.addingTimeInterval(480)
+        )
+        XCTAssertEqual(firedAt, start.addingTimeInterval(480),
+                       "unmuted-but-quiet must still accrue toward the silence backstop")
+    }
+
     func test_triggered_state_is_sticky() {
         let backstop = MicOnlySilenceBackstop(windowSeconds: 480)
         var triggerCount = 0

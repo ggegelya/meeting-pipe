@@ -48,6 +48,13 @@ def assign_speakers_by_channel(
     silly "OTHER said one quiet word" attribution from background noise.
     PCM s16 RMS of pure silence is ~0; threshold 50 is well above noise
     floor and well below normal speech.
+
+    The WAV passed here is the redacted artifact: under capture-first the
+    daemon zero-fills the muted mic spans before the pipeline runs (ADR
+    0016 / TECH-MIC5), and the kept full recording lives outside the
+    pipeline's reach. So these int16 thresholds keep their gated-audio
+    meaning and a muted speaker is never relabeled USER_SPEAKER from
+    full-amplitude audio.
     """
     import numpy as np
     import soundfile as sf  # type: ignore
