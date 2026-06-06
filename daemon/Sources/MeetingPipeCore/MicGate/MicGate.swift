@@ -1,6 +1,6 @@
 import Foundation
 
-/// Per-buffer verdict producer. Fuses HAL system-mute, AX mute label, HAL VAD, and RMS hysteresis into a `MicGateVerdict` (TECH-G-MIC spec). Precedence: mutedByHardware > mutedByApp > silentByRMS > hot > uncertain. `decide(state:)` is pure for test coverage. Threading: `start`/`stop` on main; `ingest(rmsDb:)` runs on the render thread. The RMS gate is allocation-free, and a verdict transition defers the `lock`, the synchronous `eventLog.emit` (an `events.jsonl` write), and the AsyncStream yield all onto `publishQueue`, so nothing touches the file system on the render thread (TECH-CONC1).
+/// Per-buffer verdict producer. Fuses HAL system-mute, AX mute label, HAL VAD, and RMS hysteresis into a `MicGateVerdict` (TECH-G-MIC spec). Precedence: mutedByHardware > mutedByApp > silentByRMS > hot > uncertain. `decide(state:)` is pure for test coverage. Threading: `start`/`stop` on main; `ingest(rmsDb:)` runs on the render thread. The four signal sources funnel into `update`, whose read-modify-write on `state` is serialized under `lock` so a stale snapshot cannot clobber a fresh write from another source (TECH-MIC2). The RMS gate is allocation-free, and a verdict transition defers the dedupe `lock`, the synchronous `eventLog.emit` (an `events.jsonl` write), and the AsyncStream yield all onto `publishQueue`, so nothing touches the file system on the render thread (TECH-CONC1).
 public final class MicGate {
 
     public struct State: Equatable {
@@ -122,7 +122,7 @@ public final class MicGate {
         rmsGate.reset()
         activeAdapter?.stop()
         activeAdapter = nil
-        state = State()
+        lock.withLock { state = State() }
     }
 
     public func shutdown() {
@@ -135,7 +135,7 @@ public final class MicGate {
         rmsGate.ingest(dBFS: rmsDb)
     }
 
-    /// Merge an AX mute event from an out-of-band probe (e.g. Teams 2 compact view, which appears after `start()` returns) into the same precedence chain. Threading: any queue; `update` serialises internally.
+    /// Merge an AX mute event from an out-of-band probe (e.g. Teams 2 compact view, which appears after `start()` returns) into the same precedence chain. Threading: any queue; `update` serialises the state read-modify-write under `lock` (TECH-MIC2).
     public func injectAxMuteEvent(_ event: AXMuteButtonProbe.Event) {
         update {
             $0.axMute = event.state
@@ -159,6 +159,20 @@ public final class MicGate {
     public var current: MicGateVerdict {
         lock.withLock { lastVerdict }
     }
+
+    #if DEBUG
+    /// Test-only: drive the same serialized state read-modify-write the probes
+    /// use, so a concurrency test can interleave independent field writes from
+    /// many threads and prove none is clobbered (TECH-MIC2).
+    func debugUpdate(_ mutator: (inout State) -> Void) {
+        update(mutator)
+    }
+
+    /// Test-only: a consistent snapshot of the fused state, read under `lock`.
+    func debugStateSnapshot() -> State {
+        lock.withLock { state }
+    }
+    #endif
 
     // MARK: - Pure precedence
 
@@ -189,10 +203,21 @@ public final class MicGate {
     // MARK: - State plumbing
 
     private func update(_ mutator: (inout State) -> Void) {
-        var newState = state
-        mutator(&newState)
-        state = newState
-        publish(MicGate.decide(state: newState))
+        // Serialize the read-modify-write. Four signal sources call this off
+        // different threads (AX probe, window watcher, RMS gate on the render
+        // thread, HAL probes). An unsynchronized RMW let a thread that
+        // snapshotted `state` early write the whole struct back later and
+        // clobber a field a concurrent source had just set, so a fresh
+        // `.unmuted` could be reverted to a stale `.muted` (TECH-MIC2). The
+        // snapshot used for `decide` is taken under the lock so the verdict
+        // always reflects a consistent state.
+        let snapshot: State = lock.withLock {
+            var newState = state
+            mutator(&newState)
+            state = newState
+            return newState
+        }
+        publish(MicGate.decide(state: snapshot))
     }
 
     private func publish(_ verdict: MicGateVerdict) {

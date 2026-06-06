@@ -223,6 +223,67 @@ final class MicGateIntegrationTests: XCTestCase {
     }
 }
 
+final class MicGateConcurrencyTests: XCTestCase {
+
+    private static let catalogue: MuteLabels = {
+        try! MuteLabelsLoader.loadDefault()
+    }()
+
+    private func makeGate() -> MicGate {
+        MicGate(catalogue: Self.catalogue, halBus: CoreAudioHALBus(), axBus: AXObserverBus())
+    }
+
+    /// Four signal sources funnel into one read-modify-write on `state` from
+    /// different threads. Before TECH-MIC2 that RMW was unsynchronized, so a
+    /// thread that snapshotted `state` early could write the whole struct back
+    /// later and revert a field a concurrent source had just set. Hammer three
+    /// independent fields concurrently to their terminal values; serialized,
+    /// every one must survive (with the bug, a late stale write-back reverts
+    /// one to nil).
+    func test_concurrent_field_writes_are_not_clobbered() {
+        let gate = makeGate()
+        defer { gate.shutdown() }
+
+        DispatchQueue.concurrentPerform(iterations: 4000) { i in
+            switch i % 3 {
+            case 0: gate.debugUpdate { $0.halSystemMute = true }
+            case 1: gate.debugUpdate { $0.axMute = .unmuted }
+            default: gate.debugUpdate { $0.halVad = true }
+            }
+        }
+
+        let state = gate.debugStateSnapshot()
+        XCTAssertEqual(state.halSystemMute, true, "halSystemMute write was clobbered (MIC2 race)")
+        XCTAssertEqual(state.axMute, .unmuted, "axMute write was clobbered (MIC2 race)")
+        XCTAssertEqual(state.halVad, true, "halVad write was clobbered (MIC2 race)")
+    }
+
+    /// The incident shape: a fresh window-watcher `.unmuted` must not be
+    /// reverted to a stale `.muted` by a concurrent write to another field
+    /// (TECH-MIC2). The lock takes the snapshot for each RMW under it, so the
+    /// unmuted write is always merged, never overwritten by a stale snapshot.
+    func test_fresh_unmuted_survives_concurrent_writes() {
+        let gate = makeGate()
+        defer { gate.shutdown() }
+
+        gate.debugUpdate { $0.axMute = .muted } // stale app-mute, pre-storm
+
+        let iterations = 4000
+        DispatchQueue.concurrentPerform(iterations: iterations) { i in
+            if i == iterations / 2 {
+                gate.debugUpdate { $0.axMute = .unmuted } // the one fresh write
+            } else {
+                gate.debugUpdate { $0.halVad = (i & 1 == 0) } // write pressure
+            }
+        }
+
+        XCTAssertEqual(
+            gate.debugStateSnapshot().axMute, .unmuted,
+            "a concurrent write clobbered the fresh .unmuted (MIC2 race)"
+        )
+    }
+}
+
 /// EventLog stub that reports whether `emit` ran on a queue the test tagged
 /// with `callerKey`. Used to prove the events.jsonl write is deferred off the
 /// calling thread (TECH-CONC1).
