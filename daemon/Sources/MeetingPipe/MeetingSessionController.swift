@@ -207,9 +207,18 @@ final class MeetingSessionController {
         )
         pendingWorkflowOverride = nil
 
+        // Resolve the capture mode (TECH-MIC4): regulated (global) or NDA
+        // (per-workflow) takes the no-audio-at-rest gate; everything else
+        // captures losslessly and redacts muted spans offline (TECH-MIC5).
+        let captureMode = CaptureMode.resolve(
+            regulated: coordinator.configStore?.regulatedMode ?? false,
+            nda: resolvedWorkflow?.flags.ndaMode ?? false
+        )
+
         do {
             let file = try coordinator.recorder.start(
                 outputDir: coordinator.liveOutputDir,
+                captureMode: captureMode,
                 voiceProcessing: coordinator.liveVoiceProcessing
             )
             activeWorkflow = resolvedWorkflow

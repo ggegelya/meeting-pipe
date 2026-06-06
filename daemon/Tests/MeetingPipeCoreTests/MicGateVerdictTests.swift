@@ -15,6 +15,17 @@ final class MicGateVerdictTests: XCTestCase {
         XCTAssertFalse(MicGateVerdict.uncertain(reasons: ["vad_unavailable"]).passesLiveAudio)
     }
 
+    /// The capture-first redaction timeline records only genuine mute spans
+    /// (app or hardware mute), never quiet (`silentByRMS`) or unknown
+    /// (`uncertain`), so redaction never drops real-but-quiet speech (TECH-MIC4).
+    func test_indicatesMute_is_true_only_for_app_or_hardware_mute() {
+        XCTAssertTrue(MicGateVerdict.mutedByApp(axLabel: "Unmute", locale: "en").indicatesMute)
+        XCTAssertTrue(MicGateVerdict.mutedByHardware.indicatesMute)
+        XCTAssertFalse(MicGateVerdict.hot(reason: .voiceActivityDetected).indicatesMute)
+        XCTAssertFalse(MicGateVerdict.silentByRMS(dwellMillis: 400).indicatesMute)
+        XCTAssertFalse(MicGateVerdict.uncertain(reasons: ["vad_unavailable"]).indicatesMute)
+    }
+
     func test_labels_serialise_to_snake_case() {
         XCTAssertEqual(MicGateVerdict.hot(reason: .voiceActivityDetected).label, "hot")
         XCTAssertEqual(MicGateVerdict.mutedByApp(axLabel: "Unmute", locale: "en").label, "muted_by_app")

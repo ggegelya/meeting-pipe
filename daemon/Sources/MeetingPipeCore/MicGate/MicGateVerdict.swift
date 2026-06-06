@@ -27,10 +27,23 @@ public enum MicGateVerdict: Equatable, Sendable {
         case rmsAboveOpenThreshold = "rms_above_open_threshold"
     }
 
-    /// True only for `.hot`; all other verdicts zero the mic.
+    /// True only for `.hot`; all other verdicts zero the mic under the regulated
+    /// real-time gate.
     public var passesLiveAudio: Bool {
         if case .hot = self { return true }
         return false
+    }
+
+    /// True only when a mute signal (the meeting app's mute button or the
+    /// system / hardware mute) reports the mic muted, as opposed to merely quiet
+    /// (`silentByRMS`) or unknown (`uncertain`). The capture-first redaction
+    /// timeline records only these spans, so quiet-but-unmuted speech is never
+    /// dropped (TECH-MIC4 / TECH-MIC5).
+    public var indicatesMute: Bool {
+        switch self {
+        case .mutedByApp, .mutedByHardware: return true
+        case .hot, .silentByRMS, .uncertain: return false
+        }
     }
 
     public var label: String {

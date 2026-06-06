@@ -130,6 +130,21 @@ final class MeetingRecorder {
     /// `stop()` must flip it back off. Tracked explicitly for that.
     private var voiceProcessingEnabledForSession: Bool = false
 
+    /// Capture policy for this recording (TECH-MIC4). Set once in `start()`
+    /// before the engine runs, then read on the render thread; never mutated
+    /// mid-recording, so the render-thread read needs no lock. Defaults to the
+    /// privacy-safe gate so an unset value fails closed (no audio at rest).
+    private var captureMode: CaptureMode = .regulatedGate
+
+    /// Running mic-file position in frames and the accumulating muted-span
+    /// timeline, both for capture-first redaction (TECH-MIC4). The render thread
+    /// owns them during capture (like `micFires` / the RMS accumulators);
+    /// `recoverCapture` advances the position by the silence pad while the engine
+    /// is stopped (no concurrent render access); `stop()` reads them after the
+    /// tap is removed and the engine stopped (no more callbacks).
+    private var micFramePosition: Int64 = 0
+    private var muteTimeline = MuteTimeline()
+
     /// Per-source 1 s RMS accumulators; two pairs because mic + system run
     /// on independent threads at different sample rates.
     private var micAccumSumSq: Double = 0
@@ -162,13 +177,22 @@ final class MeetingRecorder {
     /// exist until `stop()` merges; `.mic.wav`/`.system.wav` intermediates
     /// appear alongside during the recording.
     ///
+    /// `captureMode` (required, no default) decides whether the mic is captured
+    /// losslessly with muted spans redacted offline (`.captureFirst`, the
+    /// default mode resolved from the flags) or zeroed in real time so no audio
+    /// is at rest (`.regulatedGate`, under regulated / NDA). TECH-MIC4 threads it
+    /// here with no default so every call site chooses; ADR 0016 is the gate.
+    ///
     /// `voiceProcessing` runs Apple's VoIP DSP (NS/AEC/AGC) at capture time.
     /// Default false: the VPIO unit's AGC tugs the HAL gain down system-wide
     /// while the engine runs, so other mic clients (Teams, Zoom) hear the
     /// user as very quiet. Enable only if no call client shares the mic.
-    func start(outputDir: URL, voiceProcessing: Bool = false) throws -> URL {
+    func start(outputDir: URL, captureMode: CaptureMode, voiceProcessing: Bool = false) throws -> URL {
         if isRecording { throw RecorderError.alreadyRecording }
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        self.captureMode = captureMode
+        micFramePosition = 0
+        muteTimeline = MuteTimeline()
         lastMicFires = 0
         lastSystemFires = 0
         micAccumSumSq = 0
@@ -428,21 +452,35 @@ final class MeetingRecorder {
             let mean = bufSumSq / Double(bufSamples)
             let db: Float = mean > 0 ? Float(10.0 * log10(mean)) : -120
             onMicRmsDb?(db)
+            let mode = captureMode
             // TECH-CONC2/UX8: read the gate verdict and stash the HUD VU level
             // under one lock acquisition, so the render thread never tears a
-            // multi-word verdict the main thread is mid-write. The level is
-            // gated by the verdict so the meter shows silence when muted,
-            // matching what is actually recorded; the HUD polls it at 10 Hz.
+            // multi-word verdict the main thread is mid-write. Under capture-first
+            // the mic is recorded live regardless of mute, so the meter shows the
+            // live level; under the regulated gate it shows silence when gated,
+            // matching what is actually written. The HUD polls it at 10 Hz.
             let verdict = gateAccess.withLock { access -> MicGateVerdict in
-                access.levelDb = access.verdict.passesLiveAudio ? db : -120
-                return access.verdict
+                let current = access.verdict
+                access.levelDb = (mode.capturesLosslessly || current.passesLiveAudio) ? db : -120
+                return current
             }
-            // Apply the verdict in place; frame parity is preserved (ADR
-            // 0009), muted buffers fade to zero over 20 ms.
-            if let writer = micGateWriter {
-                let bufPtr = UnsafeMutableBufferPointer(start: data[0], count: frameLen)
-                writer.apply(verdict: verdict, to: bufPtr)
+            switch mode {
+            case .regulatedGate:
+                // No audio at rest: apply the verdict in place; frame parity is
+                // preserved (ADR 0009), muted buffers fade to zero over 20 ms.
+                if let writer = micGateWriter {
+                    let bufPtr = UnsafeMutableBufferPointer(start: data[0], count: frameLen)
+                    writer.apply(verdict: verdict, to: bufPtr)
+                }
+            case .captureFirst:
+                // Lossless: never zero the mic. Record the muted span instead,
+                // so MIC5 can redact it offline from the consumed artifact while
+                // the full recording stays intact for recovery (TECH-MIC4).
+                let startSec = Double(micFramePosition) / fileFormat.sampleRate
+                let endSec = Double(micFramePosition + Int64(frameLen)) / fileFormat.sampleRate
+                muteTimeline.add(startSec: startSec, endSec: endSec, muted: verdict.indicatesMute)
             }
+            micFramePosition += Int64(frameLen)
         }
 
         // `buffer` is already owned, so it goes straight onto the serial
@@ -576,6 +614,11 @@ final class MeetingRecorder {
         )
         if padFrames > 0, let silence = Self.makeSilenceBuffer(format: fileFormat, frames: padFrames) {
             micWriter?.enqueue(silence)
+            // Keep the capture-first mute timeline aligned with the mic file:
+            // the pad adds frames the render thread did not, so advance the
+            // position here. Safe to touch from main: the engine is stopped, so
+            // no render-thread buffer is in flight (TECH-MIC4).
+            micFramePosition += Int64(padFrames)
         }
 
         do {
@@ -871,6 +914,19 @@ final class MeetingRecorder {
             try? FileManager.default.removeItem(at: systemURL)
         } else {
             Log.writeLine("recorder", "WARN: neither mic nor system has audio data - leaving \(final.lastPathComponent) absent")
+        }
+
+        // Persist the muted-span timeline for the offline redactor (TECH-MIC4).
+        // Only under capture-first: the regulated gate already removed muted
+        // audio in real time, so there is nothing to redact. Written next to the
+        // final WAV; skipped when no final was produced.
+        if captureMode == .captureFirst, FileManager.default.fileExists(atPath: final.path) {
+            muteTimeline.finalize()
+            MuteTimelineFile.write(spans: muteTimeline.spans, forFinal: final)
+            Log.event(category: "recorder", action: "mute_timeline_written", attributes: [
+                "file": final.lastPathComponent,
+                "muted_spans": muteTimeline.spans.count,
+            ])
         }
 
         if let started = started {
