@@ -60,6 +60,11 @@ let package = Package(
                 .product(name: "SnapshotTesting", package: "swift-snapshot-testing")
             ],
             path: "Tests/MeetingPipeTests",
+            // swift-snapshot-testing reads reference PNGs from disk relative to
+            // each test's #filePath, not from the SwiftPM resource bundle, so the
+            // committed __Snapshots__ tree must be excluded from the target rather
+            // than declared as a resource (otherwise SwiftPM flags it as unhandled).
+            exclude: ["__Snapshots__"],
             resources: [
                 .process("Fixtures")
             ]
