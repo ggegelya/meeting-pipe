@@ -145,39 +145,6 @@ final class MeetingRecorderTests: XCTestCase {
         return buffer
     }
 
-    func test_deepCopy_preserves_frame_length_and_samples() {
-        let original = makeFloatBuffer(frames: 512) { Float($0) / 512.0 }
-        guard let copy = original.deepCopy() else { return XCTFail("deepCopy returned nil") }
-        XCTAssertEqual(copy.frameLength, original.frameLength)
-        XCTAssertEqual(copy.format.sampleRate, original.format.sampleRate)
-        let src = original.floatChannelData![0]
-        let dst = copy.floatChannelData![0]
-        for i in 0..<512 { XCTAssertEqual(dst[i], src[i]) }
-    }
-
-    /// The reason deepCopy exists: AVAudioEngine reuses the tap buffer
-    /// after the callback returns, so the queued copy must be unaffected
-    /// by a later overwrite of the original.
-    func test_deepCopy_is_independent_of_later_mutation_of_the_original() {
-        let original = makeFloatBuffer(frames: 256) { _ in 0.25 }
-        guard let copy = original.deepCopy() else { return XCTFail("deepCopy returned nil") }
-        let data = original.floatChannelData![0]
-        for i in 0..<256 { data[i] = -1.0 }
-        let copied = copy.floatChannelData![0]
-        for i in 0..<256 { XCTAssertEqual(copied[i], 0.25) }
-    }
-
-    func test_deepCopy_handles_multi_channel_buffers() {
-        let original = makeFloatBuffer(frames: 128, channels: 2) { Float($0) }
-        guard let copy = original.deepCopy() else { return XCTFail("deepCopy returned nil") }
-        XCTAssertEqual(copy.frameLength, 128)
-        XCTAssertEqual(copy.format.channelCount, 2)
-        for ch in 0..<2 {
-            let dst = copy.floatChannelData![ch]
-            for i in 0..<128 { XCTAssertEqual(dst[i], Float(i)) }
-        }
-    }
-
     // MARK: - resample
 
     func test_resample_converts_a_buffer_to_the_target_sample_rate() {
@@ -265,5 +232,76 @@ final class MeetingRecorderTests: XCTestCase {
         let mean = sumSq / Double(samples)
         XCTAssertEqual(mean, 0.25, accuracy: 1e-5)
         XCTAssertEqual(10.0 * log10(mean), -6.0206, accuracy: 0.01)
+    }
+
+    // MARK: - collapseToMono (TECH-MIC3)
+
+    private func makeTwoChannelBuffer(
+        frames: AVAudioFrameCount,
+        ch0: Float,
+        ch1: Float,
+        sampleRate: Double = 48000
+    ) -> AVAudioPCMBuffer {
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 2, interleaved: false
+        )!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buffer.frameLength = frames
+        let data = buffer.floatChannelData!
+        for i in 0..<Int(frames) {
+            data[0][i] = ch0
+            data[1][i] = ch1
+        }
+        return buffer
+    }
+
+    /// On a multichannel input device the speaking mic is one channel. The
+    /// collapse keeps that channel's true level rather than the ~3 dB-diluted
+    /// average across the silent channels, so the RMS gate sees the real level.
+    func test_collapseToMono_keeps_the_voice_channel_level() {
+        // Channel 0 silent, channel 1 a half-amplitude constant.
+        let buffer = makeTwoChannelBuffer(frames: 512, ch0: 0, ch1: 0.5)
+        let monoFormat = MeetingRecorder.monoCaptureFormat(from: buffer.format)!
+        guard let mono = MeetingRecorder.collapseToMono(buffer, to: monoFormat) else {
+            return XCTFail("collapseToMono returned nil")
+        }
+        XCTAssertEqual(mono.format.channelCount, 1)
+        XCTAssertEqual(mono.frameLength, 512)
+        let (sumSq, samples) = MeetingRecorder.sumOfSquares(mono)
+        let mean = sumSq / Double(samples)
+        // Channel 1's true level (-6.02 dBFS), not the two-channel average.
+        XCTAssertEqual(10.0 * log10(mean), -6.0206, accuracy: 0.01)
+    }
+
+    /// The leak fix: voice on the channel the old gate did NOT zero (channel 1)
+    /// becomes the single mono channel, so the one gate write silences it and
+    /// nothing survives for the stop-time mono merge to fold back in.
+    func test_collapseToMono_folds_voice_into_the_single_gateable_channel() {
+        let buffer = makeTwoChannelBuffer(frames: 256, ch0: 0, ch1: 0.8)
+        let monoFormat = MeetingRecorder.monoCaptureFormat(from: buffer.format)!
+        guard let mono = MeetingRecorder.collapseToMono(buffer, to: monoFormat) else {
+            return XCTFail("collapseToMono returned nil")
+        }
+        XCTAssertEqual(mono.format.channelCount, 1)
+        let monoData = mono.floatChannelData![0]
+        XCTAssertEqual(monoData[0], 0.8, accuracy: 1e-6) // the loud channel survived, now gateable
+
+        for i in 0..<Int(mono.frameLength) { monoData[i] = 0 } // what the gate does on mute
+        var maxAbs: Float = 0
+        for i in 0..<Int(mono.frameLength) { maxAbs = max(maxAbs, abs(monoData[i])) }
+        XCTAssertEqual(maxAbs, 0, "no residual voice after gating the single channel")
+    }
+
+    /// A mono input collapses to an owned single channel, independent of the
+    /// engine-reused source buffer.
+    func test_collapseToMono_mono_passthrough_is_owned() {
+        let buffer = makeFloatBuffer(frames: 128) { _ in 0.3 }
+        let monoFormat = MeetingRecorder.monoCaptureFormat(from: buffer.format)!
+        guard let mono = MeetingRecorder.collapseToMono(buffer, to: monoFormat) else {
+            return XCTFail("collapseToMono returned nil")
+        }
+        for i in 0..<128 { buffer.floatChannelData![0][i] = -1.0 } // mutate source
+        let monoData = mono.floatChannelData![0]
+        for i in 0..<128 { XCTAssertEqual(monoData[i], 0.3) }
     }
 }

@@ -216,19 +216,29 @@ final class MeetingRecorder {
         guard micFormat.sampleRate > 0 else {
             throw RecorderError.fileCreateFailed("inputNode reports zero sample rate - Microphone permission likely not granted")
         }
+        // TECH-MIC3: capture mono. The mic is published mono anyway (the
+        // stop-time merge folds it), so writing a multichannel mic file only
+        // created two defects on a multichannel input device (USB interface,
+        // aggregate device, mic array): the per-buffer RMS averaged energy
+        // across channels and read low, biasing the gate toward silence, and a
+        // mute verdict zeroed channel 0 only, leaving live voice on channels 1+
+        // that the mono merge folded back in. One channel leaves exactly one to
+        // measure and one to gate. The tap still delivers the device format;
+        // processMicBuffer collapses each buffer to this mono format.
+        let fileFormat = MeetingRecorder.monoCaptureFormat(from: micFormat) ?? micFormat
         let micFile: AVAudioFile
         do {
-            micFile = try AVAudioFile(forWriting: micURL, settings: micFormat.settings)
+            micFile = try AVAudioFile(forWriting: micURL, settings: fileFormat.settings)
         } catch {
             throw RecorderError.fileCreateFailed("mic file: \(error.localizedDescription)")
         }
         self.micFile = micFile
-        self.micFileFormat = micFormat
-        Log.writeLine("recorder", "mic file opened format=\(micFormat)")
+        self.micFileFormat = fileFormat
+        Log.writeLine("recorder", "mic file opened format=\(fileFormat) device=\(micFormat)")
 
         // Zero-fills (20 ms fade) buffers outside `.hot`. Built here so it
         // inherits the input sample rate; released in `stop()`.
-        self.micGateWriter = MicGateWriter(sampleRate: micFormat.sampleRate)
+        self.micGateWriter = MicGateWriter(sampleRate: fileFormat.sampleRate)
 
         // Serial writer: the tap enqueues, the disk write runs off-thread.
         self.micWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.mic-writer") { buffer in
@@ -389,11 +399,16 @@ final class MeetingRecorder {
         // an owned buffer in the file format either way.
         let buffer: AVAudioPCMBuffer
         if let converter = micConverter {
+            // Device-change path: the converter resamples and, because the file
+            // format is mono (TECH-MIC3), downmixes the live device format to
+            // one channel in the same step.
             guard let converted = Self.resample(rawBuffer, using: converter, to: fileFormat) else { return }
             buffer = converted
         } else {
-            guard let copy = rawBuffer.deepCopy() else { return }
-            buffer = copy
+            // Normal path: collapse the (possibly multichannel) tap buffer to
+            // one mono channel before RMS and the gate (TECH-MIC3).
+            guard let mono = Self.collapseToMono(rawBuffer, to: fileFormat) else { return }
+            buffer = mono
         }
 
         micFires &+= 1
@@ -663,6 +678,53 @@ final class MeetingRecorder {
         }
         guard status != .error, output.frameLength > 0 else { return nil }
         return output
+    }
+
+    /// A mono Float32 capture format at the same sample rate as `format`, so the
+    /// mic WAV is written as one channel (TECH-MIC3). Nil only if the format
+    /// constructor rejects the sample rate.
+    static func monoCaptureFormat(from format: AVAudioFormat) -> AVAudioFormat? {
+        AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: format.sampleRate,
+            channels: 1,
+            interleaved: false
+        )
+    }
+
+    /// Collapse a (possibly multichannel) tap buffer to one mono channel by
+    /// copying the highest-energy channel (TECH-MIC3). On a multichannel input
+    /// device the speaking mic is one channel; taking the loudest keeps its true
+    /// level, so the RMS gate is not diluted by silent channels, and leaves a
+    /// single channel to gate, so a muted verdict cannot leave live voice on
+    /// another channel for the stop-time mono merge to fold back in. Picking
+    /// the loudest channel rather than averaging also avoids comb-filtering two
+    /// correlated mics. The result is freshly allocated, so it outlives the
+    /// engine-reused tap buffer. Float32 deinterleaved, matching the inputNode
+    /// tap format the gate and RMS paths already assume.
+    static func collapseToMono(_ buffer: AVAudioPCMBuffer, to monoFormat: AVAudioFormat) -> AVAudioPCMBuffer? {
+        guard let src = buffer.floatChannelData else { return nil }
+        let frameLen = Int(buffer.frameLength)
+        guard frameLen > 0 else { return nil }
+        guard let mono = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: AVAudioFrameCount(frameLen)),
+              let dst = mono.floatChannelData else { return nil }
+        mono.frameLength = AVAudioFrameCount(frameLen)
+
+        var bestChannel = 0
+        let channels = Int(buffer.format.channelCount)
+        if channels > 1 {
+            var bestEnergy: Float = -1
+            for ch in 0..<channels {
+                var energy: Float = 0
+                vDSP_svesq(src[ch], 1, &energy, vDSP_Length(frameLen))
+                if energy > bestEnergy {
+                    bestEnergy = energy
+                    bestChannel = ch
+                }
+            }
+        }
+        memcpy(dst[0], src[bestChannel], frameLen * MemoryLayout<Float>.size)
+        return mono
     }
 
     /// Build a zero-filled buffer used to pad the gap left by an input
@@ -1074,26 +1136,5 @@ final class MeetingRecorder {
 
         guard let rate = byteRate, rate > 0, let payload = dataSize else { return nil }
         return Double(payload) / Double(rate)
-    }
-}
-
-extension AVAudioPCMBuffer {
-    /// Deep-copy so the buffer outlives the capture callback (AVAudioEngine
-    /// reuses the tap buffer after return). Format-agnostic per-AudioBuffer
-    /// memcpy; nil only on allocation failure.
-    func deepCopy() -> AVAudioPCMBuffer? {
-        guard let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCapacity) else {
-            return nil
-        }
-        copy.frameLength = frameLength
-        let source = UnsafeMutableAudioBufferListPointer(
-            UnsafeMutablePointer(mutating: audioBufferList)
-        )
-        let destination = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
-        for (src, dst) in zip(source, destination) {
-            guard let srcData = src.mData, let dstData = dst.mData else { continue }
-            memcpy(dstData, srcData, Int(src.mDataByteSize))
-        }
-        return copy
     }
 }
