@@ -2,11 +2,13 @@
 
 | Property            | Value              |
 | ------------------- | ------------------ |
-| **Status**          | Accepted           |
+| **Status**          | Accepted; mic-gating-at-capture disposition superseded by ADR 0016 |
 | **Date**            | 2026-05-18         |
 | **Decision Makers** | Project owner      |
 | **Technical Area**  | Detection / capture|
 | **Related Tasks**   | TECH-C13, TECH-G-MIC |
+
+> Superseding note (2026-06-07): ADR 0016 supersedes the disposition that `MicGateWriter` zeroes the mic at capture as the privacy mechanism. The verdict-fusion architecture below stands; `MicGate`'s verdict now drives an offline redaction timeline (and a real-time gate only under regulated / NDA mode).
 
 ## Context
 

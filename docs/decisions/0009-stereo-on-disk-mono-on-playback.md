@@ -2,11 +2,13 @@
 
 | Property            | Value              |
 | ------------------- | ------------------ |
-| **Status**          | Accepted           |
+| **Status**          | Accepted; zero-amplitude-at-capture mechanism amended by ADR 0016 (frame-parity invariant stands) |
 | **Date**            | 2026-05-18         |
 | **Decision Makers** | Project owner      |
 | **Technical Area**  | Recording / library|
 | **Related Tasks**   | TECH-LIB-MIX       |
+
+> Superseding note (2026-06-07): ADR 0016 moves muted-segment zeroing from capture time to an offline redaction step. The per-channel frame-parity invariant below is unchanged and load-bearing; it is now enforced at redaction time (zero-fill of sample ranges, never frame removal).
 
 ## Context
 
