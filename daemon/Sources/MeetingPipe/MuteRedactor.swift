@@ -16,6 +16,19 @@ import Foundation
 /// destroys, and the full original is always restorable.
 enum MuteRedactor {
 
+    /// Redaction that would zero at least this fraction of the recording's mic
+    /// channel is treated as a runaway oracle, not a real mute pattern, and is
+    /// withheld when the mic carries speech (TECH-MIC9). A normal meeting mutes in
+    /// bursts; a whole-recording mute is the stuck/confidently-wrong-oracle
+    /// signature (the Teams mini-window incident redacted ~100%).
+    static let runawayMutedFraction = 0.85
+
+    /// Mean mic level (dBFS) above which a "muted" region is judged to carry real
+    /// speech, so redacting it would destroy audio. -50 dBFS sits well above room
+    /// tone / digital silence (about -90) and below normal speech (about -25), so
+    /// even a few seconds of speech inside a long muted region clears it.
+    static let speechFloorDb: Float = -50
+
     /// Directory for kept full recordings: app-private, outside the recordings
     /// (`raw/`) tree the Library and Raw Files tab enumerate, and outside the
     /// iCloud-synced Documents folder. So the sensitive full audio is local-only
@@ -72,6 +85,29 @@ enum MuteRedactor {
         // kept original, or the full recording is lost. Reap the stale timeline
         // and no-op.
         if FileManager.default.fileExists(atPath: originalsURL(for: wav, in: dir).path) {
+            try? FileManager.default.removeItem(at: MuteTimelineFile.url(forFinal: wav))
+            return false
+        }
+        // Audio-grounded runaway guard (TECH-MIC9). A mute oracle that goes
+        // confidently-wrong (e.g. Teams' new mini window detaches the cached AX
+        // element and a stale "muted" is read for the whole call) produces a
+        // timeline that covers essentially the entire recording. Redacting it
+        // would zero the whole mic channel and silently delete real speech from
+        // the consumed artifact (the failure that motivated this guard). The full
+        // recording is kept aside and is recoverable, but the loss is invisible
+        // until someone checks. So when the timeline would redact almost the
+        // whole recording AND the mic actually carries sustained energy, the
+        // oracle is not trustworthy: withhold redaction, keep the full mic as the
+        // canonical artifact, flag it, and reap the bogus timeline. A genuinely
+        // all-muted-silent meeting (mic near digital silence) is redacted as
+        // normal, because nothing real is lost.
+        if let reason = runawayWithholdReason(wav: wav, spans: timeline.spans) {
+            Log.event(category: "recorder", action: "mute_redaction_withheld", attributes: [
+                "file": wav.lastPathComponent,
+                "muted_spans": timeline.spans.count,
+                "reason": reason,
+            ])
+            Log.writeLine("recorder", "withheld mute redaction for \(wav.lastPathComponent): \(reason); kept the full mic recording (TECH-MIC9)")
             try? FileManager.default.removeItem(at: MuteTimelineFile.url(forFinal: wav))
             return false
         }
@@ -156,6 +192,56 @@ enum MuteRedactor {
     private static func channelCount(of wav: URL) -> Int? {
         guard let file = try? AVAudioFile(forReading: wav) else { return nil }
         return Int(file.fileFormat.channelCount)
+    }
+
+    /// Reason to withhold redaction, or nil to proceed. Withheld when the muted
+    /// spans cover at least `runawayMutedFraction` of the recording AND the mic
+    /// (left/channel-0) carries sustained energy above `speechFloorDb`. Both must
+    /// hold: a runaway timeline over a silent mic is harmless to redact, and a
+    /// localized mute over a loud mic is a genuine muted aside the opt-in user
+    /// asked to remove (TECH-MIC9).
+    static func runawayWithholdReason(wav: URL, spans: [MuteTimeline.Span]) -> String? {
+        guard let duration = durationSeconds(of: wav), duration > 0 else { return nil }
+        let mutedSeconds = spans.reduce(0.0) { $0 + max(0, $1.endSec - $1.startSec) }
+        guard mutedSeconds / duration >= runawayMutedFraction else { return nil }
+        guard let micDb = micChannelMeanDb(of: wav), micDb > speechFloorDb else { return nil }
+        return "runaway_muted_span_over_live_mic"
+    }
+
+    private static func durationSeconds(of wav: URL) -> Double? {
+        guard let file = try? AVAudioFile(forReading: wav) else { return nil }
+        let rate = file.processingFormat.sampleRate
+        guard rate > 0 else { return nil }
+        return Double(file.length) / rate
+    }
+
+    /// Mean level (dBFS) of the mic channel (channel 0 = left), read in chunks so
+    /// a long recording never loads whole. Runs offline (not the render thread).
+    private static func micChannelMeanDb(of wav: URL) -> Float? {
+        guard let file = try? AVAudioFile(forReading: wav) else { return nil }
+        let format = file.processingFormat
+        guard format.channelCount >= 1 else { return nil }
+        let chunk: AVAudioFrameCount = 1 << 16
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: chunk) else { return nil }
+        var sumSquares = 0.0
+        var frames = 0.0
+        while true {
+            do { try file.read(into: buffer, frameCount: chunk) } catch { return nil }
+            let count = Int(buffer.frameLength)
+            if count == 0 { break }
+            guard let mic = buffer.floatChannelData?[0] else { return nil }
+            var local = 0.0
+            for i in 0..<count {
+                let v = Double(mic[i])
+                local += v * v
+            }
+            sumSquares += local
+            frames += Double(count)
+            if count < Int(chunk) { break }
+        }
+        guard frames > 0 else { return nil }
+        let meanSquare = sumSquares / frames
+        return meanSquare > 0 ? Float(10.0 * log10(meanSquare)) : -120
     }
 
     /// Trim to millisecond precision; ffmpeg `between` wants plain decimals.

@@ -177,11 +177,13 @@ final class MeetingRecorder {
     /// exist until `stop()` merges; `.mic.wav`/`.system.wav` intermediates
     /// appear alongside during the recording.
     ///
-    /// `captureMode` (required, no default) decides whether the mic is captured
-    /// losslessly with muted spans redacted offline (`.captureFirst`, the
-    /// default mode resolved from the flags) or zeroed in real time so no audio
-    /// is at rest (`.regulatedGate`, under regulated / NDA). TECH-MIC4 threads it
-    /// here with no default so every call site chooses; ADR 0016 is the gate.
+    /// `captureMode` (required, no default) decides how the mic is treated:
+    /// `.captureFirst` (the default) captures losslessly and keeps the full mic
+    /// with no redaction; `.captureFirstRedact` captures losslessly and records a
+    /// muted-span timeline for the offline redactor (opt-in, TECH-MIC9);
+    /// `.regulatedGate` zeroes muted audio in real time so none is at rest (under
+    /// regulated / NDA). TECH-MIC4 threads it here with no default so every call
+    /// site chooses; ADR 0016 is the gate.
     ///
     /// `voiceProcessing` runs Apple's VoIP DSP (NS/AEC/AGC) at capture time.
     /// Default false: the VPIO unit's AGC tugs the HAL gain down system-wide
@@ -479,10 +481,13 @@ final class MeetingRecorder {
                     let bufPtr = UnsafeMutableBufferPointer(start: data[0], count: frameLen)
                     writer.apply(verdict: verdict, to: bufPtr)
                 }
-            case .captureFirst:
-                // Lossless: never zero the mic. Record the muted span instead,
-                // so MIC5 can redact it offline from the consumed artifact while
-                // the full recording stays intact for recovery (TECH-MIC4).
+            case .captureFirst, .captureFirstRedact:
+                // Lossless: never zero the mic. Record the muted span too, so an
+                // opt-in `.captureFirstRedact` recording can redact it offline
+                // from the consumed artifact while the full recording stays
+                // intact for recovery (TECH-MIC4). Under the default
+                // `.captureFirst` the timeline is recorded but never written
+                // (stop() skips it), so nothing is redacted.
                 let startSec = Double(micFramePosition) / fileFormat.sampleRate
                 let endSec = Double(micFramePosition + Int64(frameLen)) / fileFormat.sampleRate
                 muteTimeline.add(startSec: startSec, endSec: endSec, muted: verdict.indicatesMute)
@@ -924,10 +929,12 @@ final class MeetingRecorder {
         }
 
         // Persist the muted-span timeline for the offline redactor (TECH-MIC4).
-        // Only under capture-first: the regulated gate already removed muted
-        // audio in real time, so there is nothing to redact. Written next to the
-        // final WAV; skipped when no final was produced.
-        if captureMode == .captureFirst, FileManager.default.fileExists(atPath: final.path) {
+        // Only when redaction was opted in (`.captureFirstRedact`): the default
+        // `.captureFirst` keeps the full mic with no redaction (TECH-MIC9), and
+        // the regulated gate already removed muted audio in real time, so neither
+        // writes a timeline. Written next to the final WAV; skipped when no final
+        // was produced.
+        if captureMode == .captureFirstRedact, FileManager.default.fileExists(atPath: final.path) {
             muteTimeline.finalize()
             MuteTimelineFile.write(spans: muteTimeline.spans, forFinal: final)
             Log.event(category: "recorder", action: "mute_timeline_written", attributes: [

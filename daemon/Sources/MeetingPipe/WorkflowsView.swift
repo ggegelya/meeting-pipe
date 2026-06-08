@@ -61,6 +61,7 @@ struct WorkflowEditor: View {
     @State private var sinks = SinkSelection()
     @State private var backend: WorkflowBackend? = nil
     @State private var ndaMode: Bool = false
+    @State private var redactMutedSpans: Bool = false
     @State private var pendingDeleteAlert: Bool = false
     @State private var saveError: String?
     @State private var colorPopoverOpen: Bool = false
@@ -430,6 +431,10 @@ struct WorkflowEditor: View {
             Text("Surfaces in the HUD and the menu-bar title so a misroute is visible before the meeting starts.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Toggle("Redact muted spans from the notes", isOn: $redactMutedSpans)
+            Text("Off by default: the full mic is kept and transcribed (a fragile mute oracle can never silently drop your speech). On, muted moments are removed from the consumed notes offline; the full recording is still kept aside for recovery.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -470,6 +475,7 @@ struct WorkflowEditor: View {
         sinks = SinkSelection.from(workflow.sinks)
         backend = workflow.backend
         ndaMode = workflow.flags.ndaMode
+        redactMutedSpans = workflow.flags.redactMutedSpans
         saveError = nil
     }
 
@@ -489,6 +495,7 @@ struct WorkflowEditor: View {
         clone.sinks = sinks.toWorkflowSinks()
         clone.backend = backend
         clone.flags.ndaMode = ndaMode
+        clone.flags.redactMutedSpans = redactMutedSpans
         do {
             try store.upsert(clone)
             saveError = nil

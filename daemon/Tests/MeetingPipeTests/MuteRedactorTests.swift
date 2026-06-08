@@ -136,6 +136,81 @@ final class MuteRedactorTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: wav), redactedBytes, "the canonical WAV stays the redacted one")
     }
 
+    // MARK: - audio-grounded runaway guard (TECH-MIC9)
+
+    func test_runawayWithholdReason_only_fires_on_high_coverage_with_speech() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("guard-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let loud = dir.appendingPathComponent("loud.wav")
+        try writeStereoWav(at: loud, seconds: 1.0, left: 0.5, right: 0.5)
+        let silentMic = dir.appendingPathComponent("silent.wav")
+        try writeStereoWav(at: silentMic, seconds: 1.0, left: 0.0, right: 0.5)
+
+        let whole = [MuteTimeline.Span(startSec: 0.0, endSec: 1.0)]
+        let half = [MuteTimeline.Span(startSec: 0.0, endSec: 0.5)]
+
+        XCTAssertNotNil(
+            MuteRedactor.runawayWithholdReason(wav: loud, spans: whole),
+            "whole-recording mute over a live mic must withhold"
+        )
+        XCTAssertNil(
+            MuteRedactor.runawayWithholdReason(wav: loud, spans: half),
+            "50% coverage is below the runaway bound: a genuine muted aside, redact it"
+        )
+        XCTAssertNil(
+            MuteRedactor.runawayWithholdReason(wav: silentMic, spans: whole),
+            "whole-recording mute over a silent mic is harmless: redact it"
+        )
+    }
+
+    func test_redactIfNeeded_withholds_runaway_redaction_over_a_live_mic() async throws {
+        // The Teams mini-window incident in one assertion: a whole-recording
+        // muted span over a mic that carries speech must be withheld, the full
+        // mic kept, and the bogus timeline reaped. The guard returns before
+        // ffmpeg, so this runs without it.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("redact-\(UUID().uuidString)")
+        let originals = dir.appendingPathComponent("originals")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let wav = dir.appendingPathComponent("rec.wav")
+        try writeStereoWav(at: wav, seconds: 1.0, left: 0.5, right: 0.5)
+        let fullBytes = try Data(contentsOf: wav)
+        MuteTimelineFile.write(spans: [MuteTimeline.Span(startSec: 0.0, endSec: 1.0)], forFinal: wav)
+
+        let redacted = await MuteRedactor.redactIfNeeded(wav: wav, originalsDir: originals)
+        XCTAssertFalse(redacted, "a whole-file muted span over a live mic must be withheld, not redacted")
+        XCTAssertEqual(try Data(contentsOf: wav), fullBytes, "the full mic recording is kept untouched")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: originals.appendingPathComponent("rec.wav").path),
+            "nothing is moved aside when redaction is withheld"
+        )
+        XCTAssertNil(MuteTimelineFile.read(forFinal: wav), "the bogus timeline is reaped so a reprocess won't retry it")
+    }
+
+    func test_redactIfNeeded_redacts_a_runaway_span_when_the_mic_is_silent() async throws {
+        try XCTSkipIf(MeetingRecorder.findFFmpeg() == nil, "ffmpeg not available")
+        // A whole-recording mute over a silent mic loses nothing, so the guard
+        // must not over-withhold: redaction proceeds as normal.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("redact-\(UUID().uuidString)")
+        let originals = dir.appendingPathComponent("originals")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let wav = dir.appendingPathComponent("rec.wav")
+        try writeStereoWav(at: wav, seconds: 1.0, left: 0.0, right: 0.5)
+        MuteTimelineFile.write(spans: [MuteTimeline.Span(startSec: 0.0, endSec: 1.0)], forFinal: wav)
+
+        let redacted = await MuteRedactor.redactIfNeeded(wav: wav, originalsDir: originals)
+        XCTAssertTrue(redacted, "a runaway mute over a silent mic is harmless and redacts normally")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: originals.appendingPathComponent("rec.wav").path))
+    }
+
     // MARK: - helpers
 
     private func writeStereoWav(at url: URL, seconds: Double, left: Float, right: Float) throws {

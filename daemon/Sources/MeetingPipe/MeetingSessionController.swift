@@ -209,10 +209,13 @@ final class MeetingSessionController {
 
         // Resolve the capture mode (TECH-MIC4): regulated (global) or NDA
         // (per-workflow) takes the no-audio-at-rest gate; everything else
-        // captures losslessly and redacts muted spans offline (TECH-MIC5).
+        // captures losslessly. Offline muted-span redaction (TECH-MIC5) is
+        // opt-in per workflow and off by default (TECH-MIC9), so a normal
+        // meeting keeps the full mic regardless of the mute oracle.
         let captureMode = CaptureMode.resolve(
             regulated: coordinator.configStore?.regulatedMode ?? false,
-            nda: resolvedWorkflow?.flags.ndaMode ?? false
+            nda: resolvedWorkflow?.flags.ndaMode ?? false,
+            redactMuted: resolvedWorkflow?.flags.redactMutedSpans ?? false
         )
 
         do {

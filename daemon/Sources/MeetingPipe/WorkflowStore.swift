@@ -150,6 +150,7 @@ final class WorkflowStore: ObservableObject {
 
         let flags = TOMLTable()
         flags["nda_mode"] = wf.flags.ndaMode
+        flags["redact_muted_spans"] = wf.flags.redactMutedSpans
         doc["flags"] = flags
 
         let rulesArr = TOMLArray()
@@ -195,6 +196,7 @@ final class WorkflowStore: ObservableObject {
         var flags = WorkflowFlags()
         if let f = doc["flags"]?.table {
             flags.ndaMode = f["nda_mode"]?.bool ?? false
+            flags.redactMutedSpans = f["redact_muted_spans"]?.bool ?? false
         }
 
         var rules: [WorkflowMatchingRule] = []

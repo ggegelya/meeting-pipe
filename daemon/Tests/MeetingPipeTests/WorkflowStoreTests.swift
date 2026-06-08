@@ -189,6 +189,25 @@ final class WorkflowStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.workflows[0].effectiveBackend, .local)
     }
 
+    func test_redact_muted_spans_flag_round_trips_and_defaults_off() throws {
+        // TECH-MIC9: redaction is opt-in. A reload must preserve the opt-in, and
+        // a workflow that never set it must come back off (so the default keeps
+        // the full mic).
+        let dir = try makeTempDir()
+        let store = WorkflowStore(directory: dir)
+        var optIn = Workflow(name: "Redacted", isDefault: true)
+        optIn.flags.redactMutedSpans = true
+        try store.upsert(optIn)
+        let plain = Workflow(name: "Plain")
+        try store.upsert(plain)
+
+        let reloaded = WorkflowStore(directory: dir)
+        reloaded.load()
+        let byName = Dictionary(uniqueKeysWithValues: reloaded.workflows.map { ($0.name, $0) })
+        XCTAssertTrue(try XCTUnwrap(byName["Redacted"]).flags.redactMutedSpans, "opt-in must survive a reload")
+        XCTAssertFalse(try XCTUnwrap(byName["Plain"]).flags.redactMutedSpans, "a workflow that never opted in stays off")
+    }
+
     func test_unreadable_workflow_file_is_skipped() throws {
         // A malformed TOML file under the workflows dir should not block
         // loading the rest of the set.

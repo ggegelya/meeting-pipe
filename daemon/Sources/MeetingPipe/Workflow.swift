@@ -30,6 +30,8 @@ enum WorkflowSink: Codable, Equatable, Hashable {
 struct WorkflowFlags: Codable, Equatable, Hashable {
     /// Forces `backend = .local` and `sinks = [.filesystem]` regardless of other fields. Surfaced in the HUD so a misroute is visible before recording starts.
     var ndaMode: Bool = false
+    /// Opt in to offline muted-span redaction (TECH-MIC9). Off by default: a normal meeting keeps the full mic in the consumed artifact (capture-first / retention-based privacy), so a fragile mute oracle can never silently delete real speech. On, this workflow's recordings resolve to `.captureFirstRedact`: muted spans are redacted from the notes offline, the full recording is kept aside, and `MuteRedactor` withholds a runaway whole-meeting redaction over a live mic.
+    var redactMutedSpans: Bool = false
 }
 
 /// One match predicate; any matching rule counts for the workflow. Empty `bundleID` matches any bundle, useful for title-regex rules targeting browser meetings that may surface as Chrome, Safari, Edge, or Arc.

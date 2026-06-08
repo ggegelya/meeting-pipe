@@ -129,13 +129,26 @@ final class OrphanRecordingRecoveryTests: XCTestCase {
         )
     }
 
-    func test_shouldQuarantine_true_for_capture_first_orphan_without_timeline() throws {
+    func test_shouldQuarantine_true_for_redact_optin_orphan_without_timeline() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try writeMarker(.captureFirstRedact, stem: "rec", in: dir)
+        XCTAssertTrue(
+            OrphanRecordingRecovery.shouldQuarantine(stem: "rec", final: dir.appendingPathComponent("rec.wav"), in: dir),
+            "a redaction-opt-in orphan with no timeline cannot be redacted and must not auto-publish un-redacted"
+        )
+    }
+
+    func test_shouldQuarantine_false_for_default_capture_first_orphan() throws {
+        // TECH-MIC9: the default keeps the full mic with no redaction, so a
+        // default capture-first orphan is safe to auto-process even with no
+        // timeline (there was never anything to redact).
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         try writeMarker(.captureFirst, stem: "rec", in: dir)
-        XCTAssertTrue(
+        XCTAssertFalse(
             OrphanRecordingRecovery.shouldQuarantine(stem: "rec", final: dir.appendingPathComponent("rec.wav"), in: dir),
-            "a lossless capture-first orphan with no timeline cannot be redacted and must not auto-publish"
+            "default capture-first keeps the full mic; no redaction was intended, so it is safe to process"
         )
     }
 
@@ -143,7 +156,7 @@ final class OrphanRecordingRecoveryTests: XCTestCase {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let final = dir.appendingPathComponent("rec.wav")
-        try writeMarker(.captureFirst, stem: "rec", in: dir)
+        try writeMarker(.captureFirstRedact, stem: "rec", in: dir)
         MuteTimelineFile.write(spans: [MuteTimeline.Span(startSec: 0, endSec: 1)], forFinal: final)
         XCTAssertFalse(
             OrphanRecordingRecovery.shouldQuarantine(stem: "rec", final: final, in: dir),
