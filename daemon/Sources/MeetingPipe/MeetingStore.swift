@@ -287,13 +287,53 @@ final class MeetingStore: ObservableObject {
     }
 
     /// Build a single `Meeting` from its on-disk file group. `cacheable` is true only for terminal rows (summary present, error sidecar present, or paste-ready). A `.processing` / age-inferred `.failed` row derives its status from the wall clock, so it is never cached: it must be rebuilt each scan to catch the staleness transition.
+    /// How recently a `.mic.wav` must have been written to count as a live
+    /// capture rather than a dead orphan. A recording writes the mic file every
+    /// audio buffer, so a live capture's mtime is sub-second fresh; an orphan
+    /// from a failed start is minutes+ stale. Generous vs the per-buffer cadence.
+    static let liveCaptureFreshnessSec: TimeInterval = 60
+
+    /// The final merged recording (`<stem>.wav`), excluding the `.mic.wav` /
+    /// `.system.wav` capture intermediates that also carry the `wav` extension.
+    static func isFinalRecording(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        return url.pathExtension == "wav"
+            && !name.hasSuffix(".mic.wav")
+            && !name.hasSuffix(".system.wav")
+    }
+
+    /// A `.mic.wav` capture intermediate modified within `liveCaptureFreshnessSec`,
+    /// i.e. one an in-progress recording is actively writing. Returns nil for a
+    /// stale intermediate so an orphaned/failed capture is not surfaced as a row.
+    static func freshCaptureIntermediate(in files: [URL]) -> URL? {
+        guard let mic = files.first(where: { $0.lastPathComponent.hasSuffix(".mic.wav") }),
+              let mtime = try? mic.resourceValues(forKeys: [.contentModificationDateKey])
+                  .contentModificationDate,
+              Date().timeIntervalSince(mtime) < liveCaptureFreshnessSec
+        else { return nil }
+        return mic
+    }
+
     private static func buildMeeting(
         stem: String,
         files: [URL],
         directory: URL
     ) -> (meeting: Meeting, cacheable: Bool)? {
-        // No wav = no meeting row; leftover sidecars from manual deletes shouldn't appear.
-        guard let wav = files.first(where: { $0.pathExtension == "wav" }) else {
+        // The merged recording is `<stem>.wav`. The `.mic.wav` / `.system.wav`
+        // capture intermediates also end in `.wav`, but exist only mid-recording
+        // (merged then deleted at stop) or as orphans an interrupted / failed
+        // start left behind. Prefer the final wav; fall back to a *fresh*
+        // intermediate so a live recording still shows a row, but never to a
+        // stale one. Otherwise a dead orphan (e.g. the burst a mid-meeting input
+        // device change can trigger) surfaces as a phantom `.processing` row that
+        // animates a spinner and re-evaluates every scan, burning CPU and
+        // janking the list (TECH-A17). No wav at all = no row.
+        let wav: URL
+        if let finalWav = files.first(where: { MeetingStore.isFinalRecording($0) }) {
+            wav = finalWav
+        } else if let liveCapture = MeetingStore.freshCaptureIntermediate(in: files) {
+            wav = liveCapture
+        } else {
             return nil
         }
         guard let startedAt = MeetingStore.parseStem(stem) else { return nil }

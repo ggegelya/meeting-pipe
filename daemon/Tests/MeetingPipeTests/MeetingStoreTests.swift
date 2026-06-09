@@ -124,6 +124,54 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(captured.first?.status, .processing)
     }
 
+    // MARK: capture intermediates (TECH-A17)
+
+    func test_stale_capture_intermediate_without_final_wav_is_not_a_row() throws {
+        // A failed/interrupted start leaves a `.mic.wav` (+ `.capturemode`) and no
+        // merged `.wav`. Stale (not being written), it must NOT become a row;
+        // otherwise it renders a perpetual `.processing` spinner re-evaluated every scan
+        // (the device-change start-storm lag).
+        let dir = try tempDir()
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-1800))
+        let mic = dir.appendingPathComponent("\(stem).mic.wav")
+        try writeFile(mic)
+        try setMtime(mic, Date().addingTimeInterval(-1800))   // stale: nothing writing it
+        try writeFile(dir.appendingPathComponent("\(stem).capturemode"), "capture_first")
+        let store = MeetingStore(recordingsDir: dir)
+        XCTAssertTrue(store.performScan(directory: dir).isEmpty,
+                      "a stale capture intermediate with no merged wav must not surface as a row")
+    }
+
+    func test_fresh_capture_intermediate_is_the_live_recording_row() throws {
+        // Mid-recording, only the `.mic.wav` exists and is being actively written,
+        // so its mtime is fresh. It SHOULD show as the live row.
+        let dir = try tempDir()
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-15))
+        let mic = dir.appendingPathComponent("\(stem).mic.wav")
+        try writeFile(mic)
+        try setMtime(mic, Date())   // fresh: actively recording
+        let store = MeetingStore(recordingsDir: dir)
+        let rows = store.performScan(directory: dir)
+        XCTAssertEqual(rows.count, 1, "a freshly-written capture intermediate is the live recording row")
+        XCTAssertEqual(rows.first?.status, .processing)
+    }
+
+    func test_final_wav_preferred_over_capture_intermediate() throws {
+        // With both a merged `.wav` and a leftover `.mic.wav`, the row uses the
+        // merged wav deterministically (not the intermediate).
+        let dir = try tempDir()
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        try writeFile(dir.appendingPathComponent("\(stem).mic.wav"))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{}")
+        let store = MeetingStore(recordingsDir: dir)
+        let rows = store.performScan(directory: dir)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.wavURL.lastPathComponent, "\(stem).wav",
+                       "the row points at the merged wav, not .mic.wav")
+        XCTAssertEqual(rows.first?.status, .done)
+    }
+
     func test_failed_when_processing_older_than_staleness_threshold() throws {
         let dir = try tempDir()
         // Stem far in the past — exceeds staleProcessingThresholdSec (2 h)
