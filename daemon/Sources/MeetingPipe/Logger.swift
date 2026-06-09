@@ -13,10 +13,41 @@ enum Log {
     }()
 
     static var logsDir: URL {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(Endpoints.Paths.logsRelative, isDirectory: true)
+        let dir = resolveLogsDir()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    /// Resolve the logs directory. An explicit `MEETINGPIPE_LOGS_DIR` wins (sandboxed
+    /// runs, targeted tests); otherwise, under XCTest we redirect to a temp dir so
+    /// `swift test` never appends fixture rows (clip.wav, stem "m", "Boom error",
+    /// notion.example) into the user's production events.jsonl, which would corrupt
+    /// every events-log consumer (`mp analyze-detection`, dogfood reports). Matches the
+    /// existing MEETINGPIPE_FFMPEG / MEETING_PIPE_DRY_RUN env-override convention.
+    private static func resolveLogsDir() -> URL {
+        if let override = ProcessInfo.processInfo.environment["MEETINGPIPE_LOGS_DIR"],
+           !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        if isRunningUnderTests {
+            return FileManager.default.temporaryDirectory
+                .appendingPathComponent("MeetingPipe-test-logs", isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(Endpoints.Paths.logsRelative, isDirectory: true)
+    }
+
+    /// True when the process is hosting an XCTest bundle. Checks the runner env vars
+    /// first, then falls back to the loaded `XCTestCase` class so the guard holds even
+    /// if a future toolchain stops exporting them. The production app never links XCTest.
+    private static var isRunningUnderTests: Bool {
+        let env = ProcessInfo.processInfo.environment
+        if env["XCTestConfigurationFilePath"] != nil
+            || env["XCTestBundlePath"] != nil
+            || env["XCTestSessionIdentifier"] != nil {
+            return true
+        }
+        return NSClassFromString("XCTestCase") != nil
     }
 
     /// Append-only tail-able log file (logging conventions in CONVENTIONS.md). os.Logger goes to the unified log; this writes ~/Library/Logs/MeetingPipe/<category>.log.

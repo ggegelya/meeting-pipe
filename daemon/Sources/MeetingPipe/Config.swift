@@ -16,8 +16,6 @@ struct Config {
     struct Detection {
         var debounceStartSec: Double
         var debounceEndSec: Double
-        /// Per-bundle overrides for `debounceEndSec` (TECH-C4). Browser sources without an entry fall back to a built-in 12 s default because tab/window state flickers during a call; native apps use the global value.
-        var debounceEndPerBundle: [String: Double]
         var manualHotkey: String
         /// Stop-only hotkey (TECH-C5). Distinct from `manualHotkey` so the user can force-stop without risking an accidental new recording start when the daemon is idle. Default `ctrl+option+shift+m`.
         var forceStopHotkey: String
@@ -74,18 +72,6 @@ struct Config {
             return 480
         }()
 
-        // Optional `[detection.debounce_end_per_bundle]` sub-table: bundle ID -> seconds. Non-numeric entries are skipped silently.
-        var debounceEndPerBundle: [String: Double] = [:]
-        if let overrides = det?["debounce_end_per_bundle"]?.table {
-            for (key, value) in overrides {
-                if let d = value.double {
-                    debounceEndPerBundle[key] = d
-                } else if let i = value.int {
-                    debounceEndPerBundle[key] = Double(i)
-                }
-            }
-        }
-
         let regulated = mod?["regulated_mode"]?.bool ?? false
 
         return Config(
@@ -99,7 +85,6 @@ struct Config {
             detection: Detection(
                 debounceStartSec: debounceStart,
                 debounceEndSec: debounceEnd,
-                debounceEndPerBundle: debounceEndPerBundle,
                 manualHotkey: hotkey,
                 forceStopHotkey: forceStop,
                 promptTimeoutSec: promptTimeout,
@@ -123,7 +108,6 @@ struct Config {
             detection: Detection(
                 debounceStartSec: 5,
                 debounceEndSec: 5,
-                debounceEndPerBundle: [:],
                 manualHotkey: "ctrl+option+m",
                 forceStopHotkey: "ctrl+option+shift+m",
                 promptTimeoutSec: 30,

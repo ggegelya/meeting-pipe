@@ -77,6 +77,79 @@ def test_pair_sessions_classifies_manual_stop() -> None:
     assert sessions[0].delta_sec is None
 
 
+def test_classify_silence_backstop_is_not_a_manual_miss() -> None:
+    """A `coordinator.auto_stop_silence` in-window is the backstop, not a
+    user miss (the dishonesty TECH-END4 fixes: these used to count manual)."""
+    events = [
+        _event("2026-05-01T11:00:00Z", "coordinator", "recording_started",
+               file="forgot.wav", bundle_id="com.microsoft.teams2"),
+        _event("2026-05-01T11:20:00Z", "coordinator", "auto_stop_silence",
+               reason="idle_15m"),
+        _event("2026-05-01T11:20:01Z", "coordinator", "recording_stopped",
+               file="forgot.wav", bundle_id="com.microsoft.teams2"),
+    ]
+    sessions = [classify_session(s) for s in pair_sessions(events)]
+    assert sessions[0].stop_kind == "silence_backstop"
+    assert sessions[0].delta_sec is None
+
+
+def test_classify_force_stop_hotkey() -> None:
+    events = [
+        _event("2026-05-01T11:00:00Z", "coordinator", "recording_started",
+               file="hk.wav", bundle_id="us.zoom.xos"),
+        _event("2026-05-01T11:05:00Z", "coordinator", "force_stop", reason="hotkey"),
+        _event("2026-05-01T11:05:01Z", "coordinator", "recording_stopped",
+               file="hk.wav", bundle_id="us.zoom.xos"),
+    ]
+    sessions = [classify_session(s) for s in pair_sessions(events)]
+    assert sessions[0].stop_kind == "force_stop"
+
+
+def test_classify_force_stop_with_silence_reason_is_backstop() -> None:
+    """The legacy mic-only backstop force-stops with reason `mic_only_silence`;
+    a reason naming silence classifies as the backstop, not a user force-stop."""
+    events = [
+        _event("2026-05-01T11:00:00Z", "coordinator", "recording_started",
+               file="leg.wav", bundle_id="us.zoom.xos"),
+        _event("2026-05-01T11:08:00Z", "coordinator", "force_stop",
+               reason="mic_only_silence"),
+        _event("2026-05-01T11:08:01Z", "coordinator", "recording_stopped",
+               file="leg.wav", bundle_id="us.zoom.xos"),
+    ]
+    sessions = [classify_session(s) for s in pair_sessions(events)]
+    assert sessions[0].stop_kind == "silence_backstop"
+
+
+def test_detector_end_wins_over_backstop_marker() -> None:
+    """If both a lifecycle.ended and an auto_stop_silence land in-window, the
+    detector end is the real cause and takes priority."""
+    events = [
+        _event("2026-05-01T11:00:00Z", "coordinator", "recording_started",
+               file="both.wav", bundle_id="us.zoom.xos"),
+        _event("2026-05-01T11:19:59Z", "coordinator", "auto_stop_silence"),
+        _event("2026-05-01T11:20:00Z", "lifecycle", "ended"),
+        _event("2026-05-01T11:20:01Z", "coordinator", "recording_stopped",
+               file="both.wav", bundle_id="us.zoom.xos"),
+    ]
+    sessions = [classify_session(s) for s in pair_sessions(events)]
+    assert sessions[0].stop_kind == "detector"
+
+
+def test_silence_backstop_excluded_from_misses_section() -> None:
+    events = [
+        _event("2026-05-01T11:00:00Z", "coordinator", "recording_started",
+               file="forgot.wav", bundle_id="com.microsoft.teams2"),
+        _event("2026-05-01T11:20:00Z", "coordinator", "auto_stop_silence"),
+        _event("2026-05-01T11:20:01Z", "coordinator", "recording_stopped",
+               file="forgot.wav", bundle_id="com.microsoft.teams2"),
+    ]
+    sessions = [classify_session(s) for s in pair_sessions(events)]
+    out = render_report(sessions, aggregate(sessions))
+    misses_section = out.split("## Detector misses")[1]
+    assert "forgot.wav" not in misses_section
+    assert "silence backstop" in out  # surfaced in the summary instead
+
+
 def test_pair_sessions_picks_latest_detector_ended_when_debounce_flutters() -> None:
     """Multiple `lifecycle.ended` inside one session (debounce flutter):
     use the latest, which is the one that actually drove the stop."""

@@ -159,6 +159,11 @@ final class Coordinator: NSObject {
         self.halBus = halBus
         self.axBus = axBus
         self.muteLabels = muteLabels
+        // TECH-END4 (b): honor the end-debounce knob. It was read into Config /
+        // ConfigStore and shown as a Preferences slider but never reached the
+        // engine, which always used the hardcoded 2.0s. Read once at init (edits
+        // apply next launch), like the silence-backstop window below.
+        let debounceEndSec = configStore?.debounceEndSec ?? config.detection.debounceEndSec
         self.lifecycleCoord = MeetingLifecycleCoordinator(
             halBus: halBus,
             axBus: axBus,
@@ -169,7 +174,8 @@ final class Coordinator: NSObject {
                 NativeLifecycleAdapter(config: .webex, axBus: axBus, eventLog: logAdapter),
                 NativeLifecycleAdapter(config: .slack, axBus: axBus, eventLog: logAdapter),
                 BrowserMeetingLifecycleAdapter(axBus: axBus, eventLog: logAdapter),
-            ]
+            ],
+            engine: PromotionEngine(debounce: debounceEndSec)
         )
         self.micGate = MicGate(
             catalogue: muteLabels,
