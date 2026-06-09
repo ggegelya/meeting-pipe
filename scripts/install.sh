@@ -14,20 +14,20 @@
 #      recording does not pay download latency.
 #   5. Stage config files at ~/.config/meeting-pipe/.
 #   6. Install LaunchAgent for autostart.
-#   7. Reset macOS TCC grants for com.meetingpipe.daemon (default on,
-#      see --keep-tcc to skip). Each dev rebuild produces a new cdhash
-#      and TCC keys grants on (bundle_id, identifier, cdhash); without
-#      a paid Developer ID (TECH-D8 deferred to P3) the prior grants
-#      no longer apply to the new build, so System Settings shows the
-#      toggle ON while the daemon silently lacks the permission. The
-#      user otherwise has to remove the stale row and re-add it via
-#      the + button every reinstall. Resetting up front collapses the
-#      cycle to one fresh prompt per service per install.
+#   7. (Optional, --reset-tcc) reset macOS TCC grants for
+#      com.meetingpipe.daemon. Default is to KEEP them: the bundle is
+#      re-signed with a stable `--identifier`, so Mic / Accessibility /
+#      Notifications grants survive a reinstall. Only Screen Recording is
+#      cdhash-strict (TCC re-validates the per-build hash) and needs one
+#      re-toggle, unavoidable without a paid Developer ID (TECH-D8, P3).
+#      Resetting ALL grants by default needlessly re-prompted for the three
+#      that survive; keeping them is the better default for a single-user
+#      dev install.
 #
 # Flags:
-#   --keep-tcc   skip the TCC reset step. Use when you happen to know
-#                the new cdhash matches the prior one (rare for dev
-#                builds) and want to keep the granted state.
+#   --reset-tcc  clear all TCC grants for the bundle, forcing a fresh prompt
+#                per service. Use for a clean slate or if a grant looks stuck.
+#   --keep-tcc   no-op alias (keeping grants is now the default).
 #
 # Transcription stack: FluidAudio runs Parakeet TDT v3 + pyannote
 # Community-1 in-process on the Apple Neural Engine. Models live in
@@ -39,10 +39,17 @@
 
 set -euo pipefail
 
-RESET_TCC=1
+# Default: KEEP existing TCC grants. The bundle is re-signed with a stable
+# `--identifier`, so Mic / Accessibility / Notifications survive a reinstall;
+# only Screen Recording is cdhash-strict and needs one re-toggle (no Developer
+# ID, TECH-D8). Resetting everything by default needlessly re-prompted for the
+# three that survive. Pass --reset-tcc for a clean slate. --keep-tcc kept as a
+# no-op alias for muscle memory.
+RESET_TCC=0
 for arg in "$@"; do
     case "$arg" in
-        --keep-tcc) RESET_TCC=0 ;;
+        --keep-tcc)  RESET_TCC=0 ;;
+        --reset-tcc) RESET_TCC=1 ;;
         -h|--help)
             awk '/^set -/{exit}{print}' "$0"
             exit 0
@@ -294,18 +301,16 @@ if launchctl list | grep -q "$LAUNCHD_LABEL"; then
     launchctl unload "$PLIST" || true
 fi
 
-# 7. TCC reset (default on, --keep-tcc skips) ------------------------------
+# 7. TCC reset (opt-in, --reset-tcc) ---------------------------------------
 #
-# Run BEFORE the LaunchAgent loads the new bundle. Order matters: if the
-# daemon is already running with the previous cdhash, its live TCC
-# verdict cache can re-assert the prior grant against the freshly-reset
-# DB. SIGKILL first so nothing is mid-shutdown when tccutil runs.
-#
-# Without this, every dev rebuild leaves a stale row in System Settings ->
-# Privacy & Security -> Screen Recording (and Accessibility) where the
-# toggle shows ON but macOS silently denies the new bundle's request
-# because the cdhash no longer matches. The user has to remove the row
-# and re-add it via the + button each time.
+# Skipped by default (the stable `--identifier` lets Mic / Accessibility /
+# Notifications survive a reinstall; only Screen Recording's cdhash-keyed
+# grant may need one manual re-toggle). When --reset-tcc is passed, run it
+# BEFORE the LaunchAgent loads the new bundle: if the daemon is already
+# running with the previous cdhash, its live TCC verdict cache can re-assert
+# the prior grant against the freshly-reset DB, so SIGKILL first. A reset
+# forces one fresh prompt per service, useful when a grant looks stuck (a
+# stale ON toggle that macOS silently denies because the cdhash changed).
 if (( RESET_TCC )); then
     BUNDLE_ID="com.meetingpipe.daemon"
     pkill -KILL -f "MeetingPipe.app/Contents/MacOS/MeetingPipe" 2>/dev/null || true
@@ -350,8 +355,10 @@ Next steps:
 
 Logs: $LOG_DIR
 Reinstall: $REPO_ROOT/scripts/install.sh
-  TCC permissions reset by default each install (dev cdhash changes
-  every rebuild). Pass --keep-tcc to skip the reset.
+  Keeps your TCC grants by default (Mic / Accessibility / Notifications
+  survive via the stable signing identifier; Screen Recording may need one
+  re-toggle as its cdhash changes per build). Pass --reset-tcc for a clean
+  slate.
 Uninstall: $REPO_ROOT/scripts/uninstall.sh
   Add --purge to also remove ~/.config/meeting-pipe.
   Add --reset-tcc to clear TCC for the bundle. Or pass --all for both.
