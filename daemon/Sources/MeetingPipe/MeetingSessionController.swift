@@ -26,10 +26,6 @@ final class MeetingSessionController {
     /// so it wins over rule matches.
     var pendingWorkflowOverride: UUID?
 
-    /// Surfaces a missed meeting end (TECH-C2): notify after 90 s of
-    /// mic+system silence, auto-stop after 5 min. Lives for the recording.
-    var silenceDetector: SilenceDetector?
-
     /// Observes window-created events so mute buttons that appear after
     /// `beginRecording` (Teams 2 compact view, PIP overlays) get watched
     /// too. Per-meeting (TECH-C14).
@@ -47,10 +43,9 @@ final class MeetingSessionController {
     /// recording-end path.
     var lifecycleConsumerTask: Task<Void, Never>?
 
-    /// System channel "carries audio" above this 1 s RMS floor. Mirrors
-    /// `SilenceDetector.defaultThresholdDb` so the backstop and the 5-min
-    /// auto-stop draw the same line.
-    private static let systemSilenceThresholdDb: Double = SilenceDetector.defaultThresholdDb
+    /// System channel "carries audio" above this 1 s RMS floor; the idle backstop's
+    /// `hasSystemAudio` read draws the line here (TECH-END3).
+    private static let systemSilenceThresholdDb: Double = -50.0
 
     init(coordinator: Coordinator) {
         self.coordinator = coordinator
@@ -245,7 +240,7 @@ final class MeetingSessionController {
                 "workflow_id": resolvedWorkflow?.id.uuidString ?? NSNull(),
                 "workflow_name": resolvedWorkflow?.name ?? NSNull(),
             ])
-            armSilenceDetector()
+            armSystemLevelMirror()
             engageMicGate(source: source)
             // Re-walk for the Leave button now the call UI has rendered;
             // the discovery-time walk usually runs too early to see it.
@@ -265,7 +260,7 @@ final class MeetingSessionController {
         coordinator.stateMachine.setStopping(file: file, source: source, summaryMode: summaryMode)
         coordinator.statusBar.setStopping()
         coordinator.recordingHUD.dismiss()
-        disarmSilenceDetector()
+        disarmSystemLevelMirror()
         // Tear down per-meeting AX subscriptions; the verdict stream stays
         // open for the next meeting.
         coordinator.lifecycleCoord.disengage()
@@ -449,65 +444,50 @@ final class MeetingSessionController {
         }
     }
 
-    // MARK: - Silence detection (TECH-C2)
+    // MARK: - Idle backstop (TECH-END3, was TECH-C2/C7)
 
-    func armSilenceDetector() {
-        let detector = SilenceDetector(
-            onNotifySilence: { [weak self] in
-                self?.handleSilenceNotify()
-            },
-            onAutoStopSilence: { [weak self] in
-                self?.handleSilenceAutoStop()
-            }
-        )
-        silenceDetector = detector
-        // Recorder dispatches RMS callbacks to main, so touching the
-        // detector directly here is safe.
-        coordinator.recorder.onMicLevel = { [weak self] db in
-            self?.silenceDetector?.observeMic(db: Double(db))
-        }
-        // One callback site feeds both the detector and the backstop's
-        // level mirror so the two can't drift.
+    /// Mirror the system-audio level so the idle backstop's `hasSystemAudio` read
+    /// stays current. The mic side is verdict-driven (the gate fuses VAD), so no raw
+    /// mic-level feed is needed here since TECH-END3 dropped the RMS SilenceDetector.
+    func armSystemLevelMirror() {
         coordinator.recorder.onSystemLevel = { [weak self] db in
-            guard let self = self else { return }
-            self.latestSystemLevelDb = db
-            self.silenceDetector?.observeSystem(db: Double(db))
+            self?.latestSystemLevelDb = db
         }
     }
 
-    func disarmSilenceDetector() {
-        coordinator.recorder.onMicLevel = nil
+    func disarmSystemLevelMirror() {
         coordinator.recorder.onSystemLevel = nil
-        silenceDetector = nil
     }
 
-    func handleSilenceNotify() {
-        Log.writeLine("daemon", "silence: 90s - surfacing 'still meeting?' banner")
+    func handleIdleNotify() {
+        Log.writeLine("daemon", "idle: surfacing 'still meeting?' banner")
         Log.event(category: "coordinator", action: "silence_notified")
         coordinator.notifier.notifyStillMeeting()
     }
 
-    func handleSilenceAutoStop() {
+    func handleIdleAutoStop() {
         guard case .recording(let file, let src, let mode) = coordinator.stateMachine.current else { return }
-        // Stand the backstop down when a native meeting is still tracked live:
-        // the silence is a wait for someone to join, not an end. Re-nudge and
-        // keep recording instead of killing an active meeting (TECH-C2). Browser
-        // / stale-window / manual recordings still stop on schedule.
+        // Stand the backstop down when a native meeting is still tracked live: the
+        // silence is a wait for someone to join, not an end. Re-nudge and keep
+        // recording instead of killing an active meeting. Browser / stale-window /
+        // manual recordings still stop on schedule. (The old MicOnly path force-stopped
+        // here unconditionally; TECH-END3 brings the SilenceAutoStopPolicy stand-down to
+        // the single backstop.)
         guard SilenceAutoStopPolicy.shouldAutoStop(
             sourceKind: src?.kind,
             lifecycleIsLive: coordinator.lifecycleCoord.current.isLive
         ) else {
-            Log.writeLine("daemon", "silence: 5min but meeting still live - keeping recording")
+            Log.writeLine("daemon", "idle: auto-stop horizon reached but meeting still live - keeping recording")
             Log.event(category: "coordinator", action: "auto_stop_silence_skipped", attributes: [
                 "reason": "lifecycle_still_in_meeting",
                 "bundle_id": src?.bundleID ?? "manual",
                 "file": file.lastPathComponent,
             ])
-            silenceDetector?.keepAlive()
+            coordinator.silenceBackstop.keepAlive()
             coordinator.notifier.notifyStillMeeting()
             return
         }
-        Log.writeLine("daemon", "silence: 5min - auto-stopping recording")
+        Log.writeLine("daemon", "idle: auto-stop horizon reached - auto-stopping recording")
         Log.event(category: "coordinator", action: "auto_stop_silence", attributes: [
             "bundle_id": src?.bundleID ?? "manual",
             "file": file.lastPathComponent,
@@ -515,14 +495,12 @@ final class MeetingSessionController {
         stopRecording(file: file, source: src, summaryMode: mode)
     }
 
-    /// User tapped "Keep recording" on the silence nudge: restart the silence
-    /// countdown so the recording is not auto-stopped. The single override for
-    /// the browser / stale-window meetings the native lifecycle gate cannot
-    /// cover. (TECH-C2)
+    /// User tapped "Keep recording" on the idle nudge: restart the countdown so the
+    /// recording is not auto-stopped. (TECH-END3)
     func keepRecordingFromNudge() {
         guard case .recording = coordinator.stateMachine.current else { return }
         Log.event(category: "coordinator", action: "silence_keep_recording")
-        silenceDetector?.keepAlive()
+        coordinator.silenceBackstop.keepAlive()
     }
 
     // MARK: - MicGate engage (TECH-G-MIC + TECH-C13)

@@ -133,7 +133,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         post(title: "MeetingPipe error", body: message)
     }
 
-    /// Posted by SilenceDetector after 90 s of unbroken silence. "Keep recording" (and a plain banner tap) restart the silence countdown; "Stop recording" ends it now. For a native meeting still tracked live, the auto-stop stands down on its own and this nudge just re-surfaces.
+    /// Posted by the idle backstop (TECH-END3) after a long VAD-silent stretch. "Keep recording" (and a plain banner tap) restart the idle countdown; "Stop recording" ends it now. For a native meeting still tracked live, the auto-stop stands down on its own and this nudge just re-surfaces.
     func notifyStillMeeting() {
         let content = UNMutableNotificationContent()
         content.title = "Still in a meeting?"

@@ -22,7 +22,7 @@ struct Config {
         var promptTimeoutSec: Double
         /// Suppress detector-driven prompts for a bundle for this many seconds after a recording/prompt ends. Guards against the Teams post-call mic re-acquisition that fires a spurious new prompt. Manual hotkey always bypasses.
         var repromptCooldownSec: Double
-        /// MicOnlySilenceBackstop window (TECH-C7): force-stop after this many seconds of combined mic + system-audio silence. Default 480 s.
+        /// TECH-END3 idle backstop: auto-stop after this many seconds of VAD-silent mic plus silent system audio (the forgotten-recording case). Default 900 s (15 min). The TOML key stays `mic_only_silence_seconds` for back-compat.
         var micOnlySilenceSec: TimeInterval
     }
 
@@ -69,7 +69,7 @@ struct Config {
         let micOnlySilenceSec: Double = {
             if let d = det?["mic_only_silence_seconds"]?.double { return d }
             if let i = det?["mic_only_silence_seconds"]?.int { return Double(i) }
-            return 480
+            return 900
         }()
 
         let regulated = mod?["regulated_mode"]?.bool ?? false
@@ -112,7 +112,7 @@ struct Config {
                 forceStopHotkey: "ctrl+option+shift+m",
                 promptTimeoutSec: 30,
                 repromptCooldownSec: 60,
-                micOnlySilenceSec: 480
+                micOnlySilenceSec: 900
             ),
             modes: Modes(regulatedMode: false)
         )

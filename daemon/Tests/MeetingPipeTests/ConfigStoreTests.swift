@@ -31,7 +31,7 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertFalse(store.voiceProcessing, "voice_processing defaults off; VPIO drops mic gain system-wide")
         XCTAssertTrue(store.honorAppMute, "honor_app_mute defaults on; MicGate zeroes mic when in-app muted")
         XCTAssertEqual(store.repromptCooldownSec, 60)
-        XCTAssertEqual(store.micOnlySilenceSec, 480)
+        XCTAssertEqual(store.micOnlySilenceSec, 900)  // TECH-END3: idle auto-stop horizon, 15 min
     }
 
     func test_voice_processing_and_honor_app_mute_round_trip() throws {

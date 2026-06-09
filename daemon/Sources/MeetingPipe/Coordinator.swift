@@ -58,10 +58,11 @@ final class Coordinator: NSObject {
     let muteLabels: MuteLabels
     let lifecycleCoord: MeetingLifecycleCoordinator
     let micGate: MicGate
-    /// Force-stops after `windowSeconds` of non-`.hot` MicGate verdicts
-    /// while system audio is also silent: the "everyone left and the user
-    /// forgot" case (TECH-C7).
-    let silenceBackstop: MicOnlySilenceBackstop
+    /// The single VAD-gated idle backstop (TECH-END3): nudges, then auto-stops,
+    /// after a long stretch of non-`.hot` MicGate verdicts with system audio also
+    /// silent, the "everyone left and the user forgot" case. Replaced the RMS
+    /// `SilenceDetector` + `MicOnlySilenceBackstop` pair.
+    let silenceBackstop: IdleStopBackstop
 
     /// Per-context routing rules (TECH-B): TOML files under
     /// `~/.config/meeting-pipe/workflows/`. Published so the Workflows tab
@@ -191,9 +192,11 @@ final class Coordinator: NSObject {
                 NoOpMuteAdapter(config: .browser, eventLog: logAdapter),
             ]
         )
-        // TECH-C7 window from TOML; built once, so edits apply next meeting.
-        let micOnlySilenceSec = configStore?.micOnlySilenceSec ?? config.detection.micOnlySilenceSec
-        self.silenceBackstop = MicOnlySilenceBackstop(windowSeconds: micOnlySilenceSec)
+        // TECH-END3: idle auto-stop horizon from TOML (`mic_only_silence_seconds`,
+        // default 15 min); built once, so edits apply next launch. The nudge keeps
+        // the unit's default mid-streak horizon.
+        let idleAutoStopSec = configStore?.micOnlySilenceSec ?? config.detection.micOnlySilenceSec
+        self.silenceBackstop = IdleStopBackstop(autoStopSeconds: idleAutoStopSec)
 
         super.init()
         // Post-super.init: wire the model + status bar back to self.
@@ -289,12 +292,15 @@ final class Coordinator: NSObject {
             Log.event(category: "recording", action: "recovered", attributes: [:])
             self.recordingHUD.clearSystemAudioDegraded()
         }
-        // Route the one-shot backstop trigger through forceStop (on main)
-        // so the event log records the reason.
-        silenceBackstop.onTriggered = { [weak self] _ in
-            Task { @MainActor in
-                self?.session.forceStop(reason: "mic_only_silence")
-            }
+        // TECH-END3: route the idle backstop's two horizons to the session on main.
+        // The nudge surfaces "still meeting?"; the auto-stop applies the native
+        // stand-down (keep a quiet-but-live native call) before stopping, unlike the
+        // old MicOnly path that force-stopped unconditionally.
+        silenceBackstop.onNotify = { [weak self] _ in
+            Task { @MainActor in self?.session.handleIdleNotify() }
+        }
+        silenceBackstop.onAutoStop = { [weak self] _ in
+            Task { @MainActor in self?.session.handleIdleAutoStop() }
         }
     }
 

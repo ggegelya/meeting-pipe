@@ -39,8 +39,9 @@ final class ConfigStore: ObservableObject {
     /// Per-bundle re-prompt cooldown (s): suppress fresh `.started` events
     /// from a post-call mic grab. Manual hotkey bypasses it.
     @Published var repromptCooldownSec: Double { didSet { scheduleSave() } }
-    /// MicOnlySilenceBackstop window (s); force-stop after this much mic-only
-    /// silence with system also silent (TECH-C7). Default 480.
+    /// Idle backstop auto-stop horizon (s); auto-stop after this much VAD-silent
+    /// mic with system also silent (TECH-END3). Default 900 (15 min). TOML key
+    /// stays `mic_only_silence_seconds` for back-compat.
     @Published var micOnlySilenceSec: Double { didSet { scheduleSave() } }
 
     @Published var regulatedMode: Bool { didSet { scheduleSave() } }
@@ -103,7 +104,7 @@ final class ConfigStore: ObservableObject {
         self.repromptCooldownSec = det?["reprompt_cooldown_sec"]?.double ?? 60
         self.micOnlySilenceSec = det?["mic_only_silence_seconds"]?.double
             ?? det?["mic_only_silence_seconds"]?.int.map(Double.init)
-            ?? 480
+            ?? 900
 
         self.regulatedMode = mod?["regulated_mode"]?.bool ?? false
 

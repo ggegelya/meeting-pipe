@@ -80,9 +80,10 @@ final class CoordinatorMicGateIntegrationTests: XCTestCase {
 
     // MARK: - Backstop window read from Config
 
-    func test_config_default_mic_only_silence_seconds_is_480() {
+    func test_config_default_mic_only_silence_seconds_is_900() {
+        // TECH-END3: the single idle backstop auto-stops at 15 min (was 480 s).
         let cfg = Config.defaultFallback()
-        XCTAssertEqual(cfg.detection.micOnlySilenceSec, 480)
+        XCTAssertEqual(cfg.detection.micOnlySilenceSec, 900)
     }
 
     func test_config_loads_custom_mic_only_silence_seconds() throws {
@@ -106,7 +107,7 @@ final class CoordinatorMicGateIntegrationTests: XCTestCase {
         let url = dir.appendingPathComponent("config.toml")
 
         let store = try ConfigStore(configURL: url)
-        XCTAssertEqual(store.micOnlySilenceSec, 480)
+        XCTAssertEqual(store.micOnlySilenceSec, 900)
 
         store.micOnlySilenceSec = 60
         try store.saveNow()

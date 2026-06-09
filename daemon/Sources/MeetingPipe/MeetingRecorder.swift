@@ -36,8 +36,10 @@ final class MeetingRecorder {
     private var micFires: UInt64 = 0
     private var systemFires: UInt64 = 0
 
-    /// Per-source ~1 Hz RMS for SilenceDetector (TECH-C2), on the main
-    /// queue. `nil` short-circuits the math when nobody listens.
+    /// Per-source ~1 Hz RMS averages on the main queue. `onSystemLevel` feeds the
+    /// idle backstop's `hasSystemAudio` mirror (TECH-END3); `onMicLevel` is currently
+    /// unconsumed (the mic side of the backstop is verdict-driven). `nil`
+    /// short-circuits the math when nobody listens.
     var onMicLevel: ((Float) -> Void)?
     var onSystemLevel: ((Float) -> Void)?
 
