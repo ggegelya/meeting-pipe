@@ -63,14 +63,6 @@ reprompt_cooldown_sec = 60
 # ambient room noise no longer resets the timer. Default 900 (15 minutes).
 mic_only_silence_seconds = 900
 
-# Per-bundle overrides for `debounce_end_sec`. Lookup precedence:
-# explicit entry → built-in browser default (12 s, because tab/window
-# state flickers more during a call) → the global `debounce_end_sec`
-# above. Keys are bundle IDs; values are seconds.
-# [detection.debounce_end_per_bundle]
-# "us.zoom.xos" = 7
-# "com.google.Chrome" = 15
-
 [summarization]
 # Latest Sonnet at time of writing. Bump deliberately.
 model = "claude-sonnet-4-6"
