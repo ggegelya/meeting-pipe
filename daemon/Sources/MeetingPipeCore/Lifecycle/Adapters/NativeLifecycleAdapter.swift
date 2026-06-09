@@ -129,7 +129,11 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
         }
         shareableContent.start(context: context, titleMatch: config.titleMatch)
         if let leaveButton = handle.leaveButton {
-            try axLeaveButton.start(context: context, leaveButton: leaveButton)
+            try axLeaveButton.start(
+                context: context,
+                leaveButton: leaveButton,
+                resolveElement: handle.resolveLeaveButton
+            )
         }
     }
 

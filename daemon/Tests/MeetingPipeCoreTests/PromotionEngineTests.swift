@@ -163,6 +163,104 @@ final class PromotionEngineTests: XCTestCase {
         XCTAssertEqual(decision?.verdict, .starting(context: teamsContext))
     }
 
+    // MARK: - TECH-END2 corroboration guard (screen-share false-stop)
+
+    func test_lone_ax_leave_invalid_does_not_promote_to_ended_after_debounce() {
+        // The confirmed 2026-06-09 repro: ax-leave goes transiently invalid on a
+        // screen-share re-render. With no corroborating signal it must NOT auto-stop;
+        // it stays provisional so the silence backstop, not a false end, decides.
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.confirmRecording()
+        let provisional = engine.ingest(event(.axLeaveButton, .ended, at: 1))
+        XCTAssertEqual(
+            provisional?.verdict,
+            .endingProvisional(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "ax_leave_button_invalid")
+            )
+        )
+        let post = engine.tick(at: Date(timeIntervalSince1970: 4))
+        XCTAssertNil(post, "A lone ax-leave invalid must not confirm an end on the debounce alone")
+    }
+
+    func test_window_gone_still_promotes_alone_after_debounce() {
+        // The guard is scoped: a reliable signal (window-gone) keeps promoting on the
+        // debounce by itself, so the ends that already work are preserved.
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
+        let post = engine.tick(at: Date(timeIntervalSince1970: 4))
+        XCTAssertEqual(
+            post?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "shareable_content_window_gone", confirmedBy: [])
+            )
+        )
+    }
+
+    func test_ax_leave_invalid_promotes_when_corroborated_by_window_gone() {
+        // A real leave: window-gone corroborates ax-leave, so .ended fires (fast path).
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 1))
+        let decision = engine.ingest(event(.shareableContentWindow, .ended, at: 1.3))
+        XCTAssertEqual(
+            decision?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "ax_leave_button_invalid",
+                    confirmedBy: ["shareable_content_window_gone"]
+                )
+            )
+        )
+    }
+
+    func test_held_ax_leave_provisional_ends_when_window_gone_arrives_after_debounce() {
+        // Guard holds provisional past the debounce; a later window-gone corroborates
+        // and the meeting ends, so the backstop is not the only escape.
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 1))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 5)), "Held while uncorroborated")
+        let decision = engine.ingest(event(.shareableContentWindow, .ended, at: 6))
+        XCTAssertEqual(
+            decision?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "ax_leave_button_invalid",
+                    confirmedBy: ["shareable_content_window_gone"]
+                )
+            )
+        )
+    }
+
+    func test_ax_leave_provisional_reverts_to_in_meeting_when_control_returns() {
+        // The signal's re-walk finds the live control and emits .live; provisional reverts.
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 1))
+        let revert = engine.ingest(event(.axLeaveButton, .live, at: 1.5))
+        XCTAssertEqual(revert?.verdict, .inMeeting(context: teamsContext))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 4)), "No end after the control returns")
+    }
+
+    func test_requiresCorroboration_is_scoped_to_ax_leave() {
+        XCTAssertTrue(PrimarySignalKind.axLeaveButton.requiresCorroboration)
+        XCTAssertFalse(PrimarySignalKind.shareableContentWindow.requiresCorroboration)
+        XCTAssertFalse(PrimarySignalKind.workspaceAppTerminated.requiresCorroboration)
+        XCTAssertFalse(PrimarySignalKind.windowTitleLeftPattern.requiresCorroboration)
+        XCTAssertFalse(PrimarySignalKind.browserTabTitle.requiresCorroboration)
+    }
+
     // MARK: - Browser path corroboration (GAP 2)
 
     func test_workspace_termination_confirms_browser_ended_without_debounce() {

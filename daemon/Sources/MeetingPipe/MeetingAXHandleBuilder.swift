@@ -122,9 +122,19 @@ enum MeetingAXHandleBuilder {
                 in: axApp, bundleID: bundleID, catalogue: catalogue
             ).first
         }
+        // TECH-END2: fresh leave-button walk so AXLeaveButtonSignal can re-resolve a
+        // transiently-staled element (Teams call-UI re-render) before declaring the
+        // meeting ended, instead of emitting a false `.ended` (the screen-share repro).
+        let resolveLeave: () -> AXUIElement? = {
+            MeetingAXHandleBuilder.findAllLeaveButtons(in: axApp, bundleID: bundleID).first
+        }
 
         return Handles(
-            lifecycle: LifecycleAdapterHandle(leaveButton: leave, meetingWindow: meetingWindow),
+            lifecycle: LifecycleAdapterHandle(
+                leaveButton: leave,
+                meetingWindow: meetingWindow,
+                resolveLeaveButton: resolveLeave
+            ),
             micGate: MicGateAdapterHandle(muteButton: mute, resolveMuteButton: resolveMute),
             context: context
         )

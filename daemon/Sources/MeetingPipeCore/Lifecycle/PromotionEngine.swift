@@ -12,6 +12,25 @@ public enum PrimarySignalKind: String, Equatable, CaseIterable {
     case windowTitleLeftPattern = "window_title_left_pattern"
 }
 
+public extension PrimarySignalKind {
+    /// TECH-END2: signals whose `.ended` is prone to transient AX staleness and so
+    /// must not single-handedly confirm a meeting end. `axLeaveButton` reads invalid
+    /// on a Teams call-UI re-render (the confirmed 2026-06-09 screen-share repro that
+    /// chopped one meeting into 4 fragments); a lone, uncorroborated invalid must be
+    /// held in provisional, not promoted to `.ended`, until a reliable signal
+    /// (window-gone) corroborates. Reliable signals stay false here so they keep
+    /// promoting on their own via the debounce, preserving the ends that already work.
+    var requiresCorroboration: Bool {
+        switch self {
+        case .axLeaveButton:
+            return true
+        case .shareableContentWindow, .processAudioIsRunningInput, .browserTabTitle,
+             .workspaceAppTerminated, .windowTitleLeftPattern:
+            return false
+        }
+    }
+}
+
 /// Per-signal state fed to `PromotionEngine`.
 public enum PrimarySignalState: Equatable {
     case live
@@ -105,6 +124,16 @@ public final class PromotionEngine {
         }
         guard now.timeIntervalSince(startedAt) >= debounce else { return nil }
         let confirmedBy = Array(observed.subtracting([leading]).map { $0.rawValue }).sorted()
+        // TECH-END2: a staleness-prone leading signal (ax-leave) must not confirm an end
+        // on the debounce alone. With no corroborating signal, hold in `.endingProvisional`
+        // rather than emit a bare `.ended`: a transient invalid self-heals when the signal's
+        // re-walk finds the control live (-> `.inMeeting`), and a genuinely uncorroborated end
+        // is caught by the silence backstop. This (with the AXLeaveButtonSignal re-walk) stops
+        // the screen-share restart loop. Provisional keeps `isLive == false`, so the backstop's
+        // native stand-down does not block it.
+        if leading.requiresCorroboration && confirmedBy.isEmpty {
+            return nil
+        }
         let reason = EndingReason(leadingSignal: leading.rawValue, confirmedBy: confirmedBy)
         phase = .ended(context: context)
         return Decision(verdict: .ended(context: context, reason: reason))

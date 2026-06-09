@@ -7,10 +7,20 @@ import Foundation
 public struct LifecycleAdapterHandle {
     public let leaveButton: AXUIElement?
     public let meetingWindow: AXUIElement?
+    /// Fresh-tree-walk resolver for the live Leave button, injected by the daemon
+    /// (it owns the AX walk). `AXLeaveButtonSignal` calls it before treating a stale
+    /// `.invalid` read as a meeting end, so a Teams call-UI re-render recovers a live
+    /// control instead of false-ending the call (TECH-END2, mirrors the MIC6 mute seam).
+    public let resolveLeaveButton: (() -> AXUIElement?)?
 
-    public init(leaveButton: AXUIElement? = nil, meetingWindow: AXUIElement? = nil) {
+    public init(
+        leaveButton: AXUIElement? = nil,
+        meetingWindow: AXUIElement? = nil,
+        resolveLeaveButton: (() -> AXUIElement?)? = nil
+    ) {
         self.leaveButton = leaveButton
         self.meetingWindow = meetingWindow
+        self.resolveLeaveButton = resolveLeaveButton
     }
 }
 

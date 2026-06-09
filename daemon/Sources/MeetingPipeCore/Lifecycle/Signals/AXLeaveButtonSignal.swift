@@ -41,6 +41,13 @@ public final class AXLeaveButtonSignal {
     private var cancelPoll: (() -> Void)?
     private var cadence: AdaptivePollCadence
     private var currentPollInterval: TimeInterval = 0
+    /// Fresh-tree-walk resolver for the live Leave button, injected by the daemon at
+    /// `start` (TECH-END2, mirrors the TECH-MIC6 mute-probe seam). `evaluate` calls it
+    /// before treating a `.invalid` read as a real end: a Teams call-UI re-render staled
+    /// the cached element while the live Leave control still exists, so a fresh walk
+    /// recovers it instead of emitting a false `.ended`. Nil when the caller cannot
+    /// re-walk (browser path), in which case the read just emits `.invalid` as before.
+    private var resolveElement: (() -> AXUIElement?)?
 
     public init(
         axBus: AXObserverBus,
@@ -61,11 +68,13 @@ public final class AXLeaveButtonSignal {
 
     public func start(
         context: MeetingLifecycleContext,
-        leaveButton: AXUIElement
+        leaveButton: AXUIElement,
+        resolveElement: (() -> AXUIElement?)? = nil
     ) throws {
         stop()
         self.context = context
         self.element = leaveButton
+        self.resolveElement = resolveElement
         axToken = try axBus.subscribe(
             pid: context.pid,
             element: leaveButton,
@@ -106,8 +115,9 @@ public final class AXLeaveButtonSignal {
     ) {
         // Skip only when the current element is still live; an armed-but-dead element falls through to re-arm.
         if let current = element, probe(current) == .healthy { return }
+        let resolver = resolveElement  // preserve the injected re-walk across the re-arm
         do {
-            try start(context: context, leaveButton: leaveButton)
+            try start(context: context, leaveButton: leaveButton, resolveElement: resolver)
         } catch {
             eventLog.emit(category: "signal", action: "ax_leave_button_arm_failed", attributes: [
                 "bundle_id": context.bundleID,
@@ -124,11 +134,30 @@ public final class AXLeaveButtonSignal {
         context = nil
         element = nil
         lastState = nil
+        resolveElement = nil
     }
 
     func evaluate(reason: String) {
         guard let context = context, let element = element else { return }
-        let state = probe(element)
+        var state = probe(element)
+        // TECH-END2: before treating the Leave control as gone (which ends the meeting),
+        // re-walk for a live one. A Teams call-UI re-render (screen-share start/stop, layout
+        // switch) transiently invalidates the cached element while the real Leave button still
+        // exists; the confirmed 2026-06-09 repro showed a fresh walk finds it healthy ~100 ms
+        // later. Retarget to the live element and treat the read as healthy so no false
+        // `.ended` is emitted. The destroyed-notification is deliberately NOT re-subscribed
+        // (RealAXBackend's one-observer-per-pid trap); the health poll reads the swapped
+        // element going forward, matching the TECH-MIC6 mute-probe re-arm.
+        if state == .invalid, let resolve = resolveElement, let fresh = resolve(),
+           probe(fresh) == .healthy {
+            self.element = fresh
+            state = .healthy
+            eventLog.emit(category: "signal", action: "ax_leave_button_rearmed", attributes: [
+                "bundle_id": context.bundleID,
+                "pid": Int(context.pid),
+                "reason": reason,
+            ])
+        }
         if lastState == state && state == .healthy { return }
         let previous = lastState
         lastState = state
