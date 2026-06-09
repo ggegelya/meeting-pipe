@@ -59,7 +59,7 @@ struct PromptSectionView: View {
                     )
                 }
             } footer: {
-                Text("Independent of the existing 5-minute silence auto-stop, which triggers when BOTH mic and system audio go silent.")
+                Text("Gated on voice activity, not raw level, so a brief pause does not trigger it. A 'still meeting?' nudge fires partway through; a quiet-but-live native call is kept and re-nudged rather than stopped.")
             }
             // Regulated mode moved to the Permissions pane in the DSN1 IA pass:
             // it is a privacy / egress control, not a prompt concern. The

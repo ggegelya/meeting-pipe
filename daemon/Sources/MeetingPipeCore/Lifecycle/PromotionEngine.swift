@@ -127,10 +127,15 @@ public final class PromotionEngine {
         // TECH-END2: a staleness-prone leading signal (ax-leave) must not confirm an end
         // on the debounce alone. With no corroborating signal, hold in `.endingProvisional`
         // rather than emit a bare `.ended`: a transient invalid self-heals when the signal's
-        // re-walk finds the control live (-> `.inMeeting`), and a genuinely uncorroborated end
-        // is caught by the silence backstop. This (with the AXLeaveButtonSignal re-walk) stops
-        // the screen-share restart loop. Provisional keeps `isLive == false`, so the backstop's
-        // native stand-down does not block it.
+        // re-walk finds the control live (-> `.inMeeting`), and a real end normally corroborates
+        // via window-gone (the fast path). This (with the AXLeaveButtonSignal re-walk) stops the
+        // screen-share restart loop. Provisional keeps `isLive == false`, so the idle backstop's
+        // native stand-down does not block it; but that backstop bounds a held end only under
+        // sustained silence, so a real end whose window signal is ALSO blind (Screen-Recording
+        // TCC denied, or a lingering window whose title still matches) can bleed past the end
+        // while audio keeps flowing. That residual is the accepted capture-first / miss-favouring
+        // trade (see the class-level note); the alternative, promoting a lone ax-leave, is the
+        // screen-share false-stop this guard exists to remove.
         if leading.requiresCorroboration && confirmedBy.isEmpty {
             return nil
         }

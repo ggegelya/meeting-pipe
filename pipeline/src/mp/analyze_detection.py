@@ -5,12 +5,14 @@ Pairs each `coordinator.recording_started` with the next
 `coordinator.recording_stopped` from the Swift event stream
 (`~/Library/Logs/MeetingPipe/events.jsonl`). For each session, scans
 for a `lifecycle.ended` event in between, and for the non-detector stop
-causes the daemon emits (`coordinator.auto_stop_silence`,
-`coordinator.force_stop`, `coordinator.orphan_recording_recovered`), so
-the report tells a silence-backstop auto-stop, a force-stop hotkey, and
-a crash-recovery apart from a genuine manual stop. Only a true manual
+causes that land inside a session window (`coordinator.auto_stop_silence`,
+`coordinator.force_stop`), so the report tells a silence-backstop auto-stop
+and a force-stop hotkey apart from a genuine manual stop. Only a true manual
 stop (no detector end, no backstop, no force-stop) counts as a miss:
-the failure mode the lifecycle subsystem exists to reduce.
+the failure mode the lifecycle subsystem exists to reduce. Crash-orphaned
+recordings (a `recording_started` with no `recording_stopped`, recovered at
+the next launch) are out of scope: that session is unterminated, so it is
+not paired and does not appear in the audit.
 
 Pure functions (`iter_events`, `pair_sessions`, `classify_session`,
 `aggregate`, `render_report`) are kept side-effect-free so the same
@@ -43,7 +45,6 @@ DEFAULT_EVENTS_PATH = Path(os.path.expanduser("~/Library/Logs/MeetingPipe/events
 # the only one that counts as a detector miss.
 STOP_DETECTOR = "detector"
 STOP_SILENCE_BACKSTOP = "silence_backstop"
-STOP_ORPHAN_RECOVERY = "orphan_recovery"
 STOP_FORCE_STOP = "force_stop"
 STOP_MANUAL = "manual"
 
@@ -65,9 +66,8 @@ class Session:
     # Non-detector stop causes observed inside the [started, stopped] window.
     auto_stopped: bool = False  # coordinator.auto_stop_silence fired
     force_stop_reason: str | None = None  # coordinator.force_stop reason attr
-    orphan_recovered: bool = False  # coordinator.orphan_recording_recovered fired
     # Filled by classify_session.
-    # "detector" | "silence_backstop" | "force_stop" | "orphan_recovery" | "manual" | "unknown"
+    # "detector" | "silence_backstop" | "force_stop" | "manual" | "unknown"
     stop_kind: str = "unknown"
     delta_sec: float | None = None  # stopped - detector.ended, only when detector-triggered
 
@@ -83,7 +83,6 @@ class AppStats:
     detector_triggered: int = 0
     silence_backstop: int = 0
     force_stop: int = 0
-    orphan_recovery: int = 0
     manual: int = 0
     deltas: list[float] = field(default_factory=list)
 
@@ -144,9 +143,9 @@ def pair_sessions(events: Iterable[dict], *, since: datetime | None = None) -> l
     """Walk events in timestamp order, pairing each ``recording_started``
     with the next ``recording_stopped`` on the same file. Out-of-pair
     ``lifecycle.ended`` events and the non-detector stop-cause markers
-    (``auto_stop_silence`` / ``force_stop`` / ``orphan_recording_recovered``)
-    between the two are recorded on the session so ``classify_session`` can
-    tell the real stop cause apart from a manual stop.
+    (``auto_stop_silence`` / ``force_stop``) between the two are recorded on
+    the session so ``classify_session`` can tell the real stop cause apart
+    from a manual stop.
 
     ``since`` filters by ``recording_started`` timestamp.
     """
@@ -186,8 +185,6 @@ def pair_sessions(events: Iterable[dict], *, since: datetime | None = None) -> l
             open_session.auto_stopped = True
         elif cat == "coordinator" and action == "force_stop":
             open_session.force_stop_reason = str(ev.get("reason") or "")
-        elif cat == "coordinator" and action == "orphan_recording_recovered":
-            open_session.orphan_recovered = True
         elif cat == "coordinator" and action == "recording_stopped":
             open_session.stopped_ts = ts
             # File attribute on `recording_stopped` is authoritative —
@@ -207,8 +204,8 @@ def classify_session(session: Session) -> Session:
 
     Priority: a detector end wins (it drove the stop); else a silence
     backstop (the auto-stop event, or a force-stop whose reason names
-    silence); else crash recovery; else a user force-stop hotkey; else a
-    genuine manual stop, the only kind that counts as a miss.
+    silence); else a user force-stop hotkey; else a genuine manual stop,
+    the only kind that counts as a miss.
     """
     if session.detector_ended_ts is not None:
         session.stop_kind = STOP_DETECTOR
@@ -218,8 +215,6 @@ def classify_session(session: Session) -> Session:
     session.delta_sec = None
     if session.auto_stopped or _is_silence_reason(session.force_stop_reason):
         session.stop_kind = STOP_SILENCE_BACKSTOP
-    elif session.orphan_recovered:
-        session.stop_kind = STOP_ORPHAN_RECOVERY
     elif session.force_stop_reason is not None:
         session.stop_kind = STOP_FORCE_STOP
     else:
@@ -241,8 +236,6 @@ def aggregate(sessions: Iterable[Session]) -> dict[str, AppStats]:
             bucket.silence_backstop += 1
         elif s.stop_kind == STOP_FORCE_STOP:
             bucket.force_stop += 1
-        elif s.stop_kind == STOP_ORPHAN_RECOVERY:
-            bucket.orphan_recovery += 1
         elif s.stop_kind == STOP_MANUAL:
             bucket.manual += 1
     return stats
@@ -272,7 +265,6 @@ def render_report(sessions: list[Session], stats: dict[str, AppStats]) -> str:
     detector_count = sum(1 for s in sessions if s.stop_kind == STOP_DETECTOR)
     backstop_count = sum(1 for s in sessions if s.stop_kind == STOP_SILENCE_BACKSTOP)
     force_count = sum(1 for s in sessions if s.stop_kind == STOP_FORCE_STOP)
-    orphan_count = sum(1 for s in sessions if s.stop_kind == STOP_ORPHAN_RECOVERY)
     manual_count = sum(1 for s in sessions if s.stop_kind == STOP_MANUAL)
     all_deltas = [s.delta_sec for s in sessions if s.delta_sec is not None]
 
@@ -295,9 +287,6 @@ def render_report(sessions: list[Session], stats: dict[str, AppStats]) -> str:
     if force_count:
         lines.append(f"- Force-stopped (hotkey): **{force_count}** "
                      f"({force_count / total * 100:.0f}%)")
-    if orphan_count:
-        lines.append(f"- Recovered after crash (orphan): **{orphan_count}** "
-                     f"({orphan_count / total * 100:.0f}%)")
     lines.append(f"- Manual stops (hotkey / quit): **{manual_count}** "
                  f"({manual_count / total * 100:.0f}%) "
                  f"- the failure mode end-detection should reduce")
@@ -411,7 +400,6 @@ def main(argv: list[str]) -> int:
                     "detector": a.detector_triggered,
                     "silence_backstop": a.silence_backstop,
                     "force_stop": a.force_stop,
-                    "orphan_recovery": a.orphan_recovery,
                     "manual": a.manual,
                     "delta_p50_sec": a.delta_p50,
                     "delta_p95_sec": a.delta_p95,

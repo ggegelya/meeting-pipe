@@ -66,6 +66,42 @@ final class IdleStopBackstopTests: XCTestCase {
         XCTAssertEqual(stopCount, 0)
     }
 
+    // MARK: - Nudge stays below a configurable auto-stop
+
+    func test_safe_notify_always_precedes_the_auto_stop() {
+        // The auto-stop horizon is user-configurable (60...1800 s). The nudge must
+        // land before it, otherwise the auto-stop fires with no warning (ingest
+        // checks the auto-stop first). safeNotifySeconds guarantees notify < autoStop.
+        XCTAssertEqual(IdleStopBackstop.safeNotifySeconds(forAutoStop: 900), 450)   // default 15 min
+        XCTAssertEqual(IdleStopBackstop.safeNotifySeconds(forAutoStop: 1800), 480)  // capped at the default
+        XCTAssertEqual(IdleStopBackstop.safeNotifySeconds(forAutoStop: 120), 60)    // low config still warns first
+        for autoStop in stride(from: 60.0, through: 1800.0, by: 30.0) {
+            XCTAssertLessThan(
+                IdleStopBackstop.safeNotifySeconds(forAutoStop: autoStop), autoStop,
+                "nudge must strictly precede the auto-stop for every slider value"
+            )
+        }
+    }
+
+    func test_low_auto_stop_still_fires_the_nudge_first() {
+        // Regression for the review finding: a 120 s auto-stop with a fixed 480 s nudge
+        // would never warn. With the derived nudge (60 s) the warning lands first.
+        let b = IdleStopBackstop(
+            notifySeconds: IdleStopBackstop.safeNotifySeconds(forAutoStop: 120),
+            autoStopSeconds: 120
+        )
+        var notifyAt: Date?
+        var stopAt: Date?
+        b.onNotify = { notifyAt = $0 }
+        b.onAutoStop = { stopAt = $0 }
+        b.ingest(verdict: silent(), hasSystemAudio: false, at: t0)
+        b.ingest(verdict: silent(), hasSystemAudio: false, at: t0.addingTimeInterval(60))
+        XCTAssertEqual(notifyAt, t0.addingTimeInterval(60))
+        XCTAssertNil(stopAt, "nudge fires before the auto-stop, not together")
+        b.ingest(verdict: silent(), hasSystemAudio: false, at: t0.addingTimeInterval(120))
+        XCTAssertEqual(stopAt, t0.addingTimeInterval(120))
+    }
+
     // MARK: - VAD gating (the END3 point: speech, not raw level, resets)
 
     func test_voice_activity_resets_the_streak() {

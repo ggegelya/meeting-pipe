@@ -196,7 +196,10 @@ final class Coordinator: NSObject {
         // default 15 min); built once, so edits apply next launch. The nudge keeps
         // the unit's default mid-streak horizon.
         let idleAutoStopSec = configStore?.micOnlySilenceSec ?? config.detection.micOnlySilenceSec
-        self.silenceBackstop = IdleStopBackstop(autoStopSeconds: idleAutoStopSec)
+        self.silenceBackstop = IdleStopBackstop(
+            notifySeconds: IdleStopBackstop.safeNotifySeconds(forAutoStop: idleAutoStopSec),
+            autoStopSeconds: idleAutoStopSec
+        )
 
         super.init()
         // Post-super.init: wire the model + status bar back to self.

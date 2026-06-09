@@ -43,6 +43,15 @@ public final class IdleStopBackstop {
     /// Mid-streak nudge so the user can confirm before the auto-stop.
     public static let defaultNotifySeconds: TimeInterval = 480
 
+    /// A nudge horizon guaranteed to precede `autoStop`. The auto-stop horizon is
+    /// user-configurable (Preferences slider, 60...1800 s); a fixed 480 s nudge would
+    /// sit at or past the auto-stop for any setting <= 480 s and never fire (`ingest`
+    /// checks the auto-stop first). Cap at the default but never exceed half the
+    /// auto-stop, so the warning always lands before the stop.
+    public static func safeNotifySeconds(forAutoStop autoStop: TimeInterval) -> TimeInterval {
+        min(defaultNotifySeconds, autoStop / 2)
+    }
+
     public init(
         notifySeconds: TimeInterval = IdleStopBackstop.defaultNotifySeconds,
         autoStopSeconds: TimeInterval = IdleStopBackstop.defaultAutoStopSeconds,
