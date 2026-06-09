@@ -42,6 +42,17 @@ final class LifecycleAdapterTests: XCTestCase {
         XCTAssertEqual(adapter.bundleIDs, ["us.zoom.xos"])
     }
 
+    func test_process_audio_signal_is_disabled_for_every_provider() {
+        // TECH-END1: the process mic-release signal returned object 0 for 19.8
+        // days under our ScreenCaptureKit capture model and is now off for all
+        // providers, so no NativeLifecycleAdapter constructs a ProcessAudioSignal
+        // and the `process_audio_unresolved` log spam stops at the source.
+        XCTAssertFalse(NativeLifecycleConfig.teams.usesProcessAudio)
+        XCTAssertFalse(NativeLifecycleConfig.zoom.usesProcessAudio)
+        XCTAssertFalse(NativeLifecycleConfig.webex.usesProcessAudio)
+        XCTAssertFalse(NativeLifecycleConfig.slack.usesProcessAudio)
+    }
+
     func test_webex_adapter_covers_legacy_and_unified_bundles() {
         let adapter = NativeLifecycleAdapter(config: .webex, axBus: AXObserverBus())
         XCTAssertEqual(adapter.kind, .native)

@@ -3,8 +3,11 @@ import Foundation
 
 /// `kAudioProcessPropertyIsRunningInput` PRIMARY signal. HAL property listener fires immediately when
 /// the process starts or stops capturing input; supplemented by a 1 Hz poll because macOS Sequoia drops
-/// HAL property-listener notifications silently. Webex is excluded from this signal (`NativeLifecycleConfig.webex`)
-/// because Cisco holds the mic open post-call for ultrasound discovery.
+/// HAL property-listener notifications silently.
+/// TECH-END1: currently disabled in every `NativeLifecycleConfig` (`usesProcessAudio == false`). The
+/// PID-to-process-object translation returns object 0 under our ScreenCaptureKit capture model (no
+/// audio-tap authorization, no Core Audio process tap), so it never resolved in 19.8 days of dogfood.
+/// The class and its tests are retained so the signal can be revived if we adopt a process tap.
 /// Threading: `start`/`stop` on main; probe and `onChange` fire on the HAL bus queue or poll timer queue.
 public final class ProcessAudioSignal {
 

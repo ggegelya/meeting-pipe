@@ -5,7 +5,15 @@ import Foundation
 public struct NativeLifecycleConfig {
     public let bundleIDs: Set<String>
     public let titleMatch: (String?) -> Bool
-    /// Webex/Slack are false: Cisco documents that Webex holds the mic open post-call for ultrasound discovery, which would read as a false `process_audio = live`.
+    /// TECH-END1: false for every provider now. The `kAudioProcessPropertyIsRunningInput`
+    /// signal needs the PID-to-HAL-process-object translation, which returns object 0 under
+    /// our capture model: we capture system audio via ScreenCaptureKit, hold no audio-tap
+    /// authorization, and never create a Core Audio process tap, so the HAL process-object
+    /// list is empty for us and no PID ever resolves. It produced 0 successful reads in
+    /// 19.8 days (13,407 `process_audio_unresolved`). Kept as a flag + wired machinery so
+    /// the signal can be revived if we ever adopt a process tap; until then it stays false,
+    /// which also stops the per-run unresolved log spam by never constructing the signal.
+    /// (Webex/Slack were already false: Cisco holds the mic open post-call for ultrasound.)
     public let usesProcessAudio: Bool
 
     public init(
@@ -20,18 +28,18 @@ public struct NativeLifecycleConfig {
 }
 
 public extension NativeLifecycleConfig {
-    /// ShareableContent + ProcessAudio + AXLeaveButton.
+    /// ShareableContent + AXLeaveButton (ProcessAudio disabled, TECH-END1).
     static let teams = NativeLifecycleConfig(
         bundleIDs: ["com.microsoft.teams2", "com.microsoft.teams"],
         titleMatch: MeetingTitlePatterns.teams,
-        usesProcessAudio: true
+        usesProcessAudio: false
     )
 
-    /// ShareableContent + ProcessAudio + AXLeaveButton (same set as Teams).
+    /// ShareableContent + AXLeaveButton (same set as Teams; ProcessAudio disabled, TECH-END1).
     static let zoom = NativeLifecycleConfig(
         bundleIDs: ["us.zoom.xos"],
         titleMatch: MeetingTitlePatterns.zoom,
-        usesProcessAudio: true
+        usesProcessAudio: false
     )
 
     /// ShareableContent + AXLeaveButton. Covers legacy `com.cisco.webexmeetingsapp` and the unified Webex App (`com.cisco.spark`).
