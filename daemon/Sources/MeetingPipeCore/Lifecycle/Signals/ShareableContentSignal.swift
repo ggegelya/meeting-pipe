@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 
@@ -144,6 +145,16 @@ public final class ShareableContentSignal {
     /// Bridge `SCShareableContent.excludingDesktopWindows` synchronously via a semaphore-gated wait.
     /// Safe because the scheduler dispatches probes off main in production.
     public static let defaultProbe: Probe = {
+        // Preflight before touching SCShareableContent. On macOS 14.4+ that API
+        // surfaces the Screen Recording TCC dialog whenever access is not
+        // authorized, so calling it on every poll turns a missing or stale grant
+        // (e.g. a fresh cdhash after a rebuild) into a non-stop prompt storm.
+        // CGPreflightScreenCaptureAccess reads the grant without ever prompting;
+        // when it is false, return nil (the established "unavailable, hold prior
+        // state" path) and leave the one real request to PermissionsCenter. This
+        // mirrors the discipline PermissionsCenter.refreshScreenRecording already
+        // follows for its own reads.
+        guard CGPreflightScreenCaptureAccess() else { return nil }
         let semaphore = DispatchSemaphore(value: 0)
         var result: [ShareableWindowSummary]?
         SCShareableContent.getExcludingDesktopWindows(
