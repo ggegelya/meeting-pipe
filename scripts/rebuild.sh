@@ -51,13 +51,14 @@ for bundle in "$REPO_ROOT/daemon/.build/release/"*.bundle; do
     ditto "$bundle" "$DEST"
 done
 
-# Re-sign with the same stable identifier install.sh uses so TCC grants
-# survive across rebuilds (the cdhash still changes per rebuild — we
-# have no Apple Developer ID to stabilise it — but the user-facing
-# (bundle_id, identifier) pair stays consistent, which is enough for
-# macOS to honor existing Notifications / Mic grants when the user
-# toggles the Screen Recording switch once for the new cdhash).
+# Re-sign with the stable "MeetingPipe Dev" identity (ensure_dev_cert creates
+# it on first run; see scripts/lib/dev-cert.sh). The cert gives an
+# identity-based designated requirement that does NOT pin the cdhash, so the
+# Screen Recording grant survives this rebuild with no re-toggle. Falls back to
+# ad-hoc only if the cert could not be created (then Screen Recording needs a
+# one-time re-toggle, as before).
 say "Re-signing"
+ensure_dev_cert
 sign_app_with_resources "$APP"
 
 # `kickstart -k` sends SIGTERM and immediately respawns under the same

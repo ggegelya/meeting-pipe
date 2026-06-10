@@ -15,14 +15,14 @@
 #   5. Stage config files at ~/.config/meeting-pipe/.
 #   6. Install LaunchAgent for autostart.
 #   7. (Optional, --reset-tcc) reset macOS TCC grants for
-#      com.meetingpipe.daemon. Default is to KEEP them: the bundle is
-#      re-signed with a stable `--identifier`, so Mic / Accessibility /
-#      Notifications grants survive a reinstall. Only Screen Recording is
-#      cdhash-strict (TCC re-validates the per-build hash) and needs one
-#      re-toggle, unavoidable without a paid Developer ID (TECH-D8, P3).
-#      Resetting ALL grants by default needlessly re-prompted for the three
-#      that survive; keeping them is the better default for a single-user
-#      dev install.
+#      com.meetingpipe.daemon. Default is to KEEP them: the bundle is signed
+#      with the stable self-signed "MeetingPipe Dev" cert (ensure_dev_cert),
+#      whose identity-based requirement does not pin the cdhash, so ALL grants
+#      including Screen Recording survive a reinstall (granted once, then
+#      stable). Only the ad-hoc fallback (no cert) leaves Screen Recording
+#      cdhash-strict and needing a one-time re-toggle. Resetting by default
+#      needlessly re-prompted, so keeping grants is the better default for a
+#      single-user dev install.
 #
 # Flags:
 #   --reset-tcc  clear all TCC grants for the bundle, forcing a fresh prompt
@@ -39,12 +39,13 @@
 
 set -euo pipefail
 
-# Default: KEEP existing TCC grants. The bundle is re-signed with a stable
-# `--identifier`, so Mic / Accessibility / Notifications survive a reinstall;
-# only Screen Recording is cdhash-strict and needs one re-toggle (no Developer
-# ID, TECH-D8). Resetting everything by default needlessly re-prompted for the
-# three that survive. Pass --reset-tcc for a clean slate. --keep-tcc kept as a
-# no-op alias for muscle memory.
+# Default: KEEP existing TCC grants. The bundle is signed with the stable
+# self-signed "MeetingPipe Dev" cert (ensure_dev_cert), whose identity-based
+# requirement does not pin the cdhash, so every grant including Screen
+# Recording survives a reinstall (granted once, then stable). The ad-hoc
+# fallback (no cert) is the only case where Screen Recording needs a one-time
+# re-toggle. Pass --reset-tcc for a clean slate. --keep-tcc kept as a no-op
+# alias for muscle memory.
 RESET_TCC=0
 for arg in "$@"; do
     case "$arg" in
@@ -211,12 +212,14 @@ mdimport "$APP" >/dev/null 2>&1 || true
 # System Settings toggle is on; Notifications won't accept
 # requestAuthorization because the bundle identity isn't trusted).
 #
-# Plain adhoc re-sign with `--identifier` set to the bundle id binds
-# the Info.plist, seals the resources, and gives TCC a stable identity
-# pair across rebuilds. The cdhash still changes per rebuild (we don't
-# have a paid Developer ID to stabilise it), but `(bundle_id,
-# identifier)` is now consistent, which is enough for macOS to honor
-# the user's grant after they toggle the switch.
+# `ensure_dev_cert` creates a self-signed "MeetingPipe Dev" code-signing
+# cert (see scripts/lib/dev-cert.sh) and `signing_identity` selects it.
+# A real cert gives an identity-based designated requirement that does
+# NOT pin the cdhash, so the user's Screen Recording grant survives every
+# rebuild (granted once, then stable). Without the cert we fall back to
+# ad-hoc, where the cdhash changes per build and Screen Recording needs a
+# one-time re-toggle; `--identifier` keeps `(bundle_id, identifier)` stable
+# either way so Mic / Notifications / Accessibility survive regardless.
 #
 # Two-pass signing: SPM ships each target's resource bundle as a
 # directory with the `.bundle` suffix but no Info.plist, and codesign
@@ -226,7 +229,8 @@ mdimport "$APP" >/dev/null 2>&1 || true
 # bundle per target with resources (MeetingPipe_MeetingPipe.bundle
 # for the SVG glyphs + meeting_apps.toml, and
 # MeetingPipe_MeetingPipeCore.bundle for the MicGate MuteLabels.toml).
-say "Re-signing app bundle with stable identifier"
+say "Re-signing app bundle with stable identity"
+ensure_dev_cert
 sign_app_with_resources "$APP"
 
 # Re-point DAEMON_BIN at the installed bundle so the LaunchAgent points
@@ -355,10 +359,9 @@ Next steps:
 
 Logs: $LOG_DIR
 Reinstall: $REPO_ROOT/scripts/install.sh
-  Keeps your TCC grants by default (Mic / Accessibility / Notifications
-  survive via the stable signing identifier; Screen Recording may need one
-  re-toggle as its cdhash changes per build). Pass --reset-tcc for a clean
-  slate.
+  Keeps your TCC grants by default. The self-signed "MeetingPipe Dev" cert
+  gives a stable identity, so all grants including Screen Recording survive a
+  rebuild (granted once, then stable). Pass --reset-tcc for a clean slate.
 Uninstall: $REPO_ROOT/scripts/uninstall.sh
   Add --purge to also remove ~/.config/meeting-pipe.
   Add --reset-tcc to clear TCC for the bundle. Or pass --all for both.

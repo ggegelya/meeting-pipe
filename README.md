@@ -202,19 +202,21 @@ The installer can't do these for you:
    it's missing, the daemon refuses to start the recording and routes
    you to the Permissions tab rather than producing a silent wav.
 
-   **One quirk worth knowing: reinstalls and the cdhash.** The daemon is
-   adhoc/linker-signed (no Apple Developer ID — out of scope for personal
-   use). macOS TCC keys grants on `(bundle id, code-signing hash)`, and
-   `swift build` produces a fresh cdhash every time, so a reinstall
-   orphans whatever you previously granted. System Settings will still
-   show MeetingPipe in the Screen Recording list with the toggle on, but
-   the daemon will get `granted=false` from CoreGraphics because the new
-   cdhash isn't actually authorized. The Permissions tab's **Request**
-   button detects this and routes you to System Settings with a
-   "toggle on, then click Re-check" hint; toggling once for the new
-   cdhash is enough until the next rebuild. Run
-   `scripts/uninstall.sh --reset-tcc` if you want the slate fully
-   cleared before reinstalling.
+   **Signing and Screen Recording across rebuilds.** `scripts/install.sh`
+   and `scripts/rebuild.sh` sign the app with a self-signed "MeetingPipe
+   Dev" code-signing certificate, created automatically on first run in
+   your login keychain (`scripts/lib/dev-cert.sh`). That gives the app an
+   identity-based code requirement, so macOS TCC honors your Screen
+   Recording grant across every rebuild: grant it once and it stays
+   granted. If the cert cannot be created (no openssl), signing falls back
+   to ad-hoc, where the cdhash changes on every build and Screen Recording
+   needs a one-time re-toggle per rebuild; the Permissions tab's
+   **Request** button detects that and routes you to System Settings. Run
+   `scripts/install.sh --reset-tcc` (or `scripts/uninstall.sh --reset-tcc`)
+   if you ever want the slate fully cleared. Going paid later is a swap,
+   not a teardown: set `MEETINGPIPE_SIGN_ID` to an Apple Developer ID and
+   it takes over; remove the dev cert with
+   `security delete-identity -c "MeetingPipe Dev"`.
 
    No audio devices to set up. The daemon captures whatever your system
    audio is currently playing (regardless of output device — speakers,
@@ -739,16 +741,16 @@ runaway recording stopped on its own.
 
 **I uninstalled and reinstalled but macOS still says "permission denied"
 and won't re-prompt.**
-TCC caches grants/denials per `(bundle id, cdhash)`. Two things bite:
-- `scripts/uninstall.sh --reset-tcc` clears the TCC cache. Note that
-  macOS Notifications live outside TCC and must be reset manually in
-  System Settings → Notifications → MeetingPipe.
-- Rebuilds change the cdhash (adhoc/linker-signed binaries content-hash
-  on rebuild), so even after a fresh grant the *next* rebuild orphans
-  it again. macOS no longer re-prompts in that case — the entry stays
-  in System Settings but no longer applies. Open the Permissions tab,
-  click Request: it routes you to System Settings with a "toggle on,
-  then Re-check" hint, and you toggle once more for the new cdhash.
+With the self-signed "MeetingPipe Dev" signing cert (the default), Screen
+Recording grants survive rebuilds, so this is now rare. If it still happens:
+- `scripts/install.sh --reset-tcc` (or `scripts/uninstall.sh --reset-tcc`)
+  clears the TCC cache for a clean re-grant. Note that macOS Notifications
+  live outside TCC and must be reset manually in System Settings →
+  Notifications → MeetingPipe.
+- On the ad-hoc fallback (no cert, openssl missing), rebuilds change the
+  cdhash and orphan the grant: macOS keeps the stale System Settings entry
+  but no longer applies it. Open the Permissions tab, click Request, and
+  toggle once for the new cdhash. Creating the dev cert avoids this.
 
 ---
 
