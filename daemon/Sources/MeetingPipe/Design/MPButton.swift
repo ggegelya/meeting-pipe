@@ -71,14 +71,20 @@ final class MPButton: NSButton {
             titleColor = MPColors.fgOnSignal
 
         case .ghost:
-            // Resting fill is a faint tint, not clear: on dark hudWindow material the 1pt border alone wasn't enough affordance and labels blended into the body. Matches paperRaised/bgRaised at low alpha.
+            // Resting fill on the dark hudWindow material is a faint tint, not clear: the 1pt
+            // border alone wasn't enough affordance and labels blended into the body. On the
+            // light HUD that same tint reads as an opaque box, so resting goes fill-less with a
+            // faint border and the box returns on hover/press - keeps the prompt's right cluster
+            // from looking boxy in light mode.
+            let dark = effectiveAppearance.mpIsDark
             let fill: NSColor
             if isPressed { fill = MPColors.ink100 }
             else if isHovered { fill = MPColors.ink50 }
-            else { fill = MPColors.bgRaised.withAlphaComponent(0.55) }
+            else { fill = dark ? MPColors.bgRaised.withAlphaComponent(0.55) : .clear }
             layer.backgroundColor = fill.cgColor
             layer.borderWidth = 1
-            layer.borderColor = MPColors.borderStrong.cgColor
+            let firmBorder = isHovered || isPressed
+            layer.borderColor = (dark || firmBorder ? MPColors.borderStrong : MPColors.border).cgColor
             titleColor = MPColors.fg
 
         case .text:

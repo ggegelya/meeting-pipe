@@ -109,6 +109,15 @@ enum MPColors {
     }
 }
 
+extension NSAppearance {
+    /// Dark when the effective appearance matches a dark variant. Centralises the
+    /// `bestMatch(from: [.darkAqua, .vibrantDark])` check the HUD chrome uses to decide whether
+    /// a control needs a resting fill (dark material) or can stay de-boxed until hover (light material).
+    var mpIsDark: Bool {
+        bestMatch(from: [.darkAqua, .vibrantDark]) != nil
+    }
+}
+
 /// SwiftUI accessors for the fixed semantic state colors (TECH-DSN3), so views
 /// use `.mpDanger` / `.mpWarning` / `.mpSuccess` / `.mpSignal` instead of the
 /// generic system `.red` / `.orange` / `.green` / `.accentColor`. These four

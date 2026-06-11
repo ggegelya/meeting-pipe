@@ -76,15 +76,23 @@ final class WorkflowChipView: NSButton {
     override func mouseExited(with event: NSEvent) { isHovered = false }
 
     override func draw(_ dirtyRect: NSRect) {
-        let fill = isHovered ? MPColors.ink50 : MPColors.bgRaised.withAlphaComponent(0.55)
-        fill.setFill()
+        // Light HUD rests fill-less with a faint border so the chip reads as a quiet pill, not a
+        // boxed button, next to the action cluster; the filled state returns on hover. Dark HUD
+        // keeps the resting tint so the chip separates from the dark material.
+        let dark = effectiveAppearance.mpIsDark
         let path = NSBezierPath(
             roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
             xRadius: MPRadius.sm,
             yRadius: MPRadius.sm
         )
-        path.fill()
-        MPColors.borderStrong.setStroke()
+        if isHovered {
+            MPColors.ink50.setFill()
+            path.fill()
+        } else if dark {
+            MPColors.bgRaised.withAlphaComponent(0.55).setFill()
+            path.fill()
+        }
+        (dark || isHovered ? MPColors.borderStrong : MPColors.border).setStroke()
         path.lineWidth = 1
         path.stroke()
     }

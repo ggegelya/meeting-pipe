@@ -508,11 +508,17 @@ private final class CloseButton: NSButton {
     override func mouseExited(with event: NSEvent) { isHovered = false }
 
     override func draw(_ dirtyRect: NSRect) {
-        let fill = isHovered
-            ? MPColors.bgRaised.withAlphaComponent(0.85)
-            : MPColors.bgRaised.withAlphaComponent(0.55)
-        fill.setFill()
-        NSBezierPath(ovalIn: bounds.insetBy(dx: 1, dy: 1)).fill()
+        // Light HUD: no resting disc - it read as a box crammed into the panel's rounded corner.
+        // The bare × is the affordance and a soft disc appears on hover. Dark HUD keeps the faint
+        // disc at rest so the control separates from the dark material.
+        let dark = effectiveAppearance.mpIsDark
+        let fill: NSColor?
+        if isHovered { fill = dark ? MPColors.bgRaised.withAlphaComponent(0.85) : MPColors.ink100 }
+        else { fill = dark ? MPColors.bgRaised.withAlphaComponent(0.55) : nil }
+        if let fill = fill {
+            fill.setFill()
+            NSBezierPath(ovalIn: bounds.insetBy(dx: 1, dy: 1)).fill()
+        }
 
         // ×
         let mid = NSPoint(x: bounds.midX, y: bounds.midY)
@@ -564,11 +570,18 @@ private final class ChevronMenuButton: NSButton {
     override func mouseExited(with event: NSEvent) { isHovered = false }
 
     override func draw(_ dirtyRect: NSRect) {
-        let fill = isHovered ? MPColors.ink50 : MPColors.bgRaised.withAlphaComponent(0.55)
-        fill.setFill()
+        // Light HUD rests fill-less with a faint border so it stops reading as a box beside
+        // Record; the filled box returns on hover. Dark HUD keeps the resting tint.
+        let dark = effectiveAppearance.mpIsDark
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: MPRadius.sm, yRadius: MPRadius.sm)
-        path.fill()
-        MPColors.borderStrong.setStroke()
+        if isHovered {
+            MPColors.ink50.setFill()
+            path.fill()
+        } else if dark {
+            MPColors.bgRaised.withAlphaComponent(0.55).setFill()
+            path.fill()
+        }
+        (dark || isHovered ? MPColors.borderStrong : MPColors.border).setStroke()
         path.lineWidth = 1
         path.stroke()
 
