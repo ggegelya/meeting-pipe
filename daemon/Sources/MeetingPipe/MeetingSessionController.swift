@@ -629,9 +629,14 @@ final class MeetingSessionController {
             bundleID: context.bundleID
         )
         guard let leaveButton = leaveButtons.first else {
+            // No Leave button on a fresh walk: the call really ended. The re-walk is the
+            // corroboration, so drive the promotion to `.ended` now rather than leaving it to
+            // stall in `.endingProvisional` until window-gone corroborates (which lagged ~4.5 min
+            // in the wild) or the user stops by hand.
             Log.event(category: "coordinator", action: "lifecycle_provisional_end_confirmed", attributes: [
                 "bundle_id": context.bundleID,
             ])
+            coordinator.lifecycleCoord.confirmProvisionalEnd()
             return
         }
         Log.event(category: "coordinator", action: "lifecycle_provisional_end_rescued", attributes: [

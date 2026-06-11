@@ -147,6 +147,18 @@ public final class MeetingLifecycleCoordinator {
         }
     }
 
+    /// Promote `.endingProvisional` to `.ended` because the daemon's Leave-button re-walk verified
+    /// the control is genuinely gone. The re-walk is the corroboration, so this skips the debounce
+    /// wait that `tick()` enforces. No-op when the engine is not in `.endingProvisional`.
+    public func confirmProvisionalEnd() {
+        engineQueue.async { [weak self] in
+            guard let self = self else { return }
+            if let decision = self.engine.confirmProvisionalEnd() {
+                self.publish(decision.verdict)
+            }
+        }
+    }
+
     /// Late-arm the Leave-button signal. Called at recording-start with a button re-walked after the call UI
     /// rendered; the discovery-time walk usually runs too early to see it. No-op when no adapter is engaged.
     public func armLeaveButton(_ element: AXUIElement) {

@@ -184,6 +184,42 @@ final class PromotionEngineTests: XCTestCase {
         XCTAssertNil(post, "A lone ax-leave invalid must not confirm an end on the debounce alone")
     }
 
+    func test_rewalk_confirm_promotes_a_lone_ax_leave_provisional() {
+        // The end-stop fix: when the daemon's Leave-button re-walk verifies the control is really
+        // gone, confirmProvisionalEnd promotes the held provisional to .ended immediately (the
+        // re-walk is the corroboration), recorded in confirmedBy. This stops a genuine native leave
+        // that the tick() guard alone would otherwise hold until window-gone or a manual stop.
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 1))
+        let decision = engine.confirmProvisionalEnd()
+        XCTAssertEqual(
+            decision?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "ax_leave_button_invalid",
+                    confirmedBy: ["ax_leave_rewalk"]
+                )
+            )
+        )
+        XCTAssertNil(
+            engine.tick(at: Date(timeIntervalSince1970: 5)),
+            "Once confirmed-ended, a later tick must not re-emit"
+        )
+    }
+
+    func test_rewalk_confirm_is_noop_when_not_provisional() {
+        // No provisional end in flight: confirming is a no-op (a concurrent revert or end already
+        // moved the phase), so it can never fabricate an end out of .idle or .inMeeting.
+        let engine = PromotionEngine(debounce: 2.0)
+        XCTAssertNil(engine.confirmProvisionalEnd(), "idle: nothing to confirm")
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.confirmRecording()
+        XCTAssertNil(engine.confirmProvisionalEnd(), "in_meeting: nothing to confirm")
+    }
+
     func test_window_gone_still_promotes_alone_after_debounce() {
         // The guard is scoped: a reliable signal (window-gone) keeps promoting on the
         // debounce by itself, so the ends that already work are preserved.

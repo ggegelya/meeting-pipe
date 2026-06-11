@@ -124,22 +124,35 @@ public final class PromotionEngine {
         }
         guard now.timeIntervalSince(startedAt) >= debounce else { return nil }
         let confirmedBy = Array(observed.subtracting([leading]).map { $0.rawValue }).sorted()
-        // TECH-END2: a staleness-prone leading signal (ax-leave) must not confirm an end
-        // on the debounce alone. With no corroborating signal, hold in `.endingProvisional`
-        // rather than emit a bare `.ended`: a transient invalid self-heals when the signal's
-        // re-walk finds the control live (-> `.inMeeting`), and a real end normally corroborates
-        // via window-gone (the fast path). This (with the AXLeaveButtonSignal re-walk) stops the
-        // screen-share restart loop. Provisional keeps `isLive == false`, so the idle backstop's
-        // native stand-down does not block it; but that backstop bounds a held end only under
-        // sustained silence, so a real end whose window signal is ALSO blind (Screen-Recording
-        // TCC denied, or a lingering window whose title still matches) can bleed past the end
-        // while audio keeps flowing. That residual is the accepted capture-first / miss-favouring
-        // trade (see the class-level note); the alternative, promoting a lone ax-leave, is the
-        // screen-share false-stop this guard exists to remove.
+        // TECH-END2 + end-stop fix: a staleness-prone leading signal (ax-leave) must not confirm
+        // an end on the debounce alone (a screen-share re-render briefly invalidates the Leave
+        // button and would otherwise chop one meeting into fragments). A genuine native end is
+        // promoted promptly by `confirmProvisionalEnd`, which the daemon calls once its Leave-button
+        // re-walk verifies the control is really gone. This guard is the backstop for the debounce
+        // path when that re-walk has not (yet) fired: a lone uncorroborated ax-leave stays
+        // provisional until a reliable signal (window-gone) corroborates. Reliable signals keep
+        // `requiresCorroboration == false` and promote here on their own.
         if leading.requiresCorroboration && confirmedBy.isEmpty {
             return nil
         }
         let reason = EndingReason(leadingSignal: leading.rawValue, confirmedBy: confirmedBy)
+        phase = .ended(context: context)
+        return Decision(verdict: .ended(context: context, reason: reason))
+    }
+
+    /// The daemon re-walked the AX tree and verified the leading signal's control is genuinely
+    /// gone (not transient staleness; see `MeetingSessionController.rescueProvisionalEnd`). That
+    /// re-walk IS the corroboration `tick()` would otherwise wait for, so promote
+    /// `.endingProvisional` to `.ended` now instead of holding for a second signal that can lag
+    /// minutes on native clients. `rewalkSignal` is recorded in `confirmedBy` so the end reads as
+    /// corroborated. No-op in any other phase (a concurrent revert or end already handled it).
+    public func confirmProvisionalEnd(rewalkSignal: String = "ax_leave_rewalk") -> Decision? {
+        guard case .endingProvisional(let context, let leading, _, let observed) = phase else {
+            return nil
+        }
+        var confirmedBy = observed.subtracting([leading]).map { $0.rawValue }
+        confirmedBy.append(rewalkSignal)
+        let reason = EndingReason(leadingSignal: leading.rawValue, confirmedBy: confirmedBy.sorted())
         phase = .ended(context: context)
         return Decision(verdict: .ended(context: context, reason: reason))
     }
