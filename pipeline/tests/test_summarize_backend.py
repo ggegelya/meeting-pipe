@@ -229,13 +229,31 @@ def _anthropic_status_error(cls: type[anthropic.APIStatusError], code: int) -> a
     return cls("boom", response=httpx.Response(code, request=req), body=None)
 
 
+def test_should_retry_anthropic_skips_timeout_but_keeps_transients() -> None:
+    # The end-stop/hang fix: a timeout means a stalled connection, so it must NOT be
+    # retried (it would just re-hang); it drops straight to the local fallback. Rate
+    # limits, 5xx, and connection resets stay retryable. APITimeoutError subclasses
+    # APIConnectionError, so the explicit skip is load-bearing.
+    from mp.summarize import _should_retry_anthropic
+
+    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    assert _should_retry_anthropic(anthropic.APITimeoutError(request=req)) is False
+    assert _should_retry_anthropic(anthropic.APIConnectionError(request=req)) is True
+    assert _should_retry_anthropic(_anthropic_status_error(anthropic.RateLimitError, 429)) is True
+    assert _should_retry_anthropic(_anthropic_status_error(anthropic.InternalServerError, 500)) is True
+    assert _should_retry_anthropic(ValueError("caller bug")) is False
+
+
 @pytest.mark.parametrize(
     "exc",
     [
         _anthropic_status_error(anthropic.RateLimitError, 429),
         _anthropic_status_error(anthropic.InternalServerError, 500),
+        anthropic.APITimeoutError(
+            request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        ),
     ],
-    ids=["rate_limit_429", "server_error_500"],
+    ids=["rate_limit_429", "server_error_500", "timeout"],
 )
 def test_auto_falls_back_to_local_on_429_and_5xx(
     monkeypatch: pytest.MonkeyPatch, exc: anthropic.APIStatusError

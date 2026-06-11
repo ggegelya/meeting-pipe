@@ -23,11 +23,12 @@ from pathlib import Path
 from typing import Any
 
 import anthropic
+import httpx
 from pydantic import ValidationError
 from tenacity import (
     before_sleep_log,
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
@@ -42,7 +43,7 @@ from .workflow import apply_overrides as apply_workflow_overrides
 log = logging.getLogger("mp.summarize")
 
 # Retry only on transient failures. BadRequestError / AuthenticationError /
-# PermissionDeniedError / NotFoundError are caller bugs — failing fast is right.
+# PermissionDeniedError / NotFoundError are caller bugs, so failing fast is right.
 _RETRYABLE_ANTHROPIC = (
     anthropic.RateLimitError,
     anthropic.APIConnectionError,
@@ -51,14 +52,38 @@ _RETRYABLE_ANTHROPIC = (
 )
 
 
+def _should_retry_anthropic(exc: BaseException) -> bool:
+    """Retry transient failures, but NOT a timeout.
+
+    A timeout means a stalled connection; retrying just re-hangs the run. A
+    stall should drop straight to the backend fallback (local) instead. Rate
+    limits, 5xx, and connection resets are genuinely transient and worth a
+    backed-off retry. (APITimeoutError subclasses APIConnectionError, so the
+    explicit exclusion below is load-bearing, not redundant.)
+    """
+    if isinstance(exc, anthropic.APITimeoutError):
+        return False
+    return isinstance(exc, _RETRYABLE_ANTHROPIC)
+
+
+# Bound every request so a stalled connection fails in ~2 min and falls back to
+# local, instead of the SDK's ~10-minute default (a real 8.8k-char summary hung
+# the pipeline for the full 10 minutes). Chunked summarization bounds each call's
+# output, so 120 s is generous for legitimate generation while still catching a
+# stall. Paired with max_retries=0 on the client so the SDK does not internally
+# re-try a timeout before this layer's fallback sees it.
+_REQUEST_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
+
+
 @retry(
     reraise=True,
     stop=stop_after_attempt(4),
-    # 2s, 4s, 8s — capped at 30s. Anthropic's `retry-after` header would be
-    # ideal, but tenacity doesn't read it; this is a reasonable default that
-    # respects the SDK's own internal retries (it adds 2 more on top).
+    # 2s, 4s, 8s, capped at 30s. tenacity is the sole retry layer now: the client
+    # is built with max_retries=0, so a timeout is not internally re-tried before
+    # the timeout-aware fallback sees it. (Anthropic's retry-after header would be
+    # ideal for 429s, but tenacity does not read it; this backoff is a substitute.)
     wait=wait_exponential(multiplier=1, min=2, max=30),
-    retry=retry_if_exception_type(_RETRYABLE_ANTHROPIC),
+    retry=retry_if_exception(_should_retry_anthropic),
     before_sleep=before_sleep_log(log, logging.WARNING),
 )
 def _create_message(client: anthropic.Anthropic, **kwargs: Any) -> Any:
@@ -112,7 +137,11 @@ class AnthropicSummaryClient:
     """
 
     def __init__(self, *, api_key: str) -> None:
-        self._client = anthropic.Anthropic(api_key=api_key)
+        self._client = anthropic.Anthropic(
+            api_key=api_key,
+            timeout=_REQUEST_TIMEOUT,
+            max_retries=0,
+        )
 
     def summarize(
         self,
