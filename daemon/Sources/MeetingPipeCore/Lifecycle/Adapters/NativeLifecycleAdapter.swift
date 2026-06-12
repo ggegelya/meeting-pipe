@@ -128,10 +128,16 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
             try processAudio.start(context: context)
         }
         shareableContent.start(context: context, titleMatch: config.titleMatch)
-        if let leaveButton = handle.leaveButton {
+        // Start the Leave-button signal whenever we have a button OR a resolver. The
+        // resolver lets the signal self-arm when the record-start walk missed the
+        // button (Teams compact view exposes Mute but not Leave). Without this, a
+        // missed Leave button left the meeting with only the window-gone backstop, so
+        // the end went unseen until the user collapsed the Teams window (2026-06-12).
+        // Browser / AX-denied handles carry neither, so the signal stays off there.
+        if handle.leaveButton != nil || handle.resolveLeaveButton != nil {
             try axLeaveButton.start(
                 context: context,
-                leaveButton: leaveButton,
+                leaveButton: handle.leaveButton,
                 resolveElement: handle.resolveLeaveButton
             )
         }

@@ -166,6 +166,80 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         XCTAssertEqual(observed, [.healthy, .invalid])
     }
 
+    // MARK: - Self-arm (start without a button, adopt via the resolver)
+
+    func test_self_arms_when_started_without_a_button() throws {
+        let bus = AXObserverBus()
+        let scheduler = ManualScheduler()
+        let liveButton = AXUIElementCreateApplication(93001)
+        var resolverReturn: AXUIElement?
+        var observed: [AXLeaveButtonSignal.State] = []
+        let signal = AXLeaveButtonSignal(
+            axBus: bus,
+            probe: { _ in .healthy },
+            scheduler: manualScheduler(scheduler)
+        )
+        signal.onChange = { observed.append($0) }
+
+        // Compact view at record-start: the walk found Mute but not Leave, so the
+        // adapter starts the signal with no button and only the re-walk resolver.
+        try signal.start(context: teamsContext, leaveButton: nil, resolveElement: { resolverReturn })
+        XCTAssertFalse(signal.isArmed, "No button and an empty resolver: nothing to adopt yet")
+        XCTAssertEqual(observed, [], "No baseline until a live Leave control appears")
+        XCTAssertEqual(bus.activeSubscriptionCount, 0)
+
+        // The Calling-controls Leave button renders a beat later; the poll adopts it.
+        resolverReturn = liveButton
+        scheduler.tick?()
+        XCTAssertTrue(signal.isArmed, "Self-armed once the resolver returns a live button")
+        XCTAssertEqual(observed, [.healthy], "Adopting the late button emits the live baseline")
+        XCTAssertEqual(bus.activeSubscriptionCount, 1)
+    }
+
+    func test_self_armed_signal_detects_leave() throws {
+        let bus = AXObserverBus()
+        let scheduler = ManualScheduler()
+        let liveButton = AXUIElementCreateApplication(93002)
+        var probeReturn: AXLeaveButtonSignal.State = .healthy
+        var resolverReturn: AXUIElement?
+        var observed: [AXLeaveButtonSignal.State] = []
+        let signal = AXLeaveButtonSignal(
+            axBus: bus,
+            probe: { _ in probeReturn },
+            scheduler: manualScheduler(scheduler)
+        )
+        signal.onChange = { observed.append($0) }
+
+        try signal.start(context: teamsContext, leaveButton: nil, resolveElement: { resolverReturn })
+        resolverReturn = liveButton
+        scheduler.tick?()                      // adopts -> healthy baseline
+        XCTAssertEqual(observed, [.healthy])
+
+        // Call ends: the adopted Leave button is destroyed. The end must still fire.
+        probeReturn = .invalid
+        scheduler.tick?()
+        XCTAssertEqual(observed, [.healthy, .invalid], "A self-armed signal still reports the end")
+    }
+
+    func test_started_without_button_or_resolver_is_inert() throws {
+        let bus = AXObserverBus()
+        let scheduler = ManualScheduler()
+        var observed: [AXLeaveButtonSignal.State] = []
+        let signal = AXLeaveButtonSignal(
+            axBus: bus,
+            probe: { _ in .healthy },
+            scheduler: manualScheduler(scheduler)
+        )
+        signal.onChange = { observed.append($0) }
+
+        // Browser / AX-denied: no button, no resolver. The signal stays inert.
+        try signal.start(context: teamsContext, leaveButton: nil)
+        scheduler.tick?()
+        XCTAssertFalse(signal.isArmed)
+        XCTAssertEqual(observed, [], "Nothing to watch and nothing to adopt: no emissions")
+        XCTAssertEqual(bus.activeSubscriptionCount, 0)
+    }
+
     // MARK: - TECH-END2 re-walk (screen-share false-invalid rescue)
 
     func test_rewalk_recovers_a_transiently_invalid_element() throws {

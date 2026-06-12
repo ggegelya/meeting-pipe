@@ -66,22 +66,31 @@ public final class AXLeaveButtonSignal {
         self.cadence = AdaptivePollCadence(fast: pollInterval, slow: slowPollInterval)
     }
 
+    /// `leaveButton` may be nil: the start-time AX walk does not always find the
+    /// Leave control (Teams renders the "Meeting controls" media toolbar but not
+    /// the "Calling controls" Leave button while the call window is in compact /
+    /// minimal state, so the record-start walk finds Mute but not Leave). When nil,
+    /// the signal still starts and the health poll self-arms via `resolveElement`
+    /// the moment a live Leave button appears. With no button and no resolver the
+    /// signal is inert (browser / AX-denied path), exactly as before.
     public func start(
         context: MeetingLifecycleContext,
-        leaveButton: AXUIElement,
+        leaveButton: AXUIElement?,
         resolveElement: (() -> AXUIElement?)? = nil
     ) throws {
         stop()
         self.context = context
         self.element = leaveButton
         self.resolveElement = resolveElement
-        axToken = try axBus.subscribe(
-            pid: context.pid,
-            element: leaveButton,
-            notification: kAXUIElementDestroyedNotification as String
-        ) { [weak self] in
-            self?.cadence.noteListener()   // TECH-PERF5: notification is delivering
-            self?.evaluate(reason: "destroyed_notification")
+        if let leaveButton {
+            axToken = try axBus.subscribe(
+                pid: context.pid,
+                element: leaveButton,
+                notification: kAXUIElementDestroyedNotification as String
+            ) { [weak self] in
+                self?.cadence.noteListener()   // TECH-PERF5: notification is delivering
+                self?.evaluate(reason: "destroyed_notification")
+            }
         }
         cadence = AdaptivePollCadence(fast: pollInterval, slow: slowPollInterval)
         startPoll(interval: cadence.initialInterval)
@@ -138,7 +147,22 @@ public final class AXLeaveButtonSignal {
     }
 
     func evaluate(reason: String) {
-        guard let context = context, let element = element else { return }
+        guard let context = context else { return }
+        // Self-arm: the start-time walk handed us no Leave button (Teams renders the
+        // "Meeting controls" media toolbar but not the "Calling controls" Leave
+        // button while the call window is compact / minimal; verified via
+        // Accessibility Inspector 2026-06-12, where Mute resolved but Leave did
+        // not). Re-walk each poll and adopt a live Leave button as soon as one
+        // appears, mirroring the mute watcher's re-resolution. Until one appears the
+        // meeting end is bounded by the window-gone backstop. No resolver (browser /
+        // AX-denied) means nothing to adopt: stay inert, as before.
+        if element == nil {
+            guard let resolve = resolveElement, let fresh = resolve(),
+                  probe(fresh) == .healthy else { return }
+            adopt(fresh, context: context)
+            // Fall through so the healthy baseline reaches the engine this tick.
+        }
+        guard let element = element else { return }
         var state = probe(element)
         // TECH-END2: before treating the Leave control as gone (which ends the meeting),
         // re-walk for a live one. A Teams call-UI re-render (screen-share start/stop, layout
@@ -174,6 +198,35 @@ public final class AXLeaveButtonSignal {
         } else if state == .healthy && previous != .healthy {
             onChange?(state)
         }
+    }
+
+    /// Adopt a freshly-walked Leave button mid-meeting (self-arm path): record it as
+    /// the watched control and subscribe its destruction notification. The caller
+    /// (`evaluate`) falls through to the normal probe/emit so the healthy baseline
+    /// reaches the engine on the same tick. Subscribe failure is logged, not thrown:
+    /// the health poll still reads the element, matching `armIfNeeded`.
+    private func adopt(_ element: AXUIElement, context: MeetingLifecycleContext) {
+        self.element = element
+        do {
+            axToken = try axBus.subscribe(
+                pid: context.pid,
+                element: element,
+                notification: kAXUIElementDestroyedNotification as String
+            ) { [weak self] in
+                self?.cadence.noteListener()
+                self?.evaluate(reason: "destroyed_notification")
+            }
+        } catch {
+            eventLog.emit(category: "signal", action: "ax_leave_button_arm_failed", attributes: [
+                "bundle_id": context.bundleID,
+                "pid": Int(context.pid),
+                "error": "\(error)",
+            ])
+        }
+        eventLog.emit(category: "signal", action: "ax_leave_button_self_armed", attributes: [
+            "bundle_id": context.bundleID,
+            "pid": Int(context.pid),
+        ])
     }
 
     // MARK: - Default seams
