@@ -18,8 +18,21 @@ import os
 /// Screen Recording is granted, else the final is mic-only, no merge).
 final class MeetingRecorder {
 
-    private let engine = AVAudioEngine()
+    // `var` (not `let`) so an initial-start timeout can abandon a wedged engine
+    // and swap in a fresh one for the next attempt (see unwindFailedEngineStart).
+    // Reassigned only on that failure path.
+    private var engine = AVAudioEngine()
     private var micFile: AVAudioFile?
+
+    /// Budget for a single `engine.start()` (bounded off the main thread). A
+    /// healthy start is ~25 ms; the UI stays live during the wait, so this is
+    /// "how long before we give up on a wedged device", not freeze time.
+    private static let engineStartBudgetSeconds = 8.0
+
+    /// In-flight async capture-recovery (it bounds an engine restart off the
+    /// main thread). Held so `stop()` can drain it before engine teardown, and
+    /// non-nil acts as a one-at-a-time guard against re-entrant recovery.
+    private var recoveryTask: Task<Void, Never>?
     private var systemFile: AVAudioFile?
     private var systemCapture: SystemAudioCapture?
     private var systemStartTask: Task<Void, Never>?
@@ -163,12 +176,14 @@ final class MeetingRecorder {
 
     enum RecorderError: Error, LocalizedError {
         case engineStartFailed(String)
+        case engineStartTimedOut(Double)
         case fileCreateFailed(String)
         case alreadyRecording
 
         var errorDescription: String? {
             switch self {
             case .engineStartFailed(let s): return "Audio engine failed to start: \(s)"
+            case .engineStartTimedOut(let s): return "Audio device did not respond within \(Int(s))s; it may be busy or switching. Try again."
             case .fileCreateFailed(let s):  return "Could not create output WAV: \(s)"
             case .alreadyRecording:         return "Recorder already in progress"
             }
@@ -191,7 +206,8 @@ final class MeetingRecorder {
     /// Default false: the VPIO unit's AGC tugs the HAL gain down system-wide
     /// while the engine runs, so other mic clients (Teams, Zoom) hear the
     /// user as very quiet. Enable only if no call client shares the mic.
-    func start(outputDir: URL, captureMode: CaptureMode, voiceProcessing: Bool = false) throws -> URL {
+    @MainActor
+    func start(outputDir: URL, captureMode: CaptureMode, voiceProcessing: Bool = false) async throws -> URL {
         if isRecording { throw RecorderError.alreadyRecording }
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
         self.captureMode = captureMode
@@ -286,32 +302,33 @@ final class MeetingRecorder {
 
         installMicTap(captureFormat: micFormat)
 
-        do {
+        // AVAudioEngine.start() can wedge on a transitioning audio route (a
+        // Bluetooth headset renegotiating HFP was observed 2026-06-12 to hang it
+        // ~42 s). It used to run synchronously on the main thread, so a wedge
+        // froze the whole app and "Record did nothing" until a restart. Bound it
+        // off the main thread; on timeout the abandoned start keeps running but
+        // we tear down and surface a retryable error instead of freezing.
+        switch await boundedEngineStart(seconds: MeetingRecorder.engineStartBudgetSeconds, { [engine] in
             try engine.start()
-        } catch {
-            engine.inputNode.removeTap(onBus: 0)
-            self.micFile = nil
-            self.micGateWriter = nil
-            try? FileManager.default.removeItem(at: micURL)
-            // start() failed after VP was enabled: flip it back off so the
-            // HAL device isn't stranded with degraded gain for other apps.
-            if voiceProcessingEnabledForSession {
-                try? engine.inputNode.setVoiceProcessingEnabled(false)
-                voiceProcessingEnabledForSession = false
-            }
-            throw RecorderError.engineStartFailed(error.localizedDescription)
+        }) {
+        case .started:
+            break
+        case .failed(let message):
+            unwindFailedEngineStart(micURL: micURL, recreateEngine: false)
+            throw RecorderError.engineStartFailed(message)
+        case .timedOut:
+            unwindFailedEngineStart(micURL: micURL, recreateEngine: true)
+            Log.writeLine("recorder", "WARN: engine.start() timed out after \(Int(MeetingRecorder.engineStartBudgetSeconds))s - audio device wedged; aborting start")
+            Log.event(category: "recorder", action: "engine_start_timed_out", attributes: [
+                "budget_s": MeetingRecorder.engineStartBudgetSeconds,
+            ])
+            throw RecorderError.engineStartTimedOut(MeetingRecorder.engineStartBudgetSeconds)
         }
         Log.writeLine("recorder", "engine started")
 
         // Re-arm capture on a mid-recording device swap (e.g. AirPods
         // unplugged) instead of flatlining the mic. Removed in `stop()`.
-        configChangeObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange,
-            object: engine,
-            queue: .main
-        ) { [weak self] _ in
-            self?.handleConfigurationChange()
-        }
+        armConfigurationChangeObserver()
 
         // System audio via SCStream (independent of the mic engine).
         startSystemCapture(systemURL: systemURL, isRetry: false)
@@ -324,6 +341,34 @@ final class MeetingRecorder {
         Log.writeLine("recorder", "recorder started → \(finalURL.path)")
         startTapLivenessWatchdog()
         return finalURL
+    }
+
+    /// Roll back the partial mic setup created before `engine.start()` when the
+    /// start fails or times out, so the recorder returns to a clean idle and a
+    /// retry starts fresh. On the throwing path the engine returned, so we reuse
+    /// it (remove the tap, flip voice processing back off). On the timeout path
+    /// the abandoned start may still be running on the old engine, so we must
+    /// NOT touch that engine here (concurrent AVAudioEngine mutation is unsafe):
+    /// swap in a fresh one and let the stuck start release the old one when it
+    /// unwedges (or leak it harmlessly if it never does).
+    @MainActor
+    private func unwindFailedEngineStart(micURL: URL, recreateEngine: Bool) {
+        self.micFile = nil
+        self.micGateWriter = nil
+        self.micWriter = nil
+        try? FileManager.default.removeItem(at: micURL)
+        if recreateEngine {
+            voiceProcessingEnabledForSession = false
+            engine = AVAudioEngine()
+        } else {
+            engine.inputNode.removeTap(onBus: 0)
+            // start() failed after VP was enabled: flip it back off so the HAL
+            // device isn't stranded with degraded gain for other apps.
+            if voiceProcessingEnabledForSession {
+                try? engine.inputNode.setVoiceProcessingEnabled(false)
+                voiceProcessingEnabledForSession = false
+            }
+        }
     }
 
     // MARK: - System audio (SCStream)
@@ -514,6 +559,20 @@ final class MeetingRecorder {
 
     // MARK: - Input device change recovery
 
+    /// Register the device-change observer. Split out of `start()` (which is
+    /// async) so the NotificationCenter `@Sendable` block isn't formed in an
+    /// async region, which flags the weak-self capture; the handler still runs
+    /// on the main queue via the observer's `queue: .main`. Removed in `stop()`.
+    private func armConfigurationChangeObserver() {
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleConfigurationChange()
+        }
+    }
+
     /// React to an `AVAudioEngineConfigurationChange`: macOS stops the engine
     /// on a mid-recording device/route change with no auto-recovery, so
     /// re-arm the tap and restart, resampling back to the file format (and
@@ -562,12 +621,20 @@ final class MeetingRecorder {
         case .resume(let needsConverter):
             guard let liveFormat else { return }
             configurationRecoveryAttempts = 0
-            recoverCapture(
-                fileFormat: fileFormat,
-                liveFormat: liveFormat,
-                needsConverter: needsConverter,
-                gapStart: gapStart
-            )
+            // recoverCapture is async (it bounds the engine restart off the main
+            // thread). Run one at a time: a re-entrant device change while a
+            // restart is in flight is dropped; the watchdog or the next change
+            // re-triggers. The task clears its own handle on completion.
+            guard recoveryTask == nil else { return }
+            recoveryTask = Task { @MainActor [weak self] in
+                defer { self?.recoveryTask = nil }
+                await self?.recoverCapture(
+                    fileFormat: fileFormat,
+                    liveFormat: liveFormat,
+                    needsConverter: needsConverter,
+                    gapStart: gapStart
+                )
+            }
         }
     }
 
@@ -588,12 +655,13 @@ final class MeetingRecorder {
 
     /// Re-arm mic capture after a device change; the engine is stopped here
     /// so the tap's converter is swapped while the audio thread is down.
+    @MainActor
     private func recoverCapture(
         fileFormat: AVAudioFormat,
         liveFormat: AVAudioFormat,
         needsConverter: Bool,
         gapStart: Date
-    ) {
+    ) async {
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
 
@@ -635,13 +703,30 @@ final class MeetingRecorder {
             micFramePosition += Int64(padFrames)
         }
 
-        do {
+        // Same wedge risk as the initial start (a device change can leave the
+        // route mid-transition): bound it off the main thread.
+        switch await boundedEngineStart(seconds: MeetingRecorder.engineStartBudgetSeconds, { [engine] in
             try engine.start()
-        } catch {
+        }) {
+        case .started:
+            break
+        case .failed(let message):
             Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
                 "reason": "engine_restart_failed",
             ])
-            Log.writeLine("recorder", "WARN: audio engine failed to restart after a device change: \(error.localizedDescription)")
+            Log.writeLine("recorder", "WARN: audio engine failed to restart after a device change: \(message)")
+            reportRecoveryFailure()
+            return
+        case .timedOut:
+            // The abandoned restart may still be wedged on this engine, so we do
+            // NOT recreate it here: its config-change observer is bound to it,
+            // and the tap-liveness watchdog stops once isRunning is false. Mic
+            // capture stops for the rest of the call; system audio keeps
+            // recording. Same outcome as an unrecoverable device change.
+            Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
+                "reason": "engine_restart_timed_out",
+            ])
+            Log.writeLine("recorder", "WARN: audio engine restart timed out after a device change - mic capture stopped")
             reportRecoveryFailure()
             return
         }
@@ -701,12 +786,20 @@ final class MeetingRecorder {
         guard isRecording, let fileFormat = micFileFormat else { return }
         let rawLive = engine.inputNode.outputFormat(forBus: 0)
         let liveFormat = rawLive.sampleRate > 0 ? rawLive : fileFormat
-        recoverCapture(
-            fileFormat: fileFormat,
-            liveFormat: liveFormat,
-            needsConverter: liveFormat != fileFormat,
-            gapStart: Date()
-        )
+        // One recovery at a time (see evaluateConfigurationChange). Stamp the
+        // gap start now, before the async hop, so the silence pad measures from
+        // the stall, not from when the task happens to run.
+        guard recoveryTask == nil else { return }
+        let gapStart = Date()
+        recoveryTask = Task { @MainActor [weak self] in
+            defer { self?.recoveryTask = nil }
+            await self?.recoverCapture(
+                fileFormat: fileFormat,
+                liveFormat: liveFormat,
+                needsConverter: liveFormat != fileFormat,
+                gapStart: gapStart
+            )
+        }
     }
 
     /// Resample a tap buffer to the file format with a pre-built
@@ -851,6 +944,18 @@ final class MeetingRecorder {
         // The engine is about to go down, so any pending retry would race.
         cancelPendingRecoveryRetry()
         configurationRecoveryAttempts = 0
+        // Drain an in-flight async recovery (it bounds an engine restart on a
+        // background thread) before touching the engine, so teardown can't race
+        // recoverCapture's restart. The observer is already removed and the
+        // watchdog cancelled, so no new recovery launches. recoveryTask is owned
+        // on the main thread, so read and clear it there.
+        let recovery = await MainActor.run { () -> Task<Void, Never>? in
+            let task = self.recoveryTask
+            self.recoveryTask = nil
+            return task
+        }
+        recovery?.cancel()
+        await recovery?.value
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         // The writer's sample rate was bound to the now-closed input; the

@@ -31,6 +31,12 @@ final class MeetingSessionController {
     /// too. Per-meeting (TECH-C14).
     var axWindowWatcher: MeetingAXWindowWatcher?
 
+    /// True while an async `beginRecording` start is in flight. The engine
+    /// bring-up is bounded off the main thread now, so the UI stays live during
+    /// it; this guard stops a second Record/toggle press from stacking another
+    /// `recorder.start()` (five stacked starts were seen in the 2026-06-12 freeze).
+    private var recordingStartInFlight = false
+
     /// Latest system-audio dBFS (from `recorder.onSystemLevel`), read by
     /// the silence backstop. `-120` is the "no audio observed yet" sentinel.
     var latestSystemLevelDb: Float = -120
@@ -161,6 +167,15 @@ final class MeetingSessionController {
     func beginRecording(source: AppSource?, summaryMode: SummaryMode) {
         coordinator.stateMachine.cancelPromptTimeout()
 
+        // A start is async now (the engine bring-up is bounded off the main
+        // thread), so the UI stays live while a wedged device is waited out.
+        // Ignore a second Record/toggle press while one is in flight rather than
+        // stacking another recorder.start().
+        guard !recordingStartInFlight else {
+            Log.writeLine("daemon", "beginRecording ignored: a start is already in flight")
+            return
+        }
+
         // Mic is non-negotiable (no mic = silent recording, empty
         // transcript); Screen Recording stays optional. Re-probe
         // synchronously so a just-granted permission counts without restart.
@@ -213,46 +228,54 @@ final class MeetingSessionController {
             redactMuted: resolvedWorkflow?.flags.redactMutedSpans ?? false
         )
 
-        do {
-            let file = try coordinator.recorder.start(
-                outputDir: coordinator.liveOutputDir,
-                captureMode: captureMode,
-                voiceProcessing: coordinator.liveVoiceProcessing
-            )
-            activeWorkflow = resolvedWorkflow
-            coordinator.stateMachine.setRecording(file: file, source: source, summaryMode: summaryMode)
-            coordinator.statusBar.setRecording(file: file, source: source, summaryMode: summaryMode, workflow: resolvedWorkflow)
-            coordinator.recordingHUD.present(
-                source: source,
-                workflow: resolvedWorkflow,
-                startedAt: Date(),
-                levelProvider: { [weak self] in self?.coordinator.recorder.currentMicLevelDb() ?? -120 }
-            )
-            coordinator.notifier.notifyRecordingStarted(file: file)
-            Log.writeLine(
-                "daemon",
-                "recording started → \(file.path) source=\(source?.bundleID ?? "manual") mode=\(summaryMode == .byo ? "byo" : "auto") workflow=\(resolvedWorkflow?.name ?? "(none)")"
-            )
-            Log.event(category: "coordinator", action: "recording_started", attributes: [
-                "file": file.lastPathComponent,
-                "bundle_id": source?.bundleID ?? "manual",
-                "summary_mode": summaryMode == .byo ? "byo" : "auto",
-                "workflow_id": resolvedWorkflow?.id.uuidString ?? NSNull(),
-                "workflow_name": resolvedWorkflow?.name ?? NSNull(),
-            ])
-            armSystemLevelMirror()
-            engageMicGate(source: source)
-            // Re-walk for the Leave button now the call UI has rendered;
-            // the discovery-time walk usually runs too early to see it.
-            armLifecycleLeaveButton(source: source)
-            // Recorder armed: promote `.starting` to `.inMeeting` (no-op for
-            // manual recordings and the prompt-answered-late race).
-            coordinator.lifecycleCoord.confirmRecording()
-        } catch {
-            Log.main.error("failed to start recorder: \(error.localizedDescription)")
-            coordinator.notifier.notifyError("Could not start recording: \(error.localizedDescription)")
-            coordinator.stateMachine.setIdle()
-            coordinator.statusBar.setIdle()
+        // Committed to starting: guard re-entry until this start resolves. The
+        // recorder bounds the engine bring-up off the main thread, so the await
+        // below never blocks the UI; the post-start wiring runs back on main.
+        recordingStartInFlight = true
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            defer { self.recordingStartInFlight = false }
+            do {
+                let file = try await self.coordinator.recorder.start(
+                    outputDir: self.coordinator.liveOutputDir,
+                    captureMode: captureMode,
+                    voiceProcessing: self.coordinator.liveVoiceProcessing
+                )
+                self.activeWorkflow = resolvedWorkflow
+                self.coordinator.stateMachine.setRecording(file: file, source: source, summaryMode: summaryMode)
+                self.coordinator.statusBar.setRecording(file: file, source: source, summaryMode: summaryMode, workflow: resolvedWorkflow)
+                self.coordinator.recordingHUD.present(
+                    source: source,
+                    workflow: resolvedWorkflow,
+                    startedAt: Date(),
+                    levelProvider: { [weak self] in self?.coordinator.recorder.currentMicLevelDb() ?? -120 }
+                )
+                self.coordinator.notifier.notifyRecordingStarted(file: file)
+                Log.writeLine(
+                    "daemon",
+                    "recording started → \(file.path) source=\(source?.bundleID ?? "manual") mode=\(summaryMode == .byo ? "byo" : "auto") workflow=\(resolvedWorkflow?.name ?? "(none)")"
+                )
+                Log.event(category: "coordinator", action: "recording_started", attributes: [
+                    "file": file.lastPathComponent,
+                    "bundle_id": source?.bundleID ?? "manual",
+                    "summary_mode": summaryMode == .byo ? "byo" : "auto",
+                    "workflow_id": resolvedWorkflow?.id.uuidString ?? NSNull(),
+                    "workflow_name": resolvedWorkflow?.name ?? NSNull(),
+                ])
+                self.armSystemLevelMirror()
+                self.engageMicGate(source: source)
+                // Re-walk for the Leave button now the call UI has rendered;
+                // the discovery-time walk usually runs too early to see it.
+                self.armLifecycleLeaveButton(source: source)
+                // Recorder armed: promote `.starting` to `.inMeeting` (no-op for
+                // manual recordings and the prompt-answered-late race).
+                self.coordinator.lifecycleCoord.confirmRecording()
+            } catch {
+                Log.main.error("failed to start recorder: \(error.localizedDescription)")
+                self.coordinator.notifier.notifyError("Could not start recording: \(error.localizedDescription)")
+                self.coordinator.stateMachine.setIdle()
+                self.coordinator.statusBar.setIdle()
+            }
         }
     }
 
