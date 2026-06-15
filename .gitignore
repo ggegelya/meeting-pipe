@@ -55,3 +55,11 @@ secrets.env
 *.json.bak
 recordings/
 .notion-cassettes/
+
+# --- Local tooling (not product) ---
+# The impeccable design skill is installed locally and duplicated across
+# harness dirs (.claude + .github); it is personal tooling, not product code.
+# The project-specific design knowledge that IS tracked lives in PRODUCT.md
+# and design/.
+.claude/skills/
+.github/skills/
