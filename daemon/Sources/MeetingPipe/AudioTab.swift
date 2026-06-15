@@ -299,7 +299,7 @@ private struct StaticWaveform: View, Equatable {
                     x: 0, y: size.height / 2,
                     width: size.width, height: size.height / 2
                 ),
-                tint: .purple,
+                tint: Color(MPColors.fgMuted),
                 label: "System"
             )
         }
@@ -354,7 +354,7 @@ private struct StaticWaveform: View, Equatable {
     }
 }
 
-/// Just the play head: a 1.5 pt red line at the current-time fraction. The only view
+/// Just the play head: a 1.5 pt signal-teal line at the current-time fraction. The only view
 /// in the waveform stack that observes `playback`, so the ~15 Hz tick redraws one line
 /// rather than the whole canvas.
 private struct PlayheadOverlay: View {
@@ -371,7 +371,7 @@ private struct PlayheadOverlay: View {
                 p.move(to: CGPoint(x: x, y: 0))
                 p.addLine(to: CGPoint(x: x, y: geo.size.height))
             }
-            .stroke(Color.mpDanger, lineWidth: 1.5)
+            .stroke(Color.mpSignal, lineWidth: 1.5)
         }
         .allowsHitTesting(false)
     }
