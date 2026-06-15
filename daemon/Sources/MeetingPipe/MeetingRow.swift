@@ -183,6 +183,10 @@ struct MeetingRow: View, Equatable {
                 Text("\(Self.stageLabel(p.stage)) \(MeetingRow.formatDuration(Double(p.elapsedSec)))")
                     .font(.system(size: 11).monospacedDigit())
                     .foregroundStyle(Color(MPColors.fgSubtle))
+                    // Pin to one line like MPStatusPill (TECH-DSN14); at narrow
+                    // widths "Summarizing ..." otherwise wraps to ~3 lines.
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
         }
     }
