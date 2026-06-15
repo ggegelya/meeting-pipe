@@ -12,7 +12,7 @@ final class CorrectionWindow {
     }
 
     private var window: NSWindow?
-    private var hosting: NSHostingController<CorrectionView>?
+    private var hosting: NSHostingController<MPControlAccent<CorrectionView>>?
     private var viewModel: CorrectionViewModel?
 
     private func show(stem: String, recordingsDir: URL) {
@@ -44,14 +44,14 @@ final class CorrectionWindow {
         )
 
         if let host = self.hosting, let win = self.window {
-            host.rootView = view
+            host.rootView = MPControlAccent(view)
             win.title = "Edit summary, \(model.headerTitle)"
             win.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
 
-        let host = NSHostingController(rootView: view)
+        let host = NSHostingController(rootView: MPControlAccent(view))
         let win = NSWindow(contentViewController: host)
         win.title = "Edit summary, \(model.headerTitle)"
         win.styleMask = [.titled, .closable, .resizable, .miniaturizable]

@@ -33,7 +33,7 @@ final class PreferencesWindow {
             secrets: secrets,
             selectionState: selectionState
         )
-        let host = NSHostingController(rootView: view)
+        let host = NSHostingController(rootView: MPControlAccent(view))
         let w = NSWindow(contentViewController: host)
         w.title = "MeetingPipe Preferences"
         // Resizable: benefits from extra width for long Notion DB IDs.

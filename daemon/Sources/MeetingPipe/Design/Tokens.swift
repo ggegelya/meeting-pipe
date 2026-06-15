@@ -140,6 +140,21 @@ extension ShapeStyle where Self == Color {
     static var mpSignal:  Color { .mpSignal }
 }
 
+/// Wraps a hosting-root view so native controls (list / sidebar selection,
+/// toggles, focus rings, picker checkmarks) inherit signal-teal instead of the
+/// user's System Settings accent (TECH-DSN10). DSN3/DSN4 tokenised custom views
+/// but never set the app accent; applying `.tint` at every `NSHostingController`
+/// root closes that gap. A nameable wrapper (not a `some View` extension) so
+/// `CorrectionWindow`'s typed `NSHostingController<…>` reuse path can name it
+/// without `AnyView`. Per-view tints (Record button, tab underline, slider),
+/// the recording dot, the speaker palette, and semantic colours set their own
+/// colours and are unaffected.
+struct MPControlAccent<Content: View>: View {
+    let content: Content
+    init(_ content: Content) { self.content = content }
+    var body: some View { content.tint(Color(MPColors.signal600)) }
+}
+
 /// Type tokens mirroring `--mp-text-*` and `--mp-weight-*`. The daemon uses SF Pro (system font), not Inter Tight; the display tokens exist for future surfaces that may load it.
 enum MPType {
     static let textXS:   CGFloat = 11

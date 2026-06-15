@@ -41,7 +41,7 @@ final class OnboardingWindowController {
             OnboardingGate.markCompleted()
             self?.close()
         }
-        let host = NSHostingController(rootView: root)
+        let host = NSHostingController(rootView: MPControlAccent(root))
         let w = NSWindow(contentViewController: host)
         w.title = "Welcome to MeetingPipe"
         w.styleMask = [.titled, .fullSizeContentView]

@@ -28,7 +28,7 @@ final class QuickFindWindow {
             return
         }
         let view = QuickFindView(model: model)
-        let host = NSHostingController(rootView: view)
+        let host = NSHostingController(rootView: MPControlAccent(view))
         let p = NSPanel(contentViewController: host)
         p.styleMask = [.titled, .closable, .fullSizeContentView, .hudWindow]
         p.titleVisibility = .hidden

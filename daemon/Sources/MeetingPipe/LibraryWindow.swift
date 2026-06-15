@@ -23,7 +23,7 @@ final class LibraryWindow {
 
         let view = LibraryRootView(model: model)
             .environmentObject(model)
-        let host = NSHostingController(rootView: view)
+        let host = NSHostingController(rootView: MPControlAccent(view))
         let w = NSWindow(contentViewController: host)
         w.title = "MeetingPipe Library"
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
