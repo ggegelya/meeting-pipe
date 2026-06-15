@@ -52,6 +52,24 @@ enum MPColors {
         .systemTeal, .systemGreen, .systemIndigo, .systemBrown,
     ]
 
+    // MARK: Workflow swatches (TECH-DSN11)
+    /// Curated workflow colours: a tonal family that holds the one-teal-accent
+    /// rule instead of the free-form confetti WF3 allowed. Hex strings, because
+    /// `Workflow.color` is hex. Each mirrors an existing token (asserted by
+    /// `DesignTokensTests`); teal is the default. Pulse-coral (#E5484D) is
+    /// deliberately absent - it is reserved for the live recording dot.
+    static let workflowSwatches: [String] = [
+        "#0E8C82",  // signal600 - teal (default)
+        "#0A6F67",  // signal700 - deep teal
+        "#4A4F58",  // ink600 - slate
+        "#6E747F",  // ink500 - mid ink
+        "#1F8F4E",  // success600 - green
+        "#B27300",  // warning600 - amber
+    ]
+
+    /// Default workflow colour: teal, the first curated swatch (TECH-DSN11).
+    static let defaultWorkflowHex = workflowSwatches[0]
+
     // MARK: Semantic - auto-flip on appearance.
     /// `--mp-fg` / dark `#F0F1F3`.
     static let fg = NSColor(name: "mp.fg") { appearance in

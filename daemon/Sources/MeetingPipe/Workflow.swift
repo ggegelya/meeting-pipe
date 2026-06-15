@@ -77,7 +77,7 @@ struct Workflow: Codable, Equatable, Hashable, Identifiable {
     init(
         id: UUID = UUID(),
         name: String,
-        color: String = "#3478F6",
+        color: String = MPColors.defaultWorkflowHex,
         emoji: String? = nil,
         matchingRules: [WorkflowMatchingRule] = [],
         contextPrompt: String = "",

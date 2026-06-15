@@ -7,7 +7,7 @@ final class WorkflowChipView: NSButton {
     private let titleLabel = NSTextField(labelWithString: "")
     private let leadingGlyph = NSView(frame: .zero)
 
-    /// Workflow color parsed from hex by the caller. Drives the leading swatch fill. Default is signal-blue ("General" seed).
+    /// Workflow color parsed from hex by the caller. Drives the leading swatch fill. Default is signal-teal ("General" seed).
     var workflowColor: NSColor = MPColors.signal600 {
         didSet { leadingGlyph.layer?.backgroundColor = workflowColor.cgColor }
     }

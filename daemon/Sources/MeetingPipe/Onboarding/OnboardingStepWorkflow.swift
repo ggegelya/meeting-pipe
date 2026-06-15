@@ -98,11 +98,14 @@ struct OnboardingStepWorkflow: View {
     }
 
     private func color(_ p: Preset) -> String {
+        // Curated swatches (TECH-DSN11): Client moves off Pulse-coral (#E5484D,
+        // reserved for the recording dot) to amber; the rest map onto the
+        // on-brand tonal family instead of the old confetti seeds.
         switch p {
-        case .personal: return "#3478F6"
-        case .client:   return "#E5484D"
-        case .team:     return "#30A46C"
-        case .later:    return "#8E8E93"
+        case .personal: return MPColors.defaultWorkflowHex   // teal
+        case .client:   return MPColors.workflowSwatches[5]  // amber
+        case .team:     return MPColors.workflowSwatches[4]  // green
+        case .later:    return MPColors.workflowSwatches[3]  // mid ink
         }
     }
 }

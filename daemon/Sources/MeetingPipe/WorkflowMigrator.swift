@@ -21,7 +21,7 @@ enum WorkflowMigrator {
         let general = Workflow(
             id: UUID(),
             name: "General",
-            color: "#3478F6",
+            color: MPColors.defaultWorkflowHex,
             emoji: nil,
             matchingRules: [],  // empty rules → default-only fallback
             contextPrompt: legacyTeamContext,

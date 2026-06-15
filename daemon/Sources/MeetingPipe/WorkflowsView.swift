@@ -134,14 +134,10 @@ struct WorkflowEditor: View {
                     .onSubmit(save)
             }
             LabeledContent("Color") {
-                HStack(spacing: 8) {
-                    colorSwatchButton
-                    // Hex stays as an advanced fallback for power users and paste.
-                    TextField("", text: $color, prompt: Text("#RRGGBB"))
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(width: Self.identityFieldWidth)
-                }
+                // Curated swatches only (TECH-DSN11): the popover is the sole
+                // colour control so workflows stay a tonal family. No free-hex
+                // field - it was the path off-palette colours leaked in.
+                colorSwatchButton
             }
             LabeledContent("Emoji") {
                 HStack(spacing: 8) {
@@ -175,8 +171,8 @@ struct WorkflowEditor: View {
 
     /// A swatch button that opens a small palette popover anchored to the field
     /// (TECH-WF3), replacing the native `ColorPicker` whose shared system panel
-    /// floated detached at a screen corner. The hex field beside it stays the
-    /// precise fallback for any colour not in the palette.
+    /// floated detached at a screen corner. The popover is the only colour
+    /// control (TECH-DSN11): it offers the curated `MPColors.workflowSwatches`.
     private var colorSwatchButton: some View {
         Button {
             colorPopoverOpen = true
@@ -198,7 +194,7 @@ struct WorkflowEditor: View {
     private var colorPalettePopover: some View {
         let columns = Array(repeating: GridItem(.fixed(26), spacing: 8), count: 6)
         return LazyVGrid(columns: columns, spacing: 8) {
-            ForEach(Self.colorPalette, id: \.self) { hex in
+            ForEach(MPColors.workflowSwatches, id: \.self) { hex in
                 Button {
                     color = hex
                     colorPopoverOpen = false
@@ -224,13 +220,6 @@ struct WorkflowEditor: View {
     private func isSelectedColor(_ hex: String) -> Bool {
         color.trimmingCharacters(in: .whitespaces).uppercased() == hex.uppercased()
     }
-
-    /// Curated palette for the swatch popover: the MeetingPipe signal teal first,
-    /// then a spread of distinct hues. Any other colour stays reachable via hex.
-    private static let colorPalette: [String] = [
-        "#0E8C82", "#14A89B", "#3478F6", "#5E5CE6", "#AF52DE", "#FF2D55",
-        "#E5484D", "#FF6074", "#FF9500", "#FFCC00", "#34C759", "#8E8E93",
-    ]
 
     private var matchingRulesSection: some View {
         Section("Matching rules") {
@@ -487,7 +476,7 @@ struct WorkflowEditor: View {
             return
         }
         clone.name = trimmedName
-        clone.color = color.isEmpty ? "#3478F6" : color
+        clone.color = color.isEmpty ? MPColors.defaultWorkflowHex : color
         clone.emoji = emoji.isEmpty ? nil : emoji
         clone.contextPrompt = contextPrompt
         clone.isDefault = isDefault

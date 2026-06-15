@@ -501,7 +501,7 @@ private struct NewWorkflowSheet: View {
         .onAppear {
             let next = Workflow(
                 name: "Untitled workflow",
-                color: "#3478F6",
+                color: MPColors.defaultWorkflowHex,
                 sinks: [.notion(databaseId: "")],
                 backend: .anthropic,
                 isDefault: store.workflows.isEmpty,

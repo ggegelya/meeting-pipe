@@ -184,7 +184,7 @@ final class WorkflowStore: ObservableObject {
         let idString = doc["id"]?.string ?? UUID().uuidString
         let id = UUID(uuidString: idString) ?? UUID()
         let name = doc["name"]?.string ?? "Untitled"
-        let color = doc["color"]?.string ?? "#3478F6"
+        let color = doc["color"]?.string ?? MPColors.defaultWorkflowHex
         let emoji = doc["emoji"]?.string
         let contextPrompt = doc["context_prompt"]?.string ?? ""
         // Missing or unrecognized backend decodes to nil (inherit the global
