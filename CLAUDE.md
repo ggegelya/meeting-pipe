@@ -16,6 +16,8 @@ Personal macOS product (single-user, not for sale). Two trees:
 | [`ARCHITECTURE.md#glossary`](./ARCHITECTURE.md#glossary) | Project terms (workflow, lockon, BYO, regulated, sidecar, RMS fallback, …). Skim when a term is unfamiliar. |
 | [`docs/decisions/`](./docs/decisions/) + README [Why it is shaped this way](./README.md#why-it-is-shaped-this-way) | Architectural *why* (ADRs are the long form, the README section the short). Read when the question is "why is it shaped this way?" |
 | [`README.md`](./README.md) | Operating guide (the *how*). Edit when user-visible behaviour or surfaces change. |
+| [`PRODUCT.md`](./PRODUCT.md) | Strategic UX context: register, users, brand personality (local-first, quiet, deliberate), anti-references, design principles, a11y floor. Read before any UI work or design judgement call. |
+| [`design/`](./design/) | Visual system: `colors_and_type.css` (tokens), `README.md` (voice + visual rules + iconography), `ui_kits/macos_app/` (JSX recreations of surfaces). The "match this" doc for chrome. |
 | `daemon/CLAUDE.md` | Auto-loads when you touch Swift. Short Swift-specific gotchas. |
 | `pipeline/CLAUDE.md` | Auto-loads when you touch Python. Short Python-specific gotchas. |
 
