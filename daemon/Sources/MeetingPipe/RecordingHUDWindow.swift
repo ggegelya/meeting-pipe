@@ -265,7 +265,8 @@ final class RecordingHUDWindow {
             workflowLabel.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 4),
             workflowLabel.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -4),
             workflowLabel.topAnchor.constraint(equalTo: meter.bottomAnchor, constant: 4),
-            workflowLabel.heightAnchor.constraint(equalToConstant: 14),
+            // No fixed height: the label sizes to one row (name) or two (name +
+            // NDA eyebrow). TECH-DSN13 - it used to overlap in a fixed 14pt box.
 
             stop.centerXAnchor.constraint(equalTo: bg.centerXAnchor),
             stopBottom,
@@ -471,10 +472,22 @@ private final class StopButton: NSButton {
     }
 }
 
-/// Workflow attribution label (TECH-B9). NDA mode appends a coral "NDA" suffix so the user can spot a sensitive routing before saying something they'd regret in a non-NDA summary.
+/// Workflow attribution label (TECH-B9, TECH-DSN13). The workflow name sits on
+/// its own row; when NDA mode is on, a small uppercase coral "NDA" eyebrow
+/// stacks below it. Laid out as two real rows that collapse to just the name
+/// row when not NDA - the old fixed-height box pinned the name to the top and
+/// the badge to the bottom of a 14pt frame, so they overlapped ~10pt. The 60pt
+/// panel is too narrow for an inline name + badge row, so the name keeps the
+/// full width (truncating tail) and NDA drops to its own line.
 private final class HUDWorkflowLabel: NSView {
     private let nameLabel = NSTextField(labelWithString: "")
     private let ndaLabel = NSTextField(labelWithString: "NDA")
+
+    /// Toggled in `apply`: the view's bottom tracks the name row when not NDA,
+    /// the NDA eyebrow when NDA, so the second row collapses for non-NDA workflows.
+    private var nameBottom: NSLayoutConstraint!
+    private var ndaTop: NSLayoutConstraint!
+    private var ndaBottom: NSLayoutConstraint!
 
     init(workflow: Workflow?) {
         super.init(frame: .zero)
@@ -486,21 +499,26 @@ private final class HUDWorkflowLabel: NSView {
         nameLabel.lineBreakMode = .byTruncatingTail
         nameLabel.maximumNumberOfLines = 1
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
+        // Truncate the name rather than widen the fixed 60pt panel.
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addSubview(nameLabel)
 
         ndaLabel.font = .systemFont(ofSize: 9, weight: .semibold)
-        ndaLabel.textColor = MPColors.pulse600
+        ndaLabel.textColor = MPColors.pulse600   // Pulse-coral, kept for the "sensitive" signal.
         ndaLabel.alignment = .center
         ndaLabel.translatesAutoresizingMaskIntoConstraints = false
         ndaLabel.isHidden = true
         addSubview(ndaLabel)
 
+        nameBottom = nameLabel.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ndaTop = ndaLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: MPSpace.s1)
+        ndaBottom = ndaLabel.bottomAnchor.constraint(equalTo: bottomAnchor)
+
         NSLayoutConstraint.activate([
+            nameLabel.topAnchor.constraint(equalTo: topAnchor),
             nameLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
             nameLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
-            nameLabel.topAnchor.constraint(equalTo: topAnchor),
             ndaLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
-            ndaLabel.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
         apply(workflow)
     }
@@ -509,13 +527,21 @@ private final class HUDWorkflowLabel: NSView {
     private func apply(_ workflow: Workflow?) {
         guard let wf = workflow else {
             nameLabel.stringValue = ""
-            ndaLabel.isHidden = true
+            setNDA(false)
             isHidden = true
             return
         }
         isHidden = false
         nameLabel.stringValue = wf.name
-        ndaLabel.isHidden = !wf.flags.ndaMode
+        setNDA(wf.flags.ndaMode)
+    }
+
+    /// Switch between the one-row (name only) and two-row (name + NDA eyebrow) layout.
+    private func setNDA(_ on: Bool) {
+        ndaLabel.isHidden = !on
+        nameBottom.isActive = !on
+        ndaTop.isActive = on
+        ndaBottom.isActive = on
     }
 }
 
