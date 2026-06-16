@@ -41,8 +41,10 @@ struct LibraryListView: View {
                 }
             }
         }
-        .frame(minWidth: 320)
-        .navigationSplitViewColumnWidth(min: 280, ideal: 380)
+        // Floor for the no-`workflowStore` fallback, where this view is shown
+        // outside the split. In the split, the column width is set at the call
+        // site in `LibraryWindow` (the single source of truth, TECH-UX11).
+        .frame(minWidth: LibraryLayout.listMinWidth)
         .onAppear { recomputeDerived() }
         .onChange(of: store.revision) { _, _ in recomputeDerived() }
         .onChange(of: scope) { _, _ in recomputeDerived() }

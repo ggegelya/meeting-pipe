@@ -63,7 +63,7 @@ struct MeetingDetailView: View {
             Divider().overlay(Color(MPColors.borderFaint))
             tabContent
         }
-        .frame(minWidth: 360)
+        .frame(minWidth: LibraryLayout.detailMinWidth)
         .onAppear { syncEditingTitle(force: true) }
         .onChange(of: meeting.stem) { _, _ in syncEditingTitle(force: true) }
         .onChange(of: meeting.displayTitle) { _, _ in syncEditingTitle(force: false) }

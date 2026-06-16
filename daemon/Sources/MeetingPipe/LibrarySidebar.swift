@@ -58,7 +58,11 @@ struct LibrarySidebar: View {
             }
         }
         .listStyle(.sidebar)
-        .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
+        .navigationSplitViewColumnWidth(
+            min: LibraryLayout.sidebarMinWidth,
+            ideal: LibraryLayout.sidebarIdealWidth,
+            max: LibraryLayout.sidebarMaxWidth
+        )
     }
 
     /// Non-workflow scopes shown in the Library section, in display order.

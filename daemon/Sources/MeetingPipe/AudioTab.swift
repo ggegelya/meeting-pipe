@@ -101,7 +101,9 @@ struct AudioTab: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 120)
+            // Hug the two labels instead of a fixed width, so the footer stays
+            // narrow enough to fit the detail-column floor (TECH-UX11).
+            .fixedSize()
             .help(
                 "Mono mixes the mic (left) and system audio (right) into both ears. "
                 + "Stereo plays the original channels. The on-disk WAV is never modified."
@@ -109,15 +111,16 @@ struct AudioTab: View {
 
             // Waveform zoom only (TECH-UI-10): Fit shows the whole recording,
             // 1x to 8x expand it horizontally for fine seeking. This control
-            // does not change playback speed.
+            // does not change playback speed. A compact menu (not segmented)
+            // keeps the footer inside the detail-column floor (TECH-UX11).
             Picker("Zoom", selection: $zoom) {
                 ForEach(ZoomLevel.allCases) { z in
                     Text(z.label).tag(z)
                 }
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.menu)
             .labelsHidden()
-            .frame(width: 220)
+            .fixedSize()
             .help("Waveform zoom. Fit shows the whole recording; 1x to 8x expand it horizontally for fine seeking. Playback speed is unaffected.")
         }
     }

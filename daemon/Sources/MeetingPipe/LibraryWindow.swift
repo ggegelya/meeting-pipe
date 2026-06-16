@@ -27,8 +27,8 @@ final class LibraryWindow {
         let w = NSWindow(contentViewController: host)
         w.title = "MeetingPipe Library"
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        w.setContentSize(NSSize(width: 900, height: 600))
-        w.minSize = NSSize(width: 720, height: 480)
+        w.setContentSize(NSSize(width: 1120, height: 680))
+        w.minSize = NSSize(width: LibraryLayout.windowMinWidth, height: LibraryLayout.windowMinHeight)
         // Cmd+W orders the window out without deallocating; next show() restores state.
         w.isReleasedWhenClosed = false
         w.setFrameAutosaveName("MeetingPipeLibraryWindow")
@@ -278,7 +278,7 @@ struct LibraryRootView: View {
             }
             split
         }
-        .frame(minWidth: 760)
+        .frame(minWidth: LibraryLayout.windowMinWidth)
         // Cmd+, opens Preferences from the Library window. The status-bar menu's
         // key equivalent (StatusBarController) is not validated against a key
         // window in this LSUIElement app (no NSApp.mainMenu), so the Preferences
@@ -344,9 +344,13 @@ struct LibraryRootView: View {
                 )
                 // Floor the center column so the status pill + date can't be
                 // squeezed off the row edge when the window or columns narrow.
-                .navigationSplitViewColumnWidth(min: 360, ideal: 440)
+                .navigationSplitViewColumnWidth(min: LibraryLayout.listMinWidth, ideal: LibraryLayout.listIdealWidth)
             } detail: {
                 detailPane(workflowStore: store)
+                    // Floor the detail column so it clears the Audio tab footer
+                    // instead of sliding its leading content under the divider
+                    // at the window minimum (TECH-UX11).
+                    .navigationSplitViewColumnWidth(min: LibraryLayout.detailMinWidth, ideal: LibraryLayout.detailIdealWidth)
             }
         } else {
             // WorkflowStore not yet wired; fall back to a sidebar-less list.

@@ -373,9 +373,8 @@ in Finder. Five tabs underneath:
   on the wav's size + modification time, so any change to the
   recording (re-record, repair, replace) invalidates the cache on the
   next open. Click anywhere in the waveform to seek; the play head
-  syncs with the Transcript tab. A segmented zoom picker (Fit / 1× /
-  2× / 4× / 8×) widens the rendered track when you need to land on a
-  specific second.
+  syncs with the Transcript tab. A zoom menu (Fit / 1× / 2× / 4× / 8×)
+  widens the rendered track when you need to land on a specific second.
 - `Corrections` shows the on-disk correction record once you've
   edited (or graded) the meeting: verdict, timestamp, backend + model,
   notes, and a side-by-side Original / Corrected preview. **Re-edit in
