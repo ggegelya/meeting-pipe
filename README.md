@@ -352,22 +352,33 @@ Select a row and the right pane fills with the per-meeting detail
 view: an editable title, the meeting's date, the workflow chip when
 present, duration, and shortcuts to open the published note in Notion
 or Obsidian (when those sidecars are on disk) or reveal the raw audio
-in Finder. Five tabs underneath:
+in Finder. When the backend that produced the summary is known, a
+quiet grey provenance line sits under the caption naming it -
+`Claude (cloud)`, `On-device (MLX)`, or `Apple Intelligence` (the
+model id rides in the tooltip); it is hidden for legacy, paste, or
+skipped meetings with no recorded backend. A `...` menu on the header
+collects the less-common actions (Rename, Edit summary, Corrections…,
+Republish, Reprocess, Open meta.json, Copy meeting ID, Delete…).
+Three tabs underneath:
 
-- `Summary` renders `<stem>.summary.md` as Markdown and exposes an
-  `Edit` button. The editor reuses the same field set as the
+- `Summary` renders `<stem>.summary.md` as Markdown and is read-only
+  until you pick `Edit summary` from the header `...` menu, which
+  swaps in the editor. The editor reuses the same field set as the
   standalone correction window: title, summary bullets, decisions,
-  action items, open questions, attendees, language, notes. Saving
-  writes a correction record (verdict=edited) and overwrites
+  action items, open questions, attendees, language, notes. Its
+  primary button is `Save correction`, which persists the edit only:
+  it writes a correction record (verdict=edited) and overwrites
   `<stem>.summary.json` so the list and Markdown views immediately
-  reflect the new content. `Save & Republish` additionally re-runs
-  `mp publish-notion` so the published page in Notion picks up the
-  edit; the editor stays disabled and shows a progress indicator while
-  the subprocess runs. A quiet `Reprocess…` affordance at the foot of
-  the summary lets you edit the context prompt the model is given and
-  generate a candidate summary, shown side by side; keep it to replace
-  the current one (never auto-published) or discard to keep the
-  original. The override applies to that run only and is never persisted.
+  reflect the new content. A failed save keeps you in the editor with
+  an inline warning and your edits intact. Republishing is a separate
+  step (the `...` menu's `Republish`, or the row's inline Republish
+  button once the saved summary is newer than the published page), so
+  a save never re-pushes to your sinks on its own. A quiet
+  `Reprocess…` affordance at the foot of the summary lets you edit the
+  context prompt the model is given and generate a candidate summary,
+  shown side by side; keep it to replace the current one (never
+  auto-published) or discard to keep the original. The override
+  applies to that run only and is never persisted.
 - `Transcript` renders the diarized segments from `<stem>.json` as a
   speaker-grouped list. Click any line to jump the audio play head to
   that segment and start playing; the active line is highlighted as
@@ -383,21 +394,20 @@ in Finder. Five tabs underneath:
   next open. Click anywhere in the waveform to seek; the play head
   syncs with the Transcript tab. A zoom menu (Fit / 1× / 2× / 4× / 8×)
   widens the rendered track when you need to land on a specific second.
-- `Corrections` shows the on-disk correction record once you've
-  edited (or graded) the meeting: verdict, timestamp, backend + model,
-  notes, and a side-by-side Original / Corrected preview. **Re-edit in
-  Summary tab** flips you back to the Summary tab; **Revert…** asks
-  for confirmation and then restores the original LLM summary to
-  `<stem>.summary.json` and deletes the correction record. Notion is
-  not changed automatically — republish from the Summary tab if you
-  want the page in sync.
-- `Raw files` lists every sidecar in the recordings directory that
-  shares the meeting's stem (`<stem>.wav`, `<stem>.json`,
-  `<stem>.summary.json`, `<stem>.meta.json`, `<stem>.run.json`, and
-  the publish-target sidecars) with size + modification date. Each
-  row has **Reveal in Finder**, a double-click to open with the
-  default app, and a context-menu option to copy the path. The footer
-  shows the directory and an **Open folder** button.
+
+Corrections is no longer a tab (the DSN2 IA pass dropped it): the
+`...` menu's `Corrections…` opens it as a sheet. Once you've edited
+(or graded) the meeting it shows the on-disk correction record:
+verdict, timestamp, backend + model, notes, and a side-by-side
+Original / Corrected preview. **Re-edit in Summary tab** closes the
+sheet and jumps to the Summary editor; **Revert…** asks for
+confirmation and then restores the original LLM summary to
+`<stem>.summary.json` and deletes the correction record. Notion is
+not changed automatically; republish if you want the page in sync.
+
+The `Raw files` tab was dropped in the same pass. Getting at the
+sidecars on disk now goes through the `...` menu's `Open meta.json`
+and the header's reveal-in-Finder shortcut.
 
 A filter bar sits above the list with a search field plus chips for
 workflow, source app, status, and date range (today / last 7 days /
