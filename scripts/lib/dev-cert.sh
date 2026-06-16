@@ -53,10 +53,11 @@ ensure_dev_cert() {
         return 0
     fi
 
-    # A non-empty PKCS#12 password is required: macOS's `security import` fails
-    # MAC verification on an empty-password p12 produced by LibreSSL (the system
-    # openssl). The password is transient (only for the export/import handshake);
-    # the imported key is then usable by codesign via the -A ACL with no password.
+    # A non-empty PKCS#12 password is required: `security import` fails MAC
+    # verification on an empty-password p12. (Algorithm choice matters too; see
+    # the -legacy note below.) The password is transient (only for the
+    # export/import handshake); the imported key is then usable by codesign via
+    # the -A ACL with no password.
     local tmp keychain ok=1 p12pass="meetingpipe-dev-transient"
     tmp="$(mktemp -d)" || return 0
     keychain="$HOME/Library/Keychains/login.keychain-db"
@@ -77,7 +78,16 @@ CNF
     openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
         -keyout "$tmp/key.pem" -out "$tmp/cert.pem" -config "$tmp/req.cnf" >/dev/null 2>&1 || ok=0
     if (( ok )); then
-        openssl pkcs12 -export -name "$DEV_CERT_CN" \
+        # OpenSSL 3.x defaults PKCS#12 to AES-256 + a non-SHA1 MAC that Apple's
+        # Security-framework parser rejects ("MAC verification failed during
+        # PKCS12 import"), so `security import` below fails and we fall back to
+        # ad-hoc. `-legacy` forces the SHA1/3DES algorithms it can read. The flag
+        # is OpenSSL-3-only; the system LibreSSL lacks it and already writes the
+        # legacy format, so pass it only when `pkcs12 -help` advertises it.
+        local legacy_flag=""
+        openssl pkcs12 -help 2>&1 | grep -q -- '-legacy' && legacy_flag="-legacy"
+        # shellcheck disable=SC2086  # single bare flag or empty; intentional split
+        openssl pkcs12 -export $legacy_flag -name "$DEV_CERT_CN" \
             -inkey "$tmp/key.pem" -in "$tmp/cert.pem" \
             -out "$tmp/id.p12" -passout "pass:$p12pass" >/dev/null 2>&1 || ok=0
     fi
