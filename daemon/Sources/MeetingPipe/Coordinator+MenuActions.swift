@@ -100,8 +100,13 @@ extension Coordinator {
         configStore?.summarizationBackend ?? "anthropic"
     }
 
-    func previewSummary(stem: String, completion: @escaping (Result<Void, Error>) -> Void) {
-        library.previewSummary(stem: stem, completion: completion)
+    func previewSummary(stem: String, contextOverride: String? = nil, completion: @escaping (Result<Void, Error>) -> Void) {
+        library.previewSummary(stem: stem, contextOverride: contextOverride, completion: completion)
+    }
+
+    /// TECH-FEAT7: passthrough so the Library can prefill the reprocess editor.
+    func effectiveContextPrompt(stem: String) -> String {
+        library.effectiveContextPrompt(stem: stem)
     }
 
     @discardableResult

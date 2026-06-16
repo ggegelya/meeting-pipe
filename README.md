@@ -363,7 +363,11 @@ in Finder. Five tabs underneath:
   reflect the new content. `Save & Republish` additionally re-runs
   `mp publish-notion` so the published page in Notion picks up the
   edit; the editor stays disabled and shows a progress indicator while
-  the subprocess runs.
+  the subprocess runs. A quiet `Reprocess…` affordance at the foot of
+  the summary lets you edit the context prompt the model is given and
+  generate a candidate summary, shown side by side; keep it to replace
+  the current one (never auto-published) or discard to keep the
+  original. The override applies to that run only and is never persisted.
 - `Transcript` renders the diarized segments from `<stem>.json` as a
   speaker-grouped list. Click any line to jump the audio play head to
   that segment and start playing; the active line is highlighted as

@@ -21,10 +21,10 @@ protocol PipelineDriver: AnyObject {
     func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// Publish a hand-pasted summary (TECH-UX3): runs `mp publish-from-paste <transcript.md>`, which parses the sibling `<stem>.summary.md` the caller wrote and fans out to the sinks.
     func publishFromPaste(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
-    /// Re-run summarize into a `<stem>.summary.candidate.json` preview (TECH-A16), no publish. Defaulted no-op.
-    func summarizePreview(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
-    /// Apple Intelligence candidate-preview re-run (TECH-A16), no publish. Defaulted no-op.
-    func summarizePreviewViaApple(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
+    /// Re-run summarize into a `<stem>.summary.candidate.json` preview (TECH-A16), no publish. `contextOverride` (TECH-FEAT7) overrides only the CONTEXT block for this run when non-empty. Defaulted no-op.
+    func summarizePreview(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void)
+    /// Apple Intelligence candidate-preview re-run (TECH-A16), no publish. `contextOverride` (TECH-FEAT7) overrides the context for this run when non-empty. Defaulted no-op.
+    func summarizePreviewViaApple(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void)
 }
 
 extension PipelineDriver {
@@ -67,7 +67,7 @@ extension PipelineDriver {
     }
 
     /// Default no-op stub; `PipelineLauncher` overrides this.
-    func summarizePreview(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+    func summarizePreview(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void) {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "summarizePreview unsupported by this driver"]
@@ -75,7 +75,7 @@ extension PipelineDriver {
     }
 
     /// Default no-op stub; `PipelineLauncher` overrides this.
-    func summarizePreviewViaApple(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+    func summarizePreviewViaApple(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void) {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "summarizePreviewViaApple unsupported by this driver"]
@@ -237,20 +237,43 @@ final class PipelineLauncher: PipelineDriver {
     /// Re-run summarize into a `<stem>.summary.candidate.json` preview without
     /// touching the live summary or any sink (TECH-A16), via the configured
     /// MLX-local backend (`mp summarize --candidate`).
-    func summarizePreview(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
-        runMP(["summarize", transcriptMD.path, "--candidate"], timeout: 20 * 60, meeting: transcriptMD, completion: completion)
+    func summarizePreview(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+        // TECH-FEAT7: a non-empty ad-hoc prompt overrides only the CONTEXT block
+        // for this one candidate run, through the same extraEnv channel as
+        // MP_FORCE_BYO. runMP keeps the regulated/NDA force-local enforcement
+        // (cloudSecretPolicy) on this exact call.
+        runMP(["summarize", transcriptMD.path, "--candidate"], timeout: 20 * 60,
+              meeting: transcriptMD, extraEnv: Self.contextOverrideEnv(contextOverride),
+              completion: completion)
+    }
+
+    /// TECH-FEAT7: a non-empty ad-hoc reprocess prompt as the `MP_CONTEXT_OVERRIDE`
+    /// subprocess env. Empty / whitespace is a no-op (a plain reprocess).
+    private static func contextOverrideEnv(_ contextOverride: String?) -> [String: String] {
+        guard let ctx = contextOverride,
+              !ctx.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return [:]
+        }
+        return ["MP_CONTEXT_OVERRIDE": ctx]
     }
 
     /// Apple Intelligence re-run into a candidate sidecar (TECH-A16): summarize
     /// on-device in Swift and write `<stem>.summary.candidate.json`, no publish.
-    func summarizePreviewViaApple(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+    func summarizePreviewViaApple(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void) {
         guard AppleIntelligenceSummarizer.isAvailable else {
             completion(.failure(AppleIntelligenceError.unavailable(
                 AppleIntelligenceSummarizer.availabilityReason ?? "unavailable")))
             return
         }
         let wav = transcriptMD.deletingPathExtension().appendingPathExtension("wav")
-        let (teamContext, summaryLanguage) = Self.appleContext(for: wav)
+        let (resolvedContext, summaryLanguage) = Self.appleContext(for: wav)
+        // FEAT7: the env var does not reach the in-Swift Apple summarizer, so a
+        // non-empty override is applied directly to the team context here.
+        var teamContext = resolvedContext
+        if let ctx = contextOverride,
+           !ctx.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            teamContext = ctx
+        }
         Task {
             do {
                 try await AppleIntelligenceSummarizer().summarizeFile(

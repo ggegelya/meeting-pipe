@@ -152,7 +152,7 @@ final class MeetingLibraryService {
     /// the local backend, without touching the live summary or any sink
     /// (TECH-A16). Dispatches to the Swift Apple summarizer or `mp summarize
     /// --candidate` by configured backend. Errors flow through `completion`.
-    func previewSummary(stem: String, completion: @escaping (Result<Void, Error>) -> Void) {
+    func previewSummary(stem: String, contextOverride: String? = nil, completion: @escaping (Result<Void, Error>) -> Void) {
         let dir = outputDir()
         let transcriptURL = dir.appendingPathComponent("\(stem).md")
         guard FileManager.default.fileExists(atPath: transcriptURL.path) else {
@@ -174,10 +174,18 @@ final class MeetingLibraryService {
             }
         }
         if summarizationBackend() == "apple_intelligence" {
-            launcher.summarizePreviewViaApple(transcriptMD: transcriptURL, completion: handler)
+            launcher.summarizePreviewViaApple(transcriptMD: transcriptURL, contextOverride: contextOverride, completion: handler)
         } else {
-            launcher.summarizePreview(transcriptMD: transcriptURL, completion: handler)
+            launcher.summarizePreview(transcriptMD: transcriptURL, contextOverride: contextOverride, completion: handler)
         }
+    }
+
+    /// TECH-FEAT7: the effective context prompt for a meeting (the per-meeting
+    /// workflow context overriding the global team_context), used to prefill the
+    /// reprocess editor. Reuses the same resolution the Apple summary path uses.
+    func effectiveContextPrompt(stem: String) -> String {
+        let wav = outputDir().appendingPathComponent("\(stem).wav")
+        return PipelineLauncher.appleContext(for: wav).teamContext
     }
 
     /// Promote the candidate preview to the live summary (TECH-A16). Does NOT

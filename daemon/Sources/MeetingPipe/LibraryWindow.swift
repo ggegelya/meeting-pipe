@@ -175,7 +175,9 @@ final class LibraryWindowModel: ObservableObject {
     }
 
     /// Re-run summarization into a candidate preview (TECH-A16); never publishes.
-    func previewSummary(stem: String) async -> Result<Void, Error> {
+    /// `contextOverride` (TECH-FEAT7) feeds an ad-hoc reprocess prompt for that
+    /// run only; nil is the plain local re-run.
+    func previewSummary(stem: String, contextOverride: String? = nil) async -> Result<Void, Error> {
         guard let coordinator = coordinator else {
             return .failure(NSError(
                 domain: "LibraryWindowModel", code: 1,
@@ -183,8 +185,13 @@ final class LibraryWindowModel: ObservableObject {
             ))
         }
         return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
-            coordinator.previewSummary(stem: stem) { cont.resume(returning: $0) }
+            coordinator.previewSummary(stem: stem, contextOverride: contextOverride) { cont.resume(returning: $0) }
         }
+    }
+
+    /// TECH-FEAT7: the effective context prompt for prefilling the reprocess editor.
+    func effectiveContextPrompt(stem: String) -> String {
+        coordinator?.effectiveContextPrompt(stem: stem) ?? ""
     }
 
     @discardableResult

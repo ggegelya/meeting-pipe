@@ -240,3 +240,63 @@ def test_summarize_default_writes_live_sidecars(tmp_path: Path):
 
     assert out["json"].name == "x.summary.json"
     assert out["md"].name == "x.summary.md"
+
+
+class _CapturingClient:
+    """Injected client that records the system prompt it is handed, no network."""
+
+    def __init__(self) -> None:
+        self.system_prompt: str | None = None
+
+    def summarize(self, *, system_prompt, transcript, model, max_tokens):
+        self.system_prompt = system_prompt
+        return _make_summary()
+
+
+def test_context_override_replaces_team_context_for_this_run(tmp_path: Path, monkeypatch):
+    # TECH-FEAT7: MP_CONTEXT_OVERRIDE replaces only the CONTEXT block value for
+    # this run; the configured team_context is not used and cfg is not mutated.
+    transcript = tmp_path / "x.md"
+    transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+    monkeypatch.setenv("MP_CONTEXT_OVERRIDE", "FOCUS_ON_DECISIONS_AND_OWNERS")
+
+    cfg = Config()
+    cfg.summarization.team_context = "CONFIGURED_TEAM_CONTEXT"
+    client = _CapturingClient()
+    summarize(transcript, cfg=cfg, client=client)
+
+    assert client.system_prompt is not None
+    assert "FOCUS_ON_DECISIONS_AND_OWNERS" in client.system_prompt
+    assert "CONFIGURED_TEAM_CONTEXT" not in client.system_prompt
+    # Request-scoped: the override never mutates the config.
+    assert cfg.summarization.team_context == "CONFIGURED_TEAM_CONTEXT"
+
+
+def test_empty_context_override_is_a_noop(tmp_path: Path, monkeypatch):
+    # A whitespace-only override falls back to the configured context: a plain reprocess.
+    transcript = tmp_path / "x.md"
+    transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+    monkeypatch.setenv("MP_CONTEXT_OVERRIDE", "   ")
+
+    cfg = Config()
+    cfg.summarization.team_context = "CONFIGURED_TEAM_CONTEXT"
+    client = _CapturingClient()
+    summarize(transcript, cfg=cfg, client=client)
+
+    assert client.system_prompt is not None
+    assert "CONFIGURED_TEAM_CONTEXT" in client.system_prompt
+
+
+def test_no_context_override_uses_configured_context(tmp_path: Path, monkeypatch):
+    # With no env var set, behaviour is exactly as before FEAT7.
+    transcript = tmp_path / "x.md"
+    transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+    monkeypatch.delenv("MP_CONTEXT_OVERRIDE", raising=False)
+
+    cfg = Config()
+    cfg.summarization.team_context = "CONFIGURED_TEAM_CONTEXT"
+    client = _CapturingClient()
+    summarize(transcript, cfg=cfg, client=client)
+
+    assert client.system_prompt is not None
+    assert "CONFIGURED_TEAM_CONTEXT" in client.system_prompt

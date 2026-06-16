@@ -229,8 +229,19 @@ def summarize(
     if not transcript.strip():
         raise ValueError(f"Empty transcript: {transcript_md}")
 
+    # TECH-FEAT7: an ad-hoc reprocess can override only the CONTEXT block for this
+    # one run via MP_CONTEXT_OVERRIDE. It replaces the team_context VALUE fed into
+    # the prompt, never the prompt template or the tool-use / schema contract, and
+    # is request-scoped: cfg is not mutated and nothing is persisted. Empty or
+    # whitespace-only is a no-op (a plain reprocess on the configured context).
+    team_context = cfg.summarization.team_context
+    override = os.environ.get("MP_CONTEXT_OVERRIDE")
+    if override and override.strip():
+        team_context = override
+        log.info("summarize: applying request-scoped MP_CONTEXT_OVERRIDE")
+
     system_prompt = _load_system_prompt(
-        cfg.summarization.team_context,
+        team_context,
         cfg.summarization.summary_language,
     )
 

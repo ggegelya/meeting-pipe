@@ -15,6 +15,8 @@ final class MeetingLibraryServiceTests: XCTestCase {
         private(set) var publishFromPasteInputs: [URL] = []
         private(set) var previewInputs: [URL] = []
         private(set) var applePreviewInputs: [URL] = []
+        /// TECH-FEAT7: the contextOverride forwarded into each preview call.
+        private(set) var previewContextOverrides: [String?] = []
         private var summarizeCompletions: [(Result<Void, Error>) -> Void] = []
         private var publishCompletions: [(Result<URL?, Error>) -> Void] = []
         private var publishFromPasteCompletions: [(Result<Void, Error>) -> Void] = []
@@ -22,13 +24,15 @@ final class MeetingLibraryServiceTests: XCTestCase {
 
         func runAll(wav: URL, summaryMode: SummaryMode, completion: @escaping (Result<URL?, Error>) -> Void) {}
 
-        func summarizePreview(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        func summarizePreview(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void) {
             previewInputs.append(transcriptMD)
+            previewContextOverrides.append(contextOverride)
             previewCompletions.append(completion)
         }
 
-        func summarizePreviewViaApple(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        func summarizePreviewViaApple(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void) {
             applePreviewInputs.append(transcriptMD)
+            previewContextOverrides.append(contextOverride)
             previewCompletions.append(completion)
         }
 
@@ -221,6 +225,15 @@ final class MeetingLibraryServiceTests: XCTestCase {
         service.previewSummary(stem: "m") { _ in }   // default backend "local"
         XCTAssertEqual(driver.previewInputs.map { $0.lastPathComponent }, ["m.md"])
         XCTAssertTrue(driver.applePreviewInputs.isEmpty)
+        // TECH-FEAT7: no override by default (the plain A16 local re-run).
+        XCTAssertEqual(driver.previewContextOverrides, [nil])
+    }
+
+    func test_previewSummary_forwards_context_override() throws {
+        try touch("m.md")
+        service.previewSummary(stem: "m", contextOverride: "Lead with decisions.") { _ in }
+        XCTAssertEqual(driver.previewInputs.map { $0.lastPathComponent }, ["m.md"])
+        XCTAssertEqual(driver.previewContextOverrides, ["Lead with decisions."])
     }
 
     func test_previewSummary_apple_backend_uses_apple_summarizer() throws {

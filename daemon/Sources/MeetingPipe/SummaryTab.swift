@@ -33,6 +33,12 @@ struct SummaryTab: View {
     @State private var previewing = false
     @State private var previewError: String? = nil
 
+    /// TECH-FEAT7: reprocess with a custom prompt. `showReprocess` swaps the
+    /// reader for a prompt editor; the generated candidate flows into the same
+    /// A16 compare + Keep/Discard pane, so it never auto-publishes.
+    @State private var showReprocess = false
+    @State private var promptDraft = ""
+
     var body: some View {
         Group {
             if isEditing, let model = editorModel {
@@ -61,6 +67,8 @@ struct SummaryTab: View {
             candidate = nil
             candidateStem = nil
             previewError = nil
+            showReprocess = false
+            promptDraft = ""
         }
         .onChange(of: editToken) { _, _ in
             // TECH-UI-5: the detail-pane menu requested summary editing.
@@ -75,8 +83,13 @@ struct SummaryTab: View {
             ScrollView {
                 if let candidate = candidate, let current = loadedSummary {
                     comparePane(current: current, candidate: candidate)
+                } else if showReprocess, loadedSummary != nil {
+                    reprocessPane
                 } else if let summary = loadedSummary {
-                    SummaryRenderedView(summary: summary)
+                    VStack(alignment: .leading, spacing: 0) {
+                        SummaryRenderedView(summary: summary)
+                        reprocessBar
+                    }
                 } else if loadedForStem == meeting.stem {
                     emptyState
                 } else {
@@ -98,7 +111,8 @@ struct SummaryTab: View {
                 .foregroundStyle(.secondary)
             SummaryRenderedView(summary: current)
             Divider()
-            Label("New (preview)", systemImage: "sparkles")
+            // PRODUCT "no sparkle" rule: a plain inspect glyph, label "Candidate".
+            Label("Candidate", systemImage: "doc.text.magnifyingglass")
                 .font(.headline)
                 .foregroundStyle(Color(MPColors.signal600))
             SummaryRenderedView(summary: candidate)
@@ -124,7 +138,7 @@ struct SummaryTab: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-        } else if libraryModel.canPreviewLocally, loadedSummary != nil {
+        } else if libraryModel.canPreviewLocally, loadedSummary != nil, !showReprocess {
             Divider()
             HStack(spacing: 8) {
                 if let err = previewError {
@@ -149,22 +163,112 @@ struct SummaryTab: View {
         meeting.recordingsDir.appendingPathComponent("\(meeting.stem).summary.candidate.json")
     }
 
-    private func runPreview() async {
+    private func runPreview(contextOverride: String? = nil) async {
         previewError = nil
         previewing = true
-        let result = await libraryModel.previewSummary(stem: meeting.stem)
+        let result = await libraryModel.previewSummary(stem: meeting.stem, contextOverride: contextOverride)
         previewing = false
         switch result {
         case .success:
             if let loaded = MeetingSummary.load(from: candidateURL) {
                 candidate = loaded
                 candidateStem = meeting.stem
+                showReprocess = false   // the candidate compare pane takes over
             } else {
                 previewError = "The re-run produced no readable summary."
             }
         case .failure(let err):
             previewError = err.localizedDescription
         }
+    }
+
+    // MARK: Reprocess with a custom prompt (TECH-FEAT7)
+
+    /// Quiet entry at the foot of the reader: open the prompt editor. Offered on
+    /// every backend (unlike the local-only A16 re-run); force-local under
+    /// regulated / NDA is still enforced downstream by cloudSecretPolicy.
+    private var reprocessBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Not quite right?")
+                    .font(.system(size: 12, weight: .medium))
+                Text("Edit the prompt and reprocess. You can compare before keeping it.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button("Reprocess\u{2026}") { beginReprocess() }
+                .controlSize(.small)
+        }
+        .padding(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: MPRadius.sm, style: .continuous)
+                .strokeBorder(Color(MPColors.borderStrong),
+                              style: StrokeStyle(lineWidth: 0.5, dash: [4]))
+        )
+        .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
+        .padding(.horizontal, MPSpace.s5)
+        .padding(.bottom, MPSpace.s5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Prompt editor: edit the context, generate a candidate, never auto-publish.
+    /// The result flows into the same A16 compare + Keep/Discard pane.
+    private var reprocessPane: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Reprocess with a custom prompt")
+                .font(.headline)
+            Text("Adjust the context the model is given, then generate a candidate to compare. Your live summary stays untouched until you keep it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Context prompt")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color(MPColors.fgMuted))
+            TextEditor(text: $promptDraft)
+                .font(.system(size: 13))
+                .frame(minHeight: 120)
+                .overlay(
+                    RoundedRectangle(cornerRadius: MPRadius.sm, style: .continuous)
+                        .stroke(Color(MPColors.border))
+                )
+                .disabled(previewing)
+            HStack(spacing: 8) {
+                if let err = previewError {
+                    Label(err, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.mpWarning).lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                if previewing {
+                    ProgressView().controlSize(.small)
+                    Text("Reprocessing\u{2026}").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Button("Cancel") { showReprocess = false; previewError = nil }
+                    Button("Generate candidate") { runReprocess() }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+        .padding(MPSpace.s5)
+        .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func beginReprocess() {
+        promptDraft = libraryModel.effectiveContextPrompt(stem: meeting.stem)
+        previewError = nil
+        showReprocess = true
+    }
+
+    private func runReprocess() {
+        // An empty / whitespace prompt sends no override (a plain reprocess on
+        // the configured context); the Python side treats it as a no-op too.
+        let trimmed = promptDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task { await runPreview(contextOverride: trimmed.isEmpty ? nil : promptDraft) }
     }
 
     private func keepPreview() {
