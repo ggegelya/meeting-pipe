@@ -67,7 +67,7 @@ struct LibrarySidebar: View {
 
     /// Non-workflow scopes shown in the Library section, in display order.
     static let librarySections: [LibraryScope] = [
-        .allMeetings, .today, .last7Days, .last30Days, .ndaOnly, .untagged,
+        .allMeetings, .today, .last7Days, .last30Days, .needsYou, .ndaOnly, .untagged,
     ]
 }
 
@@ -77,13 +77,14 @@ struct ScopeCounts: Equatable {
     let today: Int
     let last7: Int
     let last30: Int
+    let needsYou: Int
     let nda: Int
     let untagged: Int
     /// Per-workflow counts keyed by id. Missing entries render as zero so new workflows show immediately.
     let perWorkflow: [Workflow.ID: Int]
 
     static let zero = ScopeCounts(
-        total: 0, today: 0, last7: 0, last30: 0, nda: 0, untagged: 0, perWorkflow: [:]
+        total: 0, today: 0, last7: 0, last30: 0, needsYou: 0, nda: 0, untagged: 0, perWorkflow: [:]
     )
 
     func count(for scope: LibraryScope) -> Int {
@@ -92,6 +93,7 @@ struct ScopeCounts: Equatable {
         case .today:       return today
         case .last7Days:   return last7
         case .last30Days:  return last30
+        case .needsYou:    return needsYou
         case .ndaOnly:     return nda
         case .untagged:    return untagged
         case .workflow(let id): return perWorkflow[id] ?? 0
@@ -104,9 +106,9 @@ struct ScopeCounts: Equatable {
 
     /// Walk the meeting list once and bucket each row into the scopes it satisfies. O(n × scopes); n is at most a few hundred in normal use.
     static func build(meetings: [Meeting], workflows: [Workflow], now: Date = Date()) -> ScopeCounts {
-        var today = 0, last7 = 0, last30 = 0, nda = 0, untagged = 0
+        var today = 0, last7 = 0, last30 = 0, needsYou = 0, nda = 0, untagged = 0
         var perWf: [Workflow.ID: Int] = [:]
-        let scopes: [LibraryScope] = [.today, .last7Days, .last30Days, .ndaOnly, .untagged]
+        let scopes: [LibraryScope] = [.today, .last7Days, .last30Days, .needsYou, .ndaOnly, .untagged]
         for m in meetings {
             for s in scopes {
                 guard s.includes(m, workflows: workflows, now: now) else { continue }
@@ -114,6 +116,7 @@ struct ScopeCounts: Equatable {
                 case .today:      today += 1
                 case .last7Days:  last7 += 1
                 case .last30Days: last30 += 1
+                case .needsYou:   needsYou += 1
                 case .ndaOnly:    nda += 1
                 case .untagged:   untagged += 1
                 default: break
@@ -128,7 +131,7 @@ struct ScopeCounts: Equatable {
         return ScopeCounts(
             total: meetings.count,
             today: today, last7: last7, last30: last30,
-            nda: nda, untagged: untagged,
+            needsYou: needsYou, nda: nda, untagged: untagged,
             perWorkflow: perWf
         )
     }
@@ -141,17 +144,37 @@ private struct LibraryScopeRow: View {
     let count: Int
     let isSelected: Bool
 
+    /// "Needs you" badges a non-zero count as a filled amber attention pill so
+    /// unresolved meetings are visible from the rail (TECH-DSN17). Every other
+    /// scope keeps the quiet mono count.
+    private var isAttention: Bool {
+        if case .needsYou = scope { return count > 0 }
+        return false
+    }
+
     var body: some View {
         Label {
             HStack(spacing: 6) {
                 Text(scope.title)
                 Spacer(minLength: 0)
-                Text(count.formatted(.number))
-                    .font(.system(size: 11).monospacedDigit())
-                    // TECH-UI-8: mute empty scopes (secondary at half opacity);
-                    // non-empty stay full secondary, keeping the selected emphasis.
-                    .foregroundStyle(count == 0 ? AnyShapeStyle(Color.secondary.opacity(0.5))
-                                                 : AnyShapeStyle(isSelected ? .primary : .secondary))
+                if isAttention {
+                    Text(count.formatted(.number))
+                        .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .frame(minWidth: 16, minHeight: 16)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Color(MPColors.warning600))
+                        )
+                } else {
+                    Text(count.formatted(.number))
+                        .font(.system(size: 11).monospacedDigit())
+                        // TECH-UI-8: mute empty scopes (secondary at half opacity);
+                        // non-empty stay full secondary, keeping the selected emphasis.
+                        .foregroundStyle(count == 0 ? AnyShapeStyle(Color.secondary.opacity(0.5))
+                                                     : AnyShapeStyle(isSelected ? .primary : .secondary))
+                }
             }
         } icon: {
             if let img = scope.systemImage {

@@ -311,7 +311,11 @@ pane, with a custom toolbar across the top:
   Recording with workflow tint and timer), a Record/Stop button, and a
   gear that opens Preferences.
 - **Rail** — under a `LIBRARY` header: `All meetings`, `Today`, `Last 7
-  days`, `Last 30 days`, `NDA only`, `Untagged`. Under a `WORKFLOWS`
+  days`, `Last 30 days`, `Needs you`, `NDA only`, `Untagged`. `Needs
+  you` carries an amber count badge and gathers the meetings that want
+  an action: a failed run, a long-meeting bundle awaiting a paste, or a
+  finished meeting whose publish failed or only partially landed. Under
+  a `WORKFLOWS`
   header: one row per workflow (colored dot + name + meeting count;
   the default workflow is labelled inline). A `+ New workflow` row
   opens an editor sheet. Workflows are filter scopes here, not a

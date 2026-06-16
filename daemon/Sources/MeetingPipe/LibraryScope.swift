@@ -6,6 +6,7 @@ enum LibraryScope: Hashable {
     case today
     case last7Days
     case last30Days
+    case needsYou
     case ndaOnly
     case untagged
     case workflow(Workflow.ID)
@@ -17,6 +18,7 @@ enum LibraryScope: Hashable {
         case .today:       return "Today"
         case .last7Days:   return "Last 7 days"
         case .last30Days:  return "Last 30 days"
+        case .needsYou:    return "Needs you"
         case .ndaOnly:     return "NDA only"
         case .untagged:    return "Untagged"
         case .workflow:    return ""   // resolved at render time via the store
@@ -28,6 +30,7 @@ enum LibraryScope: Hashable {
         switch self {
         case .allMeetings: return "tray.full"
         case .today, .last7Days, .last30Days: return "calendar"
+        case .needsYou:    return "bell"
         case .ndaOnly:     return "lock"
         case .untagged:    return "tag"
         case .workflow:    return nil
@@ -60,6 +63,20 @@ enum LibraryScope: Hashable {
             guard let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: now)
             else { return true }
             return meeting.startedAt >= cutoff
+        case .needsYou:
+            // Anything that wants the owner to act: a failed run, a long-meeting
+            // bundle waiting on a paste, or a finished meeting whose publish
+            // failed outright ("none") or only partially landed ("partial"). A
+            // never-published local/NDA meeting has a nil publishState, so it is
+            // intentionally absent here (TECH-DSN17).
+            switch meeting.status {
+            case .failed, .manualPasteReady:
+                return true
+            case .done:
+                return meeting.publishState == "none" || meeting.publishState == "partial"
+            default:
+                return false
+            }
         case .ndaOnly:
             return Self.resolveWorkflow(for: meeting, in: workflows)?.flags.ndaMode == true
         case .untagged:

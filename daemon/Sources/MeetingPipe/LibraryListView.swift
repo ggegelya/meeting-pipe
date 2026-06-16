@@ -34,7 +34,7 @@ struct LibraryListView: View {
                     )
                     Divider()
                     if derived.filtered.isEmpty {
-                        noMatchesState
+                        emptyListState
                     } else {
                         listBody
                     }
@@ -132,54 +132,58 @@ struct LibraryListView: View {
         )
     }
 
-    private var noMatchesState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "line.3.horizontal.decrease.circle")
-                .font(.system(size: 32))
-                .foregroundStyle(.tertiary)
-            Text("No meetings match this filter")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Button("Clear filter") { filter = MeetingFilter() }
-                .controlSize(.small)
+    /// Empty list column: a positive "Nothing needs you" for the new attention
+    /// scope when it is clear, otherwise the no-search-results state (TECH-DSN17).
+    @ViewBuilder
+    private var emptyListState: some View {
+        if case .needsYou = scope, filter.isEmpty {
+            LibraryListEmptyState(
+                systemImage: "checkmark.circle",
+                title: "Nothing needs you",
+                message: "Failed, unpublished, and paste-pending meetings show up here."
+            )
+        } else {
+            LibraryListEmptyState(
+                systemImage: "line.3.horizontal.decrease.circle",
+                title: "No meetings match",
+                message: "Try a different search, or clear the filters.",
+                actionTitle: "Clear filter",
+                action: { filter = MeetingFilter() }
+            )
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
+    }
+
+    /// Live-recording + actively-processing meetings, pinned above the
+    /// chronological groups in the All-meetings scope only (TECH-DSN17). Driven
+    /// off the model's live flags, not re-derived from on-disk status.
+    private var inProgressMeetings: [Meeting] {
+        guard case .allMeetings = scope else { return [] }
+        return derived.filtered.filter {
+            $0.stem == libraryModel.liveRecordingStem
+                || $0.stem == libraryModel.activeProcessing?.stem
+        }
     }
 
     private var listBody: some View {
-        List(selection: $selection) {
+        // Pin live/processing rows once; drop their stems from the date groups so
+        // a meeting never renders in two places.
+        let pinned = inProgressMeetings
+        let pinnedStems = Set(pinned.map(\.stem))
+        return List(selection: $selection) {
+            if !pinned.isEmpty {
+                Section("In progress") {
+                    ForEach(pinned) { meeting in
+                        row(for: meeting)
+                    }
+                }
+            }
             ForEach(derived.groups, id: \.title) { group in
-                Section(group.title) {
-                    ForEach(group.meetings) { meeting in
-                        MeetingRow(
-                            meeting: meeting,
-                            isLiveRecording: libraryModel.liveRecordingStem == meeting.stem,
-                            activeProcessing: libraryModel.activeProcessing?.stem == meeting.stem
-                                ? libraryModel.activeProcessing : nil,
-                            onRepublish: { [weak libraryModel] in
-                                _ = await libraryModel?.republishMeeting(stem: meeting.stem)
-                            },
-                            onRegenerate: { [weak libraryModel] in
-                                _ = await libraryModel?.regenerateMeeting(stem: meeting.stem)
-                            },
-                            onRetry: { [weak libraryModel] in
-                                libraryModel?.retryMeeting(stem: meeting.stem)
-                                    ?? .failure(NSError(domain: "LibraryListView", code: 1))
-                            },
-                            onSoftDelete: { [weak libraryModel] in
-                                _ = libraryModel?.softDeleteMeeting(stem: meeting.stem)
-                            },
-                            onExport: { [weak libraryModel] dest in
-                                libraryModel?.exportMeeting(stem: meeting.stem, to: dest)
-                                    ?? .failure(NSError(domain: "LibraryListView", code: 1))
-                            },
-                            onCancelProcessing: { [weak libraryModel] in
-                                libraryModel?.cancelProcessing()
-                            }
-                        )
-                        .equatable()
-                        .tag(meeting.id)
+                let rows = group.meetings.filter { !pinnedStems.contains($0.stem) }
+                if !rows.isEmpty {
+                    Section(group.title) {
+                        ForEach(rows) { meeting in
+                            row(for: meeting)
+                        }
                     }
                 }
             }
@@ -189,6 +193,39 @@ struct LibraryListView: View {
         // three sanctioned animation moments (with the HUD degraded grow/shrink
         // and the prompt fade-in); restraint elsewhere is deliberate.
         .animation(.easeOut(duration: MPMotion.durFast), value: selection)
+    }
+
+    /// One list row. Factored so the pinned "In progress" section and the date
+    /// groups build identical rows from one site.
+    private func row(for meeting: Meeting) -> some View {
+        MeetingRow(
+            meeting: meeting,
+            isLiveRecording: libraryModel.liveRecordingStem == meeting.stem,
+            activeProcessing: libraryModel.activeProcessing?.stem == meeting.stem
+                ? libraryModel.activeProcessing : nil,
+            onRepublish: { [weak libraryModel] in
+                _ = await libraryModel?.republishMeeting(stem: meeting.stem)
+            },
+            onRegenerate: { [weak libraryModel] in
+                _ = await libraryModel?.regenerateMeeting(stem: meeting.stem)
+            },
+            onRetry: { [weak libraryModel] in
+                libraryModel?.retryMeeting(stem: meeting.stem)
+                    ?? .failure(NSError(domain: "LibraryListView", code: 1))
+            },
+            onSoftDelete: { [weak libraryModel] in
+                _ = libraryModel?.softDeleteMeeting(stem: meeting.stem)
+            },
+            onExport: { [weak libraryModel] dest in
+                libraryModel?.exportMeeting(stem: meeting.stem, to: dest)
+                    ?? .failure(NSError(domain: "LibraryListView", code: 1))
+            },
+            onCancelProcessing: { [weak libraryModel] in
+                libraryModel?.cancelProcessing()
+            }
+        )
+        .equatable()
+        .tag(meeting.id)
     }
 
 }
@@ -209,6 +246,41 @@ struct LibraryEmptyState: View {
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(40)
+    }
+}
+
+/// Reusable centred empty state for the list column (TECH-DSN17): an icon, a
+/// title, a one-line message, and an optional action button. Replaces the ad-hoc
+/// no-matches VStack and serves the new "Nothing needs you" state.
+struct LibraryListEmptyState: View {
+    let systemImage: String
+    let title: String
+    let message: String
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(.system(size: 26))
+                .foregroundStyle(.tertiary)
+                .padding(.bottom, 2)
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+            Text(message)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 320)
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .controlSize(.small)
+                    .padding(.top, 6)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)

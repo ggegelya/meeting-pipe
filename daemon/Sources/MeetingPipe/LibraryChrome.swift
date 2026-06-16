@@ -5,7 +5,11 @@ import SwiftUI
 
 // MARK: - Workflow chip
 
-/// Color-tinted workflow chip: 18pt capsule, leading 6pt dot, 16% tinted background. Used in the row caption, filter bar, and detail header.
+/// Neutral workflow chip (TECH-DSN17): 18pt capsule on the recessed `bgSunk`
+/// fill with a hairline border, a leading tonal dot in the workflow color, and a
+/// muted label. The "tonal dots, not colored chips" rule: the workflow color
+/// lives only in the dot, so a list of workflows reads as one calm family rather
+/// than confetti. Used in the row caption, filter bar, and detail header.
 struct WorkflowChip: View {
     let name: String
     let colorHex: String?
@@ -24,17 +28,22 @@ struct WorkflowChip: View {
             }
             Text(name)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(accent)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal, 7)
         .frame(height: 18)
         .background(
             Capsule(style: .continuous)
-                .fill(accent.opacity(0.16))
+                .fill(Color(MPColors.bgSunk))
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(Color(MPColors.border), lineWidth: 0.5)
         )
     }
 
+    /// The workflow's tonal color (DSN11 curated set), used only for the dot now.
     private var accent: Color {
         if let hex = colorHex, let ns = HexColor.parse(hex) { return Color(ns) }
         return Color(MPColors.fgMuted)

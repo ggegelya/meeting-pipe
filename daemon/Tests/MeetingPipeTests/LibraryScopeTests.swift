@@ -116,6 +116,34 @@ final class LibraryScopeTests: XCTestCase {
         ))
     }
 
+    func test_needsYou_matches_only_actionable_meetings() {
+        // Failed and paste-ready always want action.
+        XCTAssertTrue(LibraryScope.needsYou.includes(
+            makeMeeting(stem: "a", status: .failed), workflows: [], now: now
+        ))
+        XCTAssertTrue(LibraryScope.needsYou.includes(
+            makeMeeting(stem: "b", status: .manualPasteReady), workflows: [], now: now
+        ))
+        // Done with a fully-failed ("none") or partial publish wants action.
+        XCTAssertTrue(LibraryScope.needsYou.includes(
+            makeMeeting(stem: "c", status: .done, publishState: "none"), workflows: [], now: now
+        ))
+        XCTAssertTrue(LibraryScope.needsYou.includes(
+            makeMeeting(stem: "d", status: .done, publishState: "partial"), workflows: [], now: now
+        ))
+        // Fully published, still processing, or never-published local (nil
+        // publishState) are not attention items.
+        XCTAssertFalse(LibraryScope.needsYou.includes(
+            makeMeeting(stem: "e", status: .done, publishState: "full"), workflows: [], now: now
+        ))
+        XCTAssertFalse(LibraryScope.needsYou.includes(
+            makeMeeting(stem: "f", status: .done, publishState: nil), workflows: [], now: now
+        ))
+        XCTAssertFalse(LibraryScope.needsYou.includes(
+            makeMeeting(stem: "g", status: .processing), workflows: [], now: now
+        ))
+    }
+
     func test_isWorkflow_and_workflowID_accessors() {
         let id = UUID()
         XCTAssertFalse(LibraryScope.allMeetings.isWorkflow)
@@ -142,9 +170,11 @@ final class LibraryScopeTests: XCTestCase {
     private func makeMeeting(
         stem: String,
         startedAt: Date = Date(),
-        workflow: String? = nil
+        workflow: String? = nil,
+        status: Meeting.Status = .done,
+        publishState: String? = nil
     ) -> Meeting {
-        Meeting(
+        var m = Meeting(
             stem: stem,
             startedAt: startedAt,
             wavURL: URL(fileURLWithPath: "/tmp/\(stem).wav"),
@@ -153,8 +183,10 @@ final class LibraryScopeTests: XCTestCase {
             sourceBundleID: nil, sourceDisplayName: nil, sourceKind: nil,
             workflowName: workflow, workflowColor: nil,
             durationSec: nil, backend: nil, modelId: nil,
-            status: .done, failureReason: nil, failureStage: nil,
+            status: status, failureReason: nil, failureStage: nil,
             searchableText: ""
         )
+        m.publishState = publishState
+        return m
     }
 }

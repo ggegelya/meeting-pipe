@@ -54,11 +54,11 @@ struct MeetingRow: View, Equatable {
                     inFlightBadge(inFlight)
                 } else {
                     if effectiveStatus == .failed {
-                        retryButton
+                        inlineFixButton("Retry") { runRetry() }
                     } else if effectiveStatus == .manualPasteReady {
-                        regenerateButton
-                    } else if meeting.needsRepublish {
-                        republishButton
+                        inlineFixButton("Regenerate") { Task { await regenerate() } }
+                    } else if showsInlineRepublish {
+                        inlineFixButton("Republish") { Task { await republish() } }
                     }
                     if let progress = activeProcessing {
                         processingIndicator(progress)
@@ -69,18 +69,12 @@ struct MeetingRow: View, Equatable {
                 trailingWhenStack
             }
         }
+        // TECH-DSN17: no side stripe. The live-recording row reads through the
+        // coral wash (rowBackground) plus the coral pulse dot in the status pill;
+        // the 2pt leading accent that used to live here is gone for a calmer row.
         .padding(.horizontal, 14)
-        .frame(height: 44)
+        .frame(height: 46)
         .background(rowBackground)
-        .overlay(alignment: .leading) {
-            // 2pt leading accent for the live-recording row. Inset 6pt vertical so it reads as an accent, not a divider.
-            if showsLeadingAccent {
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(Color(MPColors.signal600))
-                    .frame(width: 2)
-                    .padding(.vertical, 6)
-            }
-        }
         .contentShape(Rectangle())
         .contextMenu { contextMenuItems }
     }
@@ -155,16 +149,28 @@ struct MeetingRow: View, Equatable {
         }
     }
 
-    /// Inline retry button so the owner can act without opening the context menu.
-    private var retryButton: some View {
-        Button("Retry") { runRetry() }
-            .controlSize(.small)
-    }
-
-    /// Inline Regenerate on paste-ready rows (TECH-UX2); same action as the context menu.
-    private var regenerateButton: some View {
-        Button("Regenerate") { Task { await regenerate() } }
-            .controlSize(.small)
+    /// Skinny inline-fix button (TECH-DSN17): a compact bordered capsule that
+    /// keeps the row light, replacing the stock `.controlSize(.small)` buttons.
+    /// The action label stays accurate to what runs (Retry / Regenerate /
+    /// Republish), so the same control reads correctly in any scope, including
+    /// the "Needs you" rail filter.
+    private func inlineFixButton(_ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color(MPColors.fg))
+                .padding(.horizontal, 9)
+                .frame(height: 20)
+                .background(
+                    RoundedRectangle(cornerRadius: MPRadius.xs, style: .continuous)
+                        .fill(Color(MPColors.bgRaised))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: MPRadius.xs, style: .continuous)
+                        .strokeBorder(Color(MPColors.borderStrong), lineWidth: 0.5)
+                )
+        }
+        .buttonStyle(.plain)
     }
 
     /// Live pipeline progress for the active row (TECH-UX5): stage + elapsed, or
@@ -202,10 +208,16 @@ struct MeetingRow: View, Equatable {
         }
     }
 
-    /// Inline Republish when the local summary is newer than the last publish (TECH-UX2).
-    private var republishButton: some View {
-        Button("Republish") { Task { await republish() } }
-            .controlSize(.small)
+    /// Inline Republish appears when the summary was edited since the last
+    /// publish (TECH-UX2) or when a publish failed / only partially landed, so a
+    /// row in the "Needs you" scope always carries its own fix (TECH-DSN17).
+    /// NDA / local-only rows can never qualify: their `publishState` is nil, so
+    /// the partial/none branch cannot fire, and the inline button never offers to
+    /// egress a meeting that was kept local by design.
+    private var showsInlineRepublish: Bool {
+        if meeting.needsRepublish { return true }
+        return effectiveStatus == .done
+            && (meeting.publishState == "none" || meeting.publishState == "partial")
     }
 
     /// Hover text for the failed pill: persisted reason when available, generic fallback for staleness-age-inferred failures.
@@ -245,8 +257,6 @@ struct MeetingRow: View, Equatable {
             Color.clear
         }
     }
-
-    private var showsLeadingAccent: Bool { isLiveRecording }
 
     private var isNDA: Bool {
         // TECH-DSN6: read the resolved zero-egress flag the daemon now persists

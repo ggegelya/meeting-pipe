@@ -14,10 +14,14 @@ struct FilterBarView: View {
             sourceChip
             statusChip
             dateChip
-            clearButton
+            // TECH-DSN17: Clear only appears once a filter is active, so the
+            // resting bar reads lighter (the count badge appears with it).
+            if !filter.isEmpty {
+                clearButton
+            }
         }
         .padding(.horizontal, 14)
-        .frame(height: 36)
+        .frame(height: 38)
     }
 
     // MARK: Search
@@ -46,8 +50,10 @@ struct FilterBarView: View {
                 .strokeBorder(Color(MPColors.border), lineWidth: 0.5)
         )
         .background(
+            // TECH-DSN17: a real recessed well. The old white-5% fill was
+            // invisible on the paper canvas; bgSunk reads on both themes.
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.white.opacity(0.05))
+                .fill(Color(MPColors.bgSunk))
         )
     }
 
