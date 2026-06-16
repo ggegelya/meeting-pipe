@@ -77,9 +77,9 @@ extension MeetingDetailView {
                     summaryEditToken += 1
                 }
             }
-            Button("Edit transcript") {
-                toolbarAction("edit_transcript") { selectedTab = Tab.transcript.rawValue }
-            }
+            // No "Edit transcript" here: there is no transcript-wide edit mode.
+            // Transcripts are corrected per line, via the hover pencil or the
+            // right-click "Edit text..." in the Transcript tab (TECH-UX12).
             Button("Corrections\u{2026}") {
                 toolbarAction("corrections") { showCorrectionsSheet = true }
             }

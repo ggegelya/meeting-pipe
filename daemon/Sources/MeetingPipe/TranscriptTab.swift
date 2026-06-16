@@ -329,6 +329,10 @@ private struct TranscriptRow: View {
     let onTap: () -> Void
     let onEdit: () -> Void
 
+    /// Reveals the per-line Edit pencil on hover so transcript correction is
+    /// discoverable without the right-click menu (TECH-UX12).
+    @State private var isHovered = false
+
     var body: some View {
         Button(action: onTap) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -365,6 +369,20 @@ private struct TranscriptRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Hover affordance lives in the empty space beside the speaker/timestamp
+        // line, so it never overlaps wrapped body text. The overlay is a sibling
+        // layer over the row button, so its tap goes to Edit, not to seek.
+        .overlay(alignment: .topTrailing) {
+            if isHovered {
+                MPGhostIconButton(
+                    systemImage: "pencil",
+                    help: "Edit this line",
+                    action: onEdit
+                )
+                .padding(.trailing, 10)
+            }
+        }
+        .onHover { isHovered = $0 }
         .contextMenu {
             Button("Edit text…", action: onEdit)
         }
