@@ -297,6 +297,12 @@ final class PipelineLauncher: PipelineDriver {
                 completion(.failure(error))
                 return
             }
+            // TECH-FEAT6: snapshot the run before publish, matching the Python
+            // ordering (write_run_sidecar precedes fanout). A publish failure
+            // then still leaves the backend provenance on disk.
+            Self.writeAppleRunSidecar(
+                dir: dir, stem: stem, transcriptMD: transcriptMD, summaryJSON: summaryJSON
+            )
             self.runMP(["publish", summaryJSON.path], timeout: 10 * 60, meeting: summaryJSON) { result in
                 switch result {
                 case .failure(let error):
@@ -306,6 +312,42 @@ final class PipelineLauncher: PipelineDriver {
                     completion(.success(Self.readPageURL(from: sidecar)))
                 }
             }
+        }
+    }
+
+    /// TECH-FEAT6: write `<stem>.run.json` for an Apple-Intelligence run so the
+    /// Library can show backend provenance. The Python pipeline writes this for
+    /// the anthropic / local backends (`corrections.write_run_sidecar`), but
+    /// `orchestrate.py` short-circuits before that call on the Apple path and the
+    /// in-Swift Apple summarizer wrote only `summary.json`, so those meetings
+    /// reached Swift with `backend == nil`. Keys and the atomic write mirror the
+    /// Python contract; there is no Python-supplied model id for the on-device
+    /// system model, so a stable identifier is used. Best-effort: a failure here
+    /// never fails the publish.
+    private static func writeAppleRunSidecar(
+        dir: URL, stem: String, transcriptMD: URL, summaryJSON: URL
+    ) {
+        let chars = (try? String(contentsOf: transcriptMD, encoding: .utf8))?.count ?? 0
+        let payload: [String: Any] = [
+            "stem": stem,
+            "transcript_path": transcriptMD.path,
+            "transcript_chars": chars,
+            "summary_json_path": summaryJSON.path,
+            "backend": "apple_intelligence",
+            "model": "apple-foundation-models",
+            "ts": ISO8601DateFormatter().string(from: Date()),
+        ]
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(
+                  withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]
+              ) else {
+            return
+        }
+        let out = dir.appendingPathComponent("\(stem).run.json")
+        do {
+            try data.write(to: out, options: .atomic)
+        } catch {
+            Log.main.warning("FEAT6: failed to write Apple run sidecar: \(error.localizedDescription)")
         }
     }
 

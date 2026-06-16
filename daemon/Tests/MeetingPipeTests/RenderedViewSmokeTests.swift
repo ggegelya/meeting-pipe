@@ -35,4 +35,38 @@ final class RenderedViewSmokeTests: XCTestCase {
         XCTAssertNotNil(SummaryRenderedView(summary: summary).body)
         XCTAssertNotNil(SummaryRenderedView(summary: MeetingSummary()).body)
     }
+
+    // TECH-FEAT6: the backend -> provenance-label map is a contract. The strings
+    // "anthropic" / "local" / "apple_intelligence" must match what MeetingStore
+    // reads from <stem>.run.json["backend"]; an unknown / nil backend hides the row.
+    func test_provenanceLabel_maps_each_backend() {
+        XCTAssertEqual(detailView(backend: "anthropic").provenanceLabel, "Claude (cloud)")
+        XCTAssertEqual(detailView(backend: "local").provenanceLabel, "On-device (MLX)")
+        XCTAssertEqual(detailView(backend: "apple_intelligence").provenanceLabel, "Apple Intelligence")
+        XCTAssertNil(detailView(backend: nil).provenanceLabel)
+        XCTAssertNil(detailView(backend: "something_new").provenanceLabel)
+    }
+
+    func test_provenanceTooltip_is_the_model_id_or_nil() {
+        XCTAssertEqual(
+            detailView(backend: "anthropic", modelId: "claude-opus-4-8").provenanceTooltip,
+            "claude-opus-4-8"
+        )
+        XCTAssertNil(detailView(backend: "anthropic", modelId: nil).provenanceTooltip)
+        XCTAssertNil(detailView(backend: "anthropic", modelId: "").provenanceTooltip)
+    }
+
+    private func detailView(backend: String?, modelId: String? = nil) -> MeetingDetailView {
+        MeetingDetailView(meeting: Meeting(
+            stem: "s", startedAt: Date(),
+            wavURL: URL(fileURLWithPath: "/tmp/s.wav"),
+            recordingsDir: URL(fileURLWithPath: "/tmp"),
+            summaryTitle: nil, meetingTitle: nil,
+            sourceBundleID: nil, sourceDisplayName: nil, sourceKind: nil,
+            workflowName: nil, workflowColor: nil,
+            durationSec: nil, backend: backend, modelId: modelId,
+            status: .done, failureReason: nil, failureStage: nil,
+            searchableText: ""
+        ))
+    }
 }

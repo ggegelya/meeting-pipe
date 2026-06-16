@@ -13,6 +13,7 @@ extension MeetingDetailView {
             titleRow
             titleField
             captionRow
+            provenanceRow
         }
     }
 
@@ -140,6 +141,52 @@ extension MeetingDetailView {
                     .foregroundStyle(Color(MPColors.fgSubtle))
             }
         }
+    }
+
+    /// FEAT6: a quiet grey line naming the backend that produced the summary
+    /// (Claude cloud / on-device MLX / Apple Intelligence). Hidden for legacy,
+    /// paste, or skipped meetings with no recorded backend, so there is never an
+    /// empty chip. Quiet about the AI: no sparkle, no teal, no coral; the model
+    /// id lives only in the tooltip. Uses `fgSubtle` (not the mockup's fainter
+    /// `fg-faint`) so the label clears the 4.5:1 text contrast floor.
+    @ViewBuilder
+    var provenanceRow: some View {
+        if let label = provenanceLabel {
+            HStack(spacing: 5) {
+                Image(systemName: provenanceIcon)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+                Text(label)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+            }
+            .help(provenanceTooltip ?? label)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Summarized by \(label)")
+        }
+    }
+
+    /// Backend -> short, quiet label. Nil for an unknown backend so the row
+    /// disappears entirely rather than showing an empty provenance line.
+    var provenanceLabel: String? {
+        switch meeting.backend {
+        case "anthropic":          return "Claude (cloud)"
+        case "local":              return "On-device (MLX)"
+        case "apple_intelligence": return "Apple Intelligence"
+        default:                   return nil
+        }
+    }
+
+    /// The model id rides only in the tooltip; the visible label stays readable.
+    var provenanceTooltip: String? {
+        guard let model = meeting.modelId, !model.isEmpty else { return nil }
+        return model
+    }
+
+    /// Quiet monochrome glyph: a cloud for the hosted call, an on-device chip for
+    /// the two local backends.
+    private var provenanceIcon: String {
+        meeting.backend == "anthropic" ? "cloud" : "cpu"
     }
 
     /// Uppercased 2-letter language code for the caption chip (TECH-UI-4); nil when unknown so the chip is hidden entirely.
