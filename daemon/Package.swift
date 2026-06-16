@@ -17,9 +17,7 @@ let package = Package(
         // sidecar. The runner is wired through TranscriptionService and is
         // not the default path yet (the Python pipeline still wins) until a
         // follow-up session validates ANE residency and sidecar parity.
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.4"),
-        // TECH-T2: Appearance-gated snapshot tests for a few SwiftUI views.
-        .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.17.0")
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.4")
     ],
     targets: [
         // Shared lifecycle + gate infrastructure (TECH-C13, TECH-G-MIC).
@@ -56,15 +54,9 @@ let package = Package(
         .testTarget(
             name: "MeetingPipeTests",
             dependencies: [
-                "MeetingPipe",
-                .product(name: "SnapshotTesting", package: "swift-snapshot-testing")
+                "MeetingPipe"
             ],
             path: "Tests/MeetingPipeTests",
-            // swift-snapshot-testing reads reference PNGs from disk relative to
-            // each test's #filePath, not from the SwiftPM resource bundle, so the
-            // committed __Snapshots__ tree must be excluded from the target rather
-            // than declared as a resource (otherwise SwiftPM flags it as unhandled).
-            exclude: ["__Snapshots__"],
             resources: [
                 .process("Fixtures")
             ]
