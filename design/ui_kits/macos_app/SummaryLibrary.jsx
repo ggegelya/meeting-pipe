@@ -14,9 +14,8 @@
 //  - Every colour, space, type and radius value routes through colors_and_type.css
 //    (--mp-* tokens). Layout dimensions are literal px (mac windows are fixed-size).
 //  - Accent is unified to signal-teal end-state (TECH-DSN10/11/12): selection,
-//    toggles, primary action, playhead and waveform are all teal, never system
-//    blue. The shipped --mp-focus-ring token is still blue; recolouring the token
-//    is coherence work, so focus rings here derive teal from --mp-signal-600 inline.
+//    toggles, primary action, playhead, waveform and focus rings are all teal,
+//    never system blue. Focus rings use the --mp-focus-ring token directly.
 //  - Workflow dots are the curated tonal set only: teal / deep-teal / amber / ink.
 //    Coral (--mp-pulse-*) is reserved for the recording dot.
 //  - No side-stripe row accents. No em-dashes in any copy. Sentence case, second
@@ -35,8 +34,6 @@ const SL_APP_GLYPH = {
 // MPColors.speakerPalette; on-palette unification curates it to the tonal set.
 // The mockup shows three on-token speakers (teal / amber / ink), no arbitrary hex.
 const SL_SPEAKER = ["var(--mp-signal-600)", "var(--mp-warning-600)", "var(--mp-ink-600)"];
-
-const SL_FOCUS = "0 0 0 3px color-mix(in srgb, var(--mp-signal-600) 32%, transparent)";
 
 const SL_WF = {
   general:  { name: "General",     dot: "var(--mp-signal-600)", isDefault: true },
@@ -708,7 +705,7 @@ const SLTextField = ({ lines, rows = 2, focused, markdown }) => (
     minHeight: rows * 22 + 14, padding: "8px 10px", borderRadius: "var(--mp-radius-sm)",
     background: "var(--mp-bg-raised)",
     border: focused ? "1px solid var(--mp-signal-600)" : "1px solid var(--mp-border-strong)",
-    boxShadow: focused ? SL_FOCUS : "none",
+    boxShadow: focused ? "var(--mp-focus-ring)" : "none",
     fontSize: "var(--mp-text-base)", lineHeight: "var(--mp-leading-normal)",
     display: "flex", flexDirection: "column", gap: 4,
   }}>

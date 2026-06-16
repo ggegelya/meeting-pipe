@@ -140,7 +140,7 @@ The design system is built on three motifs:
 2. **Hairlines, not shadows** — mac-native chrome separates surfaces with
    1px / 0.5px borders, not heavy drop shadows. Shadows appear only on
    *floating* surfaces (panels, popovers, sheets).
-3. **Signal blue** — one electric accent, used surgically. It is the color of
+3. **Signal teal** — one electric accent, used surgically. It is the color of
    *capture in progress*. Never a decorative gradient, never a background fill
    on large surfaces.
 
@@ -311,7 +311,7 @@ the menu bar.
 ## CAVEATS — please review
 
 1. **No prior brand was attached.** The identity proposed here (Paper /
-   Ink / Signal blue, the pipe-with-waveform mark, Inter Tight + JetBrains
+   Ink / Signal teal, the pipe-with-waveform mark, Inter Tight + JetBrains
    Mono) is my read of the codebase voice and the user's "modern, mac-first,
    minimalistic, slightly futuristic" brief. **Tell me which directions to
    push or pull** — bolder color? More mono / terminal-feel? Different

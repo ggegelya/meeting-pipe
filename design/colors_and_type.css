@@ -161,8 +161,8 @@
                     0 12px 32px rgba(20, 22, 26, 0.16),
                     0 24px 60px rgba(20, 22, 26, 0.12);
 
-  /* Focus ring -- matches macOS controlAccentColor outline. */
-  --mp-focus-ring: 0 0 0 3px rgba(38, 103, 240, 0.32);
+  /* Focus ring: signal accent at 32% (intentionally teal, not macOS controlAccentColor blue). */
+  --mp-focus-ring: 0 0 0 3px color-mix(in srgb, var(--mp-signal-600) 32%, transparent);
 
   /* --- Motion ---------------------------------------------------------- */
   /* Mac favors short, snappy fades. No bounces. */
