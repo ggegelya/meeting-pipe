@@ -1,110 +1,101 @@
-// MeetingPrompt — recreates MeetingPromptWindow.swift
-// Floating HUD panel: 380×auto, top-right, hudWindow translucency.
+// MeetingPrompt - faithful recreation of MeetingPromptWindow.swift.
+// Shipped: a Notion-style HORIZONTAL pill, 600x64, centered near the top of the
+// screen (80pt inset), hudWindow translucency, 14pt corner radius.
 //
-// Three signature behaviors:
-//   1. App glyph in the eyebrow — surfaces NSWorkspace.shared.icon(forFile:)
-//      at runtime; falls back to the signal-blue waveform mark.
-//   2. Live mic waveform — 4 bars driven by AVAudioRecorder.averagePower RMS.
-//      ONLY visible while the prompt is up; nothing is captured to disk yet.
-//      Copy makes that explicit.
-//   3. Auto-dismiss progress — 2px hairline along the bottom edge that drains
-//      over the timeout (default 30s, from PreferencesWindow → Detection).
+// Layout (left to right): a top-left close x that means Skip, the app glyph, a
+// stacked eyebrow (UPPERCASE app name) over the title "Record this meeting?",
+// the live mic waveform, the workflow chip, then the action cluster
+// [Record (BYO)] [Record] [v]. The secondary actions live under the v chevron
+// menu (Always / Skip / Open Screen Recording Settings) because inline buttons
+// for "Always for Microsoft Teams" alone are ~190pt and crowd the cluster.
+//
+// Two signature behaviors are preserved:
+//   - Live mic waveform: 4 bars driven by RMS while the prompt is up. Nothing
+//     is captured to disk yet, only level is read.
+//   - Auto-dismiss: a 2px hairline along the bottom drains over the timeout
+//     (default 30s). Pauses on hover so a reader does not lose the prompt.
 
 const APP_GLYPH_MAP = {
-  "Zoom":       "../../assets/app-glyphs/zoom.svg",
-  "Teams":      "../../assets/app-glyphs/teams.svg",
+  "Zoom":        "../../assets/app-glyphs/zoom.svg",
+  "Teams":       "../../assets/app-glyphs/teams.svg",
   "Microsoft Teams": "../../assets/app-glyphs/teams.svg",
-  "Meet":       "../../assets/app-glyphs/meet.svg",
-  "Google Meet":"../../assets/app-glyphs/meet.svg",
-  "Slack":      "../../assets/app-glyphs/slack.svg",
+  "Meet":        "../../assets/app-glyphs/meet.svg",
+  "Google Meet": "../../assets/app-glyphs/meet.svg",
+  "Slack":       "../../assets/app-glyphs/slack.svg",
   "Slack huddle":"../../assets/app-glyphs/slack.svg",
 };
 
 const MeetingPrompt = ({
   source = { displayName: "Zoom" },
+  workflow = { name: "General", color: "var(--mp-signal-600)" },
   timeoutSec = 30,
   onRecord, onSkip, onAlways, onBYO,
 }) => {
-  const promptStyle = {
-    position: "relative",
-    width: 380,
-    borderRadius: "var(--mp-radius-lg)",
-    background: "var(--mp-hud-bg)",
-    backdropFilter: "blur(24px) saturate(180%)",
-    WebkitBackdropFilter: "blur(24px) saturate(180%)",
-    boxShadow: "var(--mp-hud-shadow)",
-    border: "0.5px solid var(--mp-hud-stroke)",
-    padding: "14px 16px 16px",
-    color: "var(--mp-fg)",
-    fontFamily: "var(--mp-font-sans)",
-    overflow: "hidden",
-  };
   const glyphSrc = APP_GLYPH_MAP[source.displayName] ?? "../../assets/app-glyphs/_fallback.svg";
-
   return (
-    <div style={promptStyle}>
-      {/* Eyebrow row: app glyph + "Meeting detected" + live waveform */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <img
-          src={glyphSrc}
-          width={24}
-          height={24}
-          alt=""
-          style={{ display: "block", borderRadius: 6, flexShrink: 0 }}
-        />
-        <div style={{
-          fontSize: "var(--mp-text-base)",
-          fontWeight: 600,
-          color: "var(--mp-fg-muted)",
-          flex: 1,
-        }}>
-          Meeting detected
+    <div style={{
+      position: "relative", width: 600, height: 64,
+      borderRadius: "var(--mp-radius-lg)",
+      background: "var(--mp-hud-bg)",
+      backdropFilter: "blur(24px) saturate(180%)",
+      WebkitBackdropFilter: "blur(24px) saturate(180%)",
+      boxShadow: "var(--mp-hud-shadow)",
+      border: "0.5px solid var(--mp-hud-stroke)",
+      color: "var(--mp-fg)", fontFamily: "var(--mp-font-sans)", overflow: "hidden",
+    }}>
+      {/* close x (top-left) == Skip, matching Notion's idiom */}
+      <button onClick={onSkip} title="Skip" aria-label="Skip" style={{
+        position: "absolute", top: 7, left: 8, width: 16, height: 16, borderRadius: "50%",
+        border: "none", background: "transparent", color: "var(--mp-fg-faint)",
+        display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0,
+      }}><Icon name="x" size={11}/></button>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 12, height: "100%", padding: "0 12px 0 26px" }}>
+        <img src={glyphSrc} width={28} height={28} alt="" style={{ display: "block", borderRadius: 6, flexShrink: 0 }}/>
+
+        {/* eyebrow + question */}
+        <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 0 }}>
+          <div style={{
+            fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase",
+            color: "var(--mp-fg-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          }}>{source.displayName}</div>
+          <div style={{ fontSize: 17, fontWeight: 600, letterSpacing: "-0.01em", marginTop: 1, whiteSpace: "nowrap" }}>Record this meeting?</div>
         </div>
+
+        <div style={{ flex: 1 }}/>
+
         <LiveWaveform/>
+
+        {workflow && (
+          <button title="Change workflow" style={{
+            display: "inline-flex", alignItems: "center", gap: 5, height: 22, padding: "0 8px",
+            borderRadius: 999, border: "0.5px solid var(--mp-border)", background: "var(--mp-bg-raised)",
+            color: "var(--mp-fg-muted)", fontFamily: "inherit", fontSize: 11, cursor: "pointer",
+          }}>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: workflow.color }}/>
+            {workflow.name}<Icon name="chevron-down" size={8}/>
+          </button>
+        )}
+
+        {/* action cluster */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <PromptButton onClick={onBYO} title="Record, but skip the Anthropic API call. You'll summarize the transcript yourself.">Record (BYO)</PromptButton>
+          <PromptButton primary onClick={onRecord}>Record</PromptButton>
+          <PromptButton chevron title={`Always for ${source.displayName}  ·  Skip this meeting  ·  Open Screen Recording Settings…`}>
+            <Icon name="chevron-down" size={12}/>
+          </PromptButton>
+        </div>
       </div>
 
-      {/* Source name */}
-      <div style={{
-        fontSize: "var(--mp-text-lg)",
-        fontWeight: 600,
-        marginTop: 4,
-        letterSpacing: "var(--mp-tracking-snug)",
-      }}>
-        {source.displayName}
-      </div>
-
-      {/* Lead + privacy clarification */}
-      <div style={{ fontSize: "var(--mp-text-base)", color: "var(--mp-fg-muted)", marginTop: 8 }}>
-        Record this meeting?
-      </div>
-      <div style={{
-        fontSize: 11, color: "var(--mp-fg-subtle)", marginTop: 4,
-        lineHeight: 1.45,
-      }}>
-        Listening for level only — nothing is captured until you choose Record.
-      </div>
-
-      {/* Buttons */}
-      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-        <PromptButton onClick={onSkip}>Skip</PromptButton>
-        <PromptButton onClick={onAlways}>Always for {source.displayName}</PromptButton>
-      </div>
-      <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
-        <PromptButton onClick={onBYO} title="Record, but skip the API call. You'll summarize the transcript yourself.">Record (BYO)</PromptButton>
-        <PromptButton primary onClick={onRecord}>Record</PromptButton>
-      </div>
-
-      {/* Auto-dismiss progress hairline */}
       <DismissBar timeoutSec={timeoutSec}/>
     </div>
   );
 };
 
-/* -------------------------------------------------------------------------- */
-/*  Live waveform — 4 bars, signal600. In Swift this would read
-    AVAudioRecorder.averagePower(forChannel:) every ~50ms and map dB → height.
-    Here we simulate with smoothed random walk; same visual fingerprint.    */
-/* -------------------------------------------------------------------------- */
+/* --------------------------------------------------------------------------
+   Live waveform - 4 bars, signal600. In Swift this reads
+   AVAudioRecorder.averagePower(forChannel:) every ~50ms. Here a smoothed
+   random walk gives the same visual fingerprint.                            */
 const LiveWaveform = () => {
   const [levels, setLevels] = React.useState([0.4, 0.7, 0.5, 0.3]);
   React.useEffect(() => {
@@ -120,32 +111,16 @@ const LiveWaveform = () => {
     return () => clearTimeout(raf);
   }, []);
   return (
-    <div
-      aria-hidden
-      title="Listening for level"
-      style={{
-        display: "flex", alignItems: "center", gap: 2,
-        height: 14, width: 14 + (4 * 2) /* 14pt visual width */,
-        marginRight: -2,
-      }}
-    >
+    <div aria-hidden title="Listening for level" style={{ display: "flex", alignItems: "center", gap: 2, height: 16 }}>
       {levels.map((lv, i) => (
-        <div key={i} style={{
-          width: 2,
-          height: `${Math.round(lv * 100)}%`,
-          background: "var(--mp-signal-600)",
-          borderRadius: 1,
-          transition: "height 90ms linear",
-        }}/>
+        <div key={i} style={{ width: 2, height: `${Math.round(lv * 100)}%`, background: "var(--mp-signal-600)", borderRadius: 1, transition: "height 90ms linear" }}/>
       ))}
     </div>
   );
 };
 
-/* -------------------------------------------------------------------------- */
-/*  Dismiss bar — drains over `timeoutSec`. Pauses on hover so users who are
-    reading don't lose the prompt out from under them.                        */
-/* -------------------------------------------------------------------------- */
+/* --------------------------------------------------------------------------
+   Dismiss bar - drains over `timeoutSec`. Pauses on hover.                  */
 const DismissBar = ({ timeoutSec }) => {
   const [pct, setPct] = React.useState(100);
   const [paused, setPaused] = React.useState(false);
@@ -182,35 +157,18 @@ const DismissBar = ({ timeoutSec }) => {
   }, [timeoutSec]);
 
   return (
-    <div
-      ref={ref}
-      style={{
-        position: "absolute", left: 0, right: 0, bottom: 0,
-        height: 2,
-        background: "rgba(20,22,26,0.05)",
-      }}
-      aria-hidden
-    >
-      <div style={{
-        height: "100%",
-        width: `${pct}%`,
-        background: "var(--mp-signal-600)",
-        opacity: paused ? 0.30 : 0.60,
-        transition: "opacity 120ms linear",
-      }}/>
+    <div ref={ref} aria-hidden style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 2, background: "rgba(20,22,26,0.05)" }}>
+      <div style={{ height: "100%", width: `${pct}%`, background: "var(--mp-signal-600)", opacity: paused ? 0.30 : 0.60, transition: "opacity 120ms linear" }}/>
     </div>
   );
 };
 
-const PromptButton = ({ children, primary, ...rest }) => {
+const PromptButton = ({ children, primary, chevron, ...rest }) => {
   const base = {
-    height: 28,
-    padding: "0 12px",
-    fontSize: "var(--mp-text-base)",
-    fontWeight: 500,
-    fontFamily: "inherit",
-    borderRadius: "var(--mp-radius-sm)",
-    cursor: "pointer",
+    height: 26, padding: chevron ? "0 7px" : "0 12px",
+    display: "inline-flex", alignItems: "center", justifyContent: "center", whiteSpace: "nowrap",
+    fontSize: "var(--mp-text-base)", fontWeight: 500, fontFamily: "inherit",
+    borderRadius: "var(--mp-radius-sm)", cursor: "pointer", flexShrink: 0,
     transition: "background var(--mp-dur-fast) var(--mp-ease-out)",
   };
   const styles = primary

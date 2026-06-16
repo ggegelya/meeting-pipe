@@ -1,29 +1,23 @@
 # Meeting Pipe — macOS App UI Kit
 
-Pixel-faithful HTML/JSX recreations of the existing Swift menu-bar daemon's
-surfaces. These are mockups for design exploration — not real AppKit code.
+HTML/JSX recreations of the shipped Swift menu-bar daemon's surfaces, faithful to structure, labels, layout, and the design tokens. These are mockups for design exploration, not real AppKit code.
 
-The kit covers the four surfaces that exist today plus two anticipated
-near-future surfaces:
+The kit covers the surfaces that ship today, plus one anticipated near-future surface (onboarding):
 
 | Component | Maps to | Source of truth |
 |---|---|---|
 | `MenuBarDropdown.jsx` | `StatusBarController.swift` | the `rebuildMenu()` function |
-| `MeetingPrompt.jsx` | `MeetingPromptWindow.swift` | the 380×180 `NSPanel` content view |
+| `MeetingPrompt.jsx` | `MeetingPromptWindow.swift` | the 600×64 horizontal `NSPanel` pill + the `⌄` chevron menu |
 | `Notification.jsx` | `Notifier.swift` | `notifyDone` / `notifyRecordingStarted` body strings |
-| `PreferencesWindow.jsx` | `Preferences/PreferencesView.swift` | the SwiftUI split view (General / Recording / Prompt / Pipeline / Integrations / Permissions / Advanced) |
-| `SummaryLibrary.jsx` | *(anticipated)* | derived from filename patterns + Notion summary schema |
+| `PreferencesWindow.jsx` | `Preferences/PreferencesView.swift` + the per-section files | the 780×660 `NavigationSplitView` (General / Recording / Prompt / Pipeline / Integrations / Permissions / Advanced) |
+| `SummaryLibrary.jsx` | `LibraryWindow.swift` + `LibrarySidebar` / `LibraryListView` / `MeetingRow` / `MeetingDetailView` + tabs | the shipped `NavigationSplitView` Library (rail + filtered list + Summary / Transcript / Audio tabs) |
 | `OnboardingPermissions.jsx` | *(anticipated)* | the four-permission grant list (Microphone, Screen Recording, Accessibility, Notifications); see the README install steps |
 
 `index.html` shows them composed against a faux desktop so you can see how the
 menu bar, dropdown, and prompt sit on screen together.
 
 ## Caveats specific to this kit
-- We mock the macOS chrome with the `macos_window.jsx` starter component for
-  the Preferences window. The real app uses native `NSWindow`.
-- Translucency: real `NSVisualEffectView .hudWindow` blends with whatever's
-  behind it on the desktop. Web `backdrop-filter` only blends with what's in
-  the page — close enough for design review.
-- The `SummaryLibrary` and `OnboardingPermissions` surfaces don't exist in
-  code yet. They are proposed designs derived from the spec, not faithful
-  recreations.
+- The `SummaryLibrary` and `PreferencesWindow` mockups draw a light window chrome (border, radius, shadow) inline; the real app uses native `NSWindow`. The `macos_window.jsx` starter stays available for framing screenshots.
+- Tabs and panes are interactive in the mockups (the Library detail tabs, the Preferences sidebar) so a reviewer can click through; the real app persists those selections.
+- Translucency: real `NSVisualEffectView .hudWindow` blends with whatever is behind it on the desktop. Web `backdrop-filter` only blends with what is in the page, which is close enough for design review.
+- Only `OnboardingPermissions` is still a proposed design rather than a faithful recreation of shipped code. Every other surface in this kit mirrors a surface that ships today, faithful to structure, labels, and tokens (not byte-identical to AppKit).
