@@ -36,12 +36,16 @@ struct CorrectionEditorBody: View {
                 }
             }
             .padding(contentPadding)
+            // UX13: cap to the read view's reading column so the edit form lines
+            // up with the summary it replaces instead of running wider.
+            .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private var titleField: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Title").font(.subheadline).bold()
+            Text("Title").font(.headline)
             TextField("Meeting title", text: $model.title)
                 .textFieldStyle(.roundedBorder)
         }
@@ -54,7 +58,7 @@ struct CorrectionEditorBody: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(title).font(.subheadline).bold()
+                Text(title).font(.headline)
                 Spacer()
                 Button {
                     items.wrappedValue.append("")
@@ -88,7 +92,7 @@ struct CorrectionEditorBody: View {
     private var actionsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Action items").font(.subheadline).bold()
+                Text("Action items").font(.headline)
                 Spacer()
                 Button {
                     model.actions.append(EditableAction(
@@ -145,7 +149,7 @@ struct CorrectionEditorBody: View {
 
     private var languageRow: some View {
         HStack {
-            Text("Detected language").font(.subheadline).bold()
+            Text("Detected language").font(.headline)
             Spacer()
             TextField("en", text: $model.detectedLanguage)
                 .textFieldStyle(.roundedBorder)
@@ -155,7 +159,7 @@ struct CorrectionEditorBody: View {
 
     private var notesField: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Notes").font(.subheadline).bold()
+            Text("Notes").font(.headline)
             TextEditor(text: $model.notes)
                 .frame(minHeight: 60, maxHeight: 100)
                 .overlay(

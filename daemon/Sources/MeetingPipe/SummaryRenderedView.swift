@@ -1,14 +1,17 @@
 import AppKit
 import SwiftUI
 
+/// TECH-DSN8 / UX13: the shared reading-column measure (~70 characters at the
+/// body size). The read view (`SummaryRenderedView`) and the inline editor
+/// (`CorrectionEditorBody`) both cap to it, so the summary reads like paper and
+/// the edit form lines up with the reader it replaces rather than drifting wider.
+enum SummaryLayout {
+    static let readingMeasure: CGFloat = 640
+}
+
 /// Renders a typed `MeetingSummary` as SwiftUI sections. Inline emphasis/code/links inside bullets use per-bullet `AttributedString` parsing.
 struct SummaryRenderedView: View {
     let summary: MeetingSummary
-
-    /// TECH-DSN8: cap the prose column to a readable measure (~70 characters at
-    /// the body size) so the summary reads like paper rather than running the
-    /// full pane width. Left-aligned within the pane via the outer frame.
-    private let readingMeasure: CGFloat = 640
 
     var body: some View {
         VStack(alignment: .leading, spacing: MPSpace.s6) {
@@ -44,7 +47,7 @@ struct SummaryRenderedView: View {
             // TECH-UI-4: the detected-language indicator moved to the detail header caption row.
         }
         .padding(MPSpace.s5)
-        .frame(maxWidth: readingMeasure, alignment: .leading)
+        .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .textSelection(.enabled)
     }

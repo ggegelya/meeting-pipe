@@ -14,6 +14,11 @@ struct SummaryTab: View {
 
     @State private var isEditing = false
     @State private var editorModel: CorrectionViewModel? = nil
+    /// UX13: surfaced save outcome. `saveError` keeps the user in edit with an
+    /// inline warning (edits preserved); `savedCue` shows a brief confirmation
+    /// before the crossfade back to the reader.
+    @State private var saveError: String? = nil
+    @State private var savedCue = false
 
     /// BYO / long-meeting paste-back (TECH-UX3).
     @State private var pasteText = ""
@@ -32,10 +37,15 @@ struct SummaryTab: View {
         Group {
             if isEditing, let model = editorModel {
                 editorBody(model: model)
+                    .transition(.opacity)
             } else {
                 readOnlyBody
+                    .transition(.opacity)
             }
         }
+        // UX13: crossfade the read<->edit swap (one of the sanctioned animation
+        // moments) instead of a hard cut. Opacity-only keeps the pane frame stable.
+        .animation(.easeInOut(duration: MPMotion.durBase), value: isEditing)
         .task(id: meeting.stem) {
             await reloadSummary()
         }
@@ -43,6 +53,8 @@ struct SummaryTab: View {
             // Discard in-flight edits on stem change; applying old edits to the new row would be a footgun.
             isEditing = false
             editorModel = nil
+            saveError = nil
+            savedCue = false
             // TECH-A16: drop any unkept candidate preview (and its sidecar) when
             // navigating to another meeting.
             if let s = candidateStem { libraryModel.discardCandidateSummary(stem: s) }
@@ -332,6 +344,8 @@ struct SummaryTab: View {
             originalSummary: summary
         )
         editorModel = model
+        saveError = nil
+        savedCue = false
         isEditing = true
     }
 
@@ -346,21 +360,69 @@ struct SummaryTab: View {
     }
 
     private func footer(model: CorrectionViewModel) -> some View {
-        HStack(spacing: 8) {
-            Button("Cancel") {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            footerStatus
+            Spacer(minLength: 12)
+            Button("Cancel") { cancelEditing() }
+            // DSN2: one republish path. Save just persists the edit; republish is
+            // the single canonical "..." menu / row affordance (the row's
+            // needs-republish badge lights up once the summary is newer). Label
+            // matches the standalone CorrectionWindow.
+            Button("Save correction") { save(model: model) }
+                .keyboardShortcut(.defaultAction)
+        }
+    }
+
+    /// Left side of the footer: an inline warning when the last save failed (the
+    /// user stays in edit, edits preserved), a brief success cue, or the resting
+    /// helper caption. Reuses the same inline-error idiom as the preview / BYO
+    /// rows in this file (UX13).
+    @ViewBuilder
+    private var footerStatus: some View {
+        if let err = saveError {
+            Label(err, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.mpWarning)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if savedCue {
+            Label("Saved", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.mpSuccess)
+        } else {
+            Text("Markdown supported. Save keeps it here; republish to push it to your sinks.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Persist the edit and surface the result instead of swallowing it (UX13).
+    /// On failure the user stays in edit with the inline warning; on success a
+    /// brief cue shows, then the body crossfades back to the reader.
+    private func save(model: CorrectionViewModel) {
+        guard persistEdit(model: model) else {
+            saveError = "Could not save the correction. Check the file permissions and try again."
+            return
+        }
+        saveError = nil
+        savedCue = true
+        Task {
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            await MainActor.run {
+                savedCue = false
                 isEditing = false
                 editorModel = nil
             }
-            Spacer()
-            // DSN2: one republish path. Save just persists the edit; republish
-            // is the single canonical "..." menu / row affordance (the row's
-            // needs-republish badge lights up once the summary is newer).
-            Button("Save") {
-                _ = persistEdit(model: model)
-                isEditing = false
-            }
-            .keyboardShortcut(.defaultAction)
         }
+    }
+
+    private func cancelEditing() {
+        saveError = nil
+        savedCue = false
+        isEditing = false
+        editorModel = nil
     }
 
     /// Writes a correction record (verdict=edited) and overwrites `<stem>.summary.json`. Returns false on disk-write failure.
