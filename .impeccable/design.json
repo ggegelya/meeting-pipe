@@ -1,0 +1,181 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-16T12:00:00Z",
+  "title": "Design System: meeting-pipe",
+  "extensions": {
+    "colorMeta": {
+      "ink-900": { "role": "neutral", "displayName": "Warm Graphite", "canonical": "#14161A", "tonalRamp": ["#14161A", "#2C3037", "#4A4F58", "#6E747F", "#9098A4", "#B7BDC6", "#D8DCE2", "#F5F6F8"] },
+      "ink-600": { "role": "neutral", "displayName": "Slate", "canonical": "#4A4F58" },
+      "ink-500": { "role": "neutral", "displayName": "Stone", "canonical": "#6E747F" },
+      "ink-400": { "role": "neutral", "displayName": "Ash", "canonical": "#9098A4" },
+      "ink-100": { "role": "neutral", "displayName": "Fog", "canonical": "#ECEEF2" },
+      "paper": { "role": "neutral", "displayName": "Soft Document White", "canonical": "#FBFAF7", "tonalRamp": ["#1A1B1E", "#25272B", "#4A4F58", "#9098A4", "#D8DCE2", "#F4F2EC", "#FBFAF7", "#FFFFFF"] },
+      "paper-sunk": { "role": "neutral", "displayName": "Recessed Paper", "canonical": "#F4F2EC" },
+      "paper-raised": { "role": "neutral", "displayName": "Lifted White", "canonical": "#FFFFFF" },
+      "signal-600": { "role": "primary", "displayName": "Live-Signal Teal", "canonical": "#0E8C82", "tonalRamp": ["#053D38", "#0A6F67", "#0E8C82", "#14A89B", "#4FC7BC", "#9CDED7", "#C9ECE8", "#DCF1EF"] },
+      "signal-700": { "role": "primary", "displayName": "Deep Signal", "canonical": "#0A6F67" },
+      "signal-500": { "role": "primary", "displayName": "Bright Signal", "canonical": "#14A89B" },
+      "signal-100": { "role": "primary", "displayName": "Signal Wash", "canonical": "#DCF1EF" },
+      "pulse-600": { "role": "secondary", "displayName": "On-Air Coral", "canonical": "#E5484D", "tonalRamp": ["#5E1417", "#9A2125", "#C92A2A", "#E5484D", "#F5595E", "#FA8A8D", "#FDC0C2", "#FFE4E4"] },
+      "success-600": { "role": "tertiary", "displayName": "Verified Green", "canonical": "#1F8F4E", "tonalRamp": ["#0E5E31", "#1F8F4E", "#DCF1E2"] },
+      "warning-600": { "role": "tertiary", "displayName": "Caution Amber", "canonical": "#B27300", "tonalRamp": ["#7A4F00", "#B27300", "#FFF1CC"] },
+      "danger-600": { "role": "tertiary", "displayName": "Fault Red", "canonical": "#C92A2A", "tonalRamp": ["#8A1C1C", "#C92A2A", "#FCE4E4"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Hero and marketing headlines only. Inter Tight. Never in product chrome." },
+      "headline": { "displayName": "Headline", "purpose": "Largest in-product title and marketing h1. Inter Tight." },
+      "title": { "displayName": "Title", "purpose": "Page titles. Inter Tight." },
+      "heading": { "displayName": "Heading", "purpose": "Preferences section headers. Switches to the system font." },
+      "panel-title": { "displayName": "Panel Title", "purpose": "NSPanel and window title weight; the prompt question and list-pane title." },
+      "body": { "displayName": "Body", "purpose": "Default body and button label, mac-native 13px. Prose caps at 65-75ch." },
+      "body-prominent": { "displayName": "Body Prominent", "purpose": "A step up for reading-weight content." },
+      "caption": { "displayName": "Caption", "purpose": "Secondary labels." },
+      "label": { "displayName": "Label / Eyebrow", "purpose": "Functional uppercase header: sidebar sections, field labels, the app-name eyebrow. Not a decorative section kicker." },
+      "mono": { "displayName": "Mono", "purpose": "Timecodes, durations, paths, identifiers, counts, and key caps. JetBrains Mono." }
+    },
+    "shadows": [
+      { "name": "hairline", "value": "inset 0 0 0 0.5px rgba(20,22,26,0.10)", "purpose": "The Retina divider for internal table rows and surface edges. The default separator, not a shadow." },
+      { "name": "resting-xs", "value": "0 1px 1.5px rgba(20,22,26,0.06)", "purpose": "A barely-there lift for a single raised control." },
+      { "name": "raised-sm", "value": "0 1px 2px rgba(20,22,26,0.08), 0 2px 6px rgba(20,22,26,0.06)", "purpose": "Sheets and panels inside a window." },
+      { "name": "popover-md", "value": "0 1px 2px rgba(20,22,26,0.08), 0 6px 16px rgba(20,22,26,0.10)", "purpose": "Menus and popovers." },
+      { "name": "hud-float", "value": "0 1px 2px rgba(20,22,26,0.10), 0 12px 32px rgba(20,22,26,0.18), 0 24px 60px rgba(20,22,26,0.14)", "purpose": "Only the meeting prompt and floating panels, always paired with the hud fill and backdrop blur." }
+    ],
+    "motion": [
+      { "name": "ease-out", "value": "cubic-bezier(0.22, 0.61, 0.36, 1)", "purpose": "Apple's default-ish out curve. No overshoot, no spring. The standard easing for state transitions." },
+      { "name": "ease-in-out", "value": "cubic-bezier(0.45, 0, 0.20, 1)", "purpose": "Symmetric transitions such as toggles." },
+      { "name": "dur-fast", "value": "120ms", "purpose": "Hover and press feedback." },
+      { "name": "dur-base", "value": "180ms", "purpose": "Default transition; matches the 0.18s panel fade in the Swift code." },
+      { "name": "dur-slow", "value": "280ms", "purpose": "The ceiling. Recording-dot opacity loop runs at 1.6s; nothing else is slower than base by much." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one payoff action per surface: Record, Save, Publish, Use candidate.",
+      "html": "<button class='ds-btn-primary'>Record</button>",
+      "css": ".ds-btn-primary{height:28px;padding:0 12px;border:1px solid transparent;border-radius:6px;background:#0E8C82;color:#fff;font:500 13px/1 -apple-system,'SF Pro Text',Inter,sans-serif;box-shadow:0 1px 0 rgba(20,22,26,0.10);cursor:pointer;transition:background 120ms cubic-bezier(0.22,0.61,0.36,1)}.ds-btn-primary:hover{background:#0A6F67}.ds-btn-primary:active{background:#0A6F67;transform:translateY(1px)}.ds-btn-primary:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,#0E8C82 32%,transparent)}.ds-btn-primary:disabled{opacity:.5;cursor:default}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "The non-payoff action: Skip, Cancel, Always for Zoom, Keep current.",
+      "html": "<button class='ds-btn-secondary'>Skip</button>",
+      "css": ".ds-btn-secondary{height:28px;padding:0 12px;border:1px solid rgba(20,22,26,0.18);border-radius:6px;background:#fff;color:#14161A;font:500 13px/1 -apple-system,'SF Pro Text',Inter,sans-serif;box-shadow:0 1px 0 rgba(20,22,26,0.04);cursor:pointer;transition:background 120ms cubic-bezier(0.22,0.61,0.36,1)}.ds-btn-secondary:hover{background:#ECEEF2}.ds-btn-secondary:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,#0E8C82 32%,transparent)}"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Toolbar and low-emphasis actions; no border at rest.",
+      "html": "<button class='ds-btn-ghost'>Open Logs</button>",
+      "css": ".ds-btn-ghost{height:28px;padding:0 12px;border:1px solid transparent;border-radius:6px;background:transparent;color:#4A4F58;font:500 13px/1 -apple-system,'SF Pro Text',Inter,sans-serif;cursor:pointer;transition:background 120ms cubic-bezier(0.22,0.61,0.36,1)}.ds-btn-ghost:hover{background:#ECEEF2;color:#14161A}.ds-btn-ghost:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,#0E8C82 32%,transparent)}"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input-text",
+      "description": "Settings field. Focus shifts the border to teal and adds the teal ring; path fields use mono.",
+      "html": "<input class='ds-input' type='text' value='~/Documents/Meetings/raw' />",
+      "css": ".ds-input{height:24px;padding:0 8px;min-width:240px;border:1px solid rgba(20,22,26,0.18);border-radius:6px;background:#fff;color:#14161A;font:400 12px/1 'JetBrains Mono','SF Mono',ui-monospace,monospace}.ds-input:focus{outline:none;border-color:#0E8C82;box-shadow:0 0 0 3px color-mix(in srgb,#0E8C82 32%,transparent)}"
+    },
+    {
+      "name": "Toggle (on)",
+      "kind": "input",
+      "refersTo": "input-toggle",
+      "description": "Binary setting. Ash off, Live-Signal Teal on; the knob slides on a 180ms ease-out.",
+      "html": "<span class='ds-toggle ds-on' role='switch' aria-checked='true'></span>",
+      "css": ".ds-toggle{position:relative;display:inline-block;width:34px;height:20px;border-radius:999px;background:#B7BDC6;transition:background 180ms cubic-bezier(0.22,0.61,0.36,1);cursor:pointer}.ds-toggle::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,0.2);transition:transform 180ms cubic-bezier(0.22,0.61,0.36,1)}.ds-toggle.ds-on{background:#0E8C82}.ds-toggle.ds-on::after{transform:translateX(14px)}"
+    },
+    {
+      "name": "Status Pill (recording)",
+      "kind": "chip",
+      "refersTo": "status-pill",
+      "description": "The workhorse state component. Tinted background, matching border and text, a dot or icon plus a label. The recording dot pulses on a 1.6s opacity loop, never a scale pulse.",
+      "html": "<span class='ds-pill ds-pill-rec'><span class='ds-dot'></span>Recording &middot; 12:04</span>",
+      "css": "@keyframes ds-pulse{0%,100%{opacity:1}50%{opacity:.35}}.ds-pill{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 10px 0 8px;border-radius:999px;font:500 12px/1 -apple-system,'SF Pro Text',Inter,sans-serif;background:#ECEEF2;color:#4A4F58;border:1px solid rgba(20,22,26,0.10)}.ds-pill .ds-dot{width:6px;height:6px;border-radius:50%;background:#9098A4}.ds-pill-rec{background:rgba(229,72,77,0.10);color:#C92A2A;border-color:rgba(229,72,77,0.25)}.ds-pill-rec .ds-dot{background:#E5484D;animation:ds-pulse 1.6s ease-in-out infinite}"
+    },
+    {
+      "name": "Workflow Chip",
+      "kind": "chip",
+      "refersTo": "workflow-chip",
+      "description": "A meeting's workflow identity across the whole surface: a curated tonal dot (teal, deep-teal, amber, or ink, never coral) plus the name.",
+      "html": "<span class='ds-chip-wf'><span class='ds-wf-dot'></span>Engineering</span>",
+      "css": ".ds-chip-wf{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:999px;background:#fff;border:0.5px solid rgba(20,22,26,0.10);color:#4A4F58;font:400 11px/1 -apple-system,'SF Pro Text',Inter,sans-serif}.ds-chip-wf .ds-wf-dot{width:7px;height:7px;border-radius:50%;background:#0A6F67}"
+    },
+    {
+      "name": "Kbd Key",
+      "kind": "custom",
+      "refersTo": "kbd",
+      "description": "A key-binding cap. Mono, paper-raised, with a 1px hairline and a subtle bottom light.",
+      "html": "<span class='ds-kbd'>&#8963;&#8997;M</span>",
+      "css": ".ds-kbd{display:inline-flex;align-items:center;height:18px;padding:0 5px;border-radius:4px;background:#fff;border:1px solid rgba(20,22,26,0.10);box-shadow:0 1px 0 rgba(20,22,26,0.06);color:#4A4F58;font:400 11px/1 'JetBrains Mono','SF Mono',ui-monospace,monospace}"
+    },
+    {
+      "name": "Scope Row (active)",
+      "kind": "nav",
+      "refersTo": "scope-row-active",
+      "description": "An active smart-folder row in the rail: a full Live-Signal Teal fill with white text and an inverted mono count.",
+      "html": "<div class='ds-scope ds-scope-active'><svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><path d='M22 12h-6l-2 3h-4l-2-3H2'/><path d='M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z'/></svg><span class='ds-scope-label'>All meetings</span><span class='ds-scope-count'>42</span></div>",
+      "css": ".ds-scope{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:6px;font:400 13px/1 -apple-system,'SF Pro Text',Inter,sans-serif;color:#14161A;cursor:pointer}.ds-scope:hover{background:#ECEEF2}.ds-scope-active,.ds-scope-active:hover{background:#0E8C82;color:#fff}.ds-scope .ds-scope-label{flex:1}.ds-scope .ds-scope-count{font:400 11px/1 'JetBrains Mono','SF Mono',ui-monospace,monospace;color:#6E747F}.ds-scope-active .ds-scope-count{color:color-mix(in srgb,#fff 85%,transparent)}"
+    },
+    {
+      "name": "Meeting Row",
+      "kind": "custom",
+      "refersTo": "meeting-row",
+      "description": "The signature Library list row: app glyph, title over a meta line (source, duration, workflow chip), a status pill, and a right-aligned mono timestamp. Selection is a Signal Wash background, never a side-stripe.",
+      "html": "<div class='ds-row ds-row-selected'><span class='ds-row-glyph'><svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='10'/><path d='M7 12v0'/><path d='M10 9v6'/><path d='M14 7v10'/><path d='M17 10v4'/></svg></span><span class='ds-row-main'><span class='ds-row-title'>Release 3.2 validation review</span><span class='ds-row-meta'>Zoom <span class='ds-sep'>&middot;</span> <span class='ds-mono'>47:21</span></span></span><span class='ds-pill ds-pill-ok'><svg width='11' height='11' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M22 11.08V12a10 10 0 1 1-5.93-9.14'/><path d='m9 11 3 3L22 4'/></svg>Ready</span><span class='ds-row-time'>Today 11:02</span></div>",
+      "css": ".ds-row{display:flex;align-items:center;gap:10px;height:46px;padding:0 14px;cursor:pointer}.ds-row:hover{background:#F5F6F8}.ds-row-selected,.ds-row-selected:hover{background:#DCF1EF}.ds-row-glyph{width:22px;height:22px;display:flex;align-items:center;justify-content:center;color:#6E747F;flex-shrink:0}.ds-row-main{display:flex;flex-direction:column;gap:1px;flex:1;min-width:0}.ds-row-title{font:500 13px/1.2 -apple-system,'SF Pro Text',Inter,sans-serif;color:#14161A;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ds-row-meta{display:flex;align-items:center;gap:6px;font:400 11px/1.2 -apple-system,'SF Pro Text',Inter,sans-serif;color:#6E747F}.ds-row-meta .ds-sep{color:#9098A4}.ds-row-meta .ds-mono{font-family:'JetBrains Mono','SF Mono',ui-monospace,monospace}.ds-pill-ok{display:inline-flex;align-items:center;gap:5px;height:19px;padding:0 8px;border-radius:999px;font:500 11px/1 -apple-system,'SF Pro Text',Inter,sans-serif;color:#1F8F4E;border:0.5px solid rgba(31,143,78,0.25)}.ds-row-time{min-width:92px;text-align:right;font:400 11px/1 'JetBrains Mono','SF Mono',ui-monospace,monospace;color:#4A4F58;white-space:nowrap}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Private Record",
+    "overview": "The system serves one invariant that outlasts every surface: a complete, local, trustworthy record of your meetings, kept on your own Mac, that you capture, read, search, and reason over. meeting-pipe is a menu-bar utility first, seen at only four moments (the prompt when a call is detected, the recording HUD, the done-notification, the Library), but the design is built so the record it keeps can be browsed, re-published, edited, and one day analyzed for patterns without inventing a new visual language each time. Whatever gets added stays in one register: local-first, quiet, deliberate.\n\nThree motifs carry the whole thing. Paper: the canvas reads as a calm, barely-warm document where transcripts and summaries live, something you would want to read, not a chrome panel. Hairlines, not shadows: mac-native chrome separates surfaces with 1px and 0.5px borders, reserving shadow for the few surfaces that genuinely float. One signal: a single electric teal that means capture-in-progress and earns its place by rarity, never a decorative gradient or a fill on a large surface. Density is tight and mac-native throughout: a 13px body on a compact 1.125 ramp, a 4px spacing grid living mostly on the 8 / 12 / 16 / 20 ticks, fixed window sizes. This is interface, not a content site.\n\nThe system explicitly rejects three families: the SaaS marketing cliche (gradients, sparkle, decorative AI iconography, emoji, celebration toasts), the generic Electron-app feel (web-rendered chrome pretending to be a desktop app), and the modern dark-glass fintech and AI-tool family (glassy floating cards, neon accents, gradient borders, futuristic framing). The AI is used under the hood and acknowledged in plain grey text; it is never branded and never celebrated.",
+    "keyCharacteristics": [
+      "Local-first as a visual commitment: the on-device option always renders at the same weight as the cloud one, never tucked into Advanced.",
+      "Quiet by default: literal state labels, no celebration, the summary just appears.",
+      "Warm ink on paper, never pure black on pure white.",
+      "One signal-teal accent, held to roughly 10% of any surface.",
+      "Hairlines over shadows; a shadow means this floats.",
+      "Fixed window sizes and mac-native density; SF Pro at 13px is canonical."
+    ],
+    "rules": [
+      { "name": "The One Signal Rule", "body": "Live-Signal Teal appears on no more than about 10% of any surface. It marks one family of things: capture, the active path, the primary action. Its rarity is the point. Decorative teal is forbidden.", "section": "colors" },
+      { "name": "The Coral-Is-Recording Rule", "body": "On-Air Coral is the recording dot and the destructive confirm, nothing else. If coral is tinting a button or a background, it is wrong.", "section": "colors" },
+      { "name": "The No-System-Blue Rule", "body": "The accent is teal, end-state; macOS system blue is never the accent. The shipped --mp-focus-ring token is still blue and is mid-migration, so until it is recolored, derive teal focus rings inline with color-mix(in srgb, var(--mp-signal-600) 32%, transparent).", "section": "colors" },
+      { "name": "The Same-Level Rule", "body": "Wherever the user routes data, the local option renders at the same visual weight as the cloud option. Local-first is shown, not hidden.", "section": "colors" },
+      { "name": "The Thirteen-Pixel Rule", "body": "Body and chrome default to 13px, mac-native, on a compact 1.125 ramp. This is interface, not a content reader. Marketing surfaces may climb to display sizes; product chrome never inflates.", "section": "typography" },
+      { "name": "The No-Bold Rule", "body": "Weights stop at semibold (600); regular (400) and medium (500) carry the rest. Bold (700 and up) is not in the system, per Apple convention.", "section": "typography" },
+      { "name": "The System-Font-Is-Canonical Rule", "body": "The -apple-system and SF Pro stack leads every UI surface. Inter Tight appears only at 28px and above.", "section": "typography" },
+      { "name": "The Hairlines-Not-Shadows Rule", "body": "Surfaces at rest separate with 1px or 0.5px borders, never a drop shadow. If a resting card has a shadow, remove it.", "section": "elevation" },
+      { "name": "The Float-Earns-Blur Rule", "body": "Translucency and backdrop blur belong only to surfaces that float over the desktop (the HUD, the menu-bar dropdown). Cards inside windows are fully opaque. Never double-blur.", "section": "elevation" },
+      { "name": "The No-Inner-Shadow Rule", "body": "Inner shadows are forbidden everywhere.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do hold Live-Signal Teal (#0E8C82) to about 10% of any surface: primary action, current selection, active tab, playhead, capture indicator. Use Signal Wash (#DCF1EF) for selected-row tints.",
+      "Do separate resting surfaces with hairlines (1px at 10%, 0.5px Retina dividers); reserve shadow for surfaces that float.",
+      "Do keep On-Air Coral (#E5484D) for the recording dot and the destructive confirm only.",
+      "Do default to SF Pro at 13px on a compact ramp, and stop weights at semibold (600).",
+      "Do label every state with text or an icon, not color alone; both light and dark must be color-blind safe.",
+      "Do acknowledge the AI in plain grey provenance text (Summarized by Claude Opus 4.8, cloud), at the same weight as the on-device line.",
+      "Do keep fixed window sizes and mac-native density (prompt 600x64, preferences 480x560).",
+      "Do use the uppercase label only as a functional header (sidebar sections, field labels), never as decoration.",
+      "Do honor prefers-reduced-motion: the recording-dot loop, the panel fades, and the tint transitions degrade to crossfades or instant changes."
+    ],
+    "donts": [
+      "Don't ship the SaaS marketing cliche: no gradients, no powered-by-Claude sparkle, no decorative AI iconography, no emoji in microcopy, no celebration toasts. Not the Notion AI, ChatGPT, or Perplexity surface aesthetic.",
+      "Don't produce a generic Electron-app feel: web-rendered chrome pretending to be a desktop app, the wrong density, the wrong fonts, no SF Symbols. Not Slack, not Discord, not Linear's desktop wrapper.",
+      "Don't reach for the modern dark-glass fintech and AI-tool family: glassy floating cards, neon accents, gradient borders, futuristic framing. Wrong even when well-crafted, for a calm menu-bar utility.",
+      "Don't use macOS system blue as the accent; the accent is teal, end-state.",
+      "Don't use a side-stripe (a border-left or border-right over 1px as a colored accent) on rows, cards, callouts, or alerts. Use a full hairline, a wash tint, or a leading icon instead.",
+      "Don't use gradient text (background-clip: text on a gradient). Emphasis is weight or size, in a single solid color.",
+      "Don't use glassmorphism by default; blur belongs only to surfaces that float over the desktop, and cards inside windows stay fully opaque (never double-blur).",
+      "Don't use pure black (#000) or stack pure white on pure white; ink is Warm Graphite (#14161A) on Soft Document White (#FBFAF7).",
+      "Don't add inner shadows, scale or bounce pulses, skeleton shimmer, or decorative motion; motion conveys state only, at 120 to 280ms with no overshoot.",
+      "Don't use em-dashes as punctuation in chrome or copy; use commas, hyphens, or rewrite. Reserve the ellipsis for an in-flight state (Processing...) or an action that opens another surface (Preferences...).",
+      "Don't let a heading stretch past its container; product windows are fixed-size, so test the real copy at the real width."
+    ]
+  }
+}
