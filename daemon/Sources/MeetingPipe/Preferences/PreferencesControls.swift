@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Shared SwiftUI primitives for the Preferences window (TECH-E4). Spacing mirrors the HTML prototype (`primitives.jsx`): 22pt between groups, 14pt horizontal pad, 168pt label column, 26pt control height.
+/// Shared SwiftUI primitives for the Preferences window (TECH-E4). Spacing mirrors the mockup (`PreferencesWindow.jsx`): 22pt between groups, 14pt horizontal pad, 16pt row gap. An inline row is [info grows · control hugs right] (`SettingsRow`); wide or descriptive controls stack the control full-width below the label (`SettingsStackRow`).
 
 // MARK: - SectionHeader
 
@@ -80,7 +80,7 @@ struct SettingsGroup<Content: View, Footer: View>: View {
 
 // MARK: - Row
 
-/// Label+control row inside a SettingsGroup card. Label column is fixed at 168pt; control column flexes. `showsDivider: false` on the first row in a card.
+/// Label+control row inside a SettingsGroup card. Info (label + sublabel) grows and wraps across the full width; the control hugs the right at its natural size. `showsDivider: false` on the first row in a card.
 struct SettingsRow<Content: View>: View {
     let label: String
     let sublabel: String?
@@ -107,7 +107,7 @@ struct SettingsRow<Content: View>: View {
                     .fill(Color(MPColors.borderFaint))
                     .frame(height: 1)
             }
-            HStack(alignment: alignTop ? .top : .center, spacing: 14) {
+            HStack(alignment: alignTop ? .top : .center, spacing: MPSpace.s4) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(label)
                         .font(.system(size: 13))
@@ -118,10 +118,9 @@ struct SettingsRow<Content: View>: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .frame(width: 168, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, alignTop ? 4 : 0)
                 HStack(spacing: 8) { content() }
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, MPSpace.s3)
@@ -130,7 +129,7 @@ struct SettingsRow<Content: View>: View {
 }
 
 /// Label row whose control is a trailing-aligned switch (macOS System Settings
-/// convention). Wraps `SettingsRow` so the divider and 168pt label column match
+/// convention). Wraps `SettingsRow` so the divider and info-grows layout match
 /// every other row; the switch hugs the right edge instead of leaving dead space.
 struct SettingsToggleRow: View {
     let label: String
@@ -147,10 +146,57 @@ struct SettingsToggleRow: View {
 
     var body: some View {
         SettingsRow(label, sublabel: sublabel, showsDivider: showsDivider) {
-            Spacer(minLength: 0)
             Toggle("", isOn: $isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
+        }
+    }
+}
+
+/// Stacked row variant: label + sublabel on top, full-width control below. For
+/// sliders, file paths, endpoints, and secret fields - anything that wants room
+/// or carries a long description. Mirrors `SettingsRow`'s divider and padding so
+/// it sits flush among inline rows in the same card.
+struct SettingsStackRow<Content: View>: View {
+    let label: String
+    let sublabel: String?
+    var showsDivider: Bool
+    @ViewBuilder var content: () -> Content
+
+    init(_ label: String,
+         sublabel: String? = nil,
+         showsDivider: Bool = true,
+         @ViewBuilder content: @escaping () -> Content) {
+        self.label = label
+        self.sublabel = sublabel
+        self.showsDivider = showsDivider
+        self.content = content
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if showsDivider {
+                Rectangle()
+                    .fill(Color(MPColors.borderFaint))
+                    .frame(height: 1)
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                Text(label)
+                    .font(.system(size: 13))
+                if let sublabel = sublabel {
+                    Text(sublabel)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
+                HStack(spacing: 8) { content() }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, MPSpace.s2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, MPSpace.s3)
         }
     }
 }
@@ -189,7 +235,7 @@ struct SettingsDisclosure<Content: View>: View {
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) { isExpanded.toggle() }
             } label: {
-                HStack(alignment: .center, spacing: 14) {
+                HStack(alignment: .center, spacing: MPSpace.s4) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(label)
                             .font(.system(size: 13))
@@ -200,8 +246,7 @@ struct SettingsDisclosure<Content: View>: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    .frame(width: 168, alignment: .leading)
-                    Spacer(minLength: 0)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.secondary)

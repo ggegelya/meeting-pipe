@@ -10,7 +10,7 @@ struct PromptSectionView: View {
                 caption: "What happens the moment a meeting is detected.")
 
             SettingsGroup("When a meeting is detected") {
-                SettingsRow("Prompt timeout", showsDivider: false) {
+                SettingsStackRow("Prompt timeout", showsDivider: false) {
                     SettingsSlider(
                         value: $store.promptTimeoutSec,
                         range: 1...120,
@@ -32,9 +32,8 @@ struct PromptSectionView: View {
                             ("byo",    "Record (BYO)"),
                         ]
                     )
-                    Spacer(minLength: 0)
                 }
-                SettingsRow("Re-prompt cooldown",
+                SettingsStackRow("Re-prompt cooldown",
                     sublabel: "After a recording or skip, suppress new prompts for the same app for this many seconds. Catches post-call mic flickers from Teams/Zoom.") {
                     SettingsSlider(
                         value: $store.repromptCooldownSec,
@@ -48,7 +47,7 @@ struct PromptSectionView: View {
             }
 
             SettingsGroup("Stop conditions") {
-                SettingsRow("Mic-only silence backstop",
+                SettingsStackRow("Mic-only silence backstop",
                     sublabel: "Auto-stop if your mic is silent AND no system audio plays for this many seconds. Catches the 'everyone else left and I forgot to stop' case.",
                     showsDivider: false) {
                     SettingsSlider(

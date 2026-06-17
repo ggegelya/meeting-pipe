@@ -28,7 +28,6 @@ struct PipelineSectionView: View {
                             ("apple_intelligence", "Apple"),
                         ]
                     )
-                    Spacer(minLength: 0)
                 }
                 if store.summarizationBackend == "local" || store.summarizationBackend == "auto" {
                     // The local-MLX cluster (preset, model id, endpoint, active
@@ -48,23 +47,22 @@ struct PipelineSectionView: View {
                             .labelsHidden()
                             .pickerStyle(.menu)
                             .fixedSize()
-                            Spacer(minLength: 0)
                         }
                         if currentLocalModelPresetId == LocalModelPreset.customId {
-                            SettingsRow("Model id",
+                            SettingsStackRow("Model id",
                                 sublabel: "HuggingFace MLX repo id.") {
                                 TextField("mlx-community/...", text: $store.summarizationLocalModel)
                                     .textFieldStyle(.roundedBorder)
                                     .font(.system(.body, design: .monospaced))
                             }
                         }
-                        SettingsRow("Endpoint URL",
+                        SettingsStackRow("Endpoint URL",
                             sublabel: "Local mlx_lm.server target.") {
                             TextField("http://127.0.0.1:8765", text: $store.summarizationLocalEndpoint)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(.body, design: .monospaced))
                         }
-                        SettingsRow("Active model",
+                        SettingsStackRow("Active model",
                             sublabel: activeModelSizeHint) {
                             Text(activeModelName)
                                 .font(.system(.body, design: .monospaced))
@@ -72,7 +70,6 @@ struct PipelineSectionView: View {
                                 .textSelection(.enabled)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
-                            Spacer(minLength: 0)
                         }
                         SettingsToggleRow("Preload at launch",
                             sublabel: "Warm the model when the app starts so the first summary skips the cold-start. Holds the model in RAM while idle.",
@@ -96,17 +93,15 @@ struct PipelineSectionView: View {
                     sublabel: "Whisper. Auto-detect chooses per-meeting.",
                     showsDivider: false) {
                     languagePicker(selection: $store.transcriptionLanguage, includeMatch: false)
-                    Spacer(minLength: 0)
                 }
                 SettingsRow("Summary",
                     sublabel: "Output language for the Notion summary.") {
                     languagePicker(selection: $store.summaryLanguage, includeMatch: true)
-                    Spacer(minLength: 0)
                 }
             }
 
             SettingsGroup("Long meetings") {
-                SettingsRow("Chunking threshold", showsDivider: false) {
+                SettingsStackRow("Chunking threshold", showsDivider: false) {
                     SettingsSlider(
                         value: Binding(
                             get: { Double(store.summarizationSkipAboveChars) },

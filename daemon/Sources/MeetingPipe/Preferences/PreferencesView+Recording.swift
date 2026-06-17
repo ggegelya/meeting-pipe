@@ -11,7 +11,7 @@ struct RecordingSectionView: View {
                 caption: "How audio is captured to disk, and which apps record automatically.")
 
             SettingsGroup("Audio") {
-                SettingsRow("Output directory", alignTop: true, showsDivider: false) {
+                SettingsStackRow("Output directory", showsDivider: false) {
                     TextField("", text: $store.outputDirPath)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
@@ -35,7 +35,6 @@ struct RecordingSectionView: View {
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .fixedSize()
-                    Spacer(minLength: 0)
                 }
             }
 
@@ -52,7 +51,7 @@ struct RecordingSectionView: View {
             }
 
             SettingsGroup("Detection") {
-                SettingsRow("Start debounce", showsDivider: false) {
+                SettingsStackRow("Start debounce", showsDivider: false) {
                     SettingsSlider(
                         value: $store.debounceStartSec,
                         range: 1...30,
@@ -60,7 +59,7 @@ struct RecordingSectionView: View {
                         format: { "\(Int($0)) s" }
                     )
                 }
-                SettingsRow("End debounce") {
+                SettingsStackRow("End debounce") {
                     SettingsSlider(
                         value: $store.debounceEndSec,
                         range: 1...30,

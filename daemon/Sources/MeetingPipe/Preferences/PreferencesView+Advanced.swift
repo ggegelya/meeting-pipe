@@ -19,14 +19,12 @@ struct AdvancedSectionView: View {
                     Button("Reveal in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([Config.defaultPath])
                     }
-                    Spacer(minLength: 0)
                 }
                 SettingsRow("Logs folder",
                     sublabel: "Rotated daily. Used by mp doctor and bug reports.") {
                     Button("Open logs") {
                         NSWorkspace.shared.open(Log.logsDir)
                     }
-                    Spacer(minLength: 0)
                 }
             }
 

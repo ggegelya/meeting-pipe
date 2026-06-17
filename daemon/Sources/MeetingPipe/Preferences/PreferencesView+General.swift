@@ -23,7 +23,6 @@ struct GeneralSectionView: View {
                             (.dark,   "Dark"),
                         ]
                     )
-                    Spacer(minLength: 0)
                 }
                 // Menu-bar icon style (outline vs filled) was a cosmetic-only
                 // toggle; cut in the DSN1 IA pass. The glyph stays at its
@@ -62,12 +61,10 @@ struct GeneralSectionView: View {
                     sublabel: "Start or stop a recording from anywhere.",
                     showsDivider: false) {
                     SettingsHotkeyField(text: $store.manualHotkey)
-                    Spacer(minLength: 0)
                 }
                 SettingsRow("Force stop",
                     sublabel: "Stop immediately, even if detection still thinks a meeting is live.") {
                     SettingsHotkeyField(text: $store.forceStopHotkey)
-                    Spacer(minLength: 0)
                 }
             } footer: {
                 Text("Click a field, then press the chord you want to bind (one or more of ⌃⌥⇧⌘ plus a letter). The toggle hotkey starts/stops; the force-stop hotkey only stops, so panic-pressing can never accidentally start a recording. Restart MeetingPipe after changing.")

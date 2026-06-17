@@ -18,7 +18,7 @@ struct IntegrationsSectionView: View {
             }
 
             SettingsGroup("Anthropic") {
-                SettingsRow("API key", alignTop: true, showsDivider: false) {
+                SettingsStackRow("API key", showsDivider: false) {
                     SettingsSecretField(text: $secrets.anthropicAPIKey, placeholder: "sk-ant-…")
                 }
                 SettingsRow("Status") {
@@ -27,17 +27,16 @@ struct IntegrationsSectionView: View {
                     } else {
                         SettingsStatusPill(tone: .needed, icon: "exclamationmark.triangle.fill", text: "Not configured")
                     }
-                    Spacer(minLength: 0)
                 }
             } footer: {
                 Text("Used to summarize transcripts. Get a key at console.anthropic.com. Local MLX backend doesn't need this.")
             }
 
             SettingsGroup("Notion") {
-                SettingsRow("Integration token", alignTop: true, showsDivider: false) {
+                SettingsStackRow("Integration token", showsDivider: false) {
                     SettingsSecretField(text: $secrets.notionToken, placeholder: "ntn_…")
                 }
-                SettingsRow("Database ID") {
+                SettingsStackRow("Database ID") {
                     TextField("32-char hex from your database URL", text: $store.notionDatabaseId)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
@@ -48,7 +47,6 @@ struct IntegrationsSectionView: View {
                     } else {
                         SettingsStatusPill(tone: .needed, icon: "exclamationmark.triangle.fill", text: "Not configured")
                     }
-                    Spacer(minLength: 0)
                 }
             } footer: {
                 Text("Create the integration at notion.so/profile/integrations, share your Meetings database with it, and paste the database ID here.")
