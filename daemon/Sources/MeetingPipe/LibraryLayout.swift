@@ -19,12 +19,16 @@ enum LibraryLayout {
     static let sidebarIdealWidth: CGFloat = 220
     static let sidebarMaxWidth: CGFloat = 260
 
-    static let listMinWidth: CGFloat = 360
-    static let listIdealWidth: CGFloat = 440
+    static let listMinWidth: CGFloat = 400
+    static let listIdealWidth: CGFloat = 460
 
     static let detailMinWidth: CGFloat = 450
     static let detailIdealWidth: CGFloat = 520
 
-    static let windowMinWidth: CGFloat = 1024
+    // Sum of the floors (200 + 400 + 450 = 1050) stays <= windowMinWidth, the
+    // invariant LibraryLayoutTests pins. The row itself degrades to a two-line
+    // tile (MeetingRow ViewThatFits) when the list column nears its floor, so the
+    // window minimum stays modest rather than ballooning to fit a one-line row.
+    static let windowMinWidth: CGFloat = 1060
     static let windowMinHeight: CGFloat = 480
 }

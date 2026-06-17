@@ -77,6 +77,13 @@ struct MPStatusPill: View {
         }
         .padding(.horizontal, 7)
         .frame(height: 18)
+        // Solid fill so the pill reads as a status chip, not a hollow box. The
+        // DSN17 pass dropped this (stroke-only), which made the faint .nda
+        // "Local only" pill look like an empty, tappable button (it is not).
+        .background(
+            Capsule(style: .continuous)
+                .fill(fillColor)
+        )
         .overlay(
             Capsule(style: .continuous)
                 .strokeBorder(strokeColor, lineWidth: 0.5)
@@ -102,7 +109,7 @@ struct MPStatusPill: View {
         case .recording:  return Color(MPColors.pulse500)
         case .processing: return Color(MPColors.signal400)
         case .failed:     return Color(MPColors.pulse500)
-        case .nda:        return Color(MPColors.fgSubtle)
+        case .nda:        return Color(MPColors.fgMuted)
         case .neutral:    return Color(MPColors.fgSubtle)
         case .warning:    return Color(MPColors.warning600)
         }
@@ -114,6 +121,16 @@ struct MPStatusPill: View {
         switch kind {
         case .failed:  return Color(MPColors.pulse500).opacity(0.32)
         default:       return Color(MPColors.borderStrong)
+        }
+    }
+
+    /// Chip fill. Neutral kinds (.nda / .neutral) read as a calm recessed tag on
+    /// `bgSunk`; semantic kinds get a faint tint of their own tone so the pill is
+    /// visible without shouting.
+    private var fillColor: Color {
+        switch kind {
+        case .nda, .neutral: return Color(MPColors.bgSunk)
+        default:             return dotColor.opacity(0.12)
         }
     }
 }

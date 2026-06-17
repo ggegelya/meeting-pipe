@@ -140,7 +140,7 @@ struct MeetingDetailView: View {
     // MARK: Tabs
 
     private var summaryTab: some View {
-        SummaryTab(meeting: meeting, editToken: summaryEditToken)
+        SummaryTab(store: libraryModel.meetingStore, meeting: meeting, editToken: summaryEditToken)
             .environmentObject(libraryModel)
     }
 

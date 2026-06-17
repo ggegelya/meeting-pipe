@@ -22,6 +22,9 @@ struct LibrarySidebar: View {
                         isSelected: scope == selection
                     )
                     .tag(scope)
+                    // Teal selection wash, replacing the macOS system-blue source-list
+                    // highlight that the app `.tint` can't recolor (No-System-Blue).
+                    .listRowBackground(scope == selection ? Color.mpSelectionWash : Color.clear)
                 }
             } header: {
                 Text("Library")
@@ -38,6 +41,7 @@ struct LibrarySidebar: View {
                         count: counts.workflowCount(for: wf.id)
                     )
                     .tag(LibraryScope.workflow(wf.id))
+                    .listRowBackground(LibraryScope.workflow(wf.id) == selection ? Color.mpSelectionWash : Color.clear)
                 }
                 Button(action: onCreateWorkflow) {
                     Label {

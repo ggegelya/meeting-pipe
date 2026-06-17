@@ -15,12 +15,17 @@ struct MeetingRow: View, Equatable {
     let onSoftDelete: () -> Void
     let onExport: (URL) -> Result<Int, Error>
     let onCancelProcessing: () -> Void
+    /// Whether this row is the current list selection. Drives the teal selection
+    /// wash that replaces the macOS system-blue highlight (the app `.tint` can't
+    /// recolor inset-list selection). Pre-computed by the list against the set.
+    let isSelected: Bool
 
     /// Equates only value-typed fields; closures are excluded because they're re-allocated each render and would defeat `.equatable()`.
     static func == (lhs: MeetingRow, rhs: MeetingRow) -> Bool {
         lhs.meeting == rhs.meeting
             && lhs.isLiveRecording == rhs.isLiveRecording
             && lhs.activeProcessing == rhs.activeProcessing
+            && lhs.isSelected == rhs.isSelected
     }
 
     @State private var inFlight: InFlight? = nil
@@ -31,77 +36,147 @@ struct MeetingRow: View, Equatable {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            // `.draggable` on the whole row poisons SwiftUI hit-test: NSTableView's select gesture loses to the row-wide drag and clicks fall through. Confining it to the leading glyph (Finder/Mail convention) leaves the rest of the row free for selection.
-            leadingGlyph
-                .frame(width: 22, height: 22)
-                .draggable(MeetingDragItem(meeting: meeting))
-                .help("Drag to export the markdown bundle")
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(meeting.displayTitle)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(isNDA ? Color(MPColors.fgMuted) : Color(MPColors.fg))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                captionLine
-            }
-
-            Spacer(minLength: 0)
-
-            HStack(spacing: 10) {
-                if let inFlight = inFlight {
-                    inFlightBadge(inFlight)
-                } else {
-                    if effectiveStatus == .failed {
-                        inlineFixButton("Retry") { runRetry() }
-                    } else if effectiveStatus == .manualPasteReady {
-                        inlineFixButton("Regenerate") { Task { await regenerate() } }
-                    } else if showsInlineRepublish {
-                        inlineFixButton("Republish") { Task { await republish() } }
-                    }
-                    if let progress = activeProcessing {
-                        processingIndicator(progress)
-                    } else {
-                        trailingPill
-                    }
-                }
-                trailingWhenStack
-            }
+        // Adaptive row: one line when the column is wide enough, otherwise a
+        // two-line tile (title + status on top; source · duration · workflow · date
+        // below) so a narrow Library never hard-truncates the title to "202…".
+        // ViewThatFits keeps the one-line layout while it fits the proposed width;
+        // the one-line title reserves a comfortable min width so "fits" means "fits
+        // without cramping", not "fits because the title truncated to nothing".
+        ViewThatFits(in: .horizontal) {
+            oneLineRow
+            stackedTile
         }
         // TECH-DSN17: no side stripe. The live-recording row reads through the
-        // coral wash (rowBackground) plus the coral pulse dot in the status pill;
-        // the 2pt leading accent that used to live here is gone for a calmer row.
+        // coral wash (rowBackground) plus the coral pulse dot in the status pill.
         .padding(.horizontal, 14)
-        .frame(height: 46)
+        .frame(minHeight: 46)
         .background(rowBackground)
         .contentShape(Rectangle())
         .contextMenu { contextMenuItems }
     }
 
+    /// One-line layout: glyph · title+caption · status · date. The title carries a
+    /// min width so ViewThatFits falls through to the stacked tile once the column
+    /// can no longer give the title that room (the 170 is the tunable threshold).
+    private var oneLineRow: some View {
+        HStack(spacing: 10) {
+            glyphView
+            VStack(alignment: .leading, spacing: 1) {
+                titleText
+                    .frame(minWidth: 170, alignment: .leading)
+                captionLine
+            }
+            Spacer(minLength: 0)
+            trailingStatusCluster
+            trailingWhenStack
+        }
+    }
+
+    /// Two-line tile for narrow columns: title + status on line 1; the caption
+    /// (source · duration · workflow) and the date on line 2.
+    private var stackedTile: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                glyphView
+                titleText
+                Spacer(minLength: 8)
+                trailingStatusCluster
+            }
+            HStack(spacing: 6) {
+                captionContent
+                Spacer(minLength: 8)
+                Text(RelativeMeetingDateFormatter.string(from: meeting.startedAt))
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(Color(MPColors.fgMuted))
+                    .lineLimit(1)
+            }
+            .lineLimit(1)
+            // Align line 2 under the title, past the 22pt glyph + 10pt spacing.
+            .padding(.leading, 32)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 7)
+    }
+
+    /// Leading glyph plus the markdown-bundle drag affordance, shared by both
+    /// layouts. `.draggable` stays confined to the glyph (Finder/Mail convention):
+    /// on the whole row it poisons NSTableView's select gesture so clicks fall
+    /// through.
+    private var glyphView: some View {
+        leadingGlyph
+            .frame(width: 22, height: 22)
+            .draggable(MeetingDragItem(meeting: meeting))
+            .help("Drag to export the markdown bundle")
+    }
+
+    /// Meeting title, always full-contrast `fg`. The NDA/local privacy signal is
+    /// carried by the lock glyph and the "Local only" pill, not by dimming the
+    /// title: local meetings are first-class, not a downgraded summary.
+    private var titleText: some View {
+        Text(meeting.displayTitle)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(Color(MPColors.fg))
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
+
+    /// Trailing status cluster (no date): an in-flight badge, or an optional
+    /// inline-fix button plus the status pill / live processing indicator. Shared
+    /// by both layouts; the date is appended separately so the tile can move it to
+    /// line 2 without the one-line width reservation.
+    @ViewBuilder
+    private var trailingStatusCluster: some View {
+        HStack(spacing: 8) {
+            if let inFlight = inFlight {
+                inFlightBadge(inFlight)
+            } else {
+                if effectiveStatus == .failed {
+                    inlineFixButton("Retry") { runRetry() }
+                } else if effectiveStatus == .manualPasteReady {
+                    inlineFixButton("Regenerate") { Task { await regenerate() } }
+                } else if showsInlineRepublish {
+                    inlineFixButton("Republish") { Task { await republish() } }
+                }
+                if let progress = activeProcessing {
+                    processingIndicator(progress)
+                } else {
+                    trailingPill
+                }
+            }
+        }
+    }
+
     // MARK: Row pieces
 
-    /// Caption row: app name · duration · workflow chip. The trailing day/time stack covers the timestamp.
+    /// Caption content: app name · duration · workflow chip. Factored without a
+    /// trailing spacer so both the one-line VStack and the stacked tile's line 2
+    /// can compose it (the tile appends the date after it on the same line).
     @ViewBuilder
+    private var captionContent: some View {
+        if let src = meeting.sourceDisplayName, !src.isEmpty {
+            Text(src)
+                .font(.system(size: 11))
+                .foregroundStyle(Color(MPColors.fgSubtle))
+        }
+        if let d = meeting.durationSec {
+            if meeting.sourceDisplayName?.isEmpty == false {
+                Text("·").font(.system(size: 11)).foregroundStyle(Color(MPColors.fgFaint))
+            }
+            Text(Self.formatDuration(d))
+                .font(.system(size: 11).monospacedDigit())
+                .foregroundStyle(Color(MPColors.fgSubtle))
+        }
+        if let workflow = meeting.workflowName, !workflow.isEmpty {
+            Text("·").font(.system(size: 11)).foregroundStyle(Color(MPColors.fgFaint))
+            WorkflowChip(name: workflow, colorHex: meeting.workflowColor)
+        }
+    }
+
+    /// Caption row for the one-line layout: the caption content, left-aligned with
+    /// a trailing spacer (the day/time stack sits to its right in the row).
     private var captionLine: some View {
         HStack(spacing: 6) {
-            if let src = meeting.sourceDisplayName, !src.isEmpty {
-                Text(src)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color(MPColors.fgSubtle))
-            }
-            if let d = meeting.durationSec {
-                if meeting.sourceDisplayName?.isEmpty == false {
-                    Text("·").font(.system(size: 11)).foregroundStyle(Color(MPColors.fgFaint))
-                }
-                Text(Self.formatDuration(d))
-                    .font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(Color(MPColors.fgSubtle))
-            }
-            if let workflow = meeting.workflowName, !workflow.isEmpty {
-                Text("·").font(.system(size: 11)).foregroundStyle(Color(MPColors.fgFaint))
-                WorkflowChip(name: workflow, colorHex: meeting.workflowColor)
-            }
+            captionContent
             Spacer(minLength: 0)
         }
         .lineLimit(1)
@@ -248,10 +323,15 @@ struct MeetingRow: View, Equatable {
         }
     }
 
-    /// Pulse-tinted background wash for the live row; resting rows stay on the canvas.
+    /// Row wash. Selection wins: a selected row shows the signal-teal selection
+    /// wash (replacing the macOS system-blue highlight) even while live-recording;
+    /// the coral on-air cue still reads through the pulsing dot in the status pill.
+    /// An unselected live row keeps its coral wash; resting rows stay on the canvas.
     @ViewBuilder
     private var rowBackground: some View {
-        if isLiveRecording {
+        if isSelected {
+            Color.mpSelectionWash
+        } else if isLiveRecording {
             Color(MPColors.pulse600).opacity(0.06)
         } else {
             Color.clear

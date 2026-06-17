@@ -146,6 +146,12 @@ extension Color {
     static let mpWarning = Color(nsColor: MPColors.warning600)
     static let mpSuccess = Color(nsColor: MPColors.success600)
     static let mpSignal  = Color(nsColor: MPColors.signal600)
+    /// Library list + sidebar selection wash: a translucent signal-teal that
+    /// replaces the macOS system-blue selection highlight (which the app `.tint`
+    /// can't recolor). Translucent rather than the flat `signal100` token so it
+    /// reads on both the paper and dark canvases; ~15% approximates the design
+    /// spec's #DCF1EF wash over paper. One constant so the row and sidebar can't drift.
+    static let mpSelectionWash = Color(nsColor: MPColors.signal600).opacity(0.15)
 }
 
 /// Same tokens as a `ShapeStyle` leading-dot, so `.foregroundStyle(.mpDanger)`

@@ -4,6 +4,11 @@ import SwiftUI
 /// Summary tab (TECH-A5). Read-only by default; the Edit button swaps in `CorrectionEditorBody`. Save persists a correction record and overwrites `<stem>.summary.json`; "Save & Republish" additionally spawns `mp publish-notion`.
 struct SummaryTab: View {
     @EnvironmentObject var libraryModel: LibraryWindowModel
+    /// Observed so an in-place rewrite of this stem's summary.json (after Retry /
+    /// Regenerate / a correction edit) bumps `revision` and re-runs the reload
+    /// task. Without it the pane kept showing the stale cached summary while a
+    /// "Local Markdown ready" banner claimed it was done (the point-3 bug).
+    @ObservedObject var store: MeetingStore
     let meeting: Meeting
     /// Bumped by the detail-pane `...` menu's "Edit summary" to enter edit mode (TECH-UI-5).
     var editToken: Int = 0
@@ -11,6 +16,9 @@ struct SummaryTab: View {
     /// Loaded off-main on stem change. Caching avoids disk IO on the main thread, which pinned it during recording.
     @State private var loadedSummary: MeetingSummary? = nil
     @State private var loadedForStem: String? = nil
+    /// Modification time of the loaded summary.json, so a store-revision bump only
+    /// re-parses when this stem's file actually changed on disk.
+    @State private var loadedSummaryMtime: Date? = nil
 
     @State private var isEditing = false
     @State private var editorModel: CorrectionViewModel? = nil
@@ -52,7 +60,10 @@ struct SummaryTab: View {
         // UX13: crossfade the read<->edit swap (one of the sanctioned animation
         // moments) instead of a hard cut. Opacity-only keeps the pane frame stable.
         .animation(.easeInOut(duration: MPMotion.durBase), value: isEditing)
-        .task(id: meeting.stem) {
+        // Reload when the stem changes OR when the store re-scanned (revision
+        // bump) so an in-place summary rewrite refreshes the open pane; the mtime
+        // guard in reloadSummary keeps unrelated rescans from re-parsing.
+        .task(id: SummaryReloadKey(stem: meeting.stem, revision: store.revision)) {
             await reloadSummary()
         }
         .onChange(of: meeting.stem) { _, _ in
@@ -421,17 +432,32 @@ struct SummaryTab: View {
         meeting.recordingsDir.appendingPathComponent("\(meeting.stem).summary.md")
     }
 
-    /// Loads `<stem>.summary.json` off-main. Called via `.task(id:)`; guards against stale stems.
+    /// Identity for the reload task: re-parse when the stem changes OR when the
+    /// store re-scanned (revision bump), so an in-place summary rewrite refreshes
+    /// the open pane. The mtime guard in `reloadSummary` makes a bump from an
+    /// unrelated rescan a no-op.
+    private struct SummaryReloadKey: Equatable {
+        let stem: String
+        let revision: Int
+    }
+
+    /// Loads `<stem>.summary.json` off-main. Called via `.task(id:)`; guards
+    /// against stale stems and skips the parse when this stem's file is unchanged.
     @MainActor
     private func reloadSummary() async {
         let stem = meeting.stem
         let url = summaryJsonURL
+        let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+        // Already showing this stem's summary at this mtime: nothing changed on
+        // disk, so a revision bump from an unrelated rescan is a no-op.
+        if loadedForStem == stem, loadedSummaryMtime == mtime { return }
         let parsed: MeetingSummary? = await Task.detached(priority: .userInitiated) {
             MeetingSummary.load(from: url)
         }.value
         if meeting.stem == stem {
             loadedSummary = parsed
             loadedForStem = stem
+            loadedSummaryMtime = mtime
         }
     }
 
@@ -513,6 +539,9 @@ struct SummaryTab: View {
         saveError = nil
         savedCue = true
         Task {
+            // Reflect the edit immediately rather than waiting for the directory
+            // watcher's debounced rescan to bump the revision.
+            await reloadSummary()
             try? await Task.sleep(nanoseconds: 900_000_000)
             await MainActor.run {
                 savedCue = false

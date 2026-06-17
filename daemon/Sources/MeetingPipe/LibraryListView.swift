@@ -222,10 +222,14 @@ struct LibraryListView: View {
             },
             onCancelProcessing: { [weak libraryModel] in
                 libraryModel?.cancelProcessing()
-            }
+            },
+            isSelected: selection.contains(meeting.id)
         )
         .equatable()
         .tag(meeting.id)
+        // Neutralize the native (system-blue) selection paint; MeetingRow's own
+        // rowBackground draws the teal selection wash instead (DESIGN No-System-Blue).
+        .listRowBackground(Color.clear)
     }
 
 }
