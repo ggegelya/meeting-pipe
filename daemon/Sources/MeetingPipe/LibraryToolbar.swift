@@ -71,7 +71,7 @@ struct LibraryToolbar: View {
             if let wf = scopedWorkflow {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                 HStack(spacing: 5) {
                     Circle()
                         .fill(swiftUIColor(forHex: wf.color))
@@ -82,7 +82,7 @@ struct LibraryToolbar: View {
             } else {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                 Text(selection.title)
                     .font(.system(size: 12, weight: .medium))
             }

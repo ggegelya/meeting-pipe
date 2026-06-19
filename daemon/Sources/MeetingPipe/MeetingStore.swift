@@ -66,6 +66,13 @@ struct Meeting: Identifiable, Hashable {
     /// constructors need not supply it.
     var publishState: String? = nil
 
+    /// Sidecar presence captured during the scan so the row's context menu can gate
+    /// Republish / Regenerate without a per-row `FileManager` stat on the scroll
+    /// path. Derived from the prefetched file list; defaulted so test constructors
+    /// need not supply them.
+    var hasSummaryJSON: Bool = false
+    var hasTranscriptMD: Bool = false
+
     var id: String { stem } // stems are unique per recording (datetime-derived)
 
     /// True when the meeting was recorded zero-egress, i.e. forced on-device and
@@ -435,7 +442,9 @@ final class MeetingStore: ObservableObject {
             detectedLanguage: (summary?.detectedLanguage).flatMap { $0.isEmpty ? nil : $0 },
             workflowNDAMode: (meta?["workflow_nda_mode"] as? Bool),
             regulatedMode: (meta?["regulated_mode"] as? Bool),
-            publishState: (run?["publish_state"] as? String)
+            publishState: (run?["publish_state"] as? String),
+            hasSummaryJSON: summaryURL != nil,
+            hasTranscriptMD: files.contains { $0.lastPathComponent == "\(stem).md" }
         )
         return (meeting, cacheable)
     }

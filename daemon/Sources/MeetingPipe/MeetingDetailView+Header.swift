@@ -121,21 +121,21 @@ extension MeetingDetailView {
                 .font(.system(size: 11))
                 .foregroundStyle(Color(MPColors.fgSubtle))
             if let d = meeting.durationSec {
-                Text("·").font(.system(size: 11)).foregroundStyle(Color(MPColors.fgFaint))
+                Text("·").font(.mpTextXS).foregroundStyle(Color(MPColors.fgSubtle))
                 Text(MeetingRow.formatDuration(d))
                     .font(.system(size: 11).monospacedDigit())
                     .foregroundStyle(Color(MPColors.fgSubtle))
             }
             // Detected-language chip (TECH-UI-4): uppercase ISO code between duration and source, full name on hover. Hidden when unknown.
             if let langCode = languageChipCode {
-                Text("·").font(.system(size: 11)).foregroundStyle(Color(MPColors.fgFaint))
+                Text("·").font(.mpTextXS).foregroundStyle(Color(MPColors.fgSubtle))
                 Text(langCode)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(Color(MPColors.fgSubtle))
                     .help(languageChipTooltip ?? langCode)
             }
             if let src = meeting.sourceDisplayName, !src.isEmpty {
-                Text("·").font(.system(size: 11)).foregroundStyle(Color(MPColors.fgFaint))
+                Text("·").font(.mpTextXS).foregroundStyle(Color(MPColors.fgSubtle))
                 Text(src)
                     .font(.system(size: 11))
                     .foregroundStyle(Color(MPColors.fgSubtle))

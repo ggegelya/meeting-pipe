@@ -492,6 +492,34 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertNil(store.performScan(directory: dir).first?.detectedLanguage)
     }
 
+    // MARK: sidecar presence flags (row context-menu gating, no per-row disk I/O)
+
+    func test_sidecar_flags_true_when_summary_and_transcript_present() throws {
+        // The row's context menu gates Republish / Regenerate on these flags
+        // instead of a per-row FileManager stat on the scroll path.
+        let dir = try tempDir()
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{\"title\":\"x\"}")
+        try writeFile(dir.appendingPathComponent("\(stem).md"), "# transcript")
+        let store = MeetingStore(recordingsDir: dir)
+        let row = try XCTUnwrap(store.performScan(directory: dir).first)
+        XCTAssertTrue(row.hasSummaryJSON)
+        XCTAssertTrue(row.hasTranscriptMD)
+    }
+
+    func test_sidecar_flags_false_when_summary_and_transcript_absent() throws {
+        // A recent, still-processing meeting with only the wav: both flags read
+        // false so Republish / Regenerate stay disabled.
+        let dir = try tempDir()
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        let store = MeetingStore(recordingsDir: dir)
+        let row = try XCTUnwrap(store.performScan(directory: dir).first)
+        XCTAssertFalse(row.hasSummaryJSON)
+        XCTAssertFalse(row.hasTranscriptMD)
+    }
+
     // MARK: grouping
 
     func test_group_buckets_today_yesterday_and_older() {

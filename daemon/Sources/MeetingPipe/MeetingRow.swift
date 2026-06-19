@@ -36,44 +36,27 @@ struct MeetingRow: View, Equatable {
     }
 
     var body: some View {
-        // Adaptive row: one line when the column is wide enough, otherwise a
-        // two-line tile (title + status on top; source · duration · workflow · date
-        // below) so a narrow Library never hard-truncates the title to "202…".
-        // ViewThatFits keeps the one-line layout while it fits the proposed width;
-        // the one-line title reserves a comfortable min width so "fits" means "fits
-        // without cramping", not "fits because the title truncated to nothing".
-        ViewThatFits(in: .horizontal) {
-            oneLineRow
-            stackedTile
-        }
-        // TECH-DSN17: no side stripe. The live-recording row reads through the
-        // coral wash (rowBackground) plus the coral pulse dot in the status pill.
-        .padding(.horizontal, 14)
-        .frame(minHeight: 46)
-        .background(rowBackground)
-        .contentShape(Rectangle())
-        .contextMenu { contextMenuItems }
+        // Single two-line tile at a fixed height. This row used to adapt between a
+        // one-line layout and this tile via ViewThatFits, but inside a List
+        // (NSTableView caches row heights) the chosen branch, and so the height,
+        // depended on a column width that settled after the first cache. The first
+        // rows then rendered crammed into a stale, too-short slot until a
+        // scroll-recycle re-measured them. A fixed height gives the list one stable
+        // value to cache; dropping ViewThatFits also removes the per-row
+        // double-subtree measurement.
+        stackedTile
+            // TECH-DSN17: no side stripe. The live-recording row reads through the
+            // coral wash (rowBackground) plus the coral pulse dot in the status pill.
+            .padding(.horizontal, 14)
+            .frame(height: 56)
+            .background(rowBackground)
+            .contentShape(Rectangle())
+            .contextMenu { contextMenuItems }
     }
 
-    /// One-line layout: glyph · title+caption · status · date. The title carries a
-    /// min width so ViewThatFits falls through to the stacked tile once the column
-    /// can no longer give the title that room (the 170 is the tunable threshold).
-    private var oneLineRow: some View {
-        HStack(spacing: 10) {
-            glyphView
-            VStack(alignment: .leading, spacing: 1) {
-                titleText
-                    .frame(minWidth: 170, alignment: .leading)
-                captionLine
-            }
-            Spacer(minLength: 0)
-            trailingStatusCluster
-            trailingWhenStack
-        }
-    }
-
-    /// Two-line tile for narrow columns: title + status on line 1; the caption
-    /// (source · duration · workflow) and the date on line 2.
+    /// The row layout: title + status on line 1; the caption (source · duration ·
+    /// workflow) and the date on line 2. A single fixed-height layout (no
+    /// ViewThatFits); see `body` for why the adaptive variant was removed.
     private var stackedTile: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
@@ -160,37 +143,16 @@ struct MeetingRow: View, Equatable {
         }
         if let d = meeting.durationSec {
             if meeting.sourceDisplayName?.isEmpty == false {
-                Text("·").font(.system(size: 11)).foregroundStyle(Color(MPColors.fgFaint))
+                Text("·").font(.mpTextXS).foregroundStyle(Color(MPColors.fgSubtle))
             }
             Text(Self.formatDuration(d))
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(Color(MPColors.fgSubtle))
         }
         if let workflow = meeting.workflowName, !workflow.isEmpty {
-            Text("·").font(.system(size: 11)).foregroundStyle(Color(MPColors.fgFaint))
+            Text("·").font(.mpTextXS).foregroundStyle(Color(MPColors.fgSubtle))
             WorkflowChip(name: workflow, colorHex: meeting.workflowColor)
         }
-    }
-
-    /// Caption row for the one-line layout: the caption content, left-aligned with
-    /// a trailing spacer (the day/time stack sits to its right in the row).
-    private var captionLine: some View {
-        HStack(spacing: 6) {
-            captionContent
-            Spacer(minLength: 0)
-        }
-        .lineLimit(1)
-    }
-
-    /// Trailing relative date + time (TECH-UI-9). Single monospaced line; the
-    /// width is reserved for the longest case ("14 May 2025") so the column
-    /// does not jitter as rows cross date boundaries.
-    private var trailingWhenStack: some View {
-        Text(RelativeMeetingDateFormatter.string(from: meeting.startedAt))
-            .font(.system(size: 11).monospacedDigit())
-            .foregroundStyle(Color(MPColors.fgMuted))
-            .lineLimit(1)
-            .frame(minWidth: 100, alignment: .trailing)
     }
 
     /// Status pill. NDA rows show "Local only" rather than recording/processing colors; NDA is a privacy mode, not an error.
@@ -348,10 +310,11 @@ struct MeetingRow: View, Equatable {
 
     @ViewBuilder
     private var contextMenuItems: some View {
-        let summaryExists = FileManager.default.fileExists(atPath:
-            meeting.recordingsDir.appendingPathComponent("\(meeting.stem).summary.json").path)
-        let transcriptExists = FileManager.default.fileExists(atPath:
-            meeting.recordingsDir.appendingPathComponent("\(meeting.stem).md").path)
+        // Sidecar presence is read from the scan (Meeting flags), not a per-row
+        // FileManager stat: the context-menu closure is built with the row, so a
+        // disk hit here would sit on the scroll path.
+        let summaryExists = meeting.hasSummaryJSON
+        let transcriptExists = meeting.hasTranscriptMD
 
         Button("Republish") {
             Task { await republish() }

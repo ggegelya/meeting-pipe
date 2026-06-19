@@ -154,6 +154,15 @@ extension Color {
     static let mpSelectionWash = Color(nsColor: MPColors.signal600).opacity(0.15)
 }
 
+/// Fixed-size SwiftUI font tokens mirroring the `MPType` size ramp, so a call site
+/// can set the size through a token instead of a raw `.system(size:)` literal (the
+/// TECH-DSN3 guard rejects new font-size literals outside this file). Fixed, not
+/// Dynamic-Type, to match the existing metadata rows.
+extension Font {
+    /// 11pt, the extra-small caption/label size (`MPType.textXS`).
+    static let mpTextXS = Font.system(size: MPType.textXS)
+}
+
 /// Same tokens as a `ShapeStyle` leading-dot, so `.foregroundStyle(.mpDanger)`
 /// resolves (a bare `.foregroundStyle(_:)` looks the member up on `ShapeStyle`,
 /// not `Color`).
