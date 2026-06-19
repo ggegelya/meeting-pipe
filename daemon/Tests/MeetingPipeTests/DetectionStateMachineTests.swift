@@ -60,6 +60,42 @@ final class DetectionStateMachineTests: XCTestCase {
         XCTAssertEqual(fired, 2)
     }
 
+    // MARK: - Abandon prompt (skip / prompt-timeout / force-stop-while-prompting)
+
+    func test_abandonPrompt_returns_to_idle_and_cools_down_only_that_bundle() {
+        let m = DetectionStateMachine()
+        var idleFired = 0
+        m.onIdleTransition = { idleFired += 1 }
+        m.setPrompting(source: Self.teams)
+        XCTAssertFalse(m.isAcceptingPrompts)
+
+        m.abandonPrompt(source: Self.teams)
+
+        // Back to idle so a meeting in *another* app is still detected. The old
+        // `.suppressed` blocked all detection until a corroborated lifecycle end
+        // that the Teams compact-window artifact never produced, wedging detection
+        // for the rest of the meeting (the bug this regression guards).
+        XCTAssertTrue(m.isAcceptingPrompts, "abandonPrompt returns to idle")
+        // The idle hook fires so the Coordinator disengages the lifecycle adapter
+        // (and its 1 Hz Leave-button poll), instead of leaking it.
+        XCTAssertEqual(idleFired, 1)
+        // Only the skipped bundle is cooled down; a different app is not.
+        XCTAssertTrue(m.isCoolingDown(bundleID: Self.teams.bundleID, cooldownSec: 60))
+        XCTAssertFalse(m.isCoolingDown(bundleID: "us.zoom.xos", cooldownSec: 60))
+    }
+
+    func test_abandonPrompt_cancels_the_pending_prompt_timeout() {
+        let m = DetectionStateMachine()
+        m.setPrompting(source: Self.teams)
+        var fired = false
+        m.startPromptTimeout(for: Self.teams, timeoutSec: 0.05) { fired = true }
+        m.abandonPrompt(source: Self.teams)
+        let exp = expectation(description: "wait past the scheduled fire")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { exp.fulfill() }
+        wait(for: [exp], timeout: 1.0)
+        XCTAssertFalse(fired, "abandonPrompt cancels the timeout; the timer must not fire after it")
+    }
+
     // MARK: - Cooldown facade
 
     func test_cooldown_facade_round_trips() {

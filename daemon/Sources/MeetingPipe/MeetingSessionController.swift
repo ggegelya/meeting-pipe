@@ -135,10 +135,10 @@ final class MeetingSessionController {
         case .recording(let file, let src, let mode):
             stopRecording(file: file, source: src, summaryMode: mode)
         case .prompting(let src):
-            // Same as Skip: suppress until the detector sees this meeting end.
-            coordinator.stateMachine.cancelPromptTimeout()
+            // Same as Skip: don't record, return to idle, and cool down the bundle
+            // so the next discovery poll doesn't immediately re-prompt this meeting.
             coordinator.promptWindow.dismiss()
-            coordinator.stateMachine.setSuppressed(source: src)
+            coordinator.stateMachine.abandonPrompt(source: src)
             coordinator.statusBar.setIdle()
         case .idle, .suppressed, .stopping:
             break
@@ -381,11 +381,12 @@ final class MeetingSessionController {
                 Log.writeLine("daemon", "prompt timed out → auto-record byo (\(source.bundleID))")
                 self.beginRecording(source: source, summaryMode: .byo)
             default:
-                Log.writeLine("daemon", "prompt timed out → suppressed (\(source.bundleID))")
-                self.coordinator.stateMachine.setSuppressed(source: source)
-                // Like an explicit Skip: arm the cooldown to absorb post-call
-                // mic flickers once suppression lifts.
-                self.coordinator.stateMachine.recordCooldownEnd(bundleID: source.bundleID)
+                Log.writeLine("daemon", "prompt timed out → idle + cooldown (\(source.bundleID))")
+                // Like an explicit Skip: return to idle (other apps still detect) and
+                // cool down this bundle. Not the old global `.suppressed`, which wedged
+                // detection for the rest of the meeting when the leave-button end never
+                // corroborated.
+                self.coordinator.stateMachine.abandonPrompt(source: source)
                 self.coordinator.statusBar.setIdle()
             }
         }
@@ -395,6 +396,17 @@ final class MeetingSessionController {
 
     func handleMeetingStarted(source: AppSource) {
         guard coordinator.stateMachine.isAcceptingPrompts else { return }
+
+        // Honor the per-bundle reprompt cooldown here, not only in handleDiscovery:
+        // after a skip/timeout we go to .idle immediately, so a lifecycle `.starting`
+        // published from a signal queued just before disengage (or a fast re-scan)
+        // must not re-prompt the meeting the user just skipped within its cooldown.
+        if coordinator.stateMachine.isCoolingDown(
+            bundleID: source.bundleID,
+            cooldownSec: coordinator.liveRepromptCooldownSec
+        ) {
+            return
+        }
 
         // Auto-consent (config or persisted "Always").
         if coordinator.liveAutoConsentApps.contains(source.bundleID) ||

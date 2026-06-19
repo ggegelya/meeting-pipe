@@ -45,8 +45,29 @@ final class DetectionStateMachine {
         current = .prompting(source: source)
     }
 
+    /// Legacy global-suppression transition. No longer entered by the prompt-abandon
+    /// paths (skip / prompt-timeout / force-stop-while-prompting) - they now call
+    /// `abandonPrompt`. Retained because `.suppressed` is still a valid state in the
+    /// enum and exercised by `label`/`isAcceptingPrompts` tests.
     func setSuppressed(source: AppSource) {
         current = .suppressed(source: source)
+    }
+
+    /// Abandon the active prompt for `source` without recording: return to `.idle` so
+    /// meetings in *other* apps keep being detected, and arm the per-bundle reprompt
+    /// cooldown so this same meeting isn't re-prompted immediately.
+    ///
+    /// Replaces the old `setSuppressed` transition on these paths. `.suppressed` blocked
+    /// *all* detection until a corroborated lifecycle `.ended` arrived - an end the Teams
+    /// compact-window leave-button artifact never produces (`PromptEndPolicy` filters the
+    /// bare, uncorroborated invalidation), so detection wedged for the rest of the meeting
+    /// and the engaged Leave-button signal leaked, health-polling a dead element at 1 Hz.
+    /// Going to `.idle` here fires `onIdleTransition`, which disengages that poll; the
+    /// cooldown is bundle-scoped, so only the skipped meeting is held off.
+    func abandonPrompt(source: AppSource) {
+        cancelPromptTimeout()
+        recordCooldownEnd(bundleID: source.bundleID)
+        setIdle()
     }
 
     func setRecording(file: URL, source: AppSource?, summaryMode: SummaryMode) {

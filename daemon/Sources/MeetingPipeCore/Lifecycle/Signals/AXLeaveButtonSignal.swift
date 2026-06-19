@@ -182,7 +182,12 @@ public final class AXLeaveButtonSignal {
                 "reason": reason,
             ])
         }
-        if lastState == state && state == .healthy { return }
+        // Dedup the event-log emit for any sustained state, not just healthy. A
+        // stuck-invalid element (a leaked poll, or a genuinely-gone button still being
+        // polled) otherwise logged ax_leave_button_state{invalid} on every 1 Hz poll -
+        // 66% of the entire event log. `onChange` below is already edge-gated, so the
+        // engine is unaffected; this only collapses the redundant log lines.
+        if lastState == state { return }
         let previous = lastState
         lastState = state
         eventLog.emit(category: "signal", action: "ax_leave_button_state", attributes: [

@@ -13,12 +13,11 @@ extension Coordinator: NotifierDelegate {
 
     func notifier(_ notifier: Notifier, didChooseSkip source: AppSource) {
         guard case .prompting(let pending) = stateMachine.current, pending == source else { return }
-        stateMachine.cancelPromptTimeout()
-        stateMachine.setSuppressed(source: source)
+        // Skip = don't record this meeting. Return to idle (so meetings in other
+        // apps are still detected) and cool down this bundle so a post-call mic
+        // flicker - or the same still-live meeting - can't re-prompt immediately.
+        stateMachine.abandonPrompt(source: source)
         statusBar.setIdle()
-        // Skip = don't ask again for this call: also cool down the bundle so
-        // a post-call mic flicker can't re-prompt once suppression lifts.
-        stateMachine.recordCooldownEnd(bundleID: source.bundleID)
         Log.writeLine("daemon", "user skipped (\(source.bundleID))")
         Log.event(category: "coordinator", action: "user_skipped", attributes: [
             "bundle_id": source.bundleID,

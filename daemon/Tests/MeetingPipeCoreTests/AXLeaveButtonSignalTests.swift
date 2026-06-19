@@ -85,6 +85,35 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         })
     }
 
+    func test_sustained_invalid_logs_once_not_every_poll() throws {
+        let log = RecordingEventLog()
+        let bus = AXObserverBus()
+        let scheduler = ManualScheduler()
+        var probeReturn: AXLeaveButtonSignal.State = .healthy
+        let signal = AXLeaveButtonSignal(
+            axBus: bus,
+            eventLog: log,
+            probe: { _ in probeReturn },
+            scheduler: manualScheduler(scheduler)
+        )
+
+        try signal.start(context: teamsContext, leaveButton: stubElement())
+        // Element goes invalid and STAYS invalid across many health polls - the
+        // leaked-poll case where a signal is never torn down. The event-log emit
+        // must collapse to the single edge, not one line per 1 Hz tick (which was
+        // 66% of the 57 MB event log in the wild).
+        probeReturn = .invalid
+        scheduler.tick?()
+        scheduler.tick?()
+        scheduler.tick?()
+        scheduler.tick?()
+
+        let invalidEmits = log.entries.filter {
+            $0.action == "ax_leave_button_state" && $0.attributes["state"] == "invalid"
+        }
+        XCTAssertEqual(invalidEmits.count, 1, "A stuck-invalid element logs the invalid edge once, not on every poll")
+    }
+
     func test_stop_releases_bus_subscription() throws {
         let bus = AXObserverBus()
         let scheduler = ManualScheduler()
