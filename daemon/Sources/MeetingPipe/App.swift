@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Combine
 
 @main
@@ -46,6 +47,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.main.info("MeetingPipe starting")
+
+        // Ceiling on every synchronous Accessibility IPC this process makes. The
+        // detection signals read the meeting app's AX tree with blocking
+        // `AXUIElementCopyAttributeValue` calls (the Leave-button health poll
+        // re-walks the whole Teams tree on the main thread); a busy or
+        // unresponsive Teams could otherwise stall a single call long enough to
+        // wedge the main run loop, so Record/Quit stopped responding. A
+        // system-wide timeout bounds each call to 2 s for all elements, so the
+        // run loop always recovers. Set once, before any signal arms.
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 2.0)
 
         // Tag a rebuild-triggered launch before any other event, so dogfood analysis can exclude the TCC re-grant churn that follows each `--reset-tcc` cycle.
         RebuildTagger.runOnce()

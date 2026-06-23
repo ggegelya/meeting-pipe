@@ -34,6 +34,8 @@ public final class AXLeaveButtonSignal {
     private let scheduler: Scheduler
     private let pollInterval: TimeInterval
     private let slowPollInterval: TimeInterval
+    /// Clock seam for the fresh-walk throttle, injectable for tests.
+    private let now: () -> Date
 
     private var element: AXUIElement?
     private var context: MeetingLifecycleContext?
@@ -41,6 +43,12 @@ public final class AXLeaveButtonSignal {
     private var cancelPoll: (() -> Void)?
     private var cadence: AdaptivePollCadence
     private var currentPollInterval: TimeInterval = 0
+    /// Timestamp of the last fresh-tree walk via `resolveElement`. The walk is
+    /// expensive (every window, recursive AX IPC); throttling it to
+    /// `slowPollInterval` keeps the 1 Hz poll's cheap single-element probe while
+    /// preventing the every-tick full re-walk that wedged the main thread (the
+    /// Teams "detected" hang). Reset on `stop` so a fresh meeting walks at once.
+    private var lastWalkAt: Date?
     /// Fresh-tree-walk resolver for the live Leave button, injected by the daemon at
     /// `start` (TECH-END2, mirrors the TECH-MIC6 mute-probe seam). `evaluate` calls it
     /// before treating a `.invalid` read as a real end: a Teams call-UI re-render staled
@@ -55,7 +63,8 @@ public final class AXLeaveButtonSignal {
         probe: @escaping Probe = AXLeaveButtonSignal.defaultProbe,
         scheduler: @escaping Scheduler = AXLeaveButtonSignal.defaultScheduler,
         pollInterval: TimeInterval = AXLeaveButtonSignal.defaultPollInterval,
-        slowPollInterval: TimeInterval = AXLeaveButtonSignal.defaultSlowPollInterval
+        slowPollInterval: TimeInterval = AXLeaveButtonSignal.defaultSlowPollInterval,
+        now: @escaping () -> Date = { Date() }
     ) {
         self.axBus = axBus
         self.eventLog = eventLog
@@ -63,6 +72,7 @@ public final class AXLeaveButtonSignal {
         self.scheduler = scheduler
         self.pollInterval = pollInterval
         self.slowPollInterval = slowPollInterval
+        self.now = now
         self.cadence = AdaptivePollCadence(fast: pollInterval, slow: slowPollInterval)
     }
 
@@ -144,6 +154,7 @@ public final class AXLeaveButtonSignal {
         element = nil
         lastState = nil
         resolveElement = nil
+        lastWalkAt = nil
     }
 
     func evaluate(reason: String) {
@@ -157,7 +168,9 @@ public final class AXLeaveButtonSignal {
         // meeting end is bounded by the window-gone backstop. No resolver (browser /
         // AX-denied) means nothing to adopt: stay inert, as before.
         if element == nil {
-            guard let resolve = resolveElement, let fresh = resolve(),
+            // Self-arm is the sustained "button not present yet" retry, so it is
+            // always throttled (no edge to recover from when nothing was adopted).
+            guard let fresh = throttledResolve(bypassThrottle: false),
                   probe(fresh) == .healthy else { return }
             adopt(fresh, context: context)
             // Fall through so the healthy baseline reaches the engine this tick.
@@ -172,7 +185,8 @@ public final class AXLeaveButtonSignal {
         // `.ended` is emitted. The destroyed-notification is deliberately NOT re-subscribed
         // (RealAXBackend's one-observer-per-pid trap); the health poll reads the swapped
         // element going forward, matching the TECH-MIC6 mute-probe re-arm.
-        if state == .invalid, let resolve = resolveElement, let fresh = resolve(),
+        if state == .invalid,
+           let fresh = throttledResolve(bypassThrottle: lastState == .healthy),
            probe(fresh) == .healthy {
             self.element = fresh
             state = .healthy
@@ -203,6 +217,30 @@ public final class AXLeaveButtonSignal {
         } else if state == .healthy && previous != .healthy {
             onChange?(state)
         }
+    }
+
+    /// Throttled wrapper around the injected `resolveElement` fresh-tree walk.
+    /// The walk scans every window of the meeting app with recursive, synchronous
+    /// AX IPC, so running it on each 1 Hz poll (while the Leave button is missing
+    /// or stuck-invalid) saturated the main thread and wedged Record/Quit (the
+    /// Teams "detected" hang). The cheap single-element probe still runs every
+    /// tick; only the full walk is rate-limited to `slowPollInterval`. Returns nil
+    /// when throttled, when no resolver is injected (browser / AX-denied), or when
+    /// the walk finds nothing.
+    ///
+    /// `bypassThrottle` is set on a genuine healthy->invalid edge so the TECH-END2
+    /// recovery (re-walk before declaring the meeting ended) always runs, even if
+    /// a walk happened seconds ago. Only the sustained absent/invalid state - the
+    /// one that produced the every-tick walk - is rate-limited.
+    private func throttledResolve(bypassThrottle: Bool) -> AXUIElement? {
+        guard let resolveElement = resolveElement else { return nil }
+        let timestamp = now()
+        if !bypassThrottle, let last = lastWalkAt,
+           timestamp.timeIntervalSince(last) < slowPollInterval {
+            return nil
+        }
+        lastWalkAt = timestamp
+        return resolveElement()
     }
 
     /// Adopt a freshly-walked Leave button mid-meeting (self-arm path): record it as

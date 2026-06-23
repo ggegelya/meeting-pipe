@@ -148,6 +148,15 @@ enum MeetingAXHandleBuilder {
     /// at negligible walk cost (well under 100 nodes total).
     private static let maxDepth = 32
 
+    /// Total AX nodes a single walk may visit. `maxDepth` bounds how *deep* the
+    /// DFS goes; this bounds how *wide* it goes, so a pathological tree (an AX
+    /// reference cycle, or a meeting window with a very large node count) can't
+    /// turn one walk into thousands of synchronous AX round-trips on the caller's
+    /// thread. Sized far above a real meeting window (happy path is well under
+    /// 100 nodes) so it never causes a false miss; it is a runaway backstop, not
+    /// a tuning knob.
+    private static let maxNodes = 4000
+
     /// Return all AX windows of `axApp`. Internal so
     /// `MeetingAXWindowWatcher` can re-walk on a window-created
     /// notification without duplicating the `kAXWindowsAttribute`
@@ -321,13 +330,25 @@ enum MeetingAXHandleBuilder {
         Log.event(category: "coordinator", action: "ax_handles_built", attributes: attrs)
     }
 
-    /// Bounded DFS for the first button/checkbox satisfying `predicate`.
+    /// Bounded DFS for the first button/checkbox satisfying `predicate`. Entry
+    /// point: allocates a fresh per-walk node budget, then delegates.
     private static func findButton(
         in element: AXUIElement,
         depth: Int,
         predicate: (AXUIElement) -> Bool
     ) -> AXUIElement? {
-        if depth > maxDepth { return nil }
+        var budget = maxNodes
+        return findButton(in: element, depth: depth, budget: &budget, predicate: predicate)
+    }
+
+    private static func findButton(
+        in element: AXUIElement,
+        depth: Int,
+        budget: inout Int,
+        predicate: (AXUIElement) -> Bool
+    ) -> AXUIElement? {
+        if depth > maxDepth || budget <= 0 { return nil }
+        budget -= 1
         var roleRef: CFTypeRef?
         let roleErr = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
         let role = (roleErr == .success) ? (roleRef as? String) : nil
@@ -340,7 +361,7 @@ enum MeetingAXHandleBuilder {
             return nil
         }
         for child in children {
-            if let hit = findButton(in: child, depth: depth + 1, predicate: predicate) {
+            if let hit = findButton(in: child, depth: depth + 1, budget: &budget, predicate: predicate) {
                 return hit
             }
         }
@@ -348,12 +369,24 @@ enum MeetingAXHandleBuilder {
     }
 
     /// Bounded DFS for the first toolbar/group whose text contains any needle.
+    /// Entry point: allocates a fresh per-walk node budget, then delegates.
     private static func findToolbar(
         in element: AXUIElement,
         depth: Int,
         needles: [String]
     ) -> AXUIElement? {
-        if depth > maxDepth { return nil }
+        var budget = maxNodes
+        return findToolbar(in: element, depth: depth, budget: &budget, needles: needles)
+    }
+
+    private static func findToolbar(
+        in element: AXUIElement,
+        depth: Int,
+        budget: inout Int,
+        needles: [String]
+    ) -> AXUIElement? {
+        if depth > maxDepth || budget <= 0 { return nil }
+        budget -= 1
         var roleRef: CFTypeRef?
         let roleErr = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
         let role = (roleErr == .success) ? (roleRef as? String) : nil
@@ -372,7 +405,7 @@ enum MeetingAXHandleBuilder {
             return nil
         }
         for child in children {
-            if let hit = findToolbar(in: child, depth: depth + 1, needles: needles) {
+            if let hit = findToolbar(in: child, depth: depth + 1, budget: &budget, needles: needles) {
                 return hit
             }
         }
