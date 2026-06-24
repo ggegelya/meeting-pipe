@@ -81,6 +81,33 @@ def write_run_sidecar(
     return out
 
 
+def write_empty_marker(
+    *,
+    recordings_dir: Path,
+    stem: str,
+    reason: str,
+    ts: str | None = None,
+) -> Path:
+    """Write ``<stem>.empty.json`` for a recording the pipeline finished but
+    intentionally produced no summary for (no detected speech).
+
+    Without it the Library has no terminal sidecar to read, so an empty
+    recording spins in "Processing" until the staleness window flips it to a
+    misleading "Failed". The marker lets the Library show a terminal "No speech"
+    state instead. Atomic via temp + rename, matching ``write_run_sidecar``.
+    """
+    payload: dict[str, Any] = {
+        "stem": stem,
+        "reason": reason,
+        "ts": ts or _now_utc_iso(),
+    }
+    out = recordings_dir / f"{stem}.empty.json"
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, out)
+    return out
+
+
 def set_publish_state(sidecar_path: Path, publish_state: str) -> None:
     """Record the resolved publish outcome onto an existing run sidecar (TECH-I6).
 

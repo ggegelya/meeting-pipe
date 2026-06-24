@@ -128,6 +128,7 @@ struct FilterBarView: View {
             Button("Done") { filter.status = .done }
             Button("Processing") { filter.status = .processing }
             Button("Failed") { filter.status = .failed }
+            Button("No speech") { filter.status = .empty }
             Button("Manual paste ready") { filter.status = .manualPasteReady }
             Button("Recording") { filter.status = .recording }
         }
@@ -170,6 +171,7 @@ struct FilterBarView: View {
         case .processing: return "Processing"
         case .manualPasteReady: return "Manual paste ready"
         case .done: return "Done"
+        case .empty: return "No speech"
         case .failed: return "Failed"
         case .unknown: return "Unknown"
         }

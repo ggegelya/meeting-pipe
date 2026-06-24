@@ -226,6 +226,15 @@ def test_no_speech_short_circuits_before_byo(tmp_path: Path, monkeypatch):
     assert result["skipped"] == "no_speech"
     assert "manual_bundle" not in result
 
+    # A terminal marker is written so the Library shows a "No speech" state
+    # instead of spinning in "Processing" until the staleness window flips it
+    # to a misleading "Failed".
+    marker = tmp_path / f"{stem}.empty.json"
+    assert marker.exists(), "no_speech skip must write the .empty.json marker"
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["stem"] == stem
+    assert payload["reason"] == "no_speech"
+
 
 def test_diarize_cleanup_runs_when_enabled(tmp_path: Path, monkeypatch):
     """When summarization.diarize_cleanup is on and the transcript has

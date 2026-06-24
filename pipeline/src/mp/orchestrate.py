@@ -26,7 +26,7 @@ from importlib import resources
 from pathlib import Path
 
 from .config import Config, effective_backend, load_secrets
-from .corrections import set_publish_state, write_run_sidecar
+from .corrections import set_publish_state, write_empty_marker, write_run_sidecar
 from .egress_guard import arm_for_config
 from .diarize import assign_speakers_by_channel, is_stereo_recording, label_me_speaker
 from . import events
@@ -250,6 +250,16 @@ def _run_all_inner(
         log.warning("  WAV: %s", wav)
         log.warning("  MD : %s", t["md"])
         events.emit("pipeline", "run_skipped", wav=str(wav), reason="no_speech")
+        # Terminal marker so the Library shows a "No speech" state instead of
+        # spinning in "Processing" forever (this skip writes no summary/bundle,
+        # unlike the byo/too_long skips below). Best-effort: a marker write
+        # failure must not turn a clean skip into a crash.
+        try:
+            write_empty_marker(
+                recordings_dir=wav.parent, stem=wav.stem, reason="no_speech"
+            )
+        except OSError as exc:
+            log.warning("empty marker write failed: %s", exc)
         return {
             "transcript_json": str(t["json"]),
             "transcript_md": str(t["md"]),

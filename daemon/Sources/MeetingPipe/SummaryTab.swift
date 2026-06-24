@@ -309,6 +309,12 @@ struct SummaryTab: View {
             failedState
         } else if meeting.status == .manualPasteReady {
             byoPasteState
+        } else if meeting.status == .empty {
+            Text("No speech was detected, so there is nothing to summarize.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(40)
         } else {
             Text("No summary yet.\nIt appears here once the pipeline finishes.")
                 .multilineTextAlignment(.center)

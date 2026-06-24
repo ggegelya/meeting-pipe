@@ -11,6 +11,7 @@ struct Meeting: Identifiable, Hashable {
         case processing           // wav present, no summary yet
         case manualPasteReady     // long-meeting bundle waiting on user paste
         case done                 // summary.json on disk
+        case empty                // pipeline finished with no speech to summarize (.empty.json marker)
         case failed               // error sidecar present, or stalled past the age window
         case unknown
     }
@@ -349,6 +350,7 @@ final class MeetingStore: ObservableObject {
         let runURL = files.first { $0.lastPathComponent.hasSuffix(".run.json") }
         let summaryURL = files.first { $0.lastPathComponent.hasSuffix(".summary.json") }
         let pasteReadyURL = files.first { $0.lastPathComponent.hasSuffix(".READY_FOR_MANUAL.md") }
+        let emptyURL = files.first { $0.lastPathComponent.hasSuffix(".empty.json") }
         let errorURL = files.first {
             $0.lastPathComponent.hasSuffix(PipelineFailureSidecar.suffix)
         }
@@ -357,6 +359,7 @@ final class MeetingStore: ObservableObject {
             return lc.hasSuffix(".json")
                 && !lc.hasSuffix(".meta.json")
                 && !lc.hasSuffix(".run.json")
+                && !lc.hasSuffix(".empty.json")
                 && !lc.hasSuffix(".summary.json")
                 && !lc.hasSuffix(".summary.candidate.json")   // TECH-A16 preview sidecar
                 && !lc.hasSuffix(".notion.json")
@@ -393,6 +396,12 @@ final class MeetingStore: ObservableObject {
             cacheable = true
         } else if pasteReadyURL != nil {
             status = .manualPasteReady
+            cacheable = true
+        } else if emptyURL != nil {
+            // Pipeline finished but found no speech to summarize: a terminal,
+            // cacheable state, not an in-flight `.processing` that would age into
+            // a misleading `.failed`.
+            status = .empty
             cacheable = true
         } else {
             // No summary, no failure sidecar: in-flight, never started, or stalled. Use age as a proxy; anything older than the staleness window is `.failed`. The live-recording overlay supersedes this via `LibraryWindowModel.liveRecordingStem`. Age-derived, so not cacheable.

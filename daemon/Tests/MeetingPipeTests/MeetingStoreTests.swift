@@ -106,6 +106,27 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(captured.first?.status, .manualPasteReady)
     }
 
+    func test_status_empty_when_no_speech_marker_present() throws {
+        let dir = try tempDir()
+        // An old stem, past the staleness window: the `.empty.json` marker must
+        // still win, so an empty recording reads `.empty`, not the age-inferred
+        // `.failed`. This is the stuck-in-Processing bug the marker fixes.
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        try writeFile(dir.appendingPathComponent("\(stem).empty.json"), "{\"reason\":\"no_speech\"}")
+        let store = MeetingStore(recordingsDir: dir)
+        let exp = expectation(description: "scan")
+        var captured: [Meeting] = []
+        let cancel = store.$meetings.dropFirst().sink { meetings in
+            captured = meetings
+            exp.fulfill()
+        }
+        store.start()
+        wait(for: [exp], timeout: 2.0)
+        cancel.cancel()
+        XCTAssertEqual(captured.first?.status, .empty)
+    }
+
     func test_processing_when_only_wav_present() throws {
         let dir = try tempDir()
         // Use a stem within the staleness window so it stays processing.
