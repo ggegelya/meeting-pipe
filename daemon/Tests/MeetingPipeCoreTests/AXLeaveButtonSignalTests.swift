@@ -500,4 +500,42 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         XCTAssertEqual(walkCount, 2, "The invalid edge bypasses the throttle and re-walks")
         XCTAssertEqual(observed, [.healthy], "Recovery keeps it healthy: no false end despite the recent walk")
     }
+
+    // MARK: - Production serial-queue path (off-main poll)
+
+    func test_production_queue_mode_runs_poll_off_main() throws {
+        // No scheduler injected => the production path: a private serial queue + a
+        // DispatchSourceTimer. Proves the repeating timer drives a state change
+        // end-to-end and that the poll emit runs off the main thread.
+        let bus = AXObserverBus()
+        let lock = NSLock()
+        var probeState: AXLeaveButtonSignal.State = .healthy
+        var states: [AXLeaveButtonSignal.State] = []
+        var invalidEmitOnMain: Bool?
+        let exp = expectation(description: "healthy baseline then a timer-driven invalid edge")
+
+        let signal = AXLeaveButtonSignal(
+            axBus: bus,
+            probe: { _ in lock.lock(); defer { lock.unlock() }; return probeState },
+            pollInterval: 0.05,
+            slowPollInterval: 0.05
+        )
+        signal.onChange = { state in
+            lock.lock()
+            states.append(state)
+            let count = states.count
+            if state == .invalid { invalidEmitOnMain = Thread.isMainThread }
+            lock.unlock()
+            if count == 2 { exp.fulfill() }
+        }
+
+        try signal.start(context: teamsContext, leaveButton: stubElement())
+        lock.lock(); probeState = .invalid; lock.unlock()   // a later timer tick flips it
+        wait(for: [exp], timeout: 5.0)
+        signal.stop()
+
+        lock.lock(); let final = states; lock.unlock()
+        XCTAssertEqual(final, [.healthy, .invalid], "real queue + timer: healthy baseline, then the invalid edge")
+        XCTAssertEqual(invalidEmitOnMain, false, "the timer-driven poll emit runs off the main thread")
+    }
 }

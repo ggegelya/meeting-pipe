@@ -4,7 +4,12 @@ import Foundation
 /// `kAXUIElementDestroyedNotification` + 1 Hz health poll on the Leave-button element.
 /// Dual path because macOS Sequoia drops AX destruction notifications silently: the notification gives
 /// sub-100 ms on the happy path; the poll bounds worst-case lag to ~1 s.
-/// Threading: `start`/`stop` on main; notification handler dispatched to main by `AXObserverBus`; poll on scheduler queue.
+/// Threading: all state and the poll are confined to a private serial queue in production, so the poll's
+/// synchronous AX IPC never runs on the main thread. `start`/`stop`/`armIfNeeded` (called on main) hop onto
+/// it via `runSync` and stay synchronous to the caller; the `AXObserverBus` destruction-notification handler
+/// (delivered on main) hops on via `runAsync`. `onChange` fires from the queue - the coordinator's sink hops
+/// to its own engine queue, so off-main delivery is safe. Injecting a `Scheduler` (tests) selects an inline
+/// executor (no queue) so the existing synchronous assertions hold.
 public final class AXLeaveButtonSignal {
 
     public enum State: Equatable {
@@ -36,6 +41,10 @@ public final class AXLeaveButtonSignal {
     private let slowPollInterval: TimeInterval
     /// Clock seam for the fresh-walk throttle, injectable for tests.
     private let now: () -> Date
+    /// Serial queue confining all state + the poll in production, so the poll's
+    /// synchronous AX IPC never runs on the main thread. Nil when a scheduler is
+    /// injected (tests run inline on the caller for deterministic assertions).
+    private let serialQueue: DispatchQueue?
 
     private var element: AXUIElement?
     private var context: MeetingLifecycleContext?
@@ -61,7 +70,7 @@ public final class AXLeaveButtonSignal {
         axBus: AXObserverBus,
         eventLog: EventLog = NoopEventLog(),
         probe: @escaping Probe = AXLeaveButtonSignal.defaultProbe,
-        scheduler: @escaping Scheduler = AXLeaveButtonSignal.defaultScheduler,
+        scheduler: Scheduler? = nil,
         pollInterval: TimeInterval = AXLeaveButtonSignal.defaultPollInterval,
         slowPollInterval: TimeInterval = AXLeaveButtonSignal.defaultSlowPollInterval,
         now: @escaping () -> Date = { Date() }
@@ -69,11 +78,51 @@ public final class AXLeaveButtonSignal {
         self.axBus = axBus
         self.eventLog = eventLog
         self.probe = probe
-        self.scheduler = scheduler
         self.pollInterval = pollInterval
         self.slowPollInterval = slowPollInterval
         self.now = now
         self.cadence = AdaptivePollCadence(fast: pollInterval, slow: slowPollInterval)
+        // No injected scheduler is the production path: confine the poll and all
+        // state to a private serial queue (the poll does synchronous AX IPC that
+        // must stay off the main thread). An injected scheduler is the test path:
+        // run inline on the caller (serialQueue == nil) so assertions stay synchronous.
+        if let scheduler = scheduler {
+            self.scheduler = scheduler
+            self.serialQueue = nil
+        } else {
+            let queue = DispatchQueue(label: "MeetingPipeCore.AXLeaveButtonSignal", qos: .userInitiated)
+            self.serialQueue = queue
+            self.scheduler = AXLeaveButtonSignal.queueScheduler(on: queue)
+        }
+    }
+
+    /// Run `work` on the serial state context, synchronously. Production: hop to
+    /// `serialQueue` (the caller, main, blocks until the queue is free - bounded by
+    /// the AX messaging timeout, and only contended at the infrequent
+    /// start/stop/arm). Tests (no queue): run inline so those calls keep their
+    /// synchronous, throwing semantics.
+    private func runSync<T>(_ work: () throws -> T) rethrows -> T {
+        if let serialQueue = serialQueue {
+            return try serialQueue.sync(execute: work)
+        }
+        return try work()
+    }
+
+    /// Run `work` on the serial state context, asynchronously. Used from the AX
+    /// destruction-notification handler, which `AXObserverBus` delivers on main.
+    /// Inline when there is no queue (tests).
+    private func runAsync(_ work: @escaping () -> Void) {
+        if let serialQueue = serialQueue {
+            serialQueue.async(execute: work)
+        } else {
+            work()
+        }
+    }
+
+    deinit {
+        // Cancel the poll's DispatchSourceTimer if `stop()` was never called, so the
+        // source is never released while still active.
+        cancelPoll?()
     }
 
     /// `leaveButton` may be nil: the start-time AX walk does not always find the
@@ -88,7 +137,17 @@ public final class AXLeaveButtonSignal {
         leaveButton: AXUIElement?,
         resolveElement: (() -> AXUIElement?)? = nil
     ) throws {
-        stop()
+        try runSync {
+            try _start(context: context, leaveButton: leaveButton, resolveElement: resolveElement)
+        }
+    }
+
+    private func _start(
+        context: MeetingLifecycleContext,
+        leaveButton: AXUIElement?,
+        resolveElement: (() -> AXUIElement?)?
+    ) throws {
+        _stop()
         self.context = context
         self.element = leaveButton
         self.resolveElement = resolveElement
@@ -98,13 +157,16 @@ public final class AXLeaveButtonSignal {
                 element: leaveButton,
                 notification: kAXUIElementDestroyedNotification as String
             ) { [weak self] in
-                self?.cadence.noteListener()   // TECH-PERF5: notification is delivering
-                self?.evaluate(reason: "destroyed_notification")
+                self?.runAsync {
+                    guard let self = self else { return }
+                    self.cadence.noteListener()   // TECH-PERF5: notification is delivering
+                    self._evaluate(reason: "destroyed_notification")
+                }
             }
         }
         cadence = AdaptivePollCadence(fast: pollInterval, slow: slowPollInterval)
         startPoll(interval: cadence.initialInterval)
-        evaluate(reason: "initial")
+        _evaluate(reason: "initial")
     }
 
     /// Arm (or re-arm) the health poll at `interval`, backing the rate off while
@@ -115,7 +177,7 @@ public final class AXLeaveButtonSignal {
         currentPollInterval = interval
         cancelPoll = scheduler(interval) { [weak self] in
             guard let self = self else { return }
-            self.evaluate(reason: "health_poll")
+            self._evaluate(reason: "health_poll")
             let next = self.cadence.intervalAfterPoll()
             if next != self.currentPollInterval {
                 self.startPoll(interval: next)
@@ -132,11 +194,18 @@ public final class AXLeaveButtonSignal {
         context: MeetingLifecycleContext,
         leaveButton: AXUIElement
     ) {
+        runSync { _armIfNeeded(context: context, leaveButton: leaveButton) }
+    }
+
+    private func _armIfNeeded(
+        context: MeetingLifecycleContext,
+        leaveButton: AXUIElement
+    ) {
         // Skip only when the current element is still live; an armed-but-dead element falls through to re-arm.
         if let current = element, probe(current) == .healthy { return }
         let resolver = resolveElement  // preserve the injected re-walk across the re-arm
         do {
-            try start(context: context, leaveButton: leaveButton, resolveElement: resolver)
+            try _start(context: context, leaveButton: leaveButton, resolveElement: resolver)
         } catch {
             eventLog.emit(category: "signal", action: "ax_leave_button_arm_failed", attributes: [
                 "bundle_id": context.bundleID,
@@ -147,6 +216,10 @@ public final class AXLeaveButtonSignal {
     }
 
     public func stop() {
+        runSync { _stop() }
+    }
+
+    private func _stop() {
         if let token = axToken { axBus.unsubscribe(token); axToken = nil }
         cancelPoll?(); cancelPoll = nil
         currentPollInterval = 0
@@ -157,7 +230,7 @@ public final class AXLeaveButtonSignal {
         lastWalkAt = nil
     }
 
-    func evaluate(reason: String) {
+    private func _evaluate(reason: String) {
         guard let context = context else { return }
         // Self-arm: the start-time walk handed us no Leave button (Teams renders the
         // "Meeting controls" media toolbar but not the "Calling controls" Leave
@@ -256,8 +329,11 @@ public final class AXLeaveButtonSignal {
                 element: element,
                 notification: kAXUIElementDestroyedNotification as String
             ) { [weak self] in
-                self?.cadence.noteListener()
-                self?.evaluate(reason: "destroyed_notification")
+                self?.runAsync {
+                    guard let self = self else { return }
+                    self.cadence.noteListener()
+                    self._evaluate(reason: "destroyed_notification")
+                }
             }
         } catch {
             eventLog.emit(category: "signal", action: "ax_leave_button_arm_failed", attributes: [
@@ -274,11 +350,18 @@ public final class AXLeaveButtonSignal {
 
     // MARK: - Default seams
 
-    public static let defaultScheduler: Scheduler = { interval, action in
-        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
-            action()
+    /// Production scheduler: a `DispatchSourceTimer` on the signal's serial queue,
+    /// so the poll fires (and runs `_evaluate`'s AX IPC) off the main thread. A
+    /// `Timer` would bind to the calling run loop - i.e. main - which is the bug
+    /// this refactor removes. Re-armed on the queue when the cadence changes.
+    private static func queueScheduler(on queue: DispatchQueue) -> Scheduler {
+        return { interval, action in
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.schedule(deadline: .now() + interval, repeating: interval)
+            timer.setEventHandler(handler: action)
+            timer.resume()
+            return { timer.cancel() }
         }
-        return { timer.invalidate() }
     }
 
     /// Read `kAXRoleAttribute`; map `kAXErrorInvalidUIElement` to `.invalid`, all other statuses to `.healthy` (TCC hiccup guard).
