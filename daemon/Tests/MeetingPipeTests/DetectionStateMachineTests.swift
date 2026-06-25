@@ -107,6 +107,45 @@ final class DetectionStateMachineTests: XCTestCase {
         XCTAssertFalse(m.isCoolingDown(bundleID: "us.zoom.xos", cooldownSec: 60))
     }
 
+    // MARK: - Skip-latch facade
+
+    func test_skip_latch_facade_round_trips() {
+        let m = DetectionStateMachine()
+        XCTAssertFalse(m.isSkipLatched(bundleID: Self.teams.bundleID))
+        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        XCTAssertTrue(m.isSkipLatched(bundleID: Self.teams.bundleID))
+        // Per-bundle: arming Teams doesn't latch Zoom.
+        XCTAssertFalse(m.isSkipLatched(bundleID: "us.zoom.xos"))
+    }
+
+    func test_refreshSkipLatch_is_noop_when_unarmed() {
+        let m = DetectionStateMachine()
+        // A routine discovery sighting of a never-skipped meeting must not latch it.
+        m.refreshSkipLatch(bundleID: Self.teams.bundleID)
+        XCTAssertFalse(m.isSkipLatched(bundleID: Self.teams.bundleID))
+    }
+
+    func test_abandonPrompt_arms_both_the_cooldown_and_the_skip_latch() {
+        let m = DetectionStateMachine()
+        m.setPrompting(source: Self.teams)
+        m.abandonPrompt(source: Self.teams)
+        // The fixed cooldown guards the immediate post-skip window...
+        XCTAssertTrue(m.isCoolingDown(bundleID: Self.teams.bundleID, cooldownSec: 60))
+        // ...and the liveness latch holds the prompt off for the rest of the meeting, so the
+        // 60 s cooldown lapsing mid-call can no longer re-prompt the skipped meeting.
+        XCTAssertTrue(m.isSkipLatched(bundleID: Self.teams.bundleID))
+    }
+
+    func test_clearSuppression_drops_both_the_cooldown_and_the_skip_latch() {
+        let m = DetectionStateMachine()
+        m.recordCooldownEnd(bundleID: Self.teams.bundleID)
+        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        // Explicit "record now" (manual hotkey / "Always for {App}") wipes every suppression.
+        m.clearSuppression(bundleID: Self.teams.bundleID)
+        XCTAssertFalse(m.isCoolingDown(bundleID: Self.teams.bundleID, cooldownSec: 60))
+        XCTAssertFalse(m.isSkipLatched(bundleID: Self.teams.bundleID))
+    }
+
     // MARK: - Pending config refresh
 
     func test_pending_refresh_is_idempotent_and_idle_gated() {

@@ -234,7 +234,8 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 - `MeetingDiscoveryWatcher.swift` / `MeetingSourceScanner.swift` / `MeetingSourceScorer.swift` - start-side discovery: enumerate every concurrent candidate app, score each on "I am in a meeting" evidence, pick the strongest.
 - `Resources/meeting_apps.toml` - per-bundle-id table of known meeting apps and their window-title regex hints.
 - `SilenceDetector.swift` - pure logic over mic + system RMS samples: decides when to fire the "Still meeting?" notify and the silence auto-stop.
-- `RepromptCooldown.swift` - per-bundle suppression window after a recording / skip so a post-call mic flicker can't spawn a fresh prompt.
+- `RepromptCooldown.swift` - per-bundle, fixed-duration suppression window after a recording / skip so a post-call mic flicker can't spawn a fresh prompt.
+- `SkippedMeetingLatch.swift` - per-bundle suppression anchored to discovery liveness (not a fixed clock): once you dismiss a prompt, every discovery sighting of that app refreshes the latch, so the meeting stays skipped for its whole lifetime and lapses ~15 s after it ends. Paired with `RepromptCooldown` in `abandonPrompt`.
 
 ### Recording - "capture what's playing + what I say"
 
@@ -450,13 +451,15 @@ Project-specific terms. When in doubt, the code is authoritative; this is the or
 
 **Regulated mode** - global flag (`modes.regulated_mode`). When true, the Notion publisher no-ops at upsert time for *every* meeting. Pair with `summarization.backend = "local"` for a fully zero-egress pipeline. Distinct from *NDA mode*: regulated is global, NDA is per-workflow. The status-bar lock glyph (when `UISettings.showRegulatedBadge` is on) signals it.
 
-**Reprompt cooldown** - per-bundle suppression window after a recording / skip / prompt timeout (default 60 s). Absorbs the post-call mic flicker when Teams' chat surface or Zoom's "your call has ended" toast briefly holds the mic. The manual hotkey always bypasses it. See `RepromptCooldown.swift`.
+**Reprompt cooldown** - per-bundle, fixed-duration suppression window after a recording / skip / prompt timeout (default 60 s). Absorbs the post-call mic flicker when Teams' chat surface or Zoom's "your call has ended" toast briefly holds the mic. On the skip path it is paired with the **Skip latch**, which extends suppression for the rest of the meeting. The manual hotkey always bypasses both. See `RepromptCooldown.swift`.
 
 **RMS fallback** - when the AX path is denied or the meeting client is unknown, `MicGate`'s `RMSGateProbe` decides mute from mic energy alone, with asymmetric hysteresis (close after a sustained quiet dwell, open quickly above the louder threshold) so the start of a word is not clipped. HAL voice-activity detection is preferred over RMS when the input device supports it.
 
 **Sidecar** - `<stem>.meta.json` next to every `<stem>.wav`. Carries the resolved `AppSource` + the resolved `Workflow` fields. Written by `MeetingMetaSidecar.build` in Swift, read by `mp.workflow.apply_overrides` in Python. The only contract surface between the two trees. See [`CONVENTIONS.md#sidecar-schema-stem-metajson`](./CONVENTIONS.md#sidecar-schema-stemmetajson).
 
 **Sinks** - output destinations for the published summary: `"notion"`, `"obsidian"`, `"filesystem"`. `publish_router.fanout` runs each sink independently; one failing doesn't block the others. Default `["notion"]`; per-workflow override via `Workflow.sinks`.
+
+**Skip latch** - per-bundle re-prompt suppression that, unlike the fixed **Reprompt cooldown**, is anchored to discovery liveness: dismissing a prompt arms it, every discovery sighting of that app refreshes it, so the skipped meeting stays skipped for its whole lifetime and the latch lapses ~15 s after discovery stops seeing the meeting (i.e. shortly after it ends). It never re-engages the lifecycle, so there is no Leave-button poll to leak, and it is bundle-scoped, so other apps still detect. Blind spot: a new meeting in the *same* app within ~15 s of the previous one ending inherits the latch (no meeting-instance id exists to tell them apart). See `SkippedMeetingLatch.swift`.
 
 **Smart folders** - the left-rail filters in the Library window (Recent / This week / Untagged / per-workflow / per-source-app). Powered by `LibraryScope` + `MeetingFilter`. Pure in-memory; no SQLite yet (see TECH-A3 in the backlog for the FTS5 upgrade path when scale justifies it).
 
