@@ -13,7 +13,7 @@ Default to no comments. Write one only when:
 - A surprising constraint isn't visible from the code (a macOS-specific quirk, a race-condition workaround, a deliberately-non-obvious choice).
 - An invariant must be preserved by the reader and isn't enforced by types.
 
-Don't write what the code does (the names already do that). Don't reference the current task (`// TECH-E5 fix`), the bug ticket, or "added by …". Those rot.
+Don't write what the code does (the names already do that). Don't reference the current task (`// E5 fix`), the bug ticket, or "added by …". Those rot.
 
 ### No em-dashes
 
@@ -27,7 +27,7 @@ Two enforcement points, both diff-based (existing em-dashes in untouched lines a
 ### Commits
 
 ```
-TECH-<ID>: <short summary>     # backlog tasks
+<ID>: <short summary>          # backlog tasks
 fix(<scope>): <summary>        # bug fixes
 feat(<scope>): <summary>       # features outside the backlog
 chore(<scope>): <summary>      # tooling, docs, deps
@@ -226,7 +226,7 @@ Absence of the sidecar (`<stem>.meta.json` missing) is valid — the pipeline fa
 
 ## Backlog and task delegation
 
-The active backlog lives in `docs/backlog/`: the highest-numbered `meetingpipe-q<N>-backlog.md` (currently `meetingpipe-q4-backlog.md`), with earlier quarters archived beside it. Task IDs follow `TECH-<letter><number>` (`TECH-C2`, `TECH-E5`, …). When marking a task done, prefix the line with `[DONE] ` rather than deleting it, so the trail of decisions stays readable.
+The active backlog lives in `docs/backlog/`: the highest-numbered `meetingpipe-q<N>-backlog.md` (currently `meetingpipe-q4-backlog.md`), with earlier quarters archived beside it. Task IDs follow `<letter><number>` (`C2`, `E5`, …); the `TECH-` prefix was dropped from the active backlog and the `/tech-task` command, and historical code/ADR references keep the old form as provenance. When marking a task done, prefix the line with `[DONE] ` rather than deleting it, so the trail of decisions stays readable.
 
 The delegation section at the top of the active backlog is the canonical entry contract. The `/tech-task` slash command in `.claude/commands/tech-task.md` is the codified version of it.
 
