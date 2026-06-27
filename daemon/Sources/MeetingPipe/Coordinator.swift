@@ -430,9 +430,16 @@ final class Coordinator: NSObject {
         micGate.shutdown()
         lifecycleCoord.shutdown()
         if recorder.isRecording {
-            // Best-effort flush so we don't orphan recording state.
-            let recorder = self.recorder
-            Task { await recorder.stop() }
+            // Synchronously finalize the capture intermediates so a SIGTERM / quit
+            // can't strand a half-written recording (REC2 / AUD-6). The old
+            // fire-and-forget `Task { await recorder.stop() }` never completed
+            // before exit() (dead code); the orphan sweep merges + privacy-routes
+            // these on the next launch via the start-time manifest. assumeIsolated
+            // is safe: both callers (applicationWillTerminate, the SIGTERM source)
+            // run on the main queue.
+            MainActor.assumeIsolated {
+                recorder.flushIntermediatesForTermination()
+            }
         }
     }
 
@@ -448,12 +455,17 @@ final class Coordinator: NSObject {
         Task { @MainActor [weak self] in
             let result = await OrphanRecordingRecovery.recover(stems: stems, in: dir)
             guard let self = self else { return }
-            for url in result.ready {
-                Log.writeLine("daemon", "recovered orphaned recording → \(url.lastPathComponent)")
+            for rec in result.ready {
+                let modeLabel = rec.summaryMode == .byo ? "byo" : "auto"
+                Log.writeLine("daemon", "recovered orphaned recording → \(rec.url.lastPathComponent) mode=\(modeLabel)")
                 Log.event(category: "coordinator", action: "orphan_recording_recovered", attributes: [
-                    "file": url.lastPathComponent,
+                    "file": rec.url.lastPathComponent,
+                    "summary_mode": modeLabel,
                 ])
-                self.jobDispatcher.enqueue(file: url, summaryMode: .auto)
+                // REC2 / AUD-6: route by the recorded summary mode so a crash-
+                // interrupted BYO meeting produces a paste bundle, not an
+                // Anthropic+Notion auto-summary.
+                self.jobDispatcher.enqueue(file: rec.url, summaryMode: rec.summaryMode)
             }
             if !result.quarantined.isEmpty {
                 // Fail-closed capture-first orphans were kept aside, not published

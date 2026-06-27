@@ -182,4 +182,47 @@ final class OrphanRecordingRecoveryTests: XCTestCase {
             "a pre-MIC4 orphan has no marker and was gated at capture"
         )
     }
+
+    // MARK: - Meta sidecar restore from the manifest (REC2 / AUD-6)
+
+    func test_restoreMetaSidecar_writes_meta_json_when_absent() throws {
+        // The NDA / regulated flags in the rebuilt sidecar are what arm the
+        // pipeline egress guard for a recovered orphan, so the write must happen.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let meta: [String: Any] = ["workflow_nda_mode": true, "meeting_title": "Board sync"]
+
+        OrphanRecordingRecovery.restoreMetaSidecar(meta, forStem: "rec", in: dir)
+
+        let sidecar = dir.appendingPathComponent("rec.meta.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar.path))
+        let written = try JSONSerialization.jsonObject(with: Data(contentsOf: sidecar)) as? [String: Any]
+        XCTAssertEqual(written?["workflow_nda_mode"] as? Bool, true)
+        XCTAssertEqual(written?["meeting_title"] as? String, "Board sync")
+    }
+
+    func test_restoreMetaSidecar_does_not_clobber_an_existing_sidecar() throws {
+        // A stop() that wrote the sidecar before its merge failed, or a prior
+        // recovery, must win over a re-derived one.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let sidecar = dir.appendingPathComponent("rec.meta.json")
+        try Data(#"{"meeting_title":"original"}"#.utf8).write(to: sidecar)
+
+        OrphanRecordingRecovery.restoreMetaSidecar(["meeting_title": "from manifest"], forStem: "rec", in: dir)
+
+        let written = try JSONSerialization.jsonObject(with: Data(contentsOf: sidecar)) as? [String: Any]
+        XCTAssertEqual(written?["meeting_title"] as? String, "original", "an existing sidecar must not be overwritten")
+    }
+
+    func test_restoreMetaSidecar_skips_empty_meta() throws {
+        // A manual, workflow-less, non-regulated recording has no sidecar; the
+        // pipeline's global-config fallback is correct, so write nothing.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        OrphanRecordingRecovery.restoreMetaSidecar([:], forStem: "rec", in: dir)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("rec.meta.json").path))
+    }
 }

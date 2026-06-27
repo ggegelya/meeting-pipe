@@ -69,12 +69,23 @@ enum OrphanRecordingRecovery {
             .max()
     }
 
+    /// A recovered final ready to enqueue, paired with the summary mode it was
+    /// started under (REC2 / AUD-6). A BYO orphan carries `.byo` so it produces a
+    /// paste bundle instead of an Anthropic+Notion auto-summary; everything else
+    /// is `.auto` (the legacy default), with NDA / regulated kept on-device by the
+    /// restored `<stem>.meta.json` arming the pipeline's egress guard.
+    struct ReadyRecording: Equatable {
+        let url: URL
+        let summaryMode: SummaryMode
+    }
+
     /// Outcome of recovering orphan stems.
     struct Recovered {
         /// Merged finals safe to auto-process: default capture-first orphans (full
         /// mic, no redaction intended), regulated orphans gated at capture, and
-        /// pre-MIC4 / legacy orphans with no capture-mode marker.
-        var ready: [URL] = []
+        /// pre-MIC4 / legacy orphans with no capture-mode marker. Each carries the
+        /// summary mode from its start-time manifest.
+        var ready: [ReadyRecording] = []
         /// Redaction-opt-in (`.captureFirstRedact`) finals quarantined because
         /// their mute timeline was lost in the interruption, so they cannot be
         /// redacted and must not be auto-published un-redacted (TECH-MIC5 review).
@@ -84,21 +95,67 @@ enum OrphanRecordingRecovery {
     /// Merge orphan intermediates into final .wav files. Sequential to avoid
     /// concurrent ffmpeg swarms. Redaction-opt-in orphans with no mute timeline
     /// are quarantined (fail closed) instead of returned for auto-processing.
+    ///
+    /// Each recovered stem replays its start-time manifest (REC2 / AUD-6):
+    /// `<stem>.meta.json` is rebuilt from it (so an NDA / regulated orphan arms
+    /// the pipeline egress guard and the meeting title survives) and the recorded
+    /// summary mode rides back so a BYO orphan is enqueued `.byo`, not `.auto`.
     static func recover(stems: [String], in directory: URL) async -> Recovered {
         var result = Recovered()
         for stem in stems {
             guard let url = await MeetingRecorder.recoverOrphan(stem: stem, in: directory) else { continue }
+            // Read the manifest + capture-mode marker BEFORE clearing the
+            // start-time markers below: both feed the routing decision.
+            let manifest = RecordingManifest.read(forStem: stem, in: directory)
             let quarantineNeeded = shouldQuarantine(stem: stem, final: url, in: directory)
-            try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(stem).capturemode"))
+            if let manifest = manifest {
+                restoreMetaSidecar(manifest.meta, forStem: stem, in: directory)
+            }
+            cleanupStartMarkers(stem: stem, in: directory)
             if quarantineNeeded {
                 if let kept = quarantine(url) {
                     result.quarantined.append(kept)
                 }
             } else {
-                result.ready.append(url)
+                result.ready.append(ReadyRecording(
+                    url: url,
+                    summaryMode: manifest?.summaryMode ?? .auto
+                ))
             }
         }
         return result
+    }
+
+    /// Rebuild `<stem>.meta.json` from the manifest's captured payload so the
+    /// pipeline arms its egress guard for an NDA / regulated orphan and keeps the
+    /// meeting title. Skipped when the payload is empty (a manual, workflow-less,
+    /// non-regulated recording the pipeline handles via global config) or when a
+    /// sidecar already exists (a `stop()` that wrote one before the merge failed,
+    /// or a prior recovery), so a hand-edited or stop-written sidecar is never
+    /// clobbered.
+    static func restoreMetaSidecar(_ meta: [String: Any], forStem stem: String, in directory: URL) {
+        guard !meta.isEmpty else { return }
+        let sidecar = directory.appendingPathComponent("\(stem).meta.json")
+        guard !FileManager.default.fileExists(atPath: sidecar.path) else { return }
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: meta, options: [.prettyPrinted, .sortedKeys]
+        ) else { return }
+        do {
+            try data.write(to: sidecar, options: .atomic)
+            Log.event(category: "coordinator", action: "orphan_meta_restored", attributes: [
+                "stem": stem,
+            ])
+        } catch {
+            Log.writeLine("daemon", "WARN: could not restore meta sidecar for orphan \(stem): \(error.localizedDescription)")
+        }
+    }
+
+    /// Clear both start-time markers once a stem is recovered: the capture-mode
+    /// token and the recovery manifest. Callers read them (for the quarantine
+    /// decision and routing) before this runs.
+    private static func cleanupStartMarkers(stem: String, in directory: URL) {
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(stem).capturemode"))
+        RecordingManifest.remove(forStem: stem, in: directory)
     }
 
     /// Whether a recovered orphan must be quarantined rather than auto-processed:

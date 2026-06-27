@@ -1093,6 +1093,65 @@ final class MeetingRecorder {
         return producedUsableFinal
     }
 
+    /// Synchronous best-effort flush for process termination (REC2 / AUD-6).
+    /// `stop()` is the graceful path, but it awaits an off-main ffmpeg merge, so
+    /// it cannot complete from `applicationWillTerminate` / a SIGTERM handler
+    /// without risking a main-thread deadlock or being cut short by `exit()`
+    /// (the old fire-and-forget `Task { await stop() }` in `shutdown()` was dead
+    /// code). This finalizes the capture intermediates to disk WITHOUT the merge:
+    /// it drains the serial writers (`finish()` blocks until the last buffer is on
+    /// disk) and drops the file handles so their WAV headers flush. The
+    /// `.mic.wav` / `.system.wav`, the `.capturemode` marker, and the
+    /// `.recovery.json` manifest all stay on disk, so the orphan sweep merges and
+    /// privacy-routes the recording on the next launch. No-op when idle.
+    ///
+    /// Main-thread only (it mutates the recorder state the render path also
+    /// touches). Deadlock-free: the only blocking calls are the writers' own
+    /// serial queues, never the main queue. The SCStream stop is async, so the
+    /// stream is left for the OS to reclaim on exit; dropping `systemFile` first
+    /// makes any in-flight system callback no-op rather than race the teardown.
+    @MainActor
+    func flushIntermediatesForTermination() {
+        guard let final = currentFile else { return }
+        Log.writeLine("recorder", "flushing intermediates for termination (orphan sweep merges on next launch)")
+
+        tapLivenessTimer?.cancel()
+        tapLivenessTimer = nil
+        if let observer = configChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configChangeObserver = nil
+        }
+        cancelPendingRecoveryRetry()
+        configurationRecoveryAttempts = 0
+
+        // Drop the system file first so an in-flight SCStream callback no-ops
+        // instead of racing the writer teardown.
+        systemFile = nil
+        systemCapture = nil
+
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+
+        // Revert VoiceProcessing's system-wide AGC like stop() does, in case the
+        // process lingers after this (a SIGTERM the user later cancels).
+        if voiceProcessingEnabledForSession {
+            try? engine.inputNode.setVoiceProcessingEnabled(false)
+            voiceProcessingEnabledForSession = false
+        }
+
+        // Drain pending buffers to disk, then close the files so their headers
+        // are valid for the next-launch merge.
+        micWriter?.finish()
+        systemWriter?.finish()
+        micWriter = nil
+        systemWriter = nil
+        micFile = nil
+
+        Log.event(category: "recorder", action: "intermediates_flushed_for_termination", attributes: [
+            "file": final.lastPathComponent,
+        ])
+    }
+
     // MARK: - MicGate verdict (TECH-G-MIC)
 
     /// Latch a verdict for the mic tap. Written on main, read on the render

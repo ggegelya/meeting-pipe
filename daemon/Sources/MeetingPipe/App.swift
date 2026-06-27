@@ -32,6 +32,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var secretsCancellable: AnyCancellable?
     private let localModelPreloader = LocalModelPreloader()
 
+    /// Dispatch source for SIGTERM. Held so it stays armed for the process
+    /// lifetime (REC2 / AUD-6).
+    private var sigtermSource: DispatchSourceSignal?
+
     /// One-shot relaunch override for the next quit (TECH-UX7). `nil` defers to
     /// the `disableAutoRestart` preference; `false` forces a no-relaunch quit
     /// (the "Quit (do not relaunch)" menu item). Reset implicitly by process exit.
@@ -136,13 +140,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 localModel: store.summarizationLocalModel
             )
         }
+
+        installTerminationSignalHandler()
+    }
+
+    /// launchd and `kill` send SIGTERM, whose default disposition terminates the
+    /// process WITHOUT running `applicationWillTerminate`, so an in-flight
+    /// recording's intermediates were never flushed (REC2 / AUD-6). Ignore the
+    /// default action and handle SIGTERM on a main-queue dispatch source so the
+    /// recorder is flushed synchronously before we exit with the LaunchAgent-keyed
+    /// status the quit path uses.
+    private func installTerminationSignalHandler() {
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler { [weak self] in
+            Log.main.info("SIGTERM received - flushing recorder before exit")
+            self?.flushAndExit()
+        }
+        source.resume()
+        sigtermSource = source
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        flushAndExit()
+    }
+
+    /// Single synchronous teardown path for SIGTERM and a normal quit: stop the
+    /// preloader, flush the recorder (so no in-flight recording is stranded,
+    /// REC2 / AUD-6), then exit with the exit code the LaunchAgent keys off
+    /// (TECH-UX7): non-zero asks launchd to relaunch, zero quits fully.
+    private func flushAndExit() -> Never {
         localModelPreloader.stop()
         coordinator?.shutdown()
-        // TECH-UX7: choose the exit code the LaunchAgent keys off. Non-zero asks
-        // launchd to relaunch (default + crash recovery); zero quits fully.
         let relaunch = AppDelegate.shouldRelaunchOnQuit(
             override: AppDelegate.pendingRelaunchOverride,
             disableAutoRestart: UISettings.shared.disableAutoRestart

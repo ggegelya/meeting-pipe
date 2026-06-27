@@ -249,6 +249,13 @@ final class MeetingSessionController {
                     voiceProcessing: self.coordinator.liveVoiceProcessing
                 )
                 self.activeWorkflow = resolvedWorkflow
+                // Persist the privacy + summary routing at START (REC2 / AUD-6) so a
+                // crash / kill / rebuild before stop() can still recover this meeting
+                // on-device: the manifest carries the summary mode (BYO must not become
+                // an Anthropic+Notion auto-summary) and the meta sidecar payload (NDA /
+                // regulated / workflow / title), which orphan recovery replays. Cleared
+                // on a clean stop in `stopRecording`.
+                self.writeRecoveryManifest(file: file, source: source, summaryMode: summaryMode)
                 self.coordinator.stateMachine.setRecording(file: file, source: source, summaryMode: summaryMode)
                 self.coordinator.statusBar.setRecording(file: file, source: source, summaryMode: summaryMode, workflow: resolvedWorkflow)
                 self.coordinator.recordingHUD.present(
@@ -327,6 +334,14 @@ final class MeetingSessionController {
                 self.writeMetaSidecar(file: file, source: source)
                 self.coordinator.notifier.notifyProcessing(file: file)
                 self.coordinator.jobDispatcher.enqueue(file: file, summaryMode: summaryMode)
+                // Clean finish: the meta sidecar is now on disk and the job is
+                // enqueued, so drop the start-time recovery manifest. Kept on the
+                // else branch below, where the merge failed and the orphan sweep
+                // still needs it to route the retried recording (REC2 / AUD-6).
+                RecordingManifest.remove(
+                    forStem: file.deletingPathExtension().lastPathComponent,
+                    in: file.deletingLastPathComponent()
+                )
             } else {
                 // The merge/convert could not produce a usable final. stop() kept
                 // any capture intermediates and wrote a failure breadcrumb, so the
@@ -379,6 +394,26 @@ final class MeetingSessionController {
         } catch {
             Log.main.warning("Failed to write meta sidecar: \(error.localizedDescription)")
         }
+    }
+
+    /// Write the start-time recovery manifest (`<stem>.recovery.json`, REC2 /
+    /// AUD-6). It carries the summary mode and the same `MeetingMetaSidecar`
+    /// payload the clean-stop sidecar uses, so orphan recovery can route a
+    /// crash-interrupted BYO / NDA / regulated meeting on-device instead of
+    /// auto-egressing it. Removed on a clean stop that produced a final.
+    func writeRecoveryManifest(file: URL, source: AppSource?, summaryMode: SummaryMode) {
+        let meta = MeetingMetaSidecar.build(
+            source: source,
+            workflow: activeWorkflow,
+            regulatedMode: coordinator.configStore?.regulatedMode ?? false
+        )
+        let stem = file.deletingPathExtension().lastPathComponent
+        RecordingManifest.write(
+            summaryMode: summaryMode,
+            meta: meta,
+            forStem: stem,
+            in: file.deletingLastPathComponent()
+        )
     }
 
     func startPromptTimeout(for source: AppSource) {

@@ -226,7 +226,7 @@ Absence of the sidecar (`<stem>.meta.json` missing) is valid — the pipeline fa
 
 ## Daemon-internal recording artifacts
 
-Three artifacts the daemon both writes and reads. Unlike `<stem>.meta.json`, none is part of the Swift-to-Python contract: the redactor consumes them before any pipeline run, so the pipeline never sees them. The MIC4/MIC5 capture-first work introduced them; documented here per DOC6.
+Four artifacts the daemon both writes and reads. Unlike `<stem>.meta.json`, none is part of the Swift-to-Python contract: the redactor and orphan recovery consume them before any pipeline run, so the pipeline never reads them directly (recovery does *rebuild* `<stem>.meta.json` from the manifest below). The MIC4/MIC5 capture-first work introduced the first three; REC2 added the recovery manifest. Documented here per DOC6.
 
 **`<stem>.mute-timeline.json`** (TECH-MIC4), next to `<stem>.wav`. The muted spans the offline redactor (TECH-MIC5) zero-fills, written at stop only under capture-first-redact (an opt-in workflow). Shape:
 
@@ -237,6 +237,14 @@ Three artifacts the daemon both writes and reads. Unlike `<stem>.meta.json`, non
 Seconds from recording start, half-open `[start_sec, end_sec)`. Only genuine app/hardware-mute spans are recorded, never `silentByRMS` (quiet) or `uncertain`, so redaction can never drop quiet-but-real speech. Written by `MuteTimelineFile.write`, read by `MuteRedactor`, and reaped after a successful redaction. Absent for default capture-first, regulated, and pre-MIC4 recordings.
 
 **`<stem>.capturemode`** (TECH-MIC5 review), next to `<stem>.wav`. A one-line plain-text marker written at recording **start** so orphan recovery, after a crash where `stop()` never ran, can still apply the right privacy posture. One token (`CaptureMode.marker`): `capture_first`, `capture_first_redact`, or `regulated_gate`. Read by `OrphanRecordingRecovery.shouldQuarantine` (a capture-first-redact orphan with no timeline is quarantined, not auto-published). Removed at a clean stop that produced a final.
+
+**`<stem>.recovery.json`** (REC2), next to `<stem>.wav`. The start-time identity manifest: it persists the routing intent a crash would otherwise lose, so the orphan sweep never auto-egresses a BYO / NDA / regulated meeting that was interrupted mid-call. Written at recording **start** by `RecordingManifest.write`, shape:
+
+```json
+{ "schema_version": 1, "summary_mode": "auto" | "byo", "meta": { /* the MeetingMetaSidecar.build payload */ } }
+```
+
+`summary_mode` routes the recovered enqueue (a `byo` orphan produces a paste bundle, not an Anthropic+Notion auto-summary); `meta` is replayed into a rebuilt `<stem>.meta.json` (skipped if one already exists) so the pipeline arms its egress guard for an NDA / regulated orphan and keeps the meeting title. Read by `OrphanRecordingRecovery.recover`. Removed at a clean stop that produced a final (kept, like `.capturemode`, when the merge failed so the next-launch sweep can still route it). Absent for pre-REC2 orphans, which recover on the legacy `.auto` default.
 
 **`originals/<stem>.wav`** (ADR 0016), in `~/Library/Application Support/MeetingPipe/originals/`, NOT in the recordings dir. The kept full (un-redacted) recording, moved aside when `MuteRedactor` redacts the canonical `<stem>.wav`, and the quarantine destination for capture-first-redact orphans whose timeline was lost. Deliberately outside the Library-scanned `raw/` tree and the Raw Files tab's reach: mode `0600`, excluded from Time Machine and iCloud. The redacted artifact is what every consumer reads; this is the recovery source only. ADR 0016 mandates a retention policy + reaper for it (owed: MIC13).
 
