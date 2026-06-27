@@ -101,7 +101,7 @@ Sources/MeetingPipeCore/MicGate/
   MicGate.swift                       // final class + NSLock; owns the verdict
   MicGateVerdict.swift                // enum + reasoning
   MicGateWriter.swift                 // applies verdict to the L channel
-  MicOnlySilenceBackstop.swift        // force-stop a mic-only silent recording
+  IdleStopBackstop.swift              // VAD-gated long-idle auto-stop for a forgotten recording
   MuteLabelsLoader.swift
   MuteLabelsValidator.swift           // CI tool, see B.5
   Probes/
