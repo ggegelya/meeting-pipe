@@ -304,4 +304,88 @@ final class MeetingRecorderTests: XCTestCase {
         let monoData = mono.floatChannelData![0]
         for i in 0..<128 { XCTAssertEqual(monoData[i], 0.3) }
     }
+
+    // MARK: - merge verification before deleting intermediates (REC1 / AUD-5)
+
+    /// A broken merge must NOT destroy the capture: when ffmpeg fails, both
+    /// intermediates are kept (so the orphan sweep can retry on the next
+    /// launch) and a failure breadcrumb is written instead of a final WAV.
+    /// Driven with real ffmpeg on garbage inputs so it actually exits non-zero.
+    func test_recoverOrphan_keeps_intermediates_when_the_merge_fails() async throws {
+        try requireFFmpeg()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rec1-fail-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let stem = "20260627-101500"
+        let mic = dir.appendingPathComponent("\(stem).mic.wav")
+        let system = dir.appendingPathComponent("\(stem).system.wav")
+        // > 4 KiB so the has-audio gate admits them, but not decodable audio, so
+        // real ffmpeg fails the merge.
+        try Data(repeating: 0xAB, count: 8192).write(to: mic)
+        try Data(repeating: 0xCD, count: 8192).write(to: system)
+
+        let recovered = await MeetingRecorder.recoverOrphan(stem: stem, in: dir)
+
+        XCTAssertNil(recovered, "a failed merge must not return a final")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mic.path),
+                      "mic.wav must survive a failed merge")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: system.path),
+                      "system.wav must survive a failed merge")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(stem).wav").path),
+                       "no partial final is left behind")
+        let final = dir.appendingPathComponent("\(stem).wav")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: MeetingRecorder.recordFailURL(forFinal: final).path),
+                      "a failure breadcrumb explains the retained intermediates")
+    }
+
+    /// The happy path is unchanged: a verified merge produces the final and
+    /// only then clears the intermediates, leaving no failure breadcrumb.
+    func test_recoverOrphan_merges_and_clears_intermediates_on_success() async throws {
+        try requireFFmpeg()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rec1-ok-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let stem = "20260627-120000"
+        let mic = dir.appendingPathComponent("\(stem).mic.wav")
+        let system = dir.appendingPathComponent("\(stem).system.wav")
+        try makeWavData(seconds: 2.0).write(to: mic)
+        try makeWavData(seconds: 2.0).write(to: system)
+
+        let recovered = await MeetingRecorder.recoverOrphan(stem: stem, in: dir)
+
+        let final = dir.appendingPathComponent("\(stem).wav")
+        XCTAssertEqual(recovered, final, "a verified merge returns the final URL")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: final.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mic.path),
+                       "mic.wav is cleared only after a verified merge")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: system.path),
+                       "system.wav is cleared only after a verified merge")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: MeetingRecorder.recordFailURL(forFinal: final).path),
+                       "no failure breadcrumb on success")
+    }
+
+    // MARK: - helpers
+
+    /// Gate for the ffmpeg-backed data-safety tests, loud by design (CI1 /
+    /// AUD-8): CI installs ffmpeg, so a missing binary there means the
+    /// destructive merge path went unverified (a failure to surface, not a skip
+    /// to swallow). Only a genuinely local machine without ffmpeg still skips.
+    private func requireFFmpeg() throws {
+        if MeetingRecorder.findFFmpeg() != nil { return }
+        if ProcessInfo.processInfo.environment["CI"] == "true" {
+            throw FFmpegUnavailableOnCI()
+        }
+        throw XCTSkip("ffmpeg not available (local run)")
+    }
+
+    private struct FFmpegUnavailableOnCI: Error, CustomStringConvertible {
+        var description: String {
+            "ffmpeg missing on CI: the MeetingRecorder merge-verification tests could not run. "
+                + "ci.yml is supposed to install it; the capture-preservation path is now unverified."
+        }
+    }
 }

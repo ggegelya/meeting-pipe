@@ -892,11 +892,16 @@ final class MeetingRecorder {
         return buffer
     }
 
-    /// Stop the recording and merge the intermediate files.
-    func stop() async {
+    /// Stop the recording and merge the intermediate files. Returns whether a
+    /// usable final `.wav` was produced; on a failed merge the caller must not
+    /// enqueue the (missing) file, the capture intermediates are kept, and the
+    /// orphan sweep recovers them on the next launch (REC1 / AUD-5).
+    /// `@discardableResult` for the shutdown flush, which can't act on the result.
+    @discardableResult
+    func stop() async -> Bool {
         guard let final = currentFile,
               let micURL = micURL,
-              let systemURL = systemURL else { return }
+              let systemURL = systemURL else { return false }
         let started = startedAt
         let micFires = self.micFires
         let systemFires = self.systemFires
@@ -1017,20 +1022,42 @@ final class MeetingRecorder {
             "has_system": hasSystem,
         ])
 
-        // Decide what to produce as the final WAV.
+        // Decide what to produce as the final WAV. A capture intermediate is
+        // deleted ONLY after the merge/convert is verified to have produced a
+        // plausible final; otherwise the intermediates are kept so one broken
+        // ffmpeg can't destroy a fully captured meeting (REC1 / AUD-5). Kept
+        // intermediates are picked up by the orphan sweep on the next launch.
+        var producedUsableFinal = false
         if hasMic && hasSystem {
-            await Self.mergeViaFFmpeg(mic: micURL, system: systemURL, final: final)
-            try? FileManager.default.removeItem(at: micURL)
-            try? FileManager.default.removeItem(at: systemURL)
+            switch await Self.mergeViaFFmpeg(mic: micURL, system: systemURL, final: final) {
+            case .verified:
+                try? FileManager.default.removeItem(at: micURL)
+                try? FileManager.default.removeItem(at: systemURL)
+                producedUsableFinal = true
+            case .fellBackMicOnly:
+                // No ffmpeg: mic was moved to the final; keep system.wav so the
+                // other side survives for a later merge or manual recovery.
+                producedUsableFinal = true
+            case .failed:
+                Self.writePostProcessFailure(final: final, retained: [micURL, systemURL])
+            }
         } else if hasMic {
             // Just resample mic to 16 kHz mono and rename.
-            await Self.convertMonoMixdownViaFFmpeg(input: micURL, output: final)
-            try? FileManager.default.removeItem(at: micURL)
-            try? FileManager.default.removeItem(at: systemURL)
+            if await Self.convertMonoMixdownViaFFmpeg(input: micURL, output: final) {
+                try? FileManager.default.removeItem(at: micURL)
+                try? FileManager.default.removeItem(at: systemURL)
+                producedUsableFinal = true
+            } else {
+                Self.writePostProcessFailure(final: final, retained: [micURL])
+            }
         } else if hasSystem {
-            await Self.convertMonoMixdownViaFFmpeg(input: systemURL, output: final)
-            try? FileManager.default.removeItem(at: micURL)
-            try? FileManager.default.removeItem(at: systemURL)
+            if await Self.convertMonoMixdownViaFFmpeg(input: systemURL, output: final) {
+                try? FileManager.default.removeItem(at: micURL)
+                try? FileManager.default.removeItem(at: systemURL)
+                producedUsableFinal = true
+            } else {
+                Self.writePostProcessFailure(final: final, retained: [systemURL])
+            }
         } else {
             Log.writeLine("recorder", "WARN: neither mic nor system has audio data - leaving \(final.lastPathComponent) absent")
         }
@@ -1049,17 +1076,21 @@ final class MeetingRecorder {
                 "muted_spans": muteTimeline.spans.count,
             ])
         }
-        // Clean finish: drop the start-time capture-mode marker (only orphan
-        // recovery after a crash needs it).
-        try? FileManager.default.removeItem(
-            at: final.deletingPathExtension().appendingPathExtension("capturemode")
-        )
+        // Clean finish only: drop the start-time capture-mode marker (orphan
+        // recovery needs it to quarantine a redaction-opt-in recording whose
+        // merge failed, so keep it when no usable final was produced).
+        if producedUsableFinal {
+            try? FileManager.default.removeItem(
+                at: final.deletingPathExtension().appendingPathExtension("capturemode")
+            )
+        }
 
-        if let started = started {
+        if producedUsableFinal, let started = started {
             checkDurationParity(file: final, recordedFor: Date().timeIntervalSince(started))
         }
         Log.recorder.info("recorder stopped → \(final.path)")
         Log.writeLine("recorder", "recorder stopped → \(final.path)")
+        return producedUsableFinal
     }
 
     // MARK: - MicGate verdict (TECH-G-MIC)
@@ -1140,18 +1171,34 @@ final class MeetingRecorder {
         let hasMic = fm.fileExists(atPath: micURL.path) && Self.fileSize(micURL) > 4096
         let hasSystem = fm.fileExists(atPath: systemURL.path) && Self.fileSize(systemURL) > 4096
 
+        let outcome: PostProcessOutcome
         if hasMic && hasSystem {
-            await Self.mergeViaFFmpeg(mic: micURL, system: systemURL, final: finalURL)
+            outcome = await Self.mergeViaFFmpeg(mic: micURL, system: systemURL, final: finalURL)
         } else if hasMic {
-            await Self.convertMonoMixdownViaFFmpeg(input: micURL, output: finalURL)
+            outcome = await Self.convertMonoMixdownViaFFmpeg(input: micURL, output: finalURL) ? .verified : .failed
         } else if hasSystem {
-            await Self.convertMonoMixdownViaFFmpeg(input: systemURL, output: finalURL)
+            outcome = await Self.convertMonoMixdownViaFFmpeg(input: systemURL, output: finalURL) ? .verified : .failed
         } else {
             return nil
         }
 
-        try? fm.removeItem(at: micURL)
-        try? fm.removeItem(at: systemURL)
+        switch outcome {
+        case .verified:
+            try? fm.removeItem(at: micURL)
+            try? fm.removeItem(at: systemURL)
+        case .fellBackMicOnly:
+            // No ffmpeg: mic was moved to the final; keep system.wav aside.
+            break
+        case .failed:
+            // Keep the intermediates so a working ffmpeg can recover them on a
+            // later launch; never delete an unverified merge's inputs (REC1).
+            Self.writePostProcessFailure(
+                final: finalURL,
+                retained: [micURL, systemURL].filter { fm.fileExists(atPath: $0.path) }
+            )
+            Log.writeLine("recorder", "WARN: orphan recovery merge failed for \(stem); kept intermediates for the next launch")
+            return nil
+        }
 
         guard fm.fileExists(atPath: finalURL.path) else {
             Log.writeLine("recorder", "WARN: orphan recovery produced no file for \(stem)")
@@ -1163,16 +1210,64 @@ final class MeetingRecorder {
 
     // MARK: - ffmpeg post-process
 
+    /// Outcome of a merge / single-source convert. The caller deletes a capture
+    /// intermediate ONLY on `.verified`; `.fellBackMicOnly` produced a partial
+    /// final without ffmpeg so the un-merged side must be kept; `.failed`
+    /// produced no usable final, so every intermediate is kept (REC1 / AUD-5).
+    private enum PostProcessOutcome {
+        case verified
+        case fellBackMicOnly
+        case failed
+    }
+
+    /// A finalized WAV must exist and carry more than a bare RIFF/`fmt ` header
+    /// before any capture intermediate is deleted. 4 KiB matches the has-audio
+    /// threshold the intermediates themselves are gated on (REC1 / AUD-5).
+    private static func producedPlausibleOutput(at url: URL) -> Bool {
+        FileManager.default.fileExists(atPath: url.path) && fileSize(url) > 4096
+    }
+
+    /// Sidecar dropped beside a recording whose merge/convert failed, so the
+    /// retained `.mic.wav` / `.system.wav` read as a kept-for-recovery capture
+    /// rather than stray debris. Informational only: the orphan sweep still
+    /// retries the merge on the next launch (REC1 / AUD-5).
+    static func recordFailURL(forFinal final: URL) -> URL {
+        let stem = final.deletingPathExtension().lastPathComponent
+        return final.deletingLastPathComponent().appendingPathComponent("\(stem).recordfail.json")
+    }
+
+    private static func writePostProcessFailure(final: URL, retained: [URL]) {
+        let names = retained.map { $0.lastPathComponent }
+        let payload: [String: Any] = [
+            "schema_version": 1,
+            "reason": "ffmpeg post-process failed; capture intermediates were kept for recovery",
+            "retained": names,
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: recordFailURL(forFinal: final), options: .atomic)
+        }
+        Log.event(category: "recorder", action: "postprocess_failed", attributes: [
+            "file": final.lastPathComponent,
+            "retained": names.joined(separator: ","),
+        ])
+        Log.writeLine("recorder", "ERROR: post-process failed for \(final.lastPathComponent); kept \(names.joined(separator: ", ")) for recovery (REC1)")
+    }
+
     /// Merge mic + system into a 16 kHz stereo WAV: mic on the left, system
     /// mix on the right. Channel separation keeps diarization simple
     /// (per-channel RMS labelling) and makes a missing system channel
     /// obvious, instead of the old mono amix where a silent-system failure
     /// looked like "user was the only one talking" (the May 5 18:30 loss).
-    private static func mergeViaFFmpeg(mic: URL, system: URL, final: URL) async {
+    private static func mergeViaFFmpeg(mic: URL, system: URL, final: URL) async -> PostProcessOutcome {
         guard let ffmpeg = Self.findFFmpeg() else {
-            Log.writeLine("recorder", "ERROR: ffmpeg not found - leaving mic.wav as final")
-            try? FileManager.default.moveItem(at: mic, to: final)
-            return
+            Log.writeLine("recorder", "ERROR: ffmpeg not found - moving mic.wav to final, keeping system.wav for a later merge")
+            do {
+                try FileManager.default.moveItem(at: mic, to: final)
+            } catch {
+                Log.writeLine("recorder", "ERROR: ffmpeg absent and mic.wav could not be moved to final: \(error.localizedDescription)")
+                return .failed
+            }
+            return producedPlausibleOutput(at: final) ? .fellBackMicOnly : .failed
         }
         // Resample mic and system to 16 kHz mono, then amerge into stereo
         // (input 0 -> L, input 1 -> R).
@@ -1191,16 +1286,19 @@ final class MeetingRecorder {
             "-c:a", "pcm_s16le",
             final.path,
         ]
-        await runFFmpeg(ffmpeg: ffmpeg, args: args, label: "merge")
+        let ok = await runFFmpeg(ffmpeg: ffmpeg, args: args, label: "merge")
+        return ok && producedPlausibleOutput(at: final) ? .verified : .failed
     }
 
     /// Convert a single-source recording to 16 kHz mono Int16 (the format
     /// WhisperX expects). Used when one side is missing.
-    private static func convertMonoMixdownViaFFmpeg(input: URL, output: URL) async {
+    private static func convertMonoMixdownViaFFmpeg(input: URL, output: URL) async -> Bool {
         guard let ffmpeg = Self.findFFmpeg() else {
-            // No ffmpeg: copy as-is; WhisperX resamples internally.
+            // No ffmpeg: copy as-is; WhisperX resamples internally. The copy
+            // keeps the source, so deleting it later only happens once the copy
+            // is verified below.
             try? FileManager.default.copyItem(at: input, to: output)
-            return
+            return producedPlausibleOutput(at: output)
         }
         let args = [
             "-y", "-hide_banner", "-loglevel", "warning",
@@ -1209,11 +1307,15 @@ final class MeetingRecorder {
             "-c:a", "pcm_s16le",
             output.path,
         ]
-        await runFFmpeg(ffmpeg: ffmpeg, args: args, label: "convert")
+        let ok = await runFFmpeg(ffmpeg: ffmpeg, args: args, label: "convert")
+        return ok && producedPlausibleOutput(at: output)
     }
 
-    private static func runFFmpeg(ffmpeg: String, args: [String], label: String) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+    /// Run ffmpeg and report whether it exited cleanly (status 0). A non-zero
+    /// exit or a launch failure returns false so the caller never deletes a
+    /// capture intermediate on an unverified merge (REC1 / AUD-5).
+    private static func runFFmpeg(ffmpeg: String, args: [String], label: String) async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
                 let proc = Process()
                 proc.executableURL = URL(fileURLWithPath: ffmpeg)
@@ -1225,7 +1327,7 @@ final class MeetingRecorder {
                     try proc.run()
                 } catch {
                     Log.writeLine("recorder", "ERROR ffmpeg \(label) launch: \(error.localizedDescription)")
-                    continuation.resume()
+                    continuation.resume(returning: false)
                     return
                 }
                 proc.waitUntilExit()
@@ -1233,7 +1335,7 @@ final class MeetingRecorder {
                 let tail = String(data: stderr, encoding: .utf8)?
                     .split(separator: "\n").suffix(5).joined(separator: " | ") ?? ""
                 Log.writeLine("recorder", "ffmpeg \(label) exit=\(proc.terminationStatus) tail=\(tail)")
-                continuation.resume()
+                continuation.resume(returning: proc.terminationStatus == 0)
             }
         }
     }

@@ -295,29 +295,42 @@ final class MeetingSessionController {
         // pipeline and return to .idle so the next meeting can start.
         let recorder = coordinator.recorder
         Task { @MainActor [weak self] in
-            await recorder.stop()
+            let producedUsableFinal = await recorder.stop()
             guard let self = self else { return }
             Log.writeLine("daemon", "recording stopped → \(file.path)")
             Log.event(category: "coordinator", action: "recording_stopped", attributes: [
                 "file": file.lastPathComponent,
                 "bundle_id": source?.bundleID ?? "manual",
                 "system_audio_frames": recorder.lastSystemFires,
+                "produced_final": producedUsableFinal,
             ])
-            // Zero system-audio frames = lost the other side of the call;
-            // always surface it. (A prior gate also required
-            // `permissionState == .denied` and silently dropped the warning
-            // when `.unknown`, the mic-only loss reported on May 5.) The
-            // notifier shows "Open Settings" only when a perm change helps.
-            if recorder.lastSystemFires == 0 {
-                let perm = SystemAudioCapture.permissionState
-                self.coordinator.notifier.notifyMicOnlyRecording(file: file, permissionState: perm)
-                if perm == .denied || perm == .unknown {
-                    self.coordinator.statusBar.refreshMenuForPermissionChange()
+            if producedUsableFinal {
+                // Zero system-audio frames = lost the other side of the call;
+                // always surface it. (A prior gate also required
+                // `permissionState == .denied` and silently dropped the warning
+                // when `.unknown`, the mic-only loss reported on May 5.) The
+                // notifier shows "Open Settings" only when a perm change helps.
+                if recorder.lastSystemFires == 0 {
+                    let perm = SystemAudioCapture.permissionState
+                    self.coordinator.notifier.notifyMicOnlyRecording(file: file, permissionState: perm)
+                    if perm == .denied || perm == .unknown {
+                        self.coordinator.statusBar.refreshMenuForPermissionChange()
+                    }
                 }
+                self.writeMetaSidecar(file: file, source: source)
+                self.coordinator.notifier.notifyProcessing(file: file)
+                self.coordinator.jobDispatcher.enqueue(file: file, summaryMode: summaryMode)
+            } else {
+                // The merge/convert could not produce a usable final. stop() kept
+                // any capture intermediates and wrote a failure breadcrumb, so the
+                // orphan sweep recovers them on the next launch. Preserve the
+                // meeting title / workflow for that run, and surface the failure
+                // now rather than enqueueing a missing file (REC1 / AUD-5).
+                self.writeMetaSidecar(file: file, source: source)
+                self.coordinator.notifier.notifyError(
+                    "Could not finalize \(file.lastPathComponent). The raw recording was kept and will be recovered on the next launch."
+                )
             }
-            self.writeMetaSidecar(file: file, source: source)
-            self.coordinator.notifier.notifyProcessing(file: file)
-            self.coordinator.jobDispatcher.enqueue(file: file, summaryMode: summaryMode)
             // Drop the workflow so it can't bleed into the next meeting.
             self.activeWorkflow = nil
             // Arm the re-prompt cooldown so a post-call mic grab (Teams chat,
