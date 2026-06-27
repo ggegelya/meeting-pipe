@@ -391,6 +391,9 @@ lifecycle verdict .ended (or hotkey, or silence backstop)
 | `~/Documents/Meetings/raw/<stem>.wav` | daemon writes | recording |
 | `~/Documents/Meetings/raw/<stem>.meta.json` | daemon writes, pipeline reads | per-meeting workflow + source |
 | `~/Documents/Meetings/raw/<stem>.recordfail.json` | daemon writes | breadcrumb left only when an ffmpeg merge failed; the `.mic.wav`/`.system.wav` intermediates are kept and the orphan sweep retries on the next launch (REC1) |
+| `~/Documents/Meetings/raw/<stem>.mute-timeline.json` | daemon writes + reads | muted spans for the offline redactor, written at stop under capture-first-redact only; `{version, spans:[{start_sec,end_sec}]}` (DOC6) |
+| `~/Documents/Meetings/raw/<stem>.capturemode` | daemon writes + reads | one-line privacy-mode marker (`capture_first` / `capture_first_redact` / `regulated_gate`) written at recording start so orphan recovery applies the right posture after a crash (DOC6) |
+| `~/Library/Application Support/MeetingPipe/originals/<stem>.wav` | daemon writes | kept full (un-redacted) recording, the recovery source only; 0600, Time-Machine/iCloud-excluded, outside the Library-scanned `raw/` tree (ADR 0016, DOC6) |
 | `~/Documents/Meetings/raw/<stem>.{json,md,summary.*,correction.json}` | pipeline writes, daemon reads | transcripts / summaries / corrections |
 | `~/Library/Logs/MeetingPipe/` | both | tail-able text logs + JSONL event logs |
 | `~/Library/LaunchAgents/com.meetingpipe.daemon.plist` | install.sh writes | LaunchAgent |

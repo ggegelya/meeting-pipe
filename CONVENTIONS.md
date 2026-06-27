@@ -224,6 +224,26 @@ Absence of the sidecar (`<stem>.meta.json` missing) is valid — the pipeline fa
 
 ---
 
+## Daemon-internal recording artifacts
+
+Three artifacts the daemon both writes and reads. Unlike `<stem>.meta.json`, none is part of the Swift-to-Python contract: the redactor consumes them before any pipeline run, so the pipeline never sees them. The MIC4/MIC5 capture-first work introduced them; documented here per DOC6.
+
+**`<stem>.mute-timeline.json`** (TECH-MIC4), next to `<stem>.wav`. The muted spans the offline redactor (TECH-MIC5) zero-fills, written at stop only under capture-first-redact (an opt-in workflow). Shape:
+
+```json
+{ "version": 1, "spans": [ { "start_sec": 1.5, "end_sec": 3.2 } ] }
+```
+
+Seconds from recording start, half-open `[start_sec, end_sec)`. Only genuine app/hardware-mute spans are recorded, never `silentByRMS` (quiet) or `uncertain`, so redaction can never drop quiet-but-real speech. Written by `MuteTimelineFile.write`, read by `MuteRedactor`, and reaped after a successful redaction. Absent for default capture-first, regulated, and pre-MIC4 recordings.
+
+**`<stem>.capturemode`** (TECH-MIC5 review), next to `<stem>.wav`. A one-line plain-text marker written at recording **start** so orphan recovery, after a crash where `stop()` never ran, can still apply the right privacy posture. One token (`CaptureMode.marker`): `capture_first`, `capture_first_redact`, or `regulated_gate`. Read by `OrphanRecordingRecovery.shouldQuarantine` (a capture-first-redact orphan with no timeline is quarantined, not auto-published). Removed at a clean stop that produced a final.
+
+**`originals/<stem>.wav`** (ADR 0016), in `~/Library/Application Support/MeetingPipe/originals/`, NOT in the recordings dir. The kept full (un-redacted) recording, moved aside when `MuteRedactor` redacts the canonical `<stem>.wav`, and the quarantine destination for capture-first-redact orphans whose timeline was lost. Deliberately outside the Library-scanned `raw/` tree and the Raw Files tab's reach: mode `0600`, excluded from Time Machine and iCloud. The redacted artifact is what every consumer reads; this is the recovery source only. ADR 0016 mandates a retention policy + reaper for it (owed: MIC13).
+
+`schema_version` on these writers is tracked separately (CI2).
+
+---
+
 ## Backlog and task delegation
 
 The active backlog lives in `docs/backlog/`: the highest-numbered `meetingpipe-q<N>-backlog.md` (currently `meetingpipe-q4-backlog.md`), with earlier quarters archived beside it. Task IDs follow `<letter><number>` (`C2`, `E5`, …); the `TECH-` prefix was dropped from the active backlog and the `/tech-task` command, and historical code/ADR references keep the old form as provenance. When marking a task done, prefix the line with `[DONE] ` rather than deleting it, so the trail of decisions stays readable.
