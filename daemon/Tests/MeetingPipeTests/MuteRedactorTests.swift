@@ -73,7 +73,7 @@ final class MuteRedactorTests: XCTestCase {
     }
 
     func test_redactIfNeeded_zeroes_the_muted_span_and_keeps_the_original() async throws {
-        try XCTSkipIf(MeetingRecorder.findFFmpeg() == nil, "ffmpeg not available")
+        try requireFFmpeg()
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("redact-\(UUID().uuidString)")
         let originals = dir.appendingPathComponent("originals")
@@ -108,7 +108,7 @@ final class MuteRedactorTests: XCTestCase {
     }
 
     func test_redactIfNeeded_is_idempotent_and_keeps_the_original_across_reruns() async throws {
-        try XCTSkipIf(MeetingRecorder.findFFmpeg() == nil, "ffmpeg not available")
+        try requireFFmpeg()
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("redact-\(UUID().uuidString)")
         let originals = dir.appendingPathComponent("originals")
@@ -193,7 +193,7 @@ final class MuteRedactorTests: XCTestCase {
     }
 
     func test_redactIfNeeded_redacts_a_runaway_span_when_the_mic_is_silent() async throws {
-        try XCTSkipIf(MeetingRecorder.findFFmpeg() == nil, "ffmpeg not available")
+        try requireFFmpeg()
         // A whole-recording mute over a silent mic loses nothing, so the guard
         // must not over-withhold: redaction proceeds as normal.
         let dir = FileManager.default.temporaryDirectory
@@ -212,6 +212,26 @@ final class MuteRedactorTests: XCTestCase {
     }
 
     // MARK: - helpers
+
+    /// Gate for the ffmpeg-backed safety tests, loud by design (CI1 / AUD-8).
+    /// CI installs ffmpeg (`.github/workflows/ci.yml`), so a missing binary
+    /// there means the most destructive code path (mute redaction over a real
+    /// WAV) went unverified: a failure to surface, not a skip to swallow. Only a
+    /// genuinely local machine without ffmpeg still skips.
+    private func requireFFmpeg() throws {
+        if MeetingRecorder.findFFmpeg() != nil { return }
+        if ProcessInfo.processInfo.environment["CI"] == "true" {
+            throw FFmpegUnavailableOnCI()
+        }
+        throw XCTSkip("ffmpeg not available (local run)")
+    }
+
+    private struct FFmpegUnavailableOnCI: Error, CustomStringConvertible {
+        var description: String {
+            "ffmpeg missing on CI: the MuteRedactor data-safety tests could not run. "
+                + "ci.yml is supposed to install it; the mute-redaction path is now unverified."
+        }
+    }
 
     private func writeStereoWav(at url: URL, seconds: Double, left: Float, right: Float) throws {
         let fmt = AVAudioFormat(

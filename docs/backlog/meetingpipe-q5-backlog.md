@@ -29,7 +29,7 @@ Mechanics are codified in `/tech-task <ID>` (read the task here, read the orient
 
 | ID | Task | Category | Priority | Description |
 |---|---|---|---|---|
-| CI1 | Green CI honestly | Tests | P0 | Snapshot refs OS-pinned to macOS 26 vs the macos-15 runner kept CI red since Jun 6, masking all signal; ffmpeg-gated safety tests silently skip. Fix the skips, install ffmpeg in CI, push. (AUD-8) |
+| CI1 | Green CI honestly | Tests | DONE (was P0) | Snapshot refs OS-pinned to macOS 26 vs the macos-15 runner kept CI red since Jun 6, masking all signal; ffmpeg-gated safety tests silently skip. Fix the skips, install ffmpeg in CI, push. (AUD-8) Snapshot half already closed by de3bf35 (swift-snapshot-testing removed under T2); this change installs ffmpeg in the daemon CI job and makes the three MuteRedactor safety-test skips loud (fail, not skip, when ffmpeg is missing on CI). Push deferred per the no-push rule. |
 | START1 | Un-wedge the prompt/suppression lifecycle | Detection | P0 | A skipped/timed-out prompt plus one stale AX end event leaves the engine terminally `.ended`; detection is off for every app until restart. (AUD-1/2) |
 | START2 | Browser-tab meetings discoverable | Detection | P0 | URL fragments are matched against AX window titles, which carry page titles, never URLs; a plain-tab Meet/Teams/Zoom meeting can never prompt. (AUD-3) |
 | REC1 | Verify the ffmpeg merge before deleting intermediates | Recording | P0 | stop()/recoverOrphan delete `.mic.wav`/`.system.wav` unconditionally while runFFmpeg discards exit status; one broken ffmpeg destroys a fully captured meeting. (AUD-5) |
