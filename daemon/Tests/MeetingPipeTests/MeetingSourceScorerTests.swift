@@ -41,6 +41,19 @@ final class MeetingSourceScorerTests: XCTestCase {
         )
     }
 
+    /// A Chromium "installed PWA" admitted as a `.browser`. Its per-install bundle ID is in no fixed
+    /// list, so the scanner enumerates it by `localizedName`; a name-only admission carries
+    /// `titleMatch == false` (START3/AUD-4), distinct from a plain browser tab vetted by its title/URL.
+    private func meetPWA(signals: MeetingSourceCandidate.Signals = .init()) -> MeetingSourceCandidate {
+        MeetingSourceCandidate(
+            source: AppSource(
+                bundleID: "com.google.Chrome.app.fmgjjmmmlfnkbppncabfkddbjimcfncm",
+                displayName: "Google Meet", kind: .browser
+            ),
+            signals: signals
+        )
+    }
+
     // MARK: - Weight semantics
 
     func test_score_sums_individual_weights() {
@@ -295,15 +308,38 @@ final class MeetingSourceScorerTests: XCTestCase {
     }
 
     func test_browser_with_only_titleMatch_is_returned_as_sole_contender() {
-        // A lone browser with a meeting-pattern tab title is returned
-        // even at score 2. Browsers are exempt from the native
-        // corroborating-signal rule: the scanner only enumerates a
-        // browser after one of its windows already matched a meeting
-        // URL fragment, so a browser's `titleMatch` is URL-vetted, not
-        // a permissive window-title-recognizer guess.
+        // A lone browser with a GENUINE meeting-pattern tab title is returned
+        // even at score 2 (START2). The scanner only sets a browser's
+        // `titleMatch` after a window matched a meeting URL fragment or the
+        // browser title patterns, so it is vetted evidence, not a permissive
+        // window-title-recognizer guess. This trustworthy-title case is the
+        // counterpart of the name-only PWA admission below, which carries
+        // `titleMatch == false` and must show a corroborator (START3/AUD-4).
         var candidates = [chrome(signals: .init(titleMatch: true))]
         let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
         XCTAssertEqual(winner?.source.bundleID, "com.google.Chrome")
+    }
+
+    func test_single_name_only_pwa_without_corroborator_raises_no_prompt() {
+        // START3/AUD-4: a meeting-named PWA idling on its landing page is admitted
+        // as a browser by `localizedName` alone, so it carries no real `titleMatch`
+        // (the scanner now passes the honest `false`) and no in-call signal. With no
+        // vetted title and nothing to corroborate, it is dropped as a zero-evidence
+        // candidate, so an idle PWA never raises a "record this meeting?" prompt.
+        var candidates = [meetPWA(signals: .init())]
+        XCTAssertNil(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil))
+    }
+
+    func test_single_name_only_pwa_with_corroborator_wins() {
+        // The same name-only PWA, but genuinely in a call: process audio is active.
+        // That is an in-call corroborator, so the lone browser is returned even
+        // though it has no title match. The corroboration gate now treats a
+        // name-only browser exactly like a native (START3/AUD-4); a vetted title
+        // would have stood alone, but app-name-only admission does not.
+        var candidates = [meetPWA(signals: .init(processAudioActive: true))]
+        let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
+        XCTAssertEqual(winner?.source.kind, .browser)
+        XCTAssertEqual(winner?.source.displayName, "Google Meet")
     }
 
     func test_multi_contender_all_below_threshold_returns_nil() {

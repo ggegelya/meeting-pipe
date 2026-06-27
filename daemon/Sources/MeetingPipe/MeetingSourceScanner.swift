@@ -126,12 +126,18 @@ final class MeetingSourceScanner {
                     displayName: app.localizedName ?? "Meeting",
                     kind: .browser
                 )
+                // START3/AUD-4: pass the REAL title match, not a synthetic `true`. A meeting-named PWA
+                // idling on its landing page matches on `localizedName` alone, with no meeting-titled
+                // window; stamping `titleMatch = true` there fabricated evidence that let the scorer
+                // prompt on an idle PWA. With the honest value a name-only admission carries
+                // `titleMatch = false`, so it must earn its place via an in-call corroborator
+                // (the scorer's lone-candidate gate) or be dropped as zero-evidence.
                 let signals = collectSignals(
                     bundleID: bid,
                     kind: .browser,
                     pid: pid,
                     axTrusted: axTrusted,
-                    preTitleMatch: true
+                    preTitleMatch: titleMatched
                 )
                 candidates.append(MeetingSourceCandidate(source: source, signals: signals))
             }
@@ -141,7 +147,9 @@ final class MeetingSourceScanner {
     }
 
     /// Populate the signal tuple. Each signal degrades to false on AX denied / read failure.
-    /// `preTitleMatch` short-circuits the per-bundle recognizer: browsers pass `true` (already filtered by meeting URL/title); natives pass `nil` so the recognizer runs.
+    /// `preTitleMatch` short-circuits the per-bundle recognizer: browsers pass the already-computed
+    /// browser title/URL match (`true` for a plain tab vetted by URL/title; the real per-window result
+    /// for a PWA, which is `false` on a name-only admission, START3/AUD-4); natives pass `nil` so the recognizer runs.
     private func collectSignals(
         bundleID: String,
         kind: AppSourceKind,

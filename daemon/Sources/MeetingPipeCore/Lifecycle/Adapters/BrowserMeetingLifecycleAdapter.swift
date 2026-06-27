@@ -108,12 +108,13 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
     ) throws {
         let matchers = titleMatchers
 
-        // PWA admitted by localised name: window title starts non-hyphenated ("Meet", "Google Meet")
-        // before the in-call code appears, so title matchers reject it. For such contexts, owning any
-        // on-screen window is the live signal. Regular browsers keep the strict title gate.
-        let isMeetingPWA = BrowserMeetingLifecycleAdapter.isPWABundleID(context.bundleID)
-
         // PRIMARY: a meeting-titled window owned by this bundle exists in the shareable-content snapshot.
+        // START3/AUD-4: PWAs use the SAME strict title gate as plain browsers. The old `isMeetingPWA`
+        // bypass treated any on-screen PWA window as live, so a meeting-named PWA idling on its landing
+        // page ("Google Meet") read live forever and the false prompt persisted until a timeout-skip.
+        // A genuine in-room call always carries a hyphenated title ("Meet - abc-defg-hij") that the
+        // matchers accept, and dropping the bypass gives the PWA a real end signal (the landing-page
+        // title now reads not-live) it previously never had.
         shareableContent.onChange = { present in
             sink(PrimarySignalEvent(
                 kind: .browserTabTitle,
@@ -123,7 +124,7 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
             ))
         }
         shareableContent.start(context: context) { title in
-            isMeetingPWA || matchers.contains { $0(title) }
+            matchers.contains { $0(title) }
         }
 
         // PRIMARY: process termination. For a PWA, closing the meeting window quits the process - definitive

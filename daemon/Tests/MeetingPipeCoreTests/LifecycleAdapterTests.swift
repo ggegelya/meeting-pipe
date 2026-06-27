@@ -280,13 +280,14 @@ final class LifecycleAdapterTests: XCTestCase {
         XCTAssertEqual(titleStates, [.live, .ended])
     }
 
-    func test_browser_adapter_meeting_pwa_reads_live_from_identity_without_hyphen_title() throws {
-        // Solo "New Meeting" via the Google Meet PWA: the window title is
-        // still "Google Meet" (no hyphenated code), so the title matchers
-        // reject it. The adapter must read .live from the PWA identity so
-        // the prompt fires, and must NOT emit a premature .ended from the
-        // bootstrap title (which would close the meeting the instant it
-        // opened).
+    func test_browser_adapter_meeting_pwa_landing_title_does_not_read_live() throws {
+        // START3/AUD-4: a meeting-named PWA idling on its landing page carries the
+        // non-hyphenated title "Google Meet", which the matchers reject. The old
+        // `isMeetingPWA` bypass treated any on-screen PWA window as live, so this
+        // idle page raised (and then persisted) a false prompt. With the bypass
+        // dropped the PWA uses the same strict title gate as a plain browser: the
+        // landing page reads NOT live, and still emits no premature window-title
+        // `.ended` (the bootstrap-end guard is unaffected).
         let shareable = ShareableContentSignal(
             probe: {
                 [ShareableContentSignal.ShareableWindowSummary(
@@ -310,8 +311,40 @@ final class LifecycleAdapterTests: XCTestCase {
         ) { events.append($0) }
         defer { adapter.stop() }
 
-        XCTAssertEqual(events.first { $0.kind == .browserTabTitle }?.state, .live)
+        XCTAssertFalse(events.contains { $0.kind == .browserTabTitle && $0.state == .live })
         XCTAssertFalse(events.contains { $0.kind == .windowTitleLeftPattern && $0.state == .ended })
+    }
+
+    func test_browser_adapter_meeting_pwa_in_room_title_reads_live() throws {
+        // The counterpart of the landing-page case: once the call connects the PWA
+        // window carries the hyphenated in-room title ("Meet - abc-defg-hij"), which
+        // the matchers accept, so shareable-content reads live exactly as it does for
+        // a plain browser tab. This strict-title path replaces the dropped identity
+        // bypass for genuine in-room PWAs (START3/AUD-4).
+        let shareable = ShareableContentSignal(
+            probe: {
+                [ShareableContentSignal.ShareableWindowSummary(
+                    bundleIdentifier: self.meetPWAContext.bundleID,
+                    title: "Meet - abc-defg-hij"
+                )]
+            },
+            scheduler: { _, _ in {} }
+        )
+        let adapter = BrowserMeetingLifecycleAdapter(
+            shareableContent: shareable,
+            workspace: WorkspaceSignal(probe: { _ in nil }),
+            windowTitle: WindowTitleSignal(axBus: AXObserverBus(), probe: { _ in nil }),
+            titleMatchers: BrowserMeetingLifecycleAdapter.defaultTitleMatchers,
+            eventLog: NoopEventLog()
+        )
+        var events: [PrimarySignalEvent] = []
+        try adapter.start(
+            context: meetPWAContext,
+            handle: LifecycleAdapterHandle()
+        ) { events.append($0) }
+        defer { adapter.stop() }
+
+        XCTAssertEqual(events.first { $0.kind == .browserTabTitle }?.state, .live)
     }
 
     func test_browser_adapter_regular_browser_does_not_read_live_from_identity() throws {

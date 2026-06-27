@@ -75,10 +75,18 @@ enum MeetingSourceScorer {
             return nil
         }
 
-        // Single contender: disambiguation threshold doesn't apply. A lone native with only `titleMatch` is likely an idle app (Teams chat, calendar); require a corroborating in-call signal. Browsers are exempt because the scanner already filtered them by meeting URL fragment, so their `titleMatch` is URL-vetted not a recognizer guess. Before TECH-C13 `Detector`'s `micActive` AND-check supplied this gate; the discovery path now stands alone.
+        // Single contender: the disambiguation threshold doesn't apply, so a lone candidate whose only
+        // evidence is a title match must still clear a corroboration bar before it raises a prompt,
+        // UNLESS that title match is itself trustworthy. A native's `titleMatch` never qualifies alone:
+        // the window-title recognizer is permissive and fires on idle chat / calendar windows. A browser
+        // admitted by a genuine meeting-pattern or URL title (START2) IS trustworthy and stands alone.
+        // But a browser admitted by app NAME only (START3/AUD-4: a meeting-named PWA idling on its
+        // landing page) carries no real title match (`titleMatch == false` since START3) and, like a
+        // native, must show an in-call corroborator. Before TECH-C13 `Detector`'s `micActive` AND-check
+        // supplied this gate; the discovery path now stands alone.
         if contenders.count == 1 {
-            if best.source.kind == .native,
-               !hasCorroboratingSignal(best.signals) {
+            let trustworthyTitleAlone = best.source.kind == .browser && best.signals.titleMatch
+            if !trustworthyTitleAlone, !hasCorroboratingSignal(best.signals) {
                 return nil
             }
             return best
