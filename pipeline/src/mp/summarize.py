@@ -351,6 +351,8 @@ def _select_backend(cfg: Config) -> SummaryClient:
             model=cfg.summarization.local_model,
             host=host,
             port=port,
+            startup_timeout_sec=cfg.summarization.local_startup_timeout_sec,
+            request_timeout_sec=cfg.summarization.local_request_timeout_sec,
         )
     if backend == "anthropic":
         api_key = require_env("ANTHROPIC_API_KEY")
@@ -434,6 +436,8 @@ class _AutoFallbackClient:
         with LocalSummaryClient(
             model=local_model,
             host=host, port=port,
+            startup_timeout_sec=self._cfg.summarization.local_startup_timeout_sec,
+            request_timeout_sec=self._cfg.summarization.local_request_timeout_sec,
         ) as fallback:
             result = fallback.summarize(
                 system_prompt=system_prompt, transcript=transcript,

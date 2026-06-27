@@ -91,6 +91,16 @@ class Summarization(BaseModel):
     # Preferences -> Pipeline (Recommended = Qwen 14B-4bit, Large = 32B-4bit).
     local_model: str = "mlx-community/Qwen2.5-3B-Instruct-4bit"
     local_endpoint: str = "http://127.0.0.1:8765"
+    # Local-backend timeouts (LOCAL2/AUD-21). The old hardcoded 120s request
+    # window fired before a legitimate large-model generation finished and
+    # before the schema-retry layer engaged, contradicting the daemon's 20-min
+    # watchdog budget. `local_startup_timeout_sec` bounds the mlx_lm.server
+    # health-up window; `local_request_timeout_sec` is the BASE per-request read
+    # timeout, scaled up by the requested max_tokens at call time (see
+    # summarize_local.scaled_request_timeout). The daemon watchdog stays the hard
+    # backstop, so generous values here only avoid premature cutoffs.
+    local_startup_timeout_sec: float = 120.0
+    local_request_timeout_sec: float = 120.0
     # Opt-in LLM diarization cleanup (TECH-DIAR1). When true, run-all runs
     # an extra LLM pass after finalize that merges same-speaker labels and
     # reattributes obvious mistakes before summarizing. Off by default: it

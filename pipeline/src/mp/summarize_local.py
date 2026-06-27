@@ -59,7 +59,23 @@ DEFAULT_MODEL = "mlx-community/Qwen2.5-3B-Instruct-4bit"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_STARTUP_TIMEOUT_SEC = 120.0
+DEFAULT_REQUEST_TIMEOUT_SEC = 120.0
 DEFAULT_IDLE_TIMEOUT_SEC = 300.0
+
+# Conservative floor on local generation speed (seconds per output token).
+# Real M-series 4-bit throughput is 10-80 tok/s; 0.1 s/token (10 tok/s) is a
+# safe floor even for a 32B model on modest hardware, so the scaled read
+# timeout never fires before a legitimate generation completes (LOCAL2/AUD-21).
+_SECONDS_PER_OUTPUT_TOKEN_FLOOR = 0.1
+
+
+def scaled_request_timeout(base_sec: float, max_tokens: int) -> float:
+    """Per-request read timeout: a fixed ``base_sec`` budget (connect + prefill
+    + slack) plus generation time for ``max_tokens`` at a conservative speed
+    floor. Scales with the requested output length so a long summary is not cut
+    off mid-stream, while the daemon's 20-min watchdog remains the hard backstop
+    (LOCAL2/AUD-21). Pure so it is unit-testable without a server."""
+    return base_sec + max(0, max_tokens) * _SECONDS_PER_OUTPUT_TOKEN_FLOOR
 
 # Loopback hosts the local model server may bind / be reached on.
 # meeting-pipe always runs that server on the same machine; a
@@ -117,6 +133,7 @@ class LocalSummaryClient:
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
         startup_timeout_sec: float = DEFAULT_STARTUP_TIMEOUT_SEC,
+        request_timeout_sec: float = DEFAULT_REQUEST_TIMEOUT_SEC,
         idle_timeout_sec: float = DEFAULT_IDLE_TIMEOUT_SEC,
         manage_subprocess: bool = True,
     ) -> None:
@@ -124,6 +141,7 @@ class LocalSummaryClient:
         self._host = _loopback_only(host)
         self._port = port
         self._startup_timeout_sec = startup_timeout_sec
+        self._request_timeout_sec = request_timeout_sec
         self._idle_timeout_sec = idle_timeout_sec
         # Test seam: when False we assume the caller has a server
         # already running on (host, port) and never spawn one.
@@ -132,7 +150,9 @@ class LocalSummaryClient:
         self._proc: subprocess.Popen[bytes] | None = None
         self._lock = threading.Lock()
         self._idle_timer: threading.Timer | None = None
-        self._http = httpx.Client(timeout=httpx.Timeout(120.0, connect=5.0))
+        # Base client timeout; the chat-completion POST overrides the read leg
+        # per call, scaled to max_tokens (LOCAL2). Health checks override to 2s.
+        self._http = httpx.Client(timeout=httpx.Timeout(request_timeout_sec, connect=5.0))
 
     @property
     def model(self) -> str:
@@ -428,8 +448,16 @@ class LocalSummaryClient:
             # separate refactor; this hint is the practical bridge.
             "response_format": response_format,
         }
+        # Scale the read timeout to the requested output length so a long
+        # generation is not cut off mid-stream (LOCAL2/AUD-21). Connect stays
+        # tight: a server that will not accept the connection should fail fast.
+        read_timeout = scaled_request_timeout(self._request_timeout_sec, max_tokens)
         try:
-            r = self._http.post(f"{self.base_url}/v1/chat/completions", json=payload)
+            r = self._http.post(
+                f"{self.base_url}/v1/chat/completions",
+                json=payload,
+                timeout=httpx.Timeout(read_timeout, connect=5.0),
+            )
         except httpx.HTTPError as e:
             raise LocalSummaryError(f"local backend HTTP error: {e}") from e
         if r.status_code != 200:

@@ -27,6 +27,7 @@ from pathlib import Path
 
 from .config import Config, effective_backend, load_secrets
 from .corrections import set_publish_state, write_empty_marker, write_run_sidecar
+from .transcript_quality import transcript_issues
 from .egress_guard import arm_for_config
 from .diarize import assign_speakers_by_channel, is_stereo_recording, label_me_speaker
 from . import events
@@ -268,6 +269,36 @@ def _run_all_inner(
             "page_id": None,
             "page_url": None,
             "skipped": "no_speech",
+        }
+
+    # Short-circuit #1b: degenerate transcript (LOCAL2/AUD-21). FluidAudio can
+    # emit garbage on real audio without erroring (a decoder stuck on one
+    # phrase, or near-empty output over a long recording). Summarizing it burns
+    # a model call and publishes nonsense, so mark it suspect and stop, the way
+    # #1 stops on genuine silence. The checks (transcript_quality) are
+    # conservative so a real meeting is never withheld; the marker's reason
+    # records the true cause for the Library to surface (distinct UI: PIPE3).
+    suspect = transcript_issues(structured.get("segments", []))
+    if suspect:
+        log.warning("Transcript looks degenerate - skipping summarize + publish:")
+        for reason in suspect:
+            log.warning("  - %s", reason)
+        events.emit("pipeline", "run_skipped", wav=str(wav),
+                    reason="suspect_transcript", issues="; ".join(suspect))
+        try:
+            write_empty_marker(
+                recordings_dir=wav.parent, stem=wav.stem, reason="suspect_transcript"
+            )
+        except OSError as exc:
+            log.warning("empty marker write failed: %s", exc)
+        return {
+            "transcript_json": str(t["json"]),
+            "transcript_md": str(t["md"]),
+            "summary_json": None,
+            "summary_md": None,
+            "page_id": None,
+            "page_url": None,
+            "skipped": "suspect_transcript",
         }
 
     md_text = t["md"].read_text(encoding="utf-8")

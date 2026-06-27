@@ -236,6 +236,35 @@ def test_no_speech_short_circuits_before_byo(tmp_path: Path, monkeypatch):
     assert payload["reason"] == "no_speech"
 
 
+def test_suspect_transcript_short_circuits(tmp_path: Path, monkeypatch):
+    """A degenerate transcript (a looping decoder) short-circuits to
+    `skipped: suspect_transcript` rather than burning a model call and
+    publishing garbage (LOCAL2/AUD-21). The marker records the true reason."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    stem = "20260430-1600"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    looping = [
+        {"start": float(i), "end": float(i + 1), "text": "thank you so much",
+         "speaker": "speaker_0"}
+        for i in range(200)
+    ]
+    _write_fluidaudio_sidecar(tmp_path, stem=stem, segments=looping)
+    cfg = Config()
+
+    with patch("mp.orchestrate.summarize") as s, \
+         patch("mp.orchestrate.publish_fanout") as p:
+        result = run_all(wav, cfg=cfg)
+    s.assert_not_called()
+    p.assert_not_called()
+    assert result["skipped"] == "suspect_transcript"
+
+    marker = tmp_path / f"{stem}.empty.json"
+    assert marker.exists(), "a suspect transcript must write a terminal marker"
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["reason"] == "suspect_transcript"
+
+
 def test_diarize_cleanup_runs_when_enabled(tmp_path: Path, monkeypatch):
     """When summarization.diarize_cleanup is on and the transcript has
     multiple speakers, run-all runs the cleanup pass before summarize."""

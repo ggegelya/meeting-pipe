@@ -20,10 +20,25 @@ from typing import Callable
 import pytest
 
 from mp.summarize_local import (
+    DEFAULT_REQUEST_TIMEOUT_SEC,
     LocalSummaryClient,
     LocalSummaryError,
     _largest_balanced_json_object,
+    scaled_request_timeout,
 )
+
+
+def test_scaled_request_timeout_grows_with_max_tokens():
+    """The read timeout must scale with the requested output length so a long
+    generation is not cut off, while staying under the daemon's 20-min (1200s)
+    watchdog so that watchdog remains the hard backstop (LOCAL2/AUD-21)."""
+    base = DEFAULT_REQUEST_TIMEOUT_SEC
+    assert scaled_request_timeout(base, 0) == base
+    assert scaled_request_timeout(base, 1000) > base
+    assert scaled_request_timeout(base, 4000) > scaled_request_timeout(base, 1000)
+    assert base < scaled_request_timeout(base, 4000) < 1200
+    # A negative/garbage max_tokens never shortens below the base budget.
+    assert scaled_request_timeout(base, -5) == base
 
 
 # ----- Fake mlx_lm.server -----

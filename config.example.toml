@@ -96,6 +96,13 @@ backend = "anthropic"
 # backend to "local"/"auto" so the first meeting does not wait for HF.
 local_model = "mlx-community/Qwen2.5-3B-Instruct-4bit"
 local_endpoint = "http://127.0.0.1:8765"
+# Local-backend timeouts (LOCAL2). `local_startup_timeout_sec` bounds the wait
+# for mlx_lm.server to report healthy; `local_request_timeout_sec` is the base
+# per-request read timeout, scaled up by `max_tokens` at call time so a long
+# generation is not cut off mid-stream. The daemon's 20-min watchdog stays the
+# hard backstop, so raising these only avoids premature cutoffs on slow models.
+local_startup_timeout_sec = 120
+local_request_timeout_sec = 120
 # LLM diarization cleanup (TECH-DIAR1). When true, run-all runs an extra
 # LLM pass after transcription that merges same-speaker labels and
 # reattributes obvious mistakes before summarizing. Off by default: it
