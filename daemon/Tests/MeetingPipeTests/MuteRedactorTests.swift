@@ -81,8 +81,11 @@ final class MuteRedactorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let wav = dir.appendingPathComponent("rec.wav")
-        try writeStereoWav(at: wav, seconds: 1.0, left: 0.5, right: 0.5)
-        // Mute the first half of the mic channel.
+        // Mute the first half of the mic channel. It must be genuinely quiet for
+        // MIC12's per-span guard to redact it; the audible second half stands in
+        // for un-muted speech that must survive.
+        try writeStereoWavTwoRegions(at: wav, seconds: 1.0, splitSec: 0.5,
+                                     micFirst: 0.002, micSecond: 0.5, system: 0.5)
         MuteTimelineFile.write(spans: [MuteTimeline.Span(startSec: 0.0, endSec: 0.5)], forFinal: wav)
 
         let redacted = await MuteRedactor.redactIfNeeded(wav: wav, originalsDir: originals)
@@ -116,7 +119,9 @@ final class MuteRedactorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let wav = dir.appendingPathComponent("rec.wav")
-        try writeStereoWav(at: wav, seconds: 1.0, left: 0.5, right: 0.5)
+        // Muted span genuinely quiet so MIC12's per-span guard redacts it.
+        try writeStereoWavTwoRegions(at: wav, seconds: 1.0, splitSec: 0.5,
+                                     micFirst: 0.002, micSecond: 0.5, system: 0.5)
         let fullBytes = try Data(contentsOf: wav)
         MuteTimelineFile.write(spans: [MuteTimeline.Span(startSec: 0.0, endSec: 0.5)], forFinal: wav)
 
@@ -136,34 +141,67 @@ final class MuteRedactorTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: wav), redactedBytes, "the canonical WAV stays the redacted one")
     }
 
-    // MARK: - audio-grounded runaway guard (TECH-MIC9)
+    // MARK: - per-span runaway guard (TECH-MIC12)
 
-    func test_runawayWithholdReason_only_fires_on_high_coverage_with_speech() throws {
+    func test_partitionSpans_redacts_quiet_spans_and_withholds_speechy_ones() throws {
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("guard-\(UUID().uuidString)")
+            .appendingPathComponent("mic12-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        let loud = dir.appendingPathComponent("loud.wav")
-        try writeStereoWav(at: loud, seconds: 1.0, left: 0.5, right: 0.5)
-        let silentMic = dir.appendingPathComponent("silent.wav")
-        try writeStereoWav(at: silentMic, seconds: 1.0, left: 0.0, right: 0.5)
+        // Mic genuinely quiet (~-54 dBFS) in [0,0.5), at speech level (~-10 dBFS)
+        // in [0.5,1.0); system audio present throughout.
+        let wav = dir.appendingPathComponent("rec.wav")
+        try writeStereoWavTwoRegions(at: wav, seconds: 1.0, splitSec: 0.5,
+                                     micFirst: 0.002, micSecond: 0.3, system: 0.5)
+        let quiet = MuteTimeline.Span(startSec: 0.0, endSec: 0.5)
+        let speechy = MuteTimeline.Span(startSec: 0.5, endSec: 1.0)
 
-        let whole = [MuteTimeline.Span(startSec: 0.0, endSec: 1.0)]
-        let half = [MuteTimeline.Span(startSec: 0.0, endSec: 0.5)]
+        let (redact, withheld) = MuteRedactor.partitionSpans(wav: wav, spans: [quiet, speechy])
 
-        XCTAssertNotNil(
-            MuteRedactor.runawayWithholdReason(wav: loud, spans: whole),
-            "whole-recording mute over a live mic must withhold"
+        XCTAssertEqual(redact.map { $0.startSec }, [0.0],
+                       "a genuinely quiet muted span is safe to redact")
+        XCTAssertEqual(withheld.map { $0.startSec }, [0.5],
+                       "a muted span carrying speech is withheld, never zeroed")
+    }
+
+    func test_redactIfNeeded_redacts_quiet_span_and_keeps_speechy_span() async throws {
+        try requireFFmpeg()
+        // The MIC12 win in one assertion: a mixed timeline redacts the quiet muted
+        // span but PRESERVES the muted span that carries speech (the old whole-file
+        // 85% guard would have withheld both, leaving the quiet listening
+        // un-redacted).
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mic12-\(UUID().uuidString)")
+        let originals = dir.appendingPathComponent("originals")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let wav = dir.appendingPathComponent("rec.wav")
+        try writeStereoWavTwoRegions(at: wav, seconds: 1.0, splitSec: 0.5,
+                                     micFirst: 0.002, micSecond: 0.3, system: 0.5)
+        MuteTimelineFile.write(
+            spans: [MuteTimeline.Span(startSec: 0.0, endSec: 0.5),
+                    MuteTimeline.Span(startSec: 0.5, endSec: 1.0)],
+            forFinal: wav
         )
-        XCTAssertNil(
-            MuteRedactor.runawayWithholdReason(wav: loud, spans: half),
-            "50% coverage is below the runaway bound: a genuine muted aside, redact it"
-        )
-        XCTAssertNil(
-            MuteRedactor.runawayWithholdReason(wav: silentMic, spans: whole),
-            "whole-recording mute over a silent mic is harmless: redact it"
-        )
+
+        let redacted = await MuteRedactor.redactIfNeeded(wav: wav, originalsDir: originals)
+        XCTAssertTrue(redacted, "a mixed timeline still redacts its quiet span")
+
+        let file = try AVAudioFile(forReading: wav)
+        let frames = AVAudioFrameCount(file.length)
+        let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames)!
+        try file.read(into: buf)
+        let data = try XCTUnwrap(buf.floatChannelData)
+        let rate = file.processingFormat.sampleRate
+
+        XCTAssertLessThan(peak(data[0], from: 0, to: Int(0.4 * rate)), 0.0005,
+                          "the quiet muted span was redacted to silence (was ~0.002)")
+        XCTAssertGreaterThan(peak(data[0], from: Int(0.6 * rate), to: Int(0.9 * rate)), 0.1,
+                             "the speech-carrying muted span was preserved, not zeroed")
+        XCTAssertGreaterThan(peak(data[1], from: 0, to: Int(0.9 * rate)), 0.1,
+                             "the system (right) channel is untouched")
     }
 
     func test_redactIfNeeded_withholds_runaway_redaction_over_a_live_mic() async throws {
@@ -244,6 +282,28 @@ final class MuteRedactorTests: XCTestCase {
         for i in 0..<Int(frames) {
             buf.floatChannelData![0][i] = left
             buf.floatChannelData![1][i] = right
+        }
+        try file.write(from: buf)
+    }
+
+    /// Stereo WAV whose mic (left) channel switches level at `splitSec`: used to
+    /// build a recording where one muted span is genuinely quiet and another
+    /// carries speech (TECH-MIC12). System (right) is constant.
+    private func writeStereoWavTwoRegions(
+        at url: URL, seconds: Double, splitSec: Double,
+        micFirst: Float, micSecond: Float, system: Float
+    ) throws {
+        let fmt = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 2, interleaved: false
+        )!
+        let file = try AVAudioFile(forWriting: url, settings: fmt.settings)
+        let frames = AVAudioFrameCount(seconds * 16000)
+        let split = Int(splitSec * 16000)
+        let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frames)!
+        buf.frameLength = frames
+        for i in 0..<Int(frames) {
+            buf.floatChannelData![0][i] = i < split ? micFirst : micSecond
+            buf.floatChannelData![1][i] = system
         }
         try file.write(from: buf)
     }
