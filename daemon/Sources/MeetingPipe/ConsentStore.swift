@@ -1,6 +1,6 @@
 import Foundation
 
-/// Persistent "Always for {App}" consent store (Spec §3), backed by ~/Library/Application Support/MeetingPipe/auto_consent.json.
+/// Persistent "Always for {App}" consent store (see ARCHITECTURE.md), backed by ~/Library/Application Support/MeetingPipe/auto_consent.json.
 final class ConsentStore {
     private let url: URL
     private var bundles: Set<String>
