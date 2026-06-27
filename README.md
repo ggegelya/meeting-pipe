@@ -174,7 +174,8 @@ mp logs --since 1h --category detector
 mp analyze-detection --since 7d
 
 # Compare Anthropic vs the local backend on one transcript; writes a
-# scorecard you fill in by hand
+# scorecard you fill in by hand. Refuses regulated/NDA meetings, since the
+# cloud baseline would egress the transcript.
 mp dogfood <transcript.md>
 mp dogfood --report   # aggregate filled scorecards into a ship/no-ship
 ```

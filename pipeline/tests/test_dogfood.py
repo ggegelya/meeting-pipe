@@ -10,11 +10,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from unittest.mock import Mock
+
+from mp.config import Config
 from mp.dogfood import (
     SHIP_GATE,
     Scorecard,
     _read_scorecard,
     aggregate,
+    main,
     render_report,
 )
 
@@ -133,3 +137,47 @@ def test_ship_gate_constants_match_roadmap() -> None:
     assert SHIP_GATE["actions_capture_min"] == 0.80
     assert SHIP_GATE["decisions_capture_min"] == 0.80
     assert SHIP_GATE["hallucination_max"] == 0.05
+
+
+# ----- egress gate (SEC10/AUD-23) -----
+
+def test_main_refuses_regulated_meeting(tmp_path: Path, monkeypatch) -> None:
+    """mp dogfood must not POST a regulated/NDA transcript to Anthropic. With
+    regulated_mode on, main refuses (rc 2) before any backend call, even when
+    an API key is present."""
+    transcript = tmp_path / "20260501-1000.md"
+    transcript.write_text("**A**: hi there\n", encoding="utf-8")
+
+    regulated = Config()
+    regulated.modes.regulated_mode = True
+    monkeypatch.setattr(Config, "load", lambda: regulated)
+    monkeypatch.setattr("mp.dogfood.load_secrets", lambda *a, **k: None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")  # present: must still refuse
+
+    anthropic = Mock()
+    monkeypatch.setattr("mp.dogfood.AnthropicSummaryClient", anthropic)
+
+    rc = main([str(transcript)])
+
+    assert rc == 2
+    anthropic.assert_not_called()
+
+
+def test_main_runs_non_regulated_meeting(tmp_path: Path, monkeypatch) -> None:
+    """A normal meeting still runs the A/B: the gate only refuses zero-egress
+    modes, so a user who simply prefers the local backend is unaffected."""
+    transcript = tmp_path / "20260501-1100.md"
+    transcript.write_text("**A**: hi there\n", encoding="utf-8")
+
+    monkeypatch.setattr(Config, "load", lambda: Config())  # not regulated
+    monkeypatch.setattr("mp.dogfood.load_secrets", lambda *a, **k: None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    ran: list[int] = []
+    monkeypatch.setattr("mp.dogfood.run_one",
+                        lambda *a, **k: ran.append(1) or (tmp_path / "out.md"))
+
+    rc = main([str(transcript)])
+
+    assert rc == 0
+    assert ran == [1]

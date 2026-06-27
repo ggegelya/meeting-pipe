@@ -37,12 +37,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import Config, load_secrets
+from .egress_guard import arm_for_config
 from .schemas import MeetingSummary
 from .summarize import (
     AnthropicSummaryClient,
     _load_system_prompt,
 )
 from .summarize_local import LocalSummaryClient
+from .workflow import apply_overrides as apply_workflow_overrides
 
 log = logging.getLogger("mp.dogfood")
 
@@ -314,6 +316,20 @@ def main(argv: list[str]) -> int:
     if not transcript_md.exists():
         sys.stderr.write(f"no such file: {transcript_md}\n")
         return 1
+    # SEC10/AUD-23: resolve the per-meeting workflow overlay, then arm the egress
+    # guard like every other LLM entry point. dogfood is a cloud-vs-local A/B, so
+    # a regulated/NDA meeting has no cloud baseline that may run: refuse here,
+    # before the Anthropic POST, rather than egress the transcript. The arm is
+    # also the structural backstop should any later call try to reach the cloud.
+    # This gate precedes the API-key check so the refusal is reported for the
+    # right reason even when no key is set.
+    cfg = apply_workflow_overrides(cfg, transcript_md)
+    if arm_for_config(cfg):
+        sys.stderr.write(
+            f"{transcript_md.name} is a regulated/NDA meeting; mp dogfood would POST "
+            "the transcript to Anthropic for the cloud baseline. Refusing.\n"
+        )
+        return 2
     if not os.environ.get("ANTHROPIC_API_KEY"):
         sys.stderr.write("ANTHROPIC_API_KEY required to run the baseline.\n")
         return 1
