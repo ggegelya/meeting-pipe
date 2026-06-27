@@ -30,9 +30,9 @@ extension Coordinator: NotifierDelegate {
         Log.event(category: "coordinator", action: "user_consented_always", attributes: [
             "bundle_id": source.bundleID,
         ])
-        // Explicit "always": clear the cooldown so a stale skip/end can't
-        // block it (as with the manual hotkey path).
-        stateMachine.clearCooldown(bundleID: source.bundleID)
+        // Explicit "always": clear every suppression (cooldown + skip latch) so a
+        // stale skip/end can't block it (as with the manual hotkey path).
+        stateMachine.clearSuppression(bundleID: source.bundleID)
         session.beginRecording(source: source, summaryMode: .auto)
     }
 

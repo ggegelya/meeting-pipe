@@ -110,10 +110,10 @@ final class MeetingSessionController {
         case .idle:
             beginRecording(source: nil, summaryMode: .auto)
         case .prompting(let src), .suppressed(let src):
-            // Keep the source so "Always for {App}" still attributes; clear
-            // the cooldown so this explicit start isn't suppressed.
+            // Keep the source so "Always for {App}" still attributes; clear every
+            // suppression (cooldown + skip latch) so this explicit start isn't held off.
             coordinator.promptWindow.dismiss()
-            coordinator.stateMachine.clearCooldown(bundleID: src.bundleID)
+            coordinator.stateMachine.clearSuppression(bundleID: src.bundleID)
             beginRecording(source: src, summaryMode: .auto)
         case .recording(let file, let src, let mode):
             stopRecording(file: file, source: src, summaryMode: mode)
@@ -397,6 +397,15 @@ final class MeetingSessionController {
     func handleMeetingStarted(source: AppSource) {
         guard coordinator.stateMachine.isAcceptingPrompts else { return }
 
+        // A meeting the user already dismissed stays dismissed for its whole lifetime:
+        // the skip latch (refreshed by discovery in handleDiscovery) outlives the fixed
+        // cooldown, so a `.starting` re-published mid-call can't re-open the prompt. Safety
+        // net only - after a skip the lifecycle is disengaged, so this rarely fires - but it
+        // closes the race where a `.starting` was queued just before disengage.
+        if coordinator.stateMachine.isSkipLatched(bundleID: source.bundleID) {
+            return
+        }
+
         // Honor the per-bundle reprompt cooldown here, not only in handleDiscovery:
         // after a skip/timeout we go to .idle immediately, so a lifecycle `.starting`
         // published from a signal queued just before disengage (or a fast re-scan)
@@ -589,6 +598,18 @@ final class MeetingSessionController {
     /// idle and the bundle isn't in its post-meeting cooldown.
     func handleDiscovery(_ source: AppSource) {
         guard coordinator.stateMachine.isAcceptingPrompts else { return }
+
+        // The skipped-meeting latch is anchored here: this scan is proof the meeting the
+        // user dismissed is still live, so refresh the latch and stay out. Keeping it armed
+        // every ~3 s means it lapses only ~15 s after discovery stops seeing the meeting -
+        // i.e. shortly after it actually ends - so the prompt never re-fires mid-call but
+        // the next meeting in this app still prompts. We do NOT re-engage the lifecycle, so
+        // there's no Leave-button poll to leak.
+        if coordinator.stateMachine.isSkipLatched(bundleID: source.bundleID) {
+            coordinator.stateMachine.refreshSkipLatch(bundleID: source.bundleID)
+            return
+        }
+
         if coordinator.stateMachine.isCoolingDown(
             bundleID: source.bundleID,
             cooldownSec: coordinator.liveRepromptCooldownSec

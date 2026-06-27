@@ -35,6 +35,37 @@ final class DetectionStateMachine {
         cooldown.isCoolingDown(bundleID: bundleID, cooldownSec: cooldownSec)
     }
 
+    // MARK: - Skipped-meeting latch facade
+
+    /// Grace after discovery stops seeing a skipped meeting before its latch lapses.
+    /// 5x the `MeetingDiscoveryWatcher` 3 s poll, so a few missed scans mid-call do not
+    /// drop the latch, yet the next meeting in the same app can prompt ~15 s after this
+    /// one ends.
+    static let skipLatchGraceSec: Double = 15
+
+    private var skipLatch = SkippedMeetingLatch()
+
+    func armSkipLatch(bundleID: String) {
+        skipLatch.arm(bundleID: bundleID)
+    }
+
+    /// Discovery still sees this skipped meeting: extend its latch. No-op if unarmed.
+    func refreshSkipLatch(bundleID: String) {
+        skipLatch.refresh(bundleID: bundleID)
+    }
+
+    func isSkipLatched(bundleID: String) -> Bool {
+        skipLatch.isLatched(bundleID: bundleID, graceSec: Self.skipLatchGraceSec)
+    }
+
+    /// Clear every re-prompt suppression for `bundleID` (the latch and the cooldown) so an
+    /// explicit "record now" intent - manual hotkey, "Always for {App}" - is never blocked
+    /// by a prior skip or a stale end timestamp.
+    func clearSuppression(bundleID: String) {
+        skipLatch.clear(bundleID: bundleID)
+        cooldown.clear(bundleID: bundleID)
+    }
+
     // MARK: - Transitions
 
     func setIdle() {
@@ -63,10 +94,17 @@ final class DetectionStateMachine {
     /// bare, uncorroborated invalidation), so detection wedged for the rest of the meeting
     /// and the engaged Leave-button signal leaked, health-polling a dead element at 1 Hz.
     /// Going to `.idle` here fires `onIdleTransition`, which disengages that poll; the
-    /// cooldown is bundle-scoped, so only the skipped meeting is held off.
+    /// suppression is bundle-scoped, so only the skipped meeting is held off.
+    ///
+    /// Two suppressions are armed, by design: the `RepromptCooldown` covers the immediate
+    /// post-skip window (a queued `.starting` or a teardown flicker), and the
+    /// `SkippedMeetingLatch` - refreshed by every discovery sighting of the bundle - holds
+    /// the prompt off for the *rest of this meeting*, so the 60 s cooldown lapsing mid-call
+    /// can no longer re-prompt the meeting the user just dismissed.
     func abandonPrompt(source: AppSource) {
         cancelPromptTimeout()
         recordCooldownEnd(bundleID: source.bundleID)
+        armSkipLatch(bundleID: source.bundleID)
         setIdle()
     }
 
