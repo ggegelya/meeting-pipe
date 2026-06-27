@@ -285,11 +285,48 @@ final class MeetingSessionController {
                 // manual recordings and the prompt-answered-late race).
                 self.coordinator.lifecycleCoord.confirmRecording()
             } catch {
+                // MIC11 / AUD: a failed start must fail *bounded*, not silently churn
+                // the audio stack. The 2026-06-09 storm was an engine-start that
+                // returned to .idle with no backoff, so the detector's next discovery
+                // poll - and a user re-click - re-attempted immediately and unboundedly.
+                // Arm the per-bundle reprompt cooldown so a device the engine can't start
+                // on (a renegotiating Bluetooth headset) backs off for repromptCooldownSec
+                // before it can re-prompt, and emit a structured event so `mp logs` /
+                // `mp analyze-detection` can see failed starts (the catch was os_log-only).
+                // Manual recordings have no bundle to cool down; `recordingStartInFlight`
+                // already bounds re-clicks there.
+                let reason = MeetingSessionController.startFailureReason(error)
+                if let bundleID = source?.bundleID {
+                    self.coordinator.stateMachine.recordCooldownEnd(bundleID: bundleID)
+                }
+                Log.event(category: "coordinator", action: "recording_error", attributes: [
+                    "stage": "start",
+                    "reason": reason,
+                    "bundle_id": source?.bundleID ?? "manual",
+                    "cooldown_armed": source != nil,
+                ])
                 Log.main.error("failed to start recorder: \(error.localizedDescription)")
                 self.coordinator.notifier.notifyError("Could not start recording: \(error.localizedDescription)")
                 self.coordinator.stateMachine.setIdle()
                 self.coordinator.statusBar.setIdle()
             }
+        }
+    }
+
+    /// Map a recorder start failure to a stable snake_case `reason` for the
+    /// `recording_error` event (MIC11). Internal + static so it is unit-testable
+    /// without constructing the controller, and exhaustive over `RecorderError`
+    /// so a new failure case forces this mapping to be updated. The `reason`
+    /// strings are a JSONL contract that `mp analyze-detection` can bucket on.
+    static func startFailureReason(_ error: Error) -> String {
+        guard let recorderError = error as? MeetingRecorder.RecorderError else {
+            return "other"
+        }
+        switch recorderError {
+        case .engineStartFailed: return "engine_start_failed"
+        case .engineStartTimedOut: return "engine_start_timed_out"
+        case .fileCreateFailed: return "file_create_failed"
+        case .alreadyRecording: return "already_recording"
         }
     }
 
