@@ -49,6 +49,12 @@ final class MeetingRecorder {
     private var micFires: UInt64 = 0
     private var systemFires: UInt64 = 0
 
+    /// Per-writer consecutive-failure trackers (REC3 / AUD-7). Each is touched
+    /// only on its own writer's serial queue, like `micFires` / `systemFires`, so
+    /// no lock is needed. Reset at `start()`.
+    private var micWriteFailures = WriteFailureTracker()
+    private var systemWriteFailures = WriteFailureTracker()
+
     /// Per-source ~1 Hz RMS averages on the main queue. `onSystemLevel` feeds the
     /// idle backstop's `hasSystemAudio` mirror (TECH-END3); `onMicLevel` is currently
     /// unconsumed (the mic side of the backstop is verdict-driven). `nil`
@@ -123,6 +129,12 @@ final class MeetingRecorder {
     /// so the HUD can clear its degraded banner. The system channel has a gap
     /// for the window it was down.
     var onSystemAudioRecovered: (() -> Void)?
+
+    /// Fired on main when a capture writer has failed enough consecutive writes
+    /// that the recording is silently losing audio (disk full, or the 4 GiB WAV
+    /// cap). The string is the channel (`"mic"` / `"system"`). The Coordinator
+    /// surfaces it and force-stops to preserve the intact prefix (REC3 / AUD-7).
+    var onWriteFailure: ((String) -> Void)?
 
     /// Cross-thread mic-gate state (TECH-CONC2): the latest verdict (main writes
     /// it via `setMicGateVerdict`; the render thread reads it to gate each
@@ -219,6 +231,8 @@ final class MeetingRecorder {
         micAccumFrames = 0
         systemAccumSumSq = 0
         systemAccumFrames = 0
+        micWriteFailures = WriteFailureTracker()
+        systemWriteFailures = WriteFailureTracker()
         // Reset so a prior session's fade/verdict can't bleed in; the
         // writer itself is rebuilt below once the sample rate is bound.
         gateAccess.withLock { $0.verdict = .uncertain(reasons: ["not_started"]) }
@@ -291,13 +305,19 @@ final class MeetingRecorder {
         // inherits the input sample rate; released in `stop()`.
         self.micGateWriter = MicGateWriter(sampleRate: fileFormat.sampleRate)
 
-        // Serial writer: the tap enqueues, the disk write runs off-thread.
-        self.micWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.mic-writer") { buffer in
+        // Serial writer: the tap enqueues, the disk write runs off-thread. A
+        // failed write is counted (REC3 / AUD-7): a sustained run escalates to a
+        // force-stop instead of silently dropping audio.
+        self.micWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.mic-writer") { [weak self] buffer in
+            let ok: Bool
             do {
                 try micFile.write(from: buffer)
+                ok = true
             } catch {
                 Log.recorder.error("mic write: \(error.localizedDescription)")
+                ok = false
             }
+            self?.noteWriteOutcome(channel: .mic, success: ok)
         }
 
         installMicTap(captureFormat: micFormat)
@@ -393,12 +413,16 @@ final class MeetingRecorder {
         }
         self.systemFile = systemFile
         if let systemFile {
-            self.systemWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.system-writer") { buffer in
+            self.systemWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.system-writer") { [weak self] buffer in
+                let ok: Bool
                 do {
                     try systemFile.write(from: buffer)
+                    ok = true
                 } catch {
                     Log.recorder.error("system write: \(error.localizedDescription)")
+                    ok = false
                 }
+                self?.noteWriteOutcome(channel: .system, success: ok)
             }
         }
 
@@ -1210,6 +1234,38 @@ final class MeetingRecorder {
             frames = 0
             DispatchQueue.main.async { cb(db) }
         }
+    }
+
+    // MARK: - Write-failure escalation (REC3 / AUD-7)
+
+    private enum WriteChannel { case mic, system }
+
+    /// Fold one write outcome into the channel's failure tracker, on that
+    /// writer's serial queue. On the buffer that first crosses the threshold,
+    /// emit `recording_error` and hand off to `onWriteFailure` on main exactly
+    /// once, so a disk-full / 4 GiB-cap run of swallowed write errors becomes a
+    /// force-stop that preserves the intact prefix instead of silent data loss.
+    private func noteWriteOutcome(channel: WriteChannel, success: Bool) {
+        let shouldEscalate: Bool
+        let consecutive: Int
+        switch channel {
+        case .mic:
+            shouldEscalate = micWriteFailures.record(success: success)
+            consecutive = micWriteFailures.consecutiveFailures
+        case .system:
+            shouldEscalate = systemWriteFailures.record(success: success)
+            consecutive = systemWriteFailures.consecutiveFailures
+        }
+        guard shouldEscalate else { return }
+
+        let label = channel == .mic ? "mic" : "system"
+        Log.event(category: "recorder", action: "recording_error", attributes: [
+            "channel": label,
+            "consecutive_failures": consecutive,
+        ])
+        Log.writeLine("recorder", "ERROR: \(label) writer failed \(consecutive) consecutive writes - disk full or the 4 GiB WAV cap; force-stopping to preserve the intact prefix")
+        let cb = onWriteFailure
+        DispatchQueue.main.async { cb?(label) }
     }
 
     // MARK: - Orphan recovery
