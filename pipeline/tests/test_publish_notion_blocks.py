@@ -119,6 +119,15 @@ def test_action_block_unassigned_owner_pill_is_gray() -> None:
     assert chip.get("annotations", {}).get("bold") is not True
 
 
+def test_action_block_checked_mirrors_resolved() -> None:
+    # AI1: a resolved action renders as a ticked Notion to-do; open stays
+    # unchecked. The on-disk summary.json is the source of truth, not Notion.
+    assert _action_block(task="t", owner=None, due=None, confidence="high",
+                         resolved=True)["to_do"]["checked"] is True
+    assert _action_block(task="t", owner=None, due=None, confidence="high",
+                         resolved=False)["to_do"]["checked"] is False
+
+
 # ----- questions toggle -----
 
 def test_open_questions_render_inside_a_collapsed_toggle() -> None:

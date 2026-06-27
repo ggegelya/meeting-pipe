@@ -471,8 +471,9 @@ def _render_summary_md(s: MeetingSummary) -> str:
         lines.append("## Action Items")
         for a in s.actions:
             owner = a.owner or "_unassigned_"
-            due = f" — due {a.due}" if a.due else ""
-            lines.append(f"- [ ] **{owner}**: {a.task}{due}  _(confidence: {a.confidence})_")
+            due = f" - due {a.due}" if a.due else ""
+            box = "[x]" if a.resolved else "[ ]"
+            lines.append(f"- {box} **{owner}**: {a.task}{due}  _(confidence: {a.confidence})_")
         lines.append("")
 
     if s.questions:

@@ -27,16 +27,21 @@ struct MeetingSummary: Decodable, Equatable {
         var owner: String?
         var due: String?
         var confidence: String
+        /// AI1 lifecycle: false (open) until explicitly resolved. Absent on
+        /// legacy summaries, so it defaults to open; the older `done` spelling
+        /// is also accepted on read (mirrors the pydantic alias in schemas.py).
+        var resolved: Bool
 
         enum CodingKeys: String, CodingKey {
-            case task, owner, due, confidence
+            case task, owner, due, confidence, resolved, done
         }
 
-        init(task: String, owner: String? = nil, due: String? = nil, confidence: String = "medium") {
+        init(task: String, owner: String? = nil, due: String? = nil, confidence: String = "medium", resolved: Bool = false) {
             self.task = task
             self.owner = owner
             self.due = due
             self.confidence = confidence
+            self.resolved = resolved
         }
 
         init(from decoder: Decoder) throws {
@@ -45,6 +50,9 @@ struct MeetingSummary: Decodable, Equatable {
             owner = (try? c.decodeIfPresent(String.self, forKey: .owner)) ?? nil
             due = (try? c.decodeIfPresent(String.self, forKey: .due)) ?? nil
             confidence = (try? c.decode(String.self, forKey: .confidence)) ?? "medium"
+            let resolvedFlag = (try? c.decodeIfPresent(Bool.self, forKey: .resolved)) ?? nil
+            let doneFlag = (try? c.decodeIfPresent(Bool.self, forKey: .done)) ?? nil
+            resolved = resolvedFlag ?? doneFlag ?? false
         }
     }
 
@@ -114,6 +122,7 @@ struct MeetingSummary: Decodable, Equatable {
                 var d: [String: Any] = [
                     "task": a.task,
                     "confidence": a.confidence.isEmpty ? "medium" : a.confidence,
+                    "resolved": a.resolved,
                 ]
                 d["owner"] = (a.owner?.isEmpty == false) ? a.owner! : NSNull()
                 d["due"] = (a.due?.isEmpty == false) ? a.due! : NSNull()

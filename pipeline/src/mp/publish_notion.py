@@ -383,6 +383,7 @@ def _build_blocks(
                 owner=a.owner,
                 due=a.due,
                 confidence=a.confidence,
+                resolved=a.resolved,
             ))
 
     if summary.questions:
@@ -499,6 +500,7 @@ def _action_block(
     owner: str | None,
     due: str | None,
     confidence: str,
+    resolved: bool = False,
 ) -> dict:
     runs: list[dict] = []
     # Owner mention pill: bold + colored. Real Notion @mentions need a
@@ -513,10 +515,12 @@ def _action_block(
     runs.append(_text("  "))
     chip_color = _CONFIDENCE_COLOR.get(confidence, "default")
     runs.append(_text(f"[{confidence}]", color=chip_color, bold=(confidence == "high")))
+    # `checked` mirrors the resolved flag so a done action round-trips as a
+    # ticked Notion to-do; an open one stays unchecked.
     return {
         "object": "block",
         "type": "to_do",
-        "to_do": {"rich_text": runs, "checked": False},
+        "to_do": {"rich_text": runs, "checked": resolved},
     }
 
 

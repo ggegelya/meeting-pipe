@@ -28,6 +28,27 @@ def test_action_item_owner_optional():
     assert a.confidence == "low"
 
 
+def test_action_item_defaults_to_open():
+    # AI1: a legacy summary has no resolved field; it must decode as open.
+    a = ActionItem.model_validate({"task": "x", "owner": None, "due": None, "confidence": "high"})
+    assert a.resolved is False
+
+
+def test_action_item_accepts_resolved_and_done_aliases():
+    # Both the canonical `resolved` key and the legacy `done` spelling decode.
+    assert ActionItem.model_validate({"task": "x", "resolved": True}).resolved is True
+    assert ActionItem.model_validate({"task": "x", "done": True}).resolved is True
+
+
+def test_action_item_serializes_as_resolved():
+    # On write the key is always `resolved` (the daemon mirror reads that name).
+    dumped = ActionItem(task="x", resolved=True).model_dump(mode="json")
+    assert dumped["resolved"] is True
+    assert "done" not in dumped
+    round_tripped = ActionItem.model_validate(dumped)
+    assert round_tripped.resolved is True
+
+
 def test_action_item_rejects_invalid_confidence():
     with pytest.raises(ValidationError):
         ActionItem(task="x", confidence="maybe")  # type: ignore[arg-type]
@@ -42,6 +63,11 @@ def test_tool_schema_serializes():
     required = decoded["input_schema"]["required"]
     assert "actions" in required
     assert "detected_language" in required
+    # AI1: `resolved` is an optional action property (not required, so the LLM
+    # may omit it and the tolerant decoder defaults it to open).
+    action_props = decoded["input_schema"]["properties"]["actions"]["items"]
+    assert "resolved" in action_props["properties"]
+    assert "resolved" not in action_props["required"]
 
 
 def test_round_trip_through_schema():

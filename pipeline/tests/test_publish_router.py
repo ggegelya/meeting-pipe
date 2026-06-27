@@ -1,6 +1,7 @@
 """Tests for the multi-sink publish router."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +91,45 @@ def test_fanout_empty_publisher_list_returns_local_only(tmp_path: Path) -> None:
                   publishers=[])
     assert res["page_id"] is None
     assert res["sinks"] == {}
+
+
+def test_resolved_flag_round_trips_through_republish(tmp_path: Path) -> None:
+    """AI1 acceptance: a resolved action in summary.json survives a republish
+    as an upsert. The fanout re-reads the on-disk summary (it never regenerates
+    it), so the flag persists and the action is not duplicated."""
+    from mp.config import Config as Cfg
+    from mp.publish_fs import FilesystemPublisher
+    from mp.schemas import ActionItem, MeetingSummary as MS
+
+    out = tmp_path / "out"
+    summary_json = tmp_path / "20260601-0900.summary.json"
+    transcript = tmp_path / "20260601-0900.md"
+    transcript.write_text("# Transcript\n", encoding="utf-8")
+    summary = MS(
+        title="Review", summary=["a"],
+        actions=[
+            ActionItem(task="Closed item", owner="Alice", due="2026-05-01",
+                       confidence="high", resolved=True),
+            ActionItem(task="Open item", owner="Bob", due=None, confidence="high"),
+        ],
+        detected_language="en",
+    )
+    summary_json.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
+
+    def _republish() -> None:
+        fanout(
+            summary_json=summary_json, cfg=Cfg(), transcript_md=transcript,
+            publishers=[FilesystemPublisher(output_dir=out)],
+        )
+
+    _republish()
+    _republish()  # second pass = the "republish" path, must upsert not duplicate
+
+    actions = json.loads((out / "20260601-0900.actions.json").read_text(encoding="utf-8"))
+    assert len(actions) == 2  # upsert: no duplication across republishes
+    by_task = {a["task"]: a for a in actions}
+    assert by_task["Closed item"]["resolved"] is True
+    assert by_task["Open item"]["resolved"] is False
 
 
 # ----- meeting-title override (PIPE2/AUD-15) -----

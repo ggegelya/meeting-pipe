@@ -94,3 +94,26 @@ def test_actions_dumped_as_array(tmp_path: Path) -> None:
     assert len(actions) == 2
     assert actions[0]["task"] == "One"
     assert actions[1]["owner"] is None
+
+
+def test_resolved_flag_round_trips_to_actions_json_and_markdown(tmp_path: Path) -> None:
+    # AI1: a resolved action lands in actions.json with resolved=true and
+    # renders the markdown checkbox ticked; an open one stays unchecked.
+    transcript = tmp_path / "b.md"
+    transcript.write_text("", encoding="utf-8")
+    sidecar = tmp_path / "b.filesystem.json"
+    out = tmp_path / "out"
+    summary = _summary().model_copy(update={"actions": [
+        ActionItem(task="Wrapped", owner="A", due=None, confidence="high", resolved=True),
+        ActionItem(task="Pending", owner="B", due=None, confidence="high"),
+    ]})
+    FilesystemPublisher(output_dir=out).upsert(
+        summary=summary, transcript_md=transcript, sidecar_path=sidecar
+    )
+    actions = json.loads((out / "b.actions.json").read_text(encoding="utf-8"))
+    by_task = {a["task"]: a for a in actions}
+    assert by_task["Wrapped"]["resolved"] is True
+    assert by_task["Pending"]["resolved"] is False
+    body = (out / "b.summary.md").read_text(encoding="utf-8")
+    assert "- [x] **A**: Wrapped" in body
+    assert "- [ ] **B**: Pending" in body

@@ -317,15 +317,18 @@ mp ask "migration to postgres" --top 3 --json       # machine-readable
 
 This is the zero-dependency MVP; on-device semantic (embeddings) search over the same library is the planned follow-up.
 
-To roll up commitments across every meeting, `mp actions` lists the action items the summarizer already extracted, soonest deadlines first:
+To roll up commitments across every meeting, `mp actions` lists the action items the summarizer already extracted, soonest deadlines first. Each action carries a resolved flag, and a dated open action shows its age off the ISO due date:
 
 ```bash
-mp actions                                          # every open action item
+mp actions                                          # every tracked action item
+mp actions --open                                   # only unresolved
+mp actions --closed                                 # only resolved
+mp actions --overdue                                # open and past its due date
 mp actions --owner Sam --due-before 2026-07-01      # filtered
 mp actions --min-confidence high --json             # machine-readable
 ```
 
-Every extracted action counts as open today; a done/resolved flag is the follow-up.
+The resolved flag lives in `<stem>.summary.json` and round-trips through a republish, so marking an action done (a control DV1 adds to the Library) survives re-publishing.
 
 ---
 

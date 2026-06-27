@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 from .prompt_safety import clean_person
 
@@ -17,6 +17,17 @@ class ActionItem(BaseModel):
     owner: str | None = None
     due: str | None = None  # ISO 8601 date if extractable
     confidence: Literal["low", "medium", "high"] = "medium"
+    # AI1: an item is open until explicitly resolved. Absent on legacy
+    # `<stem>.summary.json` files, so it defaults to open; `done` is accepted as
+    # an alias on read so the older spelling round-trips. Aging is computed off
+    # `due` in `mp actions`, not stored.
+    resolved: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("resolved", "done"),
+        serialization_alias="resolved",
+    )
+
+    model_config = {"populate_by_name": True}
 
     @field_validator("owner", mode="after")
     @classmethod
@@ -81,6 +92,10 @@ SUMMARY_TOOL = {
                         "owner": {"type": ["string", "null"]},
                         "due": {"type": ["string", "null"], "description": "ISO 8601 date if extractable."},
                         "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                        "resolved": {
+                            "type": "boolean",
+                            "description": "True only if the meeting states the item is already done; default false (open).",
+                        },
                     },
                     "required": ["task", "owner", "due", "confidence"],
                     "additionalProperties": False,

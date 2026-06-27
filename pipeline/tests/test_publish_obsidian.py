@@ -26,6 +26,15 @@ def _summary() -> MeetingSummary:
     )
 
 
+def test_format_action_checkbox_reflects_resolved() -> None:
+    # AI1: the Obsidian action line ticks the checkbox for a resolved action.
+    from mp.publish_obsidian import _format_action
+    done = ActionItem(task="Ship it", owner="Alice", due=None, confidence="high", resolved=True)
+    open_ = ActionItem(task="Draft it", owner="Bob", due=None, confidence="high")
+    assert _format_action(done).startswith("- [x] **Alice**")
+    assert _format_action(open_).startswith("- [ ] **Bob**")
+
+
 def test_upsert_writes_note(tmp_path: Path) -> None:
     transcript = tmp_path / "20260506-1500.md"
     transcript.write_text("# Transcript\n", encoding="utf-8")

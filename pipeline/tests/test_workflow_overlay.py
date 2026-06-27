@@ -164,3 +164,24 @@ def test_empty_sinks_list_is_ignored(tmp_path: Path) -> None:
     wav.write_bytes(b"")
     result = apply_overrides(cfg, wav)
     assert result.output.sinks == cfg.output.sinks
+
+
+def test_overlay_does_not_carry_action_state(tmp_path: Path) -> None:
+    # AI1: action-item resolved state lives in <stem>.summary.json (read by the
+    # summary schema on both sides), NOT in the meta.json workflow sidecar. The
+    # overlay must not invent or strip it; it only patches config-shaped keys.
+    # This pins the contract boundary so a future meta.json key never starts
+    # shadowing per-action state.
+    cfg = Config()
+    stem = "20260512-actionstate"
+    _write_meta(tmp_path, stem, {
+        "workflow_context_prompt": "ctx",
+        # A stray action-shaped key in meta.json must be inert.
+        "resolved": True,
+        "actions": [{"task": "should be ignored", "resolved": True}],
+    })
+    summary = tmp_path / f"{stem}.summary.json"
+    summary.write_text("{}", encoding="utf-8")
+    result = apply_overrides(cfg, summary)
+    assert result.summarization.team_context == "ctx"
+    assert not hasattr(result, "actions")

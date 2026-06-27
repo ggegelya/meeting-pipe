@@ -111,7 +111,8 @@ def test_parse_picks_up_language_hint():
 
 def test_parse_accepts_checked_todos():
     """Some LLMs emit `[x]` for action items the meeting already resolved.
-    They should land in actions, not vanish silently."""
+    They should land in actions, not vanish silently, and AI1 maps the
+    checked box onto the resolved flag."""
     raw = (
         "# Quick chat\n## Summary\n- bullet\n## Action Items\n"
         "- [x] **Alice**: Done before the meeting\n"
@@ -119,8 +120,41 @@ def test_parse_accepts_checked_todos():
         "- [ ] **Bob**: Pending\n"
     )
     s = parse_summary_md(raw)
-    tasks = sorted(a.task for a in s.actions)
-    assert tasks == ["Also already done", "Done before the meeting", "Pending"]
+    by_task = {a.task: a for a in s.actions}
+    assert set(by_task) == {"Done before the meeting", "Also already done", "Pending"}
+    # AI1: `[x]`/`[X]` -> resolved, `[ ]` -> open.
+    assert by_task["Done before the meeting"].resolved is True
+    assert by_task["Also already done"].resolved is True
+    assert by_task["Pending"].resolved is False
+
+
+def test_resolved_round_trips_through_rendered_markdown():
+    """AI1: render -> re-parse preserves the resolved flag, so a paste re-run
+    (which rewrites summary.json from the markdown) does not reopen closed
+    actions. The order is stable, so the resolved action stays resolved and the
+    open one stays open. (The parser keeps the confidence suffix in the task
+    text; that is a pre-existing BYO quirk and not what this test pins.)"""
+    from mp.schemas import ActionItem, MeetingSummary
+    from mp.summarize import _render_summary_md
+
+    s = MeetingSummary(
+        title="Recap",
+        summary=["x"],
+        actions=[
+            ActionItem(task="Closed item", owner="Alice", due="2026-05-01",
+                       confidence="high", resolved=True),
+            ActionItem(task="Open item", owner="Bob", due=None, confidence="high"),
+        ],
+        detected_language="en",
+    )
+    reparsed = parse_summary_md(_render_summary_md(s))
+    assert len(reparsed.actions) == 2
+    closed, openn = reparsed.actions
+    assert closed.task.startswith("Closed item")
+    assert closed.resolved is True
+    assert closed.due == "2026-05-01"  # due survives the trailer strip
+    assert openn.task.startswith("Open item")
+    assert openn.resolved is False
 
 
 def test_parse_accepts_plain_attendees_label():

@@ -255,7 +255,8 @@ def _format_action(a: Any) -> str:
     due = getattr(a, "due", None)
     confidence = getattr(a, "confidence", "medium")
     suffix = f"  (due: {due})" if due else ""
-    return f"- [ ] **{owner}** {a.task}{suffix} _(confidence: {confidence})_"
+    box = "[x]" if getattr(a, "resolved", False) else "[ ]"
+    return f"- {box} **{owner}** {a.task}{suffix} _(confidence: {confidence})_"
 
 
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")  # control chars incl newline / tab / CR

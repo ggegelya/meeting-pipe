@@ -154,6 +154,9 @@ struct EditableAction: Identifiable, Equatable {
     var owner: String
     var due: String
     var confidence: String
+    // Carried through the editor untouched (no resolve control here; that is
+    // DV1's surface) so a text edit does not reopen a resolved action. AI1.
+    var resolved: Bool = false
 }
 
 final class CorrectionViewModel: ObservableObject {
@@ -193,7 +196,8 @@ final class CorrectionViewModel: ObservableObject {
                 task: $0.task,
                 owner: $0.owner ?? "",
                 due: $0.due ?? "",
-                confidence: $0.confidence
+                confidence: $0.confidence,
+                resolved: $0.resolved
             )
         }
     }
@@ -221,7 +225,8 @@ final class CorrectionViewModel: ObservableObject {
                     task: a.task,
                     owner: a.owner.isEmpty ? nil : a.owner,
                     due: a.due.isEmpty ? nil : a.due,
-                    confidence: a.confidence.isEmpty ? "medium" : a.confidence
+                    confidence: a.confidence.isEmpty ? "medium" : a.confidence,
+                    resolved: a.resolved
                 )
             }
         return MeetingSummary(

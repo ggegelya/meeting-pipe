@@ -133,9 +133,12 @@ def _extract_actions(body: str) -> list[ActionItem]:
         task = m.group("task").strip()
         owner = m.group("owner")
         owner = owner.strip() if owner else None
+        # A checked box (`[x]`/`[X]`) is a resolved action; `[ ]` is open. This
+        # is the markdown round-trip for the AI1 resolved flag.
+        resolved = m.group("done").lower() == "x"
         due = _extract_due_date(task)
         if due:
-            # Strip the "— due 2026-05-01" trailer from the task text.
+            # Strip the "- due 2026-05-01" trailer from the task text.
             task = re.sub(
                 r"\s*[—-]\s*due\s+\d{4}-\d{2}-\d{2}\s*$",
                 "",
@@ -148,6 +151,7 @@ def _extract_actions(body: str) -> list[ActionItem]:
                 owner=owner,
                 due=due,
                 confidence="medium",
+                resolved=resolved,
             )
         )
     return items

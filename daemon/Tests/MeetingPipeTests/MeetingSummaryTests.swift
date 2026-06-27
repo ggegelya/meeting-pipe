@@ -44,6 +44,42 @@ final class MeetingSummaryTests: XCTestCase {
         XCTAssertEqual(s.actions[1].owner, nil)
         XCTAssertEqual(s.actions[1].due, nil)
         XCTAssertEqual(s.actions[1].confidence, "low")
+        // AI1: the canonical JSON carries no resolved key, so both default open.
+        XCTAssertFalse(s.actions[0].resolved)
+        XCTAssertFalse(s.actions[1].resolved)
+    }
+
+    // MARK: AI1 resolved flag
+
+    func test_action_resolved_decodes_from_resolved_and_done_keys() throws {
+        // Canonical `resolved` and the legacy `done` spelling both decode; an
+        // absent flag stays open. Mirrors the pydantic alias in schemas.py.
+        let s = try decode("""
+        {"actions": [
+          {"task": "explicit resolved", "confidence": "high", "resolved": true},
+          {"task": "legacy done", "confidence": "high", "done": true},
+          {"task": "still open", "confidence": "high"}
+        ]}
+        """)
+        XCTAssertEqual(s.actions.count, 3)
+        XCTAssertTrue(s.actions[0].resolved)
+        XCTAssertTrue(s.actions[1].resolved)
+        XCTAssertFalse(s.actions[2].resolved)
+    }
+
+    func test_jsonObject_emits_resolved_and_round_trips() throws {
+        let s = MeetingSummary(actions: [
+            MeetingSummary.ActionItem(task: "done one", confidence: "high", resolved: true),
+            MeetingSummary.ActionItem(task: "open one", confidence: "high"),
+        ])
+        let actions = try XCTUnwrap(s.jsonObject()["actions"] as? [[String: Any]])
+        XCTAssertEqual(actions[0]["resolved"] as? Bool, true)
+        XCTAssertEqual(actions[1]["resolved"] as? Bool, false)
+        // Full round-trip preserves the flag (the Library Edit-Save path relies
+        // on this so a text edit never reopens a resolved action).
+        let rebuilt = try XCTUnwrap(MeetingSummary(jsonObject: s.jsonObject()))
+        XCTAssertEqual(rebuilt.actions, s.actions)
+        XCTAssertTrue(rebuilt.actions[0].resolved)
     }
 
     // MARK: tolerance
