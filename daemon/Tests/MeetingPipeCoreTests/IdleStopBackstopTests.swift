@@ -66,6 +66,31 @@ final class IdleStopBackstopTests: XCTestCase {
         XCTAssertEqual(stopCount, 0)
     }
 
+    // MARK: - Clock-feed without verdict changes (TECH-END7)
+
+    func test_re_ingesting_the_same_silent_verdict_fires_both_horizons() {
+        // TECH-END7: the verdict stream is deduped, so after a call goes silent the
+        // host re-feeds the SAME verdict at ~1 Hz (off the mic-level callback). The
+        // backstop must advance off the clock and fire both horizons in turn, with
+        // no new verdict transition. This is the forgotten-recording scenario the
+        // auto-stop exists for, which the change-only feed could never reach.
+        let b = backstop(notify: 480, autoStop: 900)
+        var notified = false
+        var stopped = false
+        b.onNotify = { _ in notified = true }
+        b.onAutoStop = { _ in stopped = true }
+        let v = silent()
+
+        b.ingest(verdict: v, hasSystemAudio: false, at: t0)                          // streak starts
+        XCTAssertFalse(notified)
+        XCTAssertFalse(stopped)
+        b.ingest(verdict: v, hasSystemAudio: false, at: t0.addingTimeInterval(480))  // re-fed, nudge
+        XCTAssertTrue(notified, "the nudge fires from the clock on re-ingestion")
+        XCTAssertFalse(stopped)
+        b.ingest(verdict: v, hasSystemAudio: false, at: t0.addingTimeInterval(900))  // re-fed, stop
+        XCTAssertTrue(stopped, "the auto-stop fires from the clock on re-ingestion")
+    }
+
     // MARK: - Nudge stays below a configurable auto-stop
 
     func test_safe_notify_always_precedes_the_auto_stop() {

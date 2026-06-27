@@ -41,6 +41,12 @@ final class MeetingSessionController {
     /// the silence backstop. `-120` is the "no audio observed yet" sentinel.
     var latestSystemLevelDb: Float = -120
 
+    /// Last MicGate verdict seen on the (deduped) verdict stream, re-fed to the
+    /// idle backstop on the ~1 Hz mic-level callback so its horizons advance on
+    /// the clock even when the verdict has stopped changing (TECH-END7). `nil`
+    /// until the first verdict of a recording; reset at engage and stop.
+    var latestVerdict: MicGateVerdict?
+
     /// Consumes `micGate.verdicts` (started in `startConsumers()`, cancelled at
     /// shutdown); forwards each to the recorder writer + silence backstop.
     var verdictConsumerTask: Task<Void, Never>?
@@ -67,6 +73,7 @@ final class MeetingSessionController {
             guard let self = self else { return }
             for await verdict in self.coordinator.micGate.verdicts {
                 await MainActor.run {
+                    self.latestVerdict = verdict
                     self.coordinator.recorder.setMicGateVerdict(verdict)
                     let hasSystem = Double(self.latestSystemLevelDb) > Self.systemSilenceThresholdDb
                     self.coordinator.silenceBackstop.ingest(verdict: verdict, hasSystemAudio: hasSystem)
@@ -504,16 +511,28 @@ final class MeetingSessionController {
     // MARK: - Idle backstop (TECH-END3, was TECH-C2/C7)
 
     /// Mirror the system-audio level so the idle backstop's `hasSystemAudio` read
-    /// stays current. The mic side is verdict-driven (the gate fuses VAD), so no raw
-    /// mic-level feed is needed here since TECH-END3 dropped the RMS SilenceDetector.
+    /// stays current, and clock-feed the backstop off the ~1 Hz mic-level callback.
+    /// The verdict stream is deduped (change-only), so after a call goes silent once
+    /// the backstop would never be fed again and its nudge / auto-stop horizons
+    /// could not fire on the forgotten-recording scenario they exist for (TECH-END7).
+    /// `onMicLevel` fires throughout a recording (mic-only or not) on the main queue,
+    /// the same context the verdict consumer feeds on, so re-ingesting the last
+    /// verdict there advances the streak with no cross-queue race. It was left
+    /// unconsumed when TECH-END3 dropped the RMS SilenceDetector.
     func armSystemLevelMirror() {
         coordinator.recorder.onSystemLevel = { [weak self] db in
             self?.latestSystemLevelDb = db
+        }
+        coordinator.recorder.onMicLevel = { [weak self] _ in
+            guard let self = self, let verdict = self.latestVerdict else { return }
+            let hasSystem = Double(self.latestSystemLevelDb) > Self.systemSilenceThresholdDb
+            self.coordinator.silenceBackstop.ingest(verdict: verdict, hasSystemAudio: hasSystem)
         }
     }
 
     func disarmSystemLevelMirror() {
         coordinator.recorder.onSystemLevel = nil
+        coordinator.recorder.onMicLevel = nil
     }
 
     func handleIdleNotify() {
@@ -568,6 +587,7 @@ final class MeetingSessionController {
     func engageMicGate(source: AppSource?) {
         coordinator.silenceBackstop.reset()
         latestSystemLevelDb = -120
+        latestVerdict = nil
         guard coordinator.liveHonorAppMute, let source = source else { return }
         guard let handles = MeetingAXHandleBuilder.build(source: source, catalogue: coordinator.muteLabels) else {
             Log.event(category: "coordinator", action: "micgate_engage_skipped", attributes: [
