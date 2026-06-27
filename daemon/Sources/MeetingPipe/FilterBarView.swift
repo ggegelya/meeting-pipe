@@ -40,7 +40,9 @@ struct FilterBarView: View {
                     .overlay(Color(MPColors.border))
                 Text("\(matchCount) / \(totalCount)")
                     .font(.system(size: 10).monospacedDigit())
-                    .foregroundStyle(Color(MPColors.fgFaint))
+                    // Sits inside the bgSunk search well, where fgSubtle is only
+                    // ~4.2:1; fgMuted clears the 4.5:1 floor there (UX14).
+                    .foregroundStyle(Color(MPColors.fgMuted))
             }
         }
         .padding(.horizontal, 8)
@@ -154,9 +156,10 @@ struct FilterBarView: View {
         } label: {
             Text("Clear")
                 .font(.system(size: 11, weight: .regular))
-                .foregroundStyle(filter.isEmpty
-                                 ? Color(MPColors.fgFaint)
-                                 : Color(MPColors.fgSubtle))
+                // Only shown while a filter is active; disabled state dims via
+                // SwiftUI, so fgSubtle (not the WCAG-failing fgFaint) is the
+                // resting colour (UX14).
+                .foregroundStyle(Color(MPColors.fgSubtle))
         }
         .buttonStyle(.plain)
         .disabled(filter.isEmpty)

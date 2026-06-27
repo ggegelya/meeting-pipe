@@ -115,7 +115,21 @@ struct MPStatusPill: View {
         }
     }
 
-    private var textColor: Color { dotColor }
+    /// Label colour, kept separate from the dot: the dot stays the lighter colour
+    /// cue while the text steps down to a deep, WCAG-legible tone so it clears
+    /// 4.5:1 on paper / the pill's own tint (UX14). Neutral steps to fgMuted
+    /// because fgSubtle is only ~4.2:1 over bgSunk.
+    private var textColor: Color {
+        switch kind {
+        case .ready:      return Color(MPColors.success700)
+        case .recording:  return Color(MPColors.pulse700)
+        case .processing: return Color(MPColors.signal700)
+        case .failed:     return Color(MPColors.pulse700)
+        case .nda:        return Color(MPColors.fgMuted)
+        case .neutral:    return Color(MPColors.fgMuted)
+        case .warning:    return Color(MPColors.warning700)
+        }
+    }
 
     private var strokeColor: Color {
         switch kind {

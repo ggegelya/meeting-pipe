@@ -261,8 +261,8 @@ struct RecordToolbarButton: View {
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(isRecording
-                          ? Color(MPColors.pulse600)
-                          : Color(MPColors.signal600))
+                          ? Color(MPColors.pulse700)
+                          : Color(MPColors.signal700))
             )
             .foregroundStyle(.white)
         }

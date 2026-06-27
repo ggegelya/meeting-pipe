@@ -61,11 +61,13 @@ final class MPButton: NSButton {
         let titleColor: NSColor
         switch mpStyle {
         case .primary:
-            // Press: 8% darken via signal700; hover: signal500.
+            // The white label needs >= 4.5:1, so the resting fill is signal700
+            // (white-on-teal 6.0:1), not signal600 (4.1:1, WCAG-failing) (UX14).
+            // Hover lifts to signal600, press returns to signal700 for feedback.
             let fill: NSColor
             if isPressed { fill = MPColors.signal700 }
-            else if isHovered { fill = MPColors.signal500 }
-            else { fill = MPColors.signal600 }
+            else if isHovered { fill = MPColors.signal600 }
+            else { fill = MPColors.signal700 }
             layer.backgroundColor = fill.cgColor
             layer.borderWidth = 0
             titleColor = MPColors.fgOnSignal

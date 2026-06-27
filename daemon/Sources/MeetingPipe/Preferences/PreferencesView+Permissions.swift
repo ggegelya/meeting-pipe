@@ -150,7 +150,7 @@ private struct PermissionsCardRow: View {
                     if showsDeferredHint {
                         Text("Toggle MeetingPipe on in System Settings, then click Re-check.")
                             .font(.system(size: 11))
-                            .foregroundStyle(Color(MPColors.signal600))
+                            .foregroundStyle(.mpSignal)
                             .padding(.top, 2)
                     }
                 }

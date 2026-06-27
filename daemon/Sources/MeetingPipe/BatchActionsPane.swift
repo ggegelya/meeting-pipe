@@ -86,7 +86,7 @@ struct BatchActionsPane: View {
                         Spacer(minLength: 8)
                         Text(MeetingFormatters.shortTime.string(from: m.startedAt))
                             .font(.system(size: 10).monospacedDigit())
-                            .foregroundStyle(Color(MPColors.fgFaint))
+                            .foregroundStyle(Color(MPColors.fgSubtle))
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
@@ -398,9 +398,11 @@ private struct MPPrimaryButtonStyle: ButtonStyle {
             .frame(height: 24)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    // White label needs >= 4.5:1, so the resting fill is signal700
+                    // (6.0:1), not signal600 (4.1:1) (UX14); press lifts to signal600.
                     .fill(configuration.isPressed
-                          ? Color(MPColors.signal700)
-                          : Color(MPColors.signal600))
+                          ? Color(MPColors.signal600)
+                          : Color(MPColors.signal700))
             )
     }
 }

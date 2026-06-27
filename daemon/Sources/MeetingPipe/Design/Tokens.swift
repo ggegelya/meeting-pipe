@@ -28,13 +28,16 @@ enum MPColors {
     static let signal100 = NSColor(srgbRed: 0xDC/255.0, green: 0xF1/255.0, blue: 0xEF/255.0, alpha: 1)
 
     // MARK: Pulse (recording dot - never decorative)
+    static let pulse700 = NSColor(srgbRed: 0xBE/255.0, green: 0x35/255.0, blue: 0x3A/255.0, alpha: 1) // deep coral: light-mode legible Stop label + recording/failed pill text (UX14)
     static let pulse600 = NSColor(srgbRed: 0xE5/255.0, green: 0x48/255.0, blue: 0x4D/255.0, alpha: 1)
     static let pulse500 = NSColor(srgbRed: 0xF5/255.0, green: 0x59/255.0, blue: 0x5E/255.0, alpha: 1)
     static let pulse100 = NSColor(srgbRed: 0xFF/255.0, green: 0xE4/255.0, blue: 0xE4/255.0, alpha: 1)
 
-    // MARK: Semantic states (mirror `--mp-success-*` / `--mp-warning-*` / `--mp-danger-*`). Foreground tints only - never full toast backgrounds (design rule: "Semantic states appear only in inline status rows").
+    // MARK: Semantic states (mirror `--mp-success-*` / `--mp-warning-*` / `--mp-danger-*`). Foreground tints only - never full toast backgrounds (design rule: "Semantic states appear only in inline status rows"). The `700` steps are the light-mode-legible deep variants of the `600` tones (UX14); use them as text on paper, the `600` step in dark.
+    static let success700 = NSColor(srgbRed: 0x16/255.0, green: 0x71/255.0, blue: 0x3D/255.0, alpha: 1) // light-mode legible (UX14)
     static let success600 = NSColor(srgbRed: 0x1F/255.0, green: 0x8F/255.0, blue: 0x4E/255.0, alpha: 1)
     static let success100 = NSColor(srgbRed: 0xDC/255.0, green: 0xF1/255.0, blue: 0xE2/255.0, alpha: 1)
+    static let warning700 = NSColor(srgbRed: 0x8A/255.0, green: 0x5A/255.0, blue: 0x00/255.0, alpha: 1) // light-mode legible (UX14)
     static let warning600 = NSColor(srgbRed: 0xB2/255.0, green: 0x73/255.0, blue: 0x00/255.0, alpha: 1)
     static let warning100 = NSColor(srgbRed: 0xFF/255.0, green: 0xF1/255.0, blue: 0xCC/255.0, alpha: 1)
     static let danger600  = NSColor(srgbRed: 0xC9/255.0, green: 0x2A/255.0, blue: 0x2A/255.0, alpha: 1)
@@ -47,10 +50,35 @@ enum MPColors {
     /// else at tokens while this stays a single, intentional source.
     /// Order matches the historical inline palette so speaker -> colour
     /// assignments (`palette[n % count]`) don't reshuffle.
+    /// Appearance-aware (UX14): the raw system hues fail WCAG as text on paper
+    /// (7 of 8 below 4.5:1), so light mode uses a deep variant of each hue
+    /// (>= 4.5:1 on paper) while dark mode keeps the native system colour
+    /// (already legible there). The dot and the name label both read this, so
+    /// dark mode is unchanged and light-mode speaker names become legible.
     static let speakerPalette: [NSColor] = [
-        .systemBlue, .systemPurple, .systemPink, .systemOrange,
-        .systemTeal, .systemGreen, .systemIndigo, .systemBrown,
+        MPColors.speakerHue(light: 0x1D5BC4, dark: .systemBlue),
+        MPColors.speakerHue(light: 0x7A33C2, dark: .systemPurple),
+        MPColors.speakerHue(light: 0xBC2D6B, dark: .systemPink),
+        MPColors.speakerHue(light: 0xB45309, dark: .systemOrange),
+        MPColors.speakerHue(light: 0x0E7C74, dark: .systemTeal),
+        MPColors.speakerHue(light: 0x1B7A3D, dark: .systemGreen),
+        MPColors.speakerHue(light: 0x4338CA, dark: .systemIndigo),
+        MPColors.speakerHue(light: 0x875A2C, dark: .systemBrown),
     ]
+
+    /// One categorical speaker hue: the WCAG-legible deep `light` variant on
+    /// paper, the native `dark` system colour in dark mode (UX14).
+    private static func speakerHue(light rgb: Int, dark: NSColor) -> NSColor {
+        let lightColor = NSColor(
+            srgbRed: CGFloat((rgb >> 16) & 0xFF) / 255.0,
+            green: CGFloat((rgb >> 8) & 0xFF) / 255.0,
+            blue: CGFloat(rgb & 0xFF) / 255.0,
+            alpha: 1
+        )
+        return NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil ? dark : lightColor
+        }
+    }
 
     // MARK: Workflow swatches (TECH-DSN11)
     /// Curated workflow colours: a tonal family that holds the one-teal-accent
@@ -94,6 +122,17 @@ enum MPColors {
     }
     static let fgOnSignal = NSColor.white
 
+    // MARK: Accent text - appearance-aware (UX14). The `600` accent tones fail WCAG as text on paper (signal/success ~3.95:1, warning ~3.76:1) but pass in dark; the `700` deep steps pass on paper but fail in dark. So accent *text* resolves to the deep step in light and the existing `600` step in dark, leaving dark mode unchanged. Backing the `.mpSignal` / `.mpSuccess` / `.mpWarning` Color tokens.
+    static let signalAccent = NSColor(name: "mp.signal.accent") { appearance in
+        appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil ? signal600 : signal700
+    }
+    static let successAccent = NSColor(name: "mp.success.accent") { appearance in
+        appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil ? success600 : success700
+    }
+    static let warningAccent = NSColor(name: "mp.warning.accent") { appearance in
+        appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil ? warning600 : warning700
+    }
+
     static let bg = NSColor(name: "mp.bg") { appearance in
         appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
             ? NSColor(srgbRed: 0x1A/255.0, green: 0x1B/255.0, blue: 0x1E/255.0, alpha: 1)
@@ -136,16 +175,18 @@ extension NSAppearance {
     }
 }
 
-/// SwiftUI accessors for the fixed semantic state colors (TECH-DSN3), so views
-/// use `.mpDanger` / `.mpWarning` / `.mpSuccess` / `.mpSignal` instead of the
-/// generic system `.red` / `.orange` / `.green` / `.accentColor`. These four
-/// don't auto-flip (they read on both canvases as-is), so a `static let` is safe;
-/// for fg/bg use the appearance-aware `MPColors` accessors directly.
+/// SwiftUI accessors for the semantic state colors (TECH-DSN3), so views use
+/// `.mpDanger` / `.mpWarning` / `.mpSuccess` / `.mpSignal` instead of the generic
+/// system `.red` / `.orange` / `.green` / `.accentColor`. `.mpDanger` is fixed
+/// (danger600 reads legibly on both canvases). The other three back onto the
+/// appearance-aware `*Accent` NSColors (UX14): the deep `700` step on paper, the
+/// `600` step in dark, so accent text clears WCAG in light without retuning dark.
+/// A `static let` is still safe because the dynamic NSColor resolves at draw time.
 extension Color {
     static let mpDanger  = Color(nsColor: MPColors.danger600)
-    static let mpWarning = Color(nsColor: MPColors.warning600)
-    static let mpSuccess = Color(nsColor: MPColors.success600)
-    static let mpSignal  = Color(nsColor: MPColors.signal600)
+    static let mpWarning = Color(nsColor: MPColors.warningAccent)
+    static let mpSuccess = Color(nsColor: MPColors.successAccent)
+    static let mpSignal  = Color(nsColor: MPColors.signalAccent)
     /// Library list + sidebar selection wash: a translucent signal-teal that
     /// replaces the macOS system-blue selection highlight (which the app `.tint`
     /// can't recolor). Translucent rather than the flat `signal100` token so it

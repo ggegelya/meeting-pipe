@@ -125,7 +125,7 @@ struct SummaryTab: View {
             // PRODUCT "no sparkle" rule: a plain inspect glyph, label "Candidate".
             Label("Candidate", systemImage: "doc.text.magnifyingglass")
                 .font(.headline)
-                .foregroundStyle(Color(MPColors.signal600))
+                .foregroundStyle(.mpSignal)
             SummaryRenderedView(summary: candidate)
         }
         .padding(.bottom, 8)

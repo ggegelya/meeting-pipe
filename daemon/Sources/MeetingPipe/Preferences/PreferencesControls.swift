@@ -446,7 +446,7 @@ struct SettingsHotkeyField: View {
             HStack(spacing: 6) {
                 if isCapturing {
                     Text("Press keys…")
-                        .foregroundStyle(Color(MPColors.signal600))
+                        .foregroundStyle(.mpSignal)
                         .font(.system(size: 12))
                 } else if text.isEmpty {
                     Text("Not set")

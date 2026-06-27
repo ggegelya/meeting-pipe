@@ -42,15 +42,19 @@
   --mp-signal-400: #4FC7BC;
   --mp-signal-100: #DCF1EF;     /* tinted backgrounds only */
 
-  /* Pulse -- warm coral. Reserved for the recording dot only.
+  /* Pulse, warm coral. Reserved for the recording dot only.
      Borrowed from the universal "REC" red but warmer + less alarmed. */
+  --mp-pulse-700: #BE353A;     /* deep coral: light-mode legible Stop label + recording/failed pill text (UX14) */
   --mp-pulse-600: #E5484D;
   --mp-pulse-500: #F5595E;
   --mp-pulse-100: #FFE4E4;
 
-  /* Semantic states (functional) */
+  /* Semantic states (functional). The 700 steps are the light-mode-legible deep
+     variants of the 600 tones (UX14): use as text on paper, the 600 step in dark. */
+  --mp-success-700: #16713D;   /* light-mode legible (UX14) */
   --mp-success-600: #1F8F4E;
   --mp-success-100: #DCF1E2;
+  --mp-warning-700: #8A5A00;   /* light-mode legible (UX14) */
   --mp-warning-600: #B27300;
   --mp-warning-100: #FFF1CC;
   --mp-danger-600:  #C92A2A;
