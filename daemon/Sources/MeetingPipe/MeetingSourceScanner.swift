@@ -90,8 +90,13 @@ final class MeetingSourceScanner {
             if browserBundles.contains(bid) {
                 // Requires AX trust: without it we can't read window titles to confirm a meeting tab.
                 // Natives are still enqueued without AX because they can win on audio + button signals alone.
+                // START2/AUD-3: browsers put the PAGE TITLE in the window title, never the URL, so a
+                // plain-tab Meet/Teams-web meeting is matched against the same page-title patterns the
+                // browser lifecycle adapter owns (as the PWA branch below already does), keeping the URL
+                // fragment as a bonus signal for any browser that does surface the URL in the title.
                 guard axTrusted,
-                      anyWindowMatchesMeetingFragment(pid: pid) else { continue }
+                      anyWindowMatchesMeetingTitle(pid: pid)
+                        || anyWindowMatchesMeetingFragment(pid: pid) else { continue }
                 let source = AppSource(
                     bundleID: bid,
                     displayName: app.localizedName ?? "Browser",
@@ -215,14 +220,21 @@ final class MeetingSourceScanner {
         return browserURLFragments.contains(where: { lowered.contains($0) })
     }
 
-    /// True when any AX window of `pid` matches a browser meeting-title pattern. PWA counterpart of `anyWindowMatchesMeetingFragment`: a PWA window has no URL, so it matches title patterns from the browser lifecycle adapter.
+    /// True when any AX window of `pid` matches a browser meeting-title pattern. Counterpart of `anyWindowMatchesMeetingFragment`: a browser/PWA window carries the page title, not the URL, so it matches title patterns from the browser lifecycle adapter. Used for both Chromium PWAs and (START2/AUD-3) plain browser tabs.
     private func anyWindowMatchesMeetingTitle(pid: pid_t) -> Bool {
         guard let titles = MeetingSourceScanner.collectAXWindowTitles(pid: pid) else {
             return false
         }
-        return titles.contains { title in
-            BrowserMeetingLifecycleAdapter.defaultTitleMatchers.contains { $0(title) }
-        }
+        return titles.contains { MeetingSourceScanner.browserWindowIndicatesMeeting(title: $0) }
+    }
+
+    /// True when a browser/PWA window `title` looks like an active meeting. Pure (no AX), so the
+    /// browser-discovery contract is unit-testable. START2/AUD-3: browsers put the page title, never
+    /// the URL, in the window title, so a plain-tab Meet/Teams-web meeting is admitted by these
+    /// patterns rather than the URL fragment. Shares the browser lifecycle adapter's matchers so
+    /// discovery and end-detection agree on what a meeting window looks like.
+    static func browserWindowIndicatesMeeting(title: String) -> Bool {
+        BrowserMeetingLifecycleAdapter.defaultTitleMatchers.contains { $0(title) }
     }
 
     // MARK: Window-title recognizer
