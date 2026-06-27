@@ -67,6 +67,37 @@ final class PromotionEngineTests: XCTestCase {
         )
     }
 
+    func test_lone_ax_leave_during_starting_holds_engine_live() {
+        // START1/AUD-1: while the prompt is up (engine in `.starting`), a bare Leave-button
+        // invalidation is the Teams compact-window re-render artifact, not a real end. It must
+        // NOT drive the engine to a terminal `.ended` (which then absorbs every later signal and
+        // wedges detection). The engine holds in `.starting`, so a Record press still arms it.
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        let held = engine.ingest(event(.axLeaveButton, .ended, at: 1))
+        XCTAssertNil(held, "A lone ax-leave end during `.starting` is held, not promoted to `.ended`")
+        // Engine is still live: confirming the recorder promotes to `.inMeeting`.
+        let confirmed = engine.confirmRecording()
+        XCTAssertEqual(confirmed?.verdict, .inMeeting(context: teamsContext))
+    }
+
+    func test_ax_leave_held_in_starting_does_not_block_a_reliable_end() {
+        // A genuine pre-record end still terminates: the held ax-leave does not stop a reliable
+        // signal (window-gone) from ending directly, so a slow prompt over a meeting that really
+        // ended is still torn down.
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        XCTAssertNil(engine.ingest(event(.axLeaveButton, .ended, at: 1)))
+        let decision = engine.ingest(event(.shareableContentWindow, .ended, at: 2))
+        XCTAssertEqual(
+            decision?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "shareable_content_window_gone")
+            )
+        )
+    }
+
     func test_first_ended_signal_promotes_to_ending_provisional() {
         let engine = PromotionEngine()
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))

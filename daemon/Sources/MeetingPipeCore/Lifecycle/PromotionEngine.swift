@@ -185,6 +185,19 @@ public final class PromotionEngine {
             phase = .starting(context: context, observed: observed)
             return nil
         case .ended:
+            // START1/AUD-1: a staleness-prone signal (ax-leave) must not single-handedly end a
+            // meeting that has not started recording yet. The Teams compact/mini-window swap
+            // invalidates the Leave button on a re-render; honoring it here drove the engine to a
+            // terminal `.ended` while the prompt was still up, after which it absorbed every later
+            // signal and the genuine end never produced a verdict (the prompt/suppression wedge).
+            // Mirror the `tick()` corroboration rule: hold a lone, uncorroborated ax-leave in
+            // `.starting` so the engine stays live. A later Record press still arms via
+            // `confirmRecording`, discovery is never wedged, and the prompt's own timeout/Skip is
+            // the bound on the held state. A reliable signal (window-gone, app-terminated,
+            // title-left) keeps `requiresCorroboration == false` and still ends directly.
+            if event.kind.requiresCorroboration {
+                return nil
+            }
             // Meeting ended before the recorder armed (slow prompt, stale discovery scan). End directly.
             let reason = EndingReason(leadingSignal: event.kind.rawValue, confirmedBy: [])
             phase = .ended(context: context)
