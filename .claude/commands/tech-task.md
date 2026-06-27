@@ -1,10 +1,10 @@
 ---
-description: Implement a TECH-* task from the active backlog, one task per session, one commit
+description: Implement a backlog task from the active backlog, one task per session, one commit
 ---
 
 You're picking up a single backlog task: $ARGUMENTS
 
-1. Read the task definition from the active backlog: the highest-numbered `docs/backlog/meetingpipe-q<N>-backlog.md` (currently `docs/backlog/meetingpipe-q4-backlog.md`; earlier quarters are archived beside it). The task ID format is `TECH-<letter><number>` (e.g. `TECH-E5`). Search for the line starting with `**TECH-...` matching the ID. If you can't find it, stop and tell me.
+1. Read the task definition from the active backlog: the highest-numbered `docs/backlog/meetingpipe-q<N>-backlog.md` (currently `docs/backlog/meetingpipe-q4-backlog.md`; earlier quarters are archived beside it). The task ID format is `<letter><number>` (e.g. `E5`); ids no longer carry the `TECH-` prefix, so strip a legacy `TECH-` if the argument includes one. Search for the line starting with `**<ID>` matching the ID. If you can't find it, stop and tell me.
 2. Read the orientation docs the task touches:
    - [`CLAUDE.md`](CLAUDE.md) at the repo root for git workflow, verification, and conventions worth knowing.
    - [`ARCHITECTURE.md`](ARCHITECTURE.md) for the subsystem map.
@@ -18,10 +18,10 @@ You're picking up a single backlog task: $ARGUMENTS
    - **Swift edits:** `cd daemon && swift build` and (with full Xcode) `swift test`.
    - **Python edits:** `cd pipeline && uv run --extra dev ruff check src tests` and `uv run --extra dev pytest -q`.
    - Update README.md if user-visible behaviour or contracts changed.
-7. Mark the task `[DONE]` in the active backlog file (prefix the `**TECH-...` line; keep the trail, don't delete).
+7. Mark the task `[DONE]` in the active backlog file (prefix the `**<ID>...` line; keep the trail, don't delete).
 8. Commit on `main` (no branch) using the repository's configured git identity:
    ```bash
-   git commit -m "TECH-<ID>: <short summary>"
+   git commit -m "<ID>: <short summary>"
    ```
    One logical commit. Don't push.
 9. Summarise: changed files, decisions that weren't in the spec, anything I'd want to know that the diff doesn't show.

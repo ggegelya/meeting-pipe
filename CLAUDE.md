@@ -21,7 +21,7 @@ Personal macOS product (single-user, not for sale). Two trees:
 | `daemon/CLAUDE.md` | Auto-loads when you touch Swift. Short Swift-specific gotchas. |
 | `pipeline/CLAUDE.md` | Auto-loads when you touch Python. Short Python-specific gotchas. |
 
-The active backlog lives in [`docs/backlog/`](./docs/backlog/): the highest-numbered `meetingpipe-q<N>-backlog.md` (currently `meetingpipe-q4-backlog.md`; earlier quarters are archived beside it). Task IDs look like `TECH-E5`. The `/tech-task TECH-<ID>` slash command is the codified delegation contract.
+The active backlog lives in [`docs/backlog/`](./docs/backlog/): the highest-numbered `meetingpipe-q<N>-backlog.md` (currently `meetingpipe-q4-backlog.md`; earlier quarters are archived beside it). Task IDs look like `E5` (no `TECH-` prefix; historical code/ADR references keep the old `TECH-` form as provenance). The `/tech-task <ID>` slash command is the codified delegation contract.
 
 ## Verify before declaring done
 
@@ -40,7 +40,7 @@ CI enforces ruff strictly (any F401 unused import fails). Run ruff locally befor
 
 - Commit with the repository's configured git identity (`git config user.name` / `user.email`). Do not hardcode a personal name or email in commits, code, or docs.
 - Work directly on `main`. One logical change per commit. **Do not push** unless asked.
-- Backlog-task commits: subject `TECH-<ID>: <short summary>`. Other commits follow `fix(scope): …` / `feat(scope): …` / `chore(scope): …` — match the existing style for the kind of change.
+- Backlog-task commits: subject `<ID>: <short summary>` (e.g. `FEAT3-ROSTER: ...`). Other commits follow `fix(scope): …` / `feat(scope): …` / `chore(scope): …`. Match the existing style for the kind of change.
 - **No em-dashes** in any output (code, commits, docs). Hyphens, commas, or rewrite. Match the existing style of files you don't touch.
 - Don't add dependencies without asking first.
 
