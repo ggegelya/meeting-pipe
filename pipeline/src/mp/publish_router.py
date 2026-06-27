@@ -126,6 +126,11 @@ def fanout(
     summary = MeetingSummary.model_validate_json(
         summary_json.read_text(encoding="utf-8")
     )
+    # Apply the daemon-extracted meeting title to every sink, not just Notion
+    # (PIPE2/AUD-15). Lazy import mirrors `_build_one`'s convention and avoids a
+    # publish_router <-> publish_notion import cycle.
+    from .publish_notion import apply_meeting_title
+    summary = apply_meeting_title(summary, summary_json)
     stem = summary_json.name.removesuffix(".summary.json")
     base = summary_json.parent
 

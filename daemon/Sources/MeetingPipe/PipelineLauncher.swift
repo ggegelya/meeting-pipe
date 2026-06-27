@@ -195,14 +195,16 @@ final class PipelineLauncher: PipelineDriver {
         }
     }
 
-    /// Spawn `mp publish-notion <summary.json>` and return the resulting page URL (from `<stem>.notion.json`).
+    /// Spawn `mp publish <summary.json>` (the fanout) and return the resulting page URL (from `<stem>.notion.json`).
+    /// Routing republish through the fanout (PIPE2/AUD-15) means an obsidian-only or other non-Notion workflow
+    /// reaches its configured sinks instead of always getting a Notion page; the page URL is nil when Notion is not a sink.
     /// Never sets `MP_FORCE_BYO` - publish is identical regardless of how the summary was produced.
-    /// Publish is far quicker than transcribe + summarize; 10 min is generous headroom for Notion's API on a slow link.
+    /// Publish is far quicker than transcribe + summarize; 10 min is generous headroom for the sinks on a slow link.
     func publish(
         summaryJSON: URL,
         completion: @escaping (Result<URL?, Error>) -> Void
     ) {
-        runMP(["publish-notion", summaryJSON.path], timeout: 10 * 60, meeting: summaryJSON) { result in
+        runMP(["publish", summaryJSON.path], timeout: 10 * 60, meeting: summaryJSON) { result in
             switch result {
             case .failure(let error):
                 completion(.failure(error))

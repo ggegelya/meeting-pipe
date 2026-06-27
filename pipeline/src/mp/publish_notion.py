@@ -102,6 +102,21 @@ class NotionRestPublisher:
         return {"page_id": page_id, "page_url": page_url, "idempotent": idempotent}
 
 
+def apply_meeting_title(summary: MeetingSummary, summary_json: Path) -> MeetingSummary:
+    """Prefer the meeting name the daemon extracted at recording-start time
+    (Zoom topic, Calendar event behind a Meet link, Slack channel) over the
+    LLM-derived title, so every sink shows the same title. Falls back to
+    `summary.title` when `<stem>.meta.json` is absent or carries no title; older
+    recordings stay unaffected. Shared by the legacy `publish()` path and the
+    `publish_router.fanout` path so the two no longer diverge (PIPE2/AUD-15)."""
+    meta = _load_meta_sidecar(summary_json)
+    if meta:
+        meeting_title = (meta.get("meeting_title") or "").strip()
+        if meeting_title:
+            return summary.model_copy(update={"title": meeting_title[:120]})
+    return summary
+
+
 def publish(
     summary_json: Path,
     cfg: Config | None = None,
@@ -146,15 +161,9 @@ def publish(
         candidate = summary_json.parent / f"{stem}.md"
         transcript_md = candidate if candidate.exists() else None
 
-    # Prefer the meeting name extracted by the daemon at recording-start
-    # time (Zoom topic, Calendar event behind a Meet link, Slack channel,
-    # etc.) over the LLM-derived title. Falls back to summary.title when
-    # the sidecar is absent or empty — older recordings stay unaffected.
-    meta = _load_meta_sidecar(summary_json)
-    if meta:
-        meeting_title = (meta.get("meeting_title") or "").strip()
-        if meeting_title:
-            summary = summary.model_copy(update={"title": meeting_title[:120]})
+    # Prefer the daemon-extracted meeting name over the LLM title, via the
+    # shared helper so the fanout path applies it identically (PIPE2/AUD-15).
+    summary = apply_meeting_title(summary, summary_json)
 
     sidecar = _sidecar_path(summary_json)
 

@@ -92,6 +92,53 @@ def test_fanout_empty_publisher_list_returns_local_only(tmp_path: Path) -> None:
     assert res["sinks"] == {}
 
 
+# ----- meeting-title override (PIPE2/AUD-15) -----
+
+class _TitleSpy:
+    """Captures the title each sink actually receives."""
+
+    def __init__(self, name: str = "obsidian") -> None:
+        self.name = name
+        self.titles: list[str] = []
+
+    def upsert(self, *, summary: MeetingSummary, transcript_md: Path | None,
+                sidecar_path: Path) -> dict[str, Any]:
+        self.titles.append(summary.title)
+        return {"page_id": "x", "page_url": "u", "idempotent": False}
+
+
+def test_fanout_applies_meeting_title_to_every_sink(tmp_path: Path) -> None:
+    # The daemon-extracted meeting name in <stem>.meta.json must reach every
+    # sink, not just Notion, so republish/paste routed through the fanout shows
+    # the real meeting name on Obsidian etc. (PIPE2/AUD-15).
+    cfg = Config()
+    summary_json = tmp_path / "20260506-1500.summary.json"
+    _write_summary_json(summary_json)  # title == "Standup"
+    (tmp_path / "20260506-1500.meta.json").write_text(
+        '{"meeting_title": "Q3 Planning"}', encoding="utf-8"
+    )
+    spy = _TitleSpy()
+    fanout(summary_json=summary_json, cfg=cfg, transcript_md=None, publishers=[spy])
+    assert spy.titles == ["Q3 Planning"]
+
+
+def test_apply_meeting_title_branches(tmp_path: Path) -> None:
+    from mp.publish_notion import apply_meeting_title
+
+    summary_json = tmp_path / "x.summary.json"
+    _write_summary_json(summary_json)
+    s = _summary()  # title == "Standup"
+
+    # No sidecar: title unchanged.
+    assert apply_meeting_title(s, summary_json).title == "Standup"
+    # A real title overrides.
+    (tmp_path / "x.meta.json").write_text('{"meeting_title": "Quarterly Review"}', encoding="utf-8")
+    assert apply_meeting_title(s, summary_json).title == "Quarterly Review"
+    # A blank title falls back to the summary's own.
+    (tmp_path / "x.meta.json").write_text('{"meeting_title": "  "}', encoding="utf-8")
+    assert apply_meeting_title(s, summary_json).title == "Standup"
+
+
 # ----- build_publishers -----
 
 def test_build_publishers_unknown_name_raises() -> None:

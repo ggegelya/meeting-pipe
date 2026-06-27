@@ -214,3 +214,31 @@ def test_publish_from_paste_regulated_mode_preserves_user_md(tmp_path, monkeypat
     # means "nothing on disk gets rewritten without an explicit user
     # action".
     assert not (tmp_path / "20260430-1500.summary.json").exists()
+
+
+def test_publish_from_paste_routes_through_fanout(tmp_path, monkeypatch):
+    """PIPE2/AUD-15: a BYO paste must fan out to the configured sinks via
+    publish_router.fanout, not call Notion directly, so an obsidian-only
+    workflow reaches Obsidian instead of always getting a Notion page."""
+    transcript = tmp_path / "20260430-1500.md"
+    transcript.write_text("# Transcript\n", encoding="utf-8")
+    summary_md = tmp_path / "20260430-1500.summary.md"
+    summary_md.write_text(_summary_md_canonical(), encoding="utf-8")
+
+    cfg = Config()
+    cfg.output.sinks = ["obsidian"]  # deliberately not Notion
+
+    calls: dict = {}
+
+    def fake_fanout(*, summary_json, cfg, transcript_md):
+        calls["summary_json"] = summary_json
+        return {"page_id": None, "page_url": None, "sinks": {"obsidian": {"ok": True}}}
+
+    monkeypatch.setattr("mp.publish_from_paste.fanout", fake_fanout)
+
+    result = publish_from_paste(transcript, cfg=cfg)
+
+    # Routed through the fanout (not publish_notion.publish) with the canonical
+    # summary json the paste wrote.
+    assert calls["summary_json"] == tmp_path / "20260430-1500.summary.json"
+    assert result["sinks"]["obsidian"]["ok"] is True
