@@ -342,13 +342,25 @@ struct LibraryRootView: View {
                     onCreateWorkflow: { isCreatingWorkflow = true }
                 )
             } content: {
-                LibraryListView(
-                    store: meetingStore,
-                    libraryModel: model,
-                    scope: scope,
-                    workflows: store.workflows,
-                    selection: $meetingSelection
-                )
+                Group {
+                    if case .facts = scope {
+                        // The facts projection takes the center column (DV1):
+                        // its rows are facts, not meetings, and "open" navigates
+                        // back to All Meetings with the source row selected.
+                        FactsView(store: meetingStore) { stem in
+                            scope = .allMeetings
+                            meetingSelection = [stem]
+                        }
+                    } else {
+                        LibraryListView(
+                            store: meetingStore,
+                            libraryModel: model,
+                            scope: scope,
+                            workflows: store.workflows,
+                            selection: $meetingSelection
+                        )
+                    }
+                }
                 // Floor the center column so the status pill + date can't be
                 // squeezed off the row edge when the window or columns narrow.
                 .navigationSplitViewColumnWidth(min: LibraryLayout.listMinWidth, ideal: LibraryLayout.listIdealWidth)
@@ -396,7 +408,20 @@ struct LibraryRootView: View {
     @ViewBuilder
     private func detailPane(workflowStore store: WorkflowStore) -> some View {
         let selected = model.meetingStore.meetings.filter { meetingSelection.contains($0.id) }
-        if selected.count > 1 {
+        if case .facts = scope {
+            // Facts owns the center column; the detail stays a quiet hint (a row's
+            // "open" jumps to All Meetings, which re-renders this pane normally).
+            VStack(spacing: 8) {
+                Image(systemName: "list.bullet.rectangle")
+                    .font(.system(size: 36))
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+                Text("Open actions and recent decisions across your meetings.")
+                    .foregroundStyle(Color(MPColors.fgMuted))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 260)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if selected.count > 1 {
             BatchActionsPane(meetings: selected, libraryModel: model)
         } else if let only = selected.first {
             MeetingDetailView(meeting: only)

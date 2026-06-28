@@ -70,8 +70,10 @@ struct LibrarySidebar: View {
     }
 
     /// Non-workflow scopes shown in the Library section, in display order.
+    /// `.facts` sits last: a cross-meeting projection set apart from the
+    /// date/status filters above it (DV1).
     static let librarySections: [LibraryScope] = [
-        .allMeetings, .today, .last7Days, .last30Days, .needsYou, .ndaOnly, .untagged,
+        .allMeetings, .today, .last7Days, .last30Days, .needsYou, .ndaOnly, .untagged, .facts,
     ]
 }
 
@@ -100,6 +102,7 @@ struct ScopeCounts: Equatable {
         case .needsYou:    return needsYou
         case .ndaOnly:     return nda
         case .untagged:    return untagged
+        case .facts:       return 0   // a view, not a counted subset
         case .workflow(let id): return perWorkflow[id] ?? 0
         }
     }
@@ -156,12 +159,20 @@ private struct LibraryScopeRow: View {
         return false
     }
 
+    /// `.facts` is a view, not a counted subset, so it shows no trailing count (DV1).
+    private var showsCount: Bool {
+        if case .facts = scope { return false }
+        return true
+    }
+
     var body: some View {
         Label {
             HStack(spacing: 6) {
                 Text(scope.title)
                 Spacer(minLength: 0)
-                if isAttention {
+                if !showsCount {
+                    EmptyView()
+                } else if isAttention {
                     Text(count.formatted(.number))
                         .font(.system(size: 10, weight: .semibold).monospacedDigit())
                         .foregroundStyle(.white)

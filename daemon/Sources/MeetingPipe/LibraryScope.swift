@@ -9,6 +9,10 @@ enum LibraryScope: Hashable {
     case needsYou
     case ndaOnly
     case untagged
+    /// Cross-meeting facts projection (DV1): a read-only aggregate of open
+    /// actions + recent decisions across the whole library, rendered in its own
+    /// view rather than filtering the meeting list (`includes` returns false).
+    case facts
     case workflow(Workflow.ID)
 
     /// Rail row label and list header.
@@ -21,6 +25,7 @@ enum LibraryScope: Hashable {
         case .needsYou:    return "Needs you"
         case .ndaOnly:     return "NDA only"
         case .untagged:    return "Untagged"
+        case .facts:       return "Facts"
         case .workflow:    return ""   // resolved at render time via the store
         }
     }
@@ -33,6 +38,7 @@ enum LibraryScope: Hashable {
         case .needsYou:    return "bell"
         case .ndaOnly:     return "lock"
         case .untagged:    return "tag"
+        case .facts:       return "list.bullet.rectangle"
         case .workflow:    return nil
         }
     }
@@ -81,6 +87,10 @@ enum LibraryScope: Hashable {
             return Self.resolveWorkflow(for: meeting, in: workflows)?.flags.ndaMode == true
         case .untagged:
             return (meeting.workflowName?.isEmpty ?? true)
+        case .facts:
+            // Not a list filter: the facts view aggregates across the whole
+            // library in its own column, so no meeting "belongs" to this scope.
+            return false
         case .workflow(let id):
             return Self.resolveWorkflow(for: meeting, in: workflows)?.id == id
         }
