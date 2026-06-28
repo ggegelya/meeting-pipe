@@ -330,6 +330,27 @@ final class MeetingSessionController {
         }
     }
 
+    /// Which "remote audio is missing" warning a finished recording warrants (REC4 / AUD-13).
+    enum RemoteAudioWarning: Equatable {
+        case none
+        /// No system-audio frame ever arrived: the whole recording is mic-only
+        /// (Screen Recording denied, or the SCStream never started).
+        case micOnly
+        /// System audio was captured, then the SCStream died mid-meeting and did not
+        /// recover: the remote side is absent from the death point on.
+        case interrupted
+    }
+
+    /// Pure coverage gate over the recorder's stop-time snapshot. Lifted out so it is
+    /// unit-testable without the controller (like `startFailureReason`). A never-started
+    /// capture takes precedence over a mid-meeting death (frames == 0 is the stronger,
+    /// whole-recording signal).
+    static func remoteAudioWarning(systemFires: UInt64, degraded: Bool) -> RemoteAudioWarning {
+        if systemFires == 0 { return .micOnly }
+        if degraded { return .interrupted }
+        return .none
+    }
+
     func stopRecording(file: URL, source: AppSource?, summaryMode: SummaryMode) {
         coordinator.stateMachine.setStopping(file: file, source: source, summaryMode: summaryMode)
         coordinator.statusBar.setStopping()
@@ -356,17 +377,24 @@ final class MeetingSessionController {
                 "produced_final": producedUsableFinal,
             ])
             if producedUsableFinal {
-                // Zero system-audio frames = lost the other side of the call;
-                // always surface it. (A prior gate also required
-                // `permissionState == .denied` and silently dropped the warning
-                // when `.unknown`, the mic-only loss reported on May 5.) The
-                // notifier shows "Open Settings" only when a perm change helps.
-                if recorder.lastSystemFires == 0 {
+                // Surface a missing-remote-side recording. Zero frames = the whole call was
+                // mic-only (Screen Recording denied; the notifier shows "Open Settings" only
+                // when a perm change helps). A mid-meeting SCStream death (frames > 0 but
+                // degraded) is a partial loss the old `== 0` gate never caught (REC4 / AUD-13).
+                switch MeetingSessionController.remoteAudioWarning(
+                    systemFires: recorder.lastSystemFires,
+                    degraded: recorder.lastSystemDegraded
+                ) {
+                case .micOnly:
                     let perm = SystemAudioCapture.permissionState
                     self.coordinator.notifier.notifyMicOnlyRecording(file: file, permissionState: perm)
                     if perm == .denied || perm == .unknown {
                         self.coordinator.statusBar.refreshMenuForPermissionChange()
                     }
+                case .interrupted:
+                    self.coordinator.notifier.notifyRemoteAudioInterrupted(file: file)
+                case .none:
+                    break
                 }
                 self.writeMetaSidecar(file: file, source: source)
                 self.coordinator.notifier.notifyProcessing(file: file)

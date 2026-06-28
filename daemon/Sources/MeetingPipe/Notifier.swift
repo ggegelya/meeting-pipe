@@ -193,6 +193,19 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(req)
     }
 
+    /// The system-audio (SCStream) capture died part-way through a recording and did not
+    /// recover, so the call's remote side is missing from that point on (REC4 / AUD-13).
+    /// Distinct from `notifyMicOnlyRecording`, which is the whole-recording mic-only case
+    /// ("only your voice was captured" would be wrong here: the first part had both sides).
+    func notifyRemoteAudioInterrupted(file: URL) {
+        let content = UNMutableNotificationContent()
+        content.title = "System audio interrupted"
+        content.body = "The other side of the call stopped being captured part-way through, so the recording is mic-only from that point. See ~/Library/Logs/MeetingPipe/recorder.log for SCStream errors."
+        content.sound = .default
+        let req = UNNotificationRequest(identifier: "sysaudio-interrupted-\(file.lastPathComponent)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
     /// Posted when a mid-recording input device change was recovered; capture continued with a short silent gap.
     func notifyCaptureRecovered() {
         post(

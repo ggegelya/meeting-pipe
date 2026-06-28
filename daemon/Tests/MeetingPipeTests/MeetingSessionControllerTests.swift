@@ -36,4 +36,34 @@ final class MeetingSessionControllerTests: XCTestCase {
             "other"
         )
     }
+
+    // REC4: pins the pure stop-time coverage gate. A mid-meeting SCStream death
+    // (frames > 0 but degraded) must now warn, where the old `frames == 0` gate
+    // stayed silent; a never-started capture still reads as the whole-recording
+    // mic-only case, taking precedence over the degraded flag.
+    func test_remoteAudioWarning_never_started_is_mic_only() {
+        XCTAssertEqual(
+            MeetingSessionController.remoteAudioWarning(systemFires: 0, degraded: false),
+            .micOnly
+        )
+        XCTAssertEqual(
+            MeetingSessionController.remoteAudioWarning(systemFires: 0, degraded: true),
+            .micOnly,
+            "frames == 0 is the stronger whole-recording signal and wins over degraded"
+        )
+    }
+
+    func test_remoteAudioWarning_midmeeting_death_is_interrupted() {
+        XCTAssertEqual(
+            MeetingSessionController.remoteAudioWarning(systemFires: 5000, degraded: true),
+            .interrupted
+        )
+    }
+
+    func test_remoteAudioWarning_healthy_capture_does_not_warn() {
+        XCTAssertEqual(
+            MeetingSessionController.remoteAudioWarning(systemFires: 5000, degraded: false),
+            MeetingSessionController.RemoteAudioWarning.none
+        )
+    }
 }

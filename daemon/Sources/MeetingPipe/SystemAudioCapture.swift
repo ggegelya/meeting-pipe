@@ -11,6 +11,10 @@ import ScreenCaptureKit
 final class SystemAudioCapture: NSObject {
     /// Called on a background queue with PCM samples (48 kHz stereo Float32).
     private let onBuffer: (AVAudioPCMBuffer) -> Void
+    /// Called (on the SCStream delegate queue) when the stream dies mid-capture
+    /// (`didStopWithError`). The recorder surfaces the loss and re-enables retry from here
+    /// (REC4 / AUD-13). The String is the failure reason.
+    var onStopWithError: ((String) -> Void)?
     private var stream: SCStream?
     private let sampleQueue = DispatchQueue(label: "com.meetingpipe.sysaudio")
 
@@ -209,6 +213,9 @@ extension SystemAudioCapture: SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         Log.recorder.error("SCStream stopped with error: \(error.localizedDescription)")
         Log.writeLine("recorder", "SCStream error: \(error.localizedDescription)")
+        // Don't just log: a mid-recording death otherwise leaves the remote side silently
+        // absent with no banner / no working retry / no stop-time warning (REC4 / AUD-13).
+        onStopWithError?(error.localizedDescription)
     }
 
     /// Convert a CMSampleBuffer to AVAudioPCMBuffer. SCStream delivers Float32

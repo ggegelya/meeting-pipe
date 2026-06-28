@@ -110,6 +110,14 @@ final class MeetingRecorder {
     private let tapLivenessMonitor = MicTapLivenessMonitor()
     private var tapLivenessTimer: DispatchSourceTimer?
 
+    /// System-audio (SCStream) liveness watchdog (REC4 / AUD-13). SCStream delivers audio
+    /// buffers continuously while alive, so a `systemFires` stall while a capture is
+    /// supposed to be live is a silent stream death that delivered no `didStopWithError`.
+    /// Reuses the generic counter-stall monitor; ~1 Hz main-queue timer, torn down at stop.
+    /// A longer window than the mic tap because the SCStream spin-up can be a beat slower.
+    private let systemLivenessMonitor = MicTapLivenessMonitor(stallAfterSeconds: 3.0)
+    private var systemLivenessTimer: DispatchSourceTimer?
+
     /// Outcome of reacting to a mid-recording input device change.
     enum CaptureRecoveryOutcome {
         case resumed
@@ -184,6 +192,13 @@ final class MeetingRecorder {
     private(set) var lastMicFires: UInt64 = 0
     private(set) var lastSystemFires: UInt64 = 0
 
+    /// True once the system-audio channel was torn down by a failed start or a
+    /// mid-meeting death and not recovered (REC4 / AUD-13). Snapshotted into
+    /// `lastSystemDegraded` at `stop()` so the stop-time warning fires on a stream that
+    /// died part-way (`lastSystemFires > 0`), not only on a never-started one.
+    private var systemDegraded = false
+    private(set) var lastSystemDegraded = false
+
     var isRecording: Bool { currentFile != nil }
 
     enum RecorderError: Error, LocalizedError {
@@ -227,6 +242,7 @@ final class MeetingRecorder {
         muteTimeline = MuteTimeline()
         lastMicFires = 0
         lastSystemFires = 0
+        systemDegraded = false
         micAccumSumSq = 0
         micAccumFrames = 0
         systemAccumSumSq = 0
@@ -360,6 +376,7 @@ final class MeetingRecorder {
         Log.recorder.info("recorder started → \(finalURL.path)")
         Log.writeLine("recorder", "recorder started → \(finalURL.path)")
         startTapLivenessWatchdog()
+        startSystemLivenessWatchdog()
         return finalURL
     }
 
@@ -446,6 +463,14 @@ final class MeetingRecorder {
                 callback: self.onSystemLevel
             )
         }
+        // A mid-recording SCStream death (delegate `didStopWithError`) used to only log,
+        // so the remote side went silently absent from that point with no banner, no
+        // working retry, and no stop-time warning (REC4 / AUD-13). Surface it: hop to main
+        // (off the delegate stack, so clearing `systemCapture` doesn't release the stream
+        // under its own callback) and route it through the same path as the watchdog.
+        capture.onStopWithError = { [weak self] reason in
+            DispatchQueue.main.async { self?.handleSystemAudioLost(reason: reason) }
+        }
         self.systemCapture = capture
         // Track the Task so stop() can await it; otherwise a fast stop()
         // races the in-flight start and orphans the SCStream.
@@ -453,6 +478,8 @@ final class MeetingRecorder {
             do {
                 try await capture.start()
                 Log.writeLine("recorder", "SCStream started")
+                // Healthy (re)start: the system channel covers the recording from here.
+                self?.systemDegraded = false
                 if isRetry {
                     // Capture the callback value (not self) so the main-queue
                     // hop doesn't re-capture the non-Sendable recorder.
@@ -465,6 +492,7 @@ final class MeetingRecorder {
                 self?.systemCapture = nil
                 self?.systemFile = nil
                 self?.systemWriter = nil
+                self?.systemDegraded = true
                 try? FileManager.default.removeItem(at: systemURL)
                 let reason = error.localizedDescription
                 let degraded = self?.onSystemAudioDegraded
@@ -482,6 +510,54 @@ final class MeetingRecorder {
         guard isRecording, systemCapture == nil, let systemURL = systemURL else { return }
         Log.writeLine("recorder", "retrying system audio capture")
         startSystemCapture(systemURL: systemURL, isRetry: true)
+    }
+
+    /// React to a mid-recording loss of the system-audio stream - a delivered
+    /// `didStopWithError`, or a silent stall the watchdog caught. Tear the dead SCStream
+    /// down so `retrySystemAudio()` can re-arm it (the stale non-nil `systemCapture` was why
+    /// retry no-oped after a death), flag the recording system-degraded for the stop-time
+    /// coverage warning, and surface the degraded banner. The partial `system.wav` is left
+    /// on disk so a no-retry stop still merges what was captured. Main-thread only;
+    /// idempotent (a second trigger finds `systemCapture` already nil). REC4 / AUD-13.
+    private func handleSystemAudioLost(reason: String) {
+        guard isRecording, systemCapture != nil else { return }
+        Log.writeLine("recorder", "system audio lost mid-recording (\(reason)); banner + retry now live")
+        Log.event(category: "recorder", action: "system_capture_lost", attributes: [
+            "reason": reason,
+            "system_fires": Int(systemFires),
+        ])
+        systemCapture = nil
+        systemDegraded = true
+        onSystemAudioDegraded?(reason)
+    }
+
+    // MARK: - System audio liveness watchdog (REC4)
+
+    /// Start the ~1 Hz watchdog that catches a silent SCStream death (one that delivered no
+    /// `didStopWithError`). Re-baselines to the current counter; cancelled in `stop()`.
+    private func startSystemLivenessWatchdog() {
+        systemLivenessMonitor.reset(count: systemFires)
+        systemLivenessTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 1.0, repeating: 1.0)
+        timer.setEventHandler { [weak self] in self?.checkSystemLiveness() }
+        systemLivenessTimer = timer
+        timer.resume()
+    }
+
+    /// One watchdog tick: if a system capture is supposed to be live but its buffer counter
+    /// has stalled, treat it as a mid-meeting death. Only engages once the stream has
+    /// delivered at least one buffer, so the SCStream spin-up (and a denied / mic-only
+    /// recording, where `systemCapture` is nil) never false-positives. On main.
+    private func checkSystemLiveness() {
+        guard isRecording, systemCapture != nil, systemFires > 0 else { return }
+        guard systemLivenessMonitor.sample(count: systemFires) else { return }
+        Log.event(category: "recorder", action: "system_capture_stall_detected", attributes: [
+            "system_fires": Int(systemFires),
+            "stall_after_s": systemLivenessMonitor.stallAfter,
+        ])
+        Log.writeLine("recorder", "system audio stalled with no didStopWithError - treating as mid-meeting death")
+        handleSystemAudioLost(reason: "system_capture_stalled")
     }
 
     // MARK: - Mic tap
@@ -936,13 +1012,16 @@ final class MeetingRecorder {
         self.startedAt = nil
         self.lastMicFires = micFires
         self.lastSystemFires = systemFires
+        self.lastSystemDegraded = systemDegraded
         self.micFires = 0
         self.systemFires = 0
 
-        // Stop the tap-liveness watchdog before teardown so it can't re-arm a
-        // recorder that is shutting down.
+        // Stop the tap-liveness + system-liveness watchdogs before teardown so neither
+        // can re-arm or re-surface a recorder that is shutting down.
         tapLivenessTimer?.cancel()
         tapLivenessTimer = nil
+        systemLivenessTimer?.cancel()
+        systemLivenessTimer = nil
 
         // Await the SCStream start before teardown, else we stop() a stream
         // that hasn't fully started and orphan it. Bounded so a stuck start
@@ -1141,6 +1220,8 @@ final class MeetingRecorder {
 
         tapLivenessTimer?.cancel()
         tapLivenessTimer = nil
+        systemLivenessTimer?.cancel()
+        systemLivenessTimer = nil
         if let observer = configChangeObserver {
             NotificationCenter.default.removeObserver(observer)
             configChangeObserver = nil
