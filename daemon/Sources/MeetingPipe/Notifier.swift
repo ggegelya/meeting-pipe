@@ -127,6 +127,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(req)
     }
 
+    /// A run that finished but intentionally produced no summary: no speech, or a
+    /// transcript that looked unreliable (PIPE3 / AUD-16a). An honest, quiet
+    /// terminal banner with no correction action and no Notion, replacing the
+    /// misleading "Local Markdown ready (regulated mode)" the generic done path
+    /// posted for these (the recording was neither regulated nor summarized).
+    func notifyEmptySkip(reason: EmptyReason) {
+        post(title: reason.notificationTitle, body: reason.notificationBody)
+    }
+
     /// True when `<stem>.run.json` exists (pipeline produced a gradeable summary). Skipped paths (no_speech, byo, too_long) never write the run sidecar, so the correction action is correctly disabled for them.
     private static func canCorrect(stem: String?, recordingsDir: URL?) -> Bool {
         guard let stem = stem, let dir = recordingsDir else { return false }

@@ -36,6 +36,20 @@ final class PipelineFailureSidecarTests: XCTestCase {
         XCTAssertEqual(PipelineFailureSidecar.Stage.transcribe.displayName, "Transcription")
         XCTAssertEqual(PipelineFailureSidecar.Stage.pipeline.displayName, "Summarize and publish")
         XCTAssertEqual(PipelineFailureSidecar.Stage.launch.displayName, "Pipeline launch")
+        XCTAssertEqual(PipelineFailureSidecar.Stage.interrupted.displayName, "Interrupted")
+    }
+
+    func test_interrupted_stage_round_trips() throws {
+        // PIPE3: the startup sweep writes `.interrupted` for a job stranded by a
+        // restart; it must read back like any other stage.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        PipelineFailureSidecar.write(
+            stem: "x", in: dir, stage: .interrupted, reason: "restarted before finishing"
+        )
+        let failure = PipelineFailureSidecar.read(stem: "x", in: dir)
+        XCTAssertEqual(failure?.stage, .interrupted)
+        XCTAssertEqual(failure?.reason, "restarted before finishing")
     }
 
     // MARK: - Write + read round-trip

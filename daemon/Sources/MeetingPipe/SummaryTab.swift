@@ -310,7 +310,7 @@ struct SummaryTab: View {
         } else if meeting.status == .manualPasteReady {
             byoPasteState
         } else if meeting.status == .empty {
-            Text("No speech was detected, so there is nothing to summarize.")
+            Text((meeting.emptyReason ?? .noSpeech).detail)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

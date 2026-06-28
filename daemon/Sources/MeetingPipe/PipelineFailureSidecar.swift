@@ -9,12 +9,14 @@ enum PipelineFailureSidecar {
         case transcribe   // FluidAudio ASR + diarization, in-process
         case pipeline     // mp run-all: summarize + publish
         case launch       // mp executable missing or could not spawn
+        case interrupted  // daemon restart stranded a queued/in-flight job (PIPE3)
 
         var displayName: String {
             switch self {
-            case .transcribe: return "Transcription"
-            case .pipeline:   return "Summarize and publish"
-            case .launch:     return "Pipeline launch"
+            case .transcribe:  return "Transcription"
+            case .pipeline:    return "Summarize and publish"
+            case .launch:      return "Pipeline launch"
+            case .interrupted: return "Interrupted"
             }
         }
     }

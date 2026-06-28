@@ -182,8 +182,8 @@ struct MeetingRow: View, Equatable {
                 MPStatusPill(kind: .ready, label: "Ready")
             }
         case (.empty, _):
-            MPStatusPill(kind: .neutral, label: "No speech")
-                .help("No speech was detected, so there is nothing to summarize.")
+            MPStatusPill(kind: .neutral, label: (meeting.emptyReason ?? .noSpeech).pillLabel)
+                .help((meeting.emptyReason ?? .noSpeech).detail)
         case (.unknown, _):
             MPStatusPill(kind: .neutral, label: "-")
         }

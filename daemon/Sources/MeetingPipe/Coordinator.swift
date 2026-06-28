@@ -226,14 +226,26 @@ final class Coordinator: NSObject {
         jobDispatcher = PipelineJobDispatcher(
             sinkDispatcher: sinkDispatcher,
             onDone: { [weak self] stem, recordingsDir, pageURL in
-                self?.libraryModel.activeProcessing = nil
+                guard let self = self else { return }
+                self.libraryModel.activeProcessing = nil
+                // A no-speech / suspect-transcript skip finishes with no summary
+                // and no page. The pipeline wrote <stem>.empty.json; post an
+                // honest terminal notice and skip the completion tone, rather
+                // than the misleading "Local Markdown ready (regulated mode)" the
+                // generic done path posts for a nil page URL (PIPE3 / AUD-16a).
+                // An empty-skip meeting never produces a summary, so the marker
+                // unambiguously identifies this completion as the skip.
+                if let reason = EmptyMarker.read(stem: stem, in: recordingsDir) {
+                    self.notifier.notifyEmptySkip(reason: reason)
+                    return
+                }
                 // TECH-DSN5: opt-in, default-off completion tone (the summary is
                 // ready). Never plays during a call; separate from the done
                 // notification's sound, which Focus can suppress.
                 if UISettings.shared.playCompletionTone {
                     NSSound(named: "Glass")?.play()
                 }
-                self?.notifier.notifyDone(
+                self.notifier.notifyDone(
                     stem: stem,
                     recordingsDir: recordingsDir,
                     pageURL: pageURL
@@ -391,6 +403,10 @@ final class Coordinator: NSObject {
         // Re-enqueue recordings orphaned by a mid-recording termination
         // (crash, kill, rebuild, reinstall restart).
         recoverOrphanedRecordings()
+        // Surface jobs stranded by a restart mid-pipeline (final WAV, no terminal
+        // sidecar). Runs synchronously right after the orphan scan so it observes
+        // the directory before that scan's async merges create any new final WAVs.
+        reconcileStrandedJobs()
     }
 
     /// Fire every startup TCC dialog in order. macOS serializes the prompts
@@ -486,6 +502,37 @@ final class Coordinator: NSObject {
                     "\(n) interrupted recording\(n == 1 ? "" : "s") were kept for review but not auto-published: the mute timeline was lost when the app stopped unexpectedly, so muted moments could not be removed. They are in the MeetingPipe originals folder."
                 )
             }
+        }
+    }
+
+    /// Surface pipeline jobs stranded by a mid-processing restart: a finished
+    /// `<stem>.wav` whose pipeline never reached a terminal sidecar, because the
+    /// in-memory `SinkDispatcher` queue did not survive (PIPE3 / AUD-16b). Without
+    /// this they masquerade as `.processing` for the staleness window, then decay
+    /// to a generic `.failed`. Writing an honest `.interrupted` failure sidecar
+    /// makes them retryable immediately and counts them in the failed badge.
+    ///
+    /// Mark, do not auto-re-enqueue: a cleanly-stopped meeting's start-time
+    /// recovery manifest is gone, so the recorded BYO/auto mode is unknown, and
+    /// auto-reprocessing could egress a meeting recorded BYO (REC2's no-auto-egress
+    /// posture). Retry is the user's explicit choice. Runs synchronously at startup
+    /// before the orphan sweep's async merges land, so a freshly-merged orphan
+    /// final (enqueued by `recoverOrphanedRecordings`) is never seen here.
+    private func reconcileStrandedJobs() {
+        let dir = liveOutputDir
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+            return
+        }
+        for stem in StrandedJobRecovery.detect(fileNames: names) {
+            guard MeetingStore.parseStem(stem) != nil else { continue }  // real recordings only
+            PipelineFailureSidecar.write(
+                stem: stem, in: dir, stage: .interrupted,
+                reason: "MeetingPipe restarted before this meeting finished processing. Retry to resume."
+            )
+            Log.writeLine("daemon", "stranded pipeline job marked interrupted: \(stem)")
+            Log.event(category: "coordinator", action: "stranded_job_reconciled", attributes: [
+                "stem": stem,
+            ])
         }
     }
 

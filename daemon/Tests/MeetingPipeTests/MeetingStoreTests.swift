@@ -299,6 +299,52 @@ final class MeetingStoreTests: XCTestCase {
         ]).isEmpty)
     }
 
+    func test_unrecoveredFailureStems_counts_age_inferred_stale_final() {
+        // PIPE3 / AUD-16b: an old final WAV with no terminal sidecar is a stalled
+        // job the badge previously missed; it must now be counted, while a recent
+        // one (still processing) and any terminal-sidecar stem are not.
+        let recent = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
+        let stems = MeetingStore.unrecoveredFailureStems(fileNames: [
+            "20240501-090000.wav",                                       // old, no sidecar
+            "\(recent).wav",                                             // recent: processing
+            "20240501-100000.wav", "20240501-100000.empty.json",        // terminal skip
+            "20240501-110000.wav", "20240501-110000.READY_FOR_MANUAL.md", // paste pending
+        ])
+        XCTAssertEqual(stems, ["20240501-090000"])
+    }
+
+    func test_unrecoveredFailureStems_age_clause_respects_injected_now() {
+        // With `now` pinned just after the stem's start, the same WAV is still
+        // within the staleness window, so it is not yet counted.
+        let started = try! XCTUnwrap(MeetingStore.parseStem("20240501-090000"))
+        let stems = MeetingStore.unrecoveredFailureStems(
+            fileNames: ["20240501-090000.wav"],
+            now: started.addingTimeInterval(60)
+        )
+        XCTAssertTrue(stems.isEmpty)
+    }
+
+    func test_emptyReason_read_from_marker_distinguishes_suspect() throws {
+        let dir = try tempDir()
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        try writeFile(dir.appendingPathComponent("\(stem).empty.json"),
+                      "{\"reason\":\"suspect_transcript\"}")
+        let store = MeetingStore(recordingsDir: dir)
+        let exp = expectation(description: "scan")
+        var captured: [Meeting] = []
+        let cancel = store.$meetings.dropFirst().sink { meetings in
+            captured = meetings
+            exp.fulfill()
+        }
+        store.start()
+        wait(for: [exp], timeout: 2.0)
+        cancel.cancel()
+        let row = try XCTUnwrap(captured.first)
+        XCTAssertEqual(row.status, .empty)
+        XCTAssertEqual(row.emptyReason, .suspectTranscript)
+    }
+
     // MARK: meta + summary parsing
 
     func test_meta_and_summary_populate_row_fields() throws {

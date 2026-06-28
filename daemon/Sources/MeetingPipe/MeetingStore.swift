@@ -67,6 +67,12 @@ struct Meeting: Identifiable, Hashable {
     /// constructors need not supply it.
     var publishState: String? = nil
 
+    /// Why a `.empty` row produced no summary, from `<stem>.empty.json` (PIPE3).
+    /// Lets the row distinguish "No speech" from an unreliable transcript instead
+    /// of the single hard-coded label. Nil for every non-`.empty` row. Defaulted
+    /// so test constructors need not supply it.
+    var emptyReason: EmptyReason? = nil
+
     /// Sidecar presence captured during the scan so the row's context menu can gate
     /// Republish / Regenerate without a per-row `FileManager` stat on the scroll
     /// path. Derived from the prefetched file list; defaulted so test constructors
@@ -415,6 +421,13 @@ final class MeetingStore: ObservableObject {
             _ = transcriptJSON  // currently informational only
         }
 
+        // The marker's reason distinguishes "No speech" from a degenerate
+        // transcript so the row reads honestly (PIPE3). Read only for `.empty`
+        // rows; an unreadable / pre-reason marker falls back to `.noSpeech`.
+        let emptyReason: EmptyReason? = (status == .empty)
+            ? (emptyURL.flatMap { EmptyMarker.read(at: $0) } ?? .noSpeech)
+            : nil
+
         let sourceKindRaw = meta?["source_kind"] as? String
         let kind: AppSourceKind?
         switch sourceKindRaw {
@@ -452,6 +465,7 @@ final class MeetingStore: ObservableObject {
             workflowNDAMode: (meta?["workflow_nda_mode"] as? Bool),
             regulatedMode: (meta?["regulated_mode"] as? Bool),
             publishState: (run?["publish_state"] as? String),
+            emptyReason: emptyReason,
             hasSummaryJSON: summaryURL != nil,
             hasTranscriptMD: files.contains { $0.lastPathComponent == "\(stem).md" }
         )
@@ -513,18 +527,58 @@ final class MeetingStore: ObservableObject {
         return MeetingFormatters.stem.date(from: stem)
     }
 
-    /// Stems with a failure sidecar but no summary (unrecovered failures). Filename-only so the status-bar count stays cheap and unit-testable. Mirrors `scan`'s precedence: a present summary supersedes a stale failure sidecar.
-    static func unrecoveredFailureStems(fileNames: [String]) -> [String] {
-        var failed: Set<String> = []
-        var summarised: Set<String> = []
-        for name in fileNames {
-            if name.hasSuffix(".summary.json") {
-                summarised.insert(String(name.dropLast(".summary.json".count)))
-            } else if name.hasSuffix(PipelineFailureSidecar.suffix) {
-                failed.insert(String(name.dropLast(PipelineFailureSidecar.suffix.count)))
-            }
+    /// Stems the menu-bar failed badge should count. Two classes, matching
+    /// `buildMeeting`'s `.failed` precedence so the badge and the Library list
+    /// agree (PIPE3 / AUD-16b, which flagged that age-inferred stalls were
+    /// excluded from the badge):
+    ///   1. an explicit `<stem>.error.json` failure with no superseding summary, and
+    ///   2. an age-inferred stall: a final `.wav` with no terminal sidecar whose
+    ///      stem start time is older than `Meeting.staleProcessingThresholdSec`.
+    /// Filename-only (plus the stem's encoded start time) so it stays cheap enough
+    /// to run on every menu open and is unit-testable. `now` is injected for tests.
+    static func unrecoveredFailureStems(fileNames: [String], now: Date = Date()) -> [String] {
+        struct Flags {
+            var summary = false
+            var error = false
+            var paste = false
+            var empty = false
+            var finalWav = false
         }
-        return failed.subtracting(summarised).sorted()
+        var byStem: [String: Flags] = [:]
+        for name in fileNames {
+            guard let dot = name.firstIndex(of: ".") else { continue }
+            let stem = String(name[..<dot])
+            if stem.isEmpty { continue }
+            var f = byStem[stem] ?? Flags()
+            if name.hasSuffix(".summary.json") {
+                f.summary = true
+            } else if name.hasSuffix(PipelineFailureSidecar.suffix) {
+                f.error = true
+            } else if name.hasSuffix(".READY_FOR_MANUAL.md") {
+                f.paste = true
+            } else if name.hasSuffix(EmptyMarker.suffix) {
+                f.empty = true
+            }
+            if name.hasSuffix(".wav") && !name.hasSuffix(".mic.wav") && !name.hasSuffix(".system.wav") {
+                f.finalWav = true
+            }
+            byStem[stem] = f
+        }
+        var failed: [String] = []
+        for (stem, f) in byStem {
+            if f.summary { continue }                     // produced: supersedes a stale error
+            if f.error { failed.append(stem); continue }  // explicit failure sidecar
+            if f.paste || f.empty { continue }            // terminal benign skip
+            // Age-inferred stall: a merged recording whose pipeline wrote no
+            // terminal sidecar and is past the staleness window. Mirrors
+            // `buildMeeting`'s age-inferred `.failed` via the same constant.
+            guard f.finalWav, let started = parseStem(stem),
+                  now.timeIntervalSince(started) > Meeting.staleProcessingThresholdSec else {
+                continue
+            }
+            failed.append(stem)
+        }
+        return failed.sorted()
     }
 
     private static func readJSON(at url: URL) -> [String: Any]? {
