@@ -24,6 +24,13 @@ public final class MeetingLifecycleCoordinator {
     private let lock = NSLock()
     private var lastVerdict: MeetingLifecycleVerdict = .idle
 
+    /// Session generation, bumped on every `engage` / `disengage` (AUD-29). Guarded by
+    /// `lock`. Each engaged session tags its `ingest` / `tick` work with the generation
+    /// captured at engage; an engine block whose captured generation no longer matches is
+    /// dropped, so a zombie event from a just-stopped adapter cannot re-mutate the engine
+    /// after `disengage` reset it.
+    private var generation = 0
+
     private let engine: PromotionEngine
     private let adapters: [LifecycleAdapter]
     private let scheduler: Scheduler
@@ -76,11 +83,14 @@ public final class MeetingLifecycleCoordinator {
             return
         }
         activeAdapter = adapter
+        // Tag this session's signal + tick work with the current generation (set by the
+        // `disengage()` above) so a later disengage drops anything still in flight (AUD-29).
+        let generation = currentGeneration()
         try adapter.start(context: context, handle: handle) { [weak self] event in
-            self?.ingest(event)
+            self?.ingest(event, generation: generation)
         }
         cancelTick = scheduler(tickInterval) { [weak self] in
-            self?.tick()
+            self?.tick(generation: generation)
         }
     }
 
@@ -88,8 +98,18 @@ public final class MeetingLifecycleCoordinator {
         cancelTick?(); cancelTick = nil
         activeAdapter?.stop()
         activeAdapter = nil
-        engine.reset()
-        publish(.idle)
+        // Supersede any in-flight / zombie events from the adapter just stopped: they
+        // captured the prior generation, so the gen guard in `ingest` / `tick` drops them
+        // instead of re-mutating the engine we are about to reset (AUD-29).
+        bumpGeneration()
+        // Route the reset through `engineQueue` so EVERY engine mutation is serialised on
+        // one queue. The prior inline `engine.reset()` on main raced the queued `ingest` /
+        // `tick` on `engine.phase`; this orders the reset behind any already-queued work.
+        engineQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.engine.reset()
+            self.publish(.idle)
+        }
     }
 
     /// Emit a verdict and log the transition. Idempotent: same verdict twice in a row is a no-op.
@@ -119,23 +139,35 @@ public final class MeetingLifecycleCoordinator {
 
     // MARK: - Engine plumbing
 
-    private func ingest(_ event: PrimarySignalEvent) {
+    /// Current session generation. Read under `lock`.
+    private func currentGeneration() -> Int { lock.withLock { generation } }
+
+    /// Advance to a new session generation, superseding the prior one. Under `lock`.
+    @discardableResult
+    private func bumpGeneration() -> Int { lock.withLock { generation += 1; return generation } }
+
+    private func ingest(_ event: PrimarySignalEvent, generation: Int) {
         engineQueue.async { [weak self] in
-            guard let self = self else { return }
+            guard let self = self, self.currentGeneration() == generation else { return }
             if let decision = self.engine.ingest(event) {
                 self.publish(decision.verdict)
             }
         }
     }
 
-    func tick() {
+    func tick(generation: Int) {
         engineQueue.async { [weak self] in
-            guard let self = self else { return }
+            guard let self = self, self.currentGeneration() == generation else { return }
             if let decision = self.engine.tick(at: self.clock()) {
                 self.publish(decision.verdict)
             }
         }
     }
+
+    /// Drive a tick on the current generation. The production timer captures its
+    /// generation at engage (so a late tick from a torn-down session is dropped); this
+    /// no-arg form is for tests / manual drive within the live session.
+    func tick() { tick(generation: currentGeneration()) }
 
     /// Promote `.starting` to `.inMeeting` once the recorder is armed. No-op when the engine is not in `.starting`.
     public func confirmRecording() {

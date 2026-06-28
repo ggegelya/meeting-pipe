@@ -166,7 +166,41 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
 
         coordinator.disengage()
         XCTAssertTrue(fake.didStop)
+        // disengage now routes the engine reset + idle publish through engineQueue
+        // (AUD-29), so .idle lands once that block drains rather than inline.
+        flushEngine(coordinator)
         XCTAssertEqual(coordinator.current, .idle)
+    }
+
+    func test_event_after_disengage_is_dropped_by_generation_guard() throws {
+        let fake = FakeAdapter()
+        let scheduler = ManualScheduler()
+        let coordinator = MeetingLifecycleCoordinator(
+            adapters: [fake],
+            scheduler: scheduler.scheduler()
+        )
+
+        try coordinator.engage(
+            context: teamsContext,
+            handle: LifecycleAdapterHandle()
+        )
+        coordinator.disengage()
+        flushEngine(coordinator)
+        XCTAssertEqual(coordinator.current, .idle)
+
+        // A zombie event from the adapter just stopped (it captured the prior
+        // generation) must not resurrect the freshly reset engine (AUD-29).
+        fake.emitRetained(.init(
+            kind: .shareableContentWindow,
+            state: .live,
+            timestamp: Date(timeIntervalSince1970: 0),
+            context: teamsContext
+        ))
+        flushEngine(coordinator)
+        XCTAssertEqual(
+            coordinator.current, .idle,
+            "A post-disengage event is dropped by the generation guard, not promoted to .starting"
+        )
     }
 
     func test_engage_without_matching_adapter_logs_and_no_ops() throws {
@@ -227,6 +261,9 @@ private final class FakeAdapter: LifecycleAdapter {
     private(set) var didStop = false
     private(set) var armedLeaveButtons: [AXUIElement] = []
     private var sink: ((PrimarySignalEvent) -> Void)?
+    /// Held across `stop()` (unlike `sink`) so a test can fire a zombie event the way a
+    /// real signal might after teardown, to exercise the generation guard (AUD-29).
+    private var retainedSink: ((PrimarySignalEvent) -> Void)?
 
     init(
         bundleIDs: Set<String> = ["com.microsoft.teams2"],
@@ -242,6 +279,7 @@ private final class FakeAdapter: LifecycleAdapter {
         sink: @escaping (PrimarySignalEvent) -> Void
     ) throws {
         self.sink = sink
+        self.retainedSink = sink
         didStop = false
     }
 
@@ -256,6 +294,11 @@ private final class FakeAdapter: LifecycleAdapter {
 
     func emit(_ event: PrimarySignalEvent) {
         sink?(event)
+    }
+
+    /// Fire through the sink captured at `start`, even after `stop()` nilled `sink`.
+    func emitRetained(_ event: PrimarySignalEvent) {
+        retainedSink?(event)
     }
 }
 

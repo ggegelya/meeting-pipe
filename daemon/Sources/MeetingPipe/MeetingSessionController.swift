@@ -784,27 +784,36 @@ final class MeetingSessionController {
     /// promotes to `.ended`. A genuine end finds none and proceeds.
     func rescueProvisionalEnd(context: MeetingLifecycleContext) {
         guard context.kind == .native else { return }
-        let axApp = AXUIElementCreateApplication(context.pid)
-        let leaveButtons = MeetingAXHandleBuilder.findAllLeaveButtons(
-            in: axApp,
-            bundleID: context.bundleID
-        )
-        guard let leaveButton = leaveButtons.first else {
-            // No Leave button on a fresh walk: the call really ended. The re-walk is the
-            // corroboration, so drive the promotion to `.ended` now rather than leaving it to
-            // stall in `.endingProvisional` until window-gone corroborates (which lagged ~4.5 min
-            // in the wild) or the user stops by hand.
-            Log.event(category: "coordinator", action: "lifecycle_provisional_end_confirmed", attributes: [
-                "bundle_id": context.bundleID,
-            ])
-            coordinator.lifecycleCoord.confirmProvisionalEnd()
-            return
+        // The Leave-button search is a cross-process AX DFS over every window; run it OFF
+        // main (TECH-CONC3) so a slow / hung AX call can't freeze the run loop while a
+        // recording is live, then hop back to main to mutate the engine. Mirrors
+        // `armLifecycleLeaveButton`.
+        Self.axWalkQueue.async { [weak self] in
+            let axApp = AXUIElementCreateApplication(context.pid)
+            let leaveButtons = MeetingAXHandleBuilder.findAllLeaveButtons(
+                in: axApp,
+                bundleID: context.bundleID
+            )
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                guard let leaveButton = leaveButtons.first else {
+                    // No Leave button on a fresh walk: the call really ended. The re-walk is the
+                    // corroboration, so drive the promotion to `.ended` now rather than leaving it to
+                    // stall in `.endingProvisional` until window-gone corroborates (which lagged ~4.5 min
+                    // in the wild) or the user stops by hand.
+                    Log.event(category: "coordinator", action: "lifecycle_provisional_end_confirmed", attributes: [
+                        "bundle_id": context.bundleID,
+                    ])
+                    self.coordinator.lifecycleCoord.confirmProvisionalEnd()
+                    return
+                }
+                Log.event(category: "coordinator", action: "lifecycle_provisional_end_rescued", attributes: [
+                    "bundle_id": context.bundleID,
+                    "leave_buttons_found": leaveButtons.count,
+                ])
+                self.coordinator.lifecycleCoord.armLeaveButton(leaveButton)
+            }
         }
-        Log.event(category: "coordinator", action: "lifecycle_provisional_end_rescued", attributes: [
-            "bundle_id": context.bundleID,
-            "leave_buttons_found": leaveButtons.count,
-        ])
-        coordinator.lifecycleCoord.armLeaveButton(leaveButton)
     }
 
     /// Tear down the lifecycle adapter + reset the engine. Wired to the
