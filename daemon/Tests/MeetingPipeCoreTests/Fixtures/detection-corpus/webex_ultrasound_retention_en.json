@@ -1,6 +1,6 @@
 {
   "scenario": "webex_ultrasound_retention_en",
-  "description": "Webex post-call ultrasound retention: ProcessAudio stays live (Cisco holds the mic for device discovery), so the leading signal is ShareableContent and the confirming signal is AX Leave button invalidation. Process_audio_is_running_input_false would never confirm; the debounce expires and ended fires with only ax_leave_button_invalid as the confirming signal.",
+  "description": "Webex post-call ultrasound retention: ProcessAudio stays live (Cisco holds the mic for device discovery), so the only end signals are ShareableContent (leading) and the AX Leave button. END6/AUD-10 treats those two as one correlated evidence class (a share re-render invalidates the Leave button and drops the call window together), so the ax-leave second signal no longer instant-confirms on the fast path; instead the reliable window-gone lead promotes on the 2 s debounce (the tick after t=42), with the absorbed ax-leave recorded in confirmed_by. In production the AX re-walk (confirmProvisionalEnd, fired by rescueProvisionalEnd) would also confirm a genuine leave promptly; the corpus models only the pure engine, so the debounce tick stands in for that.",
   "engine": "promotion",
   "debounce_seconds": 2.0,
   "context": {
@@ -12,12 +12,13 @@
     {"t": 0.0, "kind": "shareable_content_window", "state": "live"},
     {"t": 0.5, "kind": "ax_leave_button", "state": "live"},
     {"t": 40.0, "kind": "shareable_content_window", "state": "ended"},
-    {"t": 40.2, "kind": "ax_leave_button", "state": "ended"}
+    {"t": 40.2, "kind": "ax_leave_button", "state": "ended"},
+    {"t": 42.5, "kind": "tick"}
   ],
   "expected_verdicts": [
     {"after": "events[0]", "verdict": "starting"},
     {"after": "events[0]", "verdict": "in_meeting"},
     {"after": "events[2]", "verdict": "ending_provisional", "leading": "shareable_content_window_gone"},
-    {"after": "events[3]", "verdict": "ended", "leading": "shareable_content_window_gone", "confirmed_by": ["ax_leave_button_invalid"]}
+    {"after": "events[4]", "verdict": "ended", "leading": "shareable_content_window_gone", "confirmed_by": ["ax_leave_button_invalid"]}
   ]
 }

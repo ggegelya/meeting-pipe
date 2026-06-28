@@ -12,6 +12,19 @@ public enum PrimarySignalKind: String, Equatable, CaseIterable {
     case windowTitleLeftPattern = "window_title_left_pattern"
 }
 
+/// Correlation grouping for end signals (END6 / AUD-10). Signals in the SAME class can fail
+/// together from one root cause, so a second signal in the same class is not independent
+/// corroboration of the first. Only ax-leave + window-gone are grouped (a Teams share re-render
+/// invalidates the Leave button and drops the call window together); every other signal is its
+/// own class, so the cross-class corroboration that already works is unchanged.
+public enum EndEvidenceClass: Equatable {
+    case callWindowOrControl
+    case processAudio
+    case browserTabTitle
+    case workspaceTermination
+    case windowTitle
+}
+
 public extension PrimarySignalKind {
     /// TECH-END2: signals whose `.ended` is prone to transient AX staleness and so
     /// must not single-handedly confirm a meeting end. `axLeaveButton` reads invalid
@@ -27,6 +40,24 @@ public extension PrimarySignalKind {
         case .shareableContentWindow, .processAudioIsRunningInput, .browserTabTitle,
              .workspaceAppTerminated, .windowTitleLeftPattern:
             return false
+        }
+    }
+
+    /// The evidence class this signal belongs to (END6 / AUD-10). End corroboration must come
+    /// from a DIFFERENT class to count as genuinely independent: ax-leave + window-gone share a
+    /// class (correlated), so neither corroborates the other; every other signal is its own class.
+    var evidenceClass: EndEvidenceClass {
+        switch self {
+        case .axLeaveButton, .shareableContentWindow:
+            return .callWindowOrControl
+        case .processAudioIsRunningInput:
+            return .processAudio
+        case .browserTabTitle:
+            return .browserTabTitle
+        case .workspaceAppTerminated:
+            return .workspaceTermination
+        case .windowTitleLeftPattern:
+            return .windowTitle
         }
     }
 }
@@ -124,15 +155,20 @@ public final class PromotionEngine {
         }
         guard now.timeIntervalSince(startedAt) >= debounce else { return nil }
         let confirmedBy = Array(observed.subtracting([leading]).map { $0.rawValue }).sorted()
-        // TECH-END2 + end-stop fix: a staleness-prone leading signal (ax-leave) must not confirm
-        // an end on the debounce alone (a screen-share re-render briefly invalidates the Leave
-        // button and would otherwise chop one meeting into fragments). A genuine native end is
-        // promoted promptly by `confirmProvisionalEnd`, which the daemon calls once its Leave-button
-        // re-walk verifies the control is really gone. This guard is the backstop for the debounce
-        // path when that re-walk has not (yet) fired: a lone uncorroborated ax-leave stays
-        // provisional until a reliable signal (window-gone) corroborates. Reliable signals keep
-        // `requiresCorroboration == false` and promote here on their own.
-        if leading.requiresCorroboration && confirmedBy.isEmpty {
+        // TECH-END2 + END6/AUD-10: a staleness-prone leading signal (ax-leave) must not confirm
+        // an end on the debounce alone, and a SAME-class signal (window-gone for an ax-leave
+        // lead) is correlated, not independent, so it does not satisfy the guard either: the
+        // 2026-06-09 screen-share re-render invalidated the Leave button and dropped the call
+        // window together, which would otherwise chop one meeting into fragments. A genuine
+        // native end is promoted promptly by `confirmProvisionalEnd`, which the daemon calls
+        // once its Leave-button re-walk verifies the control is really gone; this guard is the
+        // backstop for the debounce path until that re-walk (or a genuinely independent,
+        // cross-class signal) corroborates. Reliable signals keep `requiresCorroboration ==
+        // false` and promote here on their own.
+        let crossClassCorroborated = observed.contains {
+            $0 != leading && $0.evidenceClass != leading.evidenceClass
+        }
+        if leading.requiresCorroboration && !crossClassCorroborated {
             return nil
         }
         let reason = EndingReason(leadingSignal: leading.rawValue, confirmedBy: confirmedBy)
@@ -243,7 +279,13 @@ public final class PromotionEngine {
         switch event.state {
         case .ended:
             observed.insert(event.kind)
-            if event.kind != leading {
+            // END6/AUD-10: a distinct second signal confirms the end on this fast path only
+            // when it is in a DIFFERENT evidence class than the leading signal. ax-leave and
+            // window-gone are one class (a Teams share re-render invalidates the Leave button
+            // and drops the call window together), so the pair can no longer instant-confirm
+            // each other; a same-class second signal is absorbed, and the AX re-walk
+            // (confirmProvisionalEnd) or a genuinely independent signal must corroborate.
+            if event.kind != leading && event.kind.evidenceClass != leading.evidenceClass {
                 let confirmedBy = Array(observed.subtracting([leading]).map { $0.rawValue }).sorted()
                 let reason = EndingReason(leadingSignal: leading.rawValue, confirmedBy: confirmedBy)
                 phase = .ended(context: context)

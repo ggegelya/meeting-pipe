@@ -268,44 +268,61 @@ final class PromotionEngineTests: XCTestCase {
         )
     }
 
-    func test_ax_leave_invalid_promotes_when_corroborated_by_window_gone() {
-        // A real leave: window-gone corroborates ax-leave, so .ended fires (fast path).
+    func test_correlated_window_gone_does_not_confirm_ax_leave_on_fast_path() {
+        // END6/AUD-10: ax-leave + window-gone are one evidence class (a Teams share re-render
+        // invalidates the Leave button and drops the call window together), so the window-gone
+        // must NOT instant-confirm an ax-leave lead. It is absorbed; the AX re-walk
+        // (confirmProvisionalEnd) or a genuinely independent signal decides. This is the fix
+        // for the 2026-06-09 fragments-1-and-4 false end.
         let engine = PromotionEngine(debounce: 2.0)
         _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.axLeaveButton, .ended, at: 1))
         let decision = engine.ingest(event(.shareableContentWindow, .ended, at: 1.3))
+        XCTAssertNil(decision, "A same-class window-gone is absorbed, not promoted to .ended")
+        XCTAssertNil(
+            engine.tick(at: Date(timeIntervalSince1970: 5)),
+            "And the debounce path stays held: a correlated signal is not a cross-class corroborator"
+        )
+    }
+
+    func test_ax_leave_provisional_ends_when_corroborated_by_cross_class_signal() {
+        // The gate is about CORRELATION, not blocking all corroboration: a genuinely
+        // independent signal (process-audio, a different evidence class) still confirms an
+        // ax-leave lead on the fast path.
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 1))
+        let decision = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 1.3))
         XCTAssertEqual(
             decision?.verdict,
             .ended(
                 context: teamsContext,
                 reason: EndingReason(
                     leadingSignal: "ax_leave_button_invalid",
-                    confirmedBy: ["shareable_content_window_gone"]
+                    confirmedBy: ["process_audio_is_running_input_false"]
                 )
             )
         )
     }
 
-    func test_held_ax_leave_provisional_ends_when_window_gone_arrives_after_debounce() {
-        // Guard holds provisional past the debounce; a later window-gone corroborates
-        // and the meeting ends, so the backstop is not the only escape.
+    func test_held_ax_leave_provisional_is_not_ended_by_correlated_window_gone() {
+        // END6/AUD-10 on the debounce path: a window-gone arriving after the debounce does NOT
+        // end an ax-leave-led provisional, because it is the same (correlated) evidence class.
+        // Only the AX re-walk (confirmProvisionalEnd) or a cross-class signal ends it.
         let engine = PromotionEngine(debounce: 2.0)
         _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.axLeaveButton, .ended, at: 1))
         XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 5)), "Held while uncorroborated")
         let decision = engine.ingest(event(.shareableContentWindow, .ended, at: 6))
-        XCTAssertEqual(
-            decision?.verdict,
-            .ended(
-                context: teamsContext,
-                reason: EndingReason(
-                    leadingSignal: "ax_leave_button_invalid",
-                    confirmedBy: ["shareable_content_window_gone"]
-                )
-            )
+        XCTAssertNil(decision, "A correlated window-gone does not end an ax-leave provisional")
+        XCTAssertNil(
+            engine.tick(at: Date(timeIntervalSince1970: 8)),
+            "Still held after the correlated signal: no cross-class corroborator arrived"
         )
     }
 
@@ -326,6 +343,28 @@ final class PromotionEngineTests: XCTestCase {
         XCTAssertFalse(PrimarySignalKind.workspaceAppTerminated.requiresCorroboration)
         XCTAssertFalse(PrimarySignalKind.windowTitleLeftPattern.requiresCorroboration)
         XCTAssertFalse(PrimarySignalKind.browserTabTitle.requiresCorroboration)
+    }
+
+    func test_evidence_class_groups_only_ax_leave_and_window_gone() {
+        // END6/AUD-10: ONLY ax-leave + window-gone share a class (correlated). Every other
+        // signal is its own class, so it still cross-corroborates exactly as before.
+        XCTAssertEqual(
+            PrimarySignalKind.axLeaveButton.evidenceClass,
+            PrimarySignalKind.shareableContentWindow.evidenceClass,
+            "ax-leave and window-gone are the one correlated pair"
+        )
+        XCTAssertNotEqual(
+            PrimarySignalKind.axLeaveButton.evidenceClass,
+            PrimarySignalKind.processAudioIsRunningInput.evidenceClass
+        )
+        XCTAssertNotEqual(
+            PrimarySignalKind.shareableContentWindow.evidenceClass,
+            PrimarySignalKind.workspaceAppTerminated.evidenceClass
+        )
+        XCTAssertNotEqual(
+            PrimarySignalKind.windowTitleLeftPattern.evidenceClass,
+            PrimarySignalKind.browserTabTitle.evidenceClass
+        )
     }
 
     // MARK: - Browser path corroboration (GAP 2)
