@@ -557,11 +557,15 @@ final class StatusBarController {
             item.isEnabled = false
             return item
         case .failed(let modelId, let error):
+            // Actionable (LOCAL1): clicking re-spawns the prefetch. The full
+            // error goes to the tooltip so the row title stays short and clean.
             let item = NSMenuItem(
-                title: "⚠ Model download failed: \(Self.shortModelId(modelId)): \(error.prefix(80))",
-                action: nil, keyEquivalent: ""
+                title: "⚠ Model download failed (\(Self.shortModelId(modelId))) - Retry",
+                action: #selector(Coordinator.menuRetryModelDownload),
+                keyEquivalent: ""
             )
-            item.isEnabled = false
+            item.target = coordinator
+            item.toolTip = error
             return item
         }
     }

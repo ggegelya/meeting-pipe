@@ -31,6 +31,14 @@ extension Coordinator {
         preferencesWindow?.show(initial: .permissions)
     }
 
+    /// Retry a failed model prefetch (LOCAL1), from the failed download row.
+    /// Re-runs the same eager-prefetch decision; the supervisor re-spawns
+    /// `mp prefetch-model` (a partial cache resumes), or short-circuits to
+    /// completed if the cache turns out whole.
+    @objc func menuRetryModelDownload() {
+        configRefresh.ensureModelPrefetchIfNeeded()
+    }
+
     @objc func menuOpenLibrary() {
         libraryWindow.show()
     }

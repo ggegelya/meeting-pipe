@@ -1,7 +1,7 @@
 import Foundation
 
 /// Owns the lifecycle of a `mp prefetch-model` subprocess and surfaces download progress to the Coordinator -> StatusBar.
-/// `ensure(modelId:)` is the only entry point - idempotent, cancels any in-flight download for a different model. Short-circuits without spawning if the model is already cached (avoids 0.5-1 s of fork/import latency on the happy path). Stdout is the live JSON-lines event channel; stderr goes to the daemon log.
+/// `ensure(modelId:)` is the only entry point - idempotent, cancels any in-flight download for a different model. Short-circuits without spawning if the model is already fully cached (completeness-verified, not merely non-empty - LOCAL1/AUD-20), avoiding 0.5-1 s of fork/import latency on the happy path. Stdout is the live JSON-lines event channel; stderr goes to the daemon log.
 /// Threading: every public method must run on the main queue; the stdout reader hops back to main before invoking callbacks.
 final class ModelDownloadSupervisor {
 
@@ -29,19 +29,71 @@ final class ModelDownloadSupervisor {
     private var stdoutBuffer = Data()
     private var currentModelId: String?
 
-    /// Replicates the HuggingFace Hub layout (`~/.cache/huggingface/hub/models--<repo>/snapshots/<hash>/`). Any non-empty snapshot dir is "cached enough" for the short-circuit; the Python side does a real byte-count check before declaring complete.
+    /// Is `modelId` fully present in the local HuggingFace cache
+    /// (`~/.cache/huggingface/hub/models--<repo>/`)? Verifies completeness
+    /// without a network call, so the happy-path short-circuit in `ensure`
+    /// stays fast and offline-safe.
     static func isCached(modelId: String) -> Bool {
+        let hubRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
+        return isComplete(modelId: modelId, hubRoot: hubRoot)
+    }
+
+    /// Testable core of `isCached`: is `modelId` fully present under `hubRoot`
+    /// (the `.../huggingface/hub` directory)? Pure filesystem inspection - no
+    /// network, no home-directory dependency.
+    ///
+    /// Rejects the two signatures an interrupted multi-GB download leaves behind
+    /// (LOCAL1/AUD-20), which the old "any non-empty snapshot dir" check missed:
+    ///   - a `blobs/*.incomplete` file (`hf_hub_download` writes `<etag>.incomplete`
+    ///     then renames on completion), and
+    ///   - a dangling snapshot symlink (a blob the download never finished).
+    ///
+    /// Residual it cannot catch locally: a download interrupted in the gap
+    /// between finishing one file and starting the next leaves no `.incomplete`
+    /// and no dangling link, yet the repo manifest expects more files. Detecting
+    /// that needs the network manifest, so `mp prefetch-model` (spawned whenever
+    /// this returns false) stays the authority; this check only has to be tight
+    /// enough that an obviously-partial cache no longer reports ready forever.
+    static func isComplete(modelId: String, hubRoot: URL) -> Bool {
+        let fm = FileManager.default
         let sanitized = "models--" + modelId.replacingOccurrences(of: "/", with: "--")
-        let snapshots = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/huggingface/hub/\(sanitized)/snapshots", isDirectory: true)
-        guard let entries = try? FileManager.default.contentsOfDirectory(
-            at: snapshots, includingPropertiesForKeys: nil
-        ) else {
+        let modelDir = hubRoot.appendingPathComponent(sanitized, isDirectory: true)
+
+        // An in-flight or interrupted download leaves `<etag>.incomplete` blobs;
+        // their presence means the cache is partial.
+        let blobs = modelDir.appendingPathComponent("blobs", isDirectory: true)
+        if let blobEntries = try? fm.contentsOfDirectory(
+            at: blobs, includingPropertiesForKeys: nil
+        ), blobEntries.contains(where: { $0.pathExtension == "incomplete" }) {
             return false
         }
-        return entries.contains { url in
-            let contents = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
-            return !contents.isEmpty
+
+        // At least one snapshot must be structurally whole.
+        let snapshots = modelDir.appendingPathComponent("snapshots", isDirectory: true)
+        guard let snapshotDirs = try? fm.contentsOfDirectory(
+            at: snapshots, includingPropertiesForKeys: nil
+        ), !snapshotDirs.isEmpty else {
+            return false
+        }
+        return snapshotDirs.contains { snapshotIsWhole($0, fm: fm) }
+    }
+
+    /// A snapshot dir is whole when it is non-empty and every entry resolves to
+    /// an existing file (no dangling symlinks). Recurses into real subdirs.
+    private static func snapshotIsWhole(_ dir: URL, fm: FileManager) -> Bool {
+        guard let entries = try? fm.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil
+        ), !entries.isEmpty else {
+            return false
+        }
+        return entries.allSatisfy { url in
+            var isDir: ObjCBool = false
+            // fileExists follows symlinks, so a dangling link returns false.
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else {
+                return false
+            }
+            return isDir.boolValue ? snapshotIsWhole(url, fm: fm) : true
         }
     }
 
