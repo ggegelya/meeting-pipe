@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "source_bundle_id": "com.google.Chrome",
+  "source_display_name": "Google Chrome",
+  "source_kind": "browser",
+  "meeting_title": "Design review",
+  "workflow_id": "0A2B3C4D-0000-0000-0000-00000000F001",
+  "workflow_name": "Client work",
+  "workflow_color": "#0E8C82",
+  "workflow_emoji": "📋",
+  "workflow_context_prompt": "Acme account. Weekly cadence.",
+  "workflow_backend": "anthropic",
+  "workflow_sinks": ["notion", "obsidian"],
+  "workflow_notion_database_id": "db-acme-123",
+  "workflow_nda_mode": false
+}

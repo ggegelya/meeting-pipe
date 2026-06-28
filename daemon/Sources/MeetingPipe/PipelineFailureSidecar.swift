@@ -46,6 +46,7 @@ enum PipelineFailureSidecar {
         timestamp: Date = Date()
     ) -> URL? {
         let payload: [String: Any] = [
+            "schema_version": 1,
             "stem": stem,
             "stage": stage.rawValue,
             "reason": reason,

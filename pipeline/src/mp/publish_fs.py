@@ -91,6 +91,7 @@ class FilesystemPublisher:
         sidecar_path.parent.mkdir(parents=True, exist_ok=True)
         sidecar_path.write_text(
             json.dumps({
+                "schema_version": 1,
                 "summary_path": str(summary_path),
                 "actions_path": str(actions_path),
                 "output_dir": str(self._out),

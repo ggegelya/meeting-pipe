@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "regulated_mode": true,
+  "source_bundle_id": "us.zoom.xos",
+  "source_display_name": "Zoom",
+  "source_kind": "native",
+  "meeting_title": "Q3 board review"
+}

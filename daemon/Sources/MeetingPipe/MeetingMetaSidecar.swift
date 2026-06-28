@@ -3,6 +3,9 @@ import Foundation
 /// Pure builder for `<stem>.meta.json`. Canonical Swift-to-Python contract: the pipeline reads these keys via `mp.workflow.apply_overrides`. Unit-testable without a Coordinator.
 enum MeetingMetaSidecar {
 
+    /// Sidecar shape version. Bump when the key set or a key's semantics change so a future reader can migrate. The Python reader stays fail-open on it (an unknown key is ignored); the cross-language golden fixtures (CI2, `Fixtures/meta-contract/`) pin it on both sides.
+    static let schemaVersion = 1
+
     /// Build the JSON-serializable dictionary for a finished recording. Returns an empty dict when neither source nor workflow is available (and not regulated); caller skips the write so the pipeline's no-sidecar fallback (LLM-derived title, global config) stays intact.
     ///
     /// `regulatedMode` is the global flag at record time (TECH-DSN6). Persisting it
@@ -44,6 +47,12 @@ enum MeetingMetaSidecar {
                 dict["workflow_notion_database_id"] = wf.notionDatabaseID
             }
             dict["workflow_nda_mode"] = wf.flags.ndaMode
+        }
+        // Stamp the version only on a sidecar we actually write. An empty dict
+        // (no source, workflow, or regulated flag) must stay empty so the caller
+        // still skips the write and the pipeline's no-sidecar fallback holds.
+        if !dict.isEmpty {
+            dict["schema_version"] = schemaVersion
         }
         return dict
     }

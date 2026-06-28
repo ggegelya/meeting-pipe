@@ -102,6 +102,7 @@ def test_write_run_sidecar_roundtrip(tmp_path: Path):
     assert out == tmp_path / "20260508.run.json"
     data = corrections.read_run_sidecar(out)
     assert data == {
+        "schema_version": 1,
         "stem": "20260508",
         "transcript_path": str(transcript),
         "transcript_chars": 42,

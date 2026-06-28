@@ -375,7 +375,11 @@ def _run_all_inner(
     if effective_backend(cfg) == "apple_intelligence":
         sentinel = wav.parent / f"{wav.stem}.apple_pending.json"
         sentinel.write_text(
-            json.dumps({"transcript_md": str(t["md"]), "transcript_json": str(t["json"])}),
+            json.dumps({
+                "schema_version": 1,
+                "transcript_md": str(t["md"]),
+                "transcript_json": str(t["json"]),
+            }),
             encoding="utf-8",
         )
         log.info("Apple Intelligence backend: handing summary off to the daemon.")

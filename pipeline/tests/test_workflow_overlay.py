@@ -18,6 +18,19 @@ def _write_meta(dir: Path, stem: str, data: dict) -> None:
     (dir / f"{stem}.meta.json").write_text(json.dumps(data), encoding="utf-8")
 
 
+# CI2: the cross-language contract fixtures. These committed files live next to
+# the Swift suite (written + verified there by MetaContractFixtureTests) and are
+# asserted here through the real reader, so one checked-in file pins both sides.
+# A Swift-side key rename regenerates the fixture and breaks these expectations;
+# a Python-side drift breaks because apply_overrides no longer finds the key the
+# fixture carries. Each fixture is named `<stem>.meta.json`, so passing its own
+# path to apply_overrides resolves the sibling `<stem>.meta.json` back to itself.
+_CONTRACT = (
+    Path(__file__).resolve().parents[2]
+    / "daemon" / "Tests" / "MeetingPipeTests" / "Fixtures" / "meta-contract"
+)
+
+
 def test_no_sidecar_returns_unchanged_cfg(tmp_path: Path) -> None:
     cfg = Config()
     wav = tmp_path / "20260512-101530.wav"
@@ -185,3 +198,37 @@ def test_overlay_does_not_carry_action_state(tmp_path: Path) -> None:
     result = apply_overrides(cfg, summary)
     assert result.summarization.team_context == "ctx"
     assert not hasattr(result, "actions")
+
+
+def test_contract_fixture_full_workflow_applies_overlay() -> None:
+    # The committed golden sidecar -> the keys the reader maps. If Swift renames
+    # any of these keys (and regenerates the fixture), this assertion fails.
+    cfg = Config()
+    result = apply_overrides(cfg, _CONTRACT / "workflow-full.meta.json")
+    assert result.summarization.backend == "anthropic"
+    assert result.output.sinks == ["notion", "obsidian"]
+    assert result.summarization.team_context == "Acme account. Weekly cadence."
+    assert result.notion.database_id == "db-acme-123"
+
+
+def test_contract_fixture_nda_collapses_to_local_filesystem() -> None:
+    cfg = Config()
+    result = apply_overrides(cfg, _CONTRACT / "workflow-nda.meta.json")
+    assert result.modes.workflow_nda_mode is True
+    assert result.summarization.backend == "local"
+    assert result.output.sinks == ["filesystem"]
+
+
+def test_contract_fixture_regulated_source_only_forces_zero_egress() -> None:
+    cfg = Config()
+    assert cfg.modes.regulated_mode is False
+    result = apply_overrides(cfg, _CONTRACT / "source-only-regulated.meta.json")
+    assert result.modes.regulated_mode is True
+    assert result.summarization.backend == "local"
+    assert result.output.sinks == ["filesystem"]
+
+
+def test_contract_fixtures_carry_schema_version() -> None:
+    for name in ("source-only-regulated", "workflow-full", "workflow-nda"):
+        data = json.loads((_CONTRACT / f"{name}.meta.json").read_text(encoding="utf-8"))
+        assert data["schema_version"] == 1

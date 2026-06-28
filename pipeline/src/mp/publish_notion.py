@@ -92,7 +92,12 @@ class NotionRestPublisher:
 
         sidecar_path.write_text(
             json.dumps(
-                {"page_id": page_id, "page_url": page_url, "updated_at": _now_iso()},
+                {
+                    "schema_version": 1,
+                    "page_id": page_id,
+                    "page_url": page_url,
+                    "updated_at": _now_iso(),
+                },
                 indent=2,
             ),
             encoding="utf-8",

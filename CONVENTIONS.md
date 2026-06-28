@@ -219,8 +219,11 @@ Current keys (May 2026):
 | `workflow_notion_database_id` | string? | per-workflow Notion DB |
 | `workflow_nda_mode` | bool | forces backend=local + sinks=filesystem |
 | `regulated_mode` | bool? | global zero-egress at record time (TECH-DSN6); top-level (not under a workflow), written only when true. Drives the Library "Local only" badge and is folded into the overlay fail-closed, same effect as `workflow_nda_mode` |
+| `schema_version` | int | sidecar shape version (CI2), currently `1`. Stamped on every non-empty sidecar; the reader is fail-open on it (unknown values are ignored, not rejected). Bump when the key set or a key's semantics change |
 
 Absence of the sidecar (`<stem>.meta.json` missing) is valid — the pipeline falls back to global config + LLM-derived title.
+
+A golden-fixture contract test pins these keys across both suites (CI2): three committed sidecar shapes in `daemon/Tests/MeetingPipeTests/Fixtures/meta-contract/` are built and verified by `MetaContractFixtureTests` (Swift) and read through `apply_overrides` by `test_workflow_overlay.py` (Python). A key rename on either side breaks one suite, so drift can't pass CI unnoticed.
 
 ---
 
@@ -248,7 +251,7 @@ Seconds from recording start, half-open `[start_sec, end_sec)`. Only genuine app
 
 **`originals/<stem>.wav`** (ADR 0016), in `~/Library/Application Support/MeetingPipe/originals/`, NOT in the recordings dir. The kept full (un-redacted) recording, moved aside when `MuteRedactor` redacts the canonical `<stem>.wav`, and the quarantine destination for capture-first-redact orphans whose timeline was lost. Deliberately outside the Library-scanned `raw/` tree and the Raw Files tab's reach: mode `0600`, excluded from Time Machine and iCloud. The redacted artifact is what every consumer reads; this is the recovery source only. ADR 0016 mandates a retention policy + reaper for it (owed: MIC13).
 
-`schema_version` on these writers is tracked separately (CI2).
+`schema_version` (CI2): `<stem>.meta.json` and every JSON sidecar writer that lacked one now stamp `schema_version: 1` (the `<stem>.error.json` failure sidecar and the pipeline publish receipts `<stem>.notion.json` / `.obsidian.json` / `.filesystem.json` / `.lan.json` / `.run.json` / `.empty.json` / `.apple_pending.json`). Two deliberate exceptions: `<stem>.mute-timeline.json` already carries its own `version: 1` (above), and `<stem>.summary.json` is the pydantic `MeetingSummary` data schema rather than a marker sidecar, so it is versioned through the model, not a stamp.
 
 ---
 

@@ -144,6 +144,7 @@ class ObsidianPublisher:
         sidecar_path.parent.mkdir(parents=True, exist_ok=True)
         sidecar_path.write_text(
             json.dumps({
+                "schema_version": 1,
                 "note_path": str(note_path),
                 "vault": str(self._vault),
                 "attachment_rel": attachment_rel,

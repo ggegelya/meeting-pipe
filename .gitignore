@@ -52,6 +52,9 @@ secrets.env
 *.m4a
 *.summary.md
 *.meta.json
+# CI2: the cross-language contract golden sidecars are committed on purpose
+# (named *.meta.json so the Python reader resolves them as their own sidecar).
+!daemon/Tests/MeetingPipeTests/Fixtures/meta-contract/*.meta.json
 *.json.bak
 recordings/
 .notion-cassettes/

@@ -66,6 +66,7 @@ def write_run_sidecar(
     half-written sidecar that breaks downstream readers.
     """
     payload: dict[str, Any] = {
+        "schema_version": 1,
         "stem": stem,
         "transcript_path": str(transcript_path),
         "transcript_chars": int(transcript_chars),
@@ -97,6 +98,7 @@ def write_empty_marker(
     state instead. Atomic via temp + rename, matching ``write_run_sidecar``.
     """
     payload: dict[str, Any] = {
+        "schema_version": 1,
         "stem": stem,
         "reason": reason,
         "ts": ts or _now_utc_iso(),
