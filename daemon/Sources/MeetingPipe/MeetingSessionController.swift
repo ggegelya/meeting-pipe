@@ -507,7 +507,16 @@ final class MeetingSessionController {
                 // detection for the rest of the meeting when the leave-button end never
                 // corroborated.
                 self.coordinator.stateMachine.abandonPrompt(source: source)
-                self.coordinator.statusBar.setIdle()
+                // UX10 / AUD-12: unlike an explicit Skip, a *silent* timeout-skip
+                // needs a surface. Show "Suppressed (<app>)" in the menu bar for as
+                // long as the skip latch holds (the whole meeting), and notify with a
+                // start-late action. The state machine stays `.idle` (START1); the
+                // menu-bar label is presentation-only and polls the real latch.
+                let bundleID = source.bundleID
+                self.coordinator.statusBar.setSuppressed(source) { [weak self] in
+                    self?.coordinator.stateMachine.isSkipLatched(bundleID: bundleID) ?? false
+                }
+                self.coordinator.notifier.notifySkippedMeeting(source: source)
             }
         }
     }

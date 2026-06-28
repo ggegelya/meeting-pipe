@@ -46,6 +46,15 @@ final class StatusBarController {
     private var modelDownloadCompletedDisplayTimer: Timer?
     private static let completedDisplayDuration: TimeInterval = 5
 
+    /// Drives the UX10 "Suppressed (<app>)" title. The recording-side state machine
+    /// stays `.idle` after a timeout-skip (START1), so this is a presentation-only
+    /// label that lives as long as the bundle's skip latch holds. `suppressedIsActive`
+    /// reads that latch (the single source of truth); the timer re-checks it and
+    /// collapses to Idle once it lapses (~15 s after the call ends).
+    private var suppressedDisplayTimer: Timer?
+    private var suppressedIsActive: (() -> Bool)?
+    private static let suppressedRecheckInterval: TimeInterval = 5
+
     /// Delegate for the "Recent meetings" submenu; populates on
     /// `menuNeedsUpdate` so a rebuild doesn't pay a dir scan for a submenu
     /// the user rarely opens.
@@ -125,6 +134,7 @@ final class StatusBarController {
     }
 
     func setIdle() {
+        cancelSuppressedDisplay()
         item.button?.image = idleIcon
         baseTitle = "Idle"
         isIdleState = true
@@ -135,6 +145,7 @@ final class StatusBarController {
     }
 
     func setPrompting(_ source: AppSource) {
+        cancelSuppressedDisplay()
         item.button?.image = idleIcon
         baseTitle = "Detected \(source.displayName)"
         isIdleState = false
@@ -149,6 +160,7 @@ final class StatusBarController {
         summaryMode: SummaryMode,
         workflow: Workflow? = nil
     ) {
+        cancelSuppressedDisplay()
         item.button?.image = recordingIcon
         var label = summaryMode == .byo ? "Recording (BYO)" : "Recording"
         if let wf = workflow {
@@ -165,6 +177,7 @@ final class StatusBarController {
     }
 
     func setStopping() {
+        cancelSuppressedDisplay()
         item.button?.image = idleIcon
         baseTitle = "Stopping…"
         isIdleState = false
@@ -173,6 +186,43 @@ final class StatusBarController {
         libraryModel?.status = .stopping
         // Keep liveRecordingStem until setIdle fires so the row's pulse
         // stays visible through the flush.
+    }
+
+    /// Surface a silent timeout-skip in the menu bar (UX10 / AUD-12): show
+    /// "Suppressed (<app>)" while the skip latch holds. `isStillSuppressed` reads
+    /// that latch; we re-check on a low-frequency timer and collapse to Idle once
+    /// it lapses (~15 s after the call ends). Presentation-only: the state machine
+    /// stays `.idle` (re-entering the old global `.suppressed` is the START1 wedge),
+    /// so detection keeps running for other apps the whole time.
+    func setSuppressed(_ source: AppSource, isStillSuppressed: @escaping () -> Bool) {
+        cancelSuppressedDisplay()
+        suppressedIsActive = isStillSuppressed
+        item.button?.image = idleIcon
+        baseTitle = "Suppressed (\(source.displayName))"
+        isIdleState = false
+        applyTitle()
+        rebuildMenu(state: .suppressed(source: source))
+        libraryModel?.status = .idle
+        scheduleSuppressedRecheck()
+    }
+
+    private func scheduleSuppressedRecheck() {
+        suppressedDisplayTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.suppressedRecheckInterval, repeats: false
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            if self.suppressedIsActive?() == true {
+                self.scheduleSuppressedRecheck()
+            } else {
+                self.setIdle()
+            }
+        }
+    }
+
+    private func cancelSuppressedDisplay() {
+        suppressedDisplayTimer?.invalidate()
+        suppressedDisplayTimer = nil
+        suppressedIsActive = nil
     }
 
     /// Update the processing-jobs badge. Writes into the sibling

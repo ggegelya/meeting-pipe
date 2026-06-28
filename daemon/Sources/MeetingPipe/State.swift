@@ -38,6 +38,37 @@ struct AppSource: Hashable {
     }
 }
 
+extension AppSource {
+    /// Plist-safe `userInfo` payload so a deferred notification action (UX10's
+    /// start-late on a timeout-skip) can rebuild the source after the in-memory
+    /// prompt state is gone. Keys match the `<stem>.meta.json` sidecar.
+    var notificationUserInfo: [String: String] {
+        var info = [
+            "bundle_id": bundleID,
+            "display_name": displayName,
+            "source_kind": kind == .browser ? "browser" : "native",
+        ]
+        if let meetingTitle = meetingTitle { info["meeting_title"] = meetingTitle }
+        return info
+    }
+
+    /// Rebuild from a notification `userInfo`. Nil when the required identity
+    /// keys are absent, so a malformed payload can't start an anonymous recording.
+    init?(notificationUserInfo info: [AnyHashable: Any]) {
+        guard
+            let bundleID = info["bundle_id"] as? String,
+            let displayName = info["display_name"] as? String
+        else { return nil }
+        let kind: AppSourceKind = (info["source_kind"] as? String) == "browser" ? .browser : .native
+        self.init(
+            bundleID: bundleID,
+            displayName: displayName,
+            kind: kind,
+            meetingTitle: info["meeting_title"] as? String
+        )
+    }
+}
+
 /// How the post-recording summary is produced. `.auto`: Anthropic + Notion publish. `.byo`: writes manual-paste bundle only; user hand-summarizes, saves `<stem>.summary.md`, and runs `mp publish-from-paste`.
 enum SummaryMode: Equatable {
     case auto

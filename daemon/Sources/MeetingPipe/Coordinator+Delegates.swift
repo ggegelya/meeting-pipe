@@ -117,6 +117,20 @@ extension Coordinator: NotifierDelegate {
         // silence countdown instead of stopping (TECH-C2).
         session.keepRecordingFromNudge()
     }
+
+    func notifier(_ notifier: Notifier, didRequestStartLate source: AppSource) {
+        // UX10: start-late from a timeout-skip notification. Only when nothing is
+        // already recording (a later meeting takes precedence); clear every
+        // suppression the skip armed (cooldown + latch) so this explicit intent
+        // isn't held off, mirroring the manual hotkey / "Always" paths.
+        guard stateMachine.isAcceptingPrompts else { return }
+        stateMachine.clearSuppression(bundleID: source.bundleID)
+        session.beginRecording(source: source, summaryMode: .auto)
+        Log.writeLine("daemon", "start-late from skip notification (\(source.bundleID))")
+        Log.event(category: "coordinator", action: "start_late", attributes: [
+            "bundle_id": source.bundleID,
+        ])
+    }
 }
 
 extension Coordinator: MeetingPromptDelegate {

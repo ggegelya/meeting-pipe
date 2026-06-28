@@ -15,6 +15,8 @@ protocol NotifierDelegate: AnyObject {
     func notifierDidRequestStopRecording(_ notifier: Notifier)
     /// User tapped "Keep recording", or the banner body, on the "Still meeting?" notification. Coordinator restarts the silence countdown so the recording is not auto-stopped.
     func notifierDidRequestKeepRecording(_ notifier: Notifier)
+    /// User tapped "Start recording" (or the banner body) on the timeout-skip notification (UX10). Coordinator clears the bundle's suppression and starts a late recording.
+    func notifier(_ notifier: Notifier, didRequestStartLate source: AppSource)
     /// User clicked "Looks good" on the published-meeting notification.
     func notifier(
         _ notifier: Notifier,
@@ -48,6 +50,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private static let actionStopRecording = "MP_STOP_RECORDING"
     private static let actionKeepRecording = "MP_KEEP_RECORDING"
     private static let stillMeetingIDPrefix = "still-meeting-"
+    private static let skipLateCategory = "MP_SKIP_LATE"
+    private static let actionStartLate = "MP_START_LATE"
+    private static let skipLateIDPrefix = "skip-late-"
 
     /// Per-notification state kept so "Looks good" can find the recording without re-deriving paths on click.
     private struct DoneEntry {
@@ -131,6 +136,27 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     func notifyError(_ message: String) {
         post(title: "MeetingPipe error", body: message)
+    }
+
+    /// Posted when a detection prompt times out and the meeting is skipped (UX10 /
+    /// AUD-12). The timeout-skip otherwise discards a detected meeting with no
+    /// surface at all (every other failure branch notifies). "Start recording"
+    /// begins a late recording, bypassing the reprompt cooldown + skip latch the
+    /// skip armed; the app identity rides in `userInfo` so the action still works
+    /// minutes later. A stable per-bundle id coalesces repeat skips of one app.
+    func notifySkippedMeeting(source: AppSource) {
+        let content = UNMutableNotificationContent()
+        content.title = "Skipped \(source.displayName)"
+        content.body = "Meeting prompt timed out. Start recording?"
+        content.categoryIdentifier = Self.skipLateCategory
+        content.userInfo = source.notificationUserInfo
+        content.sound = .default
+        let req = UNNotificationRequest(
+            identifier: "\(Self.skipLateIDPrefix)\(source.bundleID)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(req)
     }
 
     /// Posted by the idle backstop (TECH-END3) after a long VAD-silent stretch. "Keep recording" (and a plain banner tap) restart the idle countdown; "Stop recording" ends it now. For a native meeting still tracked live, the auto-stop stands down on its own and this nudge just re-surfaces.
@@ -284,8 +310,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             intentIdentifiers: [],
             options: []
         )
+        let startLate = UNNotificationAction(identifier: Self.actionStartLate, title: "Start recording", options: [.foreground])
+        let skipLate = UNNotificationCategory(
+            identifier: Self.skipLateCategory,
+            actions: [startLate],
+            intentIdentifiers: [],
+            options: []
+        )
         UNUserNotificationCenter.current().setNotificationCategories(
-            [done, doneCorrectable, doneCorrectableLocal, perm, accessibility, stillMeeting]
+            [done, doneCorrectable, doneCorrectableLocal, perm, accessibility, stillMeeting, skipLate]
         )
     }
 
@@ -355,6 +388,14 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             } else if action == Self.actionKeepRecording || isDefault {
                 delegate?.notifierDidRequestKeepRecording(self)
             }
+        }
+
+        // UX10: "Start recording" (or a banner tap) on a timeout-skip notification
+        // rebuilds the source from `userInfo` and starts the recording late.
+        if id.hasPrefix(Self.skipLateIDPrefix),
+           action == Self.actionStartLate || isDefault,
+           let source = AppSource(notificationUserInfo: response.notification.request.content.userInfo) {
+            delegate?.notifier(self, didRequestStartLate: source)
         }
         completionHandler()
     }
