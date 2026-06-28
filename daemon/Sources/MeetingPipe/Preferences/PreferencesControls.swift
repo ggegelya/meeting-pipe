@@ -23,7 +23,7 @@ struct SettingsSectionHeader<Trailing: View>: View {
                 if let caption = caption {
                     Text(caption)
                         .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(MPColors.fgMuted))
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -56,7 +56,7 @@ struct SettingsGroup<Content: View, Footer: View>: View {
                 Text(label.uppercased())
                     .font(.system(size: 11, weight: .semibold))
                     .tracking(0.6)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
                     .padding(.leading, 2)
             }
             VStack(spacing: 0) { content() }
@@ -70,7 +70,7 @@ struct SettingsGroup<Content: View, Footer: View>: View {
                 )
             footer()
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .padding(.leading, 2)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -114,7 +114,7 @@ struct SettingsRow<Content: View>: View {
                     if let sublabel = sublabel {
                         Text(sublabel)
                             .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color(MPColors.fgMuted))
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -186,7 +186,7 @@ struct SettingsStackRow<Content: View>: View {
                 if let sublabel = sublabel {
                     Text(sublabel)
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(MPColors.fgMuted))
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 2)
                 }
@@ -242,14 +242,14 @@ struct SettingsDisclosure<Content: View>: View {
                         if let sublabel = sublabel {
                             Text(sublabel)
                                 .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color(MPColors.fgMuted))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(MPColors.fgMuted))
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 }
                 .padding(.horizontal, 14)
@@ -344,7 +344,7 @@ struct SettingsStatusPill: View {
             case .granted: return .mpSuccess
             case .needed:  return .mpWarning
             case .denied:  return .mpDanger
-            case .neutral: return .secondary
+            case .neutral: return Color(MPColors.fgMuted)
             }
         }
     }
@@ -389,7 +389,7 @@ struct SettingsTag: View {
                 Button(action: onRemove) {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(MPColors.fgMuted))
                         .frame(width: 14, height: 14)
                 }
                 .buttonStyle(.plain)
@@ -425,7 +425,7 @@ struct SettingsSlider: View {
                 .tint(Color(MPColors.signal600))
             Text(format(value))
                 .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .frame(width: valueWidth, alignment: .trailing)
         }
     }
@@ -450,7 +450,7 @@ struct SettingsHotkeyField: View {
                         .font(.system(size: 12))
                 } else if text.isEmpty {
                     Text("Not set")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(MPColors.fgMuted))
                         .font(.system(size: 12))
                 } else {
                     Text(Self.renderGlyphs(text))
@@ -460,7 +460,7 @@ struct SettingsHotkeyField: View {
                 if isCapturing {
                     Image(systemName: "command")
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(MPColors.fgMuted))
                 }
             }
             .padding(.horizontal, 10)

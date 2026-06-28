@@ -14,7 +14,7 @@ struct OnboardingStepPermissions: View {
                 .font(.system(size: 22, weight: .semibold))
             Text("Audio capture is fully on-device. None of these permissions send anything off your machine.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .fixedSize(horizontal: false, vertical: true)
             VStack(spacing: 8) {
                 ForEach(PermissionsCenter.Kind.allCases) { kind in
@@ -31,12 +31,12 @@ struct OnboardingStepPermissions: View {
         HStack(spacing: 12) {
             Image(systemName: icon(kind))
                 .frame(width: 28, height: 28)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
             VStack(alignment: .leading, spacing: 2) {
                 Text(kind.displayName).font(.system(size: 13, weight: .medium))
                 Text(kind.rationale)
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()

@@ -56,7 +56,7 @@ struct PermissionsSectionView: View {
 
             Text("Granting Accessibility from System Settings requires a daemon restart for the change to take effect - macOS caches the trust verdict per-process at launch.")
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .padding(.leading, 2)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -130,7 +130,7 @@ private struct PermissionsCardRow: View {
                         .frame(width: 32, height: 32)
                     Image(systemName: iconName)
                         .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(MPColors.fgMuted))
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
@@ -144,7 +144,7 @@ private struct PermissionsCardRow: View {
                     }
                     Text(rationale)
                         .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(MPColors.fgMuted))
                         .lineSpacing(1)
                         .fixedSize(horizontal: false, vertical: true)
                     if showsDeferredHint {

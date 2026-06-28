@@ -67,11 +67,11 @@ struct LibraryToolbar: View {
         HStack(spacing: 6) {
             Text("Library")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
             if let wf = scopedWorkflow {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
                 HStack(spacing: 5) {
                     Circle()
                         .fill(swiftUIColor(forHex: wf.color))
@@ -82,7 +82,7 @@ struct LibraryToolbar: View {
             } else {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
                 Text(selection.title)
                     .font(.system(size: 12, weight: .medium))
             }
@@ -141,7 +141,7 @@ struct StatePill: View {
                 .frame(width: 7, height: 7)
             Text("Idle")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
         }
         .padding(.horizontal, 10)
         .frame(height: 26)
@@ -162,7 +162,7 @@ struct StatePill: View {
                 .progressViewStyle(.circular)
             Text(label)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
         }
         .padding(.horizontal, 10)
         .frame(height: 26)
@@ -185,7 +185,7 @@ struct StatePill: View {
             Text("Recording")
                 .font(.system(size: 12, weight: .medium))
             if let wf = workflow {
-                Text("·").foregroundStyle(.secondary)
+                Text("·").foregroundStyle(Color(MPColors.fgMuted))
                 HStack(spacing: 5) {
                     Circle()
                         .fill(wfColor)

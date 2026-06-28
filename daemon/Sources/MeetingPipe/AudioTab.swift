@@ -83,14 +83,14 @@ struct AudioTab: View {
 
             Text(WaveformTimecode.format(playback.currentTime))
                 .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .frame(width: 56, alignment: .trailing)
             Text("/")
                 .font(.caption.monospacedDigit())
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(MPColors.fgSubtle))
             Text(WaveformTimecode.format(playback.duration))
                 .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .frame(width: 56, alignment: .leading)
 
             Spacer()
@@ -130,10 +130,10 @@ struct AudioTab: View {
         VStack(spacing: 8) {
             Image(systemName: "waveform")
                 .font(.system(size: 32))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(MPColors.fgSubtle))
             Text("No audio for this meeting.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
@@ -147,10 +147,10 @@ struct AudioTab: View {
                 .foregroundStyle(.mpWarning)
             Text("Couldn't read the waveform.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
             Text(msg)
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(MPColors.fgSubtle))
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

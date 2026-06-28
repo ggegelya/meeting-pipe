@@ -66,7 +66,7 @@ struct PipelineSectionView: View {
                             sublabel: activeModelSizeHint) {
                             Text(activeModelName)
                                 .font(.system(.body, design: .monospaced))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color(MPColors.fgMuted))
                                 .textSelection(.enabled)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
@@ -219,7 +219,7 @@ struct PipelineSectionView: View {
             } else if let err = promptError {
                 Text("Couldn't load the prompt: \(err)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 Button(promptLoading ? "Loading…" : "View prompt") {

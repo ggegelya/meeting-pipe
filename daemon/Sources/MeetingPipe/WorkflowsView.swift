@@ -226,7 +226,7 @@ struct WorkflowEditor: View {
             if matchingRules.isEmpty {
                 Text("No rules - this workflow matches only when used as the default.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
             } else {
                 // Iterate by value/id, not a positional `$matchingRules`
                 // binding: removing a row inside a binding-based ForEach makes
@@ -247,7 +247,7 @@ struct WorkflowEditor: View {
             .buttonStyle(.borderless)
             Text("Bundle id matches the meeting app (e.g. `us.zoom.xos`, `com.microsoft.teams2`). Title regex is case-insensitive and tests the window title; useful to split a single browser into per-tab workflows.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
         }
     }
 
@@ -291,7 +291,7 @@ struct WorkflowEditor: View {
                 .border(Color.secondary.opacity(0.2))
             Text("Seasoning the LLM sees for every meeting matched by this workflow. Example: \"Confidential client meeting; redact names; FDA 21 CFR Part 11 context.\"")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
         }
     }
 
@@ -370,12 +370,12 @@ struct WorkflowEditor: View {
                 ProgressView().controlSize(.small)
                 Text("Fetching databases…")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
             }
         case .loaded(let list):
             Text("\(list.count) database\(list.count == 1 ? "" : "s") cached")
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(MPColors.fgSubtle))
         case .failed(let err):
             Text(err)
                 .font(.caption)
@@ -405,7 +405,7 @@ struct WorkflowEditor: View {
             } else if backend == nil {
                 Text("Inherits the backend from Preferences > Pipeline.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
             } else if backend == .appleIntelligence, let reason = AppleIntelligenceSummarizer.availabilityReason {
                 Text("Apple Intelligence is unavailable here: \(reason)")
                     .font(.caption)
@@ -419,11 +419,11 @@ struct WorkflowEditor: View {
             Toggle("NDA mode (force local backend, filesystem only)", isOn: $ndaMode)
             Text("Surfaces in the HUD and the menu-bar title so a misroute is visible before the meeting starts.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
             Toggle("Redact muted spans from the notes", isOn: $redactMutedSpans)
             Text("Off by default: the full mic is kept and transcribed (a fragile mute oracle can never silently drop your speech). On, muted moments are removed from the consumed notes offline; the full recording is still kept aside for recovery.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
         }
     }
 
@@ -433,7 +433,7 @@ struct WorkflowEditor: View {
                 .disabled(workflow.isDefault)
             Text("The default workflow matches any meeting that no other workflow's rules pick up. Toggle on a different workflow here to switch the default.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
         }
     }
 

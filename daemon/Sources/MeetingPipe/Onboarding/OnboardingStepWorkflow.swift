@@ -38,7 +38,7 @@ struct OnboardingStepWorkflow: View {
                 .font(.system(size: 22, weight: .semibold))
             Text("A workflow decides how a meeting is handled and where its summary goes. You can edit it or add more later.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .fixedSize(horizontal: false, vertical: true)
             VStack(spacing: 8) {
                 ForEach(Preset.allCases) { card($0) }
@@ -54,12 +54,12 @@ struct OnboardingStepWorkflow: View {
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: selected == p ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(selected == p ? Color(MPColors.signal600) : Color.secondary)
+                    .foregroundStyle(selected == p ? Color(MPColors.signal600) : Color(MPColors.fgMuted))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(p.title).font(.system(size: 13, weight: .medium))
                     Text(p.subtitle)
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(MPColors.fgMuted))
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()

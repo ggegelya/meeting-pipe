@@ -135,7 +135,7 @@ struct PreferencesView: View {
     private var doctorStatusLabel: some View {
         switch doctor.state {
         case .idle:
-            return AnyView(Text("Idle").foregroundStyle(.secondary).font(.caption))
+            return AnyView(Text("Idle").foregroundStyle(Color(MPColors.fgMuted)).font(.caption))
         case .running:
             return AnyView(
                 HStack(spacing: 6) {

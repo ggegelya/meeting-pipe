@@ -410,9 +410,9 @@ struct LibraryRootView: View {
             VStack(spacing: 8) {
                 Image(systemName: "doc.text")
                     .font(.system(size: 36))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color(MPColors.fgSubtle))
                 Text("Select a meeting")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }

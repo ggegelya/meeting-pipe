@@ -119,7 +119,7 @@ struct SummaryTab: View {
         VStack(alignment: .leading, spacing: 16) {
             Label("Current", systemImage: "doc.text")
                 .font(.headline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
             SummaryRenderedView(summary: current)
             Divider()
             // PRODUCT "no sparkle" rule: a plain inspect glyph, label "Candidate".
@@ -140,7 +140,7 @@ struct SummaryTab: View {
             HStack(spacing: 8) {
                 Text("Previewing a new local summary. Keep replaces the current one (you choose whether to publish).")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 Button("Discard") { discardPreview() }
@@ -159,7 +159,7 @@ struct SummaryTab: View {
                 Spacer()
                 if previewing {
                     ProgressView().controlSize(.small)
-                    Text("Re-running on-device…").font(.caption).foregroundStyle(.secondary)
+                    Text("Re-running on-device…").font(.caption).foregroundStyle(Color(MPColors.fgMuted))
                 } else {
                     Button("Re-run locally (preview)") { Task { await runPreview() } }
                         .help("Re-run summarization with the on-device model and compare, without publishing.")
@@ -201,13 +201,13 @@ struct SummaryTab: View {
     private var reprocessBar: some View {
         HStack(spacing: 8) {
             Image(systemName: "arrow.triangle.2.circlepath")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
             VStack(alignment: .leading, spacing: 1) {
                 Text("Not quite right?")
                     .font(.system(size: 12, weight: .medium))
                 Text("Edit the prompt and reprocess. You can compare before keeping it.")
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
@@ -234,7 +234,7 @@ struct SummaryTab: View {
                 .font(.headline)
             Text("Adjust the context the model is given, then generate a candidate to compare. Your live summary stays untouched until you keep it.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .fixedSize(horizontal: false, vertical: true)
             Text("Context prompt")
                 .font(.system(size: 11, weight: .semibold))
@@ -256,7 +256,7 @@ struct SummaryTab: View {
                 Spacer()
                 if previewing {
                     ProgressView().controlSize(.small)
-                    Text("Reprocessing\u{2026}").font(.caption).foregroundStyle(.secondary)
+                    Text("Reprocessing\u{2026}").font(.caption).foregroundStyle(Color(MPColors.fgMuted))
                 } else {
                     Button("Cancel") { showReprocess = false; previewError = nil }
                     Button("Generate candidate") { runReprocess() }
@@ -302,7 +302,7 @@ struct SummaryTab: View {
     private var emptyState: some View {
         if meeting.status == .done {
             Text("Summary not on disk yet.")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(40)
         } else if meeting.status == .failed {
@@ -312,13 +312,13 @@ struct SummaryTab: View {
         } else if meeting.status == .empty {
             Text((meeting.emptyReason ?? .noSpeech).detail)
                 .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(40)
         } else {
             Text("No summary yet.\nIt appears here once the pipeline finishes.")
                 .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(40)
         }
@@ -334,7 +334,7 @@ struct SummaryTab: View {
                     .font(.headline)
                 Text("This meeting was transcribed but left for you to summarize. Paste a Markdown summary below, then Save to parse and publish it through your sinks.")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
                     .fixedSize(horizontal: false, vertical: true)
             }
             TextEditor(text: $pasteText)
@@ -353,7 +353,7 @@ struct SummaryTab: View {
             HStack(spacing: 8) {
                 if pasteSaving {
                     ProgressView().controlSize(.small)
-                    Text("Publishing…").font(.caption).foregroundStyle(.secondary)
+                    Text("Publishing…").font(.caption).foregroundStyle(Color(MPColors.fgMuted))
                 }
                 Spacer()
                 Button("Save & publish") {
@@ -389,13 +389,13 @@ struct SummaryTab: View {
             if let stage = stageLabel {
                 Text("Failed at: \(stage)")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
             }
             if let reason = meeting.failureReason, !reason.isEmpty {
                 ScrollView {
                     Text(reason)
                         .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(MPColors.fgMuted))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -528,7 +528,7 @@ struct SummaryTab: View {
         } else {
             Text("Markdown supported. Save keeps it here; republish to push it to your sinks.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
         }

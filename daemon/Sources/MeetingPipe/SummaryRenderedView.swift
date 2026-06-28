@@ -84,7 +84,7 @@ struct SummaryRenderedView: View {
         VStack(alignment: .leading, spacing: MPSpace.s3) {
             HStack(spacing: MPSpace.s2) {
                 Image(systemName: systemImage)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
                     .font(.subheadline)
                 Text(title)
                     .font(.headline)
@@ -101,7 +101,7 @@ struct SummaryRenderedView: View {
             ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
                 HStack(alignment: .firstTextBaseline, spacing: MPSpace.s2) {
                     Text(numbered ? "\(idx + 1)." : "•")
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color(MPColors.fgSubtle))
                         .font(.callout.monospacedDigit())
                         .frame(minWidth: 16, alignment: .trailing)
                     Text(inlineMarkdown(item))
@@ -137,7 +137,7 @@ private struct ActionItemRow: View {
         VStack(alignment: .leading, spacing: MPSpace.s1) {
             HStack(alignment: .firstTextBaseline, spacing: MPSpace.s2) {
                 Image(systemName: "circle")
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color(MPColors.fgSubtle))
                     .font(.caption)
                 Text(taskAttributed)
                     .font(.body)
@@ -218,7 +218,7 @@ private struct AttendeeChips: View {
                 HStack(spacing: 4) {
                     Image(systemName: "person.fill")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(MPColors.fgMuted))
                     Text(name)
                         .font(.caption)
                         .foregroundStyle(.primary)

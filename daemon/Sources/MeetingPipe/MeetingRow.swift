@@ -283,7 +283,7 @@ struct MeetingRow: View, Equatable {
             // Manual recordings (⌃⌥M) have no source; use the waveform ring to keep the column aligned.
             Image(systemName: "waveform.circle")
                 .font(.system(size: 18))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .frame(width: 22, height: 22)
         }
     }
@@ -361,7 +361,7 @@ struct MeetingRow: View, Equatable {
             ProgressView().controlSize(.small)
             Text(state == .republishing ? "Publishing" : "Regenerating")
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
         }
     }
 

@@ -76,7 +76,7 @@ struct RecordingSectionView: View {
                     if store.autoConsentApps.isEmpty {
                         Text("No apps yet - every meeting will prompt.")
                             .font(.system(size: 12))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(Color(MPColors.fgSubtle))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
                         WrappingHStack(items: store.autoConsentApps) { bundleID in

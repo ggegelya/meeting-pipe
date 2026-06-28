@@ -84,7 +84,7 @@ struct CorrectionsTab: View {
                 HStack(spacing: 6) {
                     Text("\(backend) · \(model)")
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color(MPColors.fgSubtle))
                 }
             }
             Spacer()
@@ -141,7 +141,7 @@ struct CorrectionsTab: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title)
                 .font(.headline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
             CorrectionSummaryPreview(summary: summary)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -173,14 +173,14 @@ struct CorrectionsTab: View {
         VStack(spacing: 8) {
             Image(systemName: "pencil")
                 .font(.system(size: 32))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(MPColors.fgSubtle))
             Text("No corrections yet.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
             Text("Editing the Summary tab writes a record here so the LoRA training set has a paper trail.")
                 .multilineTextAlignment(.center)
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(MPColors.fgSubtle))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
@@ -283,7 +283,7 @@ struct CorrectionSummaryPreview: View {
             if isEmpty {
                 Text("(no content)")
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color(MPColors.fgSubtle))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -313,10 +313,10 @@ struct CorrectionSummaryPreview: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("•").foregroundStyle(.tertiary)
+                    Text("•").foregroundStyle(Color(MPColors.fgSubtle))
                     Text(item)
                         .font(.caption)
                         .fixedSize(horizontal: false, vertical: true)

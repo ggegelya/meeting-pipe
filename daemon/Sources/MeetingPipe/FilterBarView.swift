@@ -86,7 +86,7 @@ struct FilterBarView: View {
                         .foregroundStyle(Color(MPColors.fgMuted))
                     Image(systemName: "chevron.down")
                         .font(.system(size: 8, weight: .medium))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color(MPColors.fgSubtle))
                 }
                 .padding(.horizontal, 8)
                 .frame(height: 22)

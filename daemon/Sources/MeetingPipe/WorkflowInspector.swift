@@ -47,7 +47,7 @@ struct WorkflowInspector: View {
                         .font(.system(size: 10, weight: .semibold))
                         .tracking(0.06 * 10)
                         .textCase(.uppercase)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(MPColors.fgMuted))
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .overlay(
@@ -59,7 +59,7 @@ struct WorkflowInspector: View {
             if !workflow.contextPrompt.isEmpty {
                 Text(workflow.contextPrompt)
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -81,12 +81,12 @@ struct WorkflowInspector: View {
                 .font(.system(size: 10, weight: .semibold))
                 .tracking(0.08 * 10)
                 .textCase(.uppercase)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(recentMeetings.prefix(5)) { m in
                     Text(m.displayTitle)
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(MPColors.fgMuted))
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .padding(.horizontal, 6)
@@ -163,7 +163,7 @@ private struct InspectorRow: View {
                 .font(.system(size: 10, weight: .semibold))
                 .tracking(0.08 * 10)
                 .textCase(.uppercase)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
             Text(value)
                 .font(.system(size: 12))
                 .foregroundStyle(.primary)

@@ -77,7 +77,7 @@ struct OnboardingRootView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .tracking(0.08 * 11)
                     .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
                 Spacer()
                 Button("Skip setup") { onComplete() }
                     .buttonStyle(.link)

@@ -84,7 +84,7 @@ struct CorrectionEditorBody: View {
                 }
             }
             if items.wrappedValue.isEmpty {
-                Text("No entries.").font(.caption).foregroundStyle(.tertiary)
+                Text("No entries.").font(.caption).foregroundStyle(Color(MPColors.fgSubtle))
             }
         }
     }
@@ -110,7 +110,7 @@ struct CorrectionEditorBody: View {
                 }
             }
             if model.actions.isEmpty {
-                Text("No action items.").font(.caption).foregroundStyle(.tertiary)
+                Text("No action items.").font(.caption).foregroundStyle(Color(MPColors.fgSubtle))
             }
         }
     }

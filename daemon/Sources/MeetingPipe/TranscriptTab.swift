@@ -123,7 +123,7 @@ enum TranscriptDisplay {
 
     /// Stable tint per speaker so list reordering doesn't reshuffle colors.
     static func color(for speakerID: String?) -> Color {
-        guard let id = speakerID, !id.isEmpty else { return .secondary }
+        guard let id = speakerID, !id.isEmpty else { return Color(MPColors.fgMuted) }
         let palette: [Color] = MPColors.speakerPalette.map { Color(nsColor: $0) }
         if id.hasPrefix("speaker_"),
            let n = Int(id.dropFirst("speaker_".count)) {
@@ -244,13 +244,13 @@ struct TranscriptTab: View {
         VStack(spacing: 8) {
             Image(systemName: "text.bubble")
                 .font(.system(size: 32))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(MPColors.fgSubtle))
             Text(meeting.status == .done
                  ? "No transcript on disk for this meeting."
                  : "Transcript appears once the pipeline finishes.")
                 .multilineTextAlignment(.center)
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
@@ -291,7 +291,7 @@ private struct TranscriptList: View {
                     if let lang = language {
                         Text("Language: \(lang)")
                             .font(.caption)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(Color(MPColors.fgSubtle))
                             .padding(.horizontal, 16)
                             .padding(.top, 12)
                     }
@@ -347,7 +347,7 @@ private struct TranscriptRow: View {
                             .foregroundStyle(TranscriptDisplay.color(for: segment.speakerID))
                         Text(TranscriptDisplay.timestamp(segment.start))
                             .font(.caption.monospacedDigit())
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(Color(MPColors.fgSubtle))
                     }
                     Text(segment.text)
                         .font(.body)
@@ -413,7 +413,7 @@ private struct TranscriptLineEditor: View {
                     .foregroundStyle(TranscriptDisplay.color(for: segment.speakerID))
                 Text(TranscriptDisplay.timestamp(segment.start))
                     .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color(MPColors.fgSubtle))
                 Spacer()
             }
             TextEditor(text: $text)
@@ -448,7 +448,7 @@ private struct PlaybackBar: View {
         if let err = playback.loadError {
             Label(err, systemImage: "exclamationmark.triangle")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             HStack(spacing: 10) {
@@ -463,7 +463,7 @@ private struct PlaybackBar: View {
 
                 Text(TranscriptDisplay.timestamp(displayedTime))
                     .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
                     .frame(width: 48, alignment: .trailing)
 
                 Slider(
@@ -482,7 +482,7 @@ private struct PlaybackBar: View {
 
                 Text(TranscriptDisplay.timestamp(playback.duration))
                     .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
                     .frame(width: 48, alignment: .leading)
             }
         }

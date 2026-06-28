@@ -31,7 +31,7 @@ struct LibrarySidebar: View {
                     .font(.system(size: 10, weight: .semibold))
                     .tracking(0.08 * 10)
                     .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
             }
 
             Section {
@@ -46,10 +46,10 @@ struct LibrarySidebar: View {
                 Button(action: onCreateWorkflow) {
                     Label {
                         Text("New workflow")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color(MPColors.fgMuted))
                     } icon: {
                         Image(systemName: "plus")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color(MPColors.fgMuted))
                     }
                 }
                 .buttonStyle(.plain)
@@ -58,7 +58,7 @@ struct LibrarySidebar: View {
                     .font(.system(size: 10, weight: .semibold))
                     .tracking(0.08 * 10)
                     .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
             }
         }
         .listStyle(.sidebar)
@@ -203,7 +203,7 @@ private struct WorkflowScopeRow: View {
                     if workflow.isDefault {
                         Text("· default")
                             .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(Color(MPColors.fgSubtle))
                     }
                 }
                 Spacer(minLength: 0)

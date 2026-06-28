@@ -154,7 +154,7 @@ struct QuickFindView: View {
     private var searchHeader: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
             TextField("Find a meeting…", text: $model.query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
@@ -174,7 +174,7 @@ struct QuickFindView: View {
                      ? "Start typing to search the library."
                      : "No matches.")
                     .font(.callout)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color(MPColors.fgSubtle))
                 Spacer()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -220,20 +220,20 @@ private struct QuickFindRow: View {
                 if let wf = match.meeting.workflowName, !wf.isEmpty {
                     Text(wf)
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(MPColors.fgMuted))
                     Text("·")
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color(MPColors.fgSubtle))
                 }
                 Text(QuickFindRow.dateFormatter.string(from: match.meeting.startedAt))
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
                 Text("·")
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color(MPColors.fgSubtle))
                 Text(match.hitField)
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color(MPColors.fgSubtle))
             }
         }
         .padding(.horizontal, 14)

@@ -38,7 +38,7 @@ struct RawFilesTab: View {
                 HStack(spacing: 8) {
                     Text("\(files.count) file\(files.count == 1 ? "" : "s") under \(meeting.recordingsDir.path)")
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color(MPColors.fgSubtle))
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
@@ -60,10 +60,10 @@ struct RawFilesTab: View {
         VStack(spacing: 8) {
             Image(systemName: "folder")
                 .font(.system(size: 32))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(MPColors.fgSubtle))
             Text("No sidecars on disk for this stem.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
@@ -202,7 +202,7 @@ private struct RawFileRow: View {
         HStack(spacing: 12) {
             Image(systemName: entry.kind.systemImage)
                 .frame(width: 22)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 8) {
                     Text(entry.url.lastPathComponent)
@@ -213,16 +213,16 @@ private struct RawFileRow: View {
                 HStack(spacing: 6) {
                     Text(entry.kind.label)
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
-                    Text("·").foregroundStyle(.tertiary)
+                        .foregroundStyle(Color(MPColors.fgSubtle))
+                    Text("·").foregroundStyle(Color(MPColors.fgSubtle))
                     Text(formatSize(entry.sizeBytes))
                         .font(.caption.monospacedDigit())
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color(MPColors.fgSubtle))
                     if let m = entry.modified {
-                        Text("·").foregroundStyle(.tertiary)
+                        Text("·").foregroundStyle(Color(MPColors.fgSubtle))
                         Text(MeetingFormatters.fullDateTime.string(from: m))
                             .font(.caption)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(Color(MPColors.fgSubtle))
                     }
                 }
             }

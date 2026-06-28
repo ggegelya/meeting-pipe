@@ -278,7 +278,7 @@ private struct CorrectionView: View {
                 Label(modelDisplayName, systemImage: "cube")
             }
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color(MPColors.fgMuted))
         }
     }
 

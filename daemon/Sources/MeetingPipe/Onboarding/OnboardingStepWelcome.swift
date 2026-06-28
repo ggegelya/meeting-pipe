@@ -13,7 +13,7 @@ struct OnboardingStepWelcome: View {
                 .fixedSize(horizontal: false, vertical: true)
             Text("MeetingPipe detects your calls, records and transcribes them on-device, and writes a summary. Audio capture and transcription stay local; nothing is uploaded unless you configure a publish target.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }

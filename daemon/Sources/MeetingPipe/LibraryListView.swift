@@ -62,7 +62,7 @@ struct LibraryListView: View {
                     .font(.system(size: 17, weight: .semibold))
                 Text("\(count) meeting\(count == 1 ? "" : "s")")
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(MPColors.fgMuted))
             }
             Spacer()
         }
@@ -241,13 +241,13 @@ struct LibraryEmptyState: View {
         VStack(spacing: 12) {
             Image(systemName: "waveform")
                 .font(.system(size: 48))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(MPColors.fgSubtle))
             Text("No recordings yet")
                 .font(.title3)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
             Text("Start a meeting in Zoom / Teams / Meet / Webex / Slack, or press ⌃⌥M.")
                 .font(.callout)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(MPColors.fgSubtle))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -270,13 +270,13 @@ struct LibraryListEmptyState: View {
         VStack(spacing: 6) {
             Image(systemName: systemImage)
                 .font(.system(size: 26))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(MPColors.fgSubtle))
                 .padding(.bottom, 2)
             Text(title)
                 .font(.system(size: 15, weight: .semibold))
             Text(message)
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: 320)

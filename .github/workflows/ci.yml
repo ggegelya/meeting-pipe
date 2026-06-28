@@ -82,6 +82,25 @@ jobs:
             exit 1
           fi
           echo "No raw semantic color literals."
+      - name: No bare native-semantic text colors (TECH-DSN18)
+        shell: bash
+        run: |
+          # DSN18: native .secondary/.tertiary/.quaternary fail WCAG as text on
+          # paper (.tertiary ~1.88:1, .secondary ~3.94:1). Text foregrounds must
+          # come from the legibility-checked tokens (fgMuted / fgSubtle), whose
+          # floor ContrastFloorTests pins. Recursive scope on purpose (the color
+          # and font guards above use a shallow daemon/Sources/*.swift glob that
+          # never reached subdirectories); Design/ is the allowed definition site.
+          # Color.secondary.opacity(...) fills and borders are out of scope (not
+          # text), matching the spec.
+          set -e
+          matches=$(git grep -nE '\.foregroundStyle\(\.(secondary|tertiary|quaternary)\)|\.foregroundColor\(\.(secondary|tertiary|quaternary)\)|return \.(secondary|tertiary|quaternary)\b' -- daemon/Sources ':!daemon/Sources/MeetingPipe/Design' || true)
+          if [ -n "$matches" ]; then
+            echo "::error::TECH-DSN18: bare native-semantic text color under daemon/Sources. Use a token (Color(MPColors.fgMuted) for secondary, Color(MPColors.fgSubtle) for tertiary)."
+            echo "$matches"
+            exit 1
+          fi
+          echo "No bare native-semantic text colors."
       - name: No newly-introduced raw font-size literals
         env:
           BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}

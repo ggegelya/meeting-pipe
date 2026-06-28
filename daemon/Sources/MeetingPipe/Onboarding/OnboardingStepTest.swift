@@ -16,7 +16,7 @@ struct OnboardingStepTest: View {
                 .font(.system(size: 22, weight: .semibold))
             Text("Record about a minute and say a few words. When it finishes, the transcript and summary appear in your Library, so you know the whole path works before a real meeting.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(MPColors.fgMuted))
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 12) {
@@ -33,7 +33,7 @@ struct OnboardingStepTest: View {
 
             Text("Optional. You can skip this and record your first real meeting whenever you're ready.")
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(MPColors.fgSubtle))
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
