@@ -45,6 +45,9 @@ Subcommands:
                               transcripts (on-device, zero-dependency)
   actions [--owner N] [--due-before D] [--min-confidence C] [--json]
                               List open action items across all your meetings
+  ai2-spike [--sizes 4000,8000,16000] [--repeats N] [--index-only]
+                              Spike: build an on-device embedding index and
+                              measure long-context RAG latency + faithfulness
 
 Globals:
   --help, -h                  Show this message
@@ -113,6 +116,9 @@ def main() -> int:
         return run(rest)
     if cmd == "actions":
         from .actions import main as run
+        return run(rest)
+    if cmd in {"ai2-spike", "ai2_spike"}:
+        from .ai2_spike import main as run
         return run(rest)
 
     print(f"unknown subcommand: {cmd}\n", file=sys.stderr)

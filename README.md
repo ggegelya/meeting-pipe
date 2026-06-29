@@ -315,7 +315,12 @@ mp ask budget Q3 forecast                           # top meetings, with a snipp
 mp ask "migration to postgres" --top 3 --json       # machine-readable
 ```
 
-This is the zero-dependency MVP; on-device semantic (embeddings) search over the same library is the planned follow-up.
+This is the zero-dependency MVP. The on-device semantic layer over the same library now exists: `mp ai2-spike` builds a real embedding index (multilingual-e5 on MLX, en/uk) and measures long-context RAG latency + faithfulness on your Mac, the go/no-go that gates engine-backed cited answers (see [`docs/spikes/ai2-embedding-rag-latency.md`](./docs/spikes/ai2-embedding-rag-latency.md)).
+
+```bash
+mp ai2-spike --index-only                           # just build the embedding index
+mp ai2-spike --reuse-index --sizes 4000,8000,16000  # measure RAG TTFT + faithfulness
+```
 
 To roll up commitments across every meeting, `mp actions` lists the action items the summarizer already extracted, soonest deadlines first. Each action carries a resolved flag, and a dated open action shows its age off the ISO due date:
 

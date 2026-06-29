@@ -1,0 +1,49 @@
+{
+  "gen_model": "mlx-community/Qwen2.5-14B-Instruct-4bit",
+  "embed_model": "mlx-community/multilingual-e5-small-mlx",
+  "library_root": "/Users/userinverita96/Documents/Meetings/raw",
+  "chunk_count": 2147,
+  "repeats": 2,
+  "measured_at": "2026-06-29T15:14:09Z",
+  "sizes": [
+    {
+      "target_tokens": 4000,
+      "actual_prompt_tokens": 4030,
+      "prompt_tokens_estimated": false,
+      "median_ttft_sec": 33.592,
+      "median_total_sec": 51.157,
+      "median_prefill_tok_s": 120.8,
+      "median_decode_tok_s": 14.6,
+      "faithfulness": 1.0,
+      "citation_accuracy": 1.0,
+      "probe_count": 3,
+      "runs": [
+        {
+          "ttft_sec": 36.327,
+          "total_sec": 53.867,
+          "prompt_tokens": 4030,
+          "completion_tokens": 256,
+          "prefill_tok_s": 110.9,
+          "decode_tok_s": 14.6,
+          "prompt_tokens_estimated": false
+        },
+        {
+          "ttft_sec": 30.857,
+          "total_sec": 48.447,
+          "prompt_tokens": 4030,
+          "completion_tokens": 256,
+          "prefill_tok_s": 130.6,
+          "decode_tok_s": 14.6,
+          "prompt_tokens_estimated": false
+        }
+      ]
+    }
+  ],
+  "recommendation": {
+    "verdict": "async-only",
+    "recommended_context_tokens": 0,
+    "interactive_ttft_sec": 10.0,
+    "min_faithfulness": 0.8,
+    "rationale": "no tested size clears TTFT <= 10s with faithfulness >= 80%; ship ask-AI as async (spinner/notification), not live chat."
+  }
+}

@@ -19,6 +19,11 @@ dependencies = [
     # when summarization.backend = "local" or "auto". Apple Silicon only;
     # fall back to backend="anthropic" elsewhere.
     "mlx-lm>=0.20; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    # On-device sentence embeddings for the library index (AI2 spike / AI3
+    # retrieval). multilingual-e5 on MLX; en/uk. Same darwin/arm64 marker and
+    # lazy-import discipline as mlx-lm (embed_index.MLXEmbedder); CI never
+    # installs it and falls back to the numpy HashingEmbedder.
+    "mlx-embeddings>=0.0.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
     # soundfile + numpy power the channel-aware speaker labelling fallback
     # used when FluidAudio diarization fails (rare; surfaced via
     # `diarization_failed: true` in the sidecar).

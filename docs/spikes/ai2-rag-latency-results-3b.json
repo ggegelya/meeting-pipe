@@ -1,0 +1,113 @@
+{
+  "gen_model": "mlx-community/Qwen2.5-3B-Instruct-4bit",
+  "embed_model": "mlx-community/multilingual-e5-small-mlx",
+  "library_root": "/Users/userinverita96/Documents/Meetings/raw",
+  "chunk_count": 2147,
+  "repeats": 2,
+  "measured_at": "2026-06-29T15:11:12Z",
+  "sizes": [
+    {
+      "target_tokens": 4000,
+      "actual_prompt_tokens": 4030,
+      "prompt_tokens_estimated": false,
+      "median_ttft_sec": 108.412,
+      "median_total_sec": 114.105,
+      "median_prefill_tok_s": 268.3,
+      "median_decode_tok_s": 45.1,
+      "faithfulness": 1.0,
+      "citation_accuracy": 0.333,
+      "probe_count": 3,
+      "runs": [
+        {
+          "ttft_sec": 209.035,
+          "total_sec": 214.442,
+          "prompt_tokens": 4030,
+          "completion_tokens": 256,
+          "prefill_tok_s": 19.3,
+          "decode_tok_s": 47.4,
+          "prompt_tokens_estimated": false
+        },
+        {
+          "ttft_sec": 7.79,
+          "total_sec": 13.767,
+          "prompt_tokens": 4030,
+          "completion_tokens": 256,
+          "prefill_tok_s": 517.3,
+          "decode_tok_s": 42.8,
+          "prompt_tokens_estimated": false
+        }
+      ]
+    },
+    {
+      "target_tokens": 8000,
+      "actual_prompt_tokens": 8086,
+      "prompt_tokens_estimated": false,
+      "median_ttft_sec": 17.216,
+      "median_total_sec": 23.263,
+      "median_prefill_tok_s": 469.6,
+      "median_decode_tok_s": 42.3,
+      "faithfulness": 1.0,
+      "citation_accuracy": 0.0,
+      "probe_count": 3,
+      "runs": [
+        {
+          "ttft_sec": 17.238,
+          "total_sec": 23.276,
+          "prompt_tokens": 8086,
+          "completion_tokens": 256,
+          "prefill_tok_s": 469.1,
+          "decode_tok_s": 42.4,
+          "prompt_tokens_estimated": false
+        },
+        {
+          "ttft_sec": 17.195,
+          "total_sec": 23.25,
+          "prompt_tokens": 8086,
+          "completion_tokens": 256,
+          "prefill_tok_s": 470.2,
+          "decode_tok_s": 42.3,
+          "prompt_tokens_estimated": false
+        }
+      ]
+    },
+    {
+      "target_tokens": 16000,
+      "actual_prompt_tokens": 15901,
+      "prompt_tokens_estimated": false,
+      "median_ttft_sec": 40.594,
+      "median_total_sec": 47.701,
+      "median_prefill_tok_s": 391.9,
+      "median_decode_tok_s": 36.0,
+      "faithfulness": 1.0,
+      "citation_accuracy": 0.333,
+      "probe_count": 3,
+      "runs": [
+        {
+          "ttft_sec": 39.804,
+          "total_sec": 46.871,
+          "prompt_tokens": 15901,
+          "completion_tokens": 256,
+          "prefill_tok_s": 399.5,
+          "decode_tok_s": 36.2,
+          "prompt_tokens_estimated": false
+        },
+        {
+          "ttft_sec": 41.385,
+          "total_sec": 48.532,
+          "prompt_tokens": 15901,
+          "completion_tokens": 256,
+          "prefill_tok_s": 384.2,
+          "decode_tok_s": 35.8,
+          "prompt_tokens_estimated": false
+        }
+      ]
+    }
+  ],
+  "recommendation": {
+    "verdict": "async-only",
+    "recommended_context_tokens": 0,
+    "interactive_ttft_sec": 10.0,
+    "min_faithfulness": 0.8,
+    "rationale": "no tested size clears TTFT <= 10s with faithfulness >= 80%; ship ask-AI as async (spinner/notification), not live chat."
+  }
+}
