@@ -58,6 +58,9 @@ secrets.env
 *.json.bak
 recordings/
 .notion-cassettes/
+# dogfood / engine-comparison per-meeting outputs carry real summary content
+# (SEC11). Only the aggregate reports under docs/ are committed.
+runs/
 
 # --- Local tooling (not product) ---
 # The impeccable design skill is installed locally and duplicated across

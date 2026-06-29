@@ -181,3 +181,23 @@ def test_main_runs_non_regulated_meeting(tmp_path: Path, monkeypatch) -> None:
 
     assert rc == 0
     assert ran == [1]
+
+
+def test_main_passes_local_model_override(tmp_path: Path, monkeypatch) -> None:
+    """--local-model reaches run_one so any MLX size can be A/B'd without
+    editing config (the "MLX size is a user choice" path)."""
+    transcript = tmp_path / "20260501-1200.md"
+    transcript.write_text("**A**: hi there\n", encoding="utf-8")
+
+    monkeypatch.setattr(Config, "load", lambda: Config())
+    monkeypatch.setattr("mp.dogfood.load_secrets", lambda *a, **k: None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    seen: dict = {}
+    monkeypatch.setattr("mp.dogfood.run_one",
+                        lambda *a, **k: seen.update(k) or (tmp_path / "out.md"))
+
+    rc = main([str(transcript), "--local-model", "mlx-community/Qwen2.5-3B-Instruct-4bit"])
+
+    assert rc == 0
+    assert seen["local_model"] == "mlx-community/Qwen2.5-3B-Instruct-4bit"

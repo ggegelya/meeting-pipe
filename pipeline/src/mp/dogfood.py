@@ -78,8 +78,14 @@ def run_one(
     *,
     cfg: Config,
     runs_dir: Path,
+    local_model: str | None = None,
 ) -> Path:
-    """Run both backends against `transcript_md` and write a comparison."""
+    """Run both backends against `transcript_md` and write a comparison.
+
+    `local_model` overrides which MLX model the local side uses (default: the
+    configured `summarization.local_model`), so the same harness can A/B any
+    size (3B vs 14B vs 32B) without editing config.
+    """
     runs_dir.mkdir(parents=True, exist_ok=True)
     transcript = transcript_md.read_text(encoding="utf-8")
     if not transcript.strip():
@@ -96,13 +102,12 @@ def run_one(
         model=cfg.summarization.model, max_tokens=cfg.summarization.max_tokens,
     )
 
-    log.info("running local backend...")
-    with LocalSummaryClient(
-        model=cfg.summarization.local_model,
-    ) as local_client:
+    model_id = local_model or cfg.summarization.local_model
+    log.info("running local backend (%s)...", model_id)
+    with LocalSummaryClient(model=model_id) as local_client:
         local = local_client.summarize(
             system_prompt=sys_prompt, transcript=transcript,
-            model=cfg.summarization.local_model,
+            model=model_id,
             max_tokens=cfg.summarization.max_tokens,
         )
 
@@ -295,6 +300,8 @@ def main(argv: list[str]) -> int:
                    help="Aggregate scores from runs-dir and write a ship-decision report.")
     p.add_argument("--report-out", type=Path, default=DEFAULT_REPORT_PATH,
                    help=f"Where to write the report (default: {DEFAULT_REPORT_PATH}).")
+    p.add_argument("--local-model", default=None,
+                   help="MLX model for the local side (default: config summarization.local_model).")
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO,
@@ -333,7 +340,7 @@ def main(argv: list[str]) -> int:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         sys.stderr.write("ANTHROPIC_API_KEY required to run the baseline.\n")
         return 1
-    run_one(transcript_md, cfg=cfg, runs_dir=args.runs_dir)
+    run_one(transcript_md, cfg=cfg, runs_dir=args.runs_dir, local_model=args.local_model)
     return 0
 
 
