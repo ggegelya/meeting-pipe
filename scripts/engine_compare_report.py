@@ -131,12 +131,13 @@ def main(argv: list[str]) -> int:
 
     runs = args.runs.expanduser()
     d14 = runs / "mlx-14b"
+    d7 = runs / "mlx-7b"
     d3 = runs / "mlx-3b"
     dai = runs / "ai"
     latency = load_latency(runs)
 
     # per-engine per-meeting scores, keyed by engine name
-    rows: dict[str, list[dict]] = {"mlx-14b": [], "mlx-3b": [], "apple-intelligence": [], "anthropic": []}
+    rows: dict[str, list[dict]] = {"mlx-14b": [], "mlx-7b": [], "mlx-3b": [], "apple-intelligence": [], "anthropic": []}
     anth_counts: list[dict] = []
 
     for f in sorted(d14.glob("*.dogfood.md")):
@@ -149,6 +150,10 @@ def main(argv: list[str]) -> int:
         sc14 = score_vs_baseline(anth, mlx14)
         fill_dogfood_scores(f, sc14)  # provisional scores for `mp dogfood --report`
         rows["mlx-14b"].append({"stem": stem, **sc14})
+
+        f7 = d7 / f.name
+        if f7.exists() and (p7 := parse_dogfood(f7)):
+            rows["mlx-7b"].append({"stem": stem, **score_vs_baseline(anth, p7[1])})
 
         f3 = d3 / f.name
         if f3.exists() and (p3 := parse_dogfood(f3)):
@@ -175,7 +180,7 @@ def main(argv: list[str]) -> int:
             "latency_sec": _avg([x for x in lat if x is not None]),
         }
 
-    summary = {e: agg(e) for e in ("mlx-14b", "mlx-3b", "apple-intelligence")}
+    summary = {e: agg(e) for e in ("mlx-14b", "mlx-7b", "mlx-3b", "apple-intelligence")}
     anth_avg = {
         "avg_bullets": _avg([float(c["summary"]) for c in anth_counts]),
         "avg_actions": _avg([float(c["actions"]) for c in anth_counts]),
@@ -191,8 +196,8 @@ def main(argv: list[str]) -> int:
 
 
 def _lat_key(engine: str) -> str:
-    return {"mlx-14b": "mlx-14b+anthropic", "mlx-3b": "mlx-3b+anthropic",
-            "apple-intelligence": "apple-intelligence"}[engine]
+    return {"mlx-14b": "mlx-14b+anthropic", "mlx-7b": "mlx-7b+anthropic",
+            "mlx-3b": "mlx-3b+anthropic", "apple-intelligence": "apple-intelligence"}[engine]
 
 
 def render(summary: dict, anth_avg: dict, latency: dict) -> str:
@@ -215,6 +220,7 @@ def render(summary: dict, anth_avg: dict, latency: dict) -> str:
     L.append(f"| Anthropic (baseline) | {anth_avg['n']} | 1.00 | 1.00 | 0.00 | {_fmt(anth_avg['avg_bullets'])} | {_fmt(anth_avg['avg_actions'])} | fast (cloud) | cloud egress |")
     for e, label, priv in (
         ("mlx-14b", "MLX 14B (local)", "on-device"),
+        ("mlx-7b", "MLX 7B (local)", "on-device"),
         ("mlx-3b", "MLX 3B (local)", "on-device"),
         ("apple-intelligence", "Apple Intelligence", "on-device"),
     ):
