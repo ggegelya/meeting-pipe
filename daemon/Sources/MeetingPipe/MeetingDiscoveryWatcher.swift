@@ -15,6 +15,11 @@ final class MeetingDiscoveryWatcher {
     private var avObservation: NSKeyValueObservation?
     private var pollTimer: Timer?
 
+    /// PERF6: the backstop poll runs `active` (3 s) while workspace/mic activity is arriving and backs
+    /// off to `idle` (12 s) once a poll passes quiet, so an idle meeting app (e.g. Teams in the
+    /// background) is no longer AX-walked every 3 s all day. Driven on main only (see the type's note).
+    private var cadence = DiscoveryScanCadence(active: 3, idle: 12)
+
     /// Coalesces bursts (Cmd+Tab fires didDeactivate + didActivate back to back) into a single scan.
     private var coalesceWork: DispatchWorkItem?
     private static let coalesceWindow: TimeInterval = 0.08
@@ -28,11 +33,24 @@ final class MeetingDiscoveryWatcher {
     func start() {
         wireWorkspaceObservers()
         wireMicObserver()
-        // AVCapture KVO has been flaky across macOS versions; browser tabs change without workspace events. Backstop poll at 3 s.
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
-            self?.scheduleScan(triggerBundle: nil)
-        }
+        // AVCapture KVO has been flaky across macOS versions; browser tabs change without workspace events,
+        // so an adaptive backstop poll covers the gaps (PERF6: 3 s active, 12 s idle). Just-launched counts
+        // as activity so the first backstop runs fast, then it backs off if nothing is happening.
+        cadence.noteActivity()
+        armPollTimer()
         scheduleScan(triggerBundle: nil) // initial pass for a meeting already in progress at launch
+    }
+
+    /// Arm the backstop poll for the cadence's next interval. The timer is one-shot and re-arms itself,
+    /// so the interval adapts each fire (active while workspace/mic activity arrives, idle once quiet).
+    private func armPollTimer() {
+        pollTimer?.invalidate()
+        let interval = cadence.intervalAfterPoll()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            guard let self = self else { return }
+            self.scheduleScan(triggerBundle: nil)
+            self.armPollTimer()
+        }
     }
 
     func stop() {
@@ -48,6 +66,7 @@ final class MeetingDiscoveryWatcher {
 
     /// Immediate scan, bypassing the poll interval. Called by Coordinator on permission grant so an in-progress meeting is picked up the moment Accessibility/Mic flips on.
     func refreshNow() {
+        cadence.noteActivity()
         scheduleScan(triggerBundle: nil)
     }
 
@@ -63,8 +82,10 @@ final class MeetingDiscoveryWatcher {
         ]
         for name in names {
             let obs = nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let self = self else { return }
                 let bid = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
-                self?.scheduleScan(triggerBundle: bid)
+                if let bid = bid, self.isMeetingBundle(bid) { self.cadence.noteActivity() }
+                self.scheduleScan(triggerBundle: bid)
             }
             nsObservers.append(obs)
         }
@@ -74,7 +95,9 @@ final class MeetingDiscoveryWatcher {
         if let mic = AVCaptureDevice.default(for: .audio) {
             avObservation = mic.observe(\.isInUseByAnotherApplication, options: [.new, .initial]) { [weak self] _, _ in
                 DispatchQueue.main.async {
-                    self?.scheduleScan(triggerBundle: nil) // nil bypasses the fast-exit so the scan always runs
+                    guard let self = self else { return }
+                    self.cadence.noteActivity() // mic grabbed/released: a meeting may be starting
+                    self.scheduleScan(triggerBundle: nil) // nil bypasses the fast-exit so the scan always runs
                 }
             }
         }
@@ -82,16 +105,20 @@ final class MeetingDiscoveryWatcher {
 
     /// Schedule a coalesced scan. Skips when `triggerBundle` is a non-meeting app (prevents an AX walk on every Cmd+Tab). A nil trigger (mic KVO, poll, initial pass) always scans. Must be called on the main run loop.
     private func scheduleScan(triggerBundle: String?) {
-        if let bid = triggerBundle,
-           !scanner.nativeBundles.contains(bid),
-           !scanner.browserBundles.contains(bid),
-           !BrowserMeetingLifecycleAdapter.isPWABundleID(bid) {
+        if let bid = triggerBundle, !isMeetingBundle(bid) {
             return
         }
         coalesceWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.runScan() }
         coalesceWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.coalesceWindow, execute: work)
+    }
+
+    /// A bundle whose windows we scan: a native meeting app, a browser, or a Chromium PWA.
+    private func isMeetingBundle(_ bid: String) -> Bool {
+        scanner.nativeBundles.contains(bid)
+            || scanner.browserBundles.contains(bid)
+            || BrowserMeetingLifecycleAdapter.isPWABundleID(bid)
     }
 
     private func runScan() {
