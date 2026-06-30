@@ -140,9 +140,23 @@ final class LifecycleAdapterTests: XCTestCase {
         XCTAssertFalse(MeetingTitlePatterns.zoom("Slack | Standup"))
     }
 
-    func test_google_meet_pattern_requires_meet_substring() {
+    func test_google_meet_pattern_requires_meeting_code_not_bare_meet() {
+        // A browser Meet *call* tab carries the meeting code ("abc-defg-hij"). The old "meet" + "-"
+        // heuristic over-admitted ordinary titles such as "Level 10 Meeting - Jira" (2026-06-30 false prompt).
         XCTAssertTrue(MeetingTitlePatterns.googleMeet("Meet - abc-defg-hij"))
+        XCTAssertTrue(MeetingTitlePatterns.googleMeet("In call - meet.google.com/abc-defg-hij"))
         XCTAssertFalse(MeetingTitlePatterns.googleMeet("Acme Inc - Mail"))
+        XCTAssertFalse(MeetingTitlePatterns.googleMeet("Level 10 Meeting - Jira"))
+    }
+
+    func test_browser_teams_and_webex_matchers_require_brand_not_bare_meeting_word() {
+        // The browser matchers key off the vendor brand, never the bare localized "meeting" stem the
+        // native matchers allow. Natives can afford the stem because the scorer demands an in-call
+        // corroborator for them; a browser title stands alone, so it must be brand-specific.
+        XCTAssertTrue(MeetingTitlePatterns.browserTeams("Weekly sync | Microsoft Teams"))
+        XCTAssertTrue(MeetingTitlePatterns.browserWebex("Webex Meeting - Acme"))
+        XCTAssertFalse(MeetingTitlePatterns.browserTeams("Level 10 Meeting board - Jira"))
+        XCTAssertFalse(MeetingTitlePatterns.browserWebex("Level 10 Meeting board - Jira"))
     }
 
     func test_browser_adapter_default_matchers_recognise_known_meeting_titles() {
@@ -151,11 +165,13 @@ final class LifecycleAdapterTests: XCTestCase {
         let teams = "Microsoft Teams Meeting | Standup"
         let huddle = "Huddle - #engineering"
         let chat = "Slack - #general"
+        let jiraBoard = "Level 10 Meeting board - Jira"
 
         XCTAssertTrue(matchers.contains { $0(meet) })
         XCTAssertTrue(matchers.contains { $0(teams) })
         XCTAssertTrue(matchers.contains { $0(huddle) })
         XCTAssertFalse(matchers.contains { $0(chat) })
+        XCTAssertFalse(matchers.contains { $0(jiraBoard) })
     }
 
     func test_adapter_routing_picks_correct_adapter_per_bundle() {

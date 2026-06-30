@@ -59,10 +59,14 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
     }
 
     /// Ordered title matchers. First match wins; no match reads as `.ended`, which correctly handles the Meet "left the call" title transition.
+    /// Browser-scoped variants: a browser title-match stands alone in `MeetingSourceScorer` (no per-tab Leave/mute to
+    /// corroborate), so these key off vendor brand/structure (`browserTeams`, `browserWebex`, the Meet code) rather than
+    /// the bare localized "meeting" stem the native matchers allow. Without this, any page titled "...Meeting..." (a Jira
+    /// board, a "Meeting notes" doc) raised an uncorroborated Record prompt (the 2026-06-30 false positive).
     public static let defaultTitleMatchers: [(String?) -> Bool] = [
         MeetingTitlePatterns.googleMeet,
-        MeetingTitlePatterns.teams,
-        MeetingTitlePatterns.webex,
+        MeetingTitlePatterns.browserTeams,
+        MeetingTitlePatterns.browserWebex,
         MeetingTitlePatterns.slackHuddle
     ]
 

@@ -89,16 +89,40 @@ public enum MeetingTitlePatterns {
         return false
     }
 
-    /// Google Meet: title contains "meet" + "-" (handles non-ASCII separators across locales). Signal flips on transition off this pattern.
+    /// Google Meet (browser tab): a live call tab carries the meeting code (`abc-defg-hij`: three-four-three
+    /// lowercase letters) or the `meet.google.com` host. The earlier "meet" + "-" heuristic over-admitted any
+    /// page title containing the word, e.g. "Level 10 Meeting - Jira" (the 2026-06-30 false prompt). The code is
+    /// the distinctive in-room marker; the idle "Google Meet" lobby (no code) correctly reads not-live. Signal
+    /// flips on transition off this pattern. Browser-only matcher (no native Meet adapter consumes it).
     public static let googleMeet: (String?) -> Bool = { title in
         guard let lowered = title?.lowercased() else { return false }
-        return lowered.contains("meet") && lowered.contains("-")
+        if lowered.contains("meet.google.com") { return true }
+        return lowered.range(
+            of: #"(?<![a-z])[a-z]{3}-[a-z]{4}-[a-z]{3}(?![a-z])"#,
+            options: .regularExpression
+        ) != nil
     }
 
     /// Slack huddles: title contains "huddle".
     public static let slackHuddle: (String?) -> Bool = { title in
         guard let lowered = title?.lowercased() else { return false }
         return lowered.contains("huddle")
+    }
+
+    /// Browser-tab Teams: keys off the "Microsoft Teams" brand suffix ("<subject> | Microsoft Teams").
+    /// Unlike the native `teams` matcher it deliberately omits the bare localized "meeting" stem, which
+    /// matches any page whose title merely contains the word (a Jira board named "Level 10 Meeting", a
+    /// "Meeting notes" doc). Native Teams can afford the permissive stem because the scorer requires an
+    /// in-call corroborator for natives; a browser title-match stands alone, so it must be brand-specific.
+    public static let browserTeams: (String?) -> Bool = { title in
+        guard let lowered = title?.lowercased() else { return false }
+        return lowered.contains("microsoft teams")
+    }
+
+    /// Browser-tab Webex: keys off the "webex" brand, never the shared "meeting" stem (see `browserTeams`).
+    public static let browserWebex: (String?) -> Bool = { title in
+        guard let lowered = title?.lowercased() else { return false }
+        return lowered.contains("webex")
     }
 
     private static let teamsTokens: [String] = [

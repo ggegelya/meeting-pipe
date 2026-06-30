@@ -25,4 +25,26 @@ final class MeetingSourceScannerTests: XCTestCase {
         XCTAssertFalse(MeetingSourceScanner.browserWindowIndicatesMeeting(title: "Acme Inc - Mail"))
         XCTAssertFalse(MeetingSourceScanner.browserWindowIndicatesMeeting(title: "Inbox (12) - Gmail"))
     }
+
+    func test_page_titled_meeting_is_not_a_meeting_candidate() {
+        // Regression (2026-06-30 false prompt): switching to a Jira board for a project literally named
+        // "Level 10 Meeting" popped the Record prompt. The browser matchers keyed off the bare word
+        // "meeting" (Teams stem) and "meet" + "-" (Meet), so any page title containing them admitted a
+        // zero-corroboration browser candidate. These are ordinary pages, not meetings, and a browser
+        // title stands alone in the scorer, so the page word alone must never admit a candidate.
+        XCTAssertFalse(MeetingSourceScanner.browserWindowIndicatesMeeting(title: "Level 10 Meeting board - Jira"))
+        XCTAssertFalse(MeetingSourceScanner.browserWindowIndicatesMeeting(title: "[L10M-1074] Auth rework - Level 10 Meeting - Jira"))
+        XCTAssertFalse(MeetingSourceScanner.browserWindowIndicatesMeeting(title: "Meeting notes - Notion"))
+        XCTAssertFalse(MeetingSourceScanner.browserWindowIndicatesMeeting(title: "1:1 Meeting agenda - Google Docs"))
+        XCTAssertFalse(MeetingSourceScanner.browserWindowIndicatesMeeting(title: "Weekly Meeting - Confluence"))
+    }
+
+    func test_genuine_browser_meeting_titles_stay_discoverable() {
+        // The tightening must not regress real plain-tab meetings: Meet keys off the meeting code,
+        // Teams web off the "Microsoft Teams" brand, Webex off "webex", Slack off "huddle".
+        XCTAssertTrue(MeetingSourceScanner.browserWindowIndicatesMeeting(title: "Meet - abc-defg-hij"))
+        XCTAssertTrue(MeetingSourceScanner.browserWindowIndicatesMeeting(title: "Weekly sync | Microsoft Teams"))
+        XCTAssertTrue(MeetingSourceScanner.browserWindowIndicatesMeeting(title: "Webex Meeting - Acme"))
+        XCTAssertTrue(MeetingSourceScanner.browserWindowIndicatesMeeting(title: "Huddle - #engineering"))
+    }
 }
