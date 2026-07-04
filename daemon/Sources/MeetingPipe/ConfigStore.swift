@@ -59,6 +59,9 @@ final class ConfigStore: ObservableObject {
     @Published var summarizationBackend: String { didSet { scheduleSave() } }
     @Published var summarizationLocalModel: String { didSet { scheduleSave() } }
     @Published var summarizationLocalEndpoint: String { didSet { scheduleSave() } }
+    /// Display name stamped on the user's own diarized speaker so "me vs them"
+    /// reads as a real name (`summarization.user_label`).
+    @Published var summarizationUserLabel: String { didSet { scheduleSave() } }
 
     /// Fired after a successful disk write so subscribers re-read without
     /// polling ("config changed, refresh what you care about").
@@ -117,6 +120,7 @@ final class ConfigStore: ObservableObject {
             ?? "mlx-community/Qwen2.5-3B-Instruct-4bit"
         self.summarizationLocalEndpoint = summ?["local_endpoint"]?.string
             ?? "http://127.0.0.1:8765"
+        self.summarizationUserLabel = summ?["user_label"]?.string ?? ""
 
         // Arm last: every prior assignment's didSet no-ops on !isInitialized.
         self.isInitialized = true
@@ -182,6 +186,7 @@ final class ConfigStore: ObservableObject {
         ensureTable("summarization")["backend"] = summarizationBackend
         ensureTable("summarization")["local_model"] = summarizationLocalModel
         ensureTable("summarization")["local_endpoint"] = summarizationLocalEndpoint
+        ensureTable("summarization")["user_label"] = summarizationUserLabel
     }
 
     /// Render `rawDocument` and replace `configURL` atomically.

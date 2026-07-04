@@ -156,12 +156,14 @@ final class ConfigStoreTests: XCTestCase {
         [summarization]
         summary_language = "ru"
         skip_above_chars = 50000
+        user_label = "Alex"
         """.write(to: url, atomically: true, encoding: .utf8)
 
         let store = try ConfigStore(configURL: url)
         XCTAssertEqual(store.notionDatabaseId, "abc123")
         XCTAssertEqual(store.summaryLanguage, "ru")
         XCTAssertEqual(store.summarizationSkipAboveChars, 50000)
+        XCTAssertEqual(store.summarizationUserLabel, "Alex")
     }
 
     func test_round_trip_persists_pipeline_side_fields() throws {
@@ -172,12 +174,14 @@ final class ConfigStoreTests: XCTestCase {
         store.notionDatabaseId = "deadbeef"
         store.summaryLanguage = "uk"
         store.summarizationSkipAboveChars = 0
+        store.summarizationUserLabel = "Alex"
         try store.saveNow()
 
         let raw = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(raw.contains("database_id = \"deadbeef\""))
         XCTAssertTrue(raw.contains("summary_language = \"uk\""))
         XCTAssertTrue(raw.contains("skip_above_chars = 0"))
+        XCTAssertTrue(raw.contains("user_label = \"Alex\""))
     }
 
     func test_force_stop_hotkey_round_trips() throws {

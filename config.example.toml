@@ -68,6 +68,11 @@ mic_only_silence_seconds = 900
 model = "claude-sonnet-4-6"
 max_tokens = 4000
 team_context = "FDA 21 CFR Part 11 regulated SaaS, .NET 8 + Angular + AWS EKS"
+# Your name, stamped on your own diarized speaker so "me vs them" reads as a
+# real name instead of "Speaker 1". Picked structurally (the mic channel on a
+# stereo recording, else the dominant speaker). Blank keeps generic labels.
+# Also editable as "Your name" in Preferences -> Pipeline.
+user_label = ""
 # Output language. "auto" (default) mirrors the transcript's detected
 # language (Russian transcript → Russian summary). Force a specific
 # ISO 639-1 code to override (e.g. "en" for English-only).

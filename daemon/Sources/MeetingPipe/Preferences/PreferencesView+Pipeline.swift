@@ -80,6 +80,15 @@ struct PipelineSectionView: View {
                 pipelineBackendFooter
             }
 
+            SettingsGroup("Your name") {
+                SettingsStackRow("Display name",
+                    sublabel: "Stamped on your own voice in the transcript so speaker labels read as your name, not \"Speaker 1\". Leave blank to keep generic labels.",
+                    showsDivider: false) {
+                    TextField("e.g. Alex", text: $store.summarizationUserLabel)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+
             SettingsGroup("Summarization prompt") {
                 SettingsRow("System prompt", alignTop: true, showsDivider: false) {
                     promptPreview
