@@ -336,6 +336,16 @@ mp actions --min-confidence high --json             # machine-readable
 
 The resolved flag lives in `<stem>.summary.json` and round-trips through a republish, so marking an action done (a control DV1 adds to the Library) survives re-publishing.
 
+For a periodic review, `mp digest` (AI4) rolls the week up into one on-device digest: it aggregates the aging open actions and the decisions from meetings in the last N days (grounded, read straight from your summaries), asks the configured engine to narrate the state of your week over those facts, and writes the result as a `MeetingSummary` to disk (a `digests` sibling of your recordings folder, outside the scanned library). Narration runs through the same backend + egress clamp as everything else (regulated / NDA keep it on-device with no cloud fallback), and if no engine is reachable the digest still generates with a deterministic summary. With `--publish` it fans out through your configured sinks like a meeting does:
+
+```bash
+mp digest                                           # write this week's digest to disk
+mp digest --since 14                                # a two-week window
+mp digest --publish                                 # also fan out to the sinks
+```
+
+It is latency-tolerant and adds no always-on egress: run it by hand, or schedule it (e.g. a weekly `launchd` timer or `crontab` entry invoking `mp digest`).
+
 ---
 
 ## Configuration reference
