@@ -7,6 +7,38 @@ struct PipelineProgress: Equatable {
     let elapsedSec: Int
 }
 
+/// A verified `[stem]` citation on an ask answer (AI3): resolves to a real meeting on disk.
+struct AskCitation: Decodable, Hashable, Identifiable {
+    let stem: String
+    let title: String
+    var id: String { stem }
+}
+
+/// The parsed result of `mp ask --out <file>` (AI3): a cited, engine-backed answer
+/// over the library. The daemon renders `answer` + tappable `citations`; `error`
+/// is set when the engine could not answer (surfaced inline, not as a page).
+struct AskAnswer: Decodable, Equatable {
+    let question: String
+    let answer: String
+    let citations: [AskCitation]
+    let sourcesConsidered: [String]
+    let backend: String?
+    let model: String?
+    let verified: Bool
+    let empty: Bool
+    let error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case question, answer, citations, backend, model, verified, empty, error
+        case sourcesConsidered = "sources_considered"
+    }
+
+    static func load(from url: URL) -> AskAnswer? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(AskAnswer.self, from: data)
+    }
+}
+
 /// Pipeline execution contract. Default implementation is `PipelineLauncher`; tests substitute a fake.
 /// `summaryMode == .byo` skips the Anthropic call and writes a paste bundle; the launcher passes `MP_FORCE_BYO=1` in the subprocess env.
 protocol PipelineDriver: AnyObject {
@@ -25,6 +57,8 @@ protocol PipelineDriver: AnyObject {
     func summarizePreview(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void)
     /// Apple Intelligence candidate-preview re-run (TECH-A16), no publish. `contextOverride` (TECH-FEAT7) overrides the context for this run when non-empty. Defaulted no-op.
     func summarizePreviewViaApple(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void)
+    /// Ask a natural-language question across the whole library (AI3): runs `mp ask`, which retrieves + synthesizes an engine-backed answer with verified `[stem]` citations on-device (honouring the backend + egress clamp), and returns the parsed answer. Defaulted no-op.
+    func ask(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void)
 }
 
 extension PipelineDriver {
@@ -79,6 +113,14 @@ extension PipelineDriver {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "summarizePreviewViaApple unsupported by this driver"]
+        )))
+    }
+
+    /// Default no-op stub; `PipelineLauncher` overrides this.
+    func ask(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "ask unsupported by this driver"]
         )))
     }
 }
@@ -215,6 +257,42 @@ final class PipelineLauncher: PipelineDriver {
                 let sidecar = summaryJSON.deletingLastPathComponent()
                     .appendingPathComponent("\(stem).notion.json")
                 completion(.success(Self.readPageURL(from: sidecar)))
+            }
+        }
+    }
+
+    /// Ask a natural-language question across the library (AI3). Spawns `mp ask
+    /// "<q>" --out <tmp>`, which retrieves over the on-device embedding index,
+    /// synthesizes an engine-backed answer with verified `[stem]` citations, and
+    /// writes the result JSON; this reads it back (the same sidecar-read pattern as
+    /// `readPageURL`, since `runMP` reports only success/failure, not stdout). No
+    /// `meeting:` URL, so `cloudSecretPolicy(for: nil)` applies the global
+    /// regulated / backend posture; the Python side arms the egress guard and
+    /// `effective_backend()` forces local under regulated. Async per AI2's verdict,
+    /// so a generous 10-min cap covers a cold local model + long-context prefill.
+    func ask(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
+        let outURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mp-ask-\(UUID().uuidString).json")
+        runMP(["ask", question, "--out", outURL.path], timeout: 10 * 60) { result in
+            defer { try? FileManager.default.removeItem(at: outURL) }
+            // Prefer the structured error the Python side wrote (a clean, single
+            // line) over the noisy stderr tail on a non-zero exit.
+            let parsed = AskAnswer.load(from: outURL)
+            if let parsed = parsed, let err = parsed.error, !err.isEmpty {
+                completion(.failure(NSError(domain: "mp ask", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: err])))
+                return
+            }
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success:
+                guard let parsed = parsed else {
+                    completion(.failure(NSError(domain: "mp ask", code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "ask produced no readable result"])))
+                    return
+                }
+                completion(.success(parsed))
             }
         }
     }

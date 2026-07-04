@@ -238,12 +238,16 @@ class EmbeddingIndex:
     single dense dot beats any ANN structure, which is also why AI3 can reuse it
     as-is before scale justifies SQLite/FTS (see TECH-A3)."""
 
-    def __init__(self, embedder: Embedder, chunks: list[Chunk], vectors: np.ndarray, *, model: str, dim: int) -> None:
+    def __init__(self, embedder: Embedder, chunks: list[Chunk], vectors: np.ndarray, *, model: str, dim: int, fingerprint: str = "") -> None:
         self.embedder = embedder
         self.chunks = chunks
         self.vectors = vectors
         self.model = model
         self.dim = dim
+        # Fingerprint of the source library at build time (AI3): a later
+        # `load_or_build` compares it to the live library to decide reuse vs
+        # rebuild, so a new / edited meeting is picked up without a manual flag.
+        self.fingerprint = fingerprint
 
     @classmethod
     def build(
@@ -255,11 +259,12 @@ class EmbeddingIndex:
         overlap: int = CHUNK_OVERLAP,
     ) -> "EmbeddingIndex":
         embedder = embedder or default_embedder()
+        fingerprint = library_fingerprint(root)
         chunks = chunk_library(root, chunk_chars=chunk_chars, overlap=overlap)
         if not chunks:
-            return cls(embedder, [], np.zeros((0, 0), dtype=np.float32), model=embedder.name, dim=0)
+            return cls(embedder, [], np.zeros((0, 0), dtype=np.float32), model=embedder.name, dim=0, fingerprint=fingerprint)
         vectors = embedder.embed([c.text for c in chunks], kind="passage")
-        return cls(embedder, chunks, vectors, model=embedder.name, dim=int(vectors.shape[1]))
+        return cls(embedder, chunks, vectors, model=embedder.name, dim=int(vectors.shape[1]), fingerprint=fingerprint)
 
     def search(self, query: str, k: int = 8) -> list[SearchHit]:
         if not self.chunks:
@@ -283,7 +288,13 @@ class EmbeddingIndex:
                 f.write(json.dumps(c.to_json(), ensure_ascii=False) + "\n")
         (directory / "manifest.json").write_text(
             json.dumps(
-                {"schema_version": 1, "model": self.model, "dim": self.dim, "count": len(self.chunks)},
+                {
+                    "schema_version": 1,
+                    "model": self.model,
+                    "dim": self.dim,
+                    "count": len(self.chunks),
+                    "fingerprint": self.fingerprint,
+                },
                 indent=2,
             ),
             encoding="utf-8",
@@ -307,4 +318,65 @@ class EmbeddingIndex:
             vectors,
             model=str(manifest.get("model", "")),
             dim=int(manifest.get("dim", vectors.shape[1] if vectors.ndim == 2 else 0)),
+            fingerprint=str(manifest.get("fingerprint", "")),
         )
+
+
+def library_fingerprint(root: Path) -> str:
+    """A cheap, stable hash over the source files that feed the index: each file's
+    (name, mtime, size). Adds, removals, and in-place edits all change it, so a
+    stale cached index rebuilds; a byte-identical library reuses. Never reads file
+    bodies, so it is fast even on a large library."""
+    root = Path(root).expanduser()
+    if not root.is_dir():
+        return "empty"
+    parts: list[str] = []
+    for pattern in ("*.md", "*.summary.json"):
+        for p in root.glob(pattern):
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            parts.append(f"{p.name}\t{st.st_mtime_ns}\t{st.st_size}")
+    h = hashlib.blake2b(digest_size=16)
+    for line in sorted(parts):
+        h.update(line.encode("utf-8"))
+    return h.hexdigest()
+
+
+def load_or_build(
+    root: Path,
+    index_dir: Path,
+    embedder: Embedder | None = None,
+    *,
+    rebuild: bool = False,
+) -> "EmbeddingIndex":
+    """Load a persisted index when it is still fresh, else (re)build and save.
+
+    Reuse requires both the source fingerprint AND the embedder model to match
+    the manifest: the fingerprint guard picks up new / edited meetings, and the
+    model guard avoids loading a hashing-built index under an MLX embedder (whose
+    vectors would be a different dimension). A corrupt cache falls through to a
+    rebuild. This is what keeps a repeat `mp ask` fast without going stale.
+    """
+    root = Path(root).expanduser()
+    index_dir = Path(index_dir).expanduser()
+    embedder = embedder or default_embedder()
+    manifest = index_dir / "manifest.json"
+    if not rebuild and manifest.exists():
+        try:
+            meta = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        if meta.get("fingerprint") == library_fingerprint(root) and meta.get("model") == embedder.name:
+            try:
+                log.info("reusing embedding index at %s (%s chunks)", index_dir, meta.get("count"))
+                return EmbeddingIndex.load(index_dir, embedder)
+            except (OSError, ValueError, KeyError) as e:
+                log.warning("cached index at %s unreadable (%s); rebuilding", index_dir, e)
+    index = EmbeddingIndex.build(root, embedder)
+    try:
+        index.save(index_dir)
+    except OSError as e:
+        log.warning("could not persist index to %s: %s", index_dir, e)
+    return index

@@ -143,3 +143,51 @@ def test_default_embedder_uses_mlx_when_present(monkeypatch) -> None:
     e = default_embedder("mlx-community/multilingual-e5-small-mlx")
     assert isinstance(e, embed_index.MLXEmbedder)
     assert e.name == "mlx-community/multilingual-e5-small-mlx"
+
+
+# ----- library_fingerprint + load_or_build (AI3 index reuse) -----
+
+
+def test_fingerprint_changes_when_a_meeting_is_added(tmp_path: Path) -> None:
+    _meeting(tmp_path, "m1", title="One", transcript="alpha")
+    fp1 = embed_index.library_fingerprint(tmp_path)
+    _meeting(tmp_path, "m2", title="Two", transcript="beta")
+    fp2 = embed_index.library_fingerprint(tmp_path)
+    assert fp1 != fp2
+    assert embed_index.library_fingerprint(tmp_path) == fp2  # stable when unchanged
+
+
+def test_load_or_build_reuses_a_fresh_index(tmp_path: Path, monkeypatch) -> None:
+    _meeting(tmp_path, "m1", title="One", transcript="alpha budget")
+    idx_dir = tmp_path / "idx"
+    e = HashingEmbedder(dim=128)
+    first = embed_index.load_or_build(tmp_path, idx_dir, e)
+    # A second call must NOT rebuild: fail the test if build() is invoked.
+    def _fail_if_built(*a, **k):  # pragma: no cover - only runs if reuse is broken
+        raise AssertionError("load_or_build rebuilt a fresh index instead of reusing it")
+    monkeypatch.setattr(EmbeddingIndex, "build", classmethod(_fail_if_built))
+    second = embed_index.load_or_build(tmp_path, idx_dir, HashingEmbedder(dim=128))
+    assert second.fingerprint == first.fingerprint
+    assert len(second.chunks) == len(first.chunks)
+
+
+def test_load_or_build_rebuilds_when_library_changes(tmp_path: Path) -> None:
+    _meeting(tmp_path, "m1", title="One", transcript="alpha")
+    idx_dir = tmp_path / "idx"
+    e = HashingEmbedder(dim=128)
+    first = embed_index.load_or_build(tmp_path, idx_dir, e)
+    _meeting(tmp_path, "m2", title="Two", transcript="beta gamma delta")
+    second = embed_index.load_or_build(tmp_path, idx_dir, HashingEmbedder(dim=128))
+    assert second.fingerprint != first.fingerprint
+    assert len(second.chunks) > len(first.chunks)
+
+
+def test_load_or_build_rebuilds_on_embedder_model_mismatch(tmp_path: Path) -> None:
+    _meeting(tmp_path, "m1", title="One", transcript="alpha")
+    idx_dir = tmp_path / "idx"
+    built = embed_index.load_or_build(tmp_path, idx_dir, HashingEmbedder(dim=64))
+    assert built.model == "hashing-64"
+    # A different embedder name must not reuse vectors of a different dimension.
+    reloaded = embed_index.load_or_build(tmp_path, idx_dir, HashingEmbedder(dim=256))
+    assert reloaded.model == "hashing-256"
+    assert reloaded.dim == 256

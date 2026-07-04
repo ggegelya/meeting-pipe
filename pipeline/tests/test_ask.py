@@ -1,69 +1,131 @@
-"""Tests for `mp ask` lexical search (TECH-FEAT2)."""
+"""Tests for `mp ask` engine-backed cited answers (AI3).
+
+CI-safe: retrieval runs on the numpy `HashingEmbedder` (no MLX), and the engine
+is faked (no model, no socket). The real path under test is retrieve -> pack ->
+synthesize -> verify-citations -> emit.
+"""
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
-from mp.ask import discover, main, search, snippet
+import pytest
+
+from mp import ask
+from mp.ask import Answer, answer_question
+from mp.config import Config
+from mp.embed_index import EmbeddingIndex, HashingEmbedder
+from mp.engine import EngineError, EngineResult
 
 
-def _meeting(root: Path, stem: str, *, title: str, transcript: str) -> None:
+def _meeting(root: Path, stem: str, *, title: str, transcript: str, summary: str = "") -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / f"{stem}.md").write_text(transcript, encoding="utf-8")
     (root / f"{stem}.summary.json").write_text(json.dumps({"title": title}), encoding="utf-8")
-    (root / f"{stem}.summary.md").write_text(f"# {title}\n", encoding="utf-8")
+    (root / f"{stem}.summary.md").write_text(summary or f"# {title}\n", encoding="utf-8")
 
 
-def test_discover_reads_title_and_text(tmp_path: Path) -> None:
-    _meeting(tmp_path, "20260506-1500", title="Budget review", transcript="A: we cut the budget.\n")
-    docs = discover(tmp_path)
-    assert len(docs) == 1
-    assert docs[0].stem == "20260506-1500"
-    assert docs[0].title == "Budget review"
-    assert docs[0].tf["budget"] >= 1
+def _index(root: Path) -> EmbeddingIndex:
+    return EmbeddingIndex.build(root, HashingEmbedder(dim=256))
 
 
-def test_discover_skips_meetings_with_no_text(tmp_path: Path) -> None:
-    # Only a meta sidecar, no transcript or summary - nothing to search.
-    (tmp_path / "20260506-1600.meta.json").write_text("{}", encoding="utf-8")
-    assert discover(tmp_path) == []
+def _cfg() -> Config:
+    return Config.model_validate({"summarization": {"backend": "local", "local_model": "fake"}})
 
 
-def test_search_ranks_relevant_meeting_first(tmp_path: Path) -> None:
-    _meeting(tmp_path, "m1", title="Hiring sync", transcript="A: interview loop and offers.\n")
-    _meeting(tmp_path, "m2", title="Budget", transcript="A: budget budget budget cut spending.\n")
-    docs = discover(tmp_path)
-    results = search(docs, "budget", top=5)
-    assert results
-    assert results[0][0].stem == "m2"
-    assert results[0][1] > 0
+def _echo_first_stem_engine(cfg, *, system_prompt, user_message, max_tokens, model=None):
+    """Fake engine that cites the first [stem] present in the packed context, i.e.
+    behaves like a well-behaved model, so the verify path passes."""
+    m = re.search(r"\[([\w-]+)\]", user_message)
+    stem = m.group(1) if m else "none"
+    return EngineResult(text=f"The answer to your question. [{stem}]", backend="local", model="fake")
 
 
-def test_search_no_match_returns_empty(tmp_path: Path) -> None:
-    _meeting(tmp_path, "m1", title="Sync", transcript="A: hello world.\n")
-    assert search(discover(tmp_path), "encryption", top=5) == []
+def test_answer_question_cites_a_retrieved_meeting(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _meeting(tmp_path, "20260101-0900", title="Budget review", transcript="A: we cut the budget hard.")
+    _meeting(tmp_path, "20260102-1000", title="Hiring sync", transcript="A: interview loop and offers.")
+    monkeypatch.setattr(ask.engine, "complete_text", _echo_first_stem_engine)
+
+    ans = answer_question(_cfg(), _index(tmp_path), "what happened with the budget?")
+    assert ans.answer
+    assert ans.verified
+    assert ans.citations, "an answer must carry at least one citation"
+    assert ans.citations[0].stem in ans.sources_considered
+    assert ans.citations[0].title  # title resolved from the chunk
 
 
-def test_snippet_picks_the_line_with_query_terms(tmp_path: Path) -> None:
-    _meeting(
-        tmp_path, "m1", title="Mixed",
-        transcript="A: small talk about the weather.\nB: the migration to Postgres is risky.\n",
-    )
-    docs = discover(tmp_path)
-    snip = snippet(["migration", "postgres"], docs[0])
-    assert "migration" in snip.lower()
+def test_falls_back_to_top_source_when_model_cites_nothing_valid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _meeting(tmp_path, "20260101-0900", title="Budget", transcript="A: budget budget cut spend.")
+
+    def _hallucinating_engine(cfg, *, system_prompt, user_message, max_tokens, model=None):
+        return EngineResult(text="Answer with a made-up [99999999-9999] source.", backend="local", model="fake")
+
+    monkeypatch.setattr(ask.engine, "complete_text", _hallucinating_engine)
+    ans = answer_question(_cfg(), _index(tmp_path), "budget?")
+    assert not ans.verified            # the invented citation did not verify
+    assert len(ans.citations) == 1     # fell back to the top retrieved meeting
+    assert ans.citations[0].stem == "20260101-0900"
 
 
-def test_main_empty_library_is_clean_exit(tmp_path: Path, capsys) -> None:
-    rc = main(["budget", "--dir", str(tmp_path)])
+def test_main_writes_out_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    root = tmp_path / "raw"
+    _meeting(root, "20260101-0900", title="Budget review", transcript="A: we cut the budget.")
+    monkeypatch.setattr(ask.Config, "load", classmethod(lambda cls: _cfg()))
+    monkeypatch.setattr(ask.engine, "complete_text", _echo_first_stem_engine)
+
+    out = tmp_path / "answer.json"
+    rc = ask.main(["what about the", "budget", "--dir", str(root),
+                   "--index-dir", str(tmp_path / "idx"), "--out", str(out)])
     assert rc == 0
-    assert "No searchable meetings" in capsys.readouterr().out
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["answer"]
+    assert payload["citations"][0]["stem"] == "20260101-0900"
+    assert payload["backend"] == "local"
 
 
-def test_main_json_output(tmp_path: Path, capsys) -> None:
-    _meeting(tmp_path, "m1", title="Budget", transcript="A: budget cut.\n")
-    rc = main(["budget", "--dir", str(tmp_path), "--json"])
+def test_main_empty_library_is_clean_exit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(ask.Config, "load", classmethod(lambda cls: _cfg()))
+    out = tmp_path / "answer.json"
+    rc = ask.main(["anything", "--dir", str(tmp_path / "empty"),
+                   "--index-dir", str(tmp_path / "idx"), "--out", str(out)])
+    assert rc == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["empty"] is True
+    assert payload["citations"] == []
+
+
+def test_main_engine_error_returns_1_and_records_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    root = tmp_path / "raw"
+    _meeting(root, "20260101-0900", title="Budget", transcript="A: budget cut.")
+    monkeypatch.setattr(ask.Config, "load", classmethod(lambda cls: _cfg()))
+
+    def _boom(cfg, **kwargs):
+        raise EngineError("local model not installed")
+
+    monkeypatch.setattr(ask.engine, "complete_text", _boom)
+    out = tmp_path / "answer.json"
+    rc = ask.main(["budget", "--dir", str(root), "--index-dir", str(tmp_path / "idx"), "--out", str(out)])
+    assert rc == 1
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert "not installed" in payload["error"]
+
+
+def test_main_json_stdout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
+    root = tmp_path / "raw"
+    _meeting(root, "20260101-0900", title="Budget", transcript="A: budget cut deep.")
+    monkeypatch.setattr(ask.Config, "load", classmethod(lambda cls: _cfg()))
+    monkeypatch.setattr(ask.engine, "complete_text", _echo_first_stem_engine)
+
+    rc = ask.main(["budget", "--dir", str(root), "--index-dir", str(tmp_path / "idx"), "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload[0]["stem"] == "m1"
-    assert payload[0]["title"] == "Budget"
+    assert payload["answer"]
+    assert payload["citations"]
+
+
+def test_answer_dataclass_json_roundtrips() -> None:
+    ans = Answer(question="q", answer="a", backend="local", model="m")
+    assert ans.to_json()["question"] == "q"

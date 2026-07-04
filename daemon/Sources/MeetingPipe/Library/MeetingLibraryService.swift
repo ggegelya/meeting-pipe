@@ -84,6 +84,40 @@ final class MeetingLibraryService {
         }
     }
 
+    /// Ask a natural-language question across the whole library (AI3). Spawns `mp
+    /// ask`, which retrieves + synthesizes an engine-backed answer with verified
+    /// `[stem]` citations on-device, honouring the backend + egress clamp. Async /
+    /// one-shot (AI2 found live synthesis too slow, so the caller shows a spinner).
+    /// Errors flow back through `completion` for inline display, not a notification.
+    func askMeetings(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
+        let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            completion(.failure(NSError(
+                domain: "MeetingLibraryService", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Type a question first."]
+            )))
+            return
+        }
+        Log.event(category: "coordinator", action: "ask_requested", attributes: ["chars": trimmed.count])
+        launcher.ask(question: trimmed) { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let ans):
+                    Log.event(category: "coordinator", action: "ask_answered", attributes: [
+                        "backend": ans.backend ?? "unknown",
+                        "citations": ans.citations.count,
+                        "verified": ans.verified,
+                    ])
+                case .failure(let err):
+                    Log.event(category: "coordinator", action: "ask_failed", attributes: [
+                        "error": err.localizedDescription,
+                    ])
+                }
+                completion(result)
+            }
+        }
+    }
+
     /// Publish a hand-pasted summary for a BYO / long-meeting paste-ready row (TECH-UX3). Writes the pasted text to `<stem>.summary.md`, then runs `mp publish-from-paste`, which parses it, writes `<stem>.summary.json`, and fans out to the sinks; the directory watcher then flips the row to `.done`. Errors flow back through `completion` so the detail pane can show them inline (not as a notification).
     func publishFromPaste(
         stem: String,

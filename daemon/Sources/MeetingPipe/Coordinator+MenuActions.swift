@@ -95,6 +95,12 @@ extension Coordinator {
         library.publishFromPaste(stem: stem, summaryText: summaryText, completion: completion)
     }
 
+    /// Ask a natural-language question across the library (AI3). Forwards to the
+    /// library service, which spawns `mp ask` on-device.
+    func askMeetings(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
+        library.askMeetings(question: question, completion: completion)
+    }
+
     /// Cancel the active pipeline subprocess (TECH-UX5), e.g. from a stalled row.
     func cancelActiveJob() {
         jobDispatcher.cancelActive()

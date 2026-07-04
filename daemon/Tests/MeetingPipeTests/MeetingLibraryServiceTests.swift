@@ -70,6 +70,19 @@ final class MeetingLibraryServiceTests: XCTestCase {
             guard !publishFromPasteCompletions.isEmpty else { return }
             publishFromPasteCompletions.removeFirst()(result)
         }
+
+        private(set) var askInputs: [String] = []
+        private var askCompletions: [(Result<AskAnswer, Error>) -> Void] = []
+
+        func ask(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
+            askInputs.append(question)
+            askCompletions.append(completion)
+        }
+
+        func finishAsk(_ result: Result<AskAnswer, Error>) {
+            guard !askCompletions.isEmpty else { return }
+            askCompletions.removeFirst()(result)
+        }
     }
 
     private var dir: URL!
@@ -311,5 +324,45 @@ final class MeetingLibraryServiceTests: XCTestCase {
 
     func test_failedMeetingCount_empty_dir_is_zero() {
         XCTAssertEqual(service.failedMeetingCount(), 0)
+    }
+
+    // MARK: - ask (AI3)
+
+    private func decodeAnswer(_ json: String) -> AskAnswer {
+        // swiftlint:disable:next force_try
+        try! JSONDecoder().decode(AskAnswer.self, from: Data(json.utf8))
+    }
+
+    func test_ask_empty_question_fails_without_invoking_driver() {
+        var captured: Result<AskAnswer, Error>?
+        service.askMeetings(question: "   \n ") { captured = $0 }
+        guard case .failure? = captured else { return XCTFail("expected synchronous failure") }
+        XCTAssertTrue(driver.askInputs.isEmpty)
+    }
+
+    func test_ask_forwards_trimmed_question_and_returns_answer() {
+        var captured: Result<AskAnswer, Error>?
+        service.askMeetings(question: "  what about the budget?  ") { captured = $0 }
+        XCTAssertEqual(driver.askInputs, ["what about the budget?"])
+
+        let answer = decodeAnswer(#"{"question":"q","answer":"We cut it.","citations":[{"stem":"20260101-0900","title":"Budget"}],"sources_considered":["20260101-0900"],"backend":"local","model":"m","verified":true,"empty":false,"error":null}"#)
+        driver.finishAsk(.success(answer))
+        let drained = expectation(description: "drain")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 1.0)
+        guard case .success(let a)? = captured else { return XCTFail("expected success") }
+        XCTAssertEqual(a.answer, "We cut it.")
+        XCTAssertEqual(a.citations.first?.stem, "20260101-0900")
+    }
+
+    func test_ask_failure_propagates() {
+        var captured: Result<AskAnswer, Error>?
+        service.askMeetings(question: "budget?") { captured = $0 }
+        XCTAssertEqual(driver.askInputs, ["budget?"])
+        driver.finishAsk(.failure(NSError(domain: "x", code: 1)))
+        let drained = expectation(description: "drain")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 1.0)
+        guard case .failure? = captured else { return XCTFail("expected failure") }
     }
 }

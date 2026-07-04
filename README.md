@@ -206,7 +206,7 @@ Click the menu bar icon → **Open Library…** to open the main window (900×60
 The window is a smart-folder rail + scoped list + context-aware detail pane, with a custom toolbar across the top:
 
 - **Toolbar** — breadcrumb (`Library` → scope name), an optional `Edit workflow` button that appears only when a workflow scope is selected, the always-visible **state pill** (Idle / Processing / live Recording with workflow tint and timer), a Record/Stop button, and a gear that opens Preferences.
-- **Rail** (under a `LIBRARY` header): `All meetings`, `Today`, `Last 7 days`, `Last 30 days`, `Needs you`, `NDA only`, `Untagged`, `Facts`. `Needs you` carries an amber count badge and gathers the meetings that want an action: a failed run, a long-meeting bundle awaiting a paste, or a finished meeting whose publish failed or only partially landed. `Facts` is a cross-meeting projection rather than a list filter: it gathers every open action (with its owner, an aging label off the due date, and a circle to mark it done in place) and the decisions from meetings in the last 30 days, each row linking back to its source meeting. Marking an action done writes the resolved flag into that meeting's summary, so it survives a republish. Under a `WORKFLOWS` header: one row per workflow (colored dot + name + meeting count; the default workflow is labelled inline). A `+ New workflow` row opens an editor sheet. Workflows are filter scopes here, not a separate destination, and selecting one narrows the list AND surfaces the workflow inspector in the right column.
+- **Rail** (under a `LIBRARY` header): `All meetings`, `Today`, `Last 7 days`, `Last 30 days`, `Needs you`, `NDA only`, `Untagged`, `Facts`, `Ask`. `Needs you` carries an amber count badge and gathers the meetings that want an action: a failed run, a long-meeting bundle awaiting a paste, or a finished meeting whose publish failed or only partially landed. `Facts` is a cross-meeting projection rather than a list filter: it gathers every open action (with its owner, an aging label off the due date, and a circle to mark it done in place) and the decisions from meetings in the last 30 days, each row linking back to its source meeting. Marking an action done writes the resolved flag into that meeting's summary, so it survives a republish. `Ask` (AI3) is the other projection: a question box over an engine-backed, cited answer across the whole library. It runs `mp ask` on-device (honouring the backend + egress clamp), shows a spinner while it works (answers are async per the AI2 spike, not live chat), and renders the answer with each verified citation linking back to its source meeting. Under a `WORKFLOWS` header: one row per workflow (colored dot + name + meeting count; the default workflow is labelled inline). A `+ New workflow` row opens an editor sheet. Workflows are filter scopes here, not a separate destination, and selecting one narrows the list AND surfaces the workflow inspector in the right column.
 - **List** — the scoped meetings list with the existing filter chips (App / Status / Date) layered on top.
 - **Detail pane** — single meeting selected → the meeting detail (Summary / Transcript / Audio / Corrections / Raw); multiple selected → batch actions; no meeting but a workflow scope active → workflow inspector (Trigger / Modes / Output / Backend + Recent meetings + Edit workflow); otherwise the empty-state nudge.
 
@@ -308,14 +308,15 @@ mp logs --since 1d --json | jq 'select(.bundle_id=="us.zoom.xos")'
 
 `--since` accepts ISO timestamps (`2026-05-06T10:00:00Z`) or short relative offsets (`Nh` / `Nm` / `Nd` / `Ns`).
 
-To search across past meetings from the shell, `mp ask` runs a lexical (TF-IDF) ranking over your summaries and transcripts, fully on-device with no extra dependency:
+To ask a question across past meetings from the shell, `mp ask` gives an engine-backed, cited answer (AI3): it retrieves the most relevant excerpts from the on-device embedding index, synthesizes an answer with your configured backend, and carries `[stem]` citations that are verified against the retrieved meetings, so every citation resolves to a real meeting. It honours `effective_backend()` and the egress clamp (regulated / NDA force the on-device path with no cloud fallback), and per the AI2 spike it runs async with a ~4K-token context budget rather than as live chat:
 
 ```bash
-mp ask budget Q3 forecast                           # top meetings, with a snippet
-mp ask "migration to postgres" --top 3 --json       # machine-readable
+mp ask "what did we decide about the Q3 budget?"    # answer + Sources
+mp ask "open action items on the migration" --json  # machine-readable
+mp ask "hiring plan" --model mlx-community/Qwen2.5-14B-Instruct-4bit  # 14B cites best (AI2)
 ```
 
-This is the zero-dependency MVP. The on-device semantic layer over the same library now exists: `mp ai2-spike` builds a real embedding index (multilingual-e5 on MLX, en/uk) and measures long-context RAG latency + faithfulness on your Mac, the go/no-go that gates engine-backed cited answers (see [`docs/spikes/ai2-embedding-rag-latency.md`](./docs/spikes/ai2-embedding-rag-latency.md)).
+The first ask builds the embedding index (multilingual-e5 on MLX, en/uk) and caches it; later asks reuse it and rebuild only when the library changes. The same feature is reachable in the app as the Library rail's `Ask` view. The AI2 spike that gated this (long-context RAG latency + faithfulness on your Mac) is in [`docs/spikes/ai2-embedding-rag-latency.md`](./docs/spikes/ai2-embedding-rag-latency.md); its harness stays runnable:
 
 ```bash
 mp ai2-spike --index-only                           # just build the embedding index

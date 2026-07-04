@@ -40,9 +40,10 @@ Subcommands:
                               Aggregate the local correction corpus (Phase 2)
   analyze-detection [--since 7d] [--source PATH] [--output FILE] [--json]
                               Audit detector end-signal reliability
-  ask <query...> [--top N] [--dir P] [--json]
-                              Lexical search over your meeting summaries +
-                              transcripts (on-device, zero-dependency)
+  ask <question...> [--context-tokens N] [--model M] [--rebuild] [--dir P] [--out F] [--json]
+                              Ask a natural-language question about your meetings;
+                              engine-backed, cited answers over the on-device
+                              embedding index (honours the backend + egress clamp)
   actions [--owner N] [--due-before D] [--min-confidence C] [--json]
                               List open action items across all your meetings
   ai2-spike [--sizes 4000,8000,16000] [--repeats N] [--index-only]

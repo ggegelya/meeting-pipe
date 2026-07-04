@@ -34,6 +34,54 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertFalse(PipelineLauncher.secretsFileIsTooOpen(at: secretsURL))
     }
 
+    // AI3: the Swift side must decode exactly what `mp ask --out` writes,
+    // including the snake_case `sources_considered` key and a null `error`.
+    func testAskAnswerDecodesThePythonContract() throws {
+        let json = #"""
+        {
+          "question": "what about the budget?",
+          "answer": "You cut it 12%. [20260101-0900]",
+          "citations": [{"stem": "20260101-0900", "title": "Budget review"}],
+          "sources_considered": ["20260101-0900", "20260102-1000"],
+          "backend": "local",
+          "model": "mlx-community/Qwen2.5-14B-Instruct-4bit",
+          "verified": true,
+          "empty": false,
+          "error": null
+        }
+        """#
+        let a = try XCTUnwrap(AskAnswer.load(from: try writeTemp(json)))
+        XCTAssertEqual(a.answer, "You cut it 12%. [20260101-0900]")
+        XCTAssertEqual(a.citations.map(\.stem), ["20260101-0900"])
+        XCTAssertEqual(a.citations.first?.title, "Budget review")
+        XCTAssertEqual(a.sourcesConsidered, ["20260101-0900", "20260102-1000"])
+        XCTAssertEqual(a.backend, "local")
+        XCTAssertTrue(a.verified)
+        XCTAssertFalse(a.empty)
+        XCTAssertNil(a.error)
+    }
+
+    func testAskAnswerDecodesTheErrorAndEmptyPaths() throws {
+        let err = try XCTUnwrap(AskAnswer.load(from: try writeTemp(
+            #"{"question":"q","answer":"","citations":[],"sources_considered":[],"backend":null,"model":null,"verified":false,"empty":false,"error":"local model not installed"}"#
+        )))
+        XCTAssertEqual(err.error, "local model not installed")
+        XCTAssertTrue(err.citations.isEmpty)
+
+        let empty = try XCTUnwrap(AskAnswer.load(from: try writeTemp(
+            #"{"question":"q","answer":"No searchable meetings found.","citations":[],"sources_considered":[],"backend":null,"model":null,"verified":false,"empty":true,"error":null}"#
+        )))
+        XCTAssertTrue(empty.empty)
+        XCTAssertNil(empty.backend)
+    }
+
+    private func writeTemp(_ contents: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ask-\(UUID().uuidString).json")
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
     func testSecretsFileMissingIsNotTooOpen() {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("missing-\(UUID().uuidString).env")

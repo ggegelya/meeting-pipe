@@ -152,6 +152,22 @@ final class LibraryScopeTests: XCTestCase {
         XCTAssertEqual(LibraryScope.workflow(id).workflowID, id)
     }
 
+    func test_ask_and_facts_are_projections_not_list_filters() {
+        // Both render in the center column; no meeting "belongs" to the scope, so
+        // `includes` is always false (they must never filter the meeting list).
+        let m = makeMeeting(stem: "a")
+        XCTAssertFalse(LibraryScope.ask.includes(m, workflows: [], now: now))
+        XCTAssertFalse(LibraryScope.facts.includes(m, workflows: [], now: now))
+    }
+
+    func test_ask_scope_is_railed_with_chrome_and_no_count() {
+        XCTAssertTrue(LibrarySidebar.librarySections.contains(.ask))
+        XCTAssertEqual(LibraryScope.ask.title, "Ask")
+        XCTAssertNotNil(LibraryScope.ask.systemImage)
+        XCTAssertFalse(LibraryScope.ask.isWorkflow)
+        XCTAssertEqual(ScopeCounts.zero.count(for: .ask), 0)  // a view, not a counted subset
+    }
+
     // MARK: helpers
 
     /// Pinned to a wall clock that's safely mid-afternoon UTC so the

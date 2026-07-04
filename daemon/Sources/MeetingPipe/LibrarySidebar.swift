@@ -70,10 +70,10 @@ struct LibrarySidebar: View {
     }
 
     /// Non-workflow scopes shown in the Library section, in display order.
-    /// `.facts` sits last: a cross-meeting projection set apart from the
-    /// date/status filters above it (DV1).
+    /// `.facts` and `.ask` sit last: cross-meeting projections set apart from the
+    /// date/status filters above them (DV1 / AI3).
     static let librarySections: [LibraryScope] = [
-        .allMeetings, .today, .last7Days, .last30Days, .needsYou, .ndaOnly, .untagged, .facts,
+        .allMeetings, .today, .last7Days, .last30Days, .needsYou, .ndaOnly, .untagged, .facts, .ask,
     ]
 }
 
@@ -102,7 +102,7 @@ struct ScopeCounts: Equatable {
         case .needsYou:    return needsYou
         case .ndaOnly:     return nda
         case .untagged:    return untagged
-        case .facts:       return 0   // a view, not a counted subset
+        case .facts, .ask: return 0   // views, not counted subsets
         case .workflow(let id): return perWorkflow[id] ?? 0
         }
     }
@@ -159,10 +159,12 @@ private struct LibraryScopeRow: View {
         return false
     }
 
-    /// `.facts` is a view, not a counted subset, so it shows no trailing count (DV1).
+    /// `.facts` / `.ask` are views, not counted subsets, so they show no trailing count (DV1 / AI3).
     private var showsCount: Bool {
-        if case .facts = scope { return false }
-        return true
+        switch scope {
+        case .facts, .ask: return false
+        default: return true
+        }
     }
 
     var body: some View {

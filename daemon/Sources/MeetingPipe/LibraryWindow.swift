@@ -222,6 +222,22 @@ final class LibraryWindowModel: ObservableObject {
         }
     }
 
+    /// Ask a natural-language question across the library (AI3). Async-wrapped like
+    /// `republishMeeting`; the AskView shows a spinner while this runs.
+    func askMeetings(question: String) async -> Result<AskAnswer, Error> {
+        guard let coordinator = coordinator else {
+            return .failure(NSError(
+                domain: "LibraryWindowModel", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
+            ))
+        }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Result<AskAnswer, Error>, Never>) in
+            coordinator.askMeetings(question: question) { result in
+                cont.resume(returning: result)
+            }
+        }
+    }
+
     /// Re-enqueue the full `mp run-all` pipeline for a stalled/failed meeting.
     @discardableResult
     func retryMeeting(stem: String) -> Result<Void, Error> {
@@ -351,6 +367,14 @@ struct LibraryRootView: View {
                             scope = .allMeetings
                             meetingSelection = [stem]
                         }
+                    } else if case .ask = scope {
+                        // Ask-AI (AI3) also takes the center column: a question box
+                        // over a cited answer, each citation navigating back to its
+                        // source meeting like a Facts row does.
+                        AskView(model: model) { stem in
+                            scope = .allMeetings
+                            meetingSelection = [stem]
+                        }
                     } else {
                         LibraryListView(
                             store: meetingStore,
@@ -416,6 +440,19 @@ struct LibraryRootView: View {
                     .font(.system(size: 36))
                     .foregroundStyle(Color(MPColors.fgSubtle))
                 Text("Open actions and recent decisions across your meetings.")
+                    .foregroundStyle(Color(MPColors.fgMuted))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 260)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if case .ask = scope {
+            // Ask owns the center column (like Facts); a citation's "open" jumps to
+            // All Meetings, which re-renders this pane normally.
+            VStack(spacing: 8) {
+                Image(systemName: "bubble.left.and.text.bubble.right")
+                    .font(.system(size: 36))
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+                Text("Answers are drawn from your meetings, on-device, with citations.")
                     .foregroundStyle(Color(MPColors.fgMuted))
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 260)

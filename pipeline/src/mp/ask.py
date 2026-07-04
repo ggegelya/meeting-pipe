@@ -1,150 +1,194 @@
-"""`mp ask` - lexical search over the meeting library (TECH-FEAT2).
+"""`mp ask` - engine-backed, cited answers over the meeting library (AI3).
 
-A zero-dependency "ask my meetings" MVP: it builds an in-memory TF-IDF index
-over the summaries and transcripts already on disk and ranks meetings by a
-query. Stdlib only (`re` / `math` / `collections` / `json` / `pathlib`); the
-true on-device semantic RAG (embeddings + a vector index over the same library,
-reusing the MLX model) is the follow-up this paves the way for.
+Retrieval-augmented "ask my meetings": retrieve the most relevant excerpts from
+the on-device embedding index (`embed_index.py`, the AI2 artifact), synthesize a
+natural-language answer with the configured engine, and carry `[stem]` citations
+that are verified against the retrieved set so every presented citation resolves
+to a real meeting on disk.
 
-Searchable corpus per meeting: `<stem>.summary.md` (when present) plus the
-`<stem>.md` speaker-segmented transcript. The title is read from
-`<stem>.summary.json` when available, else the stem.
+Zero-egress + backend: the answer runs through `engine.complete_text`, which
+honours `effective_backend()` (regulated / NDA force the on-device path with no
+cloud fallback) and routes through httpx, so the egress guard armed at entry
+clamps it. Async by design: AI2's spike found on-device long-context synthesis is
+too slow for live typing, so `mp ask` is one blocking call that returns the whole
+answer (the daemon shows a spinner around it), with a ~4K-token context budget.
+
+This replaces the FEAT2 TF-IDF ranker: retrieval is now semantic (embeddings),
+and the output is an answer, not a ranked file list.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import math
-import re
-from collections import Counter
-from dataclasses import dataclass, field
+import logging
+import sys
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .config import Config
+from . import embed_index, engine, rag
+from .config import Config, load_secrets
+from .egress_guard import arm_for_config
 
-_TOKEN = re.compile(r"[a-z0-9]+")
+log = logging.getLogger("mp.ask")
 
-
-def _tokenize(text: str) -> list[str]:
-    return _TOKEN.findall(text.lower())
+# AI2's recommended context budget (~4K tokens on the 14B; 16K was unsafe on the
+# owner's Mac). A generous chars-per-token estimate sizes the retrieved context;
+# the model reports the real token count, this only bounds packing.
+DEFAULT_CONTEXT_TOKENS = 4000
+CHARS_PER_TOKEN = 4
+# A meeting-recall answer is a few sentences; bound generation so the local
+# path's wall-clock stays within AI2's budget.
+ANSWER_MAX_TOKENS = 512
 
 
 @dataclass
-class MeetingDoc:
+class Citation:
     stem: str
     title: str
-    lines: list[str]
-    tf: Counter = field(default_factory=Counter)
 
 
-def discover(root: Path) -> list[MeetingDoc]:
-    """Build one `MeetingDoc` per meeting under `root` from its summary +
-    transcript text. Meetings with neither are skipped."""
-    root = root.expanduser()
-    if not root.is_dir():
-        return []
+@dataclass
+class Answer:
+    question: str
+    answer: str
+    citations: list[Citation] = field(default_factory=list)
+    sources_considered: list[str] = field(default_factory=list)
+    backend: str | None = None
+    model: str | None = None
+    # True when the model's own `[stem]` citations verified against the retrieved
+    # set; False when we fell back to the top retrieved meeting as the source.
+    verified: bool = False
+    empty: bool = False
+    error: str | None = None
 
-    stems: set[str] = set()
-    for p in root.glob("*.md"):
-        # `<stem>.md` is the transcript (one dot); `<stem>.summary.md` etc. have more.
-        if p.name.count(".") == 1:
-            stems.add(p.name.split(".", 1)[0])
-    for p in root.glob("*.summary.json"):
-        stems.add(p.name.split(".", 1)[0])
-
-    docs: list[MeetingDoc] = []
-    for stem in sorted(stems):
-        parts: list[str] = []
-        title = stem
-        summary_json = root / f"{stem}.summary.json"
-        if summary_json.exists():
-            try:
-                obj = json.loads(summary_json.read_text(encoding="utf-8"))
-                if isinstance(obj, dict) and obj.get("title"):
-                    title = str(obj["title"])
-            except (OSError, ValueError):
-                pass
-        for name in (f"{stem}.summary.md", f"{stem}.md"):
-            f = root / name
-            if f.exists():
-                parts.append(f.read_text(encoding="utf-8", errors="ignore"))
-        if not parts:
-            continue
-        text = "\n".join(parts)
-        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        docs.append(MeetingDoc(stem=stem, title=title, lines=lines, tf=Counter(_tokenize(text))))
-    return docs
+    def to_json(self) -> dict:
+        return asdict(self)
 
 
-def idf(docs: list[MeetingDoc]) -> dict[str, float]:
-    """Smoothed inverse document frequency across the library."""
-    n = len(docs)
-    df: Counter = Counter()
-    for d in docs:
-        df.update(d.tf.keys())   # unique terms per doc
-    return {term: math.log((n + 1) / (c + 1)) + 1.0 for term, c in df.items()}
+def _titles_by_stem(chunks: list[embed_index.Chunk]) -> dict[str, str]:
+    titles: dict[str, str] = {}
+    for c in chunks:
+        titles.setdefault(c.stem, c.title)
+    return titles
 
 
-def score(query_terms: list[str], doc: MeetingDoc, weights: dict[str, float]) -> float:
-    """Sum of tf * idf over the query terms - a simple, effective lexical rank."""
-    return sum(doc.tf.get(t, 0) * weights.get(t, 0.0) for t in set(query_terms))
+def answer_question(
+    cfg: Config,
+    index: embed_index.EmbeddingIndex,
+    question: str,
+    *,
+    context_tokens: int = DEFAULT_CONTEXT_TOKENS,
+    model: str | None = None,
+) -> Answer:
+    """Retrieve, synthesize, and verify citations for one question.
+
+    Raises `engine.EngineError` if the backend cannot produce a completion; the
+    empty-library case is handled by the caller (this assumes a non-empty index).
+    """
+    target_chars = max(1, context_tokens) * CHARS_PER_TOKEN
+    # Retrieve generously, then pack to the char budget (mirrors the AI2 spike).
+    k = max(8, target_chars // 500)
+    hits = index.search(question, k=k)
+    chunks = [h.chunk for h in hits]
+    context, stems = rag.pack_context(chunks, target_chars)
+    titles = _titles_by_stem(chunks)
+
+    result = engine.complete_text(
+        cfg,
+        system_prompt=rag.RAG_SYSTEM,
+        user_message=rag.rag_user(context, question),
+        max_tokens=ANSWER_MAX_TOKENS,
+        model=model,
+    )
+
+    verified = rag.verify_citations(result.text, stems)
+    if verified:
+        cited_stems, was_verified = verified, True
+    else:
+        # The model cited nothing that resolves (a weak local model may cite
+        # poorly, per AI2). Fall back to the top retrieved meeting so the answer
+        # still carries at least one real, verifiable citation.
+        cited_stems, was_verified = stems[:1], False
+
+    return Answer(
+        question=question,
+        answer=result.text,
+        citations=[Citation(stem=s, title=titles.get(s, s)) for s in cited_stems],
+        sources_considered=stems,
+        backend=result.backend,
+        model=result.model,
+        verified=was_verified,
+    )
 
 
-def snippet(query_terms: list[str], doc: MeetingDoc, width: int = 200) -> str:
-    """The single line with the most query-term hits, for a bit of context."""
-    qset = set(query_terms)
-    best, best_hits = "", 0
-    for ln in doc.lines:
-        hits = sum(1 for t in _tokenize(ln) if t in qset)
-        if hits > best_hits:
-            best_hits, best = hits, ln
-    return best[:width]
+def _empty_answer(question: str) -> Answer:
+    return Answer(question=question, answer="No searchable meetings found.", empty=True)
 
 
-def search(docs: list[MeetingDoc], query: str, top: int) -> list[tuple[MeetingDoc, float]]:
-    weights = idf(docs)
-    terms = _tokenize(query)
-    ranked = [(d, score(terms, d, weights)) for d in docs]
-    ranked = [(d, s) for d, s in ranked if s > 0]
-    ranked.sort(key=lambda ds: ds[1], reverse=True)
-    return ranked[:top]
+def _render_text(ans: Answer) -> str:
+    lines = [ans.answer]
+    if ans.citations:
+        lines.append("")
+        lines.append("Sources:")
+        for c in ans.citations:
+            lines.append(f"  {c.title}  [{c.stem}]")
+        if not ans.verified:
+            lines.append("  (citation inferred from the closest matching meeting)")
+    return "\n".join(lines)
 
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(
         prog="mp ask",
-        description="Lexical search over the meeting library (TECH-FEAT2).",
+        description="Ask a natural-language question about your meetings, with cited answers (AI3).",
     )
-    ap.add_argument("query", nargs="+", help="search terms")
-    ap.add_argument("--top", type=int, default=5, help="how many meetings to show (default 5)")
+    ap.add_argument("question", nargs="+", help="the question to ask")
     ap.add_argument("--dir", type=Path, default=None, help="override the recordings directory")
-    ap.add_argument("--json", action="store_true", dest="as_json", help="emit JSON instead of text")
+    ap.add_argument("--index-dir", type=Path, default=embed_index.DEFAULT_INDEX_DIR,
+                    help="where the embedding index is cached")
+    ap.add_argument("--context-tokens", type=int, default=DEFAULT_CONTEXT_TOKENS,
+                    help=f"retrieved context budget in tokens (default {DEFAULT_CONTEXT_TOKENS})")
+    ap.add_argument("--model", default=None,
+                    help="override the answer model (14B is recommended for citation fidelity, per AI2)")
+    ap.add_argument("--rebuild", action="store_true", help="force a rebuild of the embedding index")
+    ap.add_argument("--out", type=Path, default=None, help="write the answer JSON to this file (for the daemon)")
+    ap.add_argument("--json", action="store_true", dest="as_json", help="print JSON instead of text")
     args = ap.parse_args(argv)
 
-    root = args.dir if args.dir is not None else Config.load().recording.output_dir
-    docs = discover(Path(root))
-    if not docs:
-        print(f"No searchable meetings under {root}.")
-        return 0
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
-    query = " ".join(args.query)
-    terms = _tokenize(query)
-    results = search(docs, query, args.top)
+    cfg = Config.load()
+    arm_for_config(cfg)  # TECH-SEC3: block non-loopback egress under regulated/NDA
+    load_secrets()
 
-    if args.as_json:
-        print(json.dumps([
-            {"stem": d.stem, "title": d.title, "score": round(s, 3), "snippet": snippet(terms, d)}
-            for d, s in results
-        ], indent=2))
-        return 0
+    root = Path(args.dir) if args.dir is not None else cfg.recording.output_dir
+    question = " ".join(args.question).strip()
 
-    if not results:
-        print(f"No meetings matched: {query}")
-        return 0
+    def emit(ans: Answer, rc: int) -> int:
+        if args.out is not None:
+            Path(args.out).expanduser().write_text(
+                json.dumps(ans.to_json(), indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        if args.as_json:
+            print(json.dumps(ans.to_json(), indent=2, ensure_ascii=False))
+        elif ans.error:
+            print(ans.error, file=sys.stderr)
+        else:
+            print(_render_text(ans))
+        return rc
 
-    for d, s in results:
-        print(f"{d.title}  [{d.stem}]  (score {s:.2f})")
-        snip = snippet(terms, d)
-        if snip:
-            print(f"    {snip}")
-    return 0
+    embedder = embed_index.default_embedder()
+    index = embed_index.load_or_build(root, args.index_dir, embedder, rebuild=args.rebuild)
+    if not index.chunks:
+        return emit(_empty_answer(question), 0)
+
+    try:
+        ans = answer_question(cfg, index, question, context_tokens=args.context_tokens, model=args.model)
+    except engine.EngineError as e:
+        return emit(Answer(question=question, answer="", error=str(e)), 1)
+
+    return emit(ans, 0)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main(sys.argv[1:]))
