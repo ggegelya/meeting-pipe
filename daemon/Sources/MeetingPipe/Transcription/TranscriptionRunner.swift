@@ -15,6 +15,12 @@ struct TranscriptSidecar: Codable, Equatable {
     var diarizationFailureReason: String?
     var streaming: Bool
     var finalized: Bool
+    /// Per-speaker 256-d voiceprint embedding keyed by diarization speaker id.
+    /// Written on the draft <stem>.json only; the pipeline consumes it at
+    /// finalize (voiceprint enroll + match) and strips it, so it never reaches
+    /// the final transcript the Library reads. Omitted when diarization
+    /// produced no speakers.
+    var speakerEmbeddings: [String: [Float]]? = nil
 
     enum CodingKeys: String, CodingKey {
         case language
@@ -28,6 +34,7 @@ struct TranscriptSidecar: Codable, Equatable {
         case diarizationFailureReason = "diarization_failure_reason"
         case streaming
         case finalized
+        case speakerEmbeddings = "speaker_embeddings"
     }
 }
 

@@ -29,7 +29,14 @@ from .config import Config, effective_backend, load_secrets
 from .corrections import set_publish_state, write_empty_marker, write_run_sidecar
 from .transcript_quality import transcript_issues
 from .egress_guard import arm_for_config
-from .diarize import assign_speakers_by_channel, is_stereo_recording, label_me_speaker
+from .diarize import (
+    assign_speakers_by_channel,
+    identify_user_speaker,
+    is_stereo_recording,
+    label_me_speaker,
+    match_voiceprint,
+)
+from .voiceprint import VoiceprintStore
 from . import events
 from .markdown import render_markdown
 from .publish_router import fanout as publish_fanout, publish_state
@@ -490,7 +497,42 @@ def _streamed_segments_have_speakers(streamed: dict) -> bool:
     return labelled >= max(1, len(segs) // 2)
 
 
-def _finalize_streamed_transcript(wav: Path, streamed: dict, *, user_label: str = "") -> dict[str, Path]:
+# Stop auto-enrolling once the running-average voiceprint is stable, so the
+# once-per-meeting channel RMS pass that enrollment needs is not paid forever.
+_VOICEPRINT_ENROLL_CAP = 12
+
+
+def _apply_voiceprint(
+    segments: list[dict],
+    speaker_embeddings: dict | None,
+    wav: Path,
+    store: VoiceprintStore,
+) -> str | None:
+    """Match the meeting's speakers to the persisted self-voiceprint (returning
+    the "me" speaker id, or None) and, on a stereo recording, fold the
+    mic-channel user's embedding back into the voiceprint (auto-enrollment).
+
+    No-ops when the daemon wrote no per-speaker embeddings (diarization failed).
+    Matches before enrolling, so a meeting never just matches its own freshly
+    added sample.
+    """
+    if not isinstance(speaker_embeddings, dict) or not speaker_embeddings:
+        return None
+    matched = match_voiceprint(speaker_embeddings, store.embedding())
+    if store.meetings() < _VOICEPRINT_ENROLL_CAP:
+        me = identify_user_speaker(segments, wav)
+        if me is not None and me in speaker_embeddings:
+            store.update(speaker_embeddings[me])
+    return matched
+
+
+def _finalize_streamed_transcript(
+    wav: Path,
+    streamed: dict,
+    *,
+    user_label: str = "",
+    voiceprint_store: VoiceprintStore | None = None,
+) -> dict[str, Path]:
     """Finalize the daemon transcript so downstream stages see clean
     `<stem>.json` + `<stem>.md`. FluidAudio normally provides speaker
     labels; when it didn't (diarization failed), fall back to a channel-
@@ -499,9 +541,17 @@ def _finalize_streamed_transcript(wav: Path, streamed: dict, *, user_label: str 
     json_path = wav.parent / f"{wav.stem}.json"
     md_path = wav.parent / f"{wav.stem}.md"
 
+    store = voiceprint_store or VoiceprintStore()
+    # The daemon writes per-speaker voiceprint embeddings into the draft sidecar
+    # only; consume them here and strip them so the final transcript the Library
+    # reads stays clean.
+    speaker_embeddings = streamed.pop("speaker_embeddings", None)
+
     if _streamed_segments_have_speakers(streamed):
         log.info("FluidAudio sidecar already labelled segments; finalizing as-is")
-        segments = label_me_speaker(streamed.get("segments") or [], user_label)  # TECH-FEAT3
+        segs = streamed.get("segments") or []
+        voiceprint_me = _apply_voiceprint(segs, speaker_embeddings, wav, store)
+        segments = label_me_speaker(segs, user_label, voiceprint_me=voiceprint_me)
         structured = {**streamed, "segments": segments, "finalized": True}
         json_path.write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
         md_path.write_text(render_markdown(structured), encoding="utf-8")

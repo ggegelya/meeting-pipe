@@ -59,11 +59,13 @@ final class FluidAudioRunner: TranscriptionRunner {
         }
 
         var speakers: [SpeakerSpan] = []
+        var speakerEmbeddings: [String: [Float]] = [:]
         var diarizationOK = true
         var diarizationFailureReason: String? = nil
         do {
             let diarized = try await runDiarization(samples: samples)
-            speakers = diarized
+            speakers = diarized.spans
+            speakerEmbeddings = diarized.embeddings
         } catch {
             diarizationOK = false
             diarizationFailureReason = String(describing: error)
@@ -93,7 +95,8 @@ final class FluidAudioRunner: TranscriptionRunner {
             diarizationFailed: !diarizationOK,
             diarizationFailureReason: diarizationFailureReason,
             streaming: false,
-            finalized: true
+            finalized: true,
+            speakerEmbeddings: speakerEmbeddings.isEmpty ? nil : speakerEmbeddings
         )
     }
 
@@ -126,16 +129,60 @@ final class FluidAudioRunner: TranscriptionRunner {
         }
     }
 
-    private func runDiarization(samples: [Float]) async throws -> [SpeakerSpan] {
+    private func runDiarization(
+        samples: [Float]
+    ) async throws -> (spans: [SpeakerSpan], embeddings: [String: [Float]]) {
         let diarizer = try await ensureDiarizer()
-        let result = try await diarizer.performCompleteDiarization(samples)
-        return result.segments.map {
+        let result = try diarizer.performCompleteDiarization(samples)
+        let spans = result.segments.map {
             SpeakerSpan(
                 speakerId: $0.speakerId,
                 start: Double($0.startTimeSeconds),
                 end: Double($0.endTimeSeconds)
             )
         }
+        // Duration-weighted mean of each speaker's per-segment embeddings, so the
+        // persisted voiceprint reflects voiced speech. The per-segment embedding is
+        // this recording's own audio, so it is unaffected by the diarizer's
+        // speaker database accumulating across meetings in one daemon session.
+        let items = result.segments.map {
+            (speaker: $0.speakerId,
+             embedding: $0.embedding,
+             weight: Double(max(0, $0.endTimeSeconds - $0.startTimeSeconds)))
+        }
+        return (spans, Self.weightedMeanEmbeddings(items))
+    }
+
+    /// Duration-weighted mean embedding per speaker id, L2-normalized. Pure and
+    /// FluidAudio-free so it is unit-testable. Speakers with no positive weight
+    /// or a ragged embedding dimension are dropped.
+    static func weightedMeanEmbeddings(
+        _ items: [(speaker: String, embedding: [Float], weight: Double)]
+    ) -> [String: [Float]] {
+        var sums: [String: [Double]] = [:]
+        var totals: [String: Double] = [:]
+        for item in items {
+            let dim = item.embedding.count
+            guard dim > 0, item.weight > 0 else { continue }
+            if let existing = sums[item.speaker], existing.count != dim { continue }
+            var acc = sums[item.speaker] ?? [Double](repeating: 0, count: dim)
+            for i in 0..<dim { acc[i] += Double(item.embedding[i]) * item.weight }
+            sums[item.speaker] = acc
+            totals[item.speaker, default: 0] += item.weight
+        }
+        var out: [String: [Float]] = [:]
+        for (speaker, sum) in sums {
+            guard let total = totals[speaker], total > 0 else { continue }
+            out[speaker] = l2Normalized(sum.map { Float($0 / total) })
+        }
+        return out
+    }
+
+    /// L2-normalize a vector; returns the input unchanged when its norm is ~0.
+    static func l2Normalized(_ v: [Float]) -> [Float] {
+        let norm = (v.reduce(Float(0)) { $0 + $1 * $1 }).squareRoot()
+        guard norm > 1e-9 else { return v }
+        return v.map { $0 / norm }
     }
 
     // MARK: - Adapters

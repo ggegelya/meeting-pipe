@@ -8,6 +8,7 @@ struct PipelineSectionView: View {
     @State private var promptLoading = false
     @State private var promptError: String?
     @State private var showLocalModelConfig = false
+    @State private var voiceprintMeetings = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -82,10 +83,18 @@ struct PipelineSectionView: View {
 
             SettingsGroup("Your name") {
                 SettingsStackRow("Display name",
-                    sublabel: "Stamped on your own voice in the transcript so speaker labels read as your name, not \"Speaker 1\". Leave blank to keep generic labels.",
-                    showsDivider: false) {
+                    sublabel: "Stamped on your own voice in the transcript so speaker labels read as your name, not \"Speaker 1\". Leave blank to keep generic labels.") {
                     TextField("e.g. Alex", text: $store.summarizationUserLabel)
                         .textFieldStyle(.roundedBorder)
+                }
+                SettingsRow("Voice profile",
+                    sublabel: voiceProfileSublabel,
+                    showsDivider: false) {
+                    Button("Reset") {
+                        VoiceprintProfile.reset()
+                        voiceprintMeetings = 0
+                    }
+                    .disabled(voiceprintMeetings == 0)
                 }
             }
 
@@ -126,6 +135,13 @@ struct PipelineSectionView: View {
                 Text("When the transcript exceeds this size, the pipeline writes a paste-into-Claude bundle instead of calling the Anthropic API. 0 disables the guard. ~80,000 chars ≈ 1 hour of speech.")
             }
         }
+        .onAppear { voiceprintMeetings = VoiceprintProfile.meetingsLearned() }
+    }
+
+    private var voiceProfileSublabel: String {
+        voiceprintMeetings == 0
+            ? "Learned automatically from the mic channel of your stereo recordings, then used to label you on mono or merged calls. Not learned yet."
+            : "Learned from \(voiceprintMeetings) meeting\(voiceprintMeetings == 1 ? "" : "s"). Used to label you on mono or merged calls."
     }
 
     private var localModelHint: String {

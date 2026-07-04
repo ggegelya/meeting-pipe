@@ -10,6 +10,7 @@ mono case rather than re-introducing a per-recording embedding cluster.
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 # Speaker labels for the stereo channel-aware path. Stable strings so
@@ -142,15 +143,18 @@ def label_me_speaker(
     user_label: str,
     *,
     channel_me: str = USER_SPEAKER,
+    voiceprint_me: str | None = None,
 ) -> list[dict]:
-    """TECH-FEAT3 speaker-enrollment MVP: stamp the user's enrolled display
-    name on their own speaker, so "me vs them" reads as a real name.
+    """Stamp the user's enrolled display name on their own speaker, so
+    "me vs them" reads as a real name.
 
-    Picks the "me" speaker structurally, no voiceprint needed:
+    Picks the "me" speaker by precedence:
       - the channel-assigned mic speaker (`speaker_user`) when present, the
         reliable stereo path since the mic channel is always the user; else
-      - the dominant speaker by total spoken time, a best-effort fallback for
-        FluidAudio's merged-audio labels or a mono recording.
+      - `voiceprint_me`, the speaker matched to the persisted self-voiceprint
+        (FEAT3-VOICEPRINT), which holds on mono / merged audio and when the
+        user is not the dominant speaker; else
+      - the dominant speaker by total spoken time, a best-effort fallback.
 
     Returns a new segment list with the chosen speaker relabeled to
     `user_label`. No-op (segments copied unchanged) when `user_label` is empty
@@ -162,10 +166,99 @@ def label_me_speaker(
         return [dict(s) for s in segments]
 
     present = {s.get("speaker") for s in segments if s.get("speaker")}
-    me = channel_me if channel_me in present else _dominant_speaker(segments)
+    if channel_me in present:
+        me = channel_me
+    elif voiceprint_me and voiceprint_me in present:
+        me = voiceprint_me
+    else:
+        me = _dominant_speaker(segments)
     if me is None or me == label:
         return [dict(s) for s in segments]
     return [
         {**s, "speaker": label} if s.get("speaker") == me else dict(s)
         for s in segments
     ]
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity of two equal-length vectors; 0.0 on length mismatch,
+    empty input, or a zero vector."""
+    if not a or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na < 1e-9 or nb < 1e-9:
+        return 0.0
+    return dot / (na * nb)
+
+
+# Minimum cosine similarity for a diarized speaker to be accepted as the
+# enrolled user. Conservative: bias to leaving "me" to the structural fallback
+# rather than misattributing. Same-speaker WeSpeaker pairs typically clear this.
+VOICEPRINT_MATCH_MIN = 0.5
+
+
+def match_voiceprint(
+    speaker_embeddings: dict[str, list[float]],
+    voiceprint: list[float] | None,
+    *,
+    min_similarity: float = VOICEPRINT_MATCH_MIN,
+) -> str | None:
+    """Return the diarized speaker id whose embedding is closest to the
+    persisted `voiceprint` and clears `min_similarity`, else None. Ties break to
+    the lowest speaker id for determinism."""
+    if not voiceprint or not speaker_embeddings:
+        return None
+    best_id: str | None = None
+    best_sim = -1.0
+    for spk, emb in sorted(speaker_embeddings.items()):
+        sim = cosine_similarity(emb, voiceprint)
+        if sim > best_sim:
+            best_id, best_sim = spk, sim
+    return best_id if best_id is not None and best_sim >= min_similarity else None
+
+
+def identify_user_speaker(
+    segments: list[dict],
+    wav: Path,
+    *,
+    min_fraction: float = 0.6,
+) -> str | None:
+    """On a stereo recording, return which diarized speaker is the mic-channel
+    user (the voiceprint-enrollment target), or None when mono / ambiguous.
+
+    Runs the channel-aware assignment on a copy and cross-tabulates each
+    original diarized speaker against the mic/other verdict: the speaker whose
+    speech time is at least `min_fraction` on the mic channel is the user.
+    Deliberately conservative, since a wrong enrollment poisons the voiceprint.
+    """
+    if not segments or not is_stereo_recording(wav):
+        return None
+    channel = assign_speakers_by_channel([dict(s) for s in segments], wav)
+    if len(channel) != len(segments):
+        return None
+    mic_time: dict[str, float] = {}
+    total_time: dict[str, float] = {}
+    saw_other = False
+    for orig, chan in zip(segments, channel):
+        spk = orig.get("speaker")
+        if not spk:
+            continue
+        dur = max(0.0, float(orig.get("end", 0)) - float(orig.get("start", 0)))
+        total_time[spk] = total_time.get(spk, 0.0) + dur
+        if chan.get("speaker") == USER_SPEAKER:
+            mic_time[spk] = mic_time.get(spk, 0.0) + dur
+        else:
+            saw_other = True
+    # assign_speakers_by_channel collapses every segment to USER_SPEAKER when the
+    # system channel is silent (effectively mono-from-mic); we can't tell the
+    # user's voice apart there, so decline to enroll.
+    if not total_time or not saw_other:
+        return None
+
+    def mic_fraction(spk: str) -> float:
+        return mic_time.get(spk, 0.0) / total_time[spk] if total_time[spk] > 0 else 0.0
+
+    best = max(total_time, key=mic_fraction)
+    return best if mic_fraction(best) >= min_fraction else None

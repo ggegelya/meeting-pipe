@@ -17,6 +17,7 @@ from mp.diarize import (
     OTHER_SPEAKER,
     USER_SPEAKER,
     assign_speakers_by_channel,
+    identify_user_speaker,
     is_stereo_recording,
 )
 from mp.markdown import render_markdown
@@ -192,6 +193,25 @@ def test_assign_speakers_by_channel_handles_overlap(tmp_path):
     transcript = [{"start": 1.0, "end": 3.0, "text": "Both talking."}]
     out = assign_speakers_by_channel(transcript, wav)
     assert out[0]["speaker"] in (USER_SPEAKER, OTHER_SPEAKER)
+
+
+def test_identify_user_speaker_end_to_end_picks_mic_speaker(tmp_path):
+    """End-to-end over a real stereo WAV (FEAT3-VOICEPRINT enrollment): the
+    diarized speaker whose speech lands on the mic (L) channel is the
+    voiceprint-enrollment target; the system-channel speaker is not."""
+    wav = tmp_path / "stereo.wav"
+    _write_stereo_wav(
+        wav,
+        l_segments=[(0.0, 2.0), (4.0, 5.0)],   # speaker_0 (me) on the mic
+        r_segments=[(2.0, 4.0)],                # speaker_1 (other) on system
+        total_seconds=6,
+    )
+    segs = [
+        {"speaker": "speaker_0", "start": 0.0, "end": 2.0, "text": "hi"},
+        {"speaker": "speaker_1", "start": 2.0, "end": 4.0, "text": "hello"},
+        {"speaker": "speaker_0", "start": 4.0, "end": 5.0, "text": "bye"},
+    ]
+    assert identify_user_speaker(segs, wav) == "speaker_0"
 
 
 def test_assign_speakers_by_channel_does_not_mutate_input(tmp_path):

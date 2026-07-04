@@ -17,7 +17,9 @@ from unittest.mock import patch
 import pytest
 
 from mp.config import Config
-from mp.orchestrate import run_all
+from mp.diarize import cosine_similarity
+from mp.orchestrate import _finalize_streamed_transcript, run_all
+from mp.voiceprint import VoiceprintStore
 
 
 def _write_fluidaudio_sidecar(
@@ -192,6 +194,89 @@ def test_finalize_marks_failed_when_mono_and_unlabelled(tmp_path: Path, monkeypa
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["diarization_failed"] is True
     assert data["segments"][0]["speaker"] == "Speaker?"
+
+
+def _streamed_with_embeddings(wav: Path, segments: list[dict], embeddings: dict) -> dict:
+    return {
+        "language": "en",
+        "segments": segments,
+        "audio_path": str(wav),
+        "audio_seconds": 9.0,
+        "model": "parakeet-tdt-0.6b-v3",
+        "backend": "fluidaudio",
+        "diarization": True,
+        "diarization_failed": False,
+        "streaming": False,
+        "finalized": True,
+        "speaker_embeddings": embeddings,
+    }
+
+
+def test_finalize_voiceprint_match_beats_dominant_and_strips_embeddings(
+    tmp_path: Path, monkeypatch
+):
+    """FEAT3-VOICEPRINT: the voiceprint-matched speaker becomes "me" even when
+    another speaker is dominant, and the daemon's per-speaker embeddings are
+    stripped from the final transcript the Library reads."""
+    dim = 256
+    e0 = [1.0] + [0.0] * (dim - 1)       # the user's direction
+    e1 = [0.0, 1.0] + [0.0] * (dim - 2)  # someone else
+    store = VoiceprintStore(tmp_path / "vp.json")
+    store.update(e0)  # voiceprint aligned to speaker_0
+
+    wav = tmp_path / "20260501-1000.wav"
+    wav.write_bytes(b"")
+    streamed = _streamed_with_embeddings(
+        wav,
+        [
+            {"start": 0.0, "end": 1.0, "text": "hi", "speaker": "speaker_0"},
+            {"start": 1.0, "end": 9.0, "text": "lots", "speaker": "speaker_1"},
+        ],
+        {"speaker_0": e0, "speaker_1": e1},
+    )
+    # Mono, so enrollment no-ops; this exercises match + strip only.
+    monkeypatch.setattr("mp.diarize.is_stereo_recording", lambda w: False)
+    out = _finalize_streamed_transcript(wav, streamed, user_label="Me", voiceprint_store=store)
+
+    data = json.loads(out["json"].read_text(encoding="utf-8"))
+    assert "speaker_embeddings" not in data
+    # speaker_1 is dominant, but the voiceprint matched the short speaker_0.
+    assert [s["speaker"] for s in data["segments"]] == ["Me", "speaker_1"]
+
+
+def test_finalize_enrolls_voiceprint_from_stereo_mic_channel(tmp_path: Path, monkeypatch):
+    """On a stereo meeting with no prior voiceprint, finalize folds the
+    mic-channel user's embedding into the store (auto-enrollment)."""
+    dim = 256
+    e0 = [1.0] + [0.0] * (dim - 1)
+    e1 = [0.0, 1.0] + [0.0] * (dim - 2)
+    store = VoiceprintStore(tmp_path / "vp.json")
+    assert store.meetings() == 0
+
+    wav = tmp_path / "20260501-1100.wav"
+    wav.write_bytes(b"")
+    streamed = _streamed_with_embeddings(
+        wav,
+        [
+            {"start": 0.0, "end": 2.0, "text": "hi", "speaker": "speaker_0"},
+            {"start": 2.0, "end": 4.0, "text": "hello", "speaker": "speaker_1"},
+        ],
+        {"speaker_0": e0, "speaker_1": e1},
+    )
+    # identify_user_speaker resolves both helpers from the diarize namespace:
+    # speaker_0 lands on the mic channel, so it is the enrollment target.
+    monkeypatch.setattr("mp.diarize.is_stereo_recording", lambda w: True)
+    monkeypatch.setattr(
+        "mp.diarize.assign_speakers_by_channel",
+        lambda segments, w: [
+            {**segments[0], "speaker": "speaker_user"},
+            {**segments[1], "speaker": "speaker_other"},
+        ],
+    )
+    _finalize_streamed_transcript(wav, streamed, user_label="Me", voiceprint_store=store)
+
+    assert store.meetings() == 1
+    assert cosine_similarity(store.embedding(), e0) > 0.99  # enrolled speaker_0
 
 
 def test_missing_sidecar_raises(tmp_path: Path, monkeypatch):

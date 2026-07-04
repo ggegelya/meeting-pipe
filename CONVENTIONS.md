@@ -255,6 +255,16 @@ Seconds from recording start, half-open `[start_sec, end_sec)`. Only genuine app
 
 ---
 
+## Self-voiceprint (FEAT3-VOICEPRINT)
+
+Speaker enrollment learns the user's voice automatically so "me vs them" holds on the mono / merged recordings where the stereo mic-channel trick can't. Two artifacts:
+
+**`speaker_embeddings`** on the draft `<stem>.json`. The daemon (`FluidAudioRunner`) writes a 256-d L2-normalized embedding per diarized speaker (a duration-weighted mean of that speaker's per-segment embeddings), keyed by the diarization speaker id. It rides the transcript sidecar but is **transient**: `orchestrate._finalize_streamed_transcript` pops it (voiceprint enroll + match) before writing the final `<stem>.json`, so it never reaches the Library-facing transcript. Omitted when diarization produced no speakers. Not `schema_version`-stamped (it is a key on the versioned transcript, not a standalone sidecar).
+
+**`voiceprint.json`** at `~/.config/meeting-pipe/voiceprint.json`, sibling of `config.toml`. The pipeline-owned running-average self-voiceprint: `{schema_version: 1, embedding: [256 floats], meetings: N}`. `mp.voiceprint.VoiceprintStore` writes it (auto-enrolls from the mic-channel user of stereo recordings, capped after a few meetings) and `mp.diarize.match_voiceprint` reads it to identify "me". The daemon reads it **read-only** for the Preferences "Voice profile" status + Reset (`VoiceprintProfile`); it is not part of the `<stem>.meta.json` Swift-to-Python contract, but display-only surfacing of shared per-user state, like the daemon reading `config.toml`.
+
+---
+
 ## Backlog and task delegation
 
 The active backlog lives in `docs/backlog/`: the highest-numbered `meetingpipe-q<N>-backlog.md` (currently `meetingpipe-q4-backlog.md`), with earlier quarters archived beside it. Task IDs follow `<letter><number>` (`C2`, `E5`, …); the `TECH-` prefix was dropped from the active backlog and the `/tech-task` command, and historical code/ADR references keep the old form as provenance. When marking a task done, prefix the line with `[DONE] ` rather than deleting it, so the trail of decisions stays readable.

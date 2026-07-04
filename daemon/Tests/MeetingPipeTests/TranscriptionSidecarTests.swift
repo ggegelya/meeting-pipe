@@ -75,6 +75,30 @@ final class TranscriptionSidecarTests: XCTestCase {
         XCTAssertEqual(decoded.language, "uk")
         XCTAssertEqual(decoded.diarizationFailureReason, "skipped: no segments")
     }
+
+    func test_speaker_embeddings_omitted_when_nil_present_when_set() throws {
+        // Nil (the no-diarization common case) must keep the JSON byte-shape
+        // identical to the pre-voiceprint sidecar: the key is absent, not null,
+        // so the final transcript the Library reads is unchanged.
+        let bare = TranscriptSidecar(
+            language: "en", segments: [], audioPath: "/tmp/x.wav", audioSeconds: 0,
+            model: "m", backend: "fluidaudio", diarization: false,
+            diarizationFailed: false, diarizationFailureReason: nil,
+            streaming: false, finalized: true
+        )
+        let bareJSON = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(bare)) as? [String: Any]
+        )
+        XCTAssertNil(bareJSON["speaker_embeddings"])
+
+        var withEmb = bare
+        withEmb.speakerEmbeddings = ["speaker_1": [0.1, 0.2], "speaker_2": [0.3, 0.4]]
+        let data = try JSONEncoder().encode(withEmb)
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let emb = try XCTUnwrap(json["speaker_embeddings"] as? [String: [Double]])
+        XCTAssertEqual(emb["speaker_1"]?.count, 2)
+        XCTAssertEqual(try JSONDecoder().decode(TranscriptSidecar.self, from: data), withEmb)
+    }
 }
 
 final class FluidAudioRunnerAudioMixdownTests: XCTestCase {
@@ -233,5 +257,44 @@ final class TranscriptionServiceRoutingTests: XCTestCase {
         TranscriptionService.overrideRunnerForTesting(StubRunner())
         let runner = TranscriptionService.makeRunner()
         XCTAssertEqual(runner.backendName, "stub")
+    }
+}
+
+final class FluidAudioRunnerEmbeddingTests: XCTestCase {
+
+    private func norm(_ v: [Float]) -> Float {
+        (v.reduce(0) { $0 + $1 * $1 }).squareRoot()
+    }
+
+    func test_weighted_mean_is_duration_weighted_and_l2_normalized() throws {
+        let out = FluidAudioRunner.weightedMeanEmbeddings([
+            (speaker: "speaker_1", embedding: [1, 0], weight: 9),
+            (speaker: "speaker_1", embedding: [0, 1], weight: 1),
+            (speaker: "speaker_2", embedding: [3, 4], weight: 2),
+        ])
+        // speaker_1: (9*[1,0] + 1*[0,1]) / 10 = [0.9, 0.1], then L2-normalized.
+        let s1 = try XCTUnwrap(out["speaker_1"])
+        XCTAssertEqual(s1[0], 0.9938, accuracy: 1e-3)
+        XCTAssertEqual(s1[1], 0.1104, accuracy: 1e-3)
+        XCTAssertEqual(norm(s1), 1.0, accuracy: 1e-4)
+        // speaker_2: single [3,4] turn normalizes to [0.6, 0.8].
+        let s2 = try XCTUnwrap(out["speaker_2"])
+        XCTAssertEqual(s2[0], 0.6, accuracy: 1e-4)
+        XCTAssertEqual(s2[1], 0.8, accuracy: 1e-4)
+    }
+
+    func test_zero_weight_ragged_and_empty_are_dropped() {
+        // No positive-weight segment -> speaker dropped entirely.
+        XCTAssertTrue(FluidAudioRunner.weightedMeanEmbeddings([
+            (speaker: "speaker_1", embedding: [1, 0], weight: 0),
+        ]).isEmpty)
+        // Empty input -> empty output.
+        XCTAssertTrue(FluidAudioRunner.weightedMeanEmbeddings([]).isEmpty)
+        // A ragged-dimension segment is skipped; the first still yields a vector.
+        let out = FluidAudioRunner.weightedMeanEmbeddings([
+            (speaker: "speaker_1", embedding: [1, 0, 0], weight: 1),
+            (speaker: "speaker_1", embedding: [0, 1], weight: 5),
+        ])
+        XCTAssertEqual(out["speaker_1"]?.count, 3)
     }
 }

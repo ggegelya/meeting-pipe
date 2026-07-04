@@ -19,6 +19,10 @@ enum Endpoints {
     enum Paths {
         static let configRelative = ".config/meeting-pipe/config.toml"
         static let secretsRelative = ".config/meeting-pipe/secrets.env"
+        /// Pipeline-owned self-voiceprint (FEAT3-VOICEPRINT). The daemon reads
+        /// it read-only for the Preferences status + Reset; the Python pipeline
+        /// owns writing it at finalize.
+        static let voiceprintRelative = ".config/meeting-pipe/voiceprint.json"
         static let logsRelative = "Library/Logs/MeetingPipe"
         static let recordingsRelative = "Documents/Meetings/raw"
         /// Phase 2 correction corpus. Per-meeting JSON files; consumed by
