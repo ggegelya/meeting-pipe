@@ -45,7 +45,8 @@ Icon?
 *.swo
 
 # --- Project artifacts ---
-secrets.env
+# secrets.env plus any atomic-write temp (secrets.env.writing) or backup (SEC11).
+secrets.env*
 *.local.toml
 *.wav
 *.mp3

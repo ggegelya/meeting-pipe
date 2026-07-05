@@ -419,9 +419,17 @@ def main(argv: list[str]) -> int:
     cfg = check_config()
     check_ml_runtimes()
     check_local_stack(cfg)
-    check_anthropic(presence["ANTHROPIC_API_KEY"])
-    check_notion(presence["NOTION_TOKEN"], cfg)
-    check_huggingface(presence["HF_TOKEN"])
+    # SEC11: under regulated_mode the pipeline is zero-egress, so doctor must not
+    # reach any cloud API either. Skip the live Anthropic / Notion / HuggingFace
+    # probes and say why, instead of silently pinging out.
+    if cfg is not None and cfg.modes.regulated_mode:
+        print("\n== cloud services ==")
+        _info("regulated_mode is ON; skipping the live Anthropic / Notion / HuggingFace probes")
+        _info("doctor stays zero-egress under regulated mode: no transcript or token leaves this Mac")
+    else:
+        check_anthropic(presence["ANTHROPIC_API_KEY"])
+        check_notion(presence["NOTION_TOKEN"], cfg)
+        check_huggingface(presence["HF_TOKEN"])
     check_screen_recording()
 
     print("\nDone. Re-run after fixing each [FAIL] above.")

@@ -81,12 +81,30 @@ enum Log {
 
     private static func appendData(_ data: Data, to url: URL) {
         if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: data)
+            // 0600: the event log and the tail logs carry verbatim meeting titles
+            // and transcript-derived context, so they stay private to the user (SEC11).
+            FileManager.default.createFile(
+                atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600]
+            )
             return
         }
         guard let handle = try? FileHandle(forWritingTo: url) else { return }
         defer { try? handle.close() }
         _ = try? handle.seekToEnd()
         try? handle.write(contentsOf: data)
+    }
+
+    /// Best-effort one-time tightening of existing log files to 0600 (SEC11).
+    /// New files are created 0600 by `appendData`; this closes the hole for logs
+    /// that predate that change (they were created 0644). Call once at startup.
+    static func tightenLogPermissions() {
+        guard let items = try? FileManager.default.contentsOfDirectory(
+            at: logsDir, includingPropertiesForKeys: nil
+        ) else { return }
+        for url in items where url.pathExtension == "jsonl" || url.pathExtension == "log" {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: url.path
+            )
+        }
     }
 }

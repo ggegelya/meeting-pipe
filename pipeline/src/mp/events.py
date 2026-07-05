@@ -40,9 +40,13 @@ def emit(category: str, action: str, **attrs: Any) -> None:
     record["ts"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     record["category"] = category
     record["action"] = action
+    path = _events_path()
     try:
         line = json.dumps(record, sort_keys=True, default=str)
-        with _events_path().open("a", encoding="utf-8") as f:
+        with path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
+        # SEC11: the event log carries verbatim meeting titles, so keep it
+        # user-private (0600). Idempotent, and self-heals a pre-existing 0644 file.
+        os.chmod(path, 0o600)
     except Exception as e:  # pragma: no cover
         _log.warning("event log write failed: %s", e)

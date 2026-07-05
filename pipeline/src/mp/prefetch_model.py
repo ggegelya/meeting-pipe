@@ -71,27 +71,31 @@ def _bytes_on_disk(path: Path) -> int:
     return total
 
 
-def _total_repo_bytes(repo_id: str) -> int | None:
-    """Best-effort lookup of the repo's expected on-disk size via the
-    HF API. Returns None when the call fails (no network, private
-    repo without auth, etc.) so the caller falls back to a no-total
-    progress mode."""
+def _repo_metadata(repo_id: str) -> tuple[int | None, str | None]:
+    """Best-effort (expected_on_disk_bytes, resolved_commit_sha) via the HF API.
+
+    Both None when the call fails (no network, private repo without auth,
+    huggingface_hub missing) so the caller falls back to a no-total progress
+    mode and the default (unpinned) download. The sha lets the download pin to
+    exactly the revision we inspected: a bare `snapshot_download` resolves the
+    mutable `main` branch at download time, so the bytes fetched can differ from
+    what was checked (SEC11)."""
     try:
         from huggingface_hub import HfApi
     except ImportError:
-        return None
+        return None, None
     try:
         info = HfApi().repo_info(repo_id, files_metadata=True)
     except Exception as e:  # noqa: BLE001
         log.warning("HfApi().repo_info failed: %s", e)
-        return None
+        return None, None
     total = 0
     for sib in (info.siblings or []):
         # `size` is bytes per file when files_metadata=True; can be
         # None if the file lives in LFS without size metadata.
         if sib.size is not None:
             total += sib.size
-    return total or None
+    return (total or None), getattr(info, "sha", None)
 
 
 def prefetch(repo_id: str) -> int:
@@ -101,7 +105,7 @@ def prefetch(repo_id: str) -> int:
     1 = failure (also emits a `failed` event before returning).
     """
     cache_dir = _hf_cache_dir(repo_id)
-    total_bytes = _total_repo_bytes(repo_id)
+    total_bytes, revision = _repo_metadata(repo_id)
     cached_bytes = _bytes_on_disk(cache_dir)
 
     _emit(
@@ -109,6 +113,7 @@ def prefetch(repo_id: str) -> int:
         repo_id,
         total_bytes=total_bytes if total_bytes is not None else 0,
         cached_bytes=cached_bytes,
+        revision=revision or "main",
     )
 
     # Already fully cached: emit one progress (so the UI can show 100%)
@@ -121,6 +126,7 @@ def prefetch(repo_id: str) -> int:
             path=str(cache_dir),
             cached_bytes=cached_bytes,
             total_bytes=total_bytes,
+            revision=revision or "main",
         )
         return 0
 
@@ -144,7 +150,9 @@ def prefetch(repo_id: str) -> int:
 
     def _download() -> None:
         try:
-            path = snapshot_download(repo_id, tqdm_class=None)
+            # revision pins to the sha resolved above; None falls back to the
+            # library default (main) so an offline / metadata-less repo still works.
+            path = snapshot_download(repo_id, revision=revision, tqdm_class=None)
             result_holder["path"] = path
         except Exception as e:  # noqa: BLE001
             result_holder["error"] = str(e)
@@ -193,6 +201,7 @@ def prefetch(repo_id: str) -> int:
         path=str(result_holder["path"]),
         cached_bytes=final_bytes,
         total_bytes=total_bytes if total_bytes is not None else final_bytes,
+        revision=revision or "main",
     )
     return 0
 

@@ -58,6 +58,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.main.info("MeetingPipe starting")
 
+        // Tighten any pre-existing 0644 log files to 0600 once at startup (SEC11);
+        // new files are already created 0600. The logs carry verbatim meeting titles.
+        Log.tightenLogPermissions()
+
         // Ceiling on every synchronous Accessibility IPC this process makes. The
         // detection signals read the meeting app's AX tree with blocking
         // `AXUIElementCopyAttributeValue` calls (the Leave-button health poll
