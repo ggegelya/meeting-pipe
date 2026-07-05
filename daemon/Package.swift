@@ -13,11 +13,13 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/LebJe/TOMLKit", from: "0.6.0"),
         // FluidAudio: Swift-native Parakeet ASR + pyannote diarization on ANE.
-        // Group P (TECH-P1 onward) migrates transcription off the Python
-        // sidecar. The runner is wired through TranscriptionService and is
-        // not the default path yet (the Python pipeline still wins) until a
-        // follow-up session validates ANE residency and sidecar parity.
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.4")
+        // Pinned exactly (LOCAL5): a floating `from:` silently drifted 0.12.4 ->
+        // 0.14.8 across builds, and diarization/embedding output is load-bearing
+        // for FEAT3-VOICEPRINT/ROSTER, so the transcription contract must not
+        // move without a deliberate bump. 0.14.8 already carries the streaming +
+        // enrollment/embedding API FEAT3 needs, so the 0.15.x bump is deferred.
+        // Track before bumping: upstream #738 (macOS 27 ANE access) and #726.
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.14.8")
     ],
     targets: [
         // Shared lifecycle + gate infrastructure (TECH-C13, TECH-G-MIC).
