@@ -2,17 +2,17 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Meeting Pipe — UI Kit</title>
+<title>Meeting Pipe · UI Kit</title>
 <link rel="stylesheet" href="../../colors_and_type.css">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <style>
-  body { margin:0; padding:32px; background: #E8E6DF; min-height: 100vh; }
+  body { margin:0; padding:32px; background: #DCE0E4; min-height: 100vh; }
   .stage { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; max-width: 1200px; margin: 0 auto; }
-  .frame { background: var(--mp-bg-raised); border: 1px solid var(--mp-border); border-radius: 12px; padding: 18px; }
+  .frame { background: var(--mp-bg-raised); border: 1px solid var(--mp-border); border-radius: 14px; padding: 18px; }
   .frame h3 { margin: 0 0 12px; font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--mp-fg-subtle); }
-  .menubar { background: rgba(248,247,244,0.85); backdrop-filter: blur(20px); border: 0.5px solid rgba(20,22,26,0.10); border-radius: 6px; height: 22px; display: inline-flex; align-items: center; padding: 0 8px; gap: 6px; font-size: 12px; color: #14161A; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+  .menubar { background: rgba(250,251,252,0.85); backdrop-filter: blur(20px); border: 0.5px solid rgba(22,25,29,0.10); border-radius: 8px; height: 22px; display: inline-flex; align-items: center; padding: 0 8px; gap: 6px; font-size: 12px; color: #16181C; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
   .menubar img { filter: none; }
-  .desk { background: linear-gradient(180deg, #2C3037 0%, #14161A 100%); border-radius: 12px; padding: 16px; min-height: 240px; display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; }
+  .desk { background: linear-gradient(180deg, #26292E 0%, #16181C 100%); border-radius: 14px; padding: 16px; min-height: 240px; display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; }
   .span2 { grid-column: span 2; }
 </style>
 </head>
@@ -30,6 +30,7 @@
 <script type="text/babel" src="PreferencesWindow.jsx"></script>
 <script type="text/babel" src="SummaryLibrary.jsx"></script>
 <script type="text/babel" src="OnboardingPermissions.jsx"></script>
+<script type="text/babel" src="RecordingHUD.jsx"></script>
 
 <script type="text/babel">
 const App = () => (
@@ -67,6 +68,19 @@ const App = () => (
     <div className="frame">
       <h3>Notification · processing</h3>
       <Notification kind="processing"/>
+    </div>
+
+    <div className="frame">
+      <h3>Recording HUD · idle</h3>
+      <div style={{ background: "linear-gradient(180deg, #26292E 0%, #16181C 100%)", borderRadius: 12, padding: "22px 0", display: "flex", justifyContent: "center" }}>
+        <RecordingHUD/>
+      </div>
+    </div>
+    <div className="frame">
+      <h3>Recording HUD · system audio degraded</h3>
+      <div style={{ background: "linear-gradient(180deg, #26292E 0%, #16181C 100%)", borderRadius: 12, padding: "22px 0", display: "flex", justifyContent: "center" }}>
+        <RecordingHUD degraded/>
+      </div>
     </div>
 
     <div className="frame span2">

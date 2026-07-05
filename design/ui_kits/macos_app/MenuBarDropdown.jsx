@@ -1,4 +1,4 @@
-// MenuBarDropdown — recreates StatusBarController.swift's rebuildMenu()
+// MenuBarDropdown - recreates StatusBarController.swift's rebuildMenu()
 // for the three primary states: idle, recording, prompting.
 const MenuBarDropdown = ({ state = "idle", source, file }) => {
   const wrapStyle = {
@@ -7,7 +7,7 @@ const MenuBarDropdown = ({ state = "idle", source, file }) => {
     backdropFilter: "blur(24px) saturate(180%)",
     WebkitBackdropFilter: "blur(24px) saturate(180%)",
     border: "0.5px solid var(--mp-hud-stroke)",
-    borderRadius: 8,
+    borderRadius: "var(--mp-radius-md)",
     boxShadow: "var(--mp-hud-shadow)",
     padding: 4,
     fontFamily: "var(--mp-font-sans)",
@@ -51,7 +51,7 @@ const MenuItem = ({ children, shortcut, header, disabled, mono }) => (
     fontSize: mono ? "var(--mp-text-sm)" : "var(--mp-text-base)",
     cursor: header || disabled ? "default" : "pointer",
   }}
-  onMouseEnter={(e) => { if (!header && !disabled) { e.currentTarget.style.background = "var(--mp-signal-600)"; e.currentTarget.style.color = "#fff"; } }}
+  onMouseEnter={(e) => { if (!header && !disabled) { e.currentTarget.style.background = "var(--mp-signal-fill)"; e.currentTarget.style.color = "#fff"; } }}
   onMouseLeave={(e) => { if (!header && !disabled) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--mp-fg)"; } }}>
     <span>{children}</span>
     {shortcut && <span style={{ opacity: 0.6, fontFamily: "var(--mp-font-mono)", fontSize: "var(--mp-text-sm)" }}>{shortcut}</span>}

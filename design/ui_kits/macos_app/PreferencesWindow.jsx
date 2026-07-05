@@ -33,7 +33,7 @@ const PreferencesWindow = () => {
   return (
     <div style={{
       width: 780, height: 660, background: "var(--mp-bg)", display: "flex", overflow: "hidden",
-      borderRadius: 10, fontFamily: "var(--mp-font-sans)", color: "var(--mp-fg)",
+      borderRadius: "var(--mp-radius-lg)", fontFamily: "var(--mp-font-sans)", color: "var(--mp-fg)",
       border: "1px solid var(--mp-border)", boxShadow: "var(--mp-shadow-lg)",
     }}>
       {/* sidebar */}
@@ -43,8 +43,8 @@ const PreferencesWindow = () => {
           return (
             <button key={p.id} onClick={() => setPane(p.id)} style={{
               display: "flex", alignItems: "center", gap: 8, height: 28, padding: "0 8px",
-              border: "none", borderRadius: 6, cursor: "pointer", fontFamily: "inherit", fontSize: 13,
-              background: active ? "var(--mp-signal-600)" : "transparent",
+              border: "none", borderRadius: "var(--mp-radius-sm)", cursor: "pointer", fontFamily: "inherit", fontSize: 13,
+              background: active ? "var(--mp-signal-fill)" : "transparent",
               color: active ? "var(--mp-fg-on-signal)" : "var(--mp-fg)",
             }}>
               <Icon name={p.icon} size={14}/> {p.label}
@@ -72,7 +72,7 @@ const PreferencesWindow = () => {
 const PWSectionHeader = ({ title, caption, trailing }) => (
   <div style={{ marginBottom: 18 }}>
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <div style={{ fontSize: 22, fontWeight: 600 }}>{title}</div>
+      <div style={{ fontSize: 17, fontWeight: 600 }}>{title}</div>
       <div style={{ flex: 1 }}/>
       {trailing}
     </div>
@@ -83,7 +83,7 @@ const PWSectionHeader = ({ title, caption, trailing }) => (
 const PWGroup = ({ label, footer, children }) => (
   <div style={{ marginBottom: 22 }}>
     {label && <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--mp-fg-subtle)", marginBottom: 6, paddingLeft: 2 }}>{label}</div>}
-    <div style={{ background: "var(--mp-bg-raised)", border: "1px solid var(--mp-border)", borderRadius: 10, overflow: "hidden" }}>
+    <div style={{ background: "var(--mp-bg-raised)", border: "1px solid var(--mp-border)", borderRadius: "var(--mp-radius-md)", overflow: "hidden" }}>
       {children}
     </div>
     {footer && <div style={{ fontSize: 12, color: "var(--mp-fg-subtle)", marginTop: 6, paddingLeft: 2, lineHeight: 1.5 }}>{footer}</div>}
@@ -131,29 +131,29 @@ const PWField = ({ value, placeholder, mono, width }) => (
   <input defaultValue={value} placeholder={placeholder} style={{
     flex: width ? "0 0 auto" : 1, width: width || "auto", minWidth: 0, height: 24, padding: "0 8px",
     fontFamily: mono ? "var(--mp-font-mono)" : "inherit", fontSize: mono ? 12 : 13,
-    border: "1px solid var(--mp-border-strong)", borderRadius: 6,
+    border: "1px solid var(--mp-border-strong)", borderRadius: "var(--mp-radius-sm)",
     background: "var(--mp-bg-raised)", color: "var(--mp-fg)",
   }}/>
 );
 
 const PWSmallButton = ({ children }) => (
-  <button style={{ height: 24, padding: "0 10px", fontSize: 12, fontFamily: "inherit", border: "1px solid var(--mp-border-strong)", borderRadius: 6, background: "var(--mp-bg-raised)", color: "var(--mp-fg)", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}>{children}</button>
+  <button className="mp-pressable" style={{ height: 24, padding: "0 12px", fontSize: 12, fontFamily: "inherit", border: "1px solid var(--mp-border-strong)", borderRadius: "var(--mp-radius-full)", background: "var(--mp-bg-raised)", color: "var(--mp-fg)", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}>{children}</button>
 );
 
 const PWIconButton = ({ name, title }) => (
-  <button title={title} style={{ width: 24, height: 24, border: "1px solid var(--mp-border-strong)", borderRadius: 6, background: "var(--mp-bg-raised)", color: "var(--mp-fg-muted)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon name={name} size={13}/></button>
+  <button title={title} className="mp-pressable" style={{ width: 24, height: 24, border: "1px solid var(--mp-border-strong)", borderRadius: "var(--mp-radius-sm)", background: "var(--mp-bg-raised)", color: "var(--mp-fg-muted)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon name={name} size={13}/></button>
 );
 
 const PWMenuPicker = ({ value, width }) => (
-  <span style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 24, padding: "0 8px", borderRadius: 6, border: "1px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", fontSize: 13, cursor: "pointer", width: width || "auto", justifyContent: "space-between", whiteSpace: "nowrap" }}>
+  <span style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 24, padding: "0 8px", borderRadius: "var(--mp-radius-sm)", border: "1px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", fontSize: 13, cursor: "pointer", width: width || "auto", justifyContent: "space-between", whiteSpace: "nowrap" }}>
     {value}<Icon name="chevron-down" size={10}/>
   </span>
 );
 
 const PWSegmented = ({ options, selected }) => (
-  <span style={{ display: "inline-flex", padding: 2, borderRadius: 6, background: "var(--mp-bg-sunk)", border: "0.5px solid var(--mp-border)" }}>
+  <span style={{ display: "inline-flex", padding: 2, borderRadius: "var(--mp-radius-sm)", background: "var(--mp-bg-sunk)", border: "0.5px solid var(--mp-border)" }}>
     {options.map((o, i) => (
-      <span key={o} style={{ fontSize: 12, padding: "3px 12px", borderRadius: 4, cursor: "pointer", background: i === selected ? "var(--mp-bg-raised)" : "transparent", color: i === selected ? "var(--mp-fg)" : "var(--mp-fg-muted)", boxShadow: i === selected ? "var(--mp-shadow-xs)" : "none" }}>{o}</span>
+      <span key={o} style={{ fontSize: 12, padding: "3px 12px", borderRadius: "var(--mp-radius-xs)", cursor: "pointer", background: i === selected ? "var(--mp-bg-raised)" : "transparent", color: i === selected ? "var(--mp-fg)" : "var(--mp-fg-muted)", boxShadow: i === selected ? "var(--mp-shadow-xs)" : "none" }}>{o}</span>
     ))}
   </span>
 );
@@ -191,8 +191,8 @@ const PWSecretField = ({ placeholder }) => {
   const [show, setShow] = React.useState(false);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 0 }}>
-      <input type={show ? "text" : "password"} placeholder={placeholder} style={{ flex: 1, minWidth: 0, height: 24, padding: "0 8px", fontFamily: "var(--mp-font-mono)", fontSize: 12, border: "1px solid var(--mp-border-strong)", borderRadius: 6, background: "var(--mp-bg-raised)", color: "var(--mp-fg)" }}/>
-      <button onClick={() => setShow(!show)} style={{ width: 30, height: 22, border: "1px solid var(--mp-border)", borderRadius: 5, background: "var(--mp-bg-sunk)", color: show ? "var(--mp-signal-600)" : "var(--mp-fg-muted)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon name={show ? "eye" : "eye-off"} size={12}/></button>
+      <input type={show ? "text" : "password"} placeholder={placeholder} style={{ flex: 1, minWidth: 0, height: 24, padding: "0 8px", fontFamily: "var(--mp-font-mono)", fontSize: 12, border: "1px solid var(--mp-border-strong)", borderRadius: "var(--mp-radius-sm)", background: "var(--mp-bg-raised)", color: "var(--mp-fg)" }}/>
+      <button onClick={() => setShow(!show)} style={{ width: 30, height: 22, border: "1px solid var(--mp-border)", borderRadius: "var(--mp-radius-sm)", background: "var(--mp-bg-sunk)", color: show ? "var(--mp-signal-600)" : "var(--mp-fg-muted)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon name={show ? "eye" : "eye-off"} size={12}/></button>
     </div>
   );
 };
@@ -217,7 +217,7 @@ const PWFullRow = ({ children, first }) => (
 );
 
 const PWHotkeyField = ({ value }) => (
-  <span style={{ display: "inline-flex", alignItems: "center", height: 24, width: 200, padding: "0 10px", borderRadius: 5, border: "1px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", fontFamily: "var(--mp-font-mono)", fontSize: 12, color: "var(--mp-fg)", cursor: "pointer" }}>{value}</span>
+  <span style={{ display: "inline-flex", alignItems: "center", height: 24, width: 200, padding: "0 10px", borderRadius: "var(--mp-radius-sm)", border: "1px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", fontFamily: "var(--mp-font-mono)", fontSize: 12, color: "var(--mp-fg)", cursor: "pointer" }}>{value}</span>
 );
 
 /* ===================================================================== panes */
@@ -358,7 +358,7 @@ const PWPermissionsPane = () => (
     <PWGroup footer="Granting Accessibility from System Settings requires a daemon restart for the change to take effect - macOS caches the trust verdict per-process at launch.">
       {PW_PERMISSIONS.map((p, i) => (
         <div key={p.name} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderTop: i === 0 ? "none" : "1px solid var(--mp-border-faint)" }}>
-          <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--mp-bg-sunk)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--mp-fg-muted)", flexShrink: 0 }}><Icon name={p.icon} size={16}/></div>
+          <div style={{ width: 32, height: 32, borderRadius: "var(--mp-radius-sm)", background: "var(--mp-bg-sunk)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--mp-fg-muted)", flexShrink: 0 }}><Icon name={p.icon} size={16}/></div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</span>
@@ -373,7 +373,7 @@ const PWPermissionsPane = () => (
     <PWGroup label="Regulated mode" footer="Use for client / regulated meetings. The pipeline writes summaries to disk only - no transcript or summary is uploaded to Notion.">
       <PWToggleRow first on={false} label="Skip Notion publish" sublabel="Off - meetings publish to each workflow's own sinks (Notion only if that workflow enables it)."/>
     </PWGroup>
-    <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "12px 14px", borderRadius: 10, background: "color-mix(in srgb, transparent 90%, var(--mp-signal-600))", border: "1px solid color-mix(in srgb, transparent 82%, var(--mp-signal-600))" }}>
+    <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "12px 14px", borderRadius: "var(--mp-radius-md)", background: "color-mix(in srgb, transparent 90%, var(--mp-signal-600))", border: "1px solid color-mix(in srgb, transparent 82%, var(--mp-signal-600))" }}>
       <span style={{ color: "var(--mp-signal-600)", display: "flex", flexShrink: 0, marginTop: 1 }}><Icon name="shield" size={16}/></span>
       <span style={{ fontSize: 12, lineHeight: 1.5, color: "var(--mp-fg-muted)" }}>Audio capture is fully on-device. The pipeline only reaches the network when sending the transcript to Anthropic for summarization, and when publishing to Notion.</span>
     </div>

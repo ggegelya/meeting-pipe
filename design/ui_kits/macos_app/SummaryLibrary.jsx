@@ -91,7 +91,7 @@ const SLWindow = ({ w = 1120, h = 680, children }) => (
     width: w, height: h, background: "var(--mp-bg)", color: "var(--mp-fg)",
     display: "flex", flexDirection: "column", overflow: "hidden",
     fontFamily: "var(--mp-font-sans)", fontSize: "var(--mp-text-base)",
-    border: "1px solid var(--mp-border)", borderRadius: "var(--mp-radius-md)",
+    border: "1px solid var(--mp-border)", borderRadius: "var(--mp-radius-lg)",
     boxShadow: "var(--mp-shadow-lg)",
   }}>{children}</div>
 );
@@ -136,9 +136,9 @@ const SLStatePill = ({ recording }) => (
 // in the state pill's dot, so the button stays calm (coral is reserved for the dot).
 const SLRecordButton = ({ recording }) => (
   recording ? (
-    <button style={{
-      display: "inline-flex", alignItems: "center", gap: 6, height: 26, padding: "0 11px",
-      borderRadius: "var(--mp-radius-sm)", cursor: "pointer", fontFamily: "inherit",
+    <button className="mp-pressable" style={{
+      display: "inline-flex", alignItems: "center", gap: 6, height: 26, padding: "0 12px",
+      borderRadius: "var(--mp-radius-full)", cursor: "pointer", fontFamily: "inherit",
       fontSize: "var(--mp-text-sm)", fontWeight: 500, color: "var(--mp-fg)",
       background: "var(--mp-bg-raised)", border: "0.5px solid var(--mp-border-strong)",
     }}>
@@ -146,11 +146,11 @@ const SLRecordButton = ({ recording }) => (
       Stop
     </button>
   ) : (
-    <button style={{
-      display: "inline-flex", alignItems: "center", gap: 6, height: 26, padding: "0 12px",
-      border: "none", borderRadius: "var(--mp-radius-sm)", cursor: "pointer", fontFamily: "inherit",
+    <button className="mp-pressable" style={{
+      display: "inline-flex", alignItems: "center", gap: 6, height: 26, padding: "0 13px",
+      border: "none", borderRadius: "var(--mp-radius-full)", cursor: "pointer", fontFamily: "inherit",
       fontSize: "var(--mp-text-sm)", fontWeight: 500, color: "var(--mp-fg-on-signal)",
-      background: "var(--mp-signal-600)",
+      background: "var(--mp-signal-fill)",
     }}>
       <span style={{ width: 8, height: 8, borderRadius: "var(--mp-radius-full)", background: "var(--mp-fg-on-signal)" }}/>
       Record
@@ -194,7 +194,7 @@ const SLScopeRow = ({ icon, label, count, active, attention }) => {
     <div style={{
       display: "flex", alignItems: "center", gap: 8, height: 28, padding: "0 8px",
       borderRadius: "var(--mp-radius-sm)", cursor: "pointer", fontSize: "var(--mp-text-base)",
-      background: active ? "var(--mp-signal-600)" : "transparent",
+      background: active ? "var(--mp-signal-fill)" : "transparent",
       color: active ? "var(--mp-fg-on-signal)" : "var(--mp-fg)",
     }}>
       <Icon name={icon} size={14}/>
@@ -236,7 +236,7 @@ const SLWorkflowRow = ({ dot, name, count = 0, isDefault }) => (
 const SLList = ({ title, count, scope = "all", selectedId, multiSelect, checkedIds = [], empty }) => (
   <div style={{ width: 440, flexShrink: 0, borderRight: "1px solid var(--mp-border)", display: "flex", flexDirection: "column", minHeight: 0, background: "var(--mp-bg)" }}>
     <div style={{ padding: "12px 16px 10px", display: "flex", alignItems: "baseline", gap: 8 }}>
-      <div style={{ fontSize: "var(--mp-text-lg)", fontWeight: 600 }}>{title}</div>
+      <div style={{ fontSize: "var(--mp-text-md)", fontWeight: 600 }}>{title}</div>
       <div style={{ flex: 1 }}/>
       <div style={{ fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-subtle)", fontFamily: "var(--mp-font-mono)" }}>{count}</div>
     </div>
@@ -365,7 +365,7 @@ const SLCheck = ({ checked }) => (
     width: 16, height: 16, flexShrink: 0, borderRadius: "var(--mp-radius-xs)",
     display: "flex", alignItems: "center", justifyContent: "center",
     border: checked ? "none" : "1px solid var(--mp-border-strong)",
-    background: checked ? "var(--mp-signal-600)" : "transparent",
+    background: checked ? "var(--mp-signal-fill)" : "transparent",
     color: "var(--mp-fg-on-signal)",
   }}>
     {checked && <Icon name="check-circle" size={11}/>}
@@ -380,11 +380,11 @@ const SLRowGlyph = ({ source, nda }) => {
 };
 
 const SLInlineBtn = ({ children, primary }) => (
-  <button style={{
-    height: 20, padding: "0 9px", borderRadius: "var(--mp-radius-xs)", fontSize: "var(--mp-text-xs)",
+  <button className="mp-pressable" style={{
+    height: 20, padding: "0 10px", borderRadius: "var(--mp-radius-full)", fontSize: "var(--mp-text-xs)",
     fontFamily: "inherit", fontWeight: 500, cursor: "pointer",
     border: primary ? "none" : "0.5px solid var(--mp-border-strong)",
-    background: primary ? "var(--mp-signal-600)" : "var(--mp-bg-raised)",
+    background: primary ? "var(--mp-signal-fill)" : "var(--mp-bg-raised)",
     color: primary ? "var(--mp-fg-on-signal)" : "var(--mp-fg)",
   }}>{children}</button>
 );
@@ -472,7 +472,7 @@ const SLDetailHeader = ({ m, mode }) => (
         </React.Fragment>
       )}
     </div>
-    <div style={{ fontSize: "var(--mp-text-xl)", fontWeight: 600, marginTop: 8, letterSpacing: "var(--mp-tracking-snug)" }}>{m.title}</div>
+    <div style={{ fontSize: "var(--mp-text-lg)", fontWeight: 600, marginTop: 8, letterSpacing: "var(--mp-tracking-snug)" }}>{m.title}</div>
     <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-subtle)", flexWrap: "wrap" }}>
       <span>Jun 16, 2026 at 11:02</span>
       <span style={{ color: "var(--mp-fg-faint)" }}>·</span>
@@ -498,12 +498,12 @@ const SLPrimaryAction = ({ status }) => {
 };
 
 const SLHeaderBtn = ({ icon, children, primary, tone }) => (
-  <button style={{
-    display: "inline-flex", alignItems: "center", gap: 5, height: 26, padding: "0 10px",
-    borderRadius: "var(--mp-radius-sm)", cursor: "pointer", fontFamily: "inherit",
+  <button className="mp-pressable" style={{
+    display: "inline-flex", alignItems: "center", gap: 5, height: 26, padding: "0 12px",
+    borderRadius: "var(--mp-radius-full)", cursor: "pointer", fontFamily: "inherit",
     fontSize: "var(--mp-text-sm)", fontWeight: 500,
     border: primary ? "none" : "0.5px solid var(--mp-border-strong)",
-    background: primary ? "var(--mp-signal-600)" : "var(--mp-bg-raised)",
+    background: primary ? "var(--mp-signal-fill)" : "var(--mp-bg-raised)",
     color: primary ? "var(--mp-fg-on-signal)" : (tone === "danger" ? "var(--mp-danger-600)" : "var(--mp-fg)"),
   }}>
     <Icon name={icon} size={13}/> {children}
@@ -612,7 +612,7 @@ const SLSection = ({ icon, title, children, right }) => (
 const SLBullets = ({ items, numbered }) => (
   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
     {items.map((t, i) => (
-      <div key={i} style={{ display: "flex", gap: 8, fontSize: "var(--mp-text-base)", lineHeight: "var(--mp-leading-normal)" }}>
+      <div key={i} style={{ display: "flex", gap: 8, fontSize: "var(--mp-text-md)", lineHeight: "var(--mp-leading-normal)" }}>
         <span style={{ minWidth: 16, color: "var(--mp-fg-faint)", fontFamily: numbered ? "var(--mp-font-mono)" : "inherit" }}>{numbered ? `${i + 1}.` : "•"}</span>
         <span>{t}</span>
       </div>
@@ -622,7 +622,7 @@ const SLBullets = ({ items, numbered }) => (
 
 const SLActionItem = ({ task, owner, due, confidence }) => (
   <div style={{ marginBottom: 10 }}>
-    <div style={{ display: "flex", gap: 8, fontSize: "var(--mp-text-base)", lineHeight: "var(--mp-leading-normal)" }}>
+    <div style={{ display: "flex", gap: 8, fontSize: "var(--mp-text-md)", lineHeight: "var(--mp-leading-normal)" }}>
       <span style={{ color: "var(--mp-fg-faint)", marginTop: 2, display: "flex" }}><Icon name="circle" size={13}/></span>
       <span>{task}</span>
     </div>
@@ -650,8 +650,8 @@ const SLReprocessBar = () => (
       <div style={{ fontSize: "var(--mp-text-sm)", fontWeight: 500 }}>Not quite right?</div>
       <div style={{ fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-subtle)" }}>Edit the prompt and reprocess. You can compare before keeping it.</div>
     </div>
-    <button style={{
-      height: 24, padding: "0 10px", borderRadius: "var(--mp-radius-sm)", fontFamily: "inherit",
+    <button className="mp-pressable" style={{
+      height: 24, padding: "0 12px", borderRadius: "var(--mp-radius-full)", fontFamily: "inherit",
       fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer",
       border: "0.5px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", color: "var(--mp-fg)",
     }}>Reprocess…</button>
@@ -673,7 +673,7 @@ const SLEditForm = ({ error }) => (
           <div style={{ fontWeight: 500 }}>Could not save to the summary file.</div>
           <div style={{ color: "var(--mp-fg-muted)", marginTop: 1 }}>Your edits are kept here. Check the file permissions and try again.</div>
         </div>
-        <button style={{ height: 22, padding: "0 9px", borderRadius: "var(--mp-radius-xs)", fontFamily: "inherit", fontSize: "var(--mp-text-xs)", fontWeight: 500, cursor: "pointer", border: "none", background: "var(--mp-danger-600)", color: "#fff" }}>Try again</button>
+        <button className="mp-pressable" style={{ height: 22, padding: "0 10px", borderRadius: "var(--mp-radius-full)", fontFamily: "inherit", fontSize: "var(--mp-text-xs)", fontWeight: 500, cursor: "pointer", border: "none", background: "var(--mp-danger-600)", color: "#fff" }}>Try again</button>
       </div>
     )}
     <SLFieldLabel>Summary</SLFieldLabel>
@@ -688,8 +688,8 @@ const SLEditForm = ({ error }) => (
     <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
       <span style={{ fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-faint)" }}>Markdown supported. Saves to the summary sidecar.</span>
       <span style={{ flex: 1 }}/>
-      <button style={{ height: 26, padding: "0 12px", borderRadius: "var(--mp-radius-sm)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "0.5px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", color: "var(--mp-fg)" }}>Cancel</button>
-      <button style={{ height: 26, padding: "0 14px", borderRadius: "var(--mp-radius-sm)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "none", background: "var(--mp-signal-600)", color: "var(--mp-fg-on-signal)" }}>Save</button>
+      <button className="mp-pressable" style={{ height: 26, padding: "0 13px", borderRadius: "var(--mp-radius-full)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "0.5px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", color: "var(--mp-fg)" }}>Cancel</button>
+      <button className="mp-pressable" style={{ height: 26, padding: "0 14px", borderRadius: "var(--mp-radius-full)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "none", background: "var(--mp-signal-fill)", color: "var(--mp-fg-on-signal)" }}>Save</button>
     </div>
   </div>
 );
@@ -743,7 +743,7 @@ const SLReprocess = () => (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       <SLProvenance kind="cloud"/>
       <span style={{ flex: 1 }}/>
-      <button style={{ height: 26, padding: "0 12px", borderRadius: "var(--mp-radius-sm)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "none", background: "var(--mp-signal-600)", color: "var(--mp-fg-on-signal)", display: "inline-flex", alignItems: "center", gap: 5 }}>
+      <button className="mp-pressable" style={{ height: 26, padding: "0 13px", borderRadius: "var(--mp-radius-full)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "none", background: "var(--mp-signal-fill)", color: "var(--mp-fg-on-signal)", display: "inline-flex", alignItems: "center", gap: 5 }}>
         <Icon name="refresh" size={13}/> Generate candidate
       </button>
     </div>
@@ -762,8 +762,8 @@ const SLReprocess = () => (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       <span style={{ fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-faint)" }}>The candidate replaces the current summary only when you keep it.</span>
       <span style={{ flex: 1 }}/>
-      <button style={{ height: 26, padding: "0 12px", borderRadius: "var(--mp-radius-sm)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "0.5px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", color: "var(--mp-fg)" }}>Keep current</button>
-      <button style={{ height: 26, padding: "0 14px", borderRadius: "var(--mp-radius-sm)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "none", background: "var(--mp-signal-600)", color: "var(--mp-fg-on-signal)" }}>Use candidate</button>
+      <button className="mp-pressable" style={{ height: 26, padding: "0 13px", borderRadius: "var(--mp-radius-full)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "0.5px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", color: "var(--mp-fg)" }}>Keep current</button>
+      <button className="mp-pressable" style={{ height: 26, padding: "0 14px", borderRadius: "var(--mp-radius-full)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "none", background: "var(--mp-signal-fill)", color: "var(--mp-fg-on-signal)" }}>Use candidate</button>
     </div>
   </div>
 );
@@ -775,7 +775,7 @@ const SLCompareCol = ({ title, body, accent, muted }) => (
     background: accent ? "var(--mp-signal-100)" : "var(--mp-bg-sunk)",
   }}>
     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-      <span style={{ fontSize: "var(--mp-text-xs)", fontWeight: 600, letterSpacing: "var(--mp-tracking-wide)", textTransform: "uppercase", color: accent ? "var(--mp-signal-700)" : "var(--mp-fg-subtle)" }}>{title}</span>
+      <span style={{ fontSize: "var(--mp-text-xs)", fontWeight: 600, letterSpacing: "var(--mp-tracking-wide)", textTransform: "uppercase", color: accent ? "var(--mp-signal-600)" : "var(--mp-fg-subtle)" }}>{title}</span>
     </div>
     <div style={{ display: "flex", flexDirection: "column", gap: 8, opacity: muted ? 0.75 : 1 }}>
       {body.map((t, i) => (
@@ -813,7 +813,7 @@ const SLTranscript = () => (
               <span style={{ fontSize: "var(--mp-text-sm)", fontWeight: 600, color: SL_SPEAKER[r.sp] }}>{r.name}</span>
               <span style={{ fontSize: "var(--mp-text-sm)", fontFamily: "var(--mp-font-mono)", color: "var(--mp-fg-faint)" }}>{r.t}</span>
             </div>
-            <div style={{ fontSize: "var(--mp-text-base)", lineHeight: "var(--mp-leading-normal)", marginTop: 1 }}>{r.body}</div>
+            <div style={{ fontSize: "var(--mp-text-md)", lineHeight: "var(--mp-leading-normal)", marginTop: 1 }}>{r.body}</div>
           </div>
           {/* Honest per-line editing (TECH-UX12): hover reveals the pencil; right-click also works. No false "Edit transcript" menu item. */}
           <span className="sl-tedit" style={{ color: "var(--mp-fg-faint)", display: "flex", alignItems: "flex-start", marginTop: 2, cursor: "pointer", opacity: r.active ? 1 : 0 }}>
@@ -937,7 +937,7 @@ const SLEmpty = ({ icon, title, body, action }) => (
     <span style={{ color: "var(--mp-fg-faint)", marginBottom: 6, display: "flex" }}><Icon name={icon} size={26}/></span>
     <div style={{ fontSize: "var(--mp-text-md)", fontWeight: 600 }}>{title}</div>
     <div style={{ fontSize: "var(--mp-text-sm)", color: "var(--mp-fg-subtle)", maxWidth: 320, lineHeight: "var(--mp-leading-normal)" }}>{body}</div>
-    {action && <button style={{ marginTop: 10, height: 26, padding: "0 12px", borderRadius: "var(--mp-radius-sm)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "0.5px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", color: "var(--mp-fg)" }}>{action}</button>}
+    {action && <button className="mp-pressable" style={{ marginTop: 10, height: 26, padding: "0 13px", borderRadius: "var(--mp-radius-full)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "0.5px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", color: "var(--mp-fg)" }}>{action}</button>}
   </div>
 );
 
@@ -950,7 +950,7 @@ const SLEmptyLibrary = () => (
       Meetings appear here after you record one. meeting-pipe detects calls in the background, or you can start one yourself.
     </div>
     <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14 }}>
-      <button style={{ height: 28, padding: "0 14px", borderRadius: "var(--mp-radius-sm)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "none", background: "var(--mp-signal-600)", color: "var(--mp-fg-on-signal)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+      <button className="mp-pressable" style={{ height: 28, padding: "0 14px", borderRadius: "var(--mp-radius-full)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "none", background: "var(--mp-signal-fill)", color: "var(--mp-fg-on-signal)", display: "inline-flex", alignItems: "center", gap: 6 }}>
         <span style={{ width: 8, height: 8, borderRadius: "var(--mp-radius-full)", background: "var(--mp-fg-on-signal)" }}/> Record now
       </button>
       <span style={{ fontSize: "var(--mp-text-sm)", color: "var(--mp-fg-subtle)" }}>or press</span>

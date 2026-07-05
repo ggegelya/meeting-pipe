@@ -59,7 +59,7 @@ const MeetingPrompt = ({
             fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase",
             color: "var(--mp-fg-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
           }}>{source.displayName}</div>
-          <div style={{ fontSize: 17, fontWeight: 600, letterSpacing: "-0.01em", marginTop: 1, whiteSpace: "nowrap" }}>Record this meeting?</div>
+          <div style={{ fontSize: 14, fontWeight: 600, letterSpacing: "-0.01em", marginTop: 1, whiteSpace: "nowrap" }}>Record this meeting?</div>
         </div>
 
         <div style={{ flex: 1 }}/>
@@ -157,7 +157,7 @@ const DismissBar = ({ timeoutSec }) => {
   }, [timeoutSec]);
 
   return (
-    <div ref={ref} aria-hidden style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 2, background: "rgba(20,22,26,0.05)" }}>
+    <div ref={ref} aria-hidden style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 2, background: "var(--mp-border-faint)" }}>
       <div style={{ height: "100%", width: `${pct}%`, background: "var(--mp-signal-600)", opacity: paused ? 0.30 : 0.60, transition: "opacity 120ms linear" }}/>
     </div>
   );
@@ -165,16 +165,16 @@ const DismissBar = ({ timeoutSec }) => {
 
 const PromptButton = ({ children, primary, chevron, ...rest }) => {
   const base = {
-    height: 26, padding: chevron ? "0 7px" : "0 12px",
+    height: 26, padding: chevron ? "0 8px" : "0 13px",
     display: "inline-flex", alignItems: "center", justifyContent: "center", whiteSpace: "nowrap",
     fontSize: "var(--mp-text-base)", fontWeight: 500, fontFamily: "inherit",
-    borderRadius: "var(--mp-radius-sm)", cursor: "pointer", flexShrink: 0,
+    borderRadius: "var(--mp-radius-full)", cursor: "pointer", flexShrink: 0,
     transition: "background var(--mp-dur-fast) var(--mp-ease-out)",
   };
   const styles = primary
-    ? { ...base, background: "var(--mp-signal-600)", color: "var(--mp-fg-on-signal)", border: "1px solid transparent", boxShadow: "0 1px 0 rgba(20,22,26,0.10)" }
-    : { ...base, background: "var(--mp-bg-raised)", color: "var(--mp-fg)", border: "1px solid var(--mp-border-strong)", boxShadow: "0 1px 0 rgba(20,22,26,0.04)" };
-  return <button style={styles} {...rest}>{children}</button>;
+    ? { ...base, background: "var(--mp-signal-fill)", color: "var(--mp-fg-on-signal)", border: "1px solid transparent", boxShadow: "0 1px 0 rgba(22,25,29,0.10)" }
+    : { ...base, background: "var(--mp-bg-raised)", color: "var(--mp-fg)", border: "1px solid var(--mp-border-strong)", boxShadow: "0 1px 0 rgba(22,25,29,0.04)" };
+  return <button className="mp-pressable" style={styles} {...rest}>{children}</button>;
 };
 
 window.MeetingPrompt = MeetingPrompt;

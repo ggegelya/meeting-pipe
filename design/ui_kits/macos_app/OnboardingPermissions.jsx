@@ -1,6 +1,6 @@
 // OnboardingPermissions - anticipated surface; visualizes the four-permission grant flow (Microphone, Screen Recording, Accessibility, Notifications).
 const OnboardingPermissions = () => (
-  <div style={{ width: 520, padding: 32, background: "var(--mp-bg)", fontFamily: "var(--mp-font-sans)", color: "var(--mp-fg)", borderRadius: 14, border: "1px solid var(--mp-border)", boxShadow: "var(--mp-shadow-lg)" }}>
+  <div style={{ width: 520, padding: 32, background: "var(--mp-bg)", fontFamily: "var(--mp-font-sans)", color: "var(--mp-fg)", borderRadius: "var(--mp-radius-lg)", border: "1px solid var(--mp-border)", boxShadow: "var(--mp-shadow-lg)" }}>
     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
       <Icon name="logomark" size={28}/>
       <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--mp-fg-subtle)" }}>Step 2 of 3</span>
@@ -14,8 +14,8 @@ const OnboardingPermissions = () => (
       <PermRow icon="alert" name="Notifications" why="Record / skip prompts and completion alerts." state="needed"/>
     </div>
     <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 24, gap: 8 }}>
-      <button style={{ height: 28, padding: "0 14px", borderRadius: 6, border: "1px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", fontFamily: "inherit", fontSize: 13, cursor: "pointer" }}>Skip for now</button>
-      <button style={{ height: 28, padding: "0 14px", borderRadius: 6, border: "none", background: "var(--mp-signal-600)", color: "#fff", fontWeight: 500, fontFamily: "inherit", fontSize: 13, cursor: "pointer" }}>Continue</button>
+      <button className="mp-pressable" style={{ height: 28, padding: "0 14px", borderRadius: "var(--mp-radius-full)", border: "1px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", fontFamily: "inherit", fontSize: 13, cursor: "pointer" }}>Skip for now</button>
+      <button className="mp-pressable" style={{ height: 28, padding: "0 14px", borderRadius: "var(--mp-radius-full)", border: "none", background: "var(--mp-signal-fill)", color: "#fff", fontWeight: 500, fontFamily: "inherit", fontSize: 13, cursor: "pointer" }}>Continue</button>
     </div>
   </div>
 );
@@ -23,8 +23,8 @@ const OnboardingPermissions = () => (
 const PermRow = ({ icon, name, why, state, cta }) => {
   const granted = state === "granted";
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", border: "1px solid var(--mp-border)", borderRadius: 10, background: "var(--mp-bg-raised)" }}>
-      <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--mp-bg-sunk)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--mp-fg-muted)", flexShrink: 0 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", border: "1px solid var(--mp-border)", borderRadius: "var(--mp-radius-md)", background: "var(--mp-bg-raised)" }}>
+      <div style={{ width: 32, height: 32, borderRadius: "var(--mp-radius-sm)", background: "var(--mp-bg-sunk)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--mp-fg-muted)", flexShrink: 0 }}>
         <Icon name={icon} size={16}/>
       </div>
       <div style={{ flex: 1 }}>
@@ -33,7 +33,7 @@ const PermRow = ({ icon, name, why, state, cta }) => {
       </div>
       {granted
         ? <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--mp-success-600)" }}><Icon name="check-circle" size={14}/>Granted</span>
-        : <button style={{ height: 24, padding: "0 10px", borderRadius: 6, border: "1px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{cta || "Grant"}</button>}
+        : <button className="mp-pressable" style={{ height: 24, padding: "0 12px", borderRadius: "var(--mp-radius-full)", border: "1px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{cta || "Grant"}</button>}
     </div>
   );
 };

@@ -1,48 +1,58 @@
 /* =========================================================================
    Meeting Pipe -- Color & Type Foundations
    =========================================================================
-   A mac-first, local-first aesthetic. Calm, paper-warm neutrals with one
-   electric "signal" accent that earns its place: it represents live capture,
-   the moment audio is flowing through the pipe. Used sparingly.
+   A mac-first, local-first aesthetic wearing the macOS 26 material language.
+   Cool porcelain neutrals with one electric "signal" accent that earns its
+   place: it represents live capture, the moment audio is flowing through the
+   pipe. Used sparingly.
 
    Two surfaces are first-class:
      - Light  -- default app chrome (matches macOS hudWindow / app windows)
      - Dark   -- auto-flips with system; muted, not pitch black
+
+   Substrate note (2026-07 "Liquid Quiet" redesign, design/REDESIGN.md): the
+   warm-paper canvas is retired for cool porcelain; buttons are capsules; radii
+   grow one notch and stay concentric; the teal accent splits into a "display"
+   tone (text / graphics / selection) and a deeper "fill" tone so white labels
+   clear 4.5:1. Variable NAMES are the contract with the Swift mirror
+   (Design/Tokens.swift) -- only values change; new tokens may be added.
    ========================================================================= */
 
 :root {
   color-scheme: light dark;
 
   /* --- Brand palette --------------------------------------------------- */
-  /* Ink -- the primary text/foreground. Warmer than pure black. */
-  --mp-ink-900: #14161A;
-  --mp-ink-800: #1F2227;
-  --mp-ink-700: #2C3037;
-  --mp-ink-600: #4A4F58;
-  --mp-ink-500: #6E747F;
-  --mp-ink-400: #9098A4;
-  --mp-ink-300: #B7BDC6;
-  --mp-ink-200: #D8DCE2;
-  --mp-ink-100: #ECEEF2;
+  /* Ink -- the primary text/foreground. Cool-neutral near-black, not warm. */
+  --mp-ink-900: #16181C;
+  --mp-ink-800: #202329;
+  --mp-ink-700: #2D323A;
+  --mp-ink-600: #566068;
+  --mp-ink-500: #646C77;
+  --mp-ink-400: #838B95;
+  --mp-ink-300: #B9BFC7;
+  --mp-ink-200: #D9DDE2;
+  --mp-ink-100: #ECEEF1;
   --mp-ink-50:  #F5F6F8;
 
-  /* Paper -- the canvas. A cool-warm off-white that reads as "calm document". */
-  --mp-paper:        #FBFAF7;   /* base canvas */
-  --mp-paper-sunk:   #F4F2EC;   /* recessed wells */
+  /* Paper -- the canvas. Cool porcelain neutrals that read as a calm document. */
+  --mp-paper:        #F5F6F8;   /* base canvas */
+  --mp-paper-sunk:   #ECEEF1;   /* recessed wells */
   --mp-paper-raised: #FFFFFF;   /* cards, sheets */
 
-  /* Signal, teal. The "live"/on-air color. Use only for:
-       - active recording state
-       - primary action buttons
-       - playhead / waveform highlight
-     Never as a decorative gradient or background fill on large surfaces. */
-  --mp-signal-700: #0A6F67;
-  --mp-signal-600: #0E8C82;     /* primary */
-  --mp-signal-500: #14A89B;
-  --mp-signal-400: #4FC7BC;
-  --mp-signal-100: #DCF1EF;     /* tinted backgrounds only */
+  /* Signal, teal. The "live"/on-air color. Two roles now:
+       - "display" (--mp-signal-600): text, waveform, playhead, selection,
+         dots, focus. Bright in dark so it reads as lit.
+       - "fill"    (--mp-signal-fill): teal surfaces that carry a white label
+         (primary buttons, active scope row). Deeper, so white clears 4.5:1.
+     Never a decorative gradient or a background fill on a large surface. */
+  --mp-signal-700: #0A6E64;     /* deep teal: fill hover/pressed, legible teal text */
+  --mp-signal-600: #0E9488;     /* display / primary */
+  --mp-signal-fill: #0C7F74;    /* white-label teal surfaces (both modes) */
+  --mp-signal-500: #14A89B;     /* processing spinner, scrubber */
+  --mp-signal-400: #4FC7BC;     /* soft highlight */
+  --mp-signal-100: #DFF3F0;     /* tinted backgrounds only (selection wash) */
 
-  /* Pulse, warm coral. Reserved for the recording dot only.
+  /* Pulse, warm coral. Reserved for the recording dot and destructive confirm.
      Borrowed from the universal "REC" red but warmer + less alarmed. */
   --mp-pulse-700: #BE353A;     /* deep coral: light-mode legible Stop label + recording/failed pill text (UX14) */
   --mp-pulse-600: #E5484D;
@@ -70,20 +80,21 @@
   --mp-bg:           var(--mp-paper);
   --mp-bg-raised:    var(--mp-paper-raised);
   --mp-bg-sunk:      var(--mp-paper-sunk);
-  --mp-bg-overlay:   rgba(20, 22, 26, 0.42);   /* scrim */
+  --mp-bg-overlay:   rgba(22, 25, 29, 0.42);   /* scrim */
 
 
-  --mp-border:        rgba(20, 22, 26, 0.10);
-  --mp-border-strong: rgba(20, 22, 26, 0.18);
-  --mp-border-faint:  rgba(20, 22, 26, 0.06);
+  --mp-border:        rgba(22, 25, 29, 0.10);
+  --mp-border-strong: rgba(22, 25, 29, 0.16);
+  --mp-border-faint:  rgba(22, 25, 29, 0.06);
 
-  /* HUD / floating panel -- matches macOS NSVisualEffectView .hudWindow */
-  --mp-hud-bg:        rgba(248, 247, 244, 0.78);
-  --mp-hud-stroke:    rgba(20, 22, 26, 0.08);
+  /* HUD / floating panel -- matches macOS NSVisualEffectView .hudWindow.
+     Leans into real glass: cool near-white fill + blur + saturate. */
+  --mp-hud-bg:        rgba(250, 251, 252, 0.78);
+  --mp-hud-stroke:    rgba(22, 25, 29, 0.08);
   --mp-hud-shadow:
-      0 1px 2px rgba(20, 22, 26, 0.10),
-      0 12px 32px rgba(20, 22, 26, 0.18),
-      0 24px 60px rgba(20, 22, 26, 0.14);
+      0 1px 2px rgba(22, 25, 29, 0.10),
+      0 12px 32px rgba(22, 25, 29, 0.18),
+      0 24px 60px rgba(22, 25, 29, 0.14);
 
   /* --- Type ------------------------------------------------------------ */
 
@@ -97,18 +108,22 @@
   --mp-font-sans:    -apple-system, BlinkMacSystemFont, "SF Pro Text",
                       "Inter", "Helvetica Neue", Arial, sans-serif;
 
-  /* Mono -- code, file paths, bundle IDs, key bindings. */
+  /* Mono -- code, file paths, bundle IDs, key bindings, and (redesign) every
+     timecode / duration / count on the capture surfaces. */
   --mp-font-mono:    "JetBrains Mono", "SF Mono", ui-monospace,
                       "Menlo", "Consolas", monospace;
 
   /* Type ramp -- base 13px (mac native), modest 1.125 step.
-     Compact ramp because this is a chrome-heavy app, not a content reader. */
+     Compact ramp because this is a chrome-heavy app, not a content reader.
+     One anchor per surface (redesign): each surface gets exactly one larger
+     size (prompt question 14, HUD timer 21, pane titles 15-17); nothing else
+     inflates. Those off-ramp anchors are set inline on the surface. */
   --mp-text-xs:   11px;     /* captions, status bar text */
   --mp-text-sm:   12px;     /* secondary labels */
-  --mp-text-base: 13px;     /* DEFAULT body / button label — mac native */
-  --mp-text-md:   15px;     /* prominent body */
-  --mp-text-lg:   17px;     /* panel titles (matches NSPanel title) */
-  --mp-text-xl:   22px;     /* section headers in prefs */
+  --mp-text-base: 13px;     /* DEFAULT body / button label, mac native */
+  --mp-text-md:   15px;     /* content body (summary, transcript), list/pane titles */
+  --mp-text-lg:   17px;     /* pane / detail titles, Preferences section headers */
+  --mp-text-xl:   22px;     /* large in-product headers */
   --mp-text-2xl:  28px;     /* page titles */
   --mp-text-3xl:  40px;     /* marketing display */
   --mp-text-4xl:  56px;     /* hero */
@@ -145,31 +160,32 @@
   --mp-space-16: 64px;
 
   /* --- Radii ----------------------------------------------------------- */
-  /* macOS NSPanel uses 14, controls use ~6. We follow that. */
-  --mp-radius-xs:   4px;    /* small chips, tags */
-  --mp-radius-sm:   6px;    /* buttons, inputs */
-  --mp-radius-md:   10px;   /* cards */
-  --mp-radius-lg:   14px;   /* panels, sheets — matches NSPanel cornerRadius */
-  --mp-radius-xl:   20px;   /* large hero cards */
-  --mp-radius-full: 999px;  /* pills, dots */
+  /* macOS 26: larger, concentric radii. Buttons are capsules (radius-full).
+     Inputs stay rectangular at 8. Cards 14, panels 18. */
+  --mp-radius-xs:   4px;    /* small chips, tags, checkbox */
+  --mp-radius-sm:   8px;    /* inputs, menus, nav rows */
+  --mp-radius-md:   14px;   /* cards */
+  --mp-radius-lg:   18px;   /* panels, sheets, windows */
+  --mp-radius-xl:   22px;   /* large hero cards */
+  --mp-radius-full: 999px;  /* pills, dots, capsule buttons */
 
   /* --- Shadows --------------------------------------------------------- */
   /* Subtle by default; mac chrome relies more on hairlines than shadows. */
-  --mp-shadow-hairline: inset 0 0 0 0.5px rgba(20, 22, 26, 0.10);
-  --mp-shadow-xs:  0 1px 1.5px rgba(20, 22, 26, 0.06);
-  --mp-shadow-sm:  0 1px 2px rgba(20, 22, 26, 0.08),
-                    0 2px 6px rgba(20, 22, 26, 0.06);
-  --mp-shadow-md:  0 1px 2px rgba(20, 22, 26, 0.08),
-                    0 6px 16px rgba(20, 22, 26, 0.10);
-  --mp-shadow-lg:  0 1px 2px rgba(20, 22, 26, 0.08),
-                    0 12px 32px rgba(20, 22, 26, 0.16),
-                    0 24px 60px rgba(20, 22, 26, 0.12);
+  --mp-shadow-hairline: inset 0 0 0 0.5px rgba(22, 25, 29, 0.10);
+  --mp-shadow-xs:  0 1px 1.5px rgba(22, 25, 29, 0.06);
+  --mp-shadow-sm:  0 1px 2px rgba(22, 25, 29, 0.08),
+                    0 2px 6px rgba(22, 25, 29, 0.06);
+  --mp-shadow-md:  0 1px 2px rgba(22, 25, 29, 0.08),
+                    0 6px 16px rgba(22, 25, 29, 0.10);
+  --mp-shadow-lg:  0 1px 2px rgba(22, 25, 29, 0.08),
+                    0 12px 32px rgba(22, 25, 29, 0.16),
+                    0 24px 60px rgba(22, 25, 29, 0.12);
 
   /* Focus ring: signal accent at 32% (intentionally teal, not macOS controlAccentColor blue). */
   --mp-focus-ring: 0 0 0 3px color-mix(in srgb, var(--mp-signal-600) 32%, transparent);
 
   /* --- Motion ---------------------------------------------------------- */
-  /* Mac favors short, snappy fades. No bounces. */
+  /* Mac favors short, snappy fades. No bounces, no springs. */
   --mp-ease-out:    cubic-bezier(0.22, 0.61, 0.36, 1);
   --mp-ease-in-out: cubic-bezier(0.45, 0, 0.20, 1);
   --mp-dur-fast:    120ms;
@@ -181,28 +197,34 @@
    Mac apps follow the system; we never let the user override per-page. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --mp-fg:        #F0F1F3;
-    --mp-fg-muted: #B7BDC6;
+    --mp-fg:        #F1F2F4;
+    --mp-fg-muted: #A9B0B8;
     --mp-fg-subtle: #8A909A;
     --mp-fg-faint:  #5E6470;
 
-    --mp-bg:           #1A1B1E;
-    --mp-bg-raised:    #25272B;
-    --mp-bg-sunk:      #131417;
+    --mp-bg:           #1B1D21;
+    --mp-bg-raised:    #26292E;
+    --mp-bg-sunk:      #15161A;
     --mp-bg-overlay:   rgba(0, 0, 0, 0.55);
 
-    --mp-border:        rgba(255, 255, 255, 0.08);
+    --mp-border:        rgba(255, 255, 255, 0.09);
     --mp-border-strong: rgba(255, 255, 255, 0.16);
     --mp-border-faint:  rgba(255, 255, 255, 0.05);
 
-    --mp-hud-bg:        rgba(38, 40, 44, 0.78);
-    --mp-hud-stroke:    rgba(255, 255, 255, 0.08);
+    --mp-hud-bg:        rgba(32, 34, 38, 0.78);
+    --mp-hud-stroke:    rgba(255, 255, 255, 0.09);
     --mp-hud-shadow:
         0 1px 2px rgba(0, 0, 0, 0.40),
         0 12px 32px rgba(0, 0, 0, 0.50),
         0 24px 60px rgba(0, 0, 0, 0.45);
 
-    --mp-signal-100: rgba(14, 140, 130, 0.18);
+    /* Signal display flips bright so it reads as lit; the fill stays deep in
+       both modes (white labels clear 4.5:1). */
+    --mp-signal-600: #36C6B8;
+    --mp-signal-100: rgba(54, 198, 184, 0.14);
+
+    /* Coral brightens for the dot on the darker canvas. */
+    --mp-pulse-600:  #EF5A5E;
     --mp-pulse-100:  rgba(229, 72, 77, 0.18);
   }
 }
@@ -290,6 +312,15 @@ html, body { font-family: var(--mp-font-sans); color: var(--mp-fg);
   border-radius: var(--mp-radius-xs);
   background: var(--mp-bg-raised);
   border: 1px solid var(--mp-border);
-  box-shadow: 0 1px 0 rgba(20, 22, 26, 0.06);
+  box-shadow: 0 1px 0 rgba(22, 25, 29, 0.06);
   color: var(--mp-fg-muted);
+}
+
+/* Press feedback -- controls scale to 0.97 (redesign; was translate-only).
+   Springless and short. Honors prefers-reduced-motion. */
+.mp-pressable { transition: transform 130ms var(--mp-ease-out); }
+.mp-pressable:active { transform: scale(0.97); }
+@media (prefers-reduced-motion: reduce) {
+  .mp-pressable { transition: none; }
+  .mp-pressable:active { transform: none; }
 }

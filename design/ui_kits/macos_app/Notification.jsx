@@ -1,4 +1,4 @@
-// Notification — UNUserNotification banner recreation.
+// Notification - UNUserNotification banner recreation.
 const Notification = ({ kind = "done", title, body, action }) => {
   const titleText = title ?? ({
     started: "Recording started",
@@ -17,7 +17,7 @@ const Notification = ({ kind = "done", title, body, action }) => {
   return (
     <div style={{
       width: 360,
-      borderRadius: 12,
+      borderRadius: "var(--mp-radius-lg)",
       background: "var(--mp-hud-bg)",
       backdropFilter: "blur(24px) saturate(180%)",
       WebkitBackdropFilter: "blur(24px) saturate(180%)",
@@ -28,7 +28,7 @@ const Notification = ({ kind = "done", title, body, action }) => {
       fontFamily: "var(--mp-font-sans)",
       color: "var(--mp-fg)",
     }}>
-      <div style={{ width: 36, height: 36, borderRadius: 8, background: "#FBFAF7", border: "1px solid var(--mp-border)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+      <div style={{ width: 36, height: 36, borderRadius: "var(--mp-radius-sm)", background: "var(--mp-bg-sunk)", border: "1px solid var(--mp-border)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
         <Icon name="logomark" size={22}/>
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -41,9 +41,9 @@ const Notification = ({ kind = "done", title, body, action }) => {
         </div>
         {actionLabel && (
           <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-            <button style={{
-              height: 24, padding: "0 10px", fontSize: "var(--mp-text-sm)", fontWeight: 500,
-              borderRadius: 6, border: "1px solid var(--mp-border-strong)",
+            <button className="mp-pressable" style={{
+              height: 24, padding: "0 12px", fontSize: "var(--mp-text-sm)", fontWeight: 500,
+              borderRadius: "var(--mp-radius-full)", border: "1px solid var(--mp-border-strong)",
               background: "var(--mp-bg-raised)", color: "var(--mp-fg)", cursor: "pointer",
             }}>{actionLabel}</button>
           </div>
