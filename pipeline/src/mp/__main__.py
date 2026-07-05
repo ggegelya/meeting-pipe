@@ -46,6 +46,10 @@ Subcommands:
                               embedding index (honours the backend + egress clamp)
   actions [--owner N] [--due-before D] [--min-confidence C] [--json]
                               List open action items across all your meetings
+  roster {enroll,list,forget} ...
+                              Manage named-speaker voiceprints: name an
+                              unknown THEM-A cluster so a recurring person
+                              surfaces by name across meetings (FEAT3-ROSTER)
   digest [--since N] [--publish] [--dir P] [--out-dir P] [--json]
                               Weekly review digest of aging open actions +
                               recent decisions, generated on-device; writes to
@@ -124,6 +128,9 @@ def main() -> int:
         return run(rest)
     if cmd == "digest":
         from .digest import main as run
+        return run(rest)
+    if cmd == "roster":
+        from .roster_cmd import main as run
         return run(rest)
     if cmd in {"ai2-spike", "ai2_spike"}:
         from .ai2_spike import main as run

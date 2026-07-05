@@ -7,11 +7,27 @@ from mp.diarize import (
     OTHER_SPEAKER,
     USER_SPEAKER,
     _dominant_speaker,
+    apply_speaker_labels,
     cosine_similarity,
     identify_user_speaker,
     label_me_speaker,
     match_voiceprint,
+    resolve_speaker_labels,
+    them_label,
 )
+
+
+class _FakeRoster:
+    """Match by exact embedding value, for deterministic resolve_labels tests."""
+
+    def __init__(self, matches: list[tuple[list[float], str]]):
+        self._matches = matches
+
+    def match(self, emb):
+        for vec, name in self._matches:
+            if emb == vec:
+                return name
+        return None
 
 
 def _seg(speaker, start, end, text="x"):
@@ -144,3 +160,54 @@ def test_identify_user_speaker_declines_when_system_silent(monkeypatch):
         lambda segments, wav: [{**s, "speaker": USER_SPEAKER} for s in segments],
     )
     assert identify_user_speaker(segs, Path("x.wav")) is None
+
+
+# --- FEAT3-ROSTER: label resolution (me + roster names + THEM clusters) -------
+
+
+def test_them_label_sequence():
+    assert [them_label(i) for i in range(3)] == ["THEM-A", "THEM-B", "THEM-C"]
+    assert them_label(26) == "THEM-AA"
+
+
+def test_resolve_labels_me_and_unknown_them():
+    segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6), _seg("speaker_2", 6, 7)]
+    emb = {"speaker_0": [1.0], "speaker_1": [2.0], "speaker_2": [3.0]}
+    # speaker_0 is dominant -> "Me"; the other two carry embeddings but no roster
+    # match -> stable THEM-A / THEM-B in first-appearance order.
+    mapping = resolve_speaker_labels(segs, emb, None, user_label="Me")
+    assert mapping == {"speaker_0": "Me", "speaker_1": "THEM-A", "speaker_2": "THEM-B"}
+
+
+def test_resolve_labels_roster_names_win_over_them():
+    segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6), _seg("speaker_2", 6, 7)]
+    emb = {"speaker_0": [1.0], "speaker_1": [2.0], "speaker_2": [3.0]}
+    roster = _FakeRoster([([2.0], "Bob")])  # speaker_1 -> Bob
+    mapping = resolve_speaker_labels(segs, emb, roster, user_label="Me")
+    assert mapping == {"speaker_0": "Me", "speaker_1": "Bob", "speaker_2": "THEM-A"}
+
+
+def test_resolve_labels_me_never_roster_matched():
+    segs = [_seg("speaker_0", 0, 10), _seg("speaker_1", 10, 11)]
+    emb = {"speaker_0": [1.0], "speaker_1": [2.0]}
+    # speaker_0 is dominant, so it stays "Me" even though the roster would match
+    # it; speaker_1 gets its roster name.
+    roster = _FakeRoster([([1.0], "Alice"), ([2.0], "Bob")])
+    mapping = resolve_speaker_labels(segs, emb, roster, user_label="Me")
+    assert mapping["speaker_0"] == "Me"
+    assert mapping["speaker_1"] == "Bob"
+
+
+def test_resolve_labels_no_embedding_keeps_raw_id():
+    # Fallback-branch speakers (no embeddings) are never turned into THEM clusters.
+    segs = [_seg("speaker_user", 0, 5), _seg("speaker_other", 5, 6)]
+    mapping = resolve_speaker_labels(
+        segs, None, None, user_label="Me", channel_me="speaker_user"
+    )
+    assert mapping == {"speaker_user": "Me"}  # speaker_other unmapped -> raw id kept
+
+
+def test_apply_speaker_labels_replaces_only_mapped():
+    segs = [_seg("speaker_0", 0, 1), _seg("speaker_1", 1, 2)]
+    out = apply_speaker_labels(segs, {"speaker_0": "Me"})
+    assert [s["speaker"] for s in out] == ["Me", "speaker_1"]

@@ -238,6 +238,22 @@ final class LibraryWindowModel: ObservableObject {
         }
     }
 
+    /// Enroll a meeting speaker into the named-speaker roster (FEAT3-ROSTER).
+    /// Async-wrapped like `askMeetings`; the transcript naming sheet awaits it.
+    func rosterEnroll(stem: String, label: String, name: String) async -> Result<Void, Error> {
+        guard let coordinator = coordinator else {
+            return .failure(NSError(
+                domain: "LibraryWindowModel", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
+            ))
+        }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
+            coordinator.rosterEnroll(stem: stem, label: label, name: name) { result in
+                cont.resume(returning: result)
+            }
+        }
+    }
+
     /// Re-enqueue the full `mp run-all` pipeline for a stalled/failed meeting.
     @discardableResult
     func retryMeeting(stem: String) -> Result<Void, Error> {

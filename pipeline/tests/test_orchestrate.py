@@ -19,6 +19,7 @@ import pytest
 from mp.config import Config
 from mp.diarize import cosine_similarity
 from mp.orchestrate import _finalize_streamed_transcript, run_all
+from mp.roster import EMBEDDING_DIM, RosterStore
 from mp.voiceprint import VoiceprintStore
 
 
@@ -236,12 +237,19 @@ def test_finalize_voiceprint_match_beats_dominant_and_strips_embeddings(
     )
     # Mono, so enrollment no-ops; this exercises match + strip only.
     monkeypatch.setattr("mp.diarize.is_stereo_recording", lambda w: False)
-    out = _finalize_streamed_transcript(wav, streamed, user_label="Me", voiceprint_store=store)
+    out = _finalize_streamed_transcript(
+        wav, streamed, user_label="Me",
+        voiceprint_store=store, roster_store=RosterStore(tmp_path / "roster.json"),
+    )
 
     data = json.loads(out["json"].read_text(encoding="utf-8"))
     assert "speaker_embeddings" not in data
-    # speaker_1 is dominant, but the voiceprint matched the short speaker_0.
-    assert [s["speaker"] for s in data["segments"]] == ["Me", "speaker_1"]
+    # speaker_1 is dominant, but the voiceprint matched the short speaker_0 as
+    # "Me"; speaker_1 has an embedding and no roster match, so it is THEM-A.
+    assert [s["speaker"] for s in data["segments"]] == ["Me", "THEM-A"]
+    # Embeddings are persisted keyed by final label for the Library naming UI.
+    emb = json.loads((wav.parent / f"{wav.stem}.embeddings.json").read_text(encoding="utf-8"))
+    assert set(emb["embeddings"]) == {"Me", "THEM-A"}
 
 
 def test_finalize_enrolls_voiceprint_from_stereo_mic_channel(tmp_path: Path, monkeypatch):
@@ -273,10 +281,48 @@ def test_finalize_enrolls_voiceprint_from_stereo_mic_channel(tmp_path: Path, mon
             {**segments[1], "speaker": "speaker_other"},
         ],
     )
-    _finalize_streamed_transcript(wav, streamed, user_label="Me", voiceprint_store=store)
+    _finalize_streamed_transcript(
+        wav, streamed, user_label="Me",
+        voiceprint_store=store, roster_store=RosterStore(tmp_path / "roster.json"),
+    )
 
     assert store.meetings() == 1
     assert cosine_similarity(store.embedding(), e0) > 0.99  # enrolled speaker_0
+
+
+def test_finalize_roster_names_enrolled_person_and_clusters_unknown(
+    tmp_path: Path, monkeypatch
+):
+    """FEAT3-ROSTER acceptance: with one person enrolled, a later meeting names
+    them, an unknown voice stays an unnamed THEM cluster, and "me" is untouched."""
+    def axis(i: int) -> list[float]:
+        v = [0.0] * EMBEDDING_DIM
+        v[i] = 1.0
+        return v
+
+    e0, e1, e2 = axis(0), axis(1), axis(2)  # me, Alice, a stranger
+    roster = RosterStore(tmp_path / "roster.json")
+    roster.enroll("Alice", e1)
+
+    wav = tmp_path / "20260501-1200.wav"
+    wav.write_bytes(b"")
+    streamed = _streamed_with_embeddings(
+        wav,
+        [
+            {"start": 0.0, "end": 9.0, "text": "lots", "speaker": "speaker_0"},  # me (dominant)
+            {"start": 9.0, "end": 11.0, "text": "hi", "speaker": "speaker_1"},   # Alice
+            {"start": 11.0, "end": 12.0, "text": "yo", "speaker": "speaker_2"},  # stranger
+        ],
+        {"speaker_0": e0, "speaker_1": e1, "speaker_2": e2},
+    )
+    monkeypatch.setattr("mp.diarize.is_stereo_recording", lambda w: False)
+    out = _finalize_streamed_transcript(
+        wav, streamed, user_label="Me",
+        voiceprint_store=VoiceprintStore(tmp_path / "vp.json"), roster_store=roster,
+    )
+
+    data = json.loads(out["json"].read_text(encoding="utf-8"))
+    assert [s["speaker"] for s in data["segments"]] == ["Me", "Alice", "THEM-A"]
 
 
 def test_missing_sidecar_raises(tmp_path: Path, monkeypatch):

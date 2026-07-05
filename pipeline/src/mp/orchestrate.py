@@ -30,12 +30,15 @@ from .corrections import set_publish_state, write_empty_marker, write_run_sideca
 from .transcript_quality import transcript_issues
 from .egress_guard import arm_for_config
 from .diarize import (
+    apply_speaker_labels,
     assign_speakers_by_channel,
     identify_user_speaker,
     is_stereo_recording,
     label_me_speaker,
     match_voiceprint,
+    resolve_speaker_labels,
 )
+from .roster import RosterStore
 from .voiceprint import VoiceprintStore
 from . import events
 from .markdown import render_markdown
@@ -526,12 +529,34 @@ def _apply_voiceprint(
     return matched
 
 
+def _write_embeddings_sidecar(
+    wav: Path, speaker_embeddings: dict | None, mapping: dict[str, str]
+) -> None:
+    """Persist per-speaker embeddings keyed by FINAL label to
+    `<stem>.embeddings.json`, so the Library naming UI can enroll a renamed
+    speaker into the roster later. Keyed by the label the transcript shows
+    (e.g. "THEM-A") so the daemon can look up the embedding for a label it
+    renames. No-op when the daemon wrote no embeddings."""
+    if not isinstance(speaker_embeddings, dict) or not speaker_embeddings:
+        return
+    by_label: dict[str, list[float]] = {}
+    for raw_id, emb in speaker_embeddings.items():
+        by_label.setdefault(mapping.get(raw_id, raw_id), emb)  # first wins on collision
+    path = wav.parent / f"{wav.stem}.embeddings.json"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        json.dumps({"schema_version": 1, "embeddings": by_label}), encoding="utf-8"
+    )
+    tmp.replace(path)
+
+
 def _finalize_streamed_transcript(
     wav: Path,
     streamed: dict,
     *,
     user_label: str = "",
     voiceprint_store: VoiceprintStore | None = None,
+    roster_store: RosterStore | None = None,
 ) -> dict[str, Path]:
     """Finalize the daemon transcript so downstream stages see clean
     `<stem>.json` + `<stem>.md`. FluidAudio normally provides speaker
@@ -542,16 +567,23 @@ def _finalize_streamed_transcript(
     md_path = wav.parent / f"{wav.stem}.md"
 
     store = voiceprint_store or VoiceprintStore()
-    # The daemon writes per-speaker voiceprint embeddings into the draft sidecar
-    # only; consume them here and strip them so the final transcript the Library
-    # reads stays clean.
+    roster = roster_store or RosterStore()
+    # The daemon writes per-speaker embeddings into the draft sidecar; consume
+    # them here (voiceprint enroll/match + roster match) and strip them from the
+    # transcript. They are re-persisted keyed by final label to
+    # `<stem>.embeddings.json` for the Library naming UI.
     speaker_embeddings = streamed.pop("speaker_embeddings", None)
 
     if _streamed_segments_have_speakers(streamed):
         log.info("FluidAudio sidecar already labelled segments; finalizing as-is")
         segs = streamed.get("segments") or []
         voiceprint_me = _apply_voiceprint(segs, speaker_embeddings, wav, store)
-        segments = label_me_speaker(segs, user_label, voiceprint_me=voiceprint_me)
+        mapping = resolve_speaker_labels(
+            segs, speaker_embeddings, roster,
+            user_label=user_label, voiceprint_me=voiceprint_me,
+        )
+        segments = apply_speaker_labels(segs, mapping)
+        _write_embeddings_sidecar(wav, speaker_embeddings, mapping)
         structured = {**streamed, "segments": segments, "finalized": True}
         json_path.write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
         md_path.write_text(render_markdown(structured), encoding="utf-8")

@@ -138,6 +138,23 @@ def _dominant_speaker(segments: list[dict]) -> str | None:
     return max(order, key=lambda spk: (durations[spk], -order.index(spk)))
 
 
+def _resolve_me_id(
+    segments: list[dict],
+    *,
+    channel_me: str = USER_SPEAKER,
+    voiceprint_me: str | None = None,
+) -> str | None:
+    """Pick which diarization speaker id is the user, by precedence: the
+    channel-assigned mic speaker, else the voiceprint match, else the dominant
+    speaker by spoken time. None when no speaker qualifies."""
+    present = {s.get("speaker") for s in segments if s.get("speaker")}
+    if channel_me in present:
+        return channel_me
+    if voiceprint_me and voiceprint_me in present:
+        return voiceprint_me
+    return _dominant_speaker(segments)
+
+
 def label_me_speaker(
     segments: list[dict],
     user_label: str,
@@ -165,13 +182,7 @@ def label_me_speaker(
     if not label or not segments:
         return [dict(s) for s in segments]
 
-    present = {s.get("speaker") for s in segments if s.get("speaker")}
-    if channel_me in present:
-        me = channel_me
-    elif voiceprint_me and voiceprint_me in present:
-        me = voiceprint_me
-    else:
-        me = _dominant_speaker(segments)
+    me = _resolve_me_id(segments, channel_me=channel_me, voiceprint_me=voiceprint_me)
     if me is None or me == label:
         return [dict(s) for s in segments]
     return [
@@ -262,3 +273,62 @@ def identify_user_speaker(
 
     best = max(total_time, key=mic_fraction)
     return best if mic_fraction(best) >= min_fraction else None
+
+
+def them_label(idx: int) -> str:
+    """Stable unknown-voice cluster label: 0 -> THEM-A, 25 -> THEM-Z, 26 -> THEM-AA."""
+    letters = ""
+    n = idx
+    while True:
+        letters = chr(ord("A") + n % 26) + letters
+        n = n // 26 - 1
+        if n < 0:
+            break
+    return f"THEM-{letters}"
+
+
+def resolve_speaker_labels(
+    segments: list[dict],
+    speaker_embeddings: dict[str, list[float]] | None,
+    roster,
+    *,
+    user_label: str = "",
+    channel_me: str = USER_SPEAKER,
+    voiceprint_me: str | None = None,
+) -> dict[str, str]:
+    """Map each diarization speaker id present in `segments` to its final label:
+    the user's name ("me"), a matched roster name (`roster.match`), or a stable
+    THEM-A/B cluster for an unknown voice. A speaker with no embedding keeps its
+    raw id (it cannot be roster-matched, e.g. channel-fallback labels). The "me"
+    speaker is never roster-matched. `roster` may be None (no roster)."""
+    mapping: dict[str, str] = {}
+    me = _resolve_me_id(segments, channel_me=channel_me, voiceprint_me=voiceprint_me)
+    label = user_label.strip()
+    if me is not None and label:
+        mapping[me] = label
+    order: list[str] = []
+    seen: set[str] = set()
+    for s in segments:
+        spk = s.get("speaker")
+        if spk and spk != me and spk not in seen:
+            seen.add(spk)
+            order.append(spk)
+    unknown_idx = 0
+    for spk in order:
+        emb = speaker_embeddings.get(spk) if speaker_embeddings else None
+        name = roster.match(emb) if (roster is not None and emb) else None
+        if name and name != label:
+            mapping[spk] = name
+        elif emb is not None:
+            mapping[spk] = them_label(unknown_idx)
+            unknown_idx += 1
+    return mapping
+
+
+def apply_speaker_labels(segments: list[dict], mapping: dict[str, str]) -> list[dict]:
+    """Return a new segment list with each speaker id replaced per `mapping`;
+    ids absent from the mapping are left unchanged."""
+    return [
+        {**s, "speaker": mapping.get(s.get("speaker"), s.get("speaker"))}
+        for s in segments
+    ]

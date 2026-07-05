@@ -118,6 +118,56 @@ final class MeetingLibraryService {
         }
     }
 
+    /// Enroll a meeting speaker into the named-speaker roster (FEAT3-ROSTER).
+    /// Spawns `mp roster enroll`, which reads the speaker's embedding from
+    /// `<stem>.embeddings.json`, folds it into the named person, and relabels
+    /// the meeting transcript so the name shows at once (the directory watcher
+    /// refreshes the row). Errors flow through `completion` for inline display.
+    func rosterEnroll(
+        stem: String,
+        label: String,
+        name: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            completion(.failure(NSError(
+                domain: "MeetingLibraryService", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Type a name first."]
+            )))
+            return
+        }
+        let dir = outputDir()
+        let embeddingsURL = dir.appendingPathComponent("\(stem).embeddings.json")
+        guard FileManager.default.fileExists(atPath: embeddingsURL.path) else {
+            completion(.failure(NSError(
+                domain: "MeetingLibraryService", code: 1,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "No voiceprints for this meeting - only diarized meetings can be named."]
+            )))
+            return
+        }
+        Log.event(category: "coordinator", action: "roster_enroll_requested", attributes: [
+            "stem": stem, "label": label,
+        ])
+        launcher.rosterEnroll(name: trimmed, label: label, wav: dir.appendingPathComponent("\(stem).wav")) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success:
+                    Log.event(category: "coordinator", action: "roster_enroll_done", attributes: [
+                        "stem": stem, "label": label,
+                    ])
+                case .failure(let err):
+                    Log.event(category: "coordinator", action: "roster_enroll_failed", attributes: [
+                        "stem": stem, "error": err.localizedDescription,
+                    ])
+                    self?.notifyError("Naming failed: \(err.localizedDescription)")
+                }
+                completion(result)
+            }
+        }
+    }
+
     /// Publish a hand-pasted summary for a BYO / long-meeting paste-ready row (TECH-UX3). Writes the pasted text to `<stem>.summary.md`, then runs `mp publish-from-paste`, which parses it, writes `<stem>.summary.json`, and fans out to the sinks; the directory watcher then flips the row to `.done`. Errors flow back through `completion` so the detail pane can show them inline (not as a notification).
     func publishFromPaste(
         stem: String,

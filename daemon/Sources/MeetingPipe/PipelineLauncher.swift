@@ -59,6 +59,8 @@ protocol PipelineDriver: AnyObject {
     func summarizePreviewViaApple(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void)
     /// Ask a natural-language question across the whole library (AI3): runs `mp ask`, which retrieves + synthesizes an engine-backed answer with verified `[stem]` citations on-device (honouring the backend + egress clamp), and returns the parsed answer. Defaulted no-op.
     func ask(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void)
+    /// Enroll a meeting speaker into the named-speaker roster (FEAT3-ROSTER): runs `mp roster enroll`, which reads the speaker's embedding from `<stem>.embeddings.json`, folds it into the named person, and relabels the meeting transcript so the name shows at once. Fully on-device. Defaulted no-op.
+    func rosterEnroll(name: String, label: String, wav: URL, completion: @escaping (Result<Void, Error>) -> Void)
 }
 
 extension PipelineDriver {
@@ -121,6 +123,14 @@ extension PipelineDriver {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "ask unsupported by this driver"]
+        )))
+    }
+
+    /// Default no-op stub; `PipelineLauncher` overrides this.
+    func rosterEnroll(name: String, label: String, wav: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "rosterEnroll unsupported by this driver"]
         )))
     }
 }
@@ -295,6 +305,13 @@ final class PipelineLauncher: PipelineDriver {
                 completion(.success(parsed))
             }
         }
+    }
+
+    func rosterEnroll(name: String, label: String, wav: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        runMP(
+            ["roster", "enroll", "--name", name, "--label", label, "--wav", wav.path],
+            timeout: 60, meeting: wav, completion: completion
+        )
     }
 
     /// Spawn `mp summarize <transcript.md>`. Uses the per-stage entry point (not orchestrate's run-all) so config + secrets are resolved the same way. Overwrites `<stem>.summary.json` and `<stem>.summary.md` in-place.

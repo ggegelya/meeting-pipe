@@ -101,6 +101,12 @@ extension Coordinator {
         library.askMeetings(question: question, completion: completion)
     }
 
+    /// Enroll a meeting speaker into the named-speaker roster (FEAT3-ROSTER).
+    /// Forwards to the library service, which spawns `mp roster enroll` on-device.
+    func rosterEnroll(stem: String, label: String, name: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        library.rosterEnroll(stem: stem, label: label, name: name, completion: completion)
+    }
+
     /// Cancel the active pipeline subprocess (TECH-UX5), e.g. from a stalled row.
     func cancelActiveJob() {
         jobDispatcher.cancelActive()

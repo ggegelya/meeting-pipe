@@ -131,6 +131,19 @@ final class TranscriptTabTests: XCTestCase {
         XCTAssertEqual(TranscriptDisplay.displayName(for: ""), "Unknown")
     }
 
+    func test_displayName_renders_roster_unknown_clusters() {
+        XCTAssertEqual(TranscriptDisplay.displayName(for: "THEM-A"), "Unknown A")
+        XCTAssertEqual(TranscriptDisplay.displayName(for: "THEM-AA"), "Unknown AA")
+    }
+
+    func test_isNameable_covers_unnamed_speakers_only() {
+        XCTAssertTrue(TranscriptDisplay.isNameable("THEM-A"))
+        XCTAssertTrue(TranscriptDisplay.isNameable("speaker_2"))
+        XCTAssertFalse(TranscriptDisplay.isNameable("Alice"))  // already named
+        XCTAssertFalse(TranscriptDisplay.isNameable(nil))
+        XCTAssertFalse(TranscriptDisplay.isNameable(""))
+    }
+
     func test_timestamp_formats_short_and_long_durations() {
         XCTAssertEqual(TranscriptDisplay.timestamp(0), "0:00")
         XCTAssertEqual(TranscriptDisplay.timestamp(75), "1:15")

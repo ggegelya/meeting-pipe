@@ -118,7 +118,18 @@ enum TranscriptDisplay {
            let n = Int(id.dropFirst("speaker_".count)) {
             return "Speaker \(n + 1)"
         }
+        if id.hasPrefix("THEM-") {
+            let letter = id.dropFirst("THEM-".count)
+            return letter.isEmpty ? "Unknown" : "Unknown \(letter)"
+        }
         return id
+    }
+
+    /// True for the unnamed speakers the roster naming affordance can enroll:
+    /// FEAT3-ROSTER unknown clusters (`THEM-A`) and raw diarization ids.
+    static func isNameable(_ speakerID: String?) -> Bool {
+        guard let id = speakerID, !id.isEmpty else { return false }
+        return id.hasPrefix("THEM-") || id.hasPrefix("speaker_")
     }
 
     /// Stable tint per speaker so list reordering doesn't reshuffle colors.
@@ -147,8 +158,15 @@ enum TranscriptDisplay {
 
 // MARK: - Transcript tab view
 
+/// A speaker label the roster naming sheet is open for (FEAT3-ROSTER).
+struct NamingTarget: Identifiable {
+    let label: String
+    var id: String { label }
+}
+
 struct TranscriptTab: View {
     @ObservedObject var playback: AudioPlaybackController
+    @EnvironmentObject private var libraryModel: LibraryWindowModel
     let meeting: Meeting
 
     @State private var segments: [TranscriptSegment] = []
@@ -157,6 +175,8 @@ struct TranscriptTab: View {
     @State private var loading: Bool = true
     /// Segment whose edit sheet is open; nil when no sheet is showing.
     @State private var editingSegment: TranscriptSegment? = nil
+    /// Raw speaker label being named (FEAT3-ROSTER); nil when the sheet is closed.
+    @State private var namingTarget: NamingTarget? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -180,6 +200,26 @@ struct TranscriptTab: View {
                 onCancel: { editingSegment = nil }
             )
         }
+        .sheet(item: $namingTarget) { target in
+            SpeakerNamingSheet(
+                currentDisplay: TranscriptDisplay.displayName(for: target.label),
+                onSave: { name in nameSpeaker(label: target.label, name: name) },
+                onCancel: { namingTarget = nil }
+            )
+        }
+    }
+
+    /// Enroll a speaker into the roster under `name` (FEAT3-ROSTER). The `mp
+    /// roster enroll` subprocess relabels the on-disk transcript, so a reload
+    /// picks up the new name once it succeeds.
+    private func nameSpeaker(label: String, name: String) {
+        namingTarget = nil
+        Task {
+            let result = await libraryModel.rosterEnroll(stem: meeting.stem, label: label, name: name)
+            if case .success = result {
+                await reload()
+            }
+        }
     }
 
     @ViewBuilder
@@ -194,7 +234,8 @@ struct TranscriptTab: View {
                 segments: segments,
                 language: language,
                 playback: playback,
-                onEdit: { seg in editingSegment = seg }
+                onEdit: { seg in editingSegment = seg },
+                onName: { label in namingTarget = NamingTarget(label: label) }
             )
         }
     }
@@ -280,6 +321,8 @@ private struct TranscriptList: View {
     @ObservedObject var playback: AudioPlaybackController
     /// Called on "Edit text" context-menu action; the host owns sheet presentation.
     let onEdit: (TranscriptSegment) -> Void
+    /// Called on "Name this speaker" (FEAT3-ROSTER) with the raw speaker label.
+    let onName: (String) -> Void
 
     /// Index of the segment containing the playback head. Updated via `onChange` so the binary search runs at most once per tick.
     @State private var activeIndex: Int? = nil
@@ -300,7 +343,8 @@ private struct TranscriptList: View {
                             segment: seg,
                             isActive: seg.index == activeIndex,
                             onTap: { playback.playFrom(seg.start) },
-                            onEdit: { onEdit(seg) }
+                            onEdit: { onEdit(seg) },
+                            onName: { onName(seg.speakerID ?? "") }
                         )
                         .id(seg.index)
                     }
@@ -328,6 +372,7 @@ private struct TranscriptRow: View {
     let isActive: Bool
     let onTap: () -> Void
     let onEdit: () -> Void
+    let onName: () -> Void
 
     /// Reveals the per-line Edit pencil on hover so transcript correction is
     /// discoverable without the right-click menu (TECH-UX12).
@@ -385,7 +430,48 @@ private struct TranscriptRow: View {
         .onHover { isHovered = $0 }
         .contextMenu {
             Button("Edit text…", action: onEdit)
+            if TranscriptDisplay.isNameable(segment.speakerID) {
+                Button("Name this speaker…", action: onName)
+            }
         }
+    }
+}
+
+/// Name-entry sheet for enrolling a diarized speaker into the roster (FEAT3-ROSTER).
+private struct SpeakerNamingSheet: View {
+    let currentDisplay: String
+    let onSave: (String) -> Void
+    let onCancel: () -> Void
+
+    @State private var name: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Name \(currentDisplay)")
+                .font(.headline)
+            Text("Enrolls this voice into your roster so this person is named automatically in future meetings.")
+                .font(.caption)
+                .foregroundStyle(Color(MPColors.fgMuted))
+            TextField("Name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { submit() }
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save", action: submit)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 360)
+    }
+
+    private func submit() {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        onSave(trimmed)
     }
 }
 
