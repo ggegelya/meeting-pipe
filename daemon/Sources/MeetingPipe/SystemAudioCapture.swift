@@ -32,7 +32,28 @@ final class SystemAudioCapture: NSObject {
     /// TCC check and re-prompts on freshly-rebuilt binaries. Fetched once at startup
     /// via prewarm() and reused across recordings so the user sees the prompt only
     /// on first install or after a binary signature change.
+    ///
+    /// REC5: invalidated on a display-topology change (below) and on a `start()` failure, so a stale
+    /// snapshot pointing at a now-dead display (e.g. after a dock/undock) can't make every retry fail.
     private static var cachedContent: SCShareableContent?
+
+    /// REC5: cleared whenever the attached displays are reconfigured (dock/undock, resolution change), so
+    /// the next recording re-fetches instead of building an SCStream against a display that no longer exists.
+    /// Registered once from prewarm(); re-fetching SCShareableContent does not re-prompt Screen Recording TCC.
+    private static var displayReconfigObserver: NSObjectProtocol?
+
+    static func observeDisplayReconfiguration() {
+        guard displayReconfigObserver == nil else { return }
+        displayReconfigObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            guard cachedContent != nil else { return }
+            cachedContent = nil
+            Log.writeLine("recorder", "display topology changed; cleared SCShareableContent cache (REC5)")
+        }
+    }
 
     /// Last-known TCC outcome for Screen Recording. Drives the menu-bar warning,
     /// "mic-only" notification, and prompt-panel banner. Reads: any thread; writes:
@@ -84,6 +105,7 @@ final class SystemAudioCapture: NSObject {
     /// the bundle to the list and pops the dialog on first use; subsequent runs
     /// are no-ops once TCC has an entry.
     static func prewarm() async {
+        observeDisplayReconfiguration()
         if cachedContent != nil { permissionState = .granted; return }
 
         // Check TCC without prompting first; skip request if already trusted.
@@ -147,33 +169,41 @@ final class SystemAudioCapture: NSObject {
             Self.cachedContent = content
         }
         Self.permissionState = .granted
-        guard let display = content.displays.first else {
-            throw CaptureError.noDisplay
+        do {
+            guard let display = content.displays.first else {
+                throw CaptureError.noDisplay
+            }
+
+            let filter = SCContentFilter(
+                display: display,
+                excludingApplications: [],
+                exceptingWindows: []
+            )
+
+            let config = SCStreamConfiguration()
+            config.capturesAudio = true
+            config.excludesCurrentProcessAudio = true // don't loop daemon audio into the recording; macOS 13.3+
+            config.sampleRate = 48000
+            config.channelCount = 2
+            config.width = 2  // SCStream requires non-zero; 2x2 wastes negligible CPU
+            config.height = 2
+            config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+            config.queueDepth = 5
+
+            let stream = SCStream(filter: filter, configuration: config, delegate: self)
+            try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
+            try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue) // required even for audio-only; startCapture errors without it
+            try await stream.startCapture()
+            self.stream = stream
+            Log.recorder.info("SCStream system-audio capture started")
+            Log.writeLine("recorder", "SCStream system-audio capture started")
+        } catch {
+            // REC5: the cached SCShareableContent may name a display that no longer exists (e.g. after a
+            // dock/undock), which fails startCapture on every reuse. Drop it so the next retrySystemAudio()
+            // re-fetches fresh content instead of reusing the dead snapshot. Re-fetching does not re-prompt TCC.
+            Self.cachedContent = nil
+            throw error
         }
-
-        let filter = SCContentFilter(
-            display: display,
-            excludingApplications: [],
-            exceptingWindows: []
-        )
-
-        let config = SCStreamConfiguration()
-        config.capturesAudio = true
-        config.excludesCurrentProcessAudio = true // don't loop daemon audio into the recording; macOS 13.3+
-        config.sampleRate = 48000
-        config.channelCount = 2
-        config.width = 2  // SCStream requires non-zero; 2x2 wastes negligible CPU
-        config.height = 2
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
-        config.queueDepth = 5
-
-        let stream = SCStream(filter: filter, configuration: config, delegate: self)
-        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
-        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue) // required even for audio-only; startCapture errors without it
-        try await stream.startCapture()
-        self.stream = stream
-        Log.recorder.info("SCStream system-audio capture started")
-        Log.writeLine("recorder", "SCStream system-audio capture started")
     }
 
     func stop() async {
