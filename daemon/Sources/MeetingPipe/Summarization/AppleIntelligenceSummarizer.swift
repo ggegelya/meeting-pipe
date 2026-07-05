@@ -34,10 +34,18 @@ enum AppleIntelligenceError: Error, LocalizedError {
 /// `meeting_summary.md` master prompt. Output quality is validated by on-device
 /// dogfood (the acceptance bars require a real Apple Intelligence run).
 struct AppleIntelligenceSummarizer {
-    /// Kept under the system model's context budget with headroom for the
-    /// instructions + schema directive.
-    var maxWindowChars: Int = 3200
+    /// Chars per map window. The system model's context is 4096 tokens TOTAL,
+    /// and Cyrillic tokenizes at ~1.7 tokens/char (vs ~0.3 for English), so the
+    /// old 3200-char window overflowed on Ukrainian. 1000 keeps a worst-case
+    /// window under the limit with headroom for the instructions + schema
+    /// directive; English under-utilizes the window, but correctness wins (LOCAL3).
+    var maxWindowChars: Int = 1000
     var overlapChars: Int = 200
+    /// Partials merged per reduce call, so the reduce input also stays under the
+    /// 4096-token context. A flat reduce concatenated every partial into one call
+    /// and overflowed on real meetings; partials are now merged in rounds of this
+    /// size until one remains (LOCAL3).
+    var reduceBatch: Int = 4
 
     /// nil when Apple Intelligence can summarize right now; otherwise a
     /// human-readable reason. Safe to call on any macOS (false below 26).
@@ -113,16 +121,35 @@ struct AppleIntelligenceSummarizer {
         if windows.count <= 1 {
             return try await respondSummary(windows.first?.text ?? transcript, instructions: instructions)
         }
-        // Chunked map then a single reduce pass: each window yields a partial
-        // summary, then one final call merges the partials.
+        // Chunked map then a hierarchical reduce: each window yields a partial
+        // summary, then partials are merged in rounds of `reduceBatch` until one
+        // remains, so no single reduce call concatenates every partial and blows
+        // the ~4K-token context (LOCAL3).
         var partials: [MeetingSummary] = []
         for window in windows {
             partials.append(try await respondSummary(window.text, instructions: instructions))
         }
-        let combined = partials.map(Self.renderForReduce).joined(separator: "\n\n---\n\n")
-        return try await respondSummary(
-            combined, instructions: Self.reduceInstructions(summaryLanguage: summaryLanguage), isReduce: true
-        )
+        let batch = max(2, reduceBatch)  // >= 2 so each round strictly shrinks the set
+        while partials.count > 1 {
+            var next: [MeetingSummary] = []
+            for group in Self.batched(partials, size: batch) {
+                if group.count == 1 {
+                    next.append(group[0])
+                    continue
+                }
+                let combined = group.map(Self.renderForReduce).joined(separator: "\n\n---\n\n")
+                next.append(try await respondSummary(
+                    combined,
+                    instructions: Self.reduceInstructions(summaryLanguage: summaryLanguage),
+                    isReduce: true
+                ))
+            }
+            partials = next
+        }
+        guard let merged = partials.first else {
+            throw AppleIntelligenceError.parseFailed("no partial summaries produced")
+        }
+        return merged
     }
 
     @available(macOS 26.0, *)
@@ -180,6 +207,20 @@ struct AppleIntelligenceSummarizer {
     "questions": [string], "attendees": [string], "detected_language": string}
     Output the JSON object and nothing else: no prose, no Markdown fences.
     """
+
+    /// Partition `items` into consecutive groups of at most `size` for the
+    /// hierarchical reduce (LOCAL3). `size <= 0` collapses to a single group.
+    /// Pure, so the batching invariant is unit-tested without the on-device model.
+    static func batched<T>(_ items: [T], size: Int) -> [[T]] {
+        guard size > 0 else { return items.isEmpty ? [] : [items] }
+        var out: [[T]] = []
+        var i = 0
+        while i < items.count {
+            out.append(Array(items[i..<min(i + size, items.count)]))
+            i += size
+        }
+        return out
+    }
 
     static func renderForReduce(_ s: MeetingSummary) -> String {
         let obj = s.jsonObject()

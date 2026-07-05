@@ -94,6 +94,29 @@ final class AppleIntelligenceSummarizerTests: XCTestCase {
                        AppleIntelligenceSummarizer.availabilityReason == nil)
     }
 
+    // LOCAL3: the hierarchical reduce batches partials so no reduce call
+    // concatenates more than `reduceBatch` of them. The async generate() needs
+    // the on-device model, so the pure partition invariant is what we pin here.
+    func test_batched_partitions_into_bounded_groups() {
+        let groups = AppleIntelligenceSummarizer.batched(Array(0..<10), size: 4)
+        XCTAssertEqual(groups, [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9]])
+        XCTAssertTrue(groups.allSatisfy { $0.count <= 4 })
+    }
+
+    func test_batched_group_smaller_than_size_is_single_group() {
+        XCTAssertEqual(AppleIntelligenceSummarizer.batched([1, 2], size: 4), [[1, 2]])
+    }
+
+    func test_batched_empty_is_empty() {
+        XCTAssertTrue(AppleIntelligenceSummarizer.batched([Int](), size: 4).isEmpty)
+    }
+
+    func test_default_map_window_is_cyrillic_safe() {
+        // The 3200-char window overflowed the 4096-token context on Ukrainian;
+        // the Cyrillic-safe default must stay at (or below) 1000 chars.
+        XCTAssertLessThanOrEqual(AppleIntelligenceSummarizer().maxWindowChars, 1000)
+    }
+
     func test_instructions_include_context_and_language_directive() {
         let withCtx = AppleIntelligenceSummarizer.instructions(teamContext: "ACME internal", summaryLanguage: "uk")
         XCTAssertTrue(withCtx.contains("ACME internal"))
