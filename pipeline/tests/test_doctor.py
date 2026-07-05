@@ -10,7 +10,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mp.doctor import _scan_recorder_log_for_tcc
+import pytest
+
+from mp.config import Config
+from mp.doctor import _estimate_model_gb, _scan_recorder_log_for_tcc, check_local_stack
 
 
 def _write_log(tmp_path: Path, lines: list[str]) -> Path:
@@ -76,3 +79,59 @@ def test_handles_unreadable_log_gracefully(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(Path, "read_text", raise_oserror)
     assert _scan_recorder_log_for_tcc(p) is None
+
+
+# ---------- local-stack preflight (LOCAL4) ----------------------------------
+
+
+@pytest.mark.parametrize("model_id,expected", [
+    ("mlx-community/Qwen2.5-3B-Instruct-4bit", 1.9),
+    ("mlx-community/Qwen2.5-7B-Instruct-4bit", 4.3),
+    ("mlx-community/Qwen2.5-14B-Instruct-4bit", 8.7),
+    ("mlx-community/Qwen2.5-32B-Instruct-4bit", 19.8),
+    ("mlx-community/gemma-2-9b-it-4bit", 5.6),
+])
+def test_estimate_model_gb_parses_param_count(model_id: str, expected: float) -> None:
+    assert _estimate_model_gb(model_id) == expected
+
+
+def test_estimate_model_gb_ignores_the_quant_suffix() -> None:
+    # "4bit" must not be read as a 4B parameter count.
+    assert _estimate_model_gb("mlx-community/some-instruct-4bit") is None
+
+
+def test_check_local_stack_skips_for_cloud_backend(capsys) -> None:
+    cfg = Config.model_validate({"summarization": {"backend": "anthropic"}})
+    check_local_stack(cfg)
+    assert "local stack not used" in capsys.readouterr().out
+
+
+def test_check_local_stack_fails_when_ram_below_model(capsys, monkeypatch) -> None:
+    cfg = Config.model_validate({
+        "summarization": {
+            "backend": "local",
+            "local_model": "mlx-community/Qwen2.5-14B-Instruct-4bit",
+        },
+    })
+    monkeypatch.setattr("mp.doctor._physical_ram_gb", lambda: 4.0)
+    monkeypatch.setattr("mp.doctor._free_disk_gb", lambda _p: 500.0)
+    monkeypatch.setattr("mp.prefetch_model._bytes_on_disk", lambda _p: 0)
+    check_local_stack(cfg)
+    out = capsys.readouterr().out
+    assert "will not fit" in out
+    assert "fits the ~21.0 GB download" not in out  # 14B is ~8.7 GB, not 21
+
+
+def test_check_local_stack_ok_when_ram_and_disk_ample(capsys, monkeypatch) -> None:
+    cfg = Config.model_validate({
+        "summarization": {
+            "backend": "local",
+            "local_model": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+        },
+    })
+    monkeypatch.setattr("mp.doctor._physical_ram_gb", lambda: 64.0)
+    monkeypatch.setattr("mp.doctor._free_disk_gb", lambda _p: 500.0)
+    monkeypatch.setattr("mp.prefetch_model._bytes_on_disk", lambda _p: 0)
+    check_local_stack(cfg)
+    out = capsys.readouterr().out
+    assert "comfortably fits" in out

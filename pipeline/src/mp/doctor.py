@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -206,6 +208,111 @@ def check_ml_runtimes() -> None:
     _info("Python pipeline runs summarize + publish only; no MLX deps here.")
 
 
+# ---------- local summarization stack (LOCAL4) ------------------------------
+
+def _estimate_model_gb(model_id: str) -> float | None:
+    """Rough resident-memory / download estimate for a 4-bit MLX chat model,
+    parsed from the parameter count in its repo id (`...-7B-...` -> 7B).
+    ~0.62 GB per billion params covers 4-bit weights plus runtime overhead and
+    matches the measured ~4.3 GB for the 7B. None when the size is unparseable.
+    """
+    m = re.search(r"(\d+(?:\.\d+)?)\s*[bB]\b", model_id)
+    if not m:
+        return None
+    try:
+        params_b = float(m.group(1))
+    except ValueError:
+        return None
+    return round(params_b * 0.62, 1)
+
+
+def _physical_ram_gb() -> float | None:
+    """Total physical RAM in GB. `sysctl hw.memsize` on macOS, os.sysconf fallback."""
+    try:
+        out = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "hw.memsize"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0 and out.stdout.strip().isdigit():
+            return round(int(out.stdout.strip()) / (1024 ** 3), 1)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        return round(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / (1024 ** 3), 1)
+    except (ValueError, OSError):
+        return None
+
+
+def _free_disk_gb(path: Path) -> float | None:
+    try:
+        return round(shutil.disk_usage(path).free / (1024 ** 3), 1)
+    except OSError:
+        return None
+
+
+def check_local_stack(cfg: Config | None) -> None:
+    """Preflight the on-device summarization stack (LOCAL4): mlx availability,
+    the model cache, and RAM/disk headroom against the chosen model. A clear
+    refuse-with-explanation here beats a first-run OOM inside mlx_lm.server.
+    """
+    print("\n== local summarization stack ==")
+    if cfg is None:
+        _warn("config did not load; skipping local-stack checks")
+        return
+    backend = cfg.summarization.backend
+    if backend not in {"local", "auto"} and not cfg.modes.regulated_mode:
+        _info(f"backend = {backend!r} and regulated_mode off; local stack not used (skipping)")
+        return
+
+    # `find_spec` verifies mlx is installed without importing heavy Metal here.
+    from importlib.util import find_spec
+    if find_spec("mlx_lm") is not None and find_spec("mlx") is not None:
+        _ok("mlx / mlx_lm installed")
+    else:
+        _fail("mlx_lm not installed; the local backend cannot run")
+        _info("reinstall the pipeline venv: scripts/install.sh (or cd pipeline && uv sync)")
+        _info('non-Apple-Silicon hosts have no MLX; use summarization.backend = "anthropic"')
+
+    model_id = cfg.summarization.local_model
+    _info(f"model = {model_id}")
+    need_gb = _estimate_model_gb(model_id)
+
+    from .prefetch_model import _bytes_on_disk, _hf_cache_dir
+    cache_dir = _hf_cache_dir(model_id)
+    cached_gb = round(_bytes_on_disk(cache_dir) / (1024 ** 3), 1)
+    if cached_gb > 0:
+        _ok(f"model cache present (~{cached_gb} GB at {cache_dir})")
+    else:
+        est = f"~{need_gb} GB" if need_gb else "several GB"
+        _info(f"model not cached yet; first local run downloads {est} (resumable, prefetched by the daemon)")
+
+    ram_gb = _physical_ram_gb()
+    if ram_gb is None:
+        _warn("could not determine physical RAM")
+    elif need_gb is None:
+        _info(f"physical RAM = {ram_gb} GB (model size unknown; cannot judge headroom)")
+    elif ram_gb < need_gb:
+        _fail(f"physical RAM {ram_gb} GB < the model's ~{need_gb} GB resident; this model will not fit")
+        _info("pick a smaller preset in Preferences -> Pipeline (Small 3B / Recommended 7B)")
+    elif ram_gb < need_gb + 4:
+        _warn(f"physical RAM {ram_gb} GB leaves little headroom over the model's ~{need_gb} GB; OOM risk under load")
+        _info("close memory-heavy apps, or pick a smaller preset")
+    else:
+        _ok(f"physical RAM {ram_gb} GB comfortably fits the model's ~{need_gb} GB")
+
+    if need_gb is not None and cached_gb == 0:
+        probe = cache_dir.parent if cache_dir.parent.exists() else Path.home()
+        free_gb = _free_disk_gb(probe)
+        if free_gb is None:
+            _warn("could not determine free disk space")
+        elif free_gb < need_gb:
+            _fail(f"free disk {free_gb} GB < the ~{need_gb} GB download; free space before switching to local")
+        elif free_gb < need_gb * 1.5:
+            _warn(f"free disk {free_gb} GB is tight for the ~{need_gb} GB download plus extraction headroom")
+        else:
+            _ok(f"free disk {free_gb} GB fits the ~{need_gb} GB download")
+
+
 def check_huggingface(present: bool) -> None:
     """Optional HF_TOKEN check. Kept for users who deliberately opt back
     into a pyannote-based diarization workflow. The default pipeline no
@@ -311,6 +418,7 @@ def main(argv: list[str]) -> int:
     presence = check_secrets()
     cfg = check_config()
     check_ml_runtimes()
+    check_local_stack(cfg)
     check_anthropic(presence["ANTHROPIC_API_KEY"])
     check_notion(presence["NOTION_TOKEN"], cfg)
     check_huggingface(presence["HF_TOKEN"])
