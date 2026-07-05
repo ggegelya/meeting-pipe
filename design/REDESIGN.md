@@ -138,4 +138,4 @@ Each is one `/tech-task` session, one commit. Every task verifies: `swift build`
 ## Functional siblings (not design passes)
 
 - **UX15 (P1), Library triage honesty:** Needs-you scope membership grows to include `.partial` and `.empty`; the library scan computes a has-corrections flag the row and header render; the publish-failure reason is parsed from the error sidecar into the detail-header model; paste-pending uses the single verb in list and detail. Files named in the 2026-07-05 audit (LibraryScope / MeetingStore / MeetingLibraryService / MeetingRow / MeetingDetailView+Header).
-- **UX16 (P2), one search story:** the list filter searches scan-built text while Cmd+K Quick Find ranks the whole library; decide merge vs label-and-cross-teach. After DSN27.
+- **UX16 (P2), one search story:** decided 2026-07-05: merge. Quick Find becomes the single search, backed by a SQLite FTS5 index over full transcripts + summaries; the filter bar keeps its chips and feeds the same index. Spec in the Q5 backlog. After DSN27.
