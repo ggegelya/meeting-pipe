@@ -77,10 +77,10 @@ const MeetingPrompt = ({
           </button>
         )}
 
-        {/* action cluster */}
+        {/* action cluster -- the primary Record is now the Instrument record key */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <PromptButton onClick={onBYO} title="Record, but skip the Anthropic API call. You'll summarize the transcript yourself.">Record (BYO)</PromptButton>
-          <PromptButton primary onClick={onRecord}>Record</PromptButton>
+          <PromptRecordKey label="Record" onClick={onRecord}/>
           <PromptButton chevron title={`Always for ${source.displayName}  ·  Skip this meeting  ·  Open Screen Recording Settings…`}>
             <Icon name="chevron-down" size={12}/>
           </PromptButton>
@@ -93,9 +93,9 @@ const MeetingPrompt = ({
 };
 
 /* --------------------------------------------------------------------------
-   Live waveform - 4 bars, signal600. In Swift this reads
-   AVAudioRecorder.averagePower(forChannel:) every ~50ms. Here a smoothed
-   random walk gives the same visual fingerprint.                            */
+   Live waveform - 4 bars in on-air (the DSN21 lit-LED capture accent). In Swift
+   this reads AVAudioRecorder.averagePower(forChannel:) every ~50ms. Here a
+   smoothed random walk gives the same visual fingerprint.                     */
 const LiveWaveform = () => {
   const [levels, setLevels] = React.useState([0.4, 0.7, 0.5, 0.3]);
   React.useEffect(() => {
@@ -113,7 +113,7 @@ const LiveWaveform = () => {
   return (
     <div aria-hidden title="Listening for level" style={{ display: "flex", alignItems: "center", gap: 2, height: 16 }}>
       {levels.map((lv, i) => (
-        <div key={i} style={{ width: 2, height: `${Math.round(lv * 100)}%`, background: "var(--mp-signal-600)", borderRadius: 1, transition: "height 90ms linear" }}/>
+        <div key={i} style={{ width: 2, height: `${Math.round(lv * 100)}%`, background: "var(--mp-onair-600)", borderRadius: 1, transition: "height 90ms linear" }}/>
       ))}
     </div>
   );
@@ -176,5 +176,30 @@ const PromptButton = ({ children, primary, chevron, ...rest }) => {
     : { ...base, background: "var(--mp-bg-raised)", color: "var(--mp-fg)", border: "1px solid var(--mp-border-strong)", boxShadow: "0 1px 0 rgba(22,25,29,0.04)" };
   return <button className="mp-pressable" style={styles} {...rest}>{children}</button>;
 };
+
+/* --------------------------------------------------------------------------
+   Record key (DSN21 "Instrument"): a 40px circular key -- a concentric on-air
+   ring inset 5px at 1.5px around a coral disc core -- replacing the text Record
+   button. Press travels 1.5px down and compresses the ring (.mp-recordkey). A
+   text label sits beside it so the action is never colour alone. On the prompt
+   the key is always in its idle (record-a-disc) state; the disc becomes a
+   rounded square once recording has started (see the HUD / Library stop key). */
+const PromptRecordKey = ({ label = "Record", onClick }) => (
+  <button className="mp-recordkey" onClick={onClick} aria-label={label} style={{
+    display: "inline-flex", alignItems: "center", gap: 8, padding: 0,
+    border: "none", background: "transparent", cursor: "pointer", flexShrink: 0, fontFamily: "inherit",
+  }}>
+    <span style={{
+      position: "relative", width: 40, height: 40, flexShrink: 0,
+      borderRadius: "var(--mp-radius-full)", background: "var(--mp-bg-raised)",
+      border: "0.5px solid var(--mp-border-strong)", boxShadow: "var(--mp-shadow-xs)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }}>
+      <span className="mp-recordkey-ring" style={{ position: "absolute", inset: 5, borderRadius: "var(--mp-radius-full)", border: "1.5px solid var(--mp-onair-600)" }}/>
+      <span style={{ width: 15, height: 15, borderRadius: "var(--mp-radius-full)", background: "var(--mp-pulse-600)" }}/>
+    </span>
+    <span style={{ fontSize: "var(--mp-text-base)", fontWeight: 500, color: "var(--mp-fg)" }}>{label}</span>
+  </button>
+);
 
 window.MeetingPrompt = MeetingPrompt;

@@ -15,7 +15,9 @@
    grow one notch and stay concentric; the teal accent splits into a "display"
    tone (text / graphics / selection) and a deeper "fill" tone so white labels
    clear 4.5:1. Variable NAMES are the contract with the Swift mirror
-   (Design/Tokens.swift) -- only values change; new tokens may be added.
+   (Design/Tokens.swift) -- only values change; new tokens may be added. The
+   DSN21 "Instrument" layer then adds an on-air LED accent (--mp-onair-600) and
+   backlit record tokens (--mp-record-*) for the capture surfaces only.
    ========================================================================= */
 
 :root {
@@ -51,6 +53,22 @@
   --mp-signal-500: #14A89B;     /* processing spinner, scrubber */
   --mp-signal-400: #4FC7BC;     /* soft highlight */
   --mp-signal-100: #DFF3F0;     /* tinted backgrounds only (selection wash) */
+
+  /* On-air, the DSN21 "Instrument" LED accent. CAPTURE SURFACES ONLY (prompt,
+     HUD, dropdown record rows, Library record control). Light-emitting elements
+     ONLY: meter segments, live-level dots, the record-key ring, the active mic
+     waveform + capture playhead. Buttons, selection and links keep the signal
+     tokens, so the One Signal budget still holds. Deliberately bright (reads as a
+     lit LED); the meaning is always carried by the coral core + a text label, so
+     these graphics stay decorative (they sit below the 3:1 UI floor on white by
+     design, like a real LED). */
+  --mp-onair-600: #0FBFAC;
+
+  /* Record action fill + label (capture surfaces). Light: deep teal fill, white
+     label (== signal-fill, clears 4.5:1). Dark: reads "backlit" -- a brighter
+     fill with a near-black label (#062A25 on #0FA392 clears 4.5:1). */
+  --mp-record-fill:  #0C7F74;
+  --mp-record-label: #FFFFFF;
 
   /* Pulse, warm coral. Reserved for the recording dot and destructive confirm.
      Borrowed from the universal "REC" red but warmer + less alarmed. */
@@ -223,6 +241,13 @@
     --mp-signal-600: #36C6B8;
     --mp-signal-100: rgba(54, 198, 184, 0.14);
 
+    /* On-air brightens further so it reads as a lit LED on the dark canvas. */
+    --mp-onair-600: #2BE3CC;
+
+    /* Record action reads backlit in dark: brighter fill, near-black label. */
+    --mp-record-fill:  #0FA392;
+    --mp-record-label: #062A25;
+
     /* Coral brightens for the dot on the darker canvas. */
     --mp-pulse-600:  #EF5A5E;
     --mp-pulse-100:  rgba(229, 72, 77, 0.18);
@@ -323,4 +348,18 @@ html, body { font-family: var(--mp-font-sans); color: var(--mp-fg);
 @media (prefers-reduced-motion: reduce) {
   .mp-pressable { transition: none; }
   .mp-pressable:active { transform: none; }
+}
+
+/* Record key press (DSN21 "Instrument", capture surfaces): 1.5px downward travel
+   plus the on-air ring compressing. Springless, 100ms. The record action is a
+   circular key -- a deliberate exception to the button language (REDESIGN.md).
+   Honors prefers-reduced-motion. */
+.mp-recordkey { transition: transform 100ms var(--mp-ease-out); }
+.mp-recordkey:active { transform: translateY(1.5px); }
+.mp-recordkey-ring { transition: transform 100ms var(--mp-ease-out); transform-origin: center; }
+.mp-recordkey:active .mp-recordkey-ring { transform: scale(0.86); }
+@media (prefers-reduced-motion: reduce) {
+  .mp-recordkey, .mp-recordkey-ring { transition: none; }
+  .mp-recordkey:active { transform: none; }
+  .mp-recordkey:active .mp-recordkey-ring { transform: none; }
 }

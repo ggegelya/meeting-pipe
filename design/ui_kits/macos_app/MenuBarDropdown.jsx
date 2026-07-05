@@ -1,5 +1,10 @@
 // MenuBarDropdown - recreates StatusBarController.swift's rebuildMenu()
 // for the three primary states: idle, recording, prompting.
+//
+// DSN21 "Instrument" touches the recording/idle rows only: the coral recording
+// dot is the recording colour (unchanged), and the mono filename is set in
+// tabular numerals like every other capture-surface timecode. The dropdown has
+// little else to instrument -- it is a native text menu, not a live surface.
 const MenuBarDropdown = ({ state = "idle", source, file }) => {
   const wrapStyle = {
     width: 240,
@@ -48,6 +53,7 @@ const MenuItem = ({ children, shortcut, header, disabled, mono }) => (
     color: header || disabled ? "var(--mp-fg-subtle)" : "var(--mp-fg)",
     fontWeight: header ? 600 : 400,
     fontFamily: mono ? "var(--mp-font-mono)" : "inherit",
+    fontVariantNumeric: mono ? "tabular-nums" : "normal",
     fontSize: mono ? "var(--mp-text-sm)" : "var(--mp-text-base)",
     cursor: header || disabled ? "default" : "pointer",
   }}

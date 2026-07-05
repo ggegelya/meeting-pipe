@@ -5,9 +5,10 @@
 // sensitive, kill it" moment.
 //
 // Layout (top to bottom): app glyph (24), the pulsing coral recording dot with
-// its "Recording" label, the elapsed timer (the 21px anchor, mono tabular), the
-// voice-activity meter (10 discrete segments, TECH-UX8), the workflow
-// attribution line (TECH-B9), and the round Stop key at the foot.
+// its "Recording" label, the elapsed timer (the 24px anchor, mono tabular, grown
+// under the Instrument layer), the voice-activity meter (10 discrete on-air LED
+// segments, TECH-UX8), the workflow attribution line (TECH-B9), and the record
+// key in its stop form (on-air ring + coral rounded square) at the foot.
 //
 // Second frozen frame: the degraded state (TECH-UX4). When system-audio capture
 // fails mid-recording the pill widens into a card (232 wide) and a banner
@@ -60,8 +61,8 @@ const RecordingHUD = ({
         <span style={{ fontSize: 10, fontWeight: 500, color: "var(--mp-fg-muted)" }}>Recording</span>
       </div>
 
-      {/* elapsed timer -- the 21px surface anchor, mono tabular */}
-      <div style={{ marginTop: 4, fontFamily: "var(--mp-font-mono)", fontVariantNumeric: "tabular-nums", fontSize: 21, fontWeight: 600, lineHeight: 1.1, color: "var(--mp-fg)" }}>{elapsed}</div>
+      {/* elapsed timer -- the 24px surface anchor, mono tabular (Instrument) */}
+      <div style={{ marginTop: 4, fontFamily: "var(--mp-font-mono)", fontVariantNumeric: "tabular-nums", fontSize: 24, fontWeight: 600, lineHeight: 1.1, color: "var(--mp-fg)" }}>{elapsed}</div>
 
       <HUDMeter lit={meterLit}/>
 
@@ -76,12 +77,14 @@ const RecordingHUD = ({
   );
 };
 
-/* Voice-activity meter (TECH-UX8): 10 discrete segments, one per 6 dB. Lit runs
-   signal-teal; the rest are hairline. Steps rather than slides. */
+/* Voice-activity meter (TECH-UX8): 10 discrete LED segments, one per 6 dB. Lit
+   segments run on-air (the Instrument lit-LED accent); the rest are hairline.
+   Steps rather than slides -- no transition. Decorative (aria-hidden): the coral
+   dot + "Recording" label carry the state. */
 const HUDMeter = ({ lit = 6 }) => (
-  <div aria-hidden style={{ display: "flex", alignItems: "center", gap: 1, width: 40, height: 6, marginTop: 6 }}>
+  <div aria-hidden style={{ display: "flex", alignItems: "center", gap: 2, width: 40, height: 6, marginTop: 6 }}>
     {Array.from({ length: 10 }, (_, i) => (
-      <div key={i} style={{ flex: 1, height: "100%", borderRadius: 1, background: i < lit ? "var(--mp-signal-600)" : "var(--mp-border)" }}/>
+      <div key={i} style={{ flex: 1, height: "100%", borderRadius: 1, background: i < lit ? "var(--mp-onair-600)" : "var(--mp-border)" }}/>
     ))}
   </div>
 );
@@ -94,15 +97,19 @@ const HUDWorkflowLine = ({ name }) => (
   ) : null
 );
 
-/* Round Stop key: coral disc with an inset white rounded square, matching the
-   iOS-style record stop. Pointer affordance; the coral lives here (dot + key). */
+/* Stop key: the Instrument record key in its recording form -- a 40px circular
+   key with a concentric on-air ring (inset 5px, 1.5px) around a coral rounded
+   square (the stop affordance; coral stays the recording colour). Press travels
+   1.5px + compresses the ring (.mp-recordkey). */
 const HUDStopKey = () => (
-  <button className="mp-pressable" title="Stop recording" aria-label="Stop recording" style={{
-    width: 30, height: 30, flexShrink: 0, padding: 0, border: "none", cursor: "pointer",
-    borderRadius: "var(--mp-radius-full)", background: "var(--mp-pulse-600)",
+  <button className="mp-recordkey" title="Stop recording" aria-label="Stop recording" style={{
+    position: "relative", width: 40, height: 40, flexShrink: 0, padding: 0, cursor: "pointer",
+    borderRadius: "var(--mp-radius-full)", background: "var(--mp-bg-raised)",
+    border: "0.5px solid var(--mp-border-strong)", boxShadow: "var(--mp-shadow-xs)",
     display: "flex", alignItems: "center", justifyContent: "center",
   }}>
-    <span style={{ width: 12, height: 12, borderRadius: 2, background: "#fff" }}/>
+    <span className="mp-recordkey-ring" style={{ position: "absolute", inset: 5, borderRadius: "var(--mp-radius-full)", border: "1.5px solid var(--mp-onair-600)" }}/>
+    <span style={{ width: 13, height: 13, borderRadius: 3, background: "var(--mp-pulse-600)" }}/>
   </button>
 );
 

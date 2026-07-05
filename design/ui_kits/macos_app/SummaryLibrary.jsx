@@ -132,30 +132,30 @@ const SLStatePill = ({ recording }) => (
   </span>
 );
 
-// Idle -> teal primary Record. Recording -> a quiet surface Stop; the coral lives
-// in the state pill's dot, so the button stays calm (coral is reserved for the dot).
+// Record control (DSN21 "Instrument"): the record key -- a 40px circular key with
+// a concentric on-air ring (inset 5px, 1.5px) around a coral core, plus a text
+// label beside it so the state is never colour alone. Idle shows a disc (Record);
+// recording shows a rounded square (Stop). Coral stays the recording colour; the
+// ring is the lit hardware frame. Press travels 1.5px + compresses the ring.
 const SLRecordButton = ({ recording }) => (
-  recording ? (
-    <button className="mp-pressable" style={{
-      display: "inline-flex", alignItems: "center", gap: 6, height: 26, padding: "0 12px",
-      borderRadius: "var(--mp-radius-full)", cursor: "pointer", fontFamily: "inherit",
-      fontSize: "var(--mp-text-sm)", fontWeight: 500, color: "var(--mp-fg)",
-      background: "var(--mp-bg-raised)", border: "0.5px solid var(--mp-border-strong)",
+  <button className="mp-recordkey" aria-label={recording ? "Stop recording" : "Record"} style={{
+    display: "inline-flex", alignItems: "center", gap: 8, padding: 0,
+    border: "none", background: "transparent", cursor: "pointer", fontFamily: "inherit", flexShrink: 0,
+  }}>
+    <span style={{
+      position: "relative", width: 40, height: 40, flexShrink: 0,
+      borderRadius: "var(--mp-radius-full)", background: "var(--mp-bg-raised)",
+      border: "0.5px solid var(--mp-border-strong)", boxShadow: "var(--mp-shadow-xs)",
+      display: "flex", alignItems: "center", justifyContent: "center",
     }}>
-      <span style={{ color: "var(--mp-pulse-600)", display: "flex" }}><Icon name="stop" size={11}/></span>
-      Stop
-    </button>
-  ) : (
-    <button className="mp-pressable" style={{
-      display: "inline-flex", alignItems: "center", gap: 6, height: 26, padding: "0 13px",
-      border: "none", borderRadius: "var(--mp-radius-full)", cursor: "pointer", fontFamily: "inherit",
-      fontSize: "var(--mp-text-sm)", fontWeight: 500, color: "var(--mp-fg-on-signal)",
-      background: "var(--mp-signal-fill)",
-    }}>
-      <span style={{ width: 8, height: 8, borderRadius: "var(--mp-radius-full)", background: "var(--mp-fg-on-signal)" }}/>
-      Record
-    </button>
-  )
+      <span className="mp-recordkey-ring" style={{ position: "absolute", inset: 5, borderRadius: "var(--mp-radius-full)", border: "1.5px solid var(--mp-onair-600)" }}/>
+      <span style={{
+        width: recording ? 13 : 15, height: recording ? 13 : 15,
+        borderRadius: recording ? 3 : "var(--mp-radius-full)", background: "var(--mp-pulse-600)",
+      }}/>
+    </span>
+    <span style={{ fontSize: "var(--mp-text-sm)", fontWeight: 500, color: "var(--mp-fg)" }}>{recording ? "Stop" : "Record"}</span>
+  </button>
 );
 
 /* ===================================================================== sidebar */
@@ -347,7 +347,7 @@ const SLRow = ({ m, selected, multiSelect, checked, action }) => {
         <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-subtle)", whiteSpace: "nowrap" }}>
           <span>{m.source}</span>
           <span style={{ color: "var(--mp-fg-faint)" }}>·</span>
-          <span style={{ fontFamily: "var(--mp-font-mono)" }}>{m.dur}</span>
+          <span style={{ fontFamily: "var(--mp-font-mono)", fontVariantNumeric: "tabular-nums" }}>{m.dur}</span>
           <SLWorkflowChip wf={m.wf}/>
         </div>
       </div>
@@ -355,7 +355,7 @@ const SLRow = ({ m, selected, multiSelect, checked, action }) => {
       {m.status === "processing"
         ? <SLProcessing stage={m.stage} elapsed={m.elapsed}/>
         : <SLStatusPill status={m.status}/>}
-      <span style={{ minWidth: 92, textAlign: "right", fontFamily: "var(--mp-font-mono)", fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-muted)", whiteSpace: "nowrap" }}>{recording ? "now" : m.when}</span>
+      <span style={{ minWidth: 92, textAlign: "right", fontFamily: "var(--mp-font-mono)", fontVariantNumeric: "tabular-nums", fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-muted)", whiteSpace: "nowrap" }}>{recording ? "now" : m.when}</span>
     </div>
   );
 };
@@ -396,7 +396,7 @@ const SLProcessing = ({ stage, elapsed }) => (
       border: "1.5px solid var(--mp-border-faint)", borderTopColor: "var(--mp-signal-500)",
       animation: "slSpin 0.8s linear infinite",
     }}/>
-    <span style={{ fontFamily: "var(--mp-font-mono)", fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-subtle)" }}>{stage} {elapsed}</span>
+    <span style={{ fontFamily: "var(--mp-font-mono)", fontVariantNumeric: "tabular-nums", fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-subtle)" }}>{stage} {elapsed}</span>
   </div>
 );
 
@@ -476,7 +476,7 @@ const SLDetailHeader = ({ m, mode }) => (
     <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-subtle)", flexWrap: "wrap" }}>
       <span>Jun 16, 2026 at 11:02</span>
       <span style={{ color: "var(--mp-fg-faint)" }}>·</span>
-      <span style={{ fontFamily: "var(--mp-font-mono)" }}>{m.dur}</span>
+      <span style={{ fontFamily: "var(--mp-font-mono)", fontVariantNumeric: "tabular-nums" }}>{m.dur}</span>
       <span style={{ color: "var(--mp-fg-faint)" }}>·</span>
       <span style={{ fontFamily: "var(--mp-font-mono)" }}>EN</span>
       <span style={{ color: "var(--mp-fg-faint)" }}>·</span>
@@ -811,7 +811,7 @@ const SLTranscript = () => (
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
               <span style={{ fontSize: "var(--mp-text-sm)", fontWeight: 600, color: SL_SPEAKER[r.sp] }}>{r.name}</span>
-              <span style={{ fontSize: "var(--mp-text-sm)", fontFamily: "var(--mp-font-mono)", color: "var(--mp-fg-faint)" }}>{r.t}</span>
+              <span style={{ fontSize: "var(--mp-text-sm)", fontFamily: "var(--mp-font-mono)", fontVariantNumeric: "tabular-nums", color: "var(--mp-fg-faint)" }}>{r.t}</span>
             </div>
             <div style={{ fontSize: "var(--mp-text-md)", lineHeight: "var(--mp-leading-normal)", marginTop: 1 }}>{r.body}</div>
           </div>
@@ -830,12 +830,12 @@ const SLTranscript = () => (
 const SLPlayback = ({ at, cur, total }) => (
   <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", flexShrink: 0 }}>
     <span style={{ color: "var(--mp-fg-muted)", display: "flex", cursor: "pointer" }}><Icon name="play" size={14}/></span>
-    <span style={{ fontSize: "var(--mp-text-sm)", fontFamily: "var(--mp-font-mono)", color: "var(--mp-fg-muted)", width: 40, textAlign: "right" }}>{cur}</span>
+    <span style={{ fontSize: "var(--mp-text-sm)", fontFamily: "var(--mp-font-mono)", fontVariantNumeric: "tabular-nums", color: "var(--mp-fg-muted)", width: 40, textAlign: "right" }}>{cur}</span>
     <div style={{ flex: 1, height: 4, borderRadius: "var(--mp-radius-full)", background: "var(--mp-ink-200)", position: "relative" }}>
       <div style={{ width: at, height: "100%", borderRadius: "var(--mp-radius-full)", background: "var(--mp-signal-600)" }}/>
       <div style={{ position: "absolute", left: at, top: -5, width: 14, height: 14, marginLeft: -7, borderRadius: "var(--mp-radius-full)", background: "var(--mp-bg-raised)", border: "1px solid var(--mp-signal-600)", boxShadow: "var(--mp-shadow-xs)" }}/>
     </div>
-    <span style={{ fontSize: "var(--mp-text-sm)", fontFamily: "var(--mp-font-mono)", color: "var(--mp-fg-muted)" }}>{total}</span>
+    <span style={{ fontSize: "var(--mp-text-sm)", fontFamily: "var(--mp-font-mono)", fontVariantNumeric: "tabular-nums", color: "var(--mp-fg-muted)" }}>{total}</span>
   </div>
 );
 
@@ -858,9 +858,9 @@ const SLAudio = () => (
     <div style={{ height: 1, background: "var(--mp-border)" }}/>
     <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", flexShrink: 0 }}>
       <span style={{ color: "var(--mp-fg-muted)", display: "flex", cursor: "pointer" }}><Icon name="play" size={14}/></span>
-      <span style={{ fontSize: "var(--mp-text-sm)", fontFamily: "var(--mp-font-mono)", color: "var(--mp-fg-muted)" }}>18:56</span>
+      <span style={{ fontSize: "var(--mp-text-sm)", fontFamily: "var(--mp-font-mono)", fontVariantNumeric: "tabular-nums", color: "var(--mp-fg-muted)" }}>18:56</span>
       <span style={{ color: "var(--mp-fg-faint)" }}>/</span>
-      <span style={{ fontSize: "var(--mp-text-sm)", fontFamily: "var(--mp-font-mono)", color: "var(--mp-fg-muted)" }}>47:21</span>
+      <span style={{ fontSize: "var(--mp-text-sm)", fontFamily: "var(--mp-font-mono)", fontVariantNumeric: "tabular-nums", color: "var(--mp-fg-muted)" }}>47:21</span>
       <div style={{ flex: 1 }}/>
       <SLSegmented options={["Mono", "Stereo"]} selected={1}/>
       <SLFilterChip label="Zoom: Fit"/>
@@ -950,8 +950,8 @@ const SLEmptyLibrary = () => (
       Meetings appear here after you record one. meeting-pipe detects calls in the background, or you can start one yourself.
     </div>
     <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14 }}>
-      <button className="mp-pressable" style={{ height: 28, padding: "0 14px", borderRadius: "var(--mp-radius-full)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "none", background: "var(--mp-signal-fill)", color: "var(--mp-fg-on-signal)", display: "inline-flex", alignItems: "center", gap: 6 }}>
-        <span style={{ width: 8, height: 8, borderRadius: "var(--mp-radius-full)", background: "var(--mp-fg-on-signal)" }}/> Record now
+      <button className="mp-pressable" style={{ height: 28, padding: "0 14px", borderRadius: "var(--mp-radius-full)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "none", background: "var(--mp-record-fill)", color: "var(--mp-record-label)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+        <span style={{ width: 8, height: 8, borderRadius: "var(--mp-radius-full)", background: "var(--mp-record-label)" }}/> Record now
       </button>
       <span style={{ fontSize: "var(--mp-text-sm)", color: "var(--mp-fg-subtle)" }}>or press</span>
       <span className="mp-kbd">⌃⌥M</span>
