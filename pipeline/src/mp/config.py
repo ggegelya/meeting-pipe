@@ -88,10 +88,12 @@ class Summarization(BaseModel):
     #                run-all finalizes the transcript then hands off (the
     #                daemon writes the summary and runs `mp publish`).
     backend: Literal["anthropic", "local", "auto", "apple_intelligence"] = "anthropic"
-    # Default to the 3B-4bit (~2 GB) so first-time local users do not pay
-    # a 7-8 GB download. Power users opt into a larger model in
-    # Preferences -> Pipeline (Recommended = Qwen 14B-4bit, Large = 32B-4bit).
-    local_model: str = "mlx-community/Qwen2.5-3B-Instruct-4bit"
+    # Default to the 7B-4bit (~4.3 GB resident): the engine-comparison sweet
+    # spot (LOCAL6). On par with the 14B on action/decision capture but with
+    # named owners, zero failures over the corpus, ~30% lower latency, and
+    # memory-safe (the 14B OOM'd and hung the Mac). Preferences -> Pipeline
+    # offers Small (3B) / Recommended (7B) / Large (14B).
+    local_model: str = "mlx-community/Qwen2.5-7B-Instruct-4bit"
     local_endpoint: str = "http://127.0.0.1:8765"
     # Local-backend timeouts (LOCAL2/AUD-21). The old hardcoded 120s request
     # window fired before a legitimate large-model generation finished and

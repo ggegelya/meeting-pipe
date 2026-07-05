@@ -89,19 +89,21 @@ skip_above_chars = 80000
 # Backend selection (P2.3). One of:
 #   "anthropic" : current behaviour, requires ANTHROPIC_API_KEY in the Keychain
 #                 (set it in Preferences -> Integrations or via install.sh).
-#   "local"     : on-device MLX (Qwen 14B-4bit by default). No outbound
+#   "local"     : on-device MLX (Qwen 7B-4bit by default). No outbound
 #                 API calls; audio/transcript/summary stay on this Mac.
-#                 First use downloads the model (~9 GB) into HF cache.
+#                 First use downloads the model (~4.3 GB) into HF cache.
 #   "auto"      : try anthropic first, fall back to local on
 #                 network/auth failure.
 # Pair "local" with modes.regulated_mode = true for full zero-egress.
 backend = "anthropic"
-# Default local model is Qwen 3B-4bit (~2 GB on disk, ~10s/meeting on
-# M-series). Switch to Qwen 14B-4bit (~8 GB, slower, better quality) or
-# Qwen 32B-4bit (~18 GB, slowest, best quality) via Preferences ->
-# Pipeline. The daemon pre-fetches the configured model when you flip
-# backend to "local"/"auto" so the first meeting does not wait for HF.
-local_model = "mlx-community/Qwen2.5-3B-Instruct-4bit"
+# Default local model is Qwen 7B-4bit (~4.3 GB on disk, ~30-90s/meeting on
+# M-series): the engine-comparison sweet spot (LOCAL6), memory-safe and on
+# par with the 14B on capture. Switch to Small (Qwen 3B-4bit, ~2 GB, faster,
+# lower quality) or Large (Qwen 14B-4bit, ~8 GB, slower, best quality; wants
+# 24 GB+ RAM) via Preferences -> Pipeline, or paste any HuggingFace MLX repo
+# id. The daemon pre-fetches the configured model when you flip backend to
+# "local"/"auto" so the first meeting does not wait for HF.
+local_model = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 local_endpoint = "http://127.0.0.1:8765"
 # Local-backend timeouts (LOCAL2). `local_startup_timeout_sec` bounds the wait
 # for mlx_lm.server to report healthy; `local_request_timeout_sec` is the base

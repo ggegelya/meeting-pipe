@@ -82,6 +82,10 @@ struct LocalModelPreset {
 
     static let customId = "__custom"
 
+    // Small / Recommended / Large map to 3B / 7B / 14B (LOCAL6). The picker
+    // matches the stored model id against `modelId`, so a config still holding
+    // the dropped 32B id falls through to "Custom" with the id intact rather
+    // than being silently rewritten.
     static let all: [LocalModelPreset] = [
         LocalModelPreset(
             id: "small",
@@ -89,23 +93,23 @@ struct LocalModelPreset {
             modelId: "mlx-community/Qwen2.5-3B-Instruct-4bit",
             diskHint: "~2 GB",
             speedHint: "~10s per meeting",
-            qualityHint: "Fast first run, lower quality. Good default to try local mode."
+            qualityHint: "Fastest, smallest download; lower quality (1 failure over the test corpus)."
         ),
         LocalModelPreset(
             id: "recommended",
-            label: "Recommended (Qwen 14B-4bit)",
-            modelId: "mlx-community/Qwen2.5-14B-Instruct-4bit",
-            diskHint: "~8 GB",
-            speedHint: "~45-130s per meeting",
-            qualityHint: "Better decisions and action item discipline."
+            label: "Recommended (Qwen 7B-4bit)",
+            modelId: "mlx-community/Qwen2.5-7B-Instruct-4bit",
+            diskHint: "~4.3 GB",
+            speedHint: "~30-90s per meeting",
+            qualityHint: "The engine-comparison sweet spot: on par with the 14B on capture, names owners, memory-safe, zero failures."
         ),
         LocalModelPreset(
             id: "large",
-            label: "Large (Qwen 32B-4bit)",
-            modelId: "mlx-community/Qwen2.5-32B-Instruct-4bit",
-            diskHint: "~18 GB",
-            speedHint: "~2-4 min per meeting",
-            qualityHint: "Highest quality of the curated presets. Wants 32 GB+ RAM."
+            label: "Large (Qwen 14B-4bit)",
+            modelId: "mlx-community/Qwen2.5-14B-Instruct-4bit",
+            diskHint: "~8 GB",
+            speedHint: "~45-130s per meeting",
+            qualityHint: "Highest quality of the curated presets, but heavy: wants 24 GB+ RAM (can OOM on 16 GB)."
         ),
     ]
 }

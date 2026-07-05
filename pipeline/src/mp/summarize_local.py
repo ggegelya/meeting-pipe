@@ -55,7 +55,7 @@ from .schemas import MeetingSummary, SUMMARY_TOOL
 
 log = logging.getLogger("mp.summarize_local")
 
-DEFAULT_MODEL = "mlx-community/Qwen2.5-3B-Instruct-4bit"
+DEFAULT_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_STARTUP_TIMEOUT_SEC = 120.0

@@ -117,7 +117,7 @@ final class ConfigStore: ObservableObject {
         self.summarizationSkipAboveChars = summ?["skip_above_chars"]?.int ?? 80000
         self.summarizationBackend = summ?["backend"]?.string ?? "anthropic"
         self.summarizationLocalModel = summ?["local_model"]?.string
-            ?? "mlx-community/Qwen2.5-3B-Instruct-4bit"
+            ?? "mlx-community/Qwen2.5-7B-Instruct-4bit"
         self.summarizationLocalEndpoint = summ?["local_endpoint"]?.string
             ?? "http://127.0.0.1:8765"
         self.summarizationUserLabel = summ?["user_label"]?.string ?? ""
