@@ -70,3 +70,12 @@ runs/
 # and design/.
 .claude/skills/
 .github/skills/
+
+# design-sync (claude.ai/design converter): regenerated locally, never committed.
+# Durable inputs (config, NOTES, docs, fonts, previews, conventions) ARE committed.
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
+design/.ds-entry.jsx

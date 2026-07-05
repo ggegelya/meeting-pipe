@@ -1,0 +1,6 @@
+{
+  "name": "meeting-pipe-design",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Meeting Pipe design system: --mp-* tokens (colors_and_type.css) + the macOS UI kit JSX mockups. Nominal package manifest for design-sync tooling; never npm-installed, no dependencies."
+}
