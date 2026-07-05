@@ -21,7 +21,7 @@ Personal macOS product (single-user, not for sale). Two trees:
 | `daemon/CLAUDE.md` | Auto-loads when you touch Swift. Short Swift-specific gotchas. |
 | `pipeline/CLAUDE.md` | Auto-loads when you touch Python. Short Python-specific gotchas. |
 
-The active backlog lives in [`docs/backlog/`](./docs/backlog/): the highest-numbered `meetingpipe-q<N>-backlog.md` (currently `meetingpipe-q4-backlog.md`; earlier quarters are archived beside it). Task IDs look like `E5` (no `TECH-` prefix; historical code/ADR references keep the old `TECH-` form as provenance). The `/tech-task <ID>` slash command is the codified delegation contract.
+The active backlog lives in [`docs/backlog/`](./docs/backlog/): the highest-numbered `meetingpipe-q<N>-backlog.md` (currently `meetingpipe-q5-backlog.md`; earlier quarters are archived beside it). Task IDs look like `E5` (no `TECH-` prefix; historical code/ADR references keep the old `TECH-` form as provenance). The `/tech-task <ID>` slash command is the codified delegation contract.
 
 ## Verify before declaring done
 
