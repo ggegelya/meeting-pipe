@@ -1,39 +1,37 @@
 import Combine
 import Foundation
 
-/// Observable wrapper around `~/.config/meeting-pipe/secrets.env`. Preferences UI binds to published values; persistence is debounced, atomic, and preserves keys the UI doesn't model. Mode 0600 is enforced on the temp file before the atomic replace so the final file is never visible world-readable, even momentarily.
+/// Observable wrapper over the API tokens in the macOS login Keychain (SEC8). The Preferences UI binds to the
+/// published values; a debounced save writes through the injected `SecretsBackend`. An empty string means
+/// absent, and clearing a field removes the Keychain item. Replaces the former plaintext `secrets.env`
+/// round-trip; the legacy file is migrated once via `migrateEnvFileIfPresent` and then deleted.
 final class SecretsStore: ObservableObject {
-    private let secretsURL: URL
-    private let writeQueue = DispatchQueue(label: "com.meetingpipe.secretsstore.write", qos: .utility)
+    private let backend: SecretsBackend
 
     /// Live values. didSet → debounced save. Empty string means absent.
     @Published var anthropicAPIKey: String { didSet { scheduleSave() } }
     @Published var notionToken: String { didSet { scheduleSave() } }
 
-    /// Fired after a successful disk write. The pipeline launcher re-reads `secrets.env` per-spawn; listeners can also nudge in-memory caches.
+    /// Fired after a successful Keychain write. `App` mirrors the values into the process env so the next
+    /// pipeline spawn + the in-daemon Notion database picker pick them up without a restart.
     let didPersist = PassthroughSubject<Void, Never>()
 
     private var saveTimer: Timer?
-    private var isInitialized: Bool = false
+    private var isInitialized = false
 
-    /// Lines read from disk, in order. Modeled keys are updated in-place; comments and unmodeled keys are left untouched (same round-trip contract as ConfigStore).
-    private var rawLines: [String] = []
+    private static let anthropicAccount = "ANTHROPIC_API_KEY"
+    private static let notionAccount = "NOTION_TOKEN"
 
-    init(secretsURL: URL = Config.secretsPath) {
-        self.secretsURL = secretsURL
-
-        let raw = (try? String(contentsOf: secretsURL, encoding: .utf8)) ?? ""
-        self.rawLines = raw.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        let parsed = Self.parse(lines: self.rawLines)
-        self.anthropicAPIKey = parsed["ANTHROPIC_API_KEY"] ?? ""
-        self.notionToken = parsed["NOTION_TOKEN"] ?? ""
+    init(backend: SecretsBackend = KeychainBackend()) {
+        self.backend = backend
+        self.anthropicAPIKey = backend.value(for: Self.anthropicAccount) ?? ""
+        self.notionToken = backend.value(for: Self.notionAccount) ?? ""
         self.isInitialized = true
     }
 
     /// Force an immediate save. Used by Apply buttons + tests.
     func saveNow() throws {
-        writeBack()
-        try persistToDisk()
+        try persist()
     }
 
     private func scheduleSave() {
@@ -45,84 +43,64 @@ final class SecretsStore: ObservableObject {
         saveTimer?.invalidate()
         saveTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
             guard let self = self else { return }
-            self.writeBack()
-            self.writeQueue.async {
-                do {
-                    try self.persistToDisk()
-                    DispatchQueue.main.async { self.didPersist.send() }
-                } catch {
-                    Log.main.error("SecretsStore persist failed: \(String(describing: error))")
-                }
+            do {
+                try self.persist()
+                self.didPersist.send()
+            } catch {
+                Log.main.error("SecretsStore persist failed: \(String(describing: error))")
             }
         }
     }
 
-    /// Project published values back into `rawLines` (upsert KEY=VALUE). Visible to tests for round-trip verification without disk I/O.
-    func writeBack() {
-        rawLines = Self.upsert(lines: rawLines, key: "ANTHROPIC_API_KEY", value: anthropicAPIKey)
-        rawLines = Self.upsert(lines: rawLines, key: "NOTION_TOKEN", value: notionToken)
+    private func persist() throws {
+        try write(anthropicAPIKey, to: Self.anthropicAccount)
+        try write(notionToken, to: Self.notionAccount)
     }
 
-    private func persistToDisk() throws {
-        let body = rawLines.joined(separator: "\n")
-        // Ensure the file ends with a newline (POSIX convention; `set -a; . secrets.env; set +a` requires it).
-        let normalized = body.hasSuffix("\n") ? body : body + "\n"
-        let dir = secretsURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let tmp = secretsURL.appendingPathExtension("writing")
-        try normalized.data(using: .utf8)?.write(to: tmp, options: .atomic)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: tmp.path
-        )
-        if FileManager.default.fileExists(atPath: secretsURL.path) {
-            _ = try FileManager.default.replaceItemAt(secretsURL, withItemAt: tmp)
+    private func write(_ value: String, to account: String) throws {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            backend.remove(account)
         } else {
-            try FileManager.default.moveItem(at: tmp, to: secretsURL)
+            try backend.set(trimmed, for: account)
         }
-        // replaceItemAt preserves the destination's existing perms, so force 0600 again in case the file was created with the wrong mode (e.g. by hand).
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: secretsURL.path
-        )
     }
 
-    // MARK: - Parsing helpers
+    // MARK: - Migration off the legacy plaintext secrets.env (SEC8)
 
-    private static func parse(lines: [String]) -> [String: String] {
-        var out: [String: String] = [:]
-        for raw in lines {
+    /// One-time move of a legacy `secrets.env` into the Keychain, then delete the file. Idempotent: a key
+    /// already present in the Keychain is not overwritten, and a missing file is a no-op. Runs at daemon
+    /// startup so an update-without-reinstall still migrates; `scripts/install.sh` does the same at install.
+    @discardableResult
+    static func migrateEnvFileIfPresent(
+        at url: URL = Config.secretsPath,
+        backend: SecretsBackend = KeychainBackend()
+    ) -> Bool {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        for (key, value) in parse(text) where !value.isEmpty {
+            guard KeychainSecrets.managedKeys.contains(key), backend.value(for: key) == nil else { continue }
+            try? backend.set(value, for: key)
+        }
+        try? FileManager.default.removeItem(at: url)
+        Log.writeLine("main", "migrated secrets.env into the Keychain and removed the file (SEC8)")
+        return true
+    }
+
+    /// Parse KEY=VALUE lines (comments / blanks skipped, surrounding quotes stripped), preserving order.
+    /// Exposed for the migration path + tests.
+    static func parse(_ text: String) -> [(key: String, value: String)] {
+        var out: [(String, String)] = []
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.isEmpty || line.hasPrefix("#") { continue }
             guard let eq = line.firstIndex(of: "=") else { continue }
             let key = String(line[..<eq]).trimmingCharacters(in: .whitespaces)
-            var value = String(line[line.index(after: eq)...])
+            var value = String(line[line.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
             if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
                 value = String(value.dropFirst().dropLast())
             }
-            out[key] = value
+            out.append((key, value))
         }
         return out
-    }
-
-    /// Replace the first KEY= line with the new value, or append. Comments and other keys are left untouched.
-    static func upsert(lines: [String], key: String, value: String) -> [String] {
-        var copy = lines
-        let prefix = "\(key)="
-        for i in copy.indices {
-            let trimmed = copy[i].trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix(prefix) {
-                copy[i] = "\(key)=\(value)"
-                return copy
-            }
-            // `KEY = value` (with spaces) - uncommon but tolerate it.
-            if let eq = trimmed.firstIndex(of: "="),
-               trimmed[..<eq].trimmingCharacters(in: .whitespaces) == key {
-                copy[i] = "\(key)=\(value)"
-                return copy
-            }
-        }
-        copy.append("\(key)=\(value)")
-        return copy
     }
 }

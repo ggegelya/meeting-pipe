@@ -166,7 +166,7 @@ struct PipelineSectionView: View {
                 Text("On-device Apple Intelligence (macOS 26+). No outbound API calls; the system model produces the summary.")
             }
         default:
-            Text("Calls api.anthropic.com. Requires ANTHROPIC_API_KEY in secrets.env.")
+            Text("Calls api.anthropic.com. Requires an Anthropic API key (set it under Integrations).")
         }
     }
 

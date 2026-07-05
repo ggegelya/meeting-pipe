@@ -9,7 +9,7 @@ struct IntegrationsSectionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsSectionHeader("Integrations",
-                caption: "Credentials for outbound services. Stored in ~/.config/meeting-pipe/secrets.env (mode 0600).") {
+                caption: "Credentials for outbound services. Stored securely in your macOS Keychain.") {
                 Button {
                     onRunDoctor()
                 } label: {

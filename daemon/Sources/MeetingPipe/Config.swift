@@ -124,21 +124,15 @@ struct Config {
     }
 }
 
-/// Reads ~/.config/meeting-pipe/secrets.env (KEY=VALUE per line) into the process env so pipeline subprocesses inherit ANTHROPIC_API_KEY / NOTION_TOKEN / HF_TOKEN.
+/// Seeds the process env with the managed Keychain tokens (ANTHROPIC_API_KEY / NOTION_TOKEN / HF_TOKEN) so
+/// pipeline subprocesses inherit them and the in-daemon Notion database picker can read NOTION_TOKEN (SEC8).
+/// Reads through the same `/usr/bin/security` path every tree uses.
 enum Secrets {
-    static func loadIfPresent() {
-        let url = Config.secretsPath
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return }
-        for line in text.split(separator: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
-            guard let eq = trimmed.firstIndex(of: "=") else { continue }
-            let key = String(trimmed[..<eq])
-            var value = String(trimmed[trimmed.index(after: eq)...])
-            if value.hasPrefix("\"") && value.hasSuffix("\"") && value.count >= 2 {
-                value = String(value.dropFirst().dropLast())
+    static func loadIfPresent(backend: SecretsBackend = KeychainBackend()) {
+        for key in KeychainSecrets.managedKeys {
+            if let value = backend.value(for: key), !value.isEmpty {
+                setenv(key, value, 1)
             }
-            setenv(key, value, 1)
         }
     }
 }

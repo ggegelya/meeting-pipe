@@ -65,6 +65,24 @@ Pipeline-side: `test_<module>.py` next to the module under `pipeline/tests/`.
 
 Don't add packages without asking. The dependency surface is deliberately small. Same for tools (don't pull in a new linter, formatter, or test runner).
 
+### Secrets (macOS Keychain, SEC8)
+
+The API tokens (`ANTHROPIC_API_KEY`, `NOTION_TOKEN`, plus optional `HF_TOKEN`) live in the macOS login Keychain, not a file. Three trees touch the same items and must agree on the naming:
+
+- Swift daemon: `KeychainSecrets` / `SecretsStore` (reads at startup + on each Preferences save).
+- Python pipeline: `mp.config.load_secrets` / `_keychain_get`.
+- `scripts/install.sh` (prompt + migrate a legacy `secrets.env`) and `scripts/uninstall.sh --purge` (delete).
+
+Contract: generic-password items, **service `com.meetingpipe.daemon`**, **account = the env-var name**. Every tree shells out to `/usr/bin/security` (never the native `SecItem` API), so a single stable accessor owns the item ACL: no per-access Keychain prompt, no per-rebuild cdhash churn.
+
+```sh
+security add-generic-password -U -s com.meetingpipe.daemon -a ANTHROPIC_API_KEY -w <value>
+security find-generic-password    -s com.meetingpipe.daemon -a ANTHROPIC_API_KEY -w
+security delete-generic-password  -s com.meetingpipe.daemon -a ANTHROPIC_API_KEY
+```
+
+The daemon seeds the tokens into its process env at launch + on each Preferences save, so pipeline subprocesses inherit them with no per-spawn secret read; a hand-run `mp` reads the Keychain directly. The pipeline egress guard stays the authoritative zero-egress backstop, so a token stripped from a subprocess env for a regulated/NDA run and re-read here still cannot egress.
+
 ---
 
 ## Swift — `daemon/`

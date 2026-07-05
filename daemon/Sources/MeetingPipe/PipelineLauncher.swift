@@ -519,8 +519,8 @@ final class PipelineLauncher: PipelineDriver {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: mpPath.shell)
         p.arguments = mpPath.args + args
-        // Re-read secrets.env on every launch so token rotations take effect without a daemon restart.
-        // TECH-SEC5: withhold cloud tokens this run is not allowed to use.
+        // Inherit the daemon env (which carries the Keychain-sourced tokens, refreshed on each Preferences
+        // save). TECH-SEC5: withhold cloud tokens this run is not allowed to use.
         let policy = Self.cloudSecretPolicy(for: meeting)
         var env = Self.freshEnvironment(
             stripAnthropicKey: policy.stripAnthropic, stripNotionToken: policy.stripNotion
@@ -628,43 +628,20 @@ final class PipelineLauncher: PipelineDriver {
         var isSet: Bool { lock.lock(); defer { lock.unlock() }; return flag }
     }
 
-    /// Build a process environment with a freshly-read secrets file overlaid on the daemon's current environment. Exposed for tests.
+    /// Build a pipeline subprocess environment from the daemon's current env and apply the SEC5 strip policy.
+    /// The daemon's env already carries the managed tokens (SEC8: seeded from the Keychain at startup and on
+    /// each Preferences save), so there is no per-spawn secrets read anymore. Exposed for tests.
     static func freshEnvironment(
-        secretsURL: URL? = nil,
         baseEnvironment: [String: String]? = nil,
         stripAnthropicKey: Bool = false,
         stripNotionToken: Bool = false
     ) -> [String: String] {
         var env = baseEnvironment ?? ProcessInfo.processInfo.environment
-        let url = secretsURL ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/meeting-pipe/secrets.env")
-        // TECH-SEC1: warn (do not refuse) when the secrets file is readable by
-        // group or other. Only the SecretsStore writer enforces 0600; a
-        // hand-created file may be 0644. Refusing would brick the pipeline.
-        if Self.secretsFileIsTooOpen(at: url) {
-            Log.main.warning("secrets.env at \(url.path, privacy: .public) is group/other-readable; run: chmod 600 \(url.path, privacy: .public)")
-        }
-        if let text = try? String(contentsOf: url, encoding: .utf8) {
-            for raw in text.split(separator: "\n") {
-                let line = raw.trimmingCharacters(in: .whitespaces)
-                if line.isEmpty || line.hasPrefix("#") { continue }
-                guard let eq = line.firstIndex(of: "=") else { continue }
-                let key = String(line[..<eq])
-                var value = String(line[line.index(after: eq)...])
-                if value.hasPrefix("\"") && value.hasSuffix("\"") && value.count >= 2 {
-                    value = String(value.dropFirst().dropLast())
-                }
-                env[key] = value
-            }
-        }
-        // TECH-SEC5: withhold cloud tokens the resolved run must not use, so a
-        // consumer that reads only the process env fails closed (missing
-        // credential) instead of egressing. NOTE: this strips the daemon's
-        // inherited env only; the Python child re-sources secrets.env from disk
-        // via load_secrets(), so a token written there reappears in os.environ.
-        // The egress guard (TECH-SEC3), armed from the resolved config inside the
-        // subprocess, is the authoritative network-layer backstop; this strip is
-        // defense-in-depth.
+        // TECH-SEC5: withhold cloud tokens the resolved run must not use, so a consumer that reads only the
+        // process env fails closed (missing credential) instead of egressing. NOTE: the Python child re-reads
+        // the token from the Keychain via load_secrets(), so a stripped token reappears in its os.environ; the
+        // egress guard (TECH-SEC3), armed from the resolved config inside the subprocess, is the authoritative
+        // network-layer backstop, and this strip is defense-in-depth.
         if stripAnthropicKey { env.removeValue(forKey: "ANTHROPIC_API_KEY") }
         if stripNotionToken { env.removeValue(forKey: "NOTION_TOKEN") }
         return env
@@ -707,16 +684,6 @@ final class PipelineLauncher: PipelineDriver {
         let backend = regulated ? "local" : (sidecarBackend ?? globalBackend)
         let onDeviceSummary = regulated || nda || backend == "local" || backend == "apple_intelligence"
         return (stripAnthropic: onDeviceSummary, stripNotion: regulated || nda)
-    }
-
-    /// True when `url` grants any group/other permission (more permissive than 0600).
-    /// The SecretsStore writer enforces 0600; this catches a hand-created file. (TECH-SEC1)
-    static func secretsFileIsTooOpen(at url: URL) -> Bool {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let perms = (attrs[.posixPermissions] as? NSNumber)?.uint16Value else {
-            return false
-        }
-        return perms & 0o077 != 0
     }
 
     /// Resolution order: prebuilt venv -> `uv run mp` from the repo's pipeline dir -> bare `mp` on PATH.

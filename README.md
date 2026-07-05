@@ -96,7 +96,7 @@ The installer will:
 1. Verify Homebrew, install `ffmpeg` and `uv` if missing. (`ffmpeg` is used by the Python pipeline for audio loading; the daemon itself records natively via ScreenCaptureKit — no subprocess.)
 2. Build the Swift menu-bar daemon (`swift build -c release`), generate an `AppIcon.icns` from SF Symbols, wrap the binary in a `.app` bundle, and `ditto` it into `~/Applications/MeetingPipe.app` so Spotlight can launch it.
 3. Install the Python pipeline into `~/.local/share/meeting-pipe/venv/`.
-4. Stage `~/.config/meeting-pipe/config.toml` and `secrets.env` (mode 0600).
+4. Stage `~/.config/meeting-pipe/config.toml`, and prompt for your API keys (stored in the macOS Keychain, not a plaintext file).
 5. Install the LaunchAgent so the daemon starts at login.
 
 **First launch & Gatekeeper.** The app is unsigned (no Apple Developer subscription required for personal use). On first launch from Spotlight, macOS shows an "unverified developer" dialog. Right-click the app icon in Finder → Open, confirm once, and macOS remembers the decision. The LaunchAgent path runs the binary directly so it's not subject to that dialog after the first manual approval.
@@ -107,16 +107,16 @@ The installer will:
 
 The installer can't do these for you:
 
-1. **Fill in secrets** at `~/.config/meeting-pipe/secrets.env`:
+1. **API keys.** The installer prompts for your Anthropic and Notion tokens and stores them in the macOS Keychain, not a plaintext file (SEC8). Skipped the prompt, or need to change a key? Set them any time in **Preferences -> Integrations**, or from a terminal:
 
-   ```env
-   ANTHROPIC_API_KEY=sk-ant-...
-   NOTION_TOKEN=ntn_...
+   ```sh
+   security add-generic-password -U -s com.meetingpipe.daemon -a ANTHROPIC_API_KEY -w sk-ant-...
+   security add-generic-password -U -s com.meetingpipe.daemon -a NOTION_TOKEN -w ntn_...
    ```
 
-   You can rotate these any time — the daemon re-reads `secrets.env` every time it spawns the pipeline, so a new value takes effect on the next recording. No restart needed.
+   A change takes effect on the next recording, no restart needed. A hand-run `mp` (without the daemon) reads the same Keychain items.
 
-   To verify: `~/.local/share/meeting-pipe/venv/bin/mp doctor` — pings each API, validates the ML runtimes, and tells you which secret is wrong.
+   To verify: `~/.local/share/meeting-pipe/venv/bin/mp doctor`, which pings each API, validates the ML runtimes, and tells you which secret is wrong.
 
 2. **Configure** `~/.config/meeting-pipe/config.toml`:
    - Set `notion.database_id` to your Meetings database ID (the 32-char string in the database URL).

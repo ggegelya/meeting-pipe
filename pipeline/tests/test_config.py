@@ -1,36 +1,41 @@
-"""Tests for config secrets handling (TECH-SEC1) and the effective-config
+"""Tests for config secrets handling (SEC8 Keychain) and the effective-config
 chokepoint (TECH-ARCH1)."""
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 from mp.config import (
     Config,
-    _secrets_too_open,
     effective_backend,
     effective_sinks,
+    load_secrets,
 )
 
 
-def test_secrets_too_open_flags_group_or_other_readable(tmp_path: Path) -> None:
-    p = tmp_path / "secrets.env"
-    p.write_text("NOTION_TOKEN=x\n", encoding="utf-8")
-    os.chmod(p, 0o644)
-    assert _secrets_too_open(p) is True
-    os.chmod(p, 0o640)  # group-read only is still too open
-    assert _secrets_too_open(p) is True
+# --- SEC8: load_secrets reads the managed tokens from the Keychain (via an injected reader) ---
 
 
-def test_secrets_0600_is_not_too_open(tmp_path: Path) -> None:
-    p = tmp_path / "secrets.env"
-    p.write_text("NOTION_TOKEN=x\n", encoding="utf-8")
-    os.chmod(p, 0o600)
-    assert _secrets_too_open(p) is False
+def test_load_secrets_fills_missing_from_keychain(monkeypatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    kc = {"ANTHROPIC_API_KEY": "sk-kc", "NOTION_TOKEN": "ntn-kc"}
+    load_secrets(reader=lambda account: kc.get(account))
+    assert os.environ["ANTHROPIC_API_KEY"] == "sk-kc"
+    assert os.environ["NOTION_TOKEN"] == "ntn-kc"
 
 
-def test_secrets_missing_file_is_not_flagged(tmp_path: Path) -> None:
-    assert _secrets_too_open(tmp_path / "nope.env") is False
+def test_load_secrets_keeps_a_real_env_value(monkeypatch) -> None:
+    # A token the daemon already injected into the subprocess env must not be clobbered.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-injected")
+    load_secrets(reader=lambda account: "sk-should-not-win")
+    assert os.environ["ANTHROPIC_API_KEY"] == "sk-injected"
+
+
+def test_load_secrets_treats_empty_env_as_missing(monkeypatch) -> None:
+    # Claude Code exports ANTHROPIC_API_KEY="" (empty); the Keychain value must still win.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    load_secrets(reader=lambda account: "sk-kc" if account == "ANTHROPIC_API_KEY" else None)
+    assert os.environ["ANTHROPIC_API_KEY"] == "sk-kc"
 
 
 # --- TECH-ARCH1: effective_backend / effective_sinks chokepoint ---

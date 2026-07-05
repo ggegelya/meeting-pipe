@@ -5,7 +5,6 @@ which is fine because both are read-only consumers — config is owned by the us
 """
 from __future__ import annotations
 
-import logging
 import os
 import sys
 import tomllib
@@ -14,15 +13,18 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-log = logging.getLogger("mp.config")
-
 
 def _expand(p: str) -> Path:
     return Path(os.path.expanduser(p))
 
 
 CONFIG_PATH = _expand("~/.config/meeting-pipe/config.toml")
-SECRETS_PATH = _expand("~/.config/meeting-pipe/secrets.env")
+
+# SEC8: API tokens live in the macOS login Keychain, not a plaintext file. The daemon, this pipeline, and
+# scripts/install.sh all read/write the same generic-password items through /usr/bin/security. Keep the
+# service + managed-key names in sync with KeychainSecrets.swift and install.sh.
+KEYCHAIN_SERVICE = "com.meetingpipe.daemon"
+MANAGED_SECRET_KEYS = ("ANTHROPIC_API_KEY", "NOTION_TOKEN", "HF_TOKEN")
 
 
 class Recording(BaseModel):
@@ -238,49 +240,40 @@ def effective_sinks(cfg: Config) -> list[str]:
     return list(cfg.output.sinks)
 
 
-def _secrets_too_open(path: Path) -> bool:
-    """True when `path` grants any group/other permission (more permissive than
-    0600). Tokens in a world/group-readable file are exposed to other local
-    users; the writer enforces 0600 but a hand-created file may not. (TECH-SEC1)"""
+def _keychain_get(account: str, service: str = KEYCHAIN_SERVICE) -> str | None:
+    """Read a token from the macOS login Keychain via /usr/bin/security. None if absent/unreadable."""
+    import subprocess
     try:
-        return bool(path.stat().st_mode & 0o077)
-    except OSError:
-        return False
-
-
-def load_secrets(path: Path = SECRETS_PATH) -> None:
-    """Source ~/.config/meeting-pipe/secrets.env into os.environ.
-
-    Daemon does this in Swift; Python does it independently so `mp` works
-    when run by hand without the daemon.
-
-    The file is authoritative: an entry here overrides whatever the parent
-    shell happened to export. setdefault was the wrong API — if the shell
-    has e.g. ANTHROPIC_API_KEY="" exported (Claude Code does this), the
-    real value in this file would be ignored and downstream `require_env`
-    would fail with a confusing "missing" error even though the file is
-    populated correctly.
-    """
-    if not path.exists():
-        return
-    # TECH-SEC1: warn (do not refuse) when the secrets file is readable by group
-    # or other. Only the writer enforces 0600 today; a hand-created file is 0644.
-    if _secrets_too_open(path):
-        log.warning(
-            "%s is group/other-readable; your API tokens are exposed. Run: chmod 600 %s",
-            path, path,
+        out = subprocess.run(
+            ["/usr/bin/security", "find-generic-password", "-s", service, "-a", account, "-w"],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
-    for line in path.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if not s or s.startswith("#"):
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    val = out.stdout.strip()
+    return val or None
+
+
+def load_secrets(reader=_keychain_get) -> None:
+    """Populate os.environ with the managed API tokens from the macOS Keychain (SEC8).
+
+    Daemon does this in Swift and injects the tokens into the subprocess env; Python fills any that are
+    still missing or empty (a hand-run `mp` without the daemon, or a shell that exported an empty string,
+    which Claude Code does) from the Keychain, treating "" as absent so the real value wins.
+
+    A token the daemon deliberately withheld for a zero-egress run may be refilled here, exactly as the old
+    secrets.env re-read did; the pipeline egress guard (TECH-SEC3) is the authoritative network-layer backstop.
+    """
+    for key in MANAGED_SECRET_KEYS:
+        if os.environ.get(key):
             continue
-        if "=" not in s:
-            continue
-        k, v = s.split("=", 1)
-        v = v.strip()
-        if len(v) >= 2 and v[0] == v[-1] == '"':
-            v = v[1:-1]
-        os.environ[k.strip()] = v
+        val = reader(key)
+        if val:
+            os.environ[key] = val
 
 
 def require_env(name: str) -> str:
@@ -288,7 +281,9 @@ def require_env(name: str) -> str:
     val = os.environ.get(name)
     if not val:
         sys.stderr.write(
-            f"ERROR: ${name} is not set. Add it to {SECRETS_PATH} (mode 0600) or export it.\n"
+            f"ERROR: ${name} is not set. Set it in the daemon's Preferences, re-run scripts/install.sh, "
+            f"or add it to the Keychain:\n"
+            f"  security add-generic-password -U -s {KEYCHAIN_SERVICE} -a {name} -w <value>\n"
         )
         sys.exit(2)
     return val

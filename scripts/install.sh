@@ -276,18 +276,52 @@ if [[ ! -f "$CONFIG_DIR/config.toml" ]]; then
     cp "$REPO_ROOT/config.example.toml" "$CONFIG_DIR/config.toml"
     say "Staged $CONFIG_DIR/config.toml — edit before first use"
 fi
-if [[ ! -f "$CONFIG_DIR/secrets.env" ]]; then
-    cat >"$CONFIG_DIR/secrets.env" <<'EOF'
-# Required secrets for meeting-pipe.
-ANTHROPIC_API_KEY=
-NOTION_TOKEN=
-# Optional. Only needed if you opt back into a pyannote-token workflow.
-# The default FluidAudio pipeline does not touch Hugging Face for auth.
-HF_TOKEN=
-EOF
-    chmod 600 "$CONFIG_DIR/secrets.env"
-    say "Created $CONFIG_DIR/secrets.env (mode 0600). Fill in keys."
+# 5b. API tokens -> macOS Keychain (SEC8) ---------------------------------
+#
+# Tokens live in the login Keychain, not a plaintext file. install.sh, the
+# daemon, and the Python pipeline all read/write the same generic-password
+# items through /usr/bin/security, so a single stable accessor means no
+# per-access Keychain prompt. Migrate a legacy secrets.env if one exists,
+# then prompt for any required token still missing.
+KEYCHAIN_SERVICE="com.meetingpipe.daemon"
+kc_get() { security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$1" -w 2>/dev/null; }
+kc_set() { security add-generic-password -U -s "$KEYCHAIN_SERVICE" -a "$1" -w "$2" >/dev/null 2>&1; }
+
+LEGACY_SECRETS="$CONFIG_DIR/secrets.env"
+if [[ -f "$LEGACY_SECRETS" ]]; then
+    say "Migrating $LEGACY_SECRETS into the Keychain"
+    while IFS='=' read -r raw_key raw_val; do
+        key="${raw_key//[[:space:]]/}"
+        [[ -z "$key" || "$key" == \#* ]] && continue
+        val="${raw_val#\"}"; val="${val%\"}"
+        case "$key" in
+            ANTHROPIC_API_KEY|NOTION_TOKEN|HF_TOKEN)
+                if [[ -n "$val" && -z "$(kc_get "$key")" ]]; then
+                    kc_set "$key" "$val" && say "  migrated $key"
+                fi
+                ;;
+        esac
+    done < "$LEGACY_SECRETS"
+    rm -f "$LEGACY_SECRETS"
+    say "Removed $LEGACY_SECRETS (tokens now in the Keychain)."
 fi
+
+for key in ANTHROPIC_API_KEY NOTION_TOKEN; do
+    if [[ -n "$(kc_get "$key")" ]]; then
+        say "$key already in the Keychain."
+    elif [[ -t 0 ]]; then
+        printf '   Enter %s (blank to skip, set later in Preferences): ' "$key"
+        read -rs val || val=""
+        echo
+        if [[ -n "$val" ]]; then
+            kc_set "$key" "$val" && say "Stored $key in the Keychain."
+        else
+            warn "$key left unset; add it in Preferences -> Integrations or re-run install.sh."
+        fi
+    else
+        warn "$key not set and no TTY to prompt; set it in Preferences -> Integrations."
+    fi
+done
 
 # 6. LaunchAgent -----------------------------------------------------------
 
@@ -348,7 +382,8 @@ cat <<EOF
 ✓ Install complete.
 
 Next steps:
-  1. Edit $CONFIG_DIR/secrets.env with your API keys.
+  1. API keys are stored in your macOS Keychain (you were prompted above).
+     Change them any time in Preferences -> Integrations, or re-run this script.
   2. Edit $CONFIG_DIR/config.toml — particularly notion.database_id.
   3. Grant macOS permissions when prompted:
        Microphone (records your voice via the system default input),

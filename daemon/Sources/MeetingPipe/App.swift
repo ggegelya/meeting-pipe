@@ -5,9 +5,15 @@ import Combine
 @main
 final class App {
     static func main() {
+        let args = CommandLine.arguments
+        // The long-lived daemon (not the one-shot CLI subcommands) migrates a legacy plaintext secrets.env
+        // into the Keychain once (SEC8), before seeding the process env from it.
+        let isDaemon = !(args.count > 1 && (args[1] == "doctor" || args[1] == "prefetch-models"))
+        if isDaemon {
+            SecretsStore.migrateEnvFileIfPresent()
+        }
         Secrets.loadIfPresent()
         // CLI subcommands intercept before NSApplication boots so the menu-bar path stays separate from one-shot diagnostic runs.
-        let args = CommandLine.arguments
         if args.count > 1, args[1] == "doctor" {
             exit(DoctorCommand.run())
         }

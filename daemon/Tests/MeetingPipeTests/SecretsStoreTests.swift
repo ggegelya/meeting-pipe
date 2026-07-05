@@ -1,15 +1,23 @@
 import XCTest
 @testable import MeetingPipe
 
-/// SecretsStore mirrors ConfigStore but for the shell-style secrets.env
-/// file. Two invariants need protection:
+/// SecretsStore now backs the API tokens with the macOS Keychain (SEC8, subsumes SEC1). Two things need
+/// protection:
 ///
-///   1. Mode 0600 on every write — these are API keys; world-readable
-///      would be a leak on multi-user systems.
-///   2. Preserve unknown keys — the file may have entries (HF_TOKEN,
-///      user-added keys, comments) the UI doesn't model. Editing
-///      ANTHROPIC_API_KEY through the UI must NOT strip them.
+///   1. The published values round-trip through the injected backend, and clearing a field removes the item.
+///   2. The one-time migration off the legacy plaintext secrets.env moves only the managed keys, never
+///      overwrites a value already in the Keychain, and deletes the file afterward.
+///
+/// An in-memory `SecretsBackend` stands in for the real Keychain so the suite never shells out to `security`.
 final class SecretsStoreTests: XCTestCase {
+
+    private final class InMemorySecretsBackend: SecretsBackend {
+        private(set) var store: [String: String]
+        init(_ initial: [String: String] = [:]) { self.store = initial }
+        func value(for account: String) -> String? { store[account] }
+        func set(_ value: String, for account: String) throws { store[account] = value }
+        func remove(_ account: String) { store.removeValue(forKey: account) }
+    }
 
     private func makeTempSecretsURL() throws -> URL {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -18,116 +26,120 @@ final class SecretsStoreTests: XCTestCase {
         return dir.appendingPathComponent("secrets.env")
     }
 
-    func test_loads_defaults_when_file_missing() {
-        let url = (try? makeTempSecretsURL())!
-        // Don't create the file.
-        let store = SecretsStore(secretsURL: url)
+    // MARK: - Store round-trip
+
+    func test_defaults_empty_when_backend_empty() {
+        let store = SecretsStore(backend: InMemorySecretsBackend())
         XCTAssertEqual(store.anthropicAPIKey, "")
         XCTAssertEqual(store.notionToken, "")
     }
 
-    func test_round_trip_persists_changes() throws {
-        let url = try makeTempSecretsURL()
-        try """
-        ANTHROPIC_API_KEY=sk-old
-        NOTION_TOKEN=ntn-old
-        HF_TOKEN=hf_x
-        """.write(to: url, atomically: true, encoding: .utf8)
+    func test_loads_values_from_backend() {
+        let backend = InMemorySecretsBackend(["ANTHROPIC_API_KEY": "sk-x", "NOTION_TOKEN": "ntn-y"])
+        let store = SecretsStore(backend: backend)
+        XCTAssertEqual(store.anthropicAPIKey, "sk-x")
+        XCTAssertEqual(store.notionToken, "ntn-y")
+    }
 
-        let store = SecretsStore(secretsURL: url)
-        XCTAssertEqual(store.anthropicAPIKey, "sk-old")
-        XCTAssertEqual(store.notionToken, "ntn-old")
-
+    func test_save_writes_through_to_backend() throws {
+        let backend = InMemorySecretsBackend()
+        let store = SecretsStore(backend: backend)
         store.anthropicAPIKey = "sk-new"
         store.notionToken = "ntn-new"
         try store.saveNow()
-
-        let raw = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(raw.contains("ANTHROPIC_API_KEY=sk-new"))
-        XCTAssertTrue(raw.contains("NOTION_TOKEN=ntn-new"))
-        // The unknown key must survive — that's the whole point of
-        // round-tripping rawLines instead of regenerating from scratch.
-        XCTAssertTrue(raw.contains("HF_TOKEN=hf_x"))
+        XCTAssertEqual(backend.value(for: "ANTHROPIC_API_KEY"), "sk-new")
+        XCTAssertEqual(backend.value(for: "NOTION_TOKEN"), "ntn-new")
     }
 
-    func test_preserves_comments_and_blank_lines() throws {
+    func test_clearing_a_value_removes_the_item() throws {
+        // Blanking a field in Preferences should delete the Keychain item, not store an empty string.
+        let backend = InMemorySecretsBackend(["ANTHROPIC_API_KEY": "sk-old", "NOTION_TOKEN": "ntn-keep"])
+        let store = SecretsStore(backend: backend)
+        store.anthropicAPIKey = ""
+        try store.saveNow()
+        XCTAssertNil(backend.value(for: "ANTHROPIC_API_KEY"))
+        XCTAssertEqual(backend.value(for: "NOTION_TOKEN"), "ntn-keep")
+    }
+
+    func test_whitespace_only_value_is_treated_as_absent() throws {
+        let backend = InMemorySecretsBackend(["ANTHROPIC_API_KEY": "sk-old"])
+        let store = SecretsStore(backend: backend)
+        store.anthropicAPIKey = "   "
+        try store.saveNow()
+        XCTAssertNil(backend.value(for: "ANTHROPIC_API_KEY"))
+    }
+
+    // MARK: - Legacy secrets.env migration (SEC8)
+
+    func test_migration_moves_managed_keys_and_deletes_file() throws {
         let url = try makeTempSecretsURL()
         try """
-        # Required secrets for meeting-pipe.
-        ANTHROPIC_API_KEY=
-
-        NOTION_TOKEN=
-        # Optional below.
-        HF_TOKEN=
+        ANTHROPIC_API_KEY=sk-a
+        NOTION_TOKEN=ntn-b
+        HF_TOKEN=hf-c
+        # a comment
+        UNMANAGED=whatever
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = SecretsStore(secretsURL: url)
-        store.anthropicAPIKey = "sk-test"
-        try store.saveNow()
+        let backend = InMemorySecretsBackend()
+        XCTAssertTrue(SecretsStore.migrateEnvFileIfPresent(at: url, backend: backend))
 
-        let raw = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(raw.contains("# Required secrets for meeting-pipe."))
-        XCTAssertTrue(raw.contains("# Optional below."))
-        XCTAssertTrue(raw.contains("HF_TOKEN="))
+        XCTAssertEqual(backend.value(for: "ANTHROPIC_API_KEY"), "sk-a")
+        XCTAssertEqual(backend.value(for: "NOTION_TOKEN"), "ntn-b")
+        XCTAssertEqual(backend.value(for: "HF_TOKEN"), "hf-c")
+        // Only the managed keys move; a user-added key is not silently absorbed.
+        XCTAssertNil(backend.value(for: "UNMANAGED"))
+        // The plaintext file is gone once migrated.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 
-    func test_persisted_file_is_mode_0600() throws {
+    func test_migration_does_not_overwrite_existing_keychain_value() throws {
         let url = try makeTempSecretsURL()
-        let store = SecretsStore(secretsURL: url)
-        store.anthropicAPIKey = "sk-secret"
-        try store.saveNow()
+        try "ANTHROPIC_API_KEY=sk-from-file\n".write(to: url, atomically: true, encoding: .utf8)
+        let backend = InMemorySecretsBackend(["ANTHROPIC_API_KEY": "sk-already-in-keychain"])
 
-        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
-        let mode = (attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0
-        XCTAssertEqual(mode & 0o777, 0o600,
-                       "secrets.env must be mode 0600; got 0o\(String(mode & 0o777, radix: 8))")
+        _ = SecretsStore.migrateEnvFileIfPresent(at: url, backend: backend)
+
+        XCTAssertEqual(backend.value(for: "ANTHROPIC_API_KEY"), "sk-already-in-keychain")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 
-    func test_persisted_file_is_mode_0600_when_replacing_existing() throws {
+    func test_migration_skips_empty_values() throws {
         let url = try makeTempSecretsURL()
-        // File exists with looser perms — the writer must enforce 0600
-        // even on top of an existing 0644 / 0666 file (e.g. the user
-        // had this in their dotfiles repo and it got copied in).
-        try "ANTHROPIC_API_KEY=sk-old\n".write(to: url, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o644],
-            ofItemAtPath: url.path
-        )
+        try "ANTHROPIC_API_KEY=\nNOTION_TOKEN=ntn-real\n".write(to: url, atomically: true, encoding: .utf8)
+        let backend = InMemorySecretsBackend()
 
-        let store = SecretsStore(secretsURL: url)
-        store.anthropicAPIKey = "sk-new"
-        try store.saveNow()
+        _ = SecretsStore.migrateEnvFileIfPresent(at: url, backend: backend)
 
-        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
-        let mode = (attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0
-        XCTAssertEqual(mode & 0o777, 0o600)
+        XCTAssertNil(backend.value(for: "ANTHROPIC_API_KEY"))
+        XCTAssertEqual(backend.value(for: "NOTION_TOKEN"), "ntn-real")
     }
 
-    func test_upsert_replaces_existing_key_in_place() {
-        let lines = [
-            "# header",
-            "ANTHROPIC_API_KEY=old",
-            "NOTION_TOKEN=keep",
-        ]
-        let out = SecretsStore.upsert(lines: lines, key: "ANTHROPIC_API_KEY", value: "new")
-        XCTAssertEqual(out, [
-            "# header",
-            "ANTHROPIC_API_KEY=new",
-            "NOTION_TOKEN=keep",
-        ])
+    func test_migration_missing_file_is_noop() throws {
+        let url = try makeTempSecretsURL()  // never created
+        let backend = InMemorySecretsBackend()
+        XCTAssertFalse(SecretsStore.migrateEnvFileIfPresent(at: url, backend: backend))
+        XCTAssertNil(backend.value(for: "ANTHROPIC_API_KEY"))
     }
 
-    func test_upsert_appends_when_key_absent() {
-        let lines = ["NOTION_TOKEN=ntn"]
-        let out = SecretsStore.upsert(lines: lines, key: "ANTHROPIC_API_KEY", value: "sk-x")
-        XCTAssertEqual(out, ["NOTION_TOKEN=ntn", "ANTHROPIC_API_KEY=sk-x"])
+    // MARK: - parse
+
+    func test_parse_strips_quotes_and_skips_comments_and_blanks() {
+        let pairs = SecretsStore.parse("""
+        # header
+        ANTHROPIC_API_KEY="sk-quoted"
+
+        NOTION_TOKEN=ntn-bare
+        """)
+        let dict = Dictionary(pairs.map { ($0.key, $0.value) }, uniquingKeysWith: { a, _ in a })
+        XCTAssertEqual(dict["ANTHROPIC_API_KEY"], "sk-quoted")
+        XCTAssertEqual(dict["NOTION_TOKEN"], "ntn-bare")
+        XCTAssertNil(dict["# header"])
     }
 
-    func test_upsert_handles_spaces_around_equals() {
-        let lines = ["ANTHROPIC_API_KEY = sk-old"]
-        let out = SecretsStore.upsert(lines: lines, key: "ANTHROPIC_API_KEY", value: "sk-new")
-        // Normalize on save: no spaces around `=`. That's the format
-        // every shell sourcing tool (set -a; .) handles cleanly.
-        XCTAssertEqual(out, ["ANTHROPIC_API_KEY=sk-new"])
+    func test_parse_keeps_equals_signs_in_value() {
+        let pairs = SecretsStore.parse("WEIRD_KEY=foo=bar=baz\n")
+        XCTAssertEqual(pairs.first?.key, "WEIRD_KEY")
+        XCTAssertEqual(pairs.first?.value, "foo=bar=baz")
     }
 }

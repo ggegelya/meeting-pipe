@@ -87,7 +87,8 @@ summary_language = "auto"
 # meeting locally without paying API costs. Set to 0 to disable the guard.
 skip_above_chars = 80000
 # Backend selection (P2.3). One of:
-#   "anthropic" : current behaviour, requires ANTHROPIC_API_KEY in secrets.
+#   "anthropic" : current behaviour, requires ANTHROPIC_API_KEY in the Keychain
+#                 (set it in Preferences -> Integrations or via install.sh).
 #   "local"     : on-device MLX (Qwen 14B-4bit by default). No outbound
 #                 API calls; audio/transcript/summary stay on this Mac.
 #                 First use downloads the model (~9 GB) into HF cache.

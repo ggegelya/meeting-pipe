@@ -2,11 +2,13 @@
 # Reverse what install.sh did.
 #
 # Default: removes the app bundle, LaunchAgent, venv, logs, and
-# Application Support data. Keeps config + secrets so a re-install
-# does not destroy your Notion token / model preferences.
+# Application Support data. Keeps config so a re-install does not destroy
+# your model preferences; API tokens live in the Keychain (SEC8) and also
+# survive unless --purge is passed.
 #
 # Flags:
-#   --purge        also remove ~/.config/meeting-pipe (config + secrets)
+#   --purge        also remove ~/.config/meeting-pipe (config) and clear the
+#                  API tokens from the macOS Keychain
 #   --reset-tcc    also reset macOS TCC permissions for the bundle ID
 #                  (Microphone, ScreenCapture, Accessibility,
 #                  plus `tccutil reset All` as a belt-and-suspenders).
@@ -133,9 +135,13 @@ fi
 
 if (( PURGE )); then
     rm -rf "$CONFIG_DIR"
-    echo "Removed $CONFIG_DIR (per --purge)."
+    # SEC8: API tokens live in the login Keychain, not a file. Clear them too.
+    for key in ANTHROPIC_API_KEY NOTION_TOKEN HF_TOKEN; do
+        security delete-generic-password -s com.meetingpipe.daemon -a "$key" >/dev/null 2>&1 || true
+    done
+    echo "Removed $CONFIG_DIR and cleared API tokens from the Keychain (per --purge)."
 else
-    echo "Kept $CONFIG_DIR. Pass --purge to remove it too, or --reset-tcc to clear permissions."
+    echo "Kept $CONFIG_DIR + Keychain tokens. Pass --purge to remove them too, or --reset-tcc to clear permissions."
 fi
 
 echo "✓ Uninstalled."

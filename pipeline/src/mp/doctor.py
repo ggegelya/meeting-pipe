@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from .config import CONFIG_PATH, SECRETS_PATH, Config, load_secrets
+from .config import CONFIG_PATH, KEYCHAIN_SERVICE, Config, load_secrets
 from .endpoints import (
     ANTHROPIC_API_BASE,
     ANTHROPIC_API_VERSION,
@@ -49,11 +49,11 @@ def _info(msg: str) -> None:
     print(f"       {msg}")
 
 
-# ---------- secrets file ----------------------------------------------------
+# ---------- secrets (macOS Keychain) ----------------------------------------
 
-def check_secrets_file() -> dict[str, bool]:
-    """Verify ~/.config/meeting-pipe/secrets.env exists, has 0600 perms, and
-    declares the required keys. Returns {name: present-and-non-empty}.
+def check_secrets() -> dict[str, bool]:
+    """Verify the required API tokens are present in the macOS Keychain (SEC8). Returns
+    {name: present-and-non-empty}.
 
     HF_TOKEN was required when diarization ran on pyannote (HF-gated TOS).
     Diarization now runs in Swift via FluidAudio, whose models live on a
@@ -61,23 +61,12 @@ def check_secrets_file() -> dict[str, bool]:
     optional and is surfaced when present so existing setups don't get a
     confusing missing-secret warning.
     """
-    print(f"\n== secrets file ==  ({SECRETS_PATH})")
+    print(f"\n== secrets ==  (macOS Keychain: {KEYCHAIN_SERVICE})")
     required = ("ANTHROPIC_API_KEY", "NOTION_TOKEN")
     optional = ("HF_TOKEN",)
-    all_keys = required + optional
-    if not SECRETS_PATH.exists():
-        _fail("secrets.env missing — copy from scripts/install.sh prompt or create manually")
-        return {k: False for k in all_keys}
-
-    mode = SECRETS_PATH.stat().st_mode & 0o777
-    if mode != 0o600:
-        _warn(f"file mode is 0o{mode:o}; recommended 0o600 (run: chmod 600 {SECRETS_PATH})")
-    else:
-        _ok(f"file exists, mode 0o{mode:o}")
-
     load_secrets()
     presence: dict[str, bool] = {}
-    for key in all_keys:
+    for key in required + optional:
         val = os.environ.get(key, "")
         present = bool(val) and not val.startswith(("YOUR_", "PUT_", "REPLACE_", "<"))
         presence[key] = present
@@ -85,7 +74,7 @@ def check_secrets_file() -> dict[str, bool]:
             prefix = val[:7] + "…" if len(val) > 8 else "(short)"
             _ok(f"{key} present ({prefix})")
         elif key in required:
-            _fail(f"{key} is empty or placeholder")
+            _fail(f"{key} not in Keychain; set it in the daemon's Preferences or re-run scripts/install.sh")
         else:
             _info(f"{key} not set (optional — only used if you opt back into pyannote)")
     return presence
@@ -319,7 +308,7 @@ def main(argv: list[str]) -> int:
         return 0
 
     print("mp doctor — preflight check\n")
-    presence = check_secrets_file()
+    presence = check_secrets()
     cfg = check_config()
     check_ml_runtimes()
     check_anthropic(presence["ANTHROPIC_API_KEY"])

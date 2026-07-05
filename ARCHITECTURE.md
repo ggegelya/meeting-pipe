@@ -276,7 +276,7 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 - `Config.swift` — read-only Config snapshot loaded at launch (`~/.config/meeting-pipe/config.toml`).
 - `ConfigStore.swift` — `ObservableObject` wrapper for the same file. Round-trips through TOMLKit, preserves unknown keys (so pipeline-side fields like `transcription.model` survive UI edits). 500 ms debounced writes.
 - `Preferences/UISettings.swift` — singleton over `UserDefaults` for cosmetic flags (theme, menu-bar icon style, regulated badge, verbose logging).
-- `SecretsStore.swift` — `~/.config/meeting-pipe/secrets.env` (mode 0600), Anthropic + Notion tokens.
+- `SecretsStore.swift` + `KeychainSecrets.swift`: Anthropic + Notion tokens in the macOS login Keychain via `/usr/bin/security` (SEC8), not a plaintext file. Migrates a legacy `secrets.env` on first launch, then deletes it.
 - `ConsentStore.swift` — per-bundle "always record this app" decisions.
 - `CorrectionStore.swift` — `<stem>.correction.json` records so the user's edits feed back into evals.
 - `MeetingStore.swift` — read-only catalog of `<stem>.meta.json` sidecars; powers the Library list. Watches the directory via `DispatchSource.makeFileSystemObjectSource`.
@@ -325,7 +325,7 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 
 - `services.py` — `Protocol`s for the three external dependencies (`SummaryClient`, `Publisher`, `Diarizer`). Concrete implementations live next to use sites; tests inject fakes.
 - `schemas.py` — pydantic models. `MeetingSummary` is the JSON contract the publishers expect.
-- `config.py` — TOML loader for `~/.config/meeting-pipe/config.toml` + `secrets.env`. Same file the daemon reads.
+- `config.py`: TOML loader for `~/.config/meeting-pipe/config.toml` (same file the daemon reads). `load_secrets` pulls the API tokens from the macOS Keychain via `/usr/bin/security` (SEC8).
 - `events.py` — Python mirror of Swift's `Log.event`. Appends to `~/Library/Logs/MeetingPipe/pipeline_events.jsonl`.
 
 ---
@@ -386,7 +386,7 @@ lifecycle verdict .ended (or hotkey, or silence backstop)
 | Path | Owner | Purpose |
 |---|---|---|
 | `~/.config/meeting-pipe/config.toml` | both | shared config |
-| `~/.config/meeting-pipe/secrets.env` | both | API tokens, mode 0600 |
+| macOS login Keychain (service `com.meetingpipe.daemon`) | both | API tokens (Anthropic / Notion / HF), read + written via `/usr/bin/security` (SEC8) |
 | `~/.config/meeting-pipe/workflows/*.toml` | daemon writes, pipeline reads | per-workflow definitions |
 | `~/Documents/Meetings/raw/<stem>.wav` | daemon writes | recording |
 | `~/Documents/Meetings/raw/<stem>.meta.json` | daemon writes, pipeline reads | per-meeting workflow + source |
