@@ -289,7 +289,7 @@ Speaker enrollment learns voices so "me vs them" holds on the mono / merged reco
 
 ## Backlog and task delegation
 
-The active backlog lives in `docs/backlog/`: the highest-numbered `meetingpipe-q<N>-backlog.md` (currently `meetingpipe-q4-backlog.md`), with earlier quarters archived beside it. Task IDs follow `<letter><number>` (`C2`, `E5`, …); the `TECH-` prefix was dropped from the active backlog and the `/tech-task` command, and historical code/ADR references keep the old form as provenance. When marking a task done, prefix the line with `[DONE] ` rather than deleting it, so the trail of decisions stays readable.
+The active backlog lives in `docs/backlog/`: the highest-numbered `meetingpipe-q<N>-backlog.md` (currently `meetingpipe-q6-backlog.md`), with earlier quarters archived beside it. Task IDs follow `<letter><number>` (`C2`, `E5`, …); the `TECH-` prefix was dropped from the active backlog and the `/tech-task` command, and historical code/ADR references keep the old form as provenance. When marking a task done, set its `Status` column to `done` in the Table of contents (the sadok six-column form Q6 adopted, with Status split out from Priority) rather than deleting the row, so the trail of decisions stays readable; a shipped item rolls into the next `q<N>-final.md` archive at the quarter roll.
 
 The delegation section at the top of the active backlog is the canonical entry contract. The `/tech-task` slash command in `.claude/commands/tech-task.md` is the codified version of it.
 

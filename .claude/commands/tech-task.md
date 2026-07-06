@@ -4,7 +4,7 @@ description: Implement a backlog task from the active backlog, one task per sess
 
 You're picking up a single backlog task: $ARGUMENTS
 
-1. Read the task definition from the active backlog: the highest-numbered `docs/backlog/meetingpipe-q<N>-backlog.md` (currently `docs/backlog/meetingpipe-q4-backlog.md`; earlier quarters are archived beside it). The task ID format is `<letter><number>` (e.g. `E5`); ids no longer carry the `TECH-` prefix, so strip a legacy `TECH-` if the argument includes one. Search for the line starting with `**<ID>` matching the ID. If you can't find it, stop and tell me.
+1. Read the task definition from the active backlog: the highest-numbered `docs/backlog/meetingpipe-q<N>-backlog.md` (currently `docs/backlog/meetingpipe-q6-backlog.md`; earlier quarters are archived beside it). The task ID format is `<letter><number>` (e.g. `E5`); ids no longer carry the `TECH-` prefix, so strip a legacy `TECH-` if the argument includes one. Find the task's `| <ID> |` row in the Table of contents for its Status and one-line Comment, then read its full spec: the line starting with `**<ID>` in the Task specs section below the table, or, for an item the Task specs mark as carried from Q4 unchanged, the `**<ID>` spec in `docs/backlog/q4-final.md` (search the id). If you can't find it, stop and tell me.
 2. Read the orientation docs the task touches:
    - [`CLAUDE.md`](CLAUDE.md) at the repo root for git workflow, verification, and conventions worth knowing.
    - [`ARCHITECTURE.md`](ARCHITECTURE.md) for the subsystem map.
