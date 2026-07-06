@@ -251,6 +251,13 @@
     /* Coral brightens for the dot on the darker canvas. */
     --mp-pulse-600:  #EF5A5E;
     --mp-pulse-100:  rgba(229, 72, 77, 0.18);
+
+    /* Semantic tint backgrounds flip to translucent for dark as well (they were
+       light-only, which left the save-failure banner's text white-on-pink and
+       unreadable). Alpha matches the pulse/signal wash. */
+    --mp-success-100: rgba(31, 143, 78, 0.18);
+    --mp-warning-100: rgba(178, 115, 0, 0.18);
+    --mp-danger-100:  rgba(201, 42, 42, 0.18);
   }
 }
 
