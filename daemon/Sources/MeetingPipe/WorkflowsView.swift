@@ -67,27 +67,29 @@ struct WorkflowEditor: View {
     @State private var colorPopoverOpen: Bool = false
 
     var body: some View {
+        // WF6: rebuilt on the Preferences design system (SettingsGroup / SettingsRow
+        // / SettingsToggleRow / SettingsMenuPicker) so a workflow reads as one
+        // product with Preferences, replacing the stock grouped `Form` that made
+        // editing "feel off". Each group self-spaces (SettingsGroup pads its own
+        // bottom), so the outer stack is spacing 0.
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 0) {
                 header
-                Form {
-                    identitySection
-                    matchingRulesSection
-                    contextSection
-                    sinksSection
-                    backendSection
-                    flagsSection
-                    defaultSection
-                }
-                .formStyle(.grouped)
+                identitySection
+                matchingRulesSection
+                contextSection
+                sinksSection
+                backendSection
+                flagsSection
+                defaultSection
                 if let err = saveError {
                     Text(err)
-                        .font(.caption)
+                        .font(.mpTextSM)
                         .foregroundStyle(.mpDanger)
+                        .padding(.bottom, 12)
                 }
                 actionsRow
             }
-            .padding(.vertical, 4)
         }
         .onAppear(perform: hydrate)
         .onChange(of: workflow.id) { _, _ in hydrate() }
@@ -103,19 +105,22 @@ struct WorkflowEditor: View {
     private var header: some View {
         HStack(spacing: 10) {
             if !emoji.isEmpty {
-                Text(emoji).font(.title2)
+                Text(emoji).font(.mpTextXL)
             } else if let parsed = HexColor.parse(color) {
                 Circle().fill(Color(parsed)).frame(width: 16, height: 16)
             }
-            Text(name.isEmpty ? "(unnamed)" : name).font(.title3)
+            Text(name.isEmpty ? "Untitled workflow" : name)
+                .font(.mpTextLG.weight(.semibold))
             if workflow.isDefault {
                 Text("default")
-                    .font(.caption)
+                    .font(.mpTextXS)
+                    .foregroundStyle(Color(MPColors.fgMuted))
                     .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                    .background(Capsule().fill(Color(MPColors.bgSunk)))
             }
             Spacer()
         }
+        .padding(.bottom, 16)
     }
 
     // MARK: Sections
@@ -125,37 +130,36 @@ struct WorkflowEditor: View {
     private static let identityFieldWidth: CGFloat = 150
 
     private var identitySection: some View {
-        Section("Identity") {
-            LabeledContent("Name") {
-                // `prompt:` (not the title arg) so the placeholder doesn't render
-                // as leaked label text beside the field in this LabeledContent/Form.
+        SettingsGroup("Identity") {
+            // Name is the primary field, so it stacks full-width under its label
+            // (SettingsStackRow); Color and Emoji are compact trailing controls.
+            SettingsStackRow("Name", showsDivider: false) {
                 TextField("", text: $name, prompt: Text("Untitled workflow"))
                     .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: .infinity)
                     .onSubmit(save)
             }
-            LabeledContent("Color") {
+            SettingsRow("Color") {
                 // Curated swatches only (TECH-DSN11): the popover is the sole
                 // colour control so workflows stay a tonal family. No free-hex
                 // field - it was the path off-palette colours leaked in.
                 colorSwatchButton
             }
-            LabeledContent("Emoji") {
-                HStack(spacing: 8) {
-                    Button {
-                        NSApp.orderFrontCharacterPalette(nil)
-                    } label: {
-                        Image(systemName: "face.smiling")
-                    }
-                    .buttonStyle(.bordered)
-                    .help("Open the emoji & symbols palette")
-                    TextField("", text: $emoji, prompt: Text("optional"))
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: Self.identityFieldWidth)
-                        .onChange(of: emoji) { _, newValue in
-                            let constrained = Self.constrainToOneEmoji(newValue)
-                            if constrained != newValue { emoji = constrained }
-                        }
+            SettingsRow("Emoji") {
+                Button {
+                    NSApp.orderFrontCharacterPalette(nil)
+                } label: {
+                    Image(systemName: "face.smiling")
                 }
+                .buttonStyle(.mpIcon)
+                .help("Open the emoji & symbols palette")
+                TextField("", text: $emoji, prompt: Text("optional"))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: Self.identityFieldWidth)
+                    .onChange(of: emoji) { _, newValue in
+                        let constrained = Self.constrainToOneEmoji(newValue)
+                        if constrained != newValue { emoji = constrained }
+                    }
             }
         }
     }
@@ -222,32 +226,37 @@ struct WorkflowEditor: View {
     }
 
     private var matchingRulesSection: some View {
-        Section("Matching rules") {
+        SettingsGroup("Matching rules") {
             if matchingRules.isEmpty {
-                Text("No rules - this workflow matches only when used as the default.")
-                    .font(.caption)
-                    .foregroundStyle(Color(MPColors.fgMuted))
+                SettingsFullRow(showsDivider: false) {
+                    Text("No rules - this workflow matches only when used as the default.")
+                        .font(.mpTextSM)
+                        .foregroundStyle(Color(MPColors.fgMuted))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             } else {
-                // Iterate by value/id, not a positional `$matchingRules`
-                // binding: removing a row inside a binding-based ForEach makes
-                // SwiftUI read a now-missing index on the next render and crash
-                // (the per-row "minus" delete button hit this).
-                ForEach(matchingRules) { rule in
-                    matchingRuleRow(id: rule.id)
-                }
-                .onDelete { offsets in
-                    matchingRules.remove(atOffsets: offsets)
+                // Iterate by id (WorkflowMatchingRule is Identifiable); the row's
+                // own "minus" button removes by id, so no positional
+                // `$matchingRules` binding goes stale on delete. `.onDelete` is
+                // dropped with the Form (it only works inside a List/Form); the
+                // per-row minus button is the delete path.
+                ForEach(Array(matchingRules.enumerated()), id: \.element.id) { idx, rule in
+                    SettingsFullRow(showsDivider: idx > 0) {
+                        matchingRuleRow(id: rule.id)
+                    }
                 }
             }
-            Button {
-                matchingRules.append(WorkflowMatchingRule())
-            } label: {
-                Label("Add rule", systemImage: "plus")
+            SettingsFullRow {
+                Button {
+                    matchingRules.append(WorkflowMatchingRule())
+                } label: {
+                    Label("Add rule", systemImage: "plus")
+                }
+                .buttonStyle(.mpGhost)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.borderless)
+        } footer: {
             Text("Bundle id matches the meeting app (e.g. `us.zoom.xos`, `com.microsoft.teams2`). Title regex is case-insensitive and tests the window title; useful to split a single browser into per-tab workflows.")
-                .font(.caption)
-                .foregroundStyle(Color(MPColors.fgMuted))
         }
     }
 
@@ -256,10 +265,10 @@ struct WorkflowEditor: View {
             VStack(spacing: 4) {
                 TextField("bundle id", text: ruleBinding(id, \.bundleID))
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
+                    .font(.mpTextBase.monospaced())
                 TextField("title regex (optional)", text: ruleBinding(id, \.titleRegex))
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
+                    .font(.mpTextBase.monospaced())
             }
             Button(role: .destructive) {
                 matchingRules.removeAll { $0.id == id }
@@ -284,30 +293,53 @@ struct WorkflowEditor: View {
     }
 
     private var contextSection: some View {
-        Section("Context prompt") {
-            TextEditor(text: $contextPrompt)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 120, maxHeight: 240)
-                .border(Color.secondary.opacity(0.2))
+        SettingsGroup("Context prompt") {
+            SettingsFullRow(showsDivider: false) {
+                TextEditor(text: $contextPrompt)
+                    .font(.mpTextBase.monospaced())
+                    .frame(minHeight: 120, maxHeight: 240)
+                    .scrollContentBackground(.hidden)
+                    .padding(6)
+                    .background(
+                        RoundedRectangle(cornerRadius: MPRadius.sm, style: .continuous)
+                            .fill(Color(NSColor.textBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: MPRadius.sm, style: .continuous)
+                            .strokeBorder(Color(MPColors.border), lineWidth: 1)
+                    )
+            }
+        } footer: {
             Text("Seasoning the LLM sees for every meeting matched by this workflow. Example: \"Confidential client meeting; redact names; FDA 21 CFR Part 11 context.\"")
-                .font(.caption)
-                .foregroundStyle(Color(MPColors.fgMuted))
         }
     }
 
     private var sinksSection: some View {
-        Section("Sinks") {
-            Toggle(isOn: $sinks.notionEnabled) { Text("Notion") }
+        SettingsGroup("Sinks") {
+            SettingsToggleRow("Notion", isOn: $sinks.notionEnabled, showsDivider: false)
             if sinks.notionEnabled {
-                notionDBPicker
+                SettingsFullRow(showsDivider: false) {
+                    notionDBPicker
+                }
             }
-            Toggle(isOn: $sinks.obsidianEnabled) { Text("Obsidian") }
-            Toggle(isOn: $sinks.filesystemEnabled) { Text("Filesystem (local Markdown only)") }
+            SettingsToggleRow("Obsidian", isOn: $sinks.obsidianEnabled)
+            SettingsToggleRow("Filesystem (local Markdown only)", isOn: $sinks.filesystemEnabled)
             if ndaMode {
-                Text("NDA mode forces filesystem-only; toggles above are ignored at run time.")
-                    .font(.caption)
-                    .foregroundStyle(.mpWarning)
+                note("NDA mode forces filesystem-only; toggles above are ignored at run time.", color: .mpWarning)
             }
+        }
+    }
+
+    /// A full-width caption row inside a card, the design-system replacement for
+    /// the stock `Text().font(.caption)` help/warning lines the grouped Form used
+    /// (WF6). Warning lines pass `.mpWarning`, neutral help `Color(MPColors.fgMuted)`.
+    private func note(_ text: String, color: Color) -> some View {
+        SettingsFullRow {
+            Text(text)
+                .font(.mpTextSM)
+                .foregroundStyle(color)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -334,7 +366,7 @@ struct WorkflowEditor: View {
                 if notionDBs.entries.isEmpty || sinks.notionDatabaseID.isEmpty {
                     TextField("paste DB id", text: $sinks.notionDatabaseID)
                         .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
+                        .font(.mpTextBase.monospaced())
                         .frame(minWidth: 220)
                 }
                 Spacer(minLength: 0)
@@ -369,86 +401,96 @@ struct WorkflowEditor: View {
             HStack(spacing: 4) {
                 ProgressView().controlSize(.small)
                 Text("Fetching databases…")
-                    .font(.caption)
+                    .font(.mpTextSM)
                     .foregroundStyle(Color(MPColors.fgMuted))
             }
         case .loaded(let list):
             Text("\(list.count) database\(list.count == 1 ? "" : "s") cached")
-                .font(.caption2)
+                .font(.mpTextXS)
                 .foregroundStyle(Color(MPColors.fgSubtle))
         case .failed(let err):
             Text(err)
-                .font(.caption)
+                .font(.mpTextSM)
                 .foregroundStyle(.mpDanger)
                 .lineLimit(2)
         }
     }
 
     private var backendSection: some View {
-        Section("Backend") {
-            // Menu (not segmented): five options overflow the segmented control,
-            // the same reason Preferences uses a menu picker here. (TECH-WF1)
-            Picker("", selection: $backend) {
-                Text("Use global default").tag(WorkflowBackend?.none)
-                Text("Anthropic (cloud)").tag(WorkflowBackend?.some(.anthropic))
-                Text("Local MLX").tag(WorkflowBackend?.some(.local))
-                Text("Auto (cloud, fall back to local)").tag(WorkflowBackend?.some(.auto))
-                Text("Apple Intelligence (on-device)").tag(WorkflowBackend?.some(.appleIntelligence))
+        SettingsGroup("Backend") {
+            // Menu (not segmented): five options overflow a segmented control,
+            // the same reason Preferences uses a menu picker here (TECH-WF1). 260pt
+            // so the longest label ("Auto (cloud, fall back to local)") fits.
+            SettingsRow("Backend", showsDivider: false) {
+                SettingsMenuPicker(
+                    selection: $backend,
+                    options: [
+                        (WorkflowBackend?.none,      "Use global default"),
+                        (.some(.anthropic),          "Anthropic (cloud)"),
+                        (.some(.local),              "Local MLX"),
+                        (.some(.auto),               "Auto (cloud, fall back to local)"),
+                        (.some(.appleIntelligence),  "Apple Intelligence (on-device)"),
+                    ],
+                    width: 260
+                )
+                .disabled(ndaMode)
             }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .disabled(ndaMode)
             if ndaMode {
-                Text("NDA mode forces the local backend; the picker is disabled.")
-                    .font(.caption)
-                    .foregroundStyle(.mpWarning)
+                note("NDA mode forces the local backend; the picker is disabled.", color: .mpWarning)
             } else if backend == nil {
-                Text("Inherits the backend from Preferences > Pipeline.")
-                    .font(.caption)
-                    .foregroundStyle(Color(MPColors.fgMuted))
+                note("Inherits the backend from Preferences > Pipeline.", color: Color(MPColors.fgMuted))
             } else if backend == .appleIntelligence, let reason = AppleIntelligenceSummarizer.availabilityReason {
-                Text("Apple Intelligence is unavailable here: \(reason)")
-                    .font(.caption)
-                    .foregroundStyle(.mpWarning)
+                note("Apple Intelligence is unavailable here: \(reason)", color: .mpWarning)
             }
         }
     }
 
     private var flagsSection: some View {
-        Section("Flags") {
-            Toggle("NDA mode (force local backend, filesystem only)", isOn: $ndaMode)
-            Text("Surfaces in the HUD and the menu-bar title so a misroute is visible before the meeting starts.")
-                .font(.caption)
-                .foregroundStyle(Color(MPColors.fgMuted))
-            Toggle("Redact muted spans from the notes", isOn: $redactMutedSpans)
-            Text("Off by default: the full mic is kept and transcribed (a fragile mute oracle can never silently drop your speech). On, muted moments are removed from the consumed notes offline; the full recording is still kept aside for recovery.")
-                .font(.caption)
-                .foregroundStyle(Color(MPColors.fgMuted))
+        SettingsGroup("Flags") {
+            SettingsToggleRow(
+                "NDA mode (force local backend, filesystem only)",
+                sublabel: "Surfaces in the HUD and the menu-bar title so a misroute is visible before the meeting starts.",
+                isOn: $ndaMode,
+                showsDivider: false
+            )
+            SettingsToggleRow(
+                "Redact muted spans from the notes",
+                sublabel: "Off by default: the full mic is kept and transcribed (a fragile mute oracle can never silently drop your speech). On, muted moments are removed from the consumed notes offline; the full recording is still kept aside for recovery.",
+                isOn: $redactMutedSpans
+            )
         }
     }
 
     private var defaultSection: some View {
-        Section("Default") {
-            Toggle("Use as default", isOn: $isDefault)
-                .disabled(workflow.isDefault)
-            Text("The default workflow matches any meeting that no other workflow's rules pick up. Toggle on a different workflow here to switch the default.")
-                .font(.caption)
-                .foregroundStyle(Color(MPColors.fgMuted))
+        SettingsGroup("Default") {
+            SettingsToggleRow(
+                "Use as default",
+                sublabel: "The default workflow matches any meeting that no other workflow's rules pick up. Toggle on a different workflow here to switch the default.",
+                isOn: $isDefault,
+                showsDivider: false
+            )
+            .disabled(workflow.isDefault)
         }
     }
 
     private var actionsRow: some View {
         HStack {
             Button("Save", action: save)
+                .buttonStyle(.mpGhost)
                 .keyboardShortcut(.defaultAction)
             Spacer()
+            // Neutral ghost capsule + trash glyph; the destructive emphasis lives
+            // in the confirmation alert's `.destructive` Delete, matching DSN28's
+            // move off colored inline buttons (there is no `.mpDanger` capsule).
             Button(role: .destructive) {
                 pendingDeleteAlert = true
             } label: {
                 Label("Delete", systemImage: "trash")
             }
+            .buttonStyle(.mpGhost)
             .disabled(workflow.isDefault)
         }
+        .padding(.top, 4)
     }
 
     // MARK: Form state
