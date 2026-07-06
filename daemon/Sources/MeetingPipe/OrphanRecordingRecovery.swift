@@ -183,7 +183,10 @@ enum OrphanRecordingRecovery {
             )
             try? FileManager.default.removeItem(at: dest)
             try FileManager.default.moveItem(at: url, to: dest)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dest.path)
+            // Owner-only + Time-Machine/iCloud excluded, same as the redaction
+            // move-aside. Quarantined full audio used to reach Time Machine
+            // because this path set 0600 but skipped the exclusion (AUD-19).
+            MuteRedactor.protectOriginalAtRest(dest)
             Log.event(category: "coordinator", action: "orphan_quarantined", attributes: [
                 "file": url.lastPathComponent,
                 "reason": "capture_first_no_timeline",

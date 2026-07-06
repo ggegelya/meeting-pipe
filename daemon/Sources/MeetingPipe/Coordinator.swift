@@ -228,6 +228,10 @@ final class Coordinator: NSObject {
             onDone: { [weak self] stem, recordingsDir, pageURL in
                 guard let self = self else { return }
                 self.libraryModel.activeProcessing = nil
+                // ADR 0016 / MIC13: keep the originals folder bounded through a
+                // long-running session, not only at launch. Runs on every
+                // completion path below (including the empty-skip early return).
+                self.reapOriginals()
                 // A no-speech / suspect-transcript skip finishes with no summary
                 // and no page. The pipeline wrote <stem>.empty.json; post an
                 // honest terminal notice and skip the completion tone, rather
@@ -407,6 +411,10 @@ final class Coordinator: NSObject {
         // sidecar). Runs synchronously right after the orphan scan so it observes
         // the directory before that scan's async merges create any new final WAVs.
         reconcileStrandedJobs()
+        // Reclaim kept full recordings past their retention window (ADR 0016 /
+        // MIC13). The originals folder is separate from raw/, so this never races
+        // the orphan/stranded sweeps above.
+        reapOriginals()
     }
 
     /// Fire every startup TCC dialog in order. macOS serializes the prompts
@@ -467,6 +475,17 @@ final class Coordinator: NSObject {
             MainActor.assumeIsolated {
                 recorder.flushIntermediatesForTermination()
             }
+        }
+    }
+
+    /// Reclaim kept full recordings (`originals/`) past their retention window
+    /// (ADR 0016 / MIC13). Runs off-main: a light directory scan plus a few
+    /// deletes, no reason to stall the main queue. The canonical redacted
+    /// artifact in raw/ is never touched, so this is independent of the recording
+    /// and pipeline state machines.
+    private func reapOriginals() {
+        Task.detached(priority: .background) {
+            OriginalsReaper.sweep()
         }
     }
 

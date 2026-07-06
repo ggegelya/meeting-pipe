@@ -86,6 +86,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
     }
 
     private var dir: URL!
+    private var originalsDir: URL!
     private var driver: FakeDriver!
     private var enqueued: [(URL, SummaryMode)] = []
     private var errors: [String] = []
@@ -95,6 +96,9 @@ final class MeetingLibraryServiceTests: XCTestCase {
         dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("mp-library-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        originalsDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mp-originals-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: originalsDir, withIntermediateDirectories: true)
         driver = FakeDriver()
         enqueued = []
         errors = []
@@ -102,12 +106,14 @@ final class MeetingLibraryServiceTests: XCTestCase {
             outputDir: { [unowned self] in self.dir },
             launcher: driver,
             notifyError: { [unowned self] message in self.errors.append(message) },
-            enqueue: { [unowned self] file, mode in self.enqueued.append((file, mode)) }
+            enqueue: { [unowned self] file, mode in self.enqueued.append((file, mode)) },
+            originalsDir: { [unowned self] in self.originalsDir }
         )
     }
 
     override func tearDownWithError() throws {
         try? FileManager.default.removeItem(at: dir)
+        try? FileManager.default.removeItem(at: originalsDir)
     }
 
     private func touch(_ name: String, contents: String = "x") throws {
@@ -156,6 +162,32 @@ final class MeetingLibraryServiceTests: XCTestCase {
     func test_softDelete_no_matching_files_fails() {
         let result = service.softDeleteMeeting(stem: "ghost")
         guard case .failure = result else { return XCTFail("expected failure") }
+    }
+
+    func test_softDelete_cascades_into_the_kept_original() throws {
+        try touch("m.wav")
+        try touch("m.meta.json")
+        // The kept full recording lives outside raw/, keyed by the same stem.
+        let original = originalsDir.appendingPathComponent("m.wav")
+        try "x".write(to: original, atomically: true, encoding: .utf8)
+
+        guard case .success = service.softDeleteMeeting(stem: "m") else {
+            return XCTFail("expected success")
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: original.path),
+            "deleting a meeting must also remove its kept original (ADR 0016 / MIC13)"
+        )
+    }
+
+    func test_softDelete_succeeds_when_no_kept_original_exists() throws {
+        // The common case: a normal capture-first meeting keeps no original.
+        try touch("m.wav")
+        try touch("m.meta.json")
+        guard case .success = service.softDeleteMeeting(stem: "m") else {
+            return XCTFail("expected success even with no original to cascade into")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("m.wav").path))
     }
 
     // MARK: - republish / regenerate guards

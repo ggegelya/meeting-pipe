@@ -4,6 +4,10 @@ import Foundation
 final class MeetingLibraryService {
 
     private let outputDir: () -> URL
+    /// Resolves the app-private originals directory (ADR 0016 kept recordings) so
+    /// soft-delete can cascade into it. Injected for hermetic tests; defaults to
+    /// the real location.
+    private let originalsDir: () -> URL
     private let launcher: PipelineDriver
     private let notifyError: (String) -> Void
     private let enqueue: (URL, SummaryMode) -> Void
@@ -15,9 +19,11 @@ final class MeetingLibraryService {
         launcher: PipelineDriver,
         notifyError: @escaping (String) -> Void,
         enqueue: @escaping (URL, SummaryMode) -> Void,
-        summarizationBackend: @escaping () -> String = { "local" }
+        summarizationBackend: @escaping () -> String = { "local" },
+        originalsDir: @escaping () -> URL = { MuteRedactor.originalsDirectory() }
     ) {
         self.outputDir = outputDir
+        self.originalsDir = originalsDir
         self.launcher = launcher
         self.notifyError = notifyError
         self.enqueue = enqueue
@@ -346,9 +352,27 @@ final class MeetingLibraryService {
                 if firstFailure == nil { firstFailure = error }
             }
         }
+        // Cascade into the kept full recording (ADR 0016 / MIC13). It lives
+        // outside the scanned raw/ tree, so the stem enumeration above never
+        // sees it. Most meetings have none (only redaction-opt-in or quarantined
+        // recordings keep one); trash it best-effort when present, matching how
+        // the rest of the meeting's files are removed.
+        var originalTrashed = false
+        let original = originalsDir().appendingPathComponent("\(stem).wav")
+        if fm.fileExists(atPath: original.path) {
+            var trashedURL: NSURL?
+            do {
+                try fm.trashItem(at: original, resultingItemURL: &trashedURL)
+                originalTrashed = true
+            } catch {
+                Log.main.warning("trashItem failed for kept original \(original.lastPathComponent): \(error.localizedDescription)")
+                if firstFailure == nil { firstFailure = error }
+            }
+        }
         Log.event(category: "coordinator", action: "meeting_deleted", attributes: [
             "stem": stem,
             "files_count": matching.count,
+            "original_trashed": originalTrashed,
         ])
         if let err = firstFailure { return .failure(err) }
         return .success(())

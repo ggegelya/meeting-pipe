@@ -40,6 +40,20 @@ enum MuteRedactor {
         (dir ?? originalsDirectory()).appendingPathComponent(wav.lastPathComponent)
     }
 
+    /// Apply the at-rest protections every kept original must carry (ADR 0016):
+    /// owner-only `0600` and exclusion from Time Machine / iCloud. Both write
+    /// sites that land a full recording in `originals/` (this redactor's
+    /// move-aside and the orphan quarantine) funnel through here so neither can
+    /// silently drift from the ADR's requirement. That drift is exactly how the
+    /// quarantine path shipped without backup exclusion (AUD-19).
+    static func protectOriginalAtRest(_ url: URL) {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var mutable = url
+        try? mutable.setResourceValues(values)
+    }
+
     /// Build the `-filter_complex` that zeroes the mic channel over the muted
     /// spans. Stereo (mic L, system R) splits, zeroes L, and re-merges so system
     /// audio is untouched; mono zeroes the single channel. Returns nil when there
@@ -179,11 +193,7 @@ enum MuteRedactor {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try? FileManager.default.removeItem(at: dest)
             try FileManager.default.moveItem(at: wav, to: dest)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dest.path)
-            var values = URLResourceValues()
-            values.isExcludedFromBackup = true
-            var mutableDest = dest
-            try? mutableDest.setResourceValues(values)
+            protectOriginalAtRest(dest)
             return true
         } catch {
             Log.writeLine("recorder", "WARN: could not move full recording aside for \(wav.lastPathComponent): \(error.localizedDescription)")

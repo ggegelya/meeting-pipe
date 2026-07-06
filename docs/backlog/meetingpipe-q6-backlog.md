@@ -32,7 +32,7 @@ When a task ships, set its **Status** column to `done` (sadok-style) rather than
 |---|---|---|---|---|---|
 | MIC10 | Re-lock the Teams mini-window mute control | Detection | new | P1 | Scoped AX walk reads a stale hub/pre-join "muted" button; re-scope to the live control + a VAD-contradiction staleness trigger. Needs a live AX dump. |
 | MIC6 | Attribute-based (futureproof) native mute read | Detection | partial | P1 | Four parts shipped; part-1 (read the button's stable state attribute, not the localized title) owed, gated on an owner AX dump. |
-| MIC13 | originals/ retention, reaper, delete cascade | Security | new | P1 | ADR 0016's retention + reaper never built; meeting deletion leaves the original behind; quarantine skips backup exclusion. (AUD-19) |
+| MIC13 | originals/ retention, reaper, delete cascade | Security | done | P1 | `OriginalsReaper` (age+size bounded, launch + after-job) + delete cascade + quarantine backup-exclusion fix shipped. Shared reaper foundation STOR1 extends. (AUD-19) |
 | END6 | Device-idle end corroborator | Detection | partial | P1 | Correlated-pair gate shipped; the `kAudioDevicePropertyDeviceIsRunningSomewhere` idle leg is deferred, needs live-Mac validation. (AUD-10) |
 | PIPE1 | Honest publish-failure contract | Pipeline | new | P1 | All-sinks-failed exits 0: daemon clears error.json, emits pipeline_succeeded, can notify a stale URL; retry re-summarizes. (AUD-14) |
 | VALID1 | On-device acceptance measurements | Validation | owner-owed | P1 | Scaffolding shipped; five runtime measurements (A15 cold-start, A16, DIAR1 DER, SUM1-APPLE + zero-egress, UX4) owed on a real Mac. |

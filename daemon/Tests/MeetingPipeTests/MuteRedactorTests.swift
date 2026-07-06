@@ -4,6 +4,26 @@ import XCTest
 
 final class MuteRedactorTests: XCTestCase {
 
+    // MARK: - protectOriginalAtRest (AUD-19 / MIC13)
+
+    func test_protectOriginalAtRest_sets_owner_only_and_excludes_from_backup() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mp-originals-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("rec.wav")
+        try Data("x".utf8).write(to: file)
+        // World-readable to start, so the 0600 tightening is observable.
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+
+        MuteRedactor.protectOriginalAtRest(file)
+
+        let perms = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(perms?.intValue, 0o600, "kept originals must be owner-only")
+        let excluded = try file.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup
+        XCTAssertEqual(excluded, true, "kept originals must be excluded from Time Machine / iCloud (AUD-19)")
+    }
+
     // MARK: - buildFilter (pure)
 
     func test_buildFilter_nil_when_no_spans() {
