@@ -12,14 +12,16 @@
 <body>
   <div class="col">
     <div class="h">Color tokens</div>
-    <div class="row"><span class="swatch" style="background:#FBFAF7"></span><span class="name">--mp-bg</span> Paper</div>
-    <div class="row"><span class="swatch" style="background:#FFFFFF"></span><span class="name">--mp-bg-raised</span> White</div>
-    <div class="row"><span class="swatch" style="background:#14161A"></span><span class="name">--mp-fg</span> Ink 900</div>
-    <div class="row"><span class="swatch" style="background:#4A4F58"></span><span class="name">--mp-fg-muted</span> Ink 600</div>
-    <div class="row"><span class="swatch" style="background:#9098A4"></span><span class="name">--mp-fg-subtle</span> Ink 500</div>
-    <div class="row"><span class="swatch" style="background:#0E8C82"></span><span class="name">--mp-signal-600</span> Primary</div>
-    <div class="row"><span class="swatch" style="background:#E5484D"></span><span class="name">--mp-pulse-600</span> REC dot</div>
-    <div class="row"><span class="swatch" style="background:#1F8F4E"></span><span class="name">--mp-success-600</span></div>
+    <div class="row"><span class="swatch" style="background:var(--mp-bg)"></span><span class="name">--mp-bg</span> Porcelain</div>
+    <div class="row"><span class="swatch" style="background:var(--mp-bg-raised)"></span><span class="name">--mp-bg-raised</span> White</div>
+    <div class="row"><span class="swatch" style="background:var(--mp-fg)"></span><span class="name">--mp-fg</span> Ink 900</div>
+    <div class="row"><span class="swatch" style="background:var(--mp-fg-muted)"></span><span class="name">--mp-fg-muted</span> Ink 600</div>
+    <div class="row"><span class="swatch" style="background:var(--mp-fg-subtle)"></span><span class="name">--mp-fg-subtle</span> Ink 500</div>
+    <div class="row"><span class="swatch" style="background:var(--mp-signal-600)"></span><span class="name">--mp-signal-600</span> Display teal</div>
+    <div class="row"><span class="swatch" style="background:var(--mp-signal-fill)"></span><span class="name">--mp-signal-fill</span> Fill teal</div>
+    <div class="row"><span class="swatch" style="background:var(--mp-onair-600)"></span><span class="name">--mp-onair-600</span> On-air LED</div>
+    <div class="row"><span class="swatch" style="background:var(--mp-pulse-600)"></span><span class="name">--mp-pulse-600</span> REC dot</div>
+    <div class="row"><span class="swatch" style="background:var(--mp-success-600)"></span><span class="name">--mp-success-600</span> Success</div>
   </div>
   <div class="col">
     <div class="h">Type · spacing · radii</div>
@@ -28,7 +30,8 @@
     <div class="row"><span class="name">--mp-font-display</span> Inter Tight</div>
     <div class="row"><span class="name">--mp-font-mono</span> JetBrains Mono</div>
     <div class="row"><span class="name">--mp-space-{1..16}</span> 4 8 12 16 20 24 32 40 48 64</div>
-    <div class="row"><span class="name">--mp-radius-sm/md/lg</span> 6 / 10 / 14</div>
+    <div class="row"><span class="name">--mp-radius-sm/md/lg</span> 8 / 14 / 18</div>
+    <div class="row"><span class="name">--mp-radius-full</span> capsule buttons, pills</div>
     <div class="row"><span class="name">--mp-dur-base</span> 180ms · ease-out</div>
     <div class="row"><span class="name">--mp-shadow-lg</span> HUD floating panel</div>
   </div>

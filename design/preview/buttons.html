@@ -6,15 +6,16 @@
   .row { display:flex; gap:8px; align-items:center; }
   button {
     font: inherit; font-size: var(--mp-text-base); font-weight: var(--mp-weight-medium);
-    height: 28px; padding: 0 12px; border-radius: var(--mp-radius-sm);
+    height: 26px; padding: 0 13px; border-radius: var(--mp-radius-full);
     border: 1px solid var(--mp-border-strong); background: var(--mp-bg-raised); color: var(--mp-fg);
-    cursor: pointer; transition: background var(--mp-dur-fast) var(--mp-ease-out);
-    box-shadow: 0 1px 0 rgba(20,22,26,0.04);
+    cursor: pointer; transition: background var(--mp-dur-fast) var(--mp-ease-out), transform 130ms var(--mp-ease-out);
+    box-shadow: 0 1px 0 rgba(22,25,29,0.04);
   }
   button:hover { background: var(--mp-ink-100); }
+  button:active { transform: scale(0.97); }
   button.primary {
-    background: var(--mp-signal-600); color: var(--mp-fg-on-signal); border-color: transparent;
-    box-shadow: 0 1px 0 rgba(20,22,26,0.10);
+    background: var(--mp-signal-fill); color: var(--mp-fg-on-signal); border-color: transparent;
+    box-shadow: 0 1px 0 rgba(22,25,29,0.10);
   }
   button.primary:hover { background: var(--mp-signal-700); }
   button.ghost { background: transparent; border-color: transparent; color: var(--mp-fg-muted); }
@@ -22,10 +23,11 @@
   button.danger { color: var(--mp-danger-600); }
   button.danger:hover { background: var(--mp-danger-100); }
   button:focus-visible { outline: none; box-shadow: var(--mp-focus-ring); }
+  @media (prefers-reduced-motion: reduce) { button:active { transform: none; } }
   .meta { font-family:var(--mp-font-mono); font-size:11px; color:var(--mp-fg-subtle); width:90px; }
 </style></head>
 <body>
-  <div class="row"><span class="meta">primary</span><button class="primary">Record</button><button class="primary" disabled style="opacity:0.5">Record</button></div>
+  <div class="row"><span class="meta">primary</span><button class="primary">Record</button><button class="primary" disabled style="opacity:0.45">Record</button></div>
   <div class="row"><span class="meta">secondary</span><button>Skip</button><button>Always for Zoom</button></div>
   <div class="row"><span class="meta">ghost</span><button class="ghost">Cancel</button><button class="ghost">Open Logs</button></div>
   <div class="row"><span class="meta">danger</span><button class="danger">Discard recording</button></div>

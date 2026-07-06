@@ -13,11 +13,12 @@
     min-width: 220px;
   }
   input[type=text]:focus, select:focus { outline: none; border-color: var(--mp-signal-600); box-shadow: var(--mp-focus-ring); }
-  .toggle { position: relative; width:34px; height:20px; background:var(--mp-ink-300); border-radius:999px; transition: background var(--mp-dur-base); flex-shrink:0; }
+  /* Mechanical toggle (DSN24): fixed ink-300 off-track, teal on, a short snap (not a soft slide). */
+  .toggle { position: relative; width:34px; height:20px; background:var(--mp-ink-300); border-radius:999px; transition: background 90ms var(--mp-ease-out); flex-shrink:0; }
   .toggle.on { background: var(--mp-signal-600); }
-  .toggle::after { content:""; position:absolute; top:2px; left:2px; width:16px; height:16px; background:#fff; border-radius:50%; transition: transform var(--mp-dur-base) var(--mp-ease-out); box-shadow:0 1px 2px rgba(0,0,0,0.2); }
+  .toggle::after { content:""; position:absolute; top:2px; left:2px; width:16px; height:16px; background:#fff; border-radius:50%; transition: transform 90ms var(--mp-ease-out); box-shadow:0 1px 2px rgba(0,0,0,0.2); }
   .toggle.on::after { transform: translateX(14px); }
-  .check { width:14px; height:14px; border-radius:3px; border:1px solid var(--mp-border-strong); display:inline-flex; align-items:center; justify-content:center; }
+  .check { width:14px; height:14px; border-radius:var(--mp-radius-xs); border:1px solid var(--mp-border-strong); display:inline-flex; align-items:center; justify-content:center; }
   .check.on { background: var(--mp-signal-600); border-color: var(--mp-signal-600); color:#fff; }
 </style></head>
 <body>

@@ -134,9 +134,10 @@ verbatim from the speaker).
 
 The design system is built on three motifs:
 
-1. **Paper** — the canvas reads as a calm, slightly warm document, not a
-   chrome panel. It's where transcripts and summaries live, so it should feel
-   like something you'd want to read.
+1. **Paper** - the canvas reads as a calm, cool-neutral document (cool
+   porcelain, not a warm cream), not a chrome panel. It's where transcripts and
+   summaries live, so it should feel like something you'd want to read; the
+   document calm comes from layout and type, not from a tint.
 2. **Hairlines, not shadows** — mac-native chrome separates surfaces with
    1px / 0.5px borders, not heavy drop shadows. Shadows appear only on
    *floating* surfaces (panels, popovers, sheets).
@@ -145,19 +146,23 @@ The design system is built on three motifs:
    on large surfaces.
 
 ### Color
-- **Ink** (warm near-blacks) for foreground. We avoid pure `#000` — `#14161A`
-  reads gentler against paper.
-- **Paper** (`#FBFAF7` base) for canvas. `#FFFFFF` reserved for raised cards
-  and sheets, so layering is legible.
-- **Signal** (`#0E8C82`) for the primary action and live capture indicator.
-  Used at 100% (button fill, focus ring) or as a 4–10% tint
-  (selected row, mention).
+- **Ink** (cool near-blacks) for foreground. We avoid pure `#000`: `#16181C`
+  reads gentler against porcelain.
+- **Paper** (`#F5F6F8` base) for canvas, a cool porcelain. `#FFFFFF` reserved
+  for raised cards and sheets, so layering is legible.
+- **Signal** (display `#0E9488`, deeper `#0C7F74` fill for white-label teal
+  surfaces) for the primary action and live capture indicator. Used as a fill,
+  or as a 4 to 10% tint (selected row, mention). The display tone flips bright
+  in dark so teal still reads as lit.
 - **Pulse** (`#E5484D`) is reserved exclusively for the recording dot and the
   destructive confirm in dialogs.
+- **On-air** (`#0FBFAC`) is the Instrument LED accent, capture surfaces only:
+  meter segments, level dots, the record-key ring, the live mic waveform. Part
+  of the one-signal budget, not a second accent.
 - **Semantic** — success / warning / danger — appear only in inline status
   rows. Not as backgrounds for entire toasts.
 - Dark mode auto-follows the system. Same palette, inverted surfaces; muted,
-  not pitch black (`#1A1B1E` base).
+  not pitch black (`#1B1D21` base).
 
 ### Typography
 - **System font is canonical.** SF Pro on mac. We list `-apple-system,
@@ -167,8 +172,10 @@ The design system is built on three motifs:
   see Caveats.)**
 - **Mono**: *JetBrains Mono* for code, paths, kbd. SF Mono on mac when
   available.
-- **Base size 13px** — mac native. Compact ramp because the app is chrome,
-  not content. Marketing pages can step up to `--mp-text-3xl` / `4xl`.
+- **Base size 13px**, mac native. Compact ramp because the app is chrome, not
+  content; each surface earns one larger anchor (prompt question 15, HUD timer
+  21, section headers 17), and nothing else inflates. Marketing pages can step
+  up to `--mp-text-3xl` / `4xl`.
 - **Weights**: regular (400), medium (500), semibold (600). **No bold.**
   Apple convention.
 - **Tracking**: tight negative on display sizes (-0.02em), 0 on body, +0.08em
@@ -197,17 +204,17 @@ The design system is built on three motifs:
   the literal label *"Processing…"*.
 
 ### Hover & press
-- **Hover**: 4–6% darken on filled buttons, light tint background on ghost
-  buttons (`var(--mp-ink-100)`). No scale, no shadow change.
-- **Press**: 8% darken + a 1px translate-y on raised buttons (matches AppKit
-  bezel). No ripple effects.
+- **Hover**: 4 to 6% darken on filled buttons, light tint background on ghost
+  buttons (`var(--mp-ink-100)`). No shadow change.
+- **Press**: controls scale to 0.97 over 130ms, springless (macOS 26; was a
+  1px translate). No ripple effects.
 - **Focus**: 3px outer ring at `var(--mp-signal-600)` @ 32% opacity. Always
-  visible — accessibility floor.
+  visible, the accessibility floor.
 
 ### Borders
-- 1px hairline `rgba(20, 22, 26, 0.10)` is the default surface separator.
-- Stronger 1px `rgba(20, 22, 26, 0.18)` for inputs.
-- 0.5px hairlines (Retina) on internal table dividers — `box-shadow: inset 0
+- 1px hairline `rgba(22, 25, 29, 0.10)` is the default surface separator.
+- Stronger 1px `rgba(22, 25, 29, 0.16)` for inputs.
+- 0.5px hairlines (Retina) on internal table dividers: `box-shadow: inset 0
   0 0 0.5px ...`.
 
 ### Shadows / elevation
@@ -219,9 +226,9 @@ The design system is built on three motifs:
 - **No inner shadows** anywhere.
 
 ### Transparency & blur
-- Used only on *floating* surfaces and the menu-bar dropdown — anywhere the
+- Used only on *floating* surfaces and the menu-bar dropdown, anywhere the
   underlying desktop should bleed through. The `--mp-hud-bg` token is
-  `rgba(248, 247, 244, 0.78)`; combined with `backdrop-filter: blur(24px)
+  `rgba(250, 251, 252, 0.78)`; combined with `backdrop-filter: blur(24px)
   saturate(180%)` it matches `.hudWindow`.
 - Cards inside windows are **fully opaque**. Don't double-blur.
 
@@ -231,18 +238,17 @@ The design system is built on three motifs:
   a subtle 1px hairline; never raw rectangles.
 - No grain, no sepia, no duotone.
 
-### Corner radii (highly intentional — mac-native)
-- 4px tags / chips
-- 6px buttons / inputs (matches `NSButton.bezelStyle = .rounded`)
-- 10px cards
-- **14px panels / sheets** (matches `panel.cornerRadius = 14` in
-  `MeetingPromptWindow.swift`)
-- 20px hero / marketing cards
-- Pill / dot: full-rounded
+### Corner radii (highly intentional, mac-native)
+- 4px tags / chips / checkbox
+- 8px inputs, menus, nav rows; **buttons are capsules** (full-rounded, macOS 26)
+- 14px cards
+- **18px panels / sheets** (matches `NSPanel cornerRadius`)
+- 22px hero / marketing cards
+- Pill / dot / capsule button: full-rounded
 
 ### Cards
-- Resting: `--mp-bg-raised` (white) + 1px hairline + 10px radius. **No shadow.**
-- Floating: `--mp-hud-bg` + 14px radius + `--mp-hud-shadow` + 0.5px stroke.
+- Resting: `--mp-bg-raised` (white) + 1px hairline + 14px radius. **No shadow.**
+- Floating: `--mp-hud-bg` + 18px radius + `--mp-hud-shadow` + 0.5px stroke.
 - Padding: 16 / 20 / 24 — never less than 12.
 - Content density: dense by default. Don't pad to "modern web".
 
