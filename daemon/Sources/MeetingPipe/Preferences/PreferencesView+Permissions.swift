@@ -20,6 +20,7 @@ struct PermissionsSectionView: View {
                 } label: {
                     Label("Re-check", systemImage: "arrow.clockwise")
                 }
+                .buttonStyle(.mpGhost)
             }
 
             SettingsGroup {
@@ -77,11 +78,11 @@ struct PermissionsSectionView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: MPRadius.md, style: .continuous)
                 .fill(Color(MPColors.signal600).opacity(0.10))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: MPRadius.md, style: .continuous)
                 .strokeBorder(Color(MPColors.signal600).opacity(0.18), lineWidth: 1)
         )
     }
@@ -167,18 +168,19 @@ private struct PermissionsCardRow: View {
         if isWorking {
             ProgressView().controlSize(.small).frame(width: 100, alignment: .trailing)
         } else {
+            // DSN28: all actions read as the neutral ghost capsule (the locked
+            // mockup). The amber "Needed" / red "Denied" status pill carries the
+            // urgency; a system-blue prominent button would also break One Signal.
             switch status {
             case .granted:
                 Button("Open Settings", action: onOpenSettings)
-                    .controlSize(.small)
+                    .buttonStyle(.mpGhost)
             case .denied:
                 Button("Open Settings", action: onOpenSettings)
-                    .controlSize(.small)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.mpGhost)
             case .notDetermined, .unknown:
                 Button("Request", action: onRequest)
-                    .controlSize(.small)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.mpGhost)
             }
         }
     }

@@ -19,7 +19,7 @@ struct SettingsSectionHeader<Trailing: View>: View {
         HStack(alignment: .firstTextBaseline, spacing: MPSpace.s4) {
             VStack(alignment: .leading, spacing: MPSpace.s1) {
                 Text(title)
-                    .font(.mpTextXL.weight(.semibold))
+                    .font(.mpTextLG.weight(.semibold)) // DSN28: 17 (the locked one-anchor-per-surface size), retuned down from mpTextXL
                 if let caption = caption {
                     Text(caption)
                         .font(.mpTextBase)
@@ -60,7 +60,7 @@ struct SettingsGroup<Content: View, Footer: View>: View {
                     .padding(.leading, 2)
             }
             VStack(spacing: 0) { content() }
-                .mpSurface(radius: 10) // DSN19: the one raised-card primitive (radius kept; DSN28 retunes to md)
+                .mpSurface() // DSN19 card primitive; DSN28 retuned the radius 10 -> md (14), the locked card radius
             footer()
                 .font(.mpTextSM)
                 .foregroundStyle(Color(MPColors.fgMuted))
@@ -139,9 +139,14 @@ struct SettingsToggleRow: View {
 
     var body: some View {
         SettingsRow(label, sublabel: sublabel, showsDivider: showsDivider) {
+            // DSN28: the locked mechanical toggle (DSN24) replaces the stock switch.
+            // The switch was innately accessible; the custom style is a Button, so
+            // re-attach the setting name + on/off value to keep VoiceOver's floor.
             Toggle("", isOn: $isOn)
                 .labelsHidden()
-                .toggleStyle(.switch)
+                .toggleStyle(.mechanical)
+                .accessibilityLabel(label)
+                .accessibilityValue(isOn ? "On" : "Off")
         }
     }
 }
@@ -359,6 +364,11 @@ struct SettingsStatusPill: View {
         .background(
             Capsule().fill(tone.fg.opacity(0.15))
         )
+        .overlay(
+            // DSN28: the locked pill carries a faint same-hue hairline (mockup: fill
+            // 15% currentColor under a 28% currentColor 0.5pt border).
+            Capsule().strokeBorder(tone.fg.opacity(0.28), lineWidth: 0.5)
+        )
     }
 }
 
@@ -460,11 +470,11 @@ struct SettingsHotkeyField: View {
             .padding(.vertical, 5)
             .frame(width: 200, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                RoundedRectangle(cornerRadius: MPRadius.sm, style: .continuous)
                     .fill(Color(NSColor.textBackgroundColor))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                RoundedRectangle(cornerRadius: MPRadius.sm, style: .continuous)
                     .strokeBorder(
                         isCapturing
                             ? Color(MPColors.signal600)
@@ -573,11 +583,11 @@ struct SettingsSecretField: View {
                     .foregroundStyle(isVisible ? Color(MPColors.signal600) : Color(MPColors.fgMuted))
                     .frame(width: 30, height: 22)
                     .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        RoundedRectangle(cornerRadius: MPRadius.sm, style: .continuous)
                             .fill(Color(MPColors.bgSunk))
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        RoundedRectangle(cornerRadius: MPRadius.sm, style: .continuous)
                             .strokeBorder(Color(MPColors.border), lineWidth: 1)
                     )
             }

@@ -89,4 +89,16 @@ final class ControlKitTests: XCTestCase {
         XCTAssertEqual(button.intrinsicContentSize.height, 26)
         XCTAssertEqual(button.layer?.cornerRadius, MPRadius.full) // capsule, not the old sm bezel
     }
+
+    // MARK: - SwiftUI capsule/icon button geometry (DSN28 Preferences port)
+
+    func test_mpButtonMetrics_match_the_locked_small_buttons() {
+        // The SwiftUI `.mpGhost` / `.mpIcon` styles mirror the locked PWSmallButton /
+        // PWIconButton: 24pt-tall controls (the ghost capsule padded 12pt each side,
+        // the icon a 24x24 box) taking the blessed 0.97 press scale.
+        XCTAssertEqual(MPButtonMetrics.height, 24)
+        XCTAssertEqual(MPButtonMetrics.ghostPadding, 12)
+        XCTAssertEqual(MPButtonMetrics.iconSize, 24)
+        XCTAssertEqual(MPButtonMetrics.pressScale, 0.97, accuracy: 0.001)
+    }
 }

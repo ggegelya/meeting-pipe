@@ -16,15 +16,18 @@ struct AdvancedSectionView: View {
                     Button("Open in editor") {
                         NSWorkspace.shared.open(Config.defaultPath)
                     }
+                    .buttonStyle(.mpGhost)
                     Button("Reveal in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([Config.defaultPath])
                     }
+                    .buttonStyle(.mpGhost)
                 }
                 SettingsRow("Logs folder",
                     sublabel: "Rotated daily. Used by mp doctor and bug reports.") {
                     Button("Open logs") {
                         NSWorkspace.shared.open(Log.logsDir)
                     }
+                    .buttonStyle(.mpGhost)
                 }
             }
 

@@ -15,6 +15,7 @@ struct IntegrationsSectionView: View {
                 } label: {
                     Label("Run doctor…", systemImage: "stethoscope")
                 }
+                .buttonStyle(.mpGhost)
             }
 
             SettingsGroup("Anthropic") {

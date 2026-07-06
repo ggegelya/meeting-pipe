@@ -16,13 +16,13 @@ struct RecordingSectionView: View {
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
                     Button("Choose…") { chooseOutputDir() }
+                        .buttonStyle(.mpGhost)
                     Button {
                         revealOutputDir()
                     } label: {
                         Image(systemName: "arrow.up.right.square")
-                            .frame(width: 20)
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.mpIcon)
                     .help("Reveal in Finder")
                 }
                 SettingsRow("Sample rate",
@@ -93,6 +93,7 @@ struct RecordingSectionView: View {
                             .font(.system(.body, design: .monospaced))
                             .onSubmit(addBundle)
                         Button("Add", action: addBundle)
+                            .buttonStyle(.mpGhost)
                             .disabled(newConsentBundleID.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
                 }

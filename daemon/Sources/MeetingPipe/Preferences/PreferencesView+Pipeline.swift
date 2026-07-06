@@ -94,6 +94,7 @@ struct PipelineSectionView: View {
                         VoiceprintProfile.reset()
                         voiceprintMeetings = 0
                     }
+                    .buttonStyle(.mpGhost)
                     .disabled(voiceprintMeetings == 0)
                 }
             }
@@ -250,6 +251,7 @@ struct PipelineSectionView: View {
                 Button(promptLoading ? "Loading…" : "View prompt") {
                     Task { await loadPrompt() }
                 }
+                .buttonStyle(.mpGhost)
                 .disabled(promptLoading)
             }
             Spacer(minLength: 0)
