@@ -41,6 +41,7 @@ from .diarize import (
 from .roster import RosterStore
 from .voiceprint import VoiceprintStore
 from . import events
+from .glossary import load_glossary
 from .markdown import render_markdown
 from .publish_router import fanout as publish_fanout, publish_state
 from .summarize import summarize
@@ -178,6 +179,42 @@ after raising `summarization.skip_above_chars` in
     return bundle
 
 
+def _apply_glossary(wav: Path, t: dict[str, Path]) -> None:
+    """ASR1: normalize custom vocabulary in the finalized transcript.
+
+    A pure local transform (no engine call, no egress) applied before
+    summarize / embed ever see the text, so a recurring proper noun mangled by
+    ASR is spelled consistently across the transcript, summary, and embedding
+    index. Runs only on this fresh finalize (transcripts stay write-once); a
+    no-op when no glossary is configured or nothing matches, in which case the
+    finalized files are left byte-identical.
+    """
+    glossary = load_glossary(wav)
+    if not glossary:
+        return
+    structured = json.loads(t["json"].read_text(encoding="utf-8"))
+    segments = structured.get("segments") or []
+    exact = fuzzy = 0
+    changed = False
+    for seg in segments:
+        text = seg.get("text")
+        if not text:
+            continue
+        new, e, f = glossary.apply(text)
+        exact += e
+        fuzzy += f
+        if new != text:
+            seg["text"] = new
+            changed = True
+    if not changed:
+        return
+    t["json"].write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
+    t["md"].write_text(render_markdown(structured), encoding="utf-8")
+    events.emit("pipeline", "glossary_applied", exact=exact, fuzzy=fuzzy, segments=len(segments))
+    log.info("glossary: %d exact + %d fuzzy substitutions across %d segments",
+             exact, fuzzy, len(segments))
+
+
 def run_all(
     wav: Path,
     cfg: Config | None = None,
@@ -248,6 +285,9 @@ def _run_all_inner(
     _stage("finalize")
     events.emit("pipeline", "stage_started", stage="finalize", source=source)
     t = _finalize_streamed_transcript(wav, streamed, user_label=cfg.summarization.user_label)
+    # ASR1: custom-vocabulary normalization before any downstream stage (BYO /
+    # long-meeting bundle, Apple hand-off, summarize, publish) reads the text.
+    _apply_glossary(wav, t)
     events.emit("pipeline", "stage_completed", stage="finalize", md=str(t["md"]))
 
     # Short-circuit #1: empty transcript (silent audio, broken capture).

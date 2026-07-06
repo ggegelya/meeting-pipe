@@ -1,0 +1,34 @@
+# Copy to ~/.config/meeting-pipe/glossary.toml and edit.
+#
+# Custom vocabulary (ASR1). The pipeline reads this at transcript finalize and
+# normalizes recurring proper nouns / code-switched terms BEFORE summarize and
+# embed see the text, so a name mangled by ASR is spelled the same way across
+# the transcript, summary, embeddings, and the Library. Applied only to NEW
+# meetings; existing transcripts are write-once and are re-normalized only by
+# an explicit regenerate.
+#
+# Matching is case-insensitive, whole-word (Unicode / Cyrillic-aware), and
+# longest-match-first. Left side = "as heard" (the mangled form to catch),
+# right side = the canonical spelling to write. List every common mishearing.
+
+# Global terms: applied to every meeting.
+[terms]
+"kubernetes" = "Kubernetes"
+"cube kernetes" = "Kubernetes"
+"post gres" = "PostgreSQL"
+"grafana" = "Grafana"
+
+# Per-workflow terms, keyed by the workflow's name (as shown in the app),
+# applied only to that workflow's meetings on top of the global terms. On a key
+# clash the per-workflow value wins. Renaming a workflow means updating the key.
+[workflow."General".terms]
+# "acme" = "ACME Corp"
+
+# Optional fuzzy stage for proper nouns. OFF by default: it corrects a single
+# token within `max_distance` edits of a canonical name above (single-token
+# names, length >= 4), which can occasionally fire on a real, different word. A
+# wrong substitution is worse than a missed one, so enable it only if the exact
+# table is not catching enough.
+[fuzzy]
+enabled = false
+max_distance = 1
