@@ -70,59 +70,75 @@ final class ContrastFloorTests: XCTestCase {
     /// fg + fgMuted on every surface; fgSubtle on the two canvases. AA body floor.
     func test_body_text_tokens_meet_AA_both_appearances() {
         // Light.
-        assertPair(MPColors.fg, "fg", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 17.35)
-        assertPair(MPColors.fg, "fg", on: MPColors.bgRaised, "bgRaised", dark: false, floor: 4.5, pin: 18.11)
-        assertPair(MPColors.fg, "fg", on: MPColors.bgSunk, "bgSunk", dark: false, floor: 4.5, pin: 16.18)
-        assertPair(MPColors.fgMuted, "fgMuted", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 7.89)
-        assertPair(MPColors.fgMuted, "fgMuted", on: MPColors.bgRaised, "bgRaised", dark: false, floor: 4.5, pin: 8.23)
-        assertPair(MPColors.fgMuted, "fgMuted", on: MPColors.bgSunk, "bgSunk", dark: false, floor: 4.5, pin: 7.35)
-        assertPair(MPColors.fgSubtle, "fgSubtle", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 4.50)
-        assertPair(MPColors.fgSubtle, "fgSubtle", on: MPColors.bgRaised, "bgRaised", dark: false, floor: 4.5, pin: 4.70)
+        assertPair(MPColors.fg, "fg", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 16.44)
+        assertPair(MPColors.fg, "fg", on: MPColors.bgRaised, "bgRaised", dark: false, floor: 4.5, pin: 17.77)
+        assertPair(MPColors.fg, "fg", on: MPColors.bgSunk, "bgSunk", dark: false, floor: 4.5, pin: 15.29)
+        assertPair(MPColors.fgMuted, "fgMuted", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 5.94)
+        assertPair(MPColors.fgMuted, "fgMuted", on: MPColors.bgRaised, "bgRaised", dark: false, floor: 4.5, pin: 6.42)
+        assertPair(MPColors.fgMuted, "fgMuted", on: MPColors.bgSunk, "bgSunk", dark: false, floor: 4.5, pin: 5.53)
+        assertPair(MPColors.fgSubtle, "fgSubtle", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 4.91)
+        assertPair(MPColors.fgSubtle, "fgSubtle", on: MPColors.bgRaised, "bgRaised", dark: false, floor: 4.5, pin: 5.31)
         // Dark.
-        assertPair(MPColors.fg, "fg", on: MPColors.bg, "bg", dark: true, floor: 4.5, pin: 15.24)
-        assertPair(MPColors.fg, "fg", on: MPColors.bgRaised, "bgRaised", dark: true, floor: 4.5, pin: 13.24)
-        assertPair(MPColors.fg, "fg", on: MPColors.bgSunk, "bgSunk", dark: true, floor: 4.5, pin: 16.30)
-        assertPair(MPColors.fgMuted, "fgMuted", on: MPColors.bg, "bg", dark: true, floor: 4.5, pin: 9.11)
-        assertPair(MPColors.fgMuted, "fgMuted", on: MPColors.bgRaised, "bgRaised", dark: true, floor: 4.5, pin: 7.91)
-        assertPair(MPColors.fgMuted, "fgMuted", on: MPColors.bgSunk, "bgSunk", dark: true, floor: 4.5, pin: 9.74)
-        assertPair(MPColors.fgSubtle, "fgSubtle", on: MPColors.bg, "bg", dark: true, floor: 4.5, pin: 5.36)
-        assertPair(MPColors.fgSubtle, "fgSubtle", on: MPColors.bgRaised, "bgRaised", dark: true, floor: 4.5, pin: 4.66)
+        assertPair(MPColors.fg, "fg", on: MPColors.bg, "bg", dark: true, floor: 4.5, pin: 15.07)
+        assertPair(MPColors.fg, "fg", on: MPColors.bgRaised, "bgRaised", dark: true, floor: 4.5, pin: 13.03)
+        assertPair(MPColors.fg, "fg", on: MPColors.bgSunk, "bgSunk", dark: true, floor: 4.5, pin: 16.14)
+        assertPair(MPColors.fgMuted, "fgMuted", on: MPColors.bg, "bg", dark: true, floor: 4.5, pin: 7.71)
+        assertPair(MPColors.fgMuted, "fgMuted", on: MPColors.bgRaised, "bgRaised", dark: true, floor: 4.5, pin: 6.66)
+        assertPair(MPColors.fgMuted, "fgMuted", on: MPColors.bgSunk, "bgSunk", dark: true, floor: 4.5, pin: 8.26)
+        assertPair(MPColors.fgSubtle, "fgSubtle", on: MPColors.bg, "bg", dark: true, floor: 4.5, pin: 5.25)
+        assertPair(MPColors.fgSubtle, "fgSubtle", on: MPColors.bgRaised, "bgRaised", dark: true, floor: 4.5, pin: 4.54)
     }
 
     /// fgSubtle in the shallow bgSunk well: 3:1 UI floor (UX14 keeps real sunk-well text on fgMuted).
     func test_fgSubtle_in_sunk_well_clears_ui_floor() {
-        assertPair(MPColors.fgSubtle, "fgSubtle", on: MPColors.bgSunk, "bgSunk", dark: false, floor: 3.0, pin: 4.20)
-        assertPair(MPColors.fgSubtle, "fgSubtle", on: MPColors.bgSunk, "bgSunk", dark: true, floor: 3.0, pin: 5.73)
+        assertPair(MPColors.fgSubtle, "fgSubtle", on: MPColors.bgSunk, "bgSunk", dark: false, floor: 3.0, pin: 4.57)
+        assertPair(MPColors.fgSubtle, "fgSubtle", on: MPColors.bgSunk, "bgSunk", dark: true, floor: 3.0, pin: 5.63)
     }
 
     /// Accent + semantic text: AA in light, 3:1 (icon-paired UI status tone) in dark.
     func test_accent_text_tokens() {
         // Light: full AA body floor.
-        assertPair(MPColors.signalAccent, "signalAccent", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 5.78)
-        assertPair(MPColors.signalAccent, "signalAccent", on: MPColors.bgRaised, "bgRaised", dark: false, floor: 4.5, pin: 6.03)
-        assertPair(MPColors.successAccent, "successAccent", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 5.81)
+        assertPair(MPColors.signalAccent, "signalAccent", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 5.67)
+        assertPair(MPColors.signalAccent, "signalAccent", on: MPColors.bgRaised, "bgRaised", dark: false, floor: 4.5, pin: 6.13)
+        assertPair(MPColors.successAccent, "successAccent", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 5.61)
         assertPair(MPColors.successAccent, "successAccent", on: MPColors.bgRaised, "bgRaised", dark: false, floor: 4.5, pin: 6.06)
-        assertPair(MPColors.warningAccent, "warningAccent", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 5.68)
+        assertPair(MPColors.warningAccent, "warningAccent", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 5.48)
         assertPair(MPColors.warningAccent, "warningAccent", on: MPColors.bgRaised, "bgRaised", dark: false, floor: 4.5, pin: 5.93)
-        assertPair(MPColors.danger600, "danger600", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 5.23)
+        assertPair(MPColors.danger600, "danger600", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 5.05)
         assertPair(MPColors.danger600, "danger600", on: MPColors.bgRaised, "bgRaised", dark: false, floor: 4.5, pin: 5.46)
-        // Dark: 3:1 UI floor. danger600 on a raised card (2.74) is the documented
-        // gap and is asserted only on the base canvas here.
-        assertPair(MPColors.signalAccent, "signalAccent", on: MPColors.bg, "bg", dark: true, floor: 3.0, pin: 4.18)
-        assertPair(MPColors.signalAccent, "signalAccent", on: MPColors.bgRaised, "bgRaised", dark: true, floor: 3.0, pin: 3.63)
-        assertPair(MPColors.successAccent, "successAccent", on: MPColors.bg, "bg", dark: true, floor: 3.0, pin: 4.18)
-        assertPair(MPColors.successAccent, "successAccent", on: MPColors.bgRaised, "bgRaised", dark: true, floor: 3.0, pin: 3.63)
-        assertPair(MPColors.warningAccent, "warningAccent", on: MPColors.bg, "bg", dark: true, floor: 3.0, pin: 4.38)
-        assertPair(MPColors.warningAccent, "warningAccent", on: MPColors.bgRaised, "bgRaised", dark: true, floor: 3.0, pin: 3.81)
-        assertPair(MPColors.danger600, "danger600", on: MPColors.bg, "bg", dark: true, floor: 3.0, pin: 3.16)
+        // Dark: signalAccent now resolves to the bright display teal (#36C6B8, DSN23)
+        // and clears the 4.5 body floor; success/warning/danger keep the 3:1
+        // icon-paired UI floor (semantic state is never colour-only). danger600 on a
+        // raised card (~2.7) stays the documented gap, asserted only on the base canvas.
+        assertPair(MPColors.signalAccent, "signalAccent", on: MPColors.bg, "bg", dark: true, floor: 4.5, pin: 7.98)
+        assertPair(MPColors.signalAccent, "signalAccent", on: MPColors.bgRaised, "bgRaised", dark: true, floor: 4.5, pin: 6.90)
+        assertPair(MPColors.successAccent, "successAccent", on: MPColors.bg, "bg", dark: true, floor: 3.0, pin: 4.10)
+        assertPair(MPColors.successAccent, "successAccent", on: MPColors.bgRaised, "bgRaised", dark: true, floor: 3.0, pin: 3.54)
+        assertPair(MPColors.warningAccent, "warningAccent", on: MPColors.bg, "bg", dark: true, floor: 3.0, pin: 4.30)
+        assertPair(MPColors.warningAccent, "warningAccent", on: MPColors.bgRaised, "bgRaised", dark: true, floor: 3.0, pin: 3.71)
+        assertPair(MPColors.danger600, "danger600", on: MPColors.bg, "bg", dark: true, floor: 3.0, pin: 3.09)
     }
 
     /// White button labels on the deep light-mode fills (UX14 darkened these off
     /// the brighter 600 steps, which fail white-on-fill at 4.12 / 3.91).
     func test_white_label_on_deep_fills() {
-        assertPair(MPColors.fgOnSignal, "white", on: MPColors.signal700, "signal700", dark: false, floor: 4.5, pin: 6.03)
+        assertPair(MPColors.fgOnSignal, "white", on: MPColors.signal700, "signal700", dark: false, floor: 4.5, pin: 6.13)
         assertPair(MPColors.fgOnSignal, "white", on: MPColors.pulse700, "pulse700", dark: false, floor: 4.5, pin: 5.59)
         assertPair(MPColors.fgOnSignal, "white", on: MPColors.success700, "success700", dark: false, floor: 4.5, pin: 6.06)
         assertPair(MPColors.fgOnSignal, "white", on: MPColors.warning700, "warning700", dark: false, floor: 4.5, pin: 5.93)
+    }
+
+    /// DSN23: white on the new deep signal fill (primary buttons, active scope row).
+    /// The fill is fixed in both modes, so the ratio holds across appearances.
+    func test_white_label_on_signal_fill() {
+        assertPair(MPColors.fgOnSignal, "white", on: MPColors.signalFill, "signalFill", dark: false, floor: 4.5, pin: 4.88)
+        assertPair(MPColors.fgOnSignal, "white", on: MPColors.signalFill, "signalFill", dark: true, floor: 4.5, pin: 4.88)
+    }
+
+    /// DSN23: the "Instrument" record-action label on its fill. Light: white on the
+    /// deep teal fill. Dark: a near-black backlit label on the brighter fill.
+    func test_record_action_label_on_fill() {
+        assertPair(MPColors.recordLabel, "recordLabel", on: MPColors.recordFill, "recordFill", dark: false, floor: 4.5, pin: 4.88)
+        assertPair(MPColors.recordLabel, "recordLabel", on: MPColors.recordFill, "recordFill", dark: true, floor: 4.5, pin: 4.88)
     }
 }

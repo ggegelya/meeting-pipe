@@ -8,20 +8,31 @@ import XCTest
 /// recording-dot colour) is never a workflow swatch.
 final class DesignTokensTests: XCTestCase {
 
+    /// The swatches are light-canonical hexes (stored as `Workflow.color`), and
+    /// `signal600` is now appearance-dynamic (DSN23: it flips bright in dark), so
+    /// resolve every token hex under an explicit light appearance before comparing.
+    private func lightHex(_ color: NSColor) -> String {
+        var hex = ""
+        NSAppearance(named: .aqua)!.performAsCurrentDrawingAppearance {
+            hex = HexColor.hexString(from: color)
+        }
+        return hex
+    }
+
     func test_workflowSwatches_match_their_tokens() {
         let expected: [String] = [
-            HexColor.hexString(from: MPColors.signal600),  // teal (default)
-            HexColor.hexString(from: MPColors.signal700),  // deep teal
-            HexColor.hexString(from: MPColors.ink600),     // slate
-            HexColor.hexString(from: MPColors.ink500),     // mid ink
-            HexColor.hexString(from: MPColors.success600), // green
-            HexColor.hexString(from: MPColors.warning600), // amber
+            lightHex(MPColors.signal600),  // teal (default)
+            lightHex(MPColors.signal700),  // deep teal
+            lightHex(MPColors.ink600),     // slate
+            lightHex(MPColors.ink500),     // mid ink
+            lightHex(MPColors.success600), // green
+            lightHex(MPColors.warning600), // amber
         ]
         XCTAssertEqual(MPColors.workflowSwatches, expected)
     }
 
     func test_default_workflow_colour_is_teal() {
-        XCTAssertEqual(MPColors.defaultWorkflowHex, HexColor.hexString(from: MPColors.signal600))
+        XCTAssertEqual(MPColors.defaultWorkflowHex, lightHex(MPColors.signal600))
         XCTAssertEqual(MPColors.defaultWorkflowHex, MPColors.workflowSwatches.first)
     }
 

@@ -3,35 +3,72 @@ import SwiftUI
 
 /// Design tokens mirroring `design/colors_and_type.css`. Source of truth is the CSS file; update here when a token changes there. Spot-checked by `DesignTokensTests`. Naming: `--mp-ink-900` -> `MPColors.ink900`. Prefer the semantic accessors (`MPColors.fg`, `MPColors.bg`) over raw palette steps - they auto-flip in dark mode.
 enum MPColors {
-    // MARK: Ink (warm near-blacks for foreground)
-    static let ink900 = NSColor(srgbRed: 0x14/255.0, green: 0x16/255.0, blue: 0x1A/255.0, alpha: 1)
-    static let ink800 = NSColor(srgbRed: 0x1F/255.0, green: 0x22/255.0, blue: 0x27/255.0, alpha: 1)
-    static let ink700 = NSColor(srgbRed: 0x2C/255.0, green: 0x30/255.0, blue: 0x37/255.0, alpha: 1)
-    static let ink600 = NSColor(srgbRed: 0x4A/255.0, green: 0x4F/255.0, blue: 0x58/255.0, alpha: 1)
-    static let ink500 = NSColor(srgbRed: 0x6E/255.0, green: 0x74/255.0, blue: 0x7F/255.0, alpha: 1)
-    static let ink400 = NSColor(srgbRed: 0x90/255.0, green: 0x98/255.0, blue: 0xA4/255.0, alpha: 1)
-    static let ink300 = NSColor(srgbRed: 0xB7/255.0, green: 0xBD/255.0, blue: 0xC6/255.0, alpha: 1)
-    static let ink200 = NSColor(srgbRed: 0xD8/255.0, green: 0xDC/255.0, blue: 0xE2/255.0, alpha: 1)
-    static let ink100 = NSColor(srgbRed: 0xEC/255.0, green: 0xEE/255.0, blue: 0xF2/255.0, alpha: 1)
+    // MARK: Ink (cool near-blacks for foreground - Liquid Quiet porcelain, DSN20-23)
+    static let ink900 = NSColor(srgbRed: 0x16/255.0, green: 0x18/255.0, blue: 0x1C/255.0, alpha: 1)
+    static let ink800 = NSColor(srgbRed: 0x20/255.0, green: 0x23/255.0, blue: 0x29/255.0, alpha: 1)
+    static let ink700 = NSColor(srgbRed: 0x2D/255.0, green: 0x32/255.0, blue: 0x3A/255.0, alpha: 1)
+    static let ink600 = NSColor(srgbRed: 0x56/255.0, green: 0x60/255.0, blue: 0x68/255.0, alpha: 1)
+    static let ink500 = NSColor(srgbRed: 0x64/255.0, green: 0x6C/255.0, blue: 0x77/255.0, alpha: 1)
+    static let ink400 = NSColor(srgbRed: 0x83/255.0, green: 0x8B/255.0, blue: 0x95/255.0, alpha: 1)
+    static let ink300 = NSColor(srgbRed: 0xB9/255.0, green: 0xBF/255.0, blue: 0xC7/255.0, alpha: 1)
+    static let ink200 = NSColor(srgbRed: 0xD9/255.0, green: 0xDD/255.0, blue: 0xE2/255.0, alpha: 1)
+    static let ink100 = NSColor(srgbRed: 0xEC/255.0, green: 0xEE/255.0, blue: 0xF1/255.0, alpha: 1)
     static let ink50  = NSColor(srgbRed: 0xF5/255.0, green: 0xF6/255.0, blue: 0xF8/255.0, alpha: 1)
 
-    // MARK: Paper (canvas)
-    static let paper       = NSColor(srgbRed: 0xFB/255.0, green: 0xFA/255.0, blue: 0xF7/255.0, alpha: 1)
-    static let paperSunk   = NSColor(srgbRed: 0xF4/255.0, green: 0xF2/255.0, blue: 0xEC/255.0, alpha: 1)
+    // MARK: Paper (canvas - cool porcelain, replaces the retired warm paper)
+    static let paper       = NSColor(srgbRed: 0xF5/255.0, green: 0xF6/255.0, blue: 0xF8/255.0, alpha: 1)
+    static let paperSunk   = NSColor(srgbRed: 0xEC/255.0, green: 0xEE/255.0, blue: 0xF1/255.0, alpha: 1)
     static let paperRaised = NSColor.white
 
-    // MARK: Signal (teal - the "live"/on-air color)
-    static let signal700 = NSColor(srgbRed: 0x0A/255.0, green: 0x6F/255.0, blue: 0x67/255.0, alpha: 1)
-    static let signal600 = NSColor(srgbRed: 0x0E/255.0, green: 0x8C/255.0, blue: 0x82/255.0, alpha: 1) // primary
+    // MARK: Signal (teal - the "live"/on-air color). Two roles (DSN20): a "display"
+    // tone (`signal600`) for text/graphics/selection, and a deeper "fill" tone
+    // (`signalFill`, both modes) for teal surfaces that carry a white label, so
+    // white clears 4.5:1 (one token can't be both bright-in-dark and white-legible).
+    static let signal700 = NSColor(srgbRed: 0x0A/255.0, green: 0x6E/255.0, blue: 0x64/255.0, alpha: 1)
+    /// Display teal. Flips bright in dark so it reads as lit (DSN20 "display" role):
+    /// #0E9488 on paper, #36C6B8 on the dark canvas. Graphics / selection / dots /
+    /// focus read this; `signalFill` (fixed, deep) is the white-label surface tone.
+    /// This dark-bright leg is the dark-accent pass the DSN18 ratio table left owner-owed.
+    static let signal600 = NSColor(name: "mp.signal.display") { appearance in
+        appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
+            ? NSColor(srgbRed: 0x36/255.0, green: 0xC6/255.0, blue: 0xB8/255.0, alpha: 1)
+            : NSColor(srgbRed: 0x0E/255.0, green: 0x94/255.0, blue: 0x88/255.0, alpha: 1)
+    }
+    static let signalFill = NSColor(srgbRed: 0x0C/255.0, green: 0x7F/255.0, blue: 0x74/255.0, alpha: 1) // white-label teal surfaces (both modes)
     static let signal500 = NSColor(srgbRed: 0x14/255.0, green: 0xA8/255.0, blue: 0x9B/255.0, alpha: 1)
     static let signal400 = NSColor(srgbRed: 0x4F/255.0, green: 0xC7/255.0, blue: 0xBC/255.0, alpha: 1)
-    static let signal100 = NSColor(srgbRed: 0xDC/255.0, green: 0xF1/255.0, blue: 0xEF/255.0, alpha: 1)
+    static let signal100 = NSColor(srgbRed: 0xDF/255.0, green: 0xF3/255.0, blue: 0xF0/255.0, alpha: 1)
 
     // MARK: Pulse (recording dot - never decorative)
     static let pulse700 = NSColor(srgbRed: 0xBE/255.0, green: 0x35/255.0, blue: 0x3A/255.0, alpha: 1) // deep coral: light-mode legible Stop label + recording/failed pill text (UX14)
     static let pulse600 = NSColor(srgbRed: 0xE5/255.0, green: 0x48/255.0, blue: 0x4D/255.0, alpha: 1)
     static let pulse500 = NSColor(srgbRed: 0xF5/255.0, green: 0x59/255.0, blue: 0x5E/255.0, alpha: 1)
     static let pulse100 = NSColor(srgbRed: 0xFF/255.0, green: 0xE4/255.0, blue: 0xE4/255.0, alpha: 1)
+
+    // MARK: On-air / record (DSN21 "Instrument", capture surfaces only).
+    /// The on-air LED accent: light-emitting elements only (meter segments,
+    /// live-level dots, the record-key ring, the active mic waveform). Deliberately
+    /// bright (reads as a lit LED); meaning is always carried by the coral core + a
+    /// text label, so it stays decorative and sits below the 3:1 UI floor on white
+    /// by design (like a real LED). Brightens further in dark.
+    static let onair600 = NSColor(name: "mp.onair") { appearance in
+        appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
+            ? NSColor(srgbRed: 0x2B/255.0, green: 0xE3/255.0, blue: 0xCC/255.0, alpha: 1)
+            : NSColor(srgbRed: 0x0F/255.0, green: 0xBF/255.0, blue: 0xAC/255.0, alpha: 1)
+    }
+    /// Primary record-action fill + label. Light: deep-teal fill (== signalFill), white
+    /// label (clears 4.5:1). Dark: reads "backlit" - a brighter fill with a near-black
+    /// label (#062A25 on #0FA392 clears 4.5:1).
+    static let recordFill = NSColor(name: "mp.record.fill") { appearance in
+        appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
+            ? NSColor(srgbRed: 0x0F/255.0, green: 0xA3/255.0, blue: 0x92/255.0, alpha: 1)
+            : NSColor(srgbRed: 0x0C/255.0, green: 0x7F/255.0, blue: 0x74/255.0, alpha: 1)
+    }
+    static let recordLabel = NSColor(name: "mp.record.label") { appearance in
+        appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
+            ? NSColor(srgbRed: 0x06/255.0, green: 0x2A/255.0, blue: 0x25/255.0, alpha: 1)
+            : NSColor.white
+    }
 
     // MARK: Semantic states (mirror `--mp-success-*` / `--mp-warning-*` / `--mp-danger-*`). Foreground tints only - never full toast backgrounds (design rule: "Semantic states appear only in inline status rows"). The `700` steps are the light-mode-legible deep variants of the `600` tones (UX14); use them as text on paper, the `600` step in dark.
     static let success700 = NSColor(srgbRed: 0x16/255.0, green: 0x71/255.0, blue: 0x3D/255.0, alpha: 1) // light-mode legible (UX14)
@@ -87,10 +124,10 @@ enum MPColors {
     /// `DesignTokensTests`); teal is the default. Pulse-coral (#E5484D) is
     /// deliberately absent - it is reserved for the live recording dot.
     static let workflowSwatches: [String] = [
-        "#0E8C82",  // signal600 - teal (default)
-        "#0A6F67",  // signal700 - deep teal
-        "#4A4F58",  // ink600 - slate
-        "#6E747F",  // ink500 - mid ink
+        "#0E9488",  // signal600 - teal (default)
+        "#0A6E64",  // signal700 - deep teal
+        "#566068",  // ink600 - slate
+        "#646C77",  // ink500 - mid ink
         "#1F8F4E",  // success600 - green
         "#B27300",  // warning600 - amber
     ]
@@ -102,12 +139,12 @@ enum MPColors {
     /// `--mp-fg` / dark `#F0F1F3`.
     static let fg = NSColor(name: "mp.fg") { appearance in
         appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
-            ? NSColor(srgbRed: 0xF0/255.0, green: 0xF1/255.0, blue: 0xF3/255.0, alpha: 1)
+            ? NSColor(srgbRed: 0xF1/255.0, green: 0xF2/255.0, blue: 0xF4/255.0, alpha: 1)
             : ink900
     }
     static let fgMuted = NSColor(name: "mp.fg.muted") { appearance in
         appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
-            ? ink300
+            ? NSColor(srgbRed: 0xA9/255.0, green: 0xB0/255.0, blue: 0xB8/255.0, alpha: 1)
             : ink600
     }
     static let fgSubtle = NSColor(name: "mp.fg.subtle") { appearance in
@@ -135,29 +172,29 @@ enum MPColors {
 
     static let bg = NSColor(name: "mp.bg") { appearance in
         appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
-            ? NSColor(srgbRed: 0x1A/255.0, green: 0x1B/255.0, blue: 0x1E/255.0, alpha: 1)
+            ? NSColor(srgbRed: 0x1B/255.0, green: 0x1D/255.0, blue: 0x21/255.0, alpha: 1)
             : paper
     }
     static let bgRaised = NSColor(name: "mp.bg.raised") { appearance in
         appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
-            ? NSColor(srgbRed: 0x25/255.0, green: 0x27/255.0, blue: 0x2B/255.0, alpha: 1)
+            ? NSColor(srgbRed: 0x26/255.0, green: 0x29/255.0, blue: 0x2E/255.0, alpha: 1)
             : paperRaised
     }
     static let bgSunk = NSColor(name: "mp.bg.sunk") { appearance in
         appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
-            ? NSColor(srgbRed: 0x13/255.0, green: 0x14/255.0, blue: 0x17/255.0, alpha: 1)
+            ? NSColor(srgbRed: 0x15/255.0, green: 0x16/255.0, blue: 0x1A/255.0, alpha: 1)
             : paperSunk
     }
 
     static let border = NSColor(name: "mp.border") { appearance in
         appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
-            ? NSColor.white.withAlphaComponent(0.08)
+            ? NSColor.white.withAlphaComponent(0.09)
             : NSColor.black.withAlphaComponent(0.10)
     }
     static let borderStrong = NSColor(name: "mp.border.strong") { appearance in
         appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
             ? NSColor.white.withAlphaComponent(0.16)
-            : NSColor.black.withAlphaComponent(0.18)
+            : NSColor.black.withAlphaComponent(0.16)
     }
     static let borderFaint = NSColor(name: "mp.border.faint") { appearance in
         appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
@@ -191,7 +228,7 @@ extension Color {
     /// replaces the macOS system-blue selection highlight (which the app `.tint`
     /// can't recolor). Translucent rather than the flat `signal100` token so it
     /// reads on both the paper and dark canvases; ~15% approximates the design
-    /// spec's #DCF1EF wash over paper. One constant so the row and sidebar can't drift.
+    /// spec's #DFF3F0 wash over paper. One constant so the row and sidebar can't drift.
     static let mpSelectionWash = Color(nsColor: MPColors.signal600).opacity(0.15)
 }
 
@@ -200,8 +237,21 @@ extension Color {
 /// TECH-DSN3 guard rejects new font-size literals outside this file). Fixed, not
 /// Dynamic-Type, to match the existing metadata rows.
 extension Font {
-    /// 11pt, the extra-small caption/label size (`MPType.textXS`).
-    static let mpTextXS = Font.system(size: MPType.textXS)
+    /// Fixed-size tokens spanning the `MPType` ramp, so a call site sets its size
+    /// through a token (`.font(.mpTextMD)`) instead of a raw `.system(size:)` literal
+    /// (the TECH-DSN3 guard rejects new font-size literals outside this file). Add a
+    /// weight with `.mpTextMD.weight(.semibold)`, mono digits with
+    /// `.mpTextBase.monospacedDigit()`. Fixed, not Dynamic-Type, to match the
+    /// existing metadata rows.
+    static let mpTextXS   = Font.system(size: MPType.textXS)    // 11
+    static let mpTextSM   = Font.system(size: MPType.textSM)    // 12
+    static let mpTextBase = Font.system(size: MPType.textBase)  // 13
+    static let mpTextMD   = Font.system(size: MPType.textMD)    // 15
+    static let mpTextLG   = Font.system(size: MPType.textLG)    // 17
+    static let mpTextXL   = Font.system(size: MPType.textXL)    // 22
+    static let mpText2XL  = Font.system(size: MPType.text2XL)   // 28
+    static let mpText3XL  = Font.system(size: MPType.text3XL)   // 40
+    static let mpText4XL  = Font.system(size: MPType.text4XL)   // 56
 }
 
 /// Same tokens as a `ShapeStyle` leading-dot, so `.foregroundStyle(.mpDanger)`
@@ -264,13 +314,15 @@ enum MPSpace {
     static let s16: CGFloat = 64
 }
 
-/// Corner radii, mirrors `--mp-radius-*`.
+/// Corner radii, mirrors `--mp-radius-*`. macOS 26 (DSN20): larger, concentric
+/// radii; buttons are capsules (`full`), inputs stay rectangular at `sm`.
 enum MPRadius {
-    static let xs: CGFloat = 4    // chips, tags
-    static let sm: CGFloat = 6    // buttons, inputs
-    static let md: CGFloat = 10   // cards
-    static let lg: CGFloat = 14   // panels / sheets - matches NSPanel cornerRadius
-    static let xl: CGFloat = 20   // hero cards
+    static let xs: CGFloat = 4     // chips, tags, checkbox
+    static let sm: CGFloat = 8     // inputs, menus, nav rows
+    static let md: CGFloat = 14    // cards
+    static let lg: CGFloat = 18    // panels / sheets, windows
+    static let xl: CGFloat = 22    // large hero cards
+    static let full: CGFloat = 999 // pills, dots, capsule buttons
 }
 
 /// Motion durations and easing, mirrors `--mp-dur-*` and `--mp-ease-out`.
