@@ -140,7 +140,7 @@ struct LibraryListView: View {
             LibraryListEmptyState(
                 systemImage: "checkmark.circle",
                 title: "Nothing needs you",
-                message: "Failed, unpublished, and paste-pending meetings show up here."
+                message: "Failed, unpublished, partial, no-speech and paste-pending meetings show up here."
             )
         } else {
             LibraryListEmptyState(

@@ -147,6 +147,37 @@ final class CorrectionStoreTests: XCTestCase {
         XCTAssertEqual(read?["verdict"] as? String, "good")
     }
 
+    func test_editedStems_returns_only_edited_verdicts() throws {
+        let dir = try makeTempDir()
+        // Two edits, one good grade, one bad grade. Only the edits drive the
+        // "Summary edited locally" marker (UX15); grades are not edits.
+        for (stem, verdict) in [
+            ("20260508-1500", CorrectionStore.Verdict.edited),
+            ("20260508-1600", .good),
+            ("20260508-1700", .edited),
+            ("20260508-1800", .bad),
+        ] {
+            try CorrectionStore.write(
+                stem: stem,
+                transcriptPath: "/\(stem).md",
+                summaryJsonPath: "/\(stem).summary.json",
+                modelId: "m",
+                backend: "local",
+                verdict: verdict,
+                originalSummary: sampleSummary(),
+                directoryOverride: dir
+            )
+        }
+        let edited = CorrectionStore.editedStems(directoryOverride: dir)
+        XCTAssertEqual(edited, ["20260508-1500", "20260508-1700"])
+    }
+
+    func test_editedStems_is_empty_for_absent_directory() {
+        let absent = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mp-corrections-absent-\(UUID().uuidString)", isDirectory: true)
+        XCTAssertTrue(CorrectionStore.editedStems(directoryOverride: absent).isEmpty)
+    }
+
     func test_load_run_sidecar_round_trips() throws {
         let dir = try makeTempDir()
         let runURL = dir.appendingPathComponent("foo.run.json")

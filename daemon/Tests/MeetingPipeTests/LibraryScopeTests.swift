@@ -117,12 +117,17 @@ final class LibraryScopeTests: XCTestCase {
     }
 
     func test_needsYou_matches_only_actionable_meetings() {
-        // Failed and paste-ready always want action.
+        // Failed, paste-ready, and no-speech/empty always want action (UX15 added
+        // `.empty` so a no-speech recording surfaces to inspect rather than
+        // sitting silently in All meetings).
         XCTAssertTrue(LibraryScope.needsYou.includes(
             makeMeeting(stem: "a", status: .failed), workflows: [], now: now
         ))
         XCTAssertTrue(LibraryScope.needsYou.includes(
             makeMeeting(stem: "b", status: .manualPasteReady), workflows: [], now: now
+        ))
+        XCTAssertTrue(LibraryScope.needsYou.includes(
+            makeMeeting(stem: "h", status: .empty), workflows: [], now: now
         ))
         // Done with a fully-failed ("none") or partial publish wants action.
         XCTAssertTrue(LibraryScope.needsYou.includes(

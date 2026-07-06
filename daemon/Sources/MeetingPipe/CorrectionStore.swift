@@ -122,6 +122,33 @@ enum CorrectionStore {
         return final
     }
 
+    /// Stems whose correction record is an actual edit (`verdict == edited`), i.e.
+    /// summaries the user corrected locally. Drives the Library's "Summary edited
+    /// locally" marker (UX15). Grades (good/bad) are excluded: they are not edits.
+    /// Returns an empty set when the directory is absent or unreadable.
+    static func editedStems(directoryOverride: URL? = nil) -> Set<String> {
+        let dir: URL
+        do {
+            dir = try directoryOverride ?? directory()
+        } catch {
+            return []
+        }
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) else { return [] }
+        var stems: Set<String> = []
+        for url in entries where url.pathExtension == "json" {
+            let stem = url.deletingPathExtension().lastPathComponent
+            guard !stem.isEmpty,
+                  let data = try? Data(contentsOf: url),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  (obj["verdict"] as? String) == Verdict.edited.rawValue
+            else { continue }
+            stems.insert(stem)
+        }
+        return stems
+    }
+
     /// Reads the correction record for the given stem, or nil when absent/unreadable.
     static func read(stem: String, directoryOverride: URL? = nil) -> [String: Any]? {
         let dir: URL

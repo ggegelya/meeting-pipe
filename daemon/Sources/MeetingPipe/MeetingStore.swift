@@ -80,6 +80,14 @@ struct Meeting: Identifiable, Hashable {
     var hasSummaryJSON: Bool = false
     var hasTranscriptMD: Bool = false
 
+    /// True when the meeting has a local summary-correction record with an
+    /// `edited` verdict (`CorrectionStore`), i.e. the summary was edited on this
+    /// Mac. Drives the "Summary edited locally" marker (UX15); grades (good/bad)
+    /// are excluded. Applied as a post-scan overlay because corrections live
+    /// outside the recordings dir, so it rides on top of the per-stem file-mtime
+    /// cache rather than inside it. Defaulted so test constructors need not supply it.
+    var hasCorrections: Bool = false
+
     var id: String { stem } // stems are unique per recording (datetime-derived)
 
     /// True when the meeting was recorded zero-egress, i.e. forced on-device and
@@ -142,6 +150,13 @@ final class MeetingStore: ObservableObject {
         let meeting: Meeting
     }
     private var scanCache: [String: CacheEntry] = [:]
+
+    /// Edited-correction stems for the "Summary edited locally" overlay (UX15),
+    /// refreshed only when the corrections directory's mtime changes (a write is
+    /// temp-file + rename, which bumps it), so a 500 ms scan storm during
+    /// recording does not re-parse every record. Touched only on `scanQueue`
+    /// (serial), like `scanCache`, so no extra locking.
+    private var editedStemsCache: (mtime: Date, stems: Set<String>)?
 
     init(recordingsDir: URL) {
         self.recordingsDir = recordingsDir
@@ -281,12 +296,38 @@ final class MeetingStore: ObservableObject {
         // Replacing wholesale prunes cache entries for stems whose files were deleted.
         scanCache = nextCache
 
+        // Overlay the "Summary edited locally" flag (UX15). Corrections live
+        // outside the recordings dir, so this rides on top of the file-mtime
+        // cache rather than inside the per-stem signature: it re-applies every
+        // scan against a mtime-cached stem set.
+        let edited = editedStemsOverlay()
+        if !edited.isEmpty {
+            for i in out.indices where edited.contains(out[i].stem) {
+                out[i].hasCorrections = true
+            }
+        }
+
         // Newest first; equal starts fall back to stem for stable ordering.
         out.sort { lhs, rhs in
             if lhs.startedAt != rhs.startedAt { return lhs.startedAt > rhs.startedAt }
             return lhs.stem > rhs.stem
         }
         return out
+    }
+
+    /// Stems the "Summary edited locally" marker applies to (UX15), cached by the
+    /// corrections-dir mtime so a scan storm during recording does not re-read the
+    /// records. Runs on `scanQueue` (serial), so touching `editedStemsCache` needs
+    /// no lock.
+    private func editedStemsOverlay() -> Set<String> {
+        guard let dir = try? CorrectionStore.directory() else { return [] }
+        let mtime = MeetingStore.mtime(of: dir)
+        if let cached = editedStemsCache, cached.mtime == mtime {
+            return cached.stems
+        }
+        let stems = CorrectionStore.editedStems(directoryOverride: dir)
+        editedStemsCache = (mtime: mtime, stems: stems)
+        return stems
     }
 
     /// Signature of a stem's on-disk files: filename -> content-modification date. The directory enumeration prefetched `.contentModificationDateKey`, so reading it here is cache-cheap (no extra stat syscall). Any added/removed file or any mtime bump (a title edit, a correction, a summary landing) changes the signature and forces a re-parse for that stem.

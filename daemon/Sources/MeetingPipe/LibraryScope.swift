@@ -77,12 +77,14 @@ enum LibraryScope: Hashable {
             return meeting.startedAt >= cutoff
         case .needsYou:
             // Anything that wants the owner to act: a failed run, a long-meeting
-            // bundle waiting on a paste, or a finished meeting whose publish
-            // failed outright ("none") or only partially landed ("partial"). A
-            // never-published local/NDA meeting has a nil publishState, so it is
-            // intentionally absent here (TECH-DSN17).
+            // bundle waiting on a paste, a no-speech/empty result to inspect, or a
+            // finished meeting whose publish failed outright ("none") or only
+            // partially landed ("partial"). A never-published local/NDA meeting
+            // has a nil publishState, so it is intentionally absent here
+            // (TECH-DSN17; `.empty` added in UX15 so no-speech recordings surface
+            // rather than sitting silently in All meetings).
             switch meeting.status {
-            case .failed, .manualPasteReady:
+            case .failed, .manualPasteReady, .empty:
                 return true
             case .done:
                 return meeting.publishState == "none" || meeting.publishState == "partial"

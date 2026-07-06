@@ -116,7 +116,8 @@ struct MeetingRow: View, Equatable {
                 if effectiveStatus == .failed {
                     inlineFixButton("Retry") { runRetry() }
                 } else if effectiveStatus == .manualPasteReady {
-                    inlineFixButton("Regenerate") { Task { await regenerate() } }
+                    inlineFixButton("Reveal bundle") { revealBundle() }
+                        .help("Long meeting: transcript bundled for manual summarize.")
                 } else if showsInlineRepublish {
                     inlineFixButton("Republish") { Task { await republish() } }
                 }
@@ -191,7 +192,7 @@ struct MeetingRow: View, Equatable {
 
     /// Skinny inline-fix button (TECH-DSN17): a compact bordered capsule that
     /// keeps the row light, replacing the stock `.controlSize(.small)` buttons.
-    /// The action label stays accurate to what runs (Retry / Regenerate /
+    /// The action label stays accurate to what runs (Retry / Reveal bundle /
     /// Republish), so the same control reads correctly in any scope, including
     /// the "Needs you" rail filter.
     private func inlineFixButton(_ label: String, action: @escaping () -> Void) -> some View {
@@ -379,6 +380,17 @@ struct MeetingRow: View, Equatable {
         inFlight = .regenerating
         await onRegenerate()
         inFlight = nil
+    }
+
+    /// Reveal the manual-paste transcript bundle (`<stem>.READY_FOR_MANUAL.md`)
+    /// in Finder (UX15). A paste-pending meeting is too long for an automatic
+    /// summary, so the action that helps is opening the bundle to paste, not
+    /// re-running the pipeline. The single verb "Reveal bundle" matches the
+    /// detail header; Regenerate stays available in the context menu.
+    private func revealBundle() {
+        let bundle = meeting.recordingsDir
+            .appendingPathComponent("\(meeting.stem).READY_FOR_MANUAL.md")
+        NSWorkspace.shared.activateFileViewerSelecting([bundle])
     }
 
     private func runRetry() {
