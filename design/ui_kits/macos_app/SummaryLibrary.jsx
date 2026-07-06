@@ -43,6 +43,7 @@ const SL_WF = {
 };
 
 // status -> tint + label + marker. Every state carries a label, never colour alone.
+// `tip` is an optional hover tooltip (DSN22 audit #8 for "Kept local").
 const SL_STATUS = {
   ready:       { tint: "var(--mp-success-600)", label: "Ready",         icon: "check-circle" },
   recording:   { tint: "var(--mp-pulse-500)",   label: "Recording",     pulse: true },
@@ -50,27 +51,33 @@ const SL_STATUS = {
   paste:       { tint: "var(--mp-warning-600)", label: "Paste pending", icon: "alert" },
   failed:      { tint: "var(--mp-danger-600)",  label: "Failed",        icon: "alert-triangle" },
   partial:     { tint: "var(--mp-warning-600)", label: "Partial",       icon: "alert-triangle" },
+  empty:       { tint: "var(--mp-warning-600)", label: "No speech",     icon: "alert-triangle" },
   unpublished: { tint: "var(--mp-warning-600)", label: "Unpublished" },
-  local:       { tint: "var(--mp-fg-subtle)",   label: "Local only",    icon: "lock" },
+  // "Kept local" reads as intent, not failure (DSN22 audit #8): neutral tone, lock
+  // glyph, and a tooltip naming the reason. Never a sibling of Failed/Unpublished.
+  local:       { tint: "var(--mp-fg-subtle)",   label: "Kept local",    icon: "lock", tip: "On this Mac by design (NDA workflow)" },
 };
 
+// `edited` marks a meeting with a local correction record (DSN22 audit #6).
+// `publishError` is the reason parsed from the error sidecar (DSN22 audit #4).
 const SL_MEETINGS = {
   weekly:   { id: "weekly",   title: "Weekly sync",                  source: "Zoom",  dur: "12:07",   wf: SL_WF.general,  when: "Today 14:30",     status: "recording" },
   standup:  { id: "standup",  title: "Standup",                      source: "Slack", dur: "18:04",   wf: SL_WF.general,  when: "Today 10:00",     status: "processing", stage: "Summarizing", elapsed: "1:24" },
-  release:  { id: "release",  title: "Release 3.2 validation review", source: "Zoom", dur: "47:21",   wf: SL_WF.eng,      when: "Today 11:02",     status: "ready" },
-  qms:      { id: "qms",      title: "QMS audit prep",               source: "Teams", dur: "55:00",   wf: SL_WF.client,   when: "Today 09:15",     status: "partial" },
+  release:  { id: "release",  title: "Release 3.2 validation review", source: "Zoom", dur: "47:21",   wf: SL_WF.eng,      when: "Today 11:02",     status: "ready", edited: true },
+  qms:      { id: "qms",      title: "QMS audit prep",               source: "Teams", dur: "55:00",   wf: SL_WF.client,   when: "Today 09:15",     status: "partial", publishError: "network timeout" },
   helix:    { id: "helix",    title: "Helix Diagnostics call",       source: "Teams", dur: "1:12:48", wf: SL_WF.client,   when: "Yesterday 16:30", status: "local", nda: true },
-  backlog:  { id: "backlog",  title: "Backlog refinement",           source: "Meet",  dur: "34:12",   wf: SL_WF.eng,      when: "Yesterday 09:30", status: "ready" },
+  backlog:  { id: "backlog",  title: "Backlog refinement",           source: "Meet",  dur: "34:12",   wf: SL_WF.eng,      when: "Yesterday 09:30", status: "ready", edited: true },
   vendor:   { id: "vendor",   title: "Vendor onboarding",            source: "Zoom",  dur: "41:09",   wf: SL_WF.client,   when: "Wed 13:00",       status: "unpublished" },
-  marko:    { id: "marko",    title: "1:1 with Marko",               source: "Meet",  dur: "28:30",   wf: SL_WF.personal, when: "Mon 09:30",       status: "failed" },
+  marko:    { id: "marko",    title: "1:1 with Marko",               source: "Meet",  dur: "28:30",   wf: SL_WF.personal, when: "Mon 09:30",       status: "failed", publishError: "authentication expired" },
   board:    { id: "board",    title: "Board pre-read",               source: "Teams", dur: "1:34:20", wf: SL_WF.client,   when: "Mon 16:00",       status: "paste" },
+  quiet:    { id: "quiet",    title: "Design review (muted mic)",    source: "Meet",  dur: "22:40",   wf: SL_WF.eng,      when: "Today 08:30",     status: "empty" },
 };
 
 const SL_SCOPES = [
   { icon: "tray",     label: "All meetings", count: 42, key: "all" },
   { icon: "calendar", label: "Today",        count: 4,  key: "today" },
   { icon: "calendar", label: "Last 7 days",  count: 11, key: "7d" },
-  { icon: "bell",     label: "Needs you",    count: 3,  key: "needs", attention: true },
+  { icon: "bell",     label: "Needs you",    count: 5,  key: "needs", attention: true },
   { icon: "lock",     label: "NDA only",     count: 4,  key: "nda" },
 ];
 
@@ -178,6 +185,23 @@ const SLSidebar = ({ activeScope = "all", firstRun }) => (
     }}>
       <Icon name="plus" size={14}/> New workflow
     </button>
+    <div style={{ height: 14 }}/>
+    <SLRailHeader>Insights</SLRailHeader>
+    <SLInsightRow icon="seal-check" label="Facts"/>
+    <SLInsightRow icon="message" label="Ask"/>
+  </div>
+);
+
+// INSIGHTS (DSN22 audit #7): Facts and Ask are projections that replace the list,
+// not filters that narrow it, so they get their own group below the filter groups
+// (Library scopes, Workflows). No count -- they are views, not buckets.
+const SLInsightRow = ({ icon, label }) => (
+  <div style={{
+    display: "flex", alignItems: "center", gap: 8, height: 28, padding: "0 8px",
+    borderRadius: "var(--mp-radius-sm)", cursor: "pointer", fontSize: "var(--mp-text-base)", color: "var(--mp-fg)",
+  }}>
+    <Icon name={icon} size={14}/>
+    <span>{label}</span>
   </div>
 );
 
@@ -247,7 +271,7 @@ const SLList = ({ title, count, scope = "all", selectedId, multiSelect, checkedI
       {empty === "search" ? (
         <SLEmpty icon="search" title="No meetings match" body="Try a different search, or clear the filters." action="Clear filters"/>
       ) : empty === "needs-none" ? (
-        <SLEmpty icon="check-circle" title="Nothing needs you" body="Failed, unpublished and paste-pending meetings show up here."/>
+        <SLEmpty icon="check-circle" title="Nothing needs you" body="Failed, unpublished, partial, no-speech and paste-pending meetings show up here."/>
       ) : scope === "needs" ? (
         <SLNeedsList/>
       ) : (
@@ -320,12 +344,17 @@ const SLAllList = ({ selectedId, multiSelect, checkedIds }) => {
   );
 };
 
-// "Needs you" scope: only the items that want an action, each with its inline fix.
+// "Needs you" scope (DSN22 audit #2): the five member states that want an action,
+// each with its inline fix. Failed + partial retry the publish; unpublished
+// publishes; paste-pending reveals the transcript bundle; no-speech has no auto-fix
+// so it reveals the recording to inspect.
 const SLNeedsList = () => (
   <div>
     <SLRow m={SL_MEETINGS.marko}  action="Retry"/>
-    <SLRow m={SL_MEETINGS.board}  action="Reveal"/>
     <SLRow m={SL_MEETINGS.vendor} action="Publish"/>
+    <SLRow m={SL_MEETINGS.qms}    action="Retry"/>
+    <SLRow m={SL_MEETINGS.board}  action="Reveal bundle"/>
+    <SLRow m={SL_MEETINGS.quiet}  action="Reveal"/>
   </div>
 );
 
@@ -340,10 +369,17 @@ const SLRow = ({ m, selected, multiSelect, checked, action }) => {
       {multiSelect && <SLCheck checked={checked}/>}
       <SLRowGlyph source={m.source} nda={m.nda}/>
       <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 1, flex: 1 }}>
-        <div style={{
-          fontSize: "var(--mp-text-base)", fontWeight: 500, whiteSpace: "nowrap",
-          overflow: "hidden", textOverflow: "ellipsis", color: "var(--mp-fg)",
-        }}>{m.title}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
+          <span style={{
+            fontSize: "var(--mp-text-base)", fontWeight: 500, whiteSpace: "nowrap",
+            overflow: "hidden", textOverflow: "ellipsis", color: "var(--mp-fg)",
+          }}>{m.title}</span>
+          {m.edited && (
+            <span style={{ display: "flex", flexShrink: 0, color: "var(--mp-fg-faint)" }} title="Summary edited locally">
+              <Icon name="pencil" size={11}/>
+            </span>
+          )}
+        </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-subtle)", whiteSpace: "nowrap" }}>
           <span>{m.source}</span>
           <span style={{ color: "var(--mp-fg-faint)" }}>·</span>
@@ -351,7 +387,7 @@ const SLRow = ({ m, selected, multiSelect, checked, action }) => {
           <SLWorkflowChip wf={m.wf}/>
         </div>
       </div>
-      {action && <SLInlineBtn primary={action === "Publish"}>{action}</SLInlineBtn>}
+      {action && <SLRowAction action={action}/>}
       {m.status === "processing"
         ? <SLProcessing stage={m.stage} elapsed={m.elapsed}/>
         : <SLStatusPill status={m.status}/>}
@@ -379,15 +415,46 @@ const SLRowGlyph = ({ source, nda }) => {
   return <span style={{ ...box, color: "var(--mp-fg-muted)" }}><Icon name="waveform-circle" size={18}/></span>;
 };
 
-const SLInlineBtn = ({ children, primary }) => (
-  <button className="mp-pressable" style={{
-    height: 20, padding: "0 10px", borderRadius: "var(--mp-radius-full)", fontSize: "var(--mp-text-xs)",
-    fontFamily: "inherit", fontWeight: 500, cursor: "pointer",
-    border: primary ? "none" : "0.5px solid var(--mp-border-strong)",
-    background: primary ? "var(--mp-signal-fill)" : "var(--mp-bg-raised)",
-    color: primary ? "var(--mp-fg-on-signal)" : "var(--mp-fg)",
-  }}>{children}</button>
-);
+// Triage inline actions (DSN22 audit #1): tint by action so the fix dominates the
+// row instead of vanishing into grey. Publish-shaped actions take the teal fill;
+// Retry is coral-outlined with a refresh glyph (coral is carried by the border +
+// icon, keeping the label legible in both modes -- a coral label cannot clear the
+// 4.5:1 dark floor with today's tokens); everything else (Reveal bundle) stays a
+// quiet neutral capsule.
+const SLInlineBtn = ({ children, tone = "neutral", icon, title }) => {
+  const publish = tone === "publish";
+  const retry = tone === "retry";
+  return (
+    <button className="mp-pressable" title={title} style={{
+      display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0, whiteSpace: "nowrap",
+      height: 21, padding: icon ? "0 10px 0 8px" : "0 11px",
+      borderRadius: "var(--mp-radius-full)", fontSize: "var(--mp-text-xs)",
+      fontFamily: "inherit", fontWeight: 500, cursor: "pointer",
+      border: publish ? "none"
+            : retry  ? "1px solid color-mix(in srgb, var(--mp-pulse-600) 55%, transparent)"
+                     : "0.5px solid var(--mp-border-strong)",
+      background: publish ? "var(--mp-signal-fill)" : "var(--mp-bg-raised)",
+      color: publish ? "var(--mp-fg-on-signal)" : "var(--mp-fg)",
+    }}>
+      {icon && <span style={{ display: "flex", color: retry ? "var(--mp-pulse-600)" : "var(--mp-fg-muted)" }}><Icon name={icon} size={11}/></span>}
+      {children}
+    </button>
+  );
+};
+
+// Maps a row action label to its tone + glyph + tooltip. "Reveal bundle" is the
+// single paste-pending verb shared with the detail header (DSN22 audit #3).
+const SLRowAction = ({ action }) => {
+  const tone = (action === "Publish" || action === "Republish") ? "publish"
+             : action === "Retry" ? "retry" : "neutral";
+  return (
+    <SLInlineBtn
+      tone={tone}
+      icon={action === "Retry" ? "refresh" : undefined}
+      title={action === "Reveal bundle" ? "Long meeting: transcript bundled for manual summarize." : undefined}
+    >{action}</SLInlineBtn>
+  );
+};
 
 const SLProcessing = ({ stage, elapsed }) => (
   <div style={{ display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
@@ -406,7 +473,7 @@ const SLStatusPill = ({ status }) => {
   if (s.icon) marker = <span style={{ display: "flex", color: s.tint }}><Icon name={s.icon} size={11}/></span>;
   else marker = <span style={{ width: 6, height: 6, borderRadius: "var(--mp-radius-full)", background: s.tint, animation: s.pulse ? "slPulse 1.6s ease-in-out infinite" : "none" }}/>;
   return (
-    <span style={{
+    <span title={s.tip} style={{
       display: "inline-flex", alignItems: "center", gap: 5, height: 19, padding: "0 8px",
       borderRadius: "var(--mp-radius-full)", border: "0.5px solid var(--mp-border-strong)",
       fontSize: "var(--mp-text-xs)", fontWeight: 500, color: s.tint, whiteSpace: "nowrap",
@@ -434,11 +501,11 @@ const SLSelectionFooter = ({ count }) => (
 
 /* ====================================================================== detail */
 
-const SLDetail = ({ id = "release", tab = "summary", setTab, mode = "read" }) => {
+const SLDetail = ({ id = "release", tab = "summary", setTab, mode = "read", context, menuOpen }) => {
   const m = SL_MEETINGS[id];
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: "var(--mp-bg)" }}>
-      <SLDetailHeader m={m} mode={mode}/>
+      <SLDetailHeader m={m} mode={mode} context={context} menuOpen={menuOpen}/>
       <SLTabStrip tab={tab} setTab={setTab} editing={mode === "edit"}/>
       <div style={{ height: 1, background: "var(--mp-border-faint)" }}/>
       <div style={{ flex: 1, overflow: "auto" }}>
@@ -453,8 +520,9 @@ const SLDetail = ({ id = "release", tab = "summary", setTab, mode = "read" }) =>
   );
 };
 
-const SLDetailHeader = ({ m, mode }) => (
+const SLDetailHeader = ({ m, mode, context, menuOpen }) => (
   <div style={{ padding: "14px 16px 10px" }}>
+    {context && <SLContextBanner label={context}/>}
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       <SLWorkflowChip wf={m.wf}/>
       <div style={{ flex: 1 }}/>
@@ -468,7 +536,10 @@ const SLDetailHeader = ({ m, mode }) => (
           <button style={SL_ghostBtn} title="Open in Notion"><Icon name="external" size={15}/></button>
           <button style={SL_ghostBtn} title="Open in Obsidian"><Icon name="book" size={15}/></button>
           <button style={SL_ghostBtn} title="Reveal raw files in Finder"><Icon name="folder" size={15}/></button>
-          <button style={SL_ghostBtn} title="More actions"><Icon name="more" size={16}/></button>
+          <span style={{ position: "relative", display: "flex" }}>
+            <button style={SL_ghostBtn} title="More actions"><Icon name="more" size={16}/></button>
+            {menuOpen && <SLHeaderMenu/>}
+          </span>
         </React.Fragment>
       )}
     </div>
@@ -483,9 +554,68 @@ const SLDetailHeader = ({ m, mode }) => (
       <span>{m.source}</span>
     </div>
     <SLProvenance kind={m.nda ? "local" : "cloud"}/>
-    <SLPublishState status={m.status} nda={m.nda}/>
+    {m.edited && <SLEditedCaption/>}
+    <SLPublishState status={m.status} nda={m.nda} reason={m.publishError}/>
   </div>
 );
+
+// Arrivals from Facts/Ask (DSN22 audit #9): those projections snap the scope to
+// All meetings, so a dismissible line explains why the surrounding list changed.
+const SLContextBanner = ({ label }) => (
+  <div style={{
+    display: "inline-flex", alignItems: "center", gap: 8, marginBottom: 10, height: 23, padding: "0 7px 0 11px",
+    borderRadius: "var(--mp-radius-full)", background: "var(--mp-bg-sunk)", border: "0.5px solid var(--mp-border)",
+    fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-muted)",
+  }}>
+    <span>Opened from {label}</span>
+    <span style={{ display: "flex", cursor: "pointer", color: "var(--mp-fg-subtle)" }} title="Dismiss"><Icon name="x" size={11}/></span>
+  </div>
+);
+
+// Edited-locally caption (DSN22 audit #6): the meeting carries a correction record.
+// Quiet, faint, never celebrated -- same register as the provenance line above it.
+const SLEditedCaption = () => (
+  <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 6, fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-faint)" }}>
+    <Icon name="pencil" size={11}/>
+    <span>Summary edited locally</span>
+  </div>
+);
+
+// The header actions menu, shown open (DSN22 audit #5): Reprocess lives here,
+// between Edit summary and Corrections. Floating popover -> earns the hud glass.
+const SLHeaderMenu = () => {
+  const items = [
+    { icon: "pencil", label: "Rename…" },
+    { icon: "file-text", label: "Edit summary…" },
+    { icon: "refresh", label: "Reprocess…", mark: true },
+    { icon: "checklist", label: "Corrections…" },
+    { divider: true },
+    { icon: "folder", label: "Reveal raw files" },
+    { icon: "trash", label: "Delete…", danger: true },
+  ];
+  return (
+    <div style={{
+      position: "absolute", top: 30, right: 0, zIndex: 5, width: 194, padding: 5,
+      borderRadius: "var(--mp-radius-md)", background: "var(--mp-hud-bg)",
+      border: "0.5px solid var(--mp-hud-stroke)", boxShadow: "var(--mp-hud-shadow)",
+      backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)",
+    }}>
+      {items.map((it, i) => it.divider ? (
+        <div key={i} style={{ height: 1, background: "var(--mp-border)", margin: "5px 6px" }}/>
+      ) : (
+        <div key={i} style={{
+          display: "flex", alignItems: "center", gap: 9, height: 28, padding: "0 8px",
+          borderRadius: "var(--mp-radius-sm)", fontSize: "var(--mp-text-sm)", cursor: "pointer",
+          color: it.danger ? "var(--mp-danger-600)" : "var(--mp-fg)",
+          background: it.mark ? "var(--mp-signal-100)" : "transparent",
+        }}>
+          <span style={{ display: "flex", color: it.danger ? "var(--mp-danger-600)" : "var(--mp-fg-muted)" }}><Icon name={it.icon} size={14}/></span>
+          <span>{it.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+};
 
 // Re-publish is the payoff action: teal primary, and it is the same control across
 // the surface. Hidden for NDA (handled by the publish-state line below instead).
@@ -521,13 +651,20 @@ const SLProvenance = ({ kind }) => {
   );
 };
 
-const SLPublishState = ({ status, nda }) => {
+// Publish-state line. Failures explain themselves inline (DSN22 audit #4): the
+// short reason from the error sidecar rides on the failed / partial line. The NDA
+// variant is re-voiced to "Kept local" intent (audit #8) and its escape hatch is a
+// real secondary button, not a text link.
+const SLPublishState = ({ status, nda, reason }) => {
+  const because = reason ? `: ${reason}` : "";
   let icon, tint, text;
-  if (nda)                         { icon = "lock";          tint = "var(--mp-fg-subtle)";  text = "Local only. Kept on this Mac by design."; }
-  else if (status === "failed")    { icon = "alert-triangle"; tint = "var(--mp-danger-600)"; text = "Last publish to Notion failed."; }
-  else if (status === "unpublished"){ icon = "alert";        tint = "var(--mp-warning-600)"; text = "Not published yet."; }
-  else if (status === "paste")     { icon = "alert";         tint = "var(--mp-warning-600)"; text = "Too long for an automatic summary. The transcript bundle is ready to paste into Claude Code."; }
-  else                             { icon = "check-circle";  tint = "var(--mp-success-600)"; text = "Published to Notion, Obsidian."; }
+  if (nda)                          { icon = "lock";           tint = "var(--mp-fg-subtle)";  text = "Kept local. On this Mac by design (NDA workflow)."; }
+  else if (status === "failed")     { icon = "alert-triangle"; tint = "var(--mp-danger-600)";  text = `Last publish to Notion failed${because}.`; }
+  else if (status === "partial")    { icon = "alert-triangle"; tint = "var(--mp-warning-600)"; text = `Published to Obsidian. Notion failed${because}.`; }
+  else if (status === "empty")      { icon = "alert-triangle"; tint = "var(--mp-warning-600)"; text = "No summary generated. The recording had no clear speech."; }
+  else if (status === "unpublished"){ icon = "alert";          tint = "var(--mp-warning-600)"; text = "Not published yet."; }
+  else if (status === "paste")      { icon = "alert";          tint = "var(--mp-warning-600)"; text = "Too long for an automatic summary. The transcript bundle is ready to paste into Claude Code."; }
+  else                              { icon = "check-circle";   tint = "var(--mp-success-600)"; text = "Published to Notion, Obsidian."; }
   return (
     <div style={{
       display: "flex", alignItems: "center", gap: 7, marginTop: 10, padding: "7px 10px",
@@ -536,7 +673,13 @@ const SLPublishState = ({ status, nda }) => {
     }}>
       <span style={{ color: tint, display: "flex", flexShrink: 0 }}><Icon name={icon} size={13}/></span>
       <span style={{ flex: 1 }}>{text}</span>
-      {nda && <span style={{ color: "var(--mp-fg-subtle)", cursor: "pointer", whiteSpace: "nowrap" }}>Publish anyway…</span>}
+      {nda && (
+        <button className="mp-pressable" style={{
+          height: 22, padding: "0 10px", borderRadius: "var(--mp-radius-full)", fontFamily: "inherit",
+          fontSize: "var(--mp-text-xs)", fontWeight: 500, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0,
+          border: "0.5px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", color: "var(--mp-fg)",
+        }}>Publish anyway…</button>
+      )}
     </div>
   );
 };
@@ -640,10 +783,13 @@ const SLMiniChip = ({ icon, tint, children }) => (
   </span>
 );
 
+// The in-context reprocess entry (DSN22 audit #5): a proper secondary control
+// (solid hairline, leading refresh glyph), not a dashed hint. Reprocess also lives
+// in the header actions menu now, so it is findable from both places.
 const SLReprocessBar = () => (
   <div style={{
     display: "flex", alignItems: "center", gap: 8, marginTop: 4, padding: "10px 12px",
-    borderRadius: "var(--mp-radius-sm)", border: "0.5px dashed var(--mp-border-strong)", background: "transparent",
+    borderRadius: "var(--mp-radius-sm)", border: "0.5px solid var(--mp-border)", background: "var(--mp-bg-sunk)",
   }}>
     <span style={{ color: "var(--mp-fg-subtle)", display: "flex" }}><Icon name="refresh" size={14}/></span>
     <div style={{ flex: 1, minWidth: 0 }}>
@@ -801,10 +947,12 @@ const SL_TRANSCRIPT = [
 const SLTranscript = () => (
   <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
     <div style={{ flex: 1, overflow: "auto", padding: "10px 0" }}>
-      <div style={{ fontSize: "var(--mp-text-sm)", color: "var(--mp-fg-faint)", padding: "0 16px 6px", fontFamily: "var(--mp-font-mono)" }}>Language: en · 3 speakers</div>
+      <div style={{ fontSize: "var(--mp-text-sm)", color: "var(--mp-fg-faint)", padding: "0 16px 2px", fontFamily: "var(--mp-font-mono)" }}>Language: en · 3 speakers</div>
+      {/* Transcript editing is discoverable (DSN22 audit #10): one quiet caption. */}
+      <div style={{ fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-subtle)", padding: "0 16px 8px" }}>Click a line to edit or seek.</div>
       {SL_TRANSCRIPT.map((r, i) => (
         <div key={i} className="sl-tline" style={{
-          position: "relative", display: "flex", gap: 10, padding: "7px 16px",
+          position: "relative", display: "flex", gap: 10, padding: "7px 16px", cursor: "pointer",
           background: r.active ? "var(--mp-signal-100)" : "transparent",
         }}>
           <span style={{ width: 8, height: 8, borderRadius: "var(--mp-radius-full)", background: SL_SPEAKER[r.sp], marginTop: 6, flexShrink: 0 }}/>
@@ -894,7 +1042,11 @@ const SLSegmented = ({ options, selected }) => (
 
 /* ============================================================= batch + empties */
 
-const SLBatchPane = ({ count = 3 }) => (
+// Batch degrades gracefully (DSN22 audit #11): deselecting everything returns to
+// the neutral "Select a meeting" placeholder instead of stranding an empty pane.
+const SLBatchPane = ({ count = 3 }) => {
+  if (count === 0) return <SLEmptyDetail/>;
+  return (
   <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: "var(--mp-bg)", padding: 24 }}>
     <div style={{ maxWidth: 460, margin: "0 auto", width: "100%", display: "flex", flexDirection: "column", gap: 18, paddingTop: 24 }}>
       <div>
@@ -909,7 +1061,8 @@ const SLBatchPane = ({ count = 3 }) => (
       </div>
     </div>
   </div>
-);
+  );
+};
 
 const SLBatchAction = ({ icon, title, sub, primary, danger }) => {
   const tint = danger ? "var(--mp-danger-600)" : (primary ? "var(--mp-signal-600)" : "var(--mp-fg-muted)");
@@ -938,6 +1091,16 @@ const SLEmpty = ({ icon, title, body, action }) => (
     <div style={{ fontSize: "var(--mp-text-md)", fontWeight: 600 }}>{title}</div>
     <div style={{ fontSize: "var(--mp-text-sm)", color: "var(--mp-fg-subtle)", maxWidth: 320, lineHeight: "var(--mp-leading-normal)" }}>{body}</div>
     {action && <button className="mp-pressable" style={{ marginTop: 10, height: 26, padding: "0 13px", borderRadius: "var(--mp-radius-full)", fontFamily: "inherit", fontSize: "var(--mp-text-sm)", fontWeight: 500, cursor: "pointer", border: "0.5px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)", color: "var(--mp-fg)" }}>{action}</button>}
+  </div>
+);
+
+// The neutral detail placeholder (nothing selected). Reused by the zero-selection
+// batch state (DSN22 audit #11) so deselecting all never strands an empty pane.
+const SLEmptyDetail = () => (
+  <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", gap: 4, minWidth: 0, padding: 40, background: "var(--mp-bg)" }}>
+    <span style={{ color: "var(--mp-fg-faint)", marginBottom: 6, display: "flex" }}><Icon name="waveform-circle" size={26}/></span>
+    <div style={{ fontSize: "var(--mp-text-md)", fontWeight: 600 }}>Select a meeting</div>
+    <div style={{ fontSize: "var(--mp-text-sm)", color: "var(--mp-fg-subtle)", maxWidth: 300, lineHeight: "var(--mp-leading-normal)" }}>Pick a meeting from the list to read its summary, transcript and audio.</div>
   </div>
 );
 
@@ -1027,17 +1190,45 @@ const SummaryLibrary = () => {
           <div style={SL_cropCap}>Multi-select · batch actions replace the reader</div>
           <SLDetailCrop><SLBatchPane count={3}/></SLDetailCrop>
         </div>
+        <div>
+          <div style={SL_cropCap}>Batch · nothing selected returns to placeholder</div>
+          <SLDetailCrop><SLBatchPane count={0}/></SLDetailCrop>
+        </div>
+      </div>
+
+      <SLGalleryLabel sub="the detail header, one audit change each">Detail header states</SLGalleryLabel>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
+        <div>
+          <div style={SL_cropCap}>Publish failed · reason inline, edited caption</div>
+          <SLDetailCrop><SLDetail id="marko" tab="summary" mode="read" setTab={() => {}}/></SLDetailCrop>
+        </div>
+        <div>
+          <div style={SL_cropCap}>Kept local · re-voiced, Publish anyway is a button</div>
+          <SLDetailCrop><SLDetail id="helix" tab="summary" mode="read" setTab={() => {}}/></SLDetailCrop>
+        </div>
+        <div>
+          <div style={SL_cropCap}>Actions menu · Reprocess is findable here</div>
+          <SLDetailCrop><SLDetail id="release" tab="summary" mode="read" menuOpen setTab={() => {}}/></SLDetailCrop>
+        </div>
+        <div>
+          <div style={SL_cropCap}>Opened from Facts · dismissible context line</div>
+          <SLDetailCrop><SLDetail id="release" tab="summary" mode="read" context="Facts" setTab={() => {}}/></SLDetailCrop>
+        </div>
       </div>
 
       <SLGalleryLabel sub="the list column">Triage states</SLGalleryLabel>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
         <div>
-          <div style={SL_cropCap}>Needs you · each item carries its fix</div>
-          <SLListCrop><SLList title="Needs you" count="3 meetings" scope="needs"/></SLListCrop>
+          <div style={SL_cropCap}>Needs you · five member states, each with its fix</div>
+          <SLListCrop><SLList title="Needs you" count="5 meetings" scope="needs"/></SLListCrop>
         </div>
         <div>
           <div style={SL_cropCap}>Multi-select · checkboxes + footer</div>
           <SLListCrop><SLList title="All meetings" count="42 meetings" multiSelect checkedIds={["release", "backlog", "vendor"]}/></SLListCrop>
+        </div>
+        <div>
+          <div style={SL_cropCap}>Needs you · empty names all five states</div>
+          <SLListCrop><SLList title="Needs you" count="0 meetings" scope="needs" empty="needs-none"/></SLListCrop>
         </div>
         <div>
           <div style={SL_cropCap}>No search results</div>
