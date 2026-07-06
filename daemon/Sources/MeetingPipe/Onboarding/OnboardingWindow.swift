@@ -74,7 +74,7 @@ struct OnboardingRootView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("Step \(step + 1) of \(Self.stepCount)")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.mpTextXS.weight(.semibold))
                     .tracking(0.08 * 11)
                     .textCase(.uppercase)
                     .foregroundStyle(Color(MPColors.fgMuted))

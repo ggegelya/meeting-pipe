@@ -112,7 +112,7 @@ struct MeetingDetailView: View {
         } label: {
             VStack(spacing: 0) {
                 Text(tab.label)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.mpTextSM.weight(.medium))
                     .foregroundStyle(isActive ? Color(MPColors.fg) : Color(MPColors.fgMuted))
                     .padding(.vertical, 9)
                 Rectangle()

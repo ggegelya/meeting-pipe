@@ -41,10 +41,10 @@ struct WorkflowInspector: View {
                         .frame(width: 12, height: 12)
                 }
                 Text(workflow.name)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.mpTextMD.weight(.semibold))
                 if workflow.isDefault {
                     Text("Default")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.mpTextXS.weight(.semibold))
                         .tracking(0.06 * 10)
                         .textCase(.uppercase)
                         .foregroundStyle(Color(MPColors.fgMuted))
@@ -58,7 +58,7 @@ struct WorkflowInspector: View {
             }
             if !workflow.contextPrompt.isEmpty {
                 Text(workflow.contextPrompt)
-                    .font(.system(size: 11))
+                    .font(.mpTextXS)
                     .foregroundStyle(Color(MPColors.fgMuted))
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
@@ -78,14 +78,14 @@ struct WorkflowInspector: View {
     private var recentSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Recent")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.mpTextXS.weight(.semibold))
                 .tracking(0.08 * 10)
                 .textCase(.uppercase)
                 .foregroundStyle(Color(MPColors.fgMuted))
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(recentMeetings.prefix(5)) { m in
                     Text(m.displayTitle)
-                        .font(.system(size: 11))
+                        .font(.mpTextXS)
                         .foregroundStyle(Color(MPColors.fgMuted))
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -160,12 +160,12 @@ private struct InspectorRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.mpTextXS.weight(.semibold))
                 .tracking(0.08 * 10)
                 .textCase(.uppercase)
                 .foregroundStyle(Color(MPColors.fgMuted))
             Text(value)
-                .font(.system(size: 12))
+                .font(.mpTextSM)
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
         }

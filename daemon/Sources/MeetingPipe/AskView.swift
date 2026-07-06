@@ -45,7 +45,7 @@ struct AskView: View {
                 .foregroundStyle(Color(MPColors.fgSubtle))
             TextField("Ask about your meetings…", text: $question)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13))
+                .font(.mpTextBase)
                 .foregroundStyle(Color(MPColors.fg))
                 .focused($fieldFocused)
                 .onSubmit(ask)
@@ -55,7 +55,7 @@ struct AskView: View {
             } else {
                 Button("Ask", action: ask)
                     .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.mpTextSM.weight(.medium))
                     .foregroundStyle(trimmedQuestion.isEmpty ? Color(MPColors.fgSubtle) : Color.mpSignal)
                     .disabled(trimmedQuestion.isEmpty)
                     .accessibilityLabel("Ask")
@@ -87,7 +87,7 @@ struct AskView: View {
         VStack(spacing: 8) {
             ProgressView()
             Text("Reading your meetings…")
-                .font(.system(size: 12))
+                .font(.mpTextSM)
                 .foregroundStyle(Color(MPColors.fgMuted))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -97,7 +97,7 @@ struct AskView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 Text(a.answer)
-                    .font(.system(size: 13))
+                    .font(.mpTextBase)
                     .foregroundStyle(Color(MPColors.fg))
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -105,7 +105,7 @@ struct AskView: View {
                 if !a.citations.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(a.verified ? "Sources" : "Closest source")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.mpTextXS.weight(.semibold))
                             .tracking(0.08 * 10)
                             .textCase(.uppercase)
                             .foregroundStyle(Color(MPColors.fgMuted))
@@ -127,7 +127,7 @@ struct AskView: View {
 
                 if let backend = a.backend {
                     Text(backendFooter(backend))
-                        .font(.system(size: 10))
+                        .font(.mpTextXS)
                         .foregroundStyle(Color(MPColors.fgSubtle))
                 }
             }
@@ -152,7 +152,7 @@ struct AskView: View {
                 .font(.system(size: 28))
                 .foregroundStyle(Color.mpWarning)
             Text(message)
-                .font(.system(size: 12))
+                .font(.mpTextSM)
                 .foregroundStyle(Color(MPColors.fgMuted))
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 320)
@@ -191,7 +191,7 @@ struct AskView: View {
     private func exampleRow(_ text: String) -> some View {
         Button { fillAndAsk(text) } label: {
             Text(text)
-                .font(.system(size: 12))
+                .font(.mpTextSM)
                 .foregroundStyle(Color.mpSignal)
         }
         .buttonStyle(.plain)

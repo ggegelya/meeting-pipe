@@ -9,7 +9,7 @@ struct OnboardingStepWelcome: View {
                 .font(.system(size: 48))
                 .foregroundStyle(Color(MPColors.signal600))
             Text("Meeting notes that never leave your Mac")
-                .font(.system(size: 26, weight: .semibold))
+                .font(.mpText2XL.weight(.semibold))
                 .fixedSize(horizontal: false, vertical: true)
             Text("MeetingPipe detects your calls, records and transcribes them on-device, and writes a summary. Audio capture and transcription stay local; nothing is uploaded unless you configure a publish target.")
                 .font(.callout)

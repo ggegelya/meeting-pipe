@@ -33,13 +33,13 @@ struct FilterBarView: View {
                 .foregroundStyle(Color(MPColors.fgSubtle))
             TextField("Search titles, summaries, decisions…", text: $filter.query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12))
+                .font(.mpTextSM)
             if showsMatchCount {
                 Divider()
                     .frame(height: 14)
                     .overlay(Color(MPColors.border))
                 Text("\(matchCount) / \(totalCount)")
-                    .font(.system(size: 10).monospacedDigit())
+                    .font(.mpTextXS.monospacedDigit())
                     // Sits inside the bgSunk search well, where fgSubtle is only
                     // ~4.2:1; fgMuted clears the 4.5:1 floor there (UX14).
                     .foregroundStyle(Color(MPColors.fgMuted))
@@ -82,7 +82,7 @@ struct FilterBarView: View {
             } else {
                 HStack(spacing: 4) {
                     Text("Workflow")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.mpTextXS.weight(.medium))
                         .foregroundStyle(Color(MPColors.fgMuted))
                     Image(systemName: "chevron.down")
                         .font(.system(size: 8, weight: .medium))
@@ -155,7 +155,7 @@ struct FilterBarView: View {
             filter = MeetingFilter()
         } label: {
             Text("Clear")
-                .font(.system(size: 11, weight: .regular))
+                .font(.mpTextXS.weight(.regular))
                 // Only shown while a filter is active; disabled state dims via
                 // SwiftUI, so fgSubtle (not the WCAG-failing fgFaint) is the
                 // resting colour (UX14).

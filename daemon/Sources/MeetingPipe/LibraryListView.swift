@@ -59,9 +59,9 @@ struct LibraryListView: View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(scopeTitle)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.mpTextLG.weight(.semibold))
                 Text("\(count) meeting\(count == 1 ? "" : "s")")
-                    .font(.system(size: 11))
+                    .font(.mpTextXS)
                     .foregroundStyle(Color(MPColors.fgMuted))
             }
             Spacer()
@@ -273,9 +273,9 @@ struct LibraryListEmptyState: View {
                 .foregroundStyle(Color(MPColors.fgSubtle))
                 .padding(.bottom, 2)
             Text(title)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.mpTextMD.weight(.semibold))
             Text(message)
-                .font(.system(size: 12))
+                .font(.mpTextSM)
                 .foregroundStyle(Color(MPColors.fgMuted))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)

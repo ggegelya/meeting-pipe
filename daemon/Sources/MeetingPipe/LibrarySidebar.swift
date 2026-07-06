@@ -28,7 +28,7 @@ struct LibrarySidebar: View {
                 }
             } header: {
                 Text("Library")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.mpTextXS.weight(.semibold))
                     .tracking(0.08 * 10)
                     .textCase(.uppercase)
                     .foregroundStyle(Color(MPColors.fgMuted))
@@ -55,7 +55,7 @@ struct LibrarySidebar: View {
                 .buttonStyle(.plain)
             } header: {
                 Text("Workflows")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.mpTextXS.weight(.semibold))
                     .tracking(0.08 * 10)
                     .textCase(.uppercase)
                     .foregroundStyle(Color(MPColors.fgMuted))
@@ -176,7 +176,7 @@ private struct LibraryScopeRow: View {
                     EmptyView()
                 } else if isAttention {
                     Text(count.formatted(.number))
-                        .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                        .font(.mpTextXS.weight(.semibold).monospacedDigit())
                         .foregroundStyle(.white)
                         .padding(.horizontal, 5)
                         .frame(minWidth: 16, minHeight: 16)
@@ -186,7 +186,7 @@ private struct LibraryScopeRow: View {
                         )
                 } else {
                     Text(count.formatted(.number))
-                        .font(.system(size: 11).monospacedDigit())
+                        .font(.mpTextXS.monospacedDigit())
                         // TECH-UI-8: mute empty scopes (secondary at half opacity);
                         // non-empty stay full secondary, keeping the selected emphasis.
                         .foregroundStyle(count == 0 ? AnyShapeStyle(Color.secondary.opacity(0.5))
@@ -215,13 +215,13 @@ private struct WorkflowScopeRow: View {
                     Text(workflow.name)
                     if workflow.isDefault {
                         Text("· default")
-                            .font(.system(size: 10))
+                            .font(.mpTextXS)
                             .foregroundStyle(Color(MPColors.fgSubtle))
                     }
                 }
                 Spacer(minLength: 0)
                 Text(count.formatted(.number))
-                    .font(.system(size: 11).monospacedDigit())
+                    .font(.mpTextXS.monospacedDigit())
                     // TECH-UI-8: empty workflows render dimmed.
                     .foregroundStyle(count == 0 ? AnyShapeStyle(Color.secondary.opacity(0.5))
                                                 : AnyShapeStyle(HierarchicalShapeStyle.secondary))

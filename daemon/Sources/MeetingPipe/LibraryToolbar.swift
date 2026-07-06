@@ -20,7 +20,7 @@ struct LibraryToolbar: View {
                 } label: {
                     Label("Edit workflow", systemImage: "pencil")
                         .labelStyle(.titleAndIcon)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.mpTextSM.weight(.medium))
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
@@ -66,7 +66,7 @@ struct LibraryToolbar: View {
     private var breadcrumb: some View {
         HStack(spacing: 6) {
             Text("Library")
-                .font(.system(size: 12, weight: .medium))
+                .font(.mpTextSM.weight(.medium))
                 .foregroundStyle(Color(MPColors.fgMuted))
             if let wf = scopedWorkflow {
                 Image(systemName: "chevron.right")
@@ -77,14 +77,14 @@ struct LibraryToolbar: View {
                         .fill(swiftUIColor(forHex: wf.color))
                         .frame(width: 7, height: 7)
                     Text(wf.name)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.mpTextSM.weight(.medium))
                 }
             } else {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(Color(MPColors.fgMuted))
                 Text(selection.title)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.mpTextSM.weight(.medium))
             }
         }
     }
@@ -140,7 +140,7 @@ struct StatePill: View {
                 .fill(Color(MPColors.ink400).opacity(0.7))
                 .frame(width: 7, height: 7)
             Text("Idle")
-                .font(.system(size: 12, weight: .medium))
+                .font(.mpTextSM.weight(.medium))
                 .foregroundStyle(Color(MPColors.fgMuted))
         }
         .padding(.horizontal, 10)
@@ -161,7 +161,7 @@ struct StatePill: View {
                 .controlSize(.mini)
                 .progressViewStyle(.circular)
             Text(label)
-                .font(.system(size: 12, weight: .medium))
+                .font(.mpTextSM.weight(.medium))
                 .foregroundStyle(Color(MPColors.fgMuted))
         }
         .padding(.horizontal, 10)
@@ -183,7 +183,7 @@ struct StatePill: View {
         return HStack(spacing: 8) {
             PulseDot()
             Text("Recording")
-                .font(.system(size: 12, weight: .medium))
+                .font(.mpTextSM.weight(.medium))
             if let wf = workflow {
                 Text("·").foregroundStyle(Color(MPColors.fgMuted))
                 HStack(spacing: 5) {
@@ -254,7 +254,7 @@ struct RecordToolbarButton: View {
                     Circle().fill(Color.white).frame(width: 8, height: 8)
                 }
                 Text(isRecording ? "Stop" : "Record")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.mpTextSM.weight(.medium))
             }
             .padding(.horizontal, 12)
             .frame(height: 26)

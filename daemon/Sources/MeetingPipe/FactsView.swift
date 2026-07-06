@@ -66,7 +66,7 @@ struct FactsView: View {
             Text(count.formatted(.number))
                 .monospacedDigit()
         }
-        .font(.system(size: 10, weight: .semibold))
+        .font(.mpTextXS.weight(.semibold))
         .tracking(0.08 * 10)
         .textCase(.uppercase)
         .foregroundStyle(Color(MPColors.fgMuted))
@@ -240,7 +240,7 @@ private struct OpenActionRow: View {
                     Spacer(minLength: 8)
                     meetingLink(fact.meetingTitle, onOpen: onOpen)
                 }
-                .font(.system(size: 11))
+                .font(.mpTextXS)
                 .foregroundStyle(Color(MPColors.fgSubtle))
             }
         }
@@ -258,7 +258,7 @@ private struct DecisionRow: View {
                 .foregroundStyle(Color(MPColors.fg))
                 .fixedSize(horizontal: false, vertical: true)
             meetingLink("\(fact.meetingTitle) · \(FactsDate.short(fact.meetingDate))", onOpen: onOpen)
-                .font(.system(size: 11))
+                .font(.mpTextXS)
         }
         .padding(.vertical, 2)
     }

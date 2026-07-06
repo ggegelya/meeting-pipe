@@ -19,10 +19,10 @@ struct SettingsSectionHeader<Trailing: View>: View {
         HStack(alignment: .firstTextBaseline, spacing: MPSpace.s4) {
             VStack(alignment: .leading, spacing: MPSpace.s1) {
                 Text(title)
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.mpTextXL.weight(.semibold))
                 if let caption = caption {
                     Text(caption)
-                        .font(.system(size: 13))
+                        .font(.mpTextBase)
                         .foregroundStyle(Color(MPColors.fgMuted))
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -54,7 +54,7 @@ struct SettingsGroup<Content: View, Footer: View>: View {
         VStack(alignment: .leading, spacing: MPSpace.s2) {
             if let label = label, !label.isEmpty {
                 Text(label.uppercased())
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.mpTextXS.weight(.semibold))
                     .tracking(0.6)
                     .foregroundStyle(Color(MPColors.fgMuted))
                     .padding(.leading, 2)
@@ -69,7 +69,7 @@ struct SettingsGroup<Content: View, Footer: View>: View {
                         .strokeBorder(Color(MPColors.border), lineWidth: 1)
                 )
             footer()
-                .font(.system(size: 12))
+                .font(.mpTextSM)
                 .foregroundStyle(Color(MPColors.fgMuted))
                 .padding(.leading, 2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -110,10 +110,10 @@ struct SettingsRow<Content: View>: View {
             HStack(alignment: alignTop ? .top : .center, spacing: MPSpace.s4) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(label)
-                        .font(.system(size: 13))
+                        .font(.mpTextBase)
                     if let sublabel = sublabel {
                         Text(sublabel)
-                            .font(.system(size: 11))
+                            .font(.mpTextXS)
                             .foregroundStyle(Color(MPColors.fgMuted))
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -182,10 +182,10 @@ struct SettingsStackRow<Content: View>: View {
             }
             VStack(alignment: .leading, spacing: 0) {
                 Text(label)
-                    .font(.system(size: 13))
+                    .font(.mpTextBase)
                 if let sublabel = sublabel {
                     Text(sublabel)
-                        .font(.system(size: 11))
+                        .font(.mpTextXS)
                         .foregroundStyle(Color(MPColors.fgMuted))
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 2)
@@ -238,10 +238,10 @@ struct SettingsDisclosure<Content: View>: View {
                 HStack(alignment: .center, spacing: MPSpace.s4) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(label)
-                            .font(.system(size: 13))
+                            .font(.mpTextBase)
                         if let sublabel = sublabel {
                             Text(sublabel)
-                                .font(.system(size: 11))
+                                .font(.mpTextXS)
                                 .foregroundStyle(Color(MPColors.fgMuted))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -358,7 +358,7 @@ struct SettingsStatusPill: View {
             Image(systemName: icon)
                 .font(.system(size: 10, weight: .medium))
             Text(text)
-                .font(.system(size: 11, weight: .medium))
+                .font(.mpTextXS.weight(.medium))
         }
         .foregroundStyle(tone.fg)
         .padding(.horizontal, 8)
@@ -384,7 +384,7 @@ struct SettingsTag: View {
     var body: some View {
         HStack(spacing: 4) {
             Text(label)
-                .font(.system(size: 12, design: .monospaced))
+                .font(.mpTextSM.monospaced())
             if let onRemove = onRemove {
                 Button(action: onRemove) {
                     Image(systemName: "xmark")
@@ -424,7 +424,7 @@ struct SettingsSlider: View {
             Slider(value: $value, in: range, step: step)
                 .tint(Color(MPColors.signal600))
             Text(format(value))
-                .font(.system(size: 12, design: .monospaced))
+                .font(.mpTextSM.monospaced())
                 .foregroundStyle(Color(MPColors.fgMuted))
                 .frame(width: valueWidth, alignment: .trailing)
         }
@@ -447,14 +447,14 @@ struct SettingsHotkeyField: View {
                 if isCapturing {
                     Text("Press keys…")
                         .foregroundStyle(.mpSignal)
-                        .font(.system(size: 12))
+                        .font(.mpTextSM)
                 } else if text.isEmpty {
                     Text("Not set")
                         .foregroundStyle(Color(MPColors.fgMuted))
-                        .font(.system(size: 12))
+                        .font(.mpTextSM)
                 } else {
                     Text(Self.renderGlyphs(text))
-                        .font(.system(size: 13, design: .monospaced))
+                        .font(.mpTextBase.monospaced())
                 }
                 Spacer(minLength: 0)
                 if isCapturing {
@@ -570,7 +570,7 @@ struct SettingsSecretField: View {
                 }
             }
             .textFieldStyle(.roundedBorder)
-            .font(.system(size: 12, design: .monospaced))
+            .font(.mpTextSM.monospaced())
 
             Button {
                 isVisible.toggle()

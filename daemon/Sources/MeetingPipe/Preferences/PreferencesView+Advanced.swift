@@ -38,7 +38,7 @@ struct AdvancedSectionView: View {
             }
 
             Text("MeetingPipe - config lives in `~/.config/meeting-pipe/`. Workflows live in `~/.config/meeting-pipe/workflows/`. Both are plain TOML - safe to edit by hand if you know what you're doing.")
-                .font(.system(size: 11))
+                .font(.mpTextXS)
                 .foregroundStyle(Color(MPColors.fgSubtle))
                 .padding(.top, 4)
                 .padding(.horizontal, 2)

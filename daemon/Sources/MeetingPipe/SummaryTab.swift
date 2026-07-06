@@ -204,9 +204,9 @@ struct SummaryTab: View {
                 .foregroundStyle(Color(MPColors.fgMuted))
             VStack(alignment: .leading, spacing: 1) {
                 Text("Not quite right?")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.mpTextSM.weight(.medium))
                 Text("Edit the prompt and reprocess. You can compare before keeping it.")
-                    .font(.system(size: 11))
+                    .font(.mpTextXS)
                     .foregroundStyle(Color(MPColors.fgMuted))
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -237,10 +237,10 @@ struct SummaryTab: View {
                 .foregroundStyle(Color(MPColors.fgMuted))
                 .fixedSize(horizontal: false, vertical: true)
             Text("Context prompt")
-                .font(.system(size: 11, weight: .semibold))
+                .font(.mpTextXS.weight(.semibold))
                 .foregroundStyle(Color(MPColors.fgMuted))
             TextEditor(text: $promptDraft)
-                .font(.system(size: 13))
+                .font(.mpTextBase)
                 .frame(minHeight: 120)
                 .overlay(
                     RoundedRectangle(cornerRadius: MPRadius.sm, style: .continuous)
@@ -338,7 +338,7 @@ struct SummaryTab: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             TextEditor(text: $pasteText)
-                .font(.system(size: 13, design: .monospaced))
+                .font(.mpTextBase.monospaced())
                 .frame(minHeight: 180)
                 .overlay(
                     RoundedRectangle(cornerRadius: 6).stroke(Color(MPColors.border))
@@ -394,7 +394,7 @@ struct SummaryTab: View {
             if let reason = meeting.failureReason, !reason.isEmpty {
                 ScrollView {
                     Text(reason)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.mpTextXS.monospaced())
                         .foregroundStyle(Color(MPColors.fgMuted))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)

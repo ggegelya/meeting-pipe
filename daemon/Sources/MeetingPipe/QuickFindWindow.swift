@@ -157,7 +157,7 @@ struct QuickFindView: View {
                 .foregroundStyle(Color(MPColors.fgMuted))
             TextField("Find a meeting…", text: $model.query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 14))
+                .font(.mpTextMD)
                 .focused($queryFocused)
                 .onSubmit { model.selectCurrent() }
         }
@@ -213,7 +213,7 @@ private struct QuickFindRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(match.meeting.displayTitle)
-                .font(.system(size: 13, weight: .medium))
+                .font(.mpTextBase.weight(.medium))
                 .lineLimit(1)
                 .foregroundStyle(.primary)
             HStack(spacing: 6) {

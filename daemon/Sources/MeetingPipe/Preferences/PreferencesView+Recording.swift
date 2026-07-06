@@ -75,7 +75,7 @@ struct RecordingSectionView: View {
                 SettingsFullRow(showsDivider: false) {
                     if store.autoConsentApps.isEmpty {
                         Text("No apps yet - every meeting will prompt.")
-                            .font(.system(size: 12))
+                            .font(.mpTextSM)
                             .foregroundStyle(Color(MPColors.fgSubtle))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {

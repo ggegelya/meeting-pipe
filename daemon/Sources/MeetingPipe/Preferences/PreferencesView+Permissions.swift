@@ -55,7 +55,7 @@ struct PermissionsSectionView: View {
                 .padding(.bottom, 22)
 
             Text("Granting Accessibility from System Settings requires a daemon restart for the change to take effect - macOS caches the trust verdict per-process at launch.")
-                .font(.system(size: 12))
+                .font(.mpTextSM)
                 .foregroundStyle(Color(MPColors.fgMuted))
                 .padding(.leading, 2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -71,7 +71,7 @@ struct PermissionsSectionView: View {
                 .foregroundStyle(Color(MPColors.signal600))
                 .padding(.top, 1)
             Text("Audio capture is fully on-device. The pipeline only reaches the network when sending the transcript to Anthropic for summarization, and when publishing to Notion.")
-                .font(.system(size: 12))
+                .font(.mpTextSM)
                 .lineSpacing(2)
         }
         .padding(.horizontal, 14)
@@ -135,7 +135,7 @@ private struct PermissionsCardRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
                         Text(kind.displayName)
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.mpTextBase.weight(.medium))
                         SettingsStatusPill(
                             tone: pillTone,
                             icon: pillIcon,
@@ -143,13 +143,13 @@ private struct PermissionsCardRow: View {
                         )
                     }
                     Text(rationale)
-                        .font(.system(size: 12))
+                        .font(.mpTextSM)
                         .foregroundStyle(Color(MPColors.fgMuted))
                         .lineSpacing(1)
                         .fixedSize(horizontal: false, vertical: true)
                     if showsDeferredHint {
                         Text("Toggle MeetingPipe on in System Settings, then click Re-check.")
-                            .font(.system(size: 11))
+                            .font(.mpTextXS)
                             .foregroundStyle(.mpSignal)
                             .padding(.top, 2)
                     }

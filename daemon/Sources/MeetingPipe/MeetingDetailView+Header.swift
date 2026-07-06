@@ -24,7 +24,7 @@ extension MeetingDetailView {
         if isRenamingTitle {
             TextField("Untitled meeting", text: $editingTitle)
                 .textFieldStyle(.plain)
-                .font(.system(size: 19, weight: .semibold))
+                .font(.mpTextLG.weight(.semibold))
                 .lineLimit(2)
                 .focused($titleFieldFocused)
                 .onSubmit { commitRename() }
@@ -34,7 +34,7 @@ extension MeetingDetailView {
                 }
         } else {
             Text(editingTitle.isEmpty ? "Untitled meeting" : editingTitle)
-                .font(.system(size: 19, weight: .semibold))
+                .font(.mpTextLG.weight(.semibold))
                 .foregroundStyle(Color(MPColors.fg))
                 .lineLimit(2)
                 .contentShape(Rectangle())
@@ -118,26 +118,26 @@ extension MeetingDetailView {
     var captionRow: some View {
         HStack(spacing: 6) {
             Text(MeetingFormatters.fullDateTime.string(from: meeting.startedAt))
-                .font(.system(size: 11))
+                .font(.mpTextXS)
                 .foregroundStyle(Color(MPColors.fgSubtle))
             if let d = meeting.durationSec {
                 Text("·").font(.mpTextXS).foregroundStyle(Color(MPColors.fgSubtle))
                 Text(MeetingRow.formatDuration(d))
-                    .font(.system(size: 11).monospacedDigit())
+                    .font(.mpTextXS.monospacedDigit())
                     .foregroundStyle(Color(MPColors.fgSubtle))
             }
             // Detected-language chip (TECH-UI-4): uppercase ISO code between duration and source, full name on hover. Hidden when unknown.
             if let langCode = languageChipCode {
                 Text("·").font(.mpTextXS).foregroundStyle(Color(MPColors.fgSubtle))
                 Text(langCode)
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.mpTextXS.monospaced())
                     .foregroundStyle(Color(MPColors.fgSubtle))
                     .help(languageChipTooltip ?? langCode)
             }
             if let src = meeting.sourceDisplayName, !src.isEmpty {
                 Text("·").font(.mpTextXS).foregroundStyle(Color(MPColors.fgSubtle))
                 Text(src)
-                    .font(.system(size: 11))
+                    .font(.mpTextXS)
                     .foregroundStyle(Color(MPColors.fgSubtle))
             }
         }
@@ -157,7 +157,7 @@ extension MeetingDetailView {
                     .font(.system(size: 11))
                     .foregroundStyle(Color(MPColors.fgSubtle))
                 Text(label)
-                    .font(.system(size: 11))
+                    .font(.mpTextXS)
                     .foregroundStyle(Color(MPColors.fgSubtle))
             }
             .help(provenanceTooltip ?? label)

@@ -13,7 +13,7 @@ struct OnboardingStepTest: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Try a test recording")
-                .font(.system(size: 22, weight: .semibold))
+                .font(.mpTextXL.weight(.semibold))
             Text("Record about a minute and say a few words. When it finishes, the transcript and summary appear in your Library, so you know the whole path works before a real meeting.")
                 .font(.callout)
                 .foregroundStyle(Color(MPColors.fgMuted))
@@ -26,7 +26,7 @@ struct OnboardingStepTest: View {
                 .controlSize(.large)
                 if recording {
                     Text("Recording \(remaining)s")
-                        .font(.system(size: 13).monospacedDigit())
+                        .font(.mpTextBase.monospacedDigit())
                         .foregroundStyle(Color(MPColors.pulse600))
                 }
             }

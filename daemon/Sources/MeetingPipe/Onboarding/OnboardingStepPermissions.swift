@@ -11,7 +11,7 @@ struct OnboardingStepPermissions: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Grant four permissions")
-                .font(.system(size: 22, weight: .semibold))
+                .font(.mpTextXL.weight(.semibold))
             Text("Audio capture is fully on-device. None of these permissions send anything off your machine.")
                 .font(.callout)
                 .foregroundStyle(Color(MPColors.fgMuted))
@@ -33,9 +33,9 @@ struct OnboardingStepPermissions: View {
                 .frame(width: 28, height: 28)
                 .foregroundStyle(Color(MPColors.fgMuted))
             VStack(alignment: .leading, spacing: 2) {
-                Text(kind.displayName).font(.system(size: 13, weight: .medium))
+                Text(kind.displayName).font(.mpTextBase.weight(.medium))
                 Text(kind.rationale)
-                    .font(.system(size: 11))
+                    .font(.mpTextXS)
                     .foregroundStyle(Color(MPColors.fgMuted))
                     .fixedSize(horizontal: false, vertical: true)
             }

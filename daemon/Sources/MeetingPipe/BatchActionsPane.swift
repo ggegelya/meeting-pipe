@@ -51,10 +51,10 @@ struct BatchActionsPane: View {
     private var leadRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text("\(meetings.count)")
-                .font(.system(size: 22, weight: .semibold))
+                .font(.mpTextXL.weight(.semibold))
                 .foregroundStyle(Color(MPColors.fg))
             Text("meetings selected")
-                .font(.system(size: 12))
+                .font(.mpTextSM)
                 .foregroundStyle(Color(MPColors.fgMuted))
             Spacer()
             // No-op placeholder; selection is owned upstream by LibraryRootView. Wiring a callback is out of scope for the polish pass.
@@ -79,13 +79,13 @@ struct BatchActionsPane: View {
                 ForEach(Array(visible.enumerated()), id: \.element.id) { idx, m in
                     HStack(spacing: 8) {
                         Text(m.displayTitle)
-                            .font(.system(size: 12))
+                            .font(.mpTextSM)
                             .foregroundStyle(Color(MPColors.fg))
                             .lineLimit(1)
                             .truncationMode(.tail)
                         Spacer(minLength: 8)
                         Text(MeetingFormatters.shortTime.string(from: m.startedAt))
-                            .font(.system(size: 10).monospacedDigit())
+                            .font(.mpTextXS.monospacedDigit())
                             .foregroundStyle(Color(MPColors.fgSubtle))
                     }
                     .padding(.horizontal, 12)
@@ -100,7 +100,7 @@ struct BatchActionsPane: View {
                 if meetings.count > 3 {
                     HStack {
                         Text("+ \(meetings.count - 3) more")
-                            .font(.system(size: 12))
+                            .font(.mpTextSM)
                             .foregroundStyle(Color(MPColors.fgMuted))
                         Spacer()
                     }
@@ -159,7 +159,7 @@ struct BatchActionsPane: View {
                         runningFooter(done: done, total: total, onStop: { cancelRequested = true })
                     } else {
                         Text("Choose a destination folder when prompted.")
-                            .font(.system(size: 11))
+                            .font(.mpTextXS)
                             .foregroundStyle(Color(MPColors.fgSubtle))
                         Spacer()
                         Button("Choose folder…") { Task { await runExport() } }
@@ -188,7 +188,7 @@ struct BatchActionsPane: View {
                         runningFooter(done: done, total: total, onStop: { cancelRequested = true })
                     } else {
                         Text("Recoverable from the system Trash.")
-                            .font(.system(size: 11))
+                            .font(.mpTextXS)
                             .foregroundStyle(Color(MPColors.fgSubtle))
                         Spacer()
                         Button("Move to Trash") { confirmingDelete = true }
@@ -210,7 +210,7 @@ struct BatchActionsPane: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(eyebrow)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.mpTextXS.weight(.semibold))
                 .tracking(0.08 * 10)
                 .textCase(.uppercase)
                 .foregroundStyle(Color(MPColors.fgSubtle))
@@ -242,10 +242,10 @@ struct BatchActionsPane: View {
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 12))
+                    .font(.mpTextSM)
                     .foregroundStyle(Color(MPColors.fg))
                 Text(hint)
-                    .font(.system(size: 11))
+                    .font(.mpTextXS)
                     .foregroundStyle(Color(MPColors.fgSubtle))
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -286,7 +286,7 @@ struct BatchActionsPane: View {
             }
             .frame(height: 2)
             Text("\(done) / \(total)")
-                .font(.system(size: 11).monospacedDigit())
+                .font(.mpTextXS.monospacedDigit())
                 .foregroundStyle(Color(MPColors.fgSubtle))
             Button("Stop", action: onStop)
                 .buttonStyle(MPSecondaryButtonStyle())
@@ -301,7 +301,7 @@ struct BatchActionsPane: View {
                 .font(.system(size: 11))
                 .foregroundStyle(failed > 0 ? Color(MPColors.warning600) : Color(MPColors.success600))
             Text("\(succeeded) ok\(failed > 0 ? " · \(failed) failed" : "")")
-                .font(.system(size: 11))
+                .font(.mpTextXS)
                 .foregroundStyle(Color(MPColors.fgMuted))
         }
     }
@@ -392,7 +392,7 @@ struct BatchActionsPane: View {
 private struct MPPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12, weight: .medium))
+            .font(.mpTextSM.weight(.medium))
             .foregroundStyle(Color(MPColors.fgOnSignal))
             .padding(.horizontal, 10)
             .frame(height: 24)
@@ -411,7 +411,7 @@ private struct MPPrimaryButtonStyle: ButtonStyle {
 private struct MPSecondaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12, weight: .medium))
+            .font(.mpTextSM.weight(.medium))
             .foregroundStyle(Color(MPColors.fg))
             .padding(.horizontal, 10)
             .frame(height: 24)
@@ -432,7 +432,7 @@ private struct MPSecondaryButtonStyle: ButtonStyle {
 private struct MPDangerButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12, weight: .medium))
+            .font(.mpTextSM.weight(.medium))
             .foregroundStyle(Color(MPColors.pulse500))
             .padding(.horizontal, 10)
             .frame(height: 24)

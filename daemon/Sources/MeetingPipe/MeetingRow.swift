@@ -69,7 +69,7 @@ struct MeetingRow: View, Equatable {
                 captionContent
                 Spacer(minLength: 8)
                 Text(RelativeMeetingDateFormatter.string(from: meeting.startedAt))
-                    .font(.system(size: 11).monospacedDigit())
+                    .font(.mpTextXS.monospacedDigit())
                     .foregroundStyle(Color(MPColors.fgMuted))
                     .lineLimit(1)
             }
@@ -97,7 +97,7 @@ struct MeetingRow: View, Equatable {
     /// title: local meetings are first-class, not a downgraded summary.
     private var titleText: some View {
         Text(meeting.displayTitle)
-            .font(.system(size: 13, weight: .medium))
+            .font(.mpTextBase.weight(.medium))
             .foregroundStyle(Color(MPColors.fg))
             .lineLimit(1)
             .truncationMode(.tail)
@@ -138,7 +138,7 @@ struct MeetingRow: View, Equatable {
     private var captionContent: some View {
         if let src = meeting.sourceDisplayName, !src.isEmpty {
             Text(src)
-                .font(.system(size: 11))
+                .font(.mpTextXS)
                 .foregroundStyle(Color(MPColors.fgSubtle))
         }
         if let d = meeting.durationSec {
@@ -146,7 +146,7 @@ struct MeetingRow: View, Equatable {
                 Text("·").font(.mpTextXS).foregroundStyle(Color(MPColors.fgSubtle))
             }
             Text(Self.formatDuration(d))
-                .font(.system(size: 11).monospacedDigit())
+                .font(.mpTextXS.monospacedDigit())
                 .foregroundStyle(Color(MPColors.fgSubtle))
         }
         if let workflow = meeting.workflowName, !workflow.isEmpty {
@@ -197,7 +197,7 @@ struct MeetingRow: View, Equatable {
     private func inlineFixButton(_ label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 11, weight: .medium))
+                .font(.mpTextXS.weight(.medium))
                 .foregroundStyle(Color(MPColors.fg))
                 .padding(.horizontal, 9)
                 .frame(height: 20)
@@ -227,7 +227,7 @@ struct MeetingRow: View, Equatable {
             HStack(spacing: 5) {
                 ProgressView().controlSize(.small)
                 Text("\(Self.stageLabel(p.stage)) \(MeetingRow.formatDuration(Double(p.elapsedSec)))")
-                    .font(.system(size: 11).monospacedDigit())
+                    .font(.mpTextXS.monospacedDigit())
                     .foregroundStyle(Color(MPColors.fgSubtle))
                     // Pin to one line like MPStatusPill (TECH-DSN14); at narrow
                     // widths "Summarizing ..." otherwise wraps to ~3 lines.

@@ -27,7 +27,7 @@ struct WorkflowChip: View {
                     .frame(width: 6, height: 6)
             }
             Text(name)
-                .font(.system(size: 11, weight: .medium))
+                .font(.mpTextXS.weight(.medium))
                 .foregroundStyle(Color(MPColors.fgMuted))
                 .fixedSize(horizontal: true, vertical: false)
         }
@@ -71,7 +71,7 @@ struct MPStatusPill: View {
         HStack(spacing: 5) {
             indicator
             Text(label)
-                .font(.system(size: 11, weight: .medium))
+                .font(.mpTextXS.weight(.medium))
                 .foregroundStyle(textColor)
                 .fixedSize(horizontal: true, vertical: false)
         }
@@ -205,7 +205,7 @@ struct MPRefChip<Content: View>: View {
         } label: {
             HStack(spacing: 4) {
                 Text(currentValue ?? label)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.mpTextXS.weight(.medium))
                     .foregroundStyle(isActive ? Color(MPColors.fg) : Color(MPColors.fgMuted))
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .medium))

@@ -35,7 +35,7 @@ struct OnboardingStepWorkflow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Pick a default workflow")
-                .font(.system(size: 22, weight: .semibold))
+                .font(.mpTextXL.weight(.semibold))
             Text("A workflow decides how a meeting is handled and where its summary goes. You can edit it or add more later.")
                 .font(.callout)
                 .foregroundStyle(Color(MPColors.fgMuted))
@@ -56,9 +56,9 @@ struct OnboardingStepWorkflow: View {
                 Image(systemName: selected == p ? "largecircle.fill.circle" : "circle")
                     .foregroundStyle(selected == p ? Color(MPColors.signal600) : Color(MPColors.fgMuted))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(p.title).font(.system(size: 13, weight: .medium))
+                    Text(p.title).font(.mpTextBase.weight(.medium))
                     Text(p.subtitle)
-                        .font(.system(size: 11))
+                        .font(.mpTextXS)
                         .foregroundStyle(Color(MPColors.fgMuted))
                         .fixedSize(horizontal: false, vertical: true)
                 }
