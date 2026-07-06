@@ -143,8 +143,7 @@ struct CorrectionEditorBody: View {
             }
         }
         .padding(8)
-        .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
-        .cornerRadius(6)
+        .mpSurface(radius: 6) // DSN19: was controlBackgroundColor.opacity(0.5)
     }
 
     private var languageRow: some View {

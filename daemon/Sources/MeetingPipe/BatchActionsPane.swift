@@ -216,14 +216,7 @@ struct BatchActionsPane: View {
                 .foregroundStyle(Color(MPColors.fgSubtle))
                 .padding(.leading, 10)
             content()
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color(MPColors.bgRaised))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(Color(MPColors.border), lineWidth: 0.5)
-                )
+                .mpSurface(radius: 10, borderWidth: 0.5) // DSN19: the one raised-card primitive
         }
     }
 
@@ -268,7 +261,7 @@ struct BatchActionsPane: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(Color.white.opacity(0.015))
+            .background(Color.mpOverlayFaint)
         }
     }
 
@@ -278,7 +271,7 @@ struct BatchActionsPane: View {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 1, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
+                        .fill(Color.mpOverlayHover)
                     RoundedRectangle(cornerRadius: 1, style: .continuous)
                         .fill(Color(MPColors.signal600))
                         .frame(width: geo.size.width * progressFraction(done: done, total: total))
@@ -418,7 +411,7 @@ private struct MPSecondaryButtonStyle: ButtonStyle {
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(configuration.isPressed
-                          ? Color.white.opacity(0.10)
+                          ? Color.mpOverlayPress
                           : Color(MPColors.bgRaised))
             )
             .overlay(

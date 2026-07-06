@@ -105,6 +105,14 @@
   --mp-border-strong: rgba(22, 25, 29, 0.16);
   --mp-border-faint:  rgba(22, 25, 29, 0.06);
 
+  /* Per-theme affordance overlays (DSN19): the wash behind resting / hover /
+     press / progress-track fills. A white wash over content vanishes on the
+     paper canvas, so light mode washes with ink and dark mode with white, at
+     matched alphas, so every hover / press / track affordance reads in both. */
+  --mp-overlay-faint: rgba(22, 25, 29, 0.03);
+  --mp-overlay-hover: rgba(22, 25, 29, 0.05);
+  --mp-overlay-press: rgba(22, 25, 29, 0.08);
+
   /* HUD / floating panel -- matches macOS NSVisualEffectView .hudWindow.
      Leans into real glass: cool near-white fill + blur + saturate. */
   --mp-hud-bg:        rgba(250, 251, 252, 0.78);
@@ -228,6 +236,11 @@
     --mp-border:        rgba(255, 255, 255, 0.09);
     --mp-border-strong: rgba(255, 255, 255, 0.16);
     --mp-border-faint:  rgba(255, 255, 255, 0.05);
+
+    /* Affordance overlays wash with white on the dark canvas (DSN19). */
+    --mp-overlay-faint: rgba(255, 255, 255, 0.04);
+    --mp-overlay-hover: rgba(255, 255, 255, 0.06);
+    --mp-overlay-press: rgba(255, 255, 255, 0.10);
 
     --mp-hud-bg:        rgba(32, 34, 38, 0.78);
     --mp-hud-stroke:    rgba(255, 255, 255, 0.09);

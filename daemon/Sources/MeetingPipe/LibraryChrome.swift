@@ -245,7 +245,7 @@ struct MPGhostIconButton: View {
                 .frame(width: 26, height: 26)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(hovering ? Color.white.opacity(0.06) : Color.clear)
+                        .fill(hovering ? Color.mpOverlayHover : Color.clear)
                 )
         }
         .buttonStyle(.plain)

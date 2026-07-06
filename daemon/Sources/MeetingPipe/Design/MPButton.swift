@@ -1,12 +1,18 @@
 import AppKit
 
-/// Design-system button. `.primary`: filled `signal600`, one-and-only primary action per surface. `.ghost`: `ink600` border, same size as primary but lower emphasis (e.g. "Record (BYO)" alongside "Record"). `.text`: bare text with hover tint for tertiary actions.
+/// Design-system button, the one button language (DSN24). Capsule geometry (macOS 26): `--mp-radius-full`, 26pt tall, 13pt side padding. `.primary`: filled `signalFill` (the deep teal that clears white-on-teal 4.5:1 in both modes, DSN23), the one-and-only primary action per surface. `.ghost`: hairline border, same size as primary but lower emphasis (e.g. "Record (BYO)" alongside the record key). `.text`: bare text with hover tint for tertiary actions. Press scales to 0.97 (the blessed press feedback), honoring reduce-motion. The circular record key is the named exception to this one-button rule (see `RecordKey`).
 final class MPButton: NSButton {
     enum Style { case primary, ghost, text }
 
     private let mpStyle: Style
     private var isHovered = false { didSet { needsDisplay = true } }
-    private var isPressed = false { didSet { needsDisplay = true } }
+    private var isPressed = false {
+        didSet {
+            guard isPressed != oldValue else { return }
+            applyPressScale()
+            needsDisplay = true
+        }
+    }
     private var trackingArea: NSTrackingArea?
 
     init(title: String, style: Style, target: AnyObject?, action: Selector?) {
@@ -18,7 +24,7 @@ final class MPButton: NSButton {
         self.bezelStyle = .regularSquare
         self.isBordered = false
         self.wantsLayer = true
-        self.layer?.cornerRadius = MPRadius.sm
+        self.layer?.cornerRadius = MPRadius.full // capsule (macOS 26); clamps to half-height at this 26pt size
         self.layer?.masksToBounds = true
         self.contentTintColor = nil
         applyStyle()
@@ -27,9 +33,9 @@ final class MPButton: NSButton {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override var intrinsicContentSize: NSSize {
-        // 26pt height: unified pill geometry shared with the chevron menu button (Roadmap P4.1) so the prompt's right cluster reads as one row. Width = text + 14pt padding each side.
+        // 26pt height: unified capsule geometry shared with the chevron menu button (Roadmap P4.1) so the prompt's right cluster reads as one row. Width = text + 13pt padding each side (DSN24).
         let textSize = (attributedTitle).size()
-        let padX: CGFloat = mpStyle == .text ? 8 : 14
+        let padX: CGFloat = mpStyle == .text ? 8 : 13
         return NSSize(width: ceil(textSize.width) + padX * 2, height: 26)
     }
 
@@ -61,14 +67,10 @@ final class MPButton: NSButton {
         let titleColor: NSColor
         switch mpStyle {
         case .primary:
-            // The white label needs >= 4.5:1, so the resting fill is signal700
-            // (white-on-teal 6.0:1), not signal600 (4.1:1, WCAG-failing) (UX14).
-            // Hover lifts to signal600, press returns to signal700 for feedback.
-            let fill: NSColor
-            if isPressed { fill = MPColors.signal700 }
-            else if isHovered { fill = MPColors.signal600 }
-            else { fill = MPColors.signal700 }
-            layer.backgroundColor = fill.cgColor
+            // Deep teal that clears white-on-teal 4.5:1 in both modes (signalFill,
+            // DSN23). Flat like the locked capsule mockup: no hover/press colour
+            // change, the tactile feedback is the 0.97 press scale below.
+            layer.backgroundColor = MPColors.signalFill.cgColor
             layer.borderWidth = 0
             titleColor = MPColors.fgOnSignal
 
@@ -110,6 +112,25 @@ final class MPButton: NSButton {
                 .paragraphStyle: para,
             ]
         )
+    }
+
+    /// Blessed press feedback (DSN24): scale to 0.97 over 130ms, honoring
+    /// reduce-motion. An NSView-backed layer anchors at (0,0), so scale about the
+    /// bounds centre via translate -> scale -> translate-back.
+    private func applyPressScale() {
+        guard let layer = layer else { return }
+        let scale: CGFloat = isPressed ? 0.97 : 1.0
+        let mid = CGPoint(x: bounds.midX, y: bounds.midY)
+        let transform = CATransform3DConcat(
+            CATransform3DConcat(
+                CATransform3DMakeTranslation(-mid.x, -mid.y, 0),
+                CATransform3DMakeScale(scale, scale, 1)),
+            CATransform3DMakeTranslation(mid.x, mid.y, 0))
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(MPMotion.reduceMotion ? 0 : MPMotion.durPress)
+        CATransaction.setAnimationTimingFunction(MPMotion.easeOut)
+        layer.transform = transform
+        CATransaction.commit()
     }
 
     /// Make the primary button respond to Return.

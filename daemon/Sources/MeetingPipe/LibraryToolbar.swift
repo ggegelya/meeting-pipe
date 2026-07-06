@@ -147,10 +147,10 @@ struct StatePill: View {
         .frame(height: 26)
         .background(
             Capsule(style: .continuous)
-                .fill(Color.white.opacity(0.03))
+                .fill(Color.mpOverlayFaint)
                 .overlay(
                     Capsule(style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.06), lineWidth: 0.5)
+                        .strokeBorder(Color(MPColors.borderFaint), lineWidth: 0.5)
                 )
         )
     }
@@ -168,10 +168,10 @@ struct StatePill: View {
         .frame(height: 26)
         .background(
             Capsule(style: .continuous)
-                .fill(Color.white.opacity(0.04))
+                .fill(Color.mpOverlayFaint)
                 .overlay(
                     Capsule(style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
+                        .strokeBorder(Color(MPColors.border), lineWidth: 0.5)
                 )
         )
     }

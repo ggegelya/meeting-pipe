@@ -201,6 +201,22 @@ enum MPColors {
             ? NSColor.white.withAlphaComponent(0.05)
             : NSColor.black.withAlphaComponent(0.06)
     }
+
+    // MARK: Affordance overlays (DSN19) - mirror `--mp-overlay-*`.
+    /// Per-theme wash behind resting / hover / press / progress-track fills. A
+    /// white-over-content wash vanishes on the paper canvas (white on near-white),
+    /// so these branch on appearance: an ink wash on paper, a white wash in dark,
+    /// at matched alphas, so every hover / press / track affordance reads in both
+    /// modes. The hand-rolled `Color.white.opacity(x)` fills route through these.
+    static let overlayFaint = NSColor(name: "mp.overlay.faint") { appearance in
+        appearance.mpIsDark ? .white.withAlphaComponent(0.04) : .black.withAlphaComponent(0.03)
+    }
+    static let overlayHover = NSColor(name: "mp.overlay.hover") { appearance in
+        appearance.mpIsDark ? .white.withAlphaComponent(0.06) : .black.withAlphaComponent(0.05)
+    }
+    static let overlayPress = NSColor(name: "mp.overlay.press") { appearance in
+        appearance.mpIsDark ? .white.withAlphaComponent(0.10) : .black.withAlphaComponent(0.08)
+    }
 }
 
 extension NSAppearance {
@@ -230,6 +246,13 @@ extension Color {
     /// reads on both the paper and dark canvases; ~15% approximates the design
     /// spec's #DFF3F0 wash over paper. One constant so the row and sidebar can't drift.
     static let mpSelectionWash = Color(nsColor: MPColors.signal600).opacity(0.15)
+
+    /// Per-theme affordance overlays (DSN19). Replace the dark-only
+    /// `Color.white.opacity(x)` resting/hover/press/track fills, which composite
+    /// to invisible on the paper canvas. Ink wash on paper, white wash in dark.
+    static let mpOverlayFaint = Color(nsColor: MPColors.overlayFaint)
+    static let mpOverlayHover = Color(nsColor: MPColors.overlayHover)
+    static let mpOverlayPress = Color(nsColor: MPColors.overlayPress)
 }
 
 /// Fixed-size SwiftUI font tokens mirroring the `MPType` size ramp, so a call site
@@ -331,8 +354,18 @@ enum MPMotion {
     static let durBase: TimeInterval = 0.18   // panel fade-in (matches existing code)
     static let durSlow: TimeInterval = 0.28
 
+    // Control-press timings (DSN24), mirroring the kit's `.mp-*` interaction
+    // classes. Mechanical: short, springless, ease-out.
+    static let durPress: TimeInterval = 0.13  // `.mp-pressable` scale-to-0.97 (buttons, small controls)
+    static let durKey:   TimeInterval = 0.10  // `.mp-recordkey` travel + ring compress
+    static let durSnap:  TimeInterval = 0.09  // mechanical toggle knob snap
+
     /// Apple's default-ish ease-out curve. Used for fades.
     static let easeOut = CAMediaTimingFunction(controlPoints: 0.22, 0.61, 0.36, 1.0)
+
+    /// Whether the user has asked for reduced motion; primitives collapse their
+    /// press/snap animations to instant when true.
+    static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 }
 
 /// Pre-built fonts matching the type ramp and weight conventions.

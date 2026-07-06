@@ -94,7 +94,7 @@ struct WorkflowInspector: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(
                             RoundedRectangle(cornerRadius: 4)
-                                .fill(Color.white.opacity(0.02))
+                                .fill(Color.mpOverlayFaint)
                         )
                 }
             }

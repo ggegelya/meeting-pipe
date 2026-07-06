@@ -60,14 +60,7 @@ struct SettingsGroup<Content: View, Footer: View>: View {
                     .padding(.leading, 2)
             }
             VStack(spacing: 0) { content() }
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color(MPColors.bgRaised))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(Color(MPColors.border), lineWidth: 1)
-                )
+                .mpSurface(radius: 10) // DSN19: the one raised-card primitive (radius kept; DSN28 retunes to md)
             footer()
                 .font(.mpTextSM)
                 .foregroundStyle(Color(MPColors.fgMuted))

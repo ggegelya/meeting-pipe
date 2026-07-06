@@ -226,14 +226,7 @@ private struct AttendeeChips: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color(NSColor.controlBackgroundColor).opacity(0.6))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.secondary.opacity(0.15))
-                )
+                .mpSurface(radius: 6) // DSN19: was controlBackgroundColor.opacity(0.6) + secondary stroke
             }
         }
     }
