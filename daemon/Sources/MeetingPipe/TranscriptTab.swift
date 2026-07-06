@@ -338,6 +338,14 @@ private struct TranscriptList: View {
                             .padding(.horizontal, 16)
                             .padding(.top, 12)
                     }
+                    // Discoverability caption (DSN22 #10): the rows are clickable to
+                    // edit or seek, which is not otherwise obvious.
+                    Text("Click a line to edit or seek.")
+                        .font(.mpTextXS)
+                        .foregroundStyle(Color(MPColors.fgSubtle))
+                        .padding(.horizontal, 16)
+                        .padding(.top, language == nil ? 12 : 2)
+                        .padding(.bottom, 4)
                     ForEach(segments) { seg in
                         TranscriptRow(
                             segment: seg,
@@ -427,7 +435,12 @@ private struct TranscriptRow: View {
                 .padding(.trailing, 10)
             }
         }
-        .onHover { isHovered = $0 }
+        .onHover { hovering in
+            isHovered = hovering
+            // Pointer cursor so the line reads as clickable (DSN22 #10). macOS 14
+            // floor rules out `.pointerStyle`, so push/pop the AppKit cursor.
+            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
         .contextMenu {
             Button("Edit text…", action: onEdit)
             if TranscriptDisplay.isNameable(segment.speakerID) {

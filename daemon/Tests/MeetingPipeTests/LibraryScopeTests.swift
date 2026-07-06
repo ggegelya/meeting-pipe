@@ -166,7 +166,10 @@ final class LibraryScopeTests: XCTestCase {
     }
 
     func test_ask_scope_is_railed_with_chrome_and_no_count() {
-        XCTAssertTrue(LibrarySidebar.librarySections.contains(.ask))
+        // DSN22 #7: Facts / Ask moved out of the Library group into their own
+        // INSIGHTS group (projections, not date/status filters).
+        XCTAssertTrue(LibrarySidebar.insightsSections.contains(.ask))
+        XCTAssertFalse(LibrarySidebar.librarySections.contains(.ask))
         XCTAssertEqual(LibraryScope.ask.title, "Ask")
         XCTAssertNotNil(LibraryScope.ask.systemImage)
         XCTAssertFalse(LibraryScope.ask.isWorkflow)

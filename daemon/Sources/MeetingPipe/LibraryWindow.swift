@@ -96,6 +96,15 @@ final class LibraryWindowModel: ObservableObject {
     /// Set by the menu-bar Quick Find panel. The root view switches scope to All Meetings, selects the row, then clears this back to nil so the next pick is a fresh edge.
     @Published var pendingSelection: String? = nil
 
+    /// When a Facts or Ask row opens a meeting, the scope snaps to All meetings, so
+    /// the detail header shows a dismissible "Opened from <source>" banner (DSN22
+    /// #9). Keyed by stem so navigating to any other meeting hides it on its own.
+    struct InsightOrigin: Equatable {
+        let stem: String
+        let source: String   // "Facts" / "Ask"
+    }
+    @Published var openedFromInsight: InsightOrigin? = nil
+
     /// Non-`@Published` so toolbar reads don't republish the parent model; the toolbar observes it directly via `@ObservedObject`.
     let processing = ProcessingTracker()
 
@@ -380,6 +389,7 @@ struct LibraryRootView: View {
                         // its rows are facts, not meetings, and "open" navigates
                         // back to All Meetings with the source row selected.
                         FactsView(store: meetingStore) { stem in
+                            model.openedFromInsight = .init(stem: stem, source: "Facts")
                             scope = .allMeetings
                             meetingSelection = [stem]
                         }
@@ -388,6 +398,7 @@ struct LibraryRootView: View {
                         // over a cited answer, each citation navigating back to its
                         // source meeting like a Facts row does.
                         AskView(model: model) { stem in
+                            model.openedFromInsight = .init(stem: stem, source: "Ask")
                             scope = .allMeetings
                             meetingSelection = [stem]
                         }

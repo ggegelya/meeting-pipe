@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Smart-folder rail: library scopes on top, workflows below. Selecting a workflow filters the list and opens its inspector. State pill and record button live in the toolbar.
+/// Smart-folder rail: Library date/status scopes on top, Workflows below, and an Insights group (Facts / Ask projections) last (DSN22 #7). Selecting a workflow filters the list and opens its inspector. State pill and record button live in the toolbar.
 struct LibrarySidebar: View {
     @Binding var selection: LibraryScope
     /// Non-nil once the Coordinator has wired the store. Rail degrades to library-only scopes when nil (headless tests, first launch).
@@ -60,6 +60,24 @@ struct LibrarySidebar: View {
                     .textCase(.uppercase)
                     .foregroundStyle(Color(MPColors.fgMuted))
             }
+
+            Section {
+                ForEach(LibrarySidebar.insightsSections, id: \.self) { scope in
+                    LibraryScopeRow(
+                        scope: scope,
+                        count: 0,
+                        isSelected: scope == selection
+                    )
+                    .tag(scope)
+                    .listRowBackground(scope == selection ? Color.mpSelectionWash : Color.clear)
+                }
+            } header: {
+                Text("Insights")
+                    .font(.mpTextXS.weight(.semibold))
+                    .tracking(0.08 * 10)
+                    .textCase(.uppercase)
+                    .foregroundStyle(Color(MPColors.fgMuted))
+            }
         }
         .listStyle(.sidebar)
         .navigationSplitViewColumnWidth(
@@ -69,12 +87,15 @@ struct LibrarySidebar: View {
         )
     }
 
-    /// Non-workflow scopes shown in the Library section, in display order.
-    /// `.facts` and `.ask` sit last: cross-meeting projections set apart from the
-    /// date/status filters above them (DV1 / AI3).
+    /// Date/status filter scopes shown in the Library section, in display order.
     static let librarySections: [LibraryScope] = [
-        .allMeetings, .today, .last7Days, .last30Days, .needsYou, .ndaOnly, .untagged, .facts, .ask,
+        .allMeetings, .today, .last7Days, .last30Days, .needsYou, .ndaOnly, .untagged,
     ]
+
+    /// Cross-meeting projections (DV1 / AI3): views that replace the list rather
+    /// than filter it, so they get their own INSIGHTS group below Workflows
+    /// (DSN22 #7), set apart from the date/status filters above.
+    static let insightsSections: [LibraryScope] = [.facts, .ask]
 }
 
 /// Pre-computed count bag handed in from the parent, so the sidebar never touches the meeting store directly.

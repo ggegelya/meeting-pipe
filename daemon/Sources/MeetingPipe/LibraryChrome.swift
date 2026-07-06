@@ -88,6 +88,11 @@ struct MPStatusPill: View {
             Capsule(style: .continuous)
                 .strokeBorder(strokeColor, lineWidth: 0.5)
         )
+        // VoiceOver hardening (DSN27): the pill is one element that announces its
+        // status text, so the decorative dot/lock/spinner never reads as noise and
+        // the status is never conveyed by colour alone.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
     }
 
     @ViewBuilder
@@ -98,6 +103,12 @@ struct MPStatusPill: View {
             MPSteadyPulseDot(color: dotColor, size: 5)
         case .processing:
             MPRingSpinner(color: dotColor, size: 7)
+        case .nda:
+            // "Kept local" reads as intent, not failure (DSN22 #8): a lock glyph,
+            // not a status dot, so it never scans as a coloured problem state.
+            Image(systemName: "lock.fill")
+                .font(.mpTextXS.weight(.semibold))
+                .foregroundStyle(dotColor)
         default:
             Circle().fill(dotColor).frame(width: 5, height: 5)
         }

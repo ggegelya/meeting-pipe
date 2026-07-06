@@ -10,10 +10,125 @@ extension MeetingDetailView {
 
     var header: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let origin = libraryModel.openedFromInsight, origin.stem == meeting.stem {
+                contextBanner(origin.source)
+            }
             titleRow
             titleField
             captionRow
             provenanceRow
+            if meeting.hasCorrections { editedCaption }
+            publishStateLine
+        }
+    }
+
+    /// Dismissible "Opened from Facts/Ask" banner (DSN22 #9): those projections snap
+    /// the scope to All meetings, so a small line explains why the surrounding list
+    /// changed. Keyed to the opened stem, so navigating away hides it on its own.
+    func contextBanner(_ source: String) -> some View {
+        HStack(spacing: 8) {
+            Text("Opened from \(source)")
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgMuted))
+            Button {
+                libraryModel.openedFromInsight = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.mpTextXS)
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(.leading, 11)
+        .padding(.trailing, 7)
+        .frame(height: 23)
+        .background(Capsule(style: .continuous).fill(Color(MPColors.bgSunk)))
+        .overlay(Capsule(style: .continuous).strokeBorder(Color(MPColors.border), lineWidth: 0.5))
+        .padding(.bottom, 4)
+    }
+
+    /// Edited-locally caption (DSN22 #6): the meeting carries a summary-correction
+    /// record. Quiet and faint, the same register as the provenance line above it.
+    var editedCaption: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "pencil")
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgFaint))
+            Text("Summary edited locally")
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgFaint))
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Publish-state line (DSN22 #4): a boxed status row that explains failures and
+    /// local-only intent inline, surfacing the parsed failure reason. Shown only
+    /// for states that want attention or are kept local; a cleanly-published
+    /// meeting stays calm (no green banner), keeping with the quiet register.
+    @ViewBuilder
+    var publishStateLine: some View {
+        if let info = publishStateInfo {
+            HStack(spacing: 7) {
+                Image(systemName: info.icon)
+                    .font(.mpTextXS)
+                    .foregroundStyle(info.tint)
+                Text(info.text)
+                    .font(.mpTextXS)
+                    .foregroundStyle(Color(MPColors.fgMuted))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 7)
+            .padding(.horizontal, 10)
+            .background(
+                RoundedRectangle(cornerRadius: MPRadius.sm, style: .continuous)
+                    .fill(Color(MPColors.bgSunk))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: MPRadius.sm, style: .continuous)
+                    .strokeBorder(Color(MPColors.border), lineWidth: 0.5)
+            )
+            .padding(.top, 4)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(info.text)
+        }
+    }
+
+    /// Icon + tint + copy for the publish-state line, or nil to hide it (cleanly
+    /// published, non-NDA). The failure reason rides on the `.failed` line, the one
+    /// state whose error sidecar the scan reads into `failureReason`.
+    private var publishStateInfo: (icon: String, tint: Color, text: String)? {
+        // Actionable states first, so a failed / no-speech / paste-pending NDA
+        // meeting still shows what needs doing rather than only "Kept local".
+        switch meeting.status {
+        case .failed:
+            let reason = meeting.failureReason
+            let because = (reason?.isEmpty == false) ? ": \(reason!)" : ""
+            return ("exclamationmark.triangle.fill", Color(MPColors.danger600),
+                    "Processing failed\(because).")
+        case .empty:
+            return ("exclamationmark.triangle", Color(MPColors.warning600),
+                    (meeting.emptyReason ?? .noSpeech).detail)
+        case .manualPasteReady:
+            return ("exclamationmark.circle", Color(MPColors.warning600),
+                    "Too long for an automatic summary. The transcript bundle is ready to paste.")
+        case .done:
+            if meeting.isZeroEgress {
+                return ("lock.fill", Color(MPColors.fgSubtle),
+                        "Kept local. On this Mac by design (NDA workflow).")
+            }
+            if meeting.publishState == "none" {
+                return ("exclamationmark.circle", Color(MPColors.warning600), "Not published yet.")
+            }
+            if meeting.publishState == "partial" {
+                return ("exclamationmark.triangle", Color(MPColors.warning600),
+                        "Published to some targets; at least one sink failed.")
+            }
+            return nil   // cleanly published: stay calm
+        default:
+            return nil
         }
     }
 
@@ -78,6 +193,12 @@ extension MeetingDetailView {
                     summaryEditToken += 1
                 }
             }
+            // Reprocess sits between Edit summary and Corrections (DSN22 #5) so the
+            // re-run is findable, not buried under the publish verbs. It re-runs the
+            // whole pipeline; Republish (below) only re-pushes the existing summary.
+            Button("Reprocess\u{2026}") {
+                toolbarAction("reprocess") { _ = libraryModel.retryMeeting(stem: meeting.stem) }
+            }
             // No "Edit transcript" here: there is no transcript-wide edit mode.
             // Transcripts are corrected per line, via the hover pencil or the
             // right-click "Edit text..." in the Transcript tab (TECH-UX12).
@@ -85,13 +206,9 @@ extension MeetingDetailView {
                 toolbarAction("corrections") { showCorrectionsSheet = true }
             }
             Divider()
-            // The two canonical verbs (DSN2). Republish re-pushes the existing
-            // summary to its sinks; Reprocess re-runs the whole pipeline.
+            // Republish re-pushes the existing summary to its sinks (DSN2).
             Button("Republish") {
                 toolbarAction("republish") { Task { _ = await libraryModel.republishMeeting(stem: meeting.stem) } }
-            }
-            Button("Reprocess") {
-                toolbarAction("reprocess") { _ = libraryModel.retryMeeting(stem: meeting.stem) }
             }
             Divider()
             Button("Open meta.json") {

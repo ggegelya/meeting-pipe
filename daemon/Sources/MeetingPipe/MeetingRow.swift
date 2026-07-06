@@ -61,7 +61,10 @@ struct MeetingRow: View, Equatable {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
                 glyphView
-                titleText
+                HStack(spacing: 5) {
+                    titleText
+                    if meeting.hasCorrections { editedMarker }
+                }
                 Spacer(minLength: 8)
                 trailingStatusCluster
             }
@@ -103,6 +106,16 @@ struct MeetingRow: View, Equatable {
             .truncationMode(.tail)
     }
 
+    /// Pencil marker for a locally-edited summary (DSN22 #6). Faint, never
+    /// celebrated; the same register as the provenance line in the detail header.
+    private var editedMarker: some View {
+        Image(systemName: "pencil")
+            .font(.mpTextXS)
+            .foregroundStyle(Color(MPColors.fgFaint))
+            .help("Summary edited locally")
+            .accessibilityLabel("Summary edited locally")
+    }
+
     /// Trailing status cluster (no date): an in-flight badge, or an optional
     /// inline-fix button plus the status pill / live processing indicator. Shared
     /// by both layouts; the date is appended separately so the tile can move it to
@@ -113,13 +126,8 @@ struct MeetingRow: View, Equatable {
             if let inFlight = inFlight {
                 inFlightBadge(inFlight)
             } else {
-                if effectiveStatus == .failed {
-                    inlineFixButton("Retry") { runRetry() }
-                } else if effectiveStatus == .manualPasteReady {
-                    inlineFixButton("Reveal bundle") { revealBundle() }
-                        .help("Long meeting: transcript bundled for manual summarize.")
-                } else if showsInlineRepublish {
-                    inlineFixButton("Republish") { Task { await republish() } }
+                if let fix = inlineFix {
+                    inlineFixButton(fix)
                 }
                 if let progress = activeProcessing {
                     processingIndicator(progress)
@@ -156,12 +164,14 @@ struct MeetingRow: View, Equatable {
         }
     }
 
-    /// Status pill. NDA rows show "Local only" rather than recording/processing colors; NDA is a privacy mode, not an error.
+    /// Status pill. NDA rows read "Kept local" (DSN22 #8): intent, not failure, so
+    /// it never scans as a sibling of Failed/Unpublished. NDA is a privacy mode.
     @ViewBuilder
     private var trailingPill: some View {
         switch (effectiveStatus, isNDA) {
         case (_, true):
-            MPStatusPill(kind: .nda, label: "Local only")
+            MPStatusPill(kind: .nda, label: "Kept local")
+                .help("On this Mac by design (NDA workflow).")
         case (.recording, _):
             MPStatusPill(kind: .recording, label: "Recording")
         case (.processing, _):
@@ -190,28 +200,124 @@ struct MeetingRow: View, Equatable {
         }
     }
 
-    /// Skinny inline-fix button (TECH-DSN17): a compact bordered capsule that
-    /// keeps the row light, replacing the stock `.controlSize(.small)` buttons.
-    /// The action label stays accurate to what runs (Retry / Reveal bundle /
-    /// Republish), so the same control reads correctly in any scope, including
-    /// the "Needs you" rail filter.
-    private func inlineFixButton(_ label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .font(.mpTextXS.weight(.medium))
-                .foregroundStyle(Color(MPColors.fg))
-                .padding(.horizontal, 9)
-                .frame(height: 20)
-                .background(
-                    RoundedRectangle(cornerRadius: MPRadius.xs, style: .continuous)
-                        .fill(Color(MPColors.bgRaised))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: MPRadius.xs, style: .continuous)
-                        .strokeBorder(Color(MPColors.borderStrong), lineWidth: 0.5)
-                )
+    /// Inline triage action, tinted by shape (DSN22 #1) and specific to the
+    /// meeting's state (DSN22 #2).
+    private enum InlineFix {
+        case retryRun         // failed run -> re-run the pipeline
+        case retryPublish     // partial publish -> retry the failed sink
+        case publish          // never published -> publish
+        case republish        // edited since publish -> re-publish
+        case revealBundle     // paste-pending -> reveal the manual bundle
+        case revealRecording  // no speech -> reveal the recording to inspect
+
+        var label: String {
+            switch self {
+            case .retryRun, .retryPublish: return "Retry"
+            case .publish:                 return "Publish"
+            case .republish:               return "Republish"
+            case .revealBundle:            return "Reveal bundle"
+            case .revealRecording:         return "Reveal"
+            }
+        }
+
+        /// Publish-shaped actions take the teal fill; Retry is coral-outlined;
+        /// reveal stays a quiet neutral capsule.
+        var tone: InlineTone {
+            switch self {
+            case .publish, .republish:            return .publish
+            case .retryRun, .retryPublish:        return .retry
+            case .revealBundle, .revealRecording: return .neutral
+            }
+        }
+
+        /// Hover tooltip; only the paste bundle needs one.
+        var tooltip: String {
+            self == .revealBundle
+                ? "Long meeting: transcript bundled for manual summarize."
+                : ""
+        }
+
+        /// Spoken action phrase for VoiceOver, richer than the terse label.
+        var accessibilityLabel: String {
+            switch self {
+            case .retryRun:        return "Retry processing"
+            case .retryPublish:    return "Retry publish"
+            case .publish:         return "Publish"
+            case .republish:       return "Republish"
+            case .revealBundle:    return "Reveal transcript bundle in Finder"
+            case .revealRecording: return "Reveal recording in Finder"
+            }
+        }
+    }
+
+    private enum InlineTone { case publish, retry, neutral }
+
+    /// The row's inline triage action, or nil when nothing is actionable. NDA /
+    /// local-only rows never publish (nil publishState), so they only ever surface
+    /// a reveal for a no-speech recording, never an egress action.
+    private var inlineFix: InlineFix? {
+        switch effectiveStatus {
+        case .failed:           return .retryRun
+        case .manualPasteReady: return .revealBundle
+        case .empty:            return .revealRecording
+        case .done:
+            if meeting.publishState == "none"    { return .publish }
+            if meeting.publishState == "partial" { return .retryPublish }
+            if meeting.needsRepublish            { return .republish }
+            return nil
+        default:                return nil
+        }
+    }
+
+    private func performInlineFix(_ fix: InlineFix) {
+        switch fix {
+        case .retryRun:                           runRetry()
+        case .retryPublish, .publish, .republish: Task { await republish() }
+        case .revealBundle:                       revealBundle()
+        case .revealRecording:                    revealRecording()
+        }
+    }
+
+    /// Skinny inline-fix capsule (TECH-DSN17 / DSN22 #1): compact and tinted by the
+    /// action's shape so the fix dominates the row instead of vanishing into grey.
+    /// The label stays accurate to what runs, so it reads correctly in any scope
+    /// including the "Needs you" rail filter.
+    @ViewBuilder
+    private func inlineFixButton(_ fix: InlineFix) -> some View {
+        let tone = fix.tone
+        Button { performInlineFix(fix) } label: {
+            HStack(spacing: 4) {
+                if tone == .retry {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.mpTextXS)
+                        .foregroundStyle(Color(MPColors.pulse600))
+                }
+                Text(fix.label)
+                    .font(.mpTextXS.weight(.medium))
+                    .foregroundStyle(tone == .publish ? Color(MPColors.fgOnSignal) : Color(MPColors.fg))
+            }
+            .padding(.horizontal, tone == .retry ? 8 : 11)
+            .frame(height: 21)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(tone == .publish ? Color(MPColors.signalFill) : Color(MPColors.bgRaised))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(inlineStroke(tone), lineWidth: tone == .retry ? 1 : 0.5)
+            )
         }
         .buttonStyle(.plain)
+        .help(fix.tooltip)
+        .accessibilityLabel(fix.accessibilityLabel)
+    }
+
+    private func inlineStroke(_ tone: InlineTone) -> Color {
+        switch tone {
+        case .publish: return .clear
+        case .retry:   return Color(MPColors.pulse600).opacity(0.55)
+        case .neutral: return Color(MPColors.borderStrong)
+        }
     }
 
     /// Live pipeline progress for the active row (TECH-UX5): stage + elapsed, or
@@ -247,18 +353,6 @@ struct MeetingRow: View, Equatable {
         case "publish":         return "Publishing"
         default:                return "Processing"
         }
-    }
-
-    /// Inline Republish appears when the summary was edited since the last
-    /// publish (TECH-UX2) or when a publish failed / only partially landed, so a
-    /// row in the "Needs you" scope always carries its own fix (TECH-DSN17).
-    /// NDA / local-only rows can never qualify: their `publishState` is nil, so
-    /// the partial/none branch cannot fire, and the inline button never offers to
-    /// egress a meeting that was kept local by design.
-    private var showsInlineRepublish: Bool {
-        if meeting.needsRepublish { return true }
-        return effectiveStatus == .done
-            && (meeting.publishState == "none" || meeting.publishState == "partial")
     }
 
     /// Hover text for the failed pill: persisted reason when available, generic fallback for staleness-age-inferred failures.
@@ -391,6 +485,13 @@ struct MeetingRow: View, Equatable {
         let bundle = meeting.recordingsDir
             .appendingPathComponent("\(meeting.stem).READY_FOR_MANUAL.md")
         NSWorkspace.shared.activateFileViewerSelecting([bundle])
+    }
+
+    /// Reveal the recording in Finder to inspect a no-speech/empty meeting (DSN22
+    /// #2): there is no auto-fix for silence, so the action that helps is opening
+    /// the audio to hear what happened.
+    private func revealRecording() {
+        NSWorkspace.shared.activateFileViewerSelecting([meeting.wavURL])
     }
 
     private func runRetry() {

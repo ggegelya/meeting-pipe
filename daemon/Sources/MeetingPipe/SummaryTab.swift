@@ -215,10 +215,16 @@ struct SummaryTab: View {
                 .controlSize(.small)
         }
         .padding(10)
+        // DSN22 #5: a proper secondary control (solid hairline + recessed fill),
+        // not the old dashed placeholder, so the in-context reprocess entry reads
+        // as a real affordance.
+        .background(
+            RoundedRectangle(cornerRadius: MPRadius.sm, style: .continuous)
+                .fill(Color(MPColors.bgSunk))
+        )
         .overlay(
             RoundedRectangle(cornerRadius: MPRadius.sm, style: .continuous)
-                .strokeBorder(Color(MPColors.borderStrong),
-                              style: StrokeStyle(lineWidth: 0.5, dash: [4]))
+                .strokeBorder(Color(MPColors.border), lineWidth: 0.5)
         )
         .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
         .padding(.horizontal, MPSpace.s5)
