@@ -38,6 +38,7 @@ from .egress_guard import arm_for_config
 from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
 from .services import SummaryClient
+from .workflow import _read_meta
 from .workflow import apply_overrides as apply_workflow_overrides
 
 log = logging.getLogger("mp.summarize")
@@ -91,7 +92,11 @@ def _create_message(client: anthropic.Anthropic, **kwargs: Any) -> Any:
     return client.messages.create(**kwargs)
 
 
-def _load_system_prompt(team_context: str, summary_language: str = "auto") -> str:
+def _load_system_prompt(
+    team_context: str,
+    summary_language: str = "auto",
+    prior_context: str | None = None,
+) -> str:
     # Loaded from the package so the installed venv has the prompt available.
     text = resources.files("mp.prompts").joinpath("meeting_summary.md").read_text(encoding="utf-8")
     text = text.replace("{team_context}", team_context or "(no team context configured)")
@@ -99,6 +104,10 @@ def _load_system_prompt(team_context: str, summary_language: str = "auto") -> st
         "{summary_language_directive}",
         _summary_language_directive(summary_language),
     )
+    # AI6: recurring-series continuity. Trusted block (our own prior summary),
+    # so it sits before the untrusted-transcript boundary below.
+    if prior_context:
+        text = text + "\n\n" + prior_context
     # Prompt-injection boundary (TECH-SEC6): the transcript is wrapped in
     # untrusted markers in the user message; tell the model not to obey it.
     return text + "\n\n" + UNTRUSTED_GUIDANCE
@@ -125,6 +134,83 @@ def _summary_language_directive(summary_language: str) -> str:
         "transcript's language. Translate quoted phrases as needed; preserve "
         "proper nouns and code identifiers verbatim."
     )
+
+
+# AI6: bound the injected prior-meeting block so it stays a hint, not a second
+# transcript. Latest prior meeting only.
+_AI6_MAX_DECISIONS = 12
+_AI6_MAX_ACTIONS = 12
+_AI6_MAX_ITEM_CHARS = 240
+
+
+def _ai6_trim(s: str) -> str:
+    s = s.strip()
+    return s if len(s) <= _AI6_MAX_ITEM_CHARS else s[: _AI6_MAX_ITEM_CHARS - 3].rstrip() + "..."
+
+
+def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
+    """AI6: a bounded continuity block from the same workflow's latest prior
+    meeting (its decisions + still-open actions), or None.
+
+    The workflow is the explicit series key (resolved per meeting in the meta
+    sidecar); no fuzzy series inference. Assembled from local disk, so cloud and
+    local backends receive it identically and the egress profile is unchanged
+    (it routes to whichever backend already summarizes this transcript). The
+    first meeting in a workflow, or one with no prior decisions/open actions, is
+    a clean no-op.
+    """
+    workflow_id = _read_meta(transcript_md).get("workflow_id")
+    if not workflow_id:
+        return None
+    out_dir = cfg.recording.output_dir
+    if not out_dir.exists():
+        return None
+
+    current_stem = transcript_md.name.split(".", 1)[0]
+    prior_stem: str | None = None
+    prior_path: Path | None = None
+    for summary_json in out_dir.glob("*.summary.json"):
+        stem = summary_json.name.split(".", 1)[0]
+        if stem >= current_stem:  # self or a later meeting; stems sort chronologically
+            continue
+        if _read_meta(summary_json).get("workflow_id") != workflow_id:
+            continue
+        if prior_stem is None or stem > prior_stem:
+            prior_stem, prior_path = stem, summary_json
+    if prior_path is None:
+        return None
+
+    try:
+        prior = MeetingSummary.model_validate_json(prior_path.read_text(encoding="utf-8"))
+    except (OSError, ValidationError) as e:
+        log.warning("AI6: skipping unreadable prior summary %s: %s", prior_path, e)
+        return None
+
+    decisions = [d.strip() for d in prior.decisions if d.strip()][:_AI6_MAX_DECISIONS]
+    open_actions = [a for a in prior.actions if not a.resolved][:_AI6_MAX_ACTIONS]
+    if not decisions and not open_actions:
+        return None
+
+    workflow_name = _read_meta(transcript_md).get("workflow_name") or "this"
+    lines = [
+        "## Previous meeting in this series",
+        "",
+        f'This meeting continues the "{workflow_name}" series. The items below are '
+        f'carried over from the previous meeting ("{prior.title}"). If any of them '
+        "recur, treat them as carried over (a continuing decision, an action still "
+        "in progress) and say so, rather than re-listing them as brand-new "
+        "discoveries.",
+    ]
+    if decisions:
+        lines += ["", "Decisions already made:"]
+        lines += [f"- {_ai6_trim(d)}" for d in decisions]
+    if open_actions:
+        lines += ["", "Open action items still outstanding:"]
+        for a in open_actions:
+            owner = (a.owner or "unassigned").strip() or "unassigned"
+            due = f" (due {a.due})" if a.due else ""
+            lines.append(f"- {owner}: {_ai6_trim(a.task)}{due}")
+    return "\n".join(lines)
 
 
 class AnthropicSummaryClient:
@@ -243,6 +329,7 @@ def summarize(
     system_prompt = _load_system_prompt(
         team_context,
         cfg.summarization.summary_language,
+        prior_context=_prior_meeting_context(transcript_md, cfg),
     )
 
     owns_client = client is None

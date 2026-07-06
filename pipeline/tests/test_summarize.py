@@ -1,6 +1,7 @@
 """Tests for summarize.py — mock the Anthropic client to avoid network calls."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -8,8 +9,14 @@ import anthropic
 import httpx
 import pytest
 
-from mp.config import Config
-from mp.summarize import _load_system_prompt, _render_summary_md, _summary_language_directive, summarize
+from mp.config import Config, Recording
+from mp.summarize import (
+    _load_system_prompt,
+    _prior_meeting_context,
+    _render_summary_md,
+    _summary_language_directive,
+    summarize,
+)
 from mp.schemas import ActionItem, MeetingSummary
 
 
@@ -300,3 +307,79 @@ def test_no_context_override_uses_configured_context(tmp_path: Path, monkeypatch
 
     assert client.system_prompt is not None
     assert "CONFIGURED_TEAM_CONTEXT" in client.system_prompt
+
+
+# --- AI6: recurring-series continuity ---------------------------------------
+
+def _write_prior_meeting(root: Path, stem: str, *, workflow_id: str, summary: MeetingSummary) -> None:
+    (root / f"{stem}.summary.json").write_text(summary.model_dump_json(), encoding="utf-8")
+    (root / f"{stem}.meta.json").write_text(
+        json.dumps({"workflow_id": workflow_id, "workflow_name": "Weekly"}), encoding="utf-8"
+    )
+
+
+def _current_meeting(root: Path, stem: str, *, workflow_id: str, workflow_name: str = "Weekly") -> Path:
+    md = root / f"{stem}.md"
+    md.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+    (root / f"{stem}.meta.json").write_text(
+        json.dumps({"workflow_id": workflow_id, "workflow_name": workflow_name}), encoding="utf-8"
+    )
+    return md
+
+
+def test_ai6_injects_prior_decisions_and_open_actions(tmp_path: Path):
+    prior = MeetingSummary(
+        title="Weekly sync #1",
+        summary=["s"],
+        decisions=["Adopt the new deploy process."],
+        actions=[
+            ActionItem(task="Draft the migration doc", owner="Alice", due="2026-07-01",
+                       confidence="high", resolved=False),
+            ActionItem(task="Close the old ticket", owner="Bob", confidence="high", resolved=True),
+        ],
+        detected_language="en",
+    )
+    _write_prior_meeting(tmp_path, "20260701-1000", workflow_id="wf-1", summary=prior)
+    md = _current_meeting(tmp_path, "20260708-1000", workflow_id="wf-1")
+
+    client = _CapturingClient()
+    summarize(md, cfg=Config(recording=Recording(output_dir=tmp_path)), client=client)
+
+    sp = client.system_prompt
+    assert sp is not None
+    assert "Previous meeting in this series" in sp
+    assert "Adopt the new deploy process." in sp   # carried decision
+    assert "Draft the migration doc" in sp         # still-open action
+    assert "Close the old ticket" not in sp        # resolved action is excluded
+
+
+def test_ai6_first_meeting_in_workflow_is_a_noop(tmp_path: Path):
+    md = _current_meeting(tmp_path, "20260708-0900", workflow_id="wf-lonely")
+    client = _CapturingClient()
+    summarize(md, cfg=Config(recording=Recording(output_dir=tmp_path)), client=client)
+    assert client.system_prompt is not None
+    assert "Previous meeting in this series" not in client.system_prompt
+
+
+def test_ai6_ignores_priors_from_other_workflows(tmp_path: Path):
+    _write_prior_meeting(tmp_path, "20260701-1000", workflow_id="wf-other", summary=_make_summary())
+    md = _current_meeting(tmp_path, "20260708-1000", workflow_id="wf-mine", workflow_name="Mine")
+    client = _CapturingClient()
+    summarize(md, cfg=Config(recording=Recording(output_dir=tmp_path)), client=client)
+    assert client.system_prompt is not None
+    assert "Previous meeting in this series" not in client.system_prompt
+
+
+def test_ai6_picks_the_latest_prior_meeting(tmp_path: Path):
+    older = MeetingSummary(title="old", summary=["s"], decisions=["Old decision."], detected_language="en")
+    newer = MeetingSummary(title="Recent sync", summary=["s"], decisions=["Newer decision."],
+                           detected_language="en")
+    _write_prior_meeting(tmp_path, "20260601-1000", workflow_id="wf-1", summary=older)
+    _write_prior_meeting(tmp_path, "20260701-1000", workflow_id="wf-1", summary=newer)
+    md = _current_meeting(tmp_path, "20260708-1000", workflow_id="wf-1")
+
+    ctx = _prior_meeting_context(md, Config(recording=Recording(output_dir=tmp_path)))
+    assert ctx is not None
+    assert "Newer decision." in ctx
+    assert "Recent sync" in ctx
+    assert "Old decision." not in ctx
