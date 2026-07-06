@@ -354,9 +354,10 @@ final class StatusBarController {
             let s = rect.width / 18.0
 
             // Non-template image (coral dot), so AppKit won't auto-tint the
-            // ring: pick a mid-tone that reads on light and dark menu bars.
-            let ringStroke = NSColor(srgbRed: 0x4A/255.0, green: 0x4F/255.0, blue: 0x58/255.0, alpha: 1) // ink600
-            ringStroke.setStroke()
+            // ring: a fixed mid-tone (ink600) that reads on light and dark menu
+            // bars. The coral dot is the actual recording signal; the ring is
+            // chrome.
+            MPColors.ink600.setStroke()
             let ringRect = NSRect(
                 x: (9 - 7.5) * s, y: (9 - 7.5) * s,
                 width: 15 * s, height: 15 * s
@@ -376,6 +377,21 @@ final class StatusBarController {
         }
         img.isTemplate = false  // Coral dot must keep its color across appearances.
         img.accessibilityDescription = "MeetingPipe - Recording"
+        return img
+    }
+
+    /// Small coral status dot for the "Stop Recording" menu row (the locked
+    /// dropdown's `--mp-pulse-600` bullet, DSN20). Non-template so it stays
+    /// coral over the menu's selection highlight rather than tinting to the
+    /// accent colour, mirroring the recording icon's dot.
+    private static func makeStopDotImage() -> NSImage {
+        let side: CGFloat = 12
+        let img = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            MPColors.pulse600.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 2.5, dy: 2.5)).fill()
+            return true
+        }
+        img.isTemplate = false
         return img
     }
 
@@ -495,10 +511,21 @@ final class StatusBarController {
             let start = NSMenuItem(title: "Start Recording", action: #selector(Coordinator.menuStart), keyEquivalent: "")
             start.target = coordinator
             menu.addItem(start)
-        case .recording:
+        case .recording(let file, _, _):
             let stop = NSMenuItem(title: "Stop Recording", action: #selector(Coordinator.menuStop), keyEquivalent: "")
             stop.target = coordinator
+            stop.image = Self.makeStopDotImage()   // coral status dot (DSN20)
             menu.addItem(stop)
+            // DSN21: the live recording file, mono tabular numerals like every
+            // other capture-surface timecode. Disabled/informational.
+            let stem = file.deletingPathExtension().lastPathComponent
+            let fileRow = NSMenuItem(title: stem, action: nil, keyEquivalent: "")
+            fileRow.isEnabled = false
+            fileRow.attributedTitle = NSAttributedString(string: stem, attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+                .foregroundColor: MPColors.fgSubtle,
+            ])
+            menu.addItem(fileRow)
         default:
             break
         }
