@@ -29,13 +29,13 @@ final class RecordingHUDWindow {
 
     /// Voice-activity meter (TECH-UX8): polls the mic level at 10 Hz so the
     /// audio render thread never has to push to the UI.
-    private var levelMeter: HUDLevelMeter?
+    private var levelMeter: LEDMeterView?
     private var meterTicker: Timer?
     private var levelProvider: (() -> Float)?
 
     private static let panelWidth: CGFloat = 60
-    // 132 → 146 for the workflow attribution line (TECH-B9), 146 → 162 for the TECH-UX8 voice-activity meter row. Allocated unconditionally so the HUD geometry doesn't shift between workflowed and un-workflowed meetings.
-    private static let panelHeight: CGFloat = 162
+    // 132 → 146 for the workflow attribution line (TECH-B9), 146 → 162 for the TECH-UX8 voice-activity meter row, 162 → 192 for the DSN25 Instrument port (the 22pt timer anchor, the 40pt record key, and the new "Recording" label are all taller than what they replaced). Sized for the tallest (NDA two-row) case and allocated unconditionally so the HUD geometry doesn't shift between workflowed and un-workflowed meetings.
+    private static let panelHeight: CGFloat = 192
     private static let edgeInset: CGFloat = 16
     // Degraded mode (TECH-UX4): the pill widens into a card so the banner text and retry button fit.
     private static let degradedPanelWidth: CGFloat = 232
@@ -70,7 +70,7 @@ final class RecordingHUDWindow {
         if levelProvider != nil {
             meterTicker = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
                 guard let self = self, let provider = self.levelProvider else { return }
-                self.levelMeter?.setLevelDb(provider())
+                self.levelMeter?.level = RecordingHUDWindow.normalizedLevel(db: provider())
             }
         }
     }
@@ -197,31 +197,46 @@ final class RecordingHUDWindow {
         }
         bg.addSubview(glyph)
 
+        // Pulsing recording dot. Always coral now (DSN25 drops the old TECH-B5
+        // workflow-colour tint): the locked mockup renders a coral dot, and it
+        // upholds the unchanged Coral-Is-Recording rule. Workflow identity is
+        // carried by the name line below, not by recolouring the recording signal.
         let dot = PulseDotView(frame: .zero)
         dot.translatesAutoresizingMaskIntoConstraints = false
-        // TECH-B5: tint the pulse dot to the workflow color. NDA mode keeps recording-coral so the "sensitive" signal isn't diluted by a softer accent.
-        if let wf = workflow, !wf.flags.ndaMode,
-           let color = HexColor.parse(wf.color) {
-            dot.tintColor = color
-        }
         bg.addSubview(dot)
         self.pulseDot = dot
 
+        // "Recording" label beside the dot so the state is never colour-only. The
+        // dot + label sit as a centred row; 10pt matches the workflow line below
+        // and keeps the pair inside the 60pt pill.
+        let recordingLabel = NSTextField(labelWithString: "Recording")
+        recordingLabel.font = .systemFont(ofSize: 10, weight: MPType.medium)
+        recordingLabel.textColor = MPColors.fgMuted
+        recordingLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let dotRow = NSStackView(views: [dot, recordingLabel])
+        dotRow.orientation = .horizontal
+        dotRow.spacing = 5
+        dotRow.alignment = .centerY
+        dotRow.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(dotRow)
+
+        // Elapsed timer: the surface anchor (DSN21 Instrument), grown to 22pt
+        // semibold - the mockup's 24 collapses to the nearest ramp step (textXL).
+        // Monospaced digits keep the numerals tabular so they don't jitter.
         let elapsed = NSTextField(labelWithString: "0:00")
-        elapsed.font = .monospacedDigitSystemFont(ofSize: MPType.textSM, weight: MPType.medium)
+        elapsed.font = .monospacedDigitSystemFont(ofSize: MPType.textXL, weight: MPType.semibold)
         elapsed.textColor = MPColors.fg
         elapsed.alignment = .center
         elapsed.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(elapsed)
         self.elapsedLabel = elapsed
 
-        // Voice-activity meter (TECH-UX8): one segment per 6 dB of mic level.
-        let meter = HUDLevelMeter(frame: .zero)
+        // Voice-activity meter (TECH-UX8): the shared Instrument LED meter (DSN24),
+        // 10 discrete on-air segments that step rather than slide. Always on-air -
+        // DSN25 drops the old workflow-colour tint, matching the locked mockup.
+        let meter = LEDMeterView(segmentCount: 10, gap: 2, segmentRadius: 1)
         meter.translatesAutoresizingMaskIntoConstraints = false
-        // Tint to the workflow color when one is set (and not NDA), matching the pulse dot.
-        if let wf = workflow, !wf.flags.ndaMode, let color = HexColor.parse(wf.color) {
-            meter.litColor = color
-        }
         bg.addSubview(meter)
         self.levelMeter = meter
 
@@ -230,7 +245,10 @@ final class RecordingHUDWindow {
         workflowLabel.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(workflowLabel)
 
-        let stop = StopButton(target: bg, action: #selector(HUDBackgroundView.didClickStop))
+        // Stop control: the Instrument record key in its .stop form (DSN24/DSN25) -
+        // a concentric on-air ring around a coral rounded-square core. Replaces the
+        // bespoke StopButton; VoiceOver reads "Stop recording" from the key itself.
+        let stop = RecordKey(state: .stop, target: bg, action: #selector(HUDBackgroundView.didClickStop))
         stop.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(stop)
 
@@ -248,14 +266,15 @@ final class RecordingHUDWindow {
             glyph.widthAnchor.constraint(equalToConstant: 24),
             glyph.heightAnchor.constraint(equalToConstant: 24),
 
-            dot.centerXAnchor.constraint(equalTo: bg.centerXAnchor),
-            dot.topAnchor.constraint(equalTo: glyph.bottomAnchor, constant: 10),
+            // Dot + "Recording" as a centred row (the dot keeps its fixed 8pt size).
             dot.widthAnchor.constraint(equalToConstant: 8),
             dot.heightAnchor.constraint(equalToConstant: 8),
+            dotRow.centerXAnchor.constraint(equalTo: bg.centerXAnchor),
+            dotRow.topAnchor.constraint(equalTo: glyph.bottomAnchor, constant: 8),
 
             elapsed.leadingAnchor.constraint(equalTo: bg.leadingAnchor),
             elapsed.trailingAnchor.constraint(equalTo: bg.trailingAnchor),
-            elapsed.topAnchor.constraint(equalTo: dot.bottomAnchor, constant: 4),
+            elapsed.topAnchor.constraint(equalTo: dotRow.bottomAnchor, constant: 4),
 
             meter.centerXAnchor.constraint(equalTo: bg.centerXAnchor),
             meter.topAnchor.constraint(equalTo: elapsed.bottomAnchor, constant: 6),
@@ -268,10 +287,13 @@ final class RecordingHUDWindow {
             // No fixed height: the label sizes to one row (name) or two (name +
             // NDA eyebrow). TECH-DSN13 - it used to overlap in a fixed 14pt box.
 
+            // The 40pt record key sits at the foot, pinned to the bottom; the
+            // top-anchored stack above and this pin leave a flexible gap between,
+            // which absorbs the taller (NDA two-row) workflow label.
             stop.centerXAnchor.constraint(equalTo: bg.centerXAnchor),
             stopBottom,
-            stop.widthAnchor.constraint(equalToConstant: 30),
-            stop.heightAnchor.constraint(equalToConstant: 30),
+            stop.widthAnchor.constraint(equalToConstant: RecordKey.Geometry.side),
+            stop.heightAnchor.constraint(equalToConstant: RecordKey.Geometry.side),
         ])
         return bg
     }
@@ -295,7 +317,20 @@ final class RecordingHUDWindow {
     }
 
     fileprivate func handleStop() {
+        // TECH-DSN5: a firm trackpad detent for the consequential Stop action
+        // (no-op without a Force Touch trackpad). Preserved from the old StopButton,
+        // which fired it on press; the shared record key fires its action on click.
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
         delegate?.recordingHUDDidRequestStop(self)
+    }
+
+    /// Map a mic level in dBFS to the meter's normalized 0...1 activity. -60 dBFS
+    /// (the meter floor) and below reads as silence; 0 dBFS lights every segment.
+    /// Pure, so the mapping is pinned by tests without the 10 Hz poll timer.
+    static func normalizedLevel(db: Float) -> Float {
+        let floorDb: Float = -60
+        let clamped = max(floorDb, min(0, db))
+        return (clamped - floorDb) / (0 - floorDb)
     }
 
     fileprivate func handleRetrySystemAudio() {
@@ -412,66 +447,6 @@ private final class PulseDotView: NSView {
     }
 }
 
-/// Round stop button with hover/press affordances; inset square fill matches iOS-style record stops.
-private final class StopButton: NSButton {
-    private var trackingArea: NSTrackingArea?
-    private var isHovered = false { didSet { needsDisplay = true } }
-    private var isPressed = false { didSet { needsDisplay = true } }
-
-    init(target: AnyObject?, action: Selector?) {
-        super.init(frame: .zero)
-        self.target = target
-        self.action = action
-        bezelStyle = .regularSquare
-        isBordered = false
-        wantsLayer = true
-        title = ""
-        toolTip = "Stop recording"
-    }
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let existing = trackingArea { removeTrackingArea(existing) }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-        trackingArea = area
-    }
-    override func mouseEntered(with event: NSEvent) { isHovered = true }
-    override func mouseExited(with event: NSEvent) { isHovered = false; isPressed = false }
-    override func mouseDown(with event: NSEvent) {
-        isPressed = true
-        // TECH-DSN5: a firm trackpad detent for the consequential Stop action
-        // (no-op on hardware without a Force Touch trackpad).
-        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
-        super.mouseDown(with: event)
-        isPressed = false
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let ring: NSColor
-        if isPressed { ring = MPColors.pulse600 }
-        else if isHovered { ring = MPColors.pulse500 }
-        else { ring = MPColors.pulse600 }
-        ring.setFill()
-        NSBezierPath(ovalIn: bounds).fill()
-
-        let inset: CGFloat = 9
-        let square = bounds.insetBy(dx: inset, dy: inset)
-        NSColor.white.setFill()
-        NSBezierPath(roundedRect: square, xRadius: 1.5, yRadius: 1.5).fill()
-    }
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .pointingHand)
-    }
-}
-
 /// Workflow attribution label (TECH-B9, TECH-DSN13). The workflow name sits on
 /// its own row; when NDA mode is on, a small uppercase coral "NDA" eyebrow
 /// stacks below it. Laid out as two real rows that collapse to just the name
@@ -562,7 +537,7 @@ private final class HUDDegradedBanner: NSView {
         let icon = NSImageView()
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Warning")
-        icon.contentTintColor = .systemOrange
+        icon.contentTintColor = MPColors.warningAccent
         icon.imageScaling = .scaleProportionallyUpOrDown
         addSubview(icon)
 
@@ -604,43 +579,5 @@ private final class HUDDegradedBanner: NSView {
         ])
     }
     required init?(coder: NSCoder) { fatalError("not used") }
-}
-
-/// Horizontal voice-activity meter (TECH-UX8): one segment per 6 dB of mic
-/// level over a -60..0 dBFS range. Driven by the HUD's 10 Hz poll timer, so
-/// the audio render thread only stores a Float. Drawn with plain fills; the
-/// 10-rect redraw at 10 Hz is negligible.
-private final class HUDLevelMeter: NSView {
-    private static let segmentCount = 10
-    private static let floorDb: Float = -60
-
-    var litColor: NSColor = MPColors.signal600 { didSet { needsDisplay = true } }
-    private var levelDb: Float = HUDLevelMeter.floorDb
-
-    /// Update the displayed level. Clamped to the meter range; redraws only
-    /// when the level actually moves so a steady tone doesn't thrash the view.
-    func setLevelDb(_ db: Float) {
-        let clamped = max(Self.floorDb, min(0, db))
-        guard abs(clamped - levelDb) > 0.1 else { return }
-        levelDb = clamped
-        needsDisplay = true
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let n = Self.segmentCount
-        let gap: CGFloat = 1
-        guard bounds.width > 0 else { return }
-        let segW = (bounds.width - gap * CGFloat(n - 1)) / CGFloat(n)
-        guard segW > 0 else { return }
-        let fraction = Double((levelDb - Self.floorDb) / (0 - Self.floorDb))
-        let lit = Int((Double(n) * max(0, min(1, fraction))).rounded())
-        for i in 0..<n {
-            let x = CGFloat(i) * (segW + gap)
-            let rect = NSRect(x: x, y: 0, width: segW, height: bounds.height)
-            let path = NSBezierPath(roundedRect: rect, xRadius: 1, yRadius: 1)
-            (i < lit ? litColor : MPColors.border).setFill()
-            path.fill()
-        }
-    }
 }
 

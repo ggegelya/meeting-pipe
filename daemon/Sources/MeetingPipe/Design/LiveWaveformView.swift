@@ -1,6 +1,8 @@
 import AppKit
 
-/// 4-bar waveform meter in `signal600`. 14x8pt bounding box; newest sample on the right, older samples shift left. Purely visual - no buffer persisted (see `MicLevelMonitor`).
+/// 4-bar live waveform meter in `onair600` (the DSN21 on-air LED capture accent; a lit
+/// waveform is a light-emitting element). 14x8pt bounding box; newest sample on the right,
+/// older samples shift left. Purely visual - no buffer persisted (see `MicLevelMonitor`).
 final class LiveWaveformView: NSView {
     private static let barCount = 4
     private static let barWidth: CGFloat = 2
@@ -20,7 +22,7 @@ final class LiveWaveformView: NSView {
         wantsLayer = true
         layer?.masksToBounds = false
         for bar in barLayers {
-            bar.backgroundColor = MPColors.signal600.cgColor
+            bar.backgroundColor = MPColors.onair600.cgColor
             bar.cornerRadius = Self.barWidth / 2
             bar.anchorPoint = CGPoint(x: 0.5, y: 0.5)   // bars grow from center
             layer?.addSublayer(bar)

@@ -258,7 +258,7 @@ Ties on score break by the workflow's `order` (ascending). Manual recordings (`C
 
 **Where it shows up.**
 - The **prompt panel** sprouts a chip next to the action buttons with the resolved workflow's color/emoji + name. Click it to pick a different workflow before clicking Record.
-- The **recording HUD** tints its pulse dot to the workflow's color and shows the name + an "NDA" tag (when applicable) below the elapsed timer.
+- The **recording HUD** shows the workflow's name (with an "NDA" tag when applicable) below the elapsed timer. The recording dot itself stays coral - it signals recording, not the workflow (DSN25).
 - The **menu-bar title** reads `Recording - {Workflow}` with a trailing `· NDA` when NDA mode is on.
 
 **Sidecar contract.** When a recording finishes the daemon writes `<stem>.meta.json` with `workflow_id`, `workflow_name`, `workflow_context_prompt`, `workflow_backend`, `workflow_sinks`, `workflow_notion_database_id`, and `workflow_nda_mode`. The pipeline's `mp.workflow.apply_overrides` reads that sidecar and patches the in-memory `Config` before summarize + publish, so every workflow knob takes effect on a single run without changing global state.

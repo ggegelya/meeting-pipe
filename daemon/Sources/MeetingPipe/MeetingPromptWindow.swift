@@ -162,7 +162,9 @@ final class MeetingPromptWindow {
             question.stringValue = "Record this meeting?"
             question.textColor = MPColors.fg
         }
-        question.font = .mpTitle()
+        // DSN25 anchor retune: the mockup's 14pt question collapses to the nearest
+        // ramp step (15 / textMD), down from the old 17pt title. One anchor per surface.
+        question.font = .systemFont(ofSize: MPType.textMD, weight: MPType.semibold)
         question.maximumNumberOfLines = 1
         question.lineBreakMode = .byTruncatingTail
         question.translatesAutoresizingMaskIntoConstraints = false
@@ -189,18 +191,27 @@ final class MeetingPromptWindow {
         }
         self.workflowChip = chip
 
-        // --- Right-cluster: Record (BYO) + Record + ⌄ ----------------
+        // --- Right cluster: Record (BYO) + record key + "Record" + ⌄ ---
         let recordBYO = MPButton(title: "Record (BYO)", style: .ghost,
                                  target: bg, action: #selector(RoundedBackgroundView.didClickRecordBYO))
         recordBYO.toolTip = "Record, but skip the Anthropic API call. You'll summarize the transcript yourself."
         recordBYO.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(recordBYO)
 
-        let record = MPButton(title: "Record", style: .primary,
-                              target: bg, action: #selector(RoundedBackgroundView.didClickRecord))
-        record.bindAsDefault()
-        record.translatesAutoresizingMaskIntoConstraints = false
-        bg.addSubview(record)
+        // The Instrument record key (DSN25) replaces the text primary button. A
+        // "Record" label sits beside it so the action is never colour-only; both
+        // the key and the (clickable) label fire record, keeping a generous target.
+        let recordKey = RecordKey(state: .record, target: bg, action: #selector(RoundedBackgroundView.didClickRecord))
+        recordKey.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(recordKey)
+
+        let recordLabel = HintLabel()
+        recordLabel.stringValue = "Record"
+        recordLabel.font = .systemFont(ofSize: MPType.textBase, weight: MPType.medium)
+        recordLabel.textColor = MPColors.fg
+        recordLabel.makeClickable { [weak self] in self?.handleRecord() }
+        recordLabel.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(recordLabel)
 
         let chevron = ChevronMenuButton(target: bg, action: #selector(RoundedBackgroundView.didClickChevron))
         chevron.translatesAutoresizingMaskIntoConstraints = false
@@ -248,16 +259,22 @@ final class MeetingPromptWindow {
             chip.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
             chip.widthAnchor.constraint(lessThanOrEqualToConstant: 160),
 
-            // Right cluster: chevron flush right; Record before it; BYO before that.
+            // Right cluster: chevron flush right; the record key + its label before
+            // it; BYO before that. All gaps 8pt, centred on the row.
             chevron.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -rightEdge),
             chevron.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
             chevron.widthAnchor.constraint(equalToConstant: 26),
             chevron.heightAnchor.constraint(equalToConstant: 26),
 
-            record.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -8),
-            record.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
+            recordLabel.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -8),
+            recordLabel.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
 
-            recordBYO.trailingAnchor.constraint(equalTo: record.leadingAnchor, constant: -8),
+            recordKey.trailingAnchor.constraint(equalTo: recordLabel.leadingAnchor, constant: -8),
+            recordKey.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
+            recordKey.widthAnchor.constraint(equalToConstant: RecordKey.Geometry.side),
+            recordKey.heightAnchor.constraint(equalToConstant: RecordKey.Geometry.side),
+
+            recordBYO.trailingAnchor.constraint(equalTo: recordKey.leadingAnchor, constant: -8),
             recordBYO.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
 
             // Dismiss progress: 2pt bar flush to the bottom edge, full width.
@@ -573,7 +590,9 @@ private final class ChevronMenuButton: NSButton {
         // Light HUD rests fill-less with a faint border so it stops reading as a box beside
         // Record; the filled box returns on hover. Dark HUD keeps the resting tint.
         let dark = effectiveAppearance.mpIsDark
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: MPRadius.sm, yRadius: MPRadius.sm)
+        // Capsule (DSN25): full radius clamps to half-height at 26pt, matching the
+        // ghost-capsule button language of Record (BYO) beside it.
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: MPRadius.full, yRadius: MPRadius.full)
         if isHovered {
             MPColors.ink50.setFill()
             path.fill()
