@@ -35,6 +35,7 @@ from tenacity import (
 
 from .config import Config, effective_backend, load_secrets, require_env
 from .egress_guard import arm_for_config
+from .markers import FLAGGED_INSTRUCTION, flagged_moments_block
 from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
 from .services import SummaryClient
@@ -96,6 +97,7 @@ def _load_system_prompt(
     team_context: str,
     summary_language: str = "auto",
     prior_context: str | None = None,
+    flagged_note: bool = False,
 ) -> str:
     # Loaded from the package so the installed venv has the prompt available.
     text = resources.files("mp.prompts").joinpath("meeting_summary.md").read_text(encoding="utf-8")
@@ -108,6 +110,10 @@ def _load_system_prompt(
     # so it sits before the untrusted-transcript boundary below.
     if prior_context:
         text = text + "\n\n" + prior_context
+    # FEAT8: the flag-a-moment instruction is trusted; the excerpts it points at
+    # ride in the (untrusted) transcript.
+    if flagged_note:
+        text = text + "\n\n" + FLAGGED_INSTRUCTION
     # Prompt-injection boundary (TECH-SEC6): the transcript is wrapped in
     # untrusted markers in the user message; tell the model not to obey it.
     return text + "\n\n" + UNTRUSTED_GUIDANCE
@@ -326,10 +332,18 @@ def summarize(
         team_context = override
         log.info("summarize: applying request-scoped MP_CONTEXT_OVERRIDE")
 
+    # FEAT8: append the user-flagged excerpts to the transcript (they stay in
+    # the untrusted zone with the rest of it) and flag them so the system prompt
+    # carries the trusted instruction to reflect them.
+    flagged = flagged_moments_block(transcript_md)
+    if flagged:
+        transcript = transcript + "\n\n" + flagged
+
     system_prompt = _load_system_prompt(
         team_context,
         cfg.summarization.summary_language,
         prior_context=_prior_meeting_context(transcript_md, cfg),
+        flagged_note=bool(flagged),
     )
 
     owns_client = client is None

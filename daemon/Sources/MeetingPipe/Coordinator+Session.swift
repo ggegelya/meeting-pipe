@@ -49,4 +49,8 @@ extension Coordinator {
     var liveForceStopHotkey: String {
         configStore?.forceStopHotkey ?? config.detection.forceStopHotkey
     }
+
+    var liveFlagMomentHotkey: String {
+        configStore?.flagMomentHotkey ?? config.detection.flagMomentHotkey
+    }
 }

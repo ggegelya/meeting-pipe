@@ -384,6 +384,20 @@ final class Coordinator: NSObject {
             Log.main.warning("Could not parse force-stop hotkey: \(self.liveForceStopHotkey)")
         }
 
+        // Flag-moment hotkey (FEAT8): stamps a timestamp marker on the active
+        // recording (a quiet HUD blink); a no-op when idle, like force-stop.
+        let flagHotkey = liveFlagMomentHotkey
+        if flagHotkey == liveManualHotkey || flagHotkey == liveForceStopHotkey {
+            Log.main.warning("Flag-moment hotkey matches another hotkey - skipping registration")
+        } else if let parsed = HotkeyManager.parse(flagHotkey) {
+            hotkey.register(keyCode: parsed.keyCode, modifiers: parsed.modifiers) { [weak self] in
+                DispatchQueue.main.async { self?.session.flagMoment() }
+            }
+            Log.main.info("Flag-moment hotkey registered: \(flagHotkey)")
+        } else {
+            Log.main.warning("Could not parse flag-moment hotkey: \(flagHotkey)")
+        }
+
         // Seed the regulated-mode glyph, wire the model-download status,
         // run the eager local-model prefetch, and subscribe to config
         // persistence. Owned by ConfigRefreshCoordinator (TECH-H1-FINISH).

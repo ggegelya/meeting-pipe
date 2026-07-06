@@ -43,6 +43,7 @@ from .voiceprint import VoiceprintStore
 from . import events
 from .glossary import load_glossary
 from .markdown import render_markdown
+from .markers import flagged_moments_block
 from .publish_router import fanout as publish_fanout, publish_state
 from .summarize import summarize
 from .workflow import apply_overrides as apply_workflow_overrides
@@ -175,6 +176,11 @@ after raising `summarization.skip_above_chars` in
 {prompt}
 ```
 """
+    # FEAT8: carry the flagged moments into the paste bundle so a BYO / long
+    # meeting summarized by hand still sees what the user marked as important.
+    flagged = flagged_moments_block(transcript_md)
+    if flagged:
+        body += f"\n\n---\n\n{flagged}\n"
     bundle.write_text(body, encoding="utf-8")
     return bundle
 

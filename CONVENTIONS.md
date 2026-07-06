@@ -245,6 +245,18 @@ A golden-fixture contract test pins these keys across both suites (CI2): three c
 
 ---
 
+## Flagged-moment markers (`<stem>.markers.json`)
+
+The moments the user flagged mid-recording with the flag-moment hotkey (FEAT8). A Swift-to-Python surface like `<stem>.meta.json`, but simpler. `MarkerFile.write` (Swift) writes it at stop, and two readers consume it: the pipeline (`mp.markers`, where the transcript segments spanning each marker become user-flagged excerpts fed to the summarizer and listed in the BYO / long-meeting paste bundles) and the Library transcript tab (`MarkerFile.read`, rendering anchor chips that seek). Shape:
+
+```json
+{ "schema_version": 1, "markers": [ { "t_seconds": 42.5 } ] }
+```
+
+`t_seconds` is the offset in seconds from recording start, the same clock the transcript segments use. Written only when at least one moment was flagged, so an unflagged meeting leaves no sidecar. Both sides are fail-open: a missing or malformed file yields no flagged moments, never an error. Capture is deterministic (the daemon stamps offsets, the pipeline maps them to segments); the emphasis is model-side (a trusted system-prompt instruction), so a flag adds no new egress class, the excerpts travel to whichever backend already summarizes the transcript.
+
+---
+
 ## Daemon-internal recording artifacts
 
 Four artifacts the daemon both writes and reads. Unlike `<stem>.meta.json`, none is part of the Swift-to-Python contract: the redactor and orphan recovery consume them before any pipeline run, so the pipeline never reads them directly (recovery does *rebuild* `<stem>.meta.json` from the manifest below). The MIC4/MIC5 capture-first work introduced the first three; REC2 added the recovery manifest. Documented here per DOC6.

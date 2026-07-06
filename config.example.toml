@@ -48,6 +48,10 @@ manual_hotkey = "ctrl+option+m"
 # when idle is a no-op — only stops a running recording. Useful as a
 # panic button that can never accidentally start a fresh recording.
 force_stop_hotkey = "ctrl+option+shift+m"
+# Flag-moment hotkey (FEAT8). While recording, stamps a timestamp marker
+# for an important moment (a quiet HUD blink); a no-op when idle. Markers
+# surface in the summary and as clickable chips in the transcript.
+flag_moment_hotkey = "ctrl+option+f"
 prompt_timeout_sec = 30
 # After a recording for a bundle ends (or its prompt is skipped /
 # timed out), suppress detector-driven prompts for the same bundle for

@@ -108,6 +108,32 @@ final class RecordingHUDWindow {
         })
     }
 
+    /// FEAT8: a single quiet opacity blink acknowledging a flagged moment. No
+    /// persistent chrome. Under reduced motion it collapses to an instant
+    /// dip-and-restore. Main-queue only; a no-op when the HUD isn't showing.
+    func blink() {
+        guard let panel = panel else { return }
+        let dip: CGFloat = 0.4
+        if MPMotion.reduceMotion {
+            panel.alphaValue = dip
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak panel] in
+                panel?.alphaValue = 1
+            }
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = MPMotion.durFast
+            ctx.timingFunction = MPMotion.easeOut
+            panel.animator().alphaValue = dip
+        }, completionHandler: { [weak panel] in
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = MPMotion.durFast
+                ctx.timingFunction = MPMotion.easeOut
+                panel?.animator().alphaValue = 1
+            }
+        })
+    }
+
     // MARK: Degraded state (TECH-UX4)
 
     /// Add the "system audio not captured" banner and grow the HUD into a card.

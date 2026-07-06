@@ -18,7 +18,7 @@ import pytest
 
 from mp.config import Config
 from mp.diarize import cosine_similarity
-from mp.orchestrate import _finalize_streamed_transcript, run_all
+from mp.orchestrate import _finalize_streamed_transcript, _write_manual_bundle, run_all
 from mp.roster import EMBEDDING_DIM, RosterStore
 from mp.voiceprint import VoiceprintStore
 
@@ -485,3 +485,34 @@ def test_apple_intelligence_bypasses_long_meeting_guard(tmp_path: Path, monkeypa
 
     assert result["skipped"] == "apple_pending"
     assert "manual_bundle" not in result
+
+
+# --- FEAT8: paste bundles carry the flagged moments --------------------------
+
+def test_manual_bundle_includes_flagged_moments(tmp_path: Path):
+    stem = "20260707-1500"
+    md = tmp_path / f"{stem}.md"
+    md.write_text("# Transcript\n\n**A**: long meeting.\n", encoding="utf-8")
+    (tmp_path / f"{stem}.json").write_text(
+        json.dumps({"segments": [
+            {"start": 0.0, "end": 10.0, "text": "Preamble.", "speaker": "A"},
+            {"start": 10.0, "end": 20.0, "text": "Key point to remember.", "speaker": "B"},
+        ]}),
+        encoding="utf-8",
+    )
+    (tmp_path / f"{stem}.markers.json").write_text(
+        json.dumps({"schema_version": 1, "markers": [{"t_seconds": 15.0}]}), encoding="utf-8"
+    )
+
+    bundle = _write_manual_bundle(md, char_count=90000, threshold=80000)
+    text = bundle.read_text(encoding="utf-8")
+    assert "User-flagged moments" in text
+    assert "Key point to remember." in text
+
+
+def test_manual_bundle_without_markers_has_no_flagged_section(tmp_path: Path):
+    stem = "20260707-1600"
+    md = tmp_path / f"{stem}.md"
+    md.write_text("# Transcript\n", encoding="utf-8")
+    bundle = _write_manual_bundle(md, char_count=90000, threshold=80000)
+    assert "User-flagged moments" not in bundle.read_text(encoding="utf-8")

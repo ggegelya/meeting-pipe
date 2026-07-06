@@ -43,6 +43,26 @@ enum TranscriptSegmentLookup {
     }
 }
 
+/// Anchors flagged-moment markers (FEAT8) to the transcript segments they fall
+/// in, so the tab can render a chip inline at each moment. Pure so it is unit
+/// testable without the view.
+enum TranscriptMarkerLayout {
+    /// Map a segment's stable `.index` -> sorted marker offsets anchored to it.
+    /// A marker before the first segment (or into a gap) anchors to the nearest
+    /// segment at or before it, falling back to the first segment. Keyed by the
+    /// segment id (not array position) so it composes with the row's `seg.index`
+    /// even when empty segments were filtered out.
+    static func assign(markers: [Double], to segments: [TranscriptSegment]) -> [Int: [Double]] {
+        guard !segments.isEmpty else { return [:] }
+        var out: [Int: [Double]] = [:]
+        for t in markers.sorted() {
+            let pos = TranscriptSegmentLookup.index(at: t, in: segments) ?? 0
+            out[segments[pos].index, default: []].append(t)
+        }
+        return out
+    }
+}
+
 /// Loads `<stem>.json` off-main and overlays transcript corrections.
 enum TranscriptLoader {
     struct Result {
@@ -171,6 +191,9 @@ struct TranscriptTab: View {
 
     @State private var segments: [TranscriptSegment] = []
     @State private var language: String? = nil
+    /// Flagged-moment offsets (FEAT8) from `<stem>.markers.json`, rendered as
+    /// anchor chips in the transcript.
+    @State private var markers: [Double] = []
     @State private var loadedForStem: String? = nil
     @State private var loading: Bool = true
     /// Segment whose edit sheet is open; nil when no sheet is showing.
@@ -233,6 +256,7 @@ struct TranscriptTab: View {
             TranscriptList(
                 segments: segments,
                 language: language,
+                markers: markers,
                 playback: playback,
                 onEdit: { seg in editingSegment = seg },
                 onName: { label in namingTarget = NamingTarget(label: label) }
@@ -308,6 +332,8 @@ struct TranscriptTab: View {
         guard meeting.stem == stem else { return }
         segments = result?.segments ?? []
         language = result?.language
+        // Small sidecar; a synchronous read on main is fine, like the corrections overlay.
+        markers = MarkerFile.read(forFinal: meeting.wavURL)?.markers.map(\.tSeconds) ?? []
         loadedForStem = stem
         loading = false
     }
@@ -318,6 +344,8 @@ struct TranscriptTab: View {
 private struct TranscriptList: View {
     let segments: [TranscriptSegment]
     let language: String?
+    /// Flagged-moment offsets (FEAT8), anchored to their segments for chips.
+    let markers: [Double]
     @ObservedObject var playback: AudioPlaybackController
     /// Called on "Edit text" context-menu action; the host owns sheet presentation.
     let onEdit: (TranscriptSegment) -> Void
@@ -328,6 +356,7 @@ private struct TranscriptList: View {
     @State private var activeIndex: Int? = nil
 
     var body: some View {
+        let markerMap = TranscriptMarkerLayout.assign(markers: markers, to: segments)
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
@@ -347,6 +376,9 @@ private struct TranscriptList: View {
                         .padding(.top, language == nil ? 12 : 2)
                         .padding(.bottom, 4)
                     ForEach(segments) { seg in
+                        if let times = markerMap[seg.index] {
+                            MarkerChipsRow(times: times, onSeek: { playback.playFrom($0) })
+                        }
                         TranscriptRow(
                             segment: seg,
                             isActive: seg.index == activeIndex,
@@ -372,6 +404,44 @@ private struct TranscriptList: View {
             }
         }
         .textSelection(.enabled)
+    }
+}
+
+/// Inline flag chips (FEAT8) for the moments anchored to a transcript segment.
+/// Each chip shows the moment's timestamp and seeks to it on click, reusing the
+/// same `playFrom` path as a row tap.
+private struct MarkerChipsRow: View {
+    let times: [Double]
+    let onSeek: (Double) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(times, id: \.self) { t in
+                Button {
+                    onSeek(t)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "flag.fill")
+                            .font(.system(size: 9))
+                        Text(TranscriptDisplay.timestamp(t))
+                            .font(.caption.monospacedDigit())
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.mpSignal.opacity(0.18)))
+                    .foregroundStyle(Color.mpSignal)
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Flagged moment at \(TranscriptDisplay.timestamp(t)). Click to play.")
+                .onHover { hovering in
+                    if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 4)
     }
 }
 

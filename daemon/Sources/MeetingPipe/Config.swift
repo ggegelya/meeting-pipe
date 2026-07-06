@@ -19,6 +19,8 @@ struct Config {
         var manualHotkey: String
         /// Stop-only hotkey (TECH-C5). Distinct from `manualHotkey` so the user can force-stop without risking an accidental new recording start when the daemon is idle. Default `ctrl+option+shift+m`.
         var forceStopHotkey: String
+        /// Flag-moment hotkey (FEAT8). Stamps a timestamp marker on the active recording; a no-op when idle. Default `ctrl+option+f`.
+        var flagMomentHotkey: String
         var promptTimeoutSec: Double
         /// Suppress detector-driven prompts for a bundle for this many seconds after a recording/prompt ends. Guards against the Teams post-call mic re-acquisition that fires a spurious new prompt. Manual hotkey always bypasses.
         var repromptCooldownSec: Double
@@ -63,6 +65,7 @@ struct Config {
         let debounceEnd = det?["debounce_end_sec"]?.double ?? 5
         let hotkey = det?["manual_hotkey"]?.string ?? "ctrl+option+m"
         let forceStop = det?["force_stop_hotkey"]?.string ?? "ctrl+option+shift+m"
+        let flagMoment = det?["flag_moment_hotkey"]?.string ?? "ctrl+option+f"
         let promptTimeout = det?["prompt_timeout_sec"]?.double ?? 30
         let repromptCooldown = det?["reprompt_cooldown_sec"]?.double ?? 60
         // Accept both integer and double TOML literals (`= 120` and `= 120.0`); other detection knobs are doubles-only because their TOML defaults are written as doubles.
@@ -87,6 +90,7 @@ struct Config {
                 debounceEndSec: debounceEnd,
                 manualHotkey: hotkey,
                 forceStopHotkey: forceStop,
+                flagMomentHotkey: flagMoment,
                 promptTimeoutSec: promptTimeout,
                 repromptCooldownSec: repromptCooldown,
                 micOnlySilenceSec: micOnlySilenceSec
@@ -110,6 +114,7 @@ struct Config {
                 debounceEndSec: 5,
                 manualHotkey: "ctrl+option+m",
                 forceStopHotkey: "ctrl+option+shift+m",
+                flagMomentHotkey: "ctrl+option+f",
                 promptTimeoutSec: 30,
                 repromptCooldownSec: 60,
                 micOnlySilenceSec: 900

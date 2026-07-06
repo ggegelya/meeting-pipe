@@ -250,13 +250,15 @@ def test_summarize_default_writes_live_sidecars(tmp_path: Path):
 
 
 class _CapturingClient:
-    """Injected client that records the system prompt it is handed, no network."""
+    """Injected client that records the system prompt + transcript, no network."""
 
     def __init__(self) -> None:
         self.system_prompt: str | None = None
+        self.transcript: str | None = None
 
     def summarize(self, *, system_prompt, transcript, model, max_tokens):
         self.system_prompt = system_prompt
+        self.transcript = transcript
         return _make_summary()
 
 
@@ -383,3 +385,51 @@ def test_ai6_picks_the_latest_prior_meeting(tmp_path: Path):
     assert "Newer decision." in ctx
     assert "Recent sync" in ctx
     assert "Old decision." not in ctx
+
+
+# --- FEAT8: flagged moments reach the summarizer -----------------------------
+
+def _write_transcript_with_markers(root: Path, stem: str, *, segments, marker_offsets) -> Path:
+    md = root / f"{stem}.md"
+    md.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+    (root / f"{stem}.json").write_text(json.dumps({"segments": segments}), encoding="utf-8")
+    if marker_offsets is not None:
+        (root / f"{stem}.markers.json").write_text(
+            json.dumps({"schema_version": 1, "markers": [{"t_seconds": t} for t in marker_offsets]}),
+            encoding="utf-8",
+        )
+    return md
+
+
+def test_feat8_flagged_excerpt_and_instruction_reach_the_prompt(tmp_path: Path):
+    from mp.markers import FLAGGED_INSTRUCTION
+
+    segments = [
+        {"start": 0.0, "end": 10.0, "text": "Casual opener.", "speaker": "A"},
+        {"start": 10.0, "end": 20.0, "text": "Decision: migrate to Postgres.", "speaker": "B"},
+    ]
+    md = _write_transcript_with_markers(tmp_path, "20260707-1300", segments=segments, marker_offsets=[12.0])
+
+    client = _CapturingClient()
+    summarize(md, cfg=Config(recording=Recording(output_dir=tmp_path)), client=client)
+
+    # Deterministic capture: the spanning segment's text rides in the transcript.
+    assert client.transcript is not None
+    assert "User-flagged moments" in client.transcript
+    assert "Decision: migrate to Postgres." in client.transcript
+    # Model-side emphasis: the trusted instruction is in the system prompt.
+    assert client.system_prompt is not None
+    assert FLAGGED_INSTRUCTION in client.system_prompt
+
+
+def test_feat8_no_markers_leaves_prompt_unflagged(tmp_path: Path):
+    from mp.markers import FLAGGED_INSTRUCTION
+
+    segments = [{"start": 0.0, "end": 10.0, "text": "Just talking.", "speaker": "A"}]
+    md = _write_transcript_with_markers(tmp_path, "20260707-1400", segments=segments, marker_offsets=None)
+
+    client = _CapturingClient()
+    summarize(md, cfg=Config(recording=Recording(output_dir=tmp_path)), client=client)
+
+    assert "User-flagged moments" not in (client.transcript or "")
+    assert FLAGGED_INSTRUCTION not in (client.system_prompt or "")

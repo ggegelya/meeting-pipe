@@ -37,6 +37,11 @@ final class MeetingSessionController {
     /// `recorder.start()` (five stacked starts were seen in the 2026-06-12 freeze).
     private var recordingStartInFlight = false
 
+    /// Offsets (seconds from recording start) the user flagged mid-recording via
+    /// the flag hotkey (FEAT8). Reset at start, flushed to `<stem>.markers.json`
+    /// at stop. Main-queue only, like every field here.
+    private var markerSeconds: [Double] = []
+
     /// Latest system-audio dBFS (from `recorder.onSystemLevel`), read by
     /// the silence backstop. `-120` is the "no audio observed yet" sentinel.
     var latestSystemLevelDb: Float = -120
@@ -152,6 +157,30 @@ final class MeetingSessionController {
         }
     }
 
+    /// Stamp a timestamp marker on the active recording (FEAT8). Stop-only
+    /// semantics like `forceStop`: pressing it when nothing is recording is a
+    /// logged no-op, so it can never start a recording. The offset is seconds
+    /// from recording start (the same clock the transcript segments use), the
+    /// HUD blinks once to acknowledge, and the batch is flushed at stop.
+    func flagMoment() {
+        guard case .recording(let file, _, _) = coordinator.stateMachine.current else {
+            Log.event(category: "recorder", action: "marker_flag_ignored", attributes: [
+                "state": DetectionStateMachine.label(coordinator.stateMachine.current),
+            ])
+            return
+        }
+        let startedAt = coordinator.recorder.startedAt ?? Date()
+        let elapsed = max(0, Date().timeIntervalSince(startedAt))
+        markerSeconds.append(elapsed)
+        coordinator.recordingHUD.blink()
+        Log.event(category: "recorder", action: "marker_flagged", attributes: [
+            "file": file.lastPathComponent,
+            "t_seconds": elapsed,
+            "index": markerSeconds.count,
+        ])
+        Log.writeLine("recorder", "flagged moment #\(markerSeconds.count) at \(String(format: "%.1f", elapsed))s")
+    }
+
     /// Pin the next recording to a workflow (prompt chevron, TECH-B5).
     /// Consumed by the next `beginRecording`.
     func setPendingWorkflowOverride(_ id: UUID?) {
@@ -249,6 +278,7 @@ final class MeetingSessionController {
                     voiceProcessing: self.coordinator.liveVoiceProcessing
                 )
                 self.activeWorkflow = resolvedWorkflow
+                self.markerSeconds = []  // FEAT8: fresh marker batch per recording
                 // Persist the privacy + summary routing at START (REC2 / AUD-6) so a
                 // crash / kill / rebuild before stop() can still recover this meeting
                 // on-device: the manifest carries the summary mode (BYO must not become
@@ -397,6 +427,9 @@ final class MeetingSessionController {
                     break
                 }
                 self.writeMetaSidecar(file: file, source: source)
+                // FEAT8: flush the flagged moments next to the final wav so the
+                // pipeline and the Library transcript tab can read them.
+                MarkerFile.write(seconds: self.markerSeconds, forFinal: file)
                 self.coordinator.notifier.notifyProcessing(file: file)
                 self.coordinator.jobDispatcher.enqueue(file: file, summaryMode: summaryMode)
                 // Clean finish: the meta sidecar is now on disk and the job is
@@ -418,8 +451,9 @@ final class MeetingSessionController {
                     "Could not finalize \(file.lastPathComponent). The raw recording was kept and will be recovered on the next launch."
                 )
             }
-            // Drop the workflow so it can't bleed into the next meeting.
+            // Drop the workflow + markers so they can't bleed into the next meeting.
             self.activeWorkflow = nil
+            self.markerSeconds = []
             // Arm the re-prompt cooldown so a post-call mic grab (Teams chat,
             // Zoom teardown toast) can't re-prompt right after the flush.
             if let bid = source?.bundleID {
