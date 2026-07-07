@@ -123,7 +123,7 @@ flowchart TB
 
     subgraph Consumers
         Writer["MicGateWriter<br/>per-buffer apply<br/>20 ms linear fade"]
-        Backstop["MicOnlySilenceBackstop<br/>force-stop after N seconds<br/>(default 480, configurable)"]
+        Backstop["IdleStopBackstop<br/>idle-streak: nudge 480s,<br/>auto-stop 900s (configurable)"]
     end
 
     Audio[".wav left channel"]
@@ -233,7 +233,7 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 - `MeetingPipeCore/Lifecycle/Adapters/` - one adapter per meeting client (Teams, Zoom, Webex, Slack, browser), wiring the right signals with locale-tolerant title patterns.
 - `MeetingDiscoveryWatcher.swift` / `MeetingSourceScanner.swift` / `MeetingSourceScorer.swift` - start-side discovery: enumerate every concurrent candidate app, score each on "I am in a meeting" evidence, pick the strongest.
 - `Resources/meeting_apps.toml` - per-bundle-id table of known meeting apps and their window-title regex hints.
-- `SilenceDetector.swift` - pure logic over mic + system RMS samples: decides when to fire the "Still meeting?" notify and the silence auto-stop.
+- `MeetingPipeCore/MicGate/IdleStopBackstop.swift` - meeting-idle backstop (TECH-END3): the "Still meeting?" nudge (default 480s) and the forgotten-recording auto-stop (default 900s). Detailed under Mute gating below.
 - `RepromptCooldown.swift` - per-bundle, fixed-duration suppression window after a recording / skip so a post-call mic flicker can't spawn a fresh prompt.
 - `SkippedMeetingLatch.swift` - per-bundle suppression anchored to discovery liveness (not a fixed clock): once you dismiss a prompt, every discovery sighting of that app refreshes the latch, so the meeting stays skipped for its whole lifetime and lapses ~15 s after it ends. Paired with `RepromptCooldown` in `abandonPrompt`.
 
@@ -245,7 +245,7 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 ### Mute gating - "don't record me while I'm muted"
 
 - `MeetingPipeCore/MicGate/` - the `MicGate` verdict-fusion subsystem. Probes (HAL system mute, HAL voice-activity detection, an AX read of the meeting client's Mute button, a per-buffer RMS gate) feed `MicGate.decide`; `MicGateWriter` zeros the mic channel with a short fade while muted, preserving frame alignment with system audio.
-- `MeetingPipeCore/MicGate/MicOnlySilenceBackstop.swift` - force-stops a recording that has been mic-only and silent past a configured window.
+- `MeetingPipeCore/MicGate/IdleStopBackstop.swift` - the meeting-idle backstop (TECH-END3). Off one idle streak, gated on the fused `MicGate` verdict plus a live-system-audio mirror (not raw RMS, so ambient noise cannot keep a dead meeting open), it fires the nudge then the auto-stop. Supersedes the old `SilenceDetector` and `MicOnlySilenceBackstop`.
 
 ### Transcription - "ASR + speaker labels, on device"
 
