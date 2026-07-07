@@ -1,6 +1,6 @@
 import AppKit
 
-/// Detection prompt: a Notion-style horizontal pill centered near the top of the screen. Secondary actions (Always, Skip, Screen Recording Settings) live under a chevron menu rather than inline buttons because "Always for Microsoft Teams" alone is ~190pt, leaving no breathing room at 480pt wide. Lifecycle: `present` shows the panel and starts the mic monitor; `dismiss` fades it out and stops the monitor. One panel at a time; the delegate carries outcome clicks back to the Coordinator.
+/// Detection prompt: a Notion-style horizontal pill centered near the top of the screen. The primary action is a labelled teal `MPButton` ("Record"); secondary actions (Record BYO, Always, Skip, Screen Recording Settings) live under a chevron menu rather than inline buttons, so the right cluster stays quiet. Lifecycle: `present` shows the panel and starts the mic monitor; `dismiss` fades it out and stops the monitor. One panel at a time; the delegate carries outcome clicks back to the Coordinator.
 protocol MeetingPromptDelegate: AnyObject {
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecord source: AppSource)
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseSkip source: AppSource)
@@ -191,27 +191,17 @@ final class MeetingPromptWindow {
         }
         self.workflowChip = chip
 
-        // --- Right cluster: Record (BYO) + record key + "Record" + ⌄ ---
-        let recordBYO = MPButton(title: "Record (BYO)", style: .ghost,
-                                 target: bg, action: #selector(RoundedBackgroundView.didClickRecordBYO))
-        recordBYO.toolTip = "Record, but skip the Anthropic API call. You'll summarize the transcript yourself."
-        recordBYO.translatesAutoresizingMaskIntoConstraints = false
-        bg.addSubview(recordBYO)
-
-        // The Instrument record key (DSN25) replaces the text primary button. A
-        // "Record" label sits beside it so the action is never colour-only; both
-        // the key and the (clickable) label fire record, keeping a generous target.
-        let recordKey = RecordKey(state: .record, target: bg, action: #selector(RoundedBackgroundView.didClickRecord))
-        recordKey.translatesAutoresizingMaskIntoConstraints = false
-        bg.addSubview(recordKey)
-
-        let recordLabel = HintLabel()
-        recordLabel.stringValue = "Record"
-        recordLabel.font = .systemFont(ofSize: MPType.textBase, weight: MPType.medium)
-        recordLabel.textColor = MPColors.fg
-        recordLabel.makeClickable { [weak self] in self?.handleRecord() }
-        recordLabel.translatesAutoresizingMaskIntoConstraints = false
-        bg.addSubview(recordLabel)
+        // --- Right cluster: [Record] primary + ⌄ menu ---
+        // The primary action is a labelled teal capsule (the design-system primary
+        // button), not the old concentric record key: on a decision prompt a labelled
+        // affordance is the clearest primary, and it folds the key plus its separate
+        // "Record" label into one control. "Record (BYO)" and the other secondary
+        // actions live under the ⌄ menu so the cluster stays quiet.
+        let record = MPButton(title: "Record", style: .primary,
+                              target: bg, action: #selector(RoundedBackgroundView.didClickRecord))
+        record.bindAsDefault()
+        record.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(record)
 
         let chevron = ChevronMenuButton(target: bg, action: #selector(RoundedBackgroundView.didClickChevron))
         chevron.translatesAutoresizingMaskIntoConstraints = false
@@ -255,27 +245,18 @@ final class MeetingPromptWindow {
             waveform.heightAnchor.constraint(equalToConstant: 14),
 
             // Max width prevents a long workflow name from pushing the action cluster off-canvas.
-            chip.trailingAnchor.constraint(equalTo: recordBYO.leadingAnchor, constant: -10),
+            chip.trailingAnchor.constraint(equalTo: record.leadingAnchor, constant: -10),
             chip.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
             chip.widthAnchor.constraint(lessThanOrEqualToConstant: 160),
 
-            // Right cluster: chevron flush right; the record key + its label before
-            // it; BYO before that. All gaps 8pt, centred on the row.
+            // Right cluster: chevron flush right, the primary Record button before it.
             chevron.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -rightEdge),
             chevron.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
             chevron.widthAnchor.constraint(equalToConstant: 26),
             chevron.heightAnchor.constraint(equalToConstant: 26),
 
-            recordLabel.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -8),
-            recordLabel.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
-
-            recordKey.trailingAnchor.constraint(equalTo: recordLabel.leadingAnchor, constant: -8),
-            recordKey.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
-            recordKey.widthAnchor.constraint(equalToConstant: RecordKey.Geometry.side),
-            recordKey.heightAnchor.constraint(equalToConstant: RecordKey.Geometry.side),
-
-            recordBYO.trailingAnchor.constraint(equalTo: recordKey.leadingAnchor, constant: -8),
-            recordBYO.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
+            record.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -8),
+            record.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
 
             // Dismiss progress: 2pt bar flush to the bottom edge, full width.
             progress.leadingAnchor.constraint(equalTo: bg.leadingAnchor),
@@ -348,9 +329,20 @@ final class MeetingPromptWindow {
     fileprivate func showChevronMenu(from button: NSView) {
         guard let source = currentSource else { return }
         let menu = NSMenu()
+
+        // Record (BYO): record normally, but the pipeline writes a manual-paste bundle
+        // instead of calling Anthropic. Moved here from an inline button to keep the
+        // prompt's action cluster quiet.
+        let byo = NSMenuItem(title: "Record (BYO)", action: #selector(menuPickBYO), keyEquivalent: "")
+        byo.target = self
+        byo.toolTip = "Record, but skip the Anthropic API call. You'll summarize the transcript yourself."
+        menu.addItem(byo)
+
         let always = NSMenuItem(title: "Always for \(source.displayName)", action: #selector(menuPickAlways), keyEquivalent: "")
         always.target = self
         menu.addItem(always)
+
+        menu.addItem(.separator())
 
         let skip = NSMenuItem(title: "Skip this meeting", action: #selector(menuPickSkip), keyEquivalent: "")
         skip.target = self
@@ -373,6 +365,7 @@ final class MeetingPromptWindow {
 
     @objc private func menuPickAlways() { handleAlways() }
     @objc private func menuPickSkip() { handleSkip() }
+    @objc private func menuPickBYO() { handleRecordBYO() }
     @objc private func menuPickOpenSettings() {
         SystemAudioCapture.openScreenRecordingSettings()
     }
@@ -485,7 +478,6 @@ private final class RoundedBackgroundView: NSView {
     override func mouseExited(with event: NSEvent) { host?.setHovered(false) }
 
     @objc func didClickRecord() { host?.handleRecord() }
-    @objc func didClickRecordBYO() { host?.handleRecordBYO() }
     @objc func didClickClose() { host?.handleClose() }
     @objc func didClickChevron(_ sender: NSView) { host?.showChevronMenu(from: sender) }
 }

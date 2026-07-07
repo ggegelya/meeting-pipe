@@ -33,8 +33,11 @@ final class RecordingHUDWindow {
     private var meterTicker: Timer?
     private var levelProvider: (() -> Float)?
 
-    private static let panelWidth: CGFloat = 60
-    // 132 → 146 for the workflow attribution line (TECH-B9), 146 → 162 for the TECH-UX8 voice-activity meter row, 162 → 192 for the DSN25 Instrument port (the 22pt timer anchor, the 40pt record key, and the new "Recording" label are all taller than what they replaced). Sized for the tallest (NDA two-row) case and allocated unconditionally so the HUD geometry doesn't shift between workflowed and un-workflowed meetings.
+    // 60 → 76: at 60 the "Recording" label (8pt dot + 5pt gap + 50pt text = 63pt) and
+    // workflow names past ~9 chars overflowed the pill and were sliced by the rounded
+    // mask. 76 gives the label margin and lets names up to "Engineering" fit.
+    private static let panelWidth: CGFloat = 76
+    // 132 → 146 for the workflow attribution line (TECH-B9), 146 → 162 for the TECH-UX8 voice-activity meter row, 162 → 192 for the DSN25 Instrument port (the 22pt timer anchor, the record key, and the "Recording" label are all taller than what they replaced). Sized for the tallest (NDA two-row) case and allocated unconditionally so the HUD geometry doesn't shift between workflowed and un-workflowed meetings.
     private static let panelHeight: CGFloat = 192
     private static let edgeInset: CGFloat = 16
     // Degraded mode (TECH-UX4): the pill widens into a card so the banner text and retry button fit.
@@ -233,8 +236,8 @@ final class RecordingHUDWindow {
         self.pulseDot = dot
 
         // "Recording" label beside the dot so the state is never colour-only. The
-        // dot + label sit as a centred row; 10pt matches the workflow line below
-        // and keeps the pair inside the 60pt pill.
+        // dot + label sit as a centred row; 10pt matches the workflow line below and
+        // the pair fits the 76pt pill (it was clipped at the old 60pt width).
         let recordingLabel = NSTextField(labelWithString: "Recording")
         recordingLabel.font = .systemFont(ofSize: 10, weight: MPType.medium)
         recordingLabel.textColor = MPColors.fgMuted
@@ -271,9 +274,9 @@ final class RecordingHUDWindow {
         workflowLabel.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(workflowLabel)
 
-        // Stop control: the Instrument record key in its .stop form (DSN24/DSN25) -
-        // a concentric on-air ring around a coral rounded-square core. Replaces the
-        // bespoke StopButton; VoiceOver reads "Stop recording" from the key itself.
+        // Stop control: the record key in its .stop form - a coral rounded-square core
+        // in a hairline-bordered circle (the neon on-air ring was dropped in the
+        // redesign). VoiceOver reads "Stop recording" from the key itself.
         let stop = RecordKey(state: .stop, target: bg, action: #selector(HUDBackgroundView.didClickStop))
         stop.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(stop)
@@ -477,8 +480,8 @@ private final class PulseDotView: NSView {
 /// its own row; when NDA mode is on, a small uppercase coral "NDA" eyebrow
 /// stacks below it. Laid out as two real rows that collapse to just the name
 /// row when not NDA - the old fixed-height box pinned the name to the top and
-/// the badge to the bottom of a 14pt frame, so they overlapped ~10pt. The 60pt
-/// panel is too narrow for an inline name + badge row, so the name keeps the
+/// the badge to the bottom of a 14pt frame, so they overlapped ~10pt. The 76pt
+/// panel is still too narrow for an inline name + badge row, so the name keeps the
 /// full width (truncating tail) and NDA drops to its own line.
 private final class HUDWorkflowLabel: NSView {
     private let nameLabel = NSTextField(labelWithString: "")
@@ -500,7 +503,7 @@ private final class HUDWorkflowLabel: NSView {
         nameLabel.lineBreakMode = .byTruncatingTail
         nameLabel.maximumNumberOfLines = 1
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
-        // Truncate the name rather than widen the fixed 60pt panel.
+        // Truncate the name rather than widen the fixed 76pt panel.
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addSubview(nameLabel)
 

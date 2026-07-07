@@ -1,17 +1,19 @@
 import AppKit
 import SwiftUI
 
-/// The Instrument record key (DSN21/DSN24): a 40pt circular key with machined
-/// geometry, the named exception to the one-button-language rule (see `MPButton`).
-/// A concentric on-air ring (inset 5pt, 1.5pt) surrounds a coral core; the core is
-/// a disc in `.record` (idle) and a rounded square in `.stop` (recording), so the
-/// state is never carried by colour alone. Press travels 1.5pt down and compresses
-/// the ring over 100ms (springless), honoring reduce-motion.
+/// The HUD stop control: a compact circular key with a coral core - a disc in
+/// `.record` (idle) and a rounded square in `.stop` (recording), so the state is
+/// never carried by colour alone. It rests fill-less with a hairline border on the
+/// HUD material (matching the workflow chip and ghost buttons), so it reads as a
+/// quiet control rather than a backlit target. Press travels 1.5pt down over 100ms
+/// (springless), honoring reduce-motion.
 ///
-/// The key is colour + shape only; the beside/above text label ("Record" on the
-/// prompt, "Recording" on the HUD) is the consuming surface's job. Built as an
-/// `NSControl` so it drops into the AppKit prompt and HUD next to `MPButton`;
-/// `RecordKeyView` wraps it for the SwiftUI Library toolbar.
+/// History: this was the DSN21 "Instrument" record key - a backlit on-air ring
+/// around the core - and it also served as the prompt's primary action. The redesign
+/// drops the neon ring (the app's most "futuristic" element, against the local-first
+/// quiet brand) and moves the prompt's primary action to a labelled `MPButton`, so
+/// the key now lives only on the HUD as Stop. Built as an `NSControl` next to
+/// `MPButton`; `RecordKeyView` wraps it for SwiftUI.
 final class RecordKey: NSControl {
 
     enum KeyState {
@@ -22,10 +24,11 @@ final class RecordKey: NSControl {
         case stop
     }
 
-    /// Fixed geometry, mirroring the locked mockups. Exposed for tests and for the
-    /// SwiftUI wrapper's intrinsic size.
+    /// Fixed geometry. Exposed for tests and for the SwiftUI wrapper's intrinsic
+    /// size. 40 -> 34: with the puck and ring gone the control reads lighter, so it
+    /// no longer needs the larger footprint that carried the concentric rings.
     enum Geometry {
-        static let side: CGFloat = 40
+        static let side: CGFloat = 34
         static let ringInset: CGFloat = 5
         static let ringWidth: CGFloat = 1.5
         static let ringPressScale: CGFloat = 0.86
@@ -105,14 +108,20 @@ final class RecordKey: NSControl {
 
     private func applyColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = MPColors.bgRaised.cgColor
-            layer?.borderWidth = 0.5
-            layer?.borderColor = MPColors.borderStrong.cgColor
-            layer?.shadowColor = NSColor.black.cgColor
-            layer?.shadowOpacity = 0.06
-            layer?.shadowRadius = 1.5
-            layer?.shadowOffset = CGSize(width: 0, height: -1) // shadow-xs
-            ringLayer.borderColor = MPColors.onair600.cgColor
+            let dark = effectiveAppearance.mpIsDark
+            // Rest fill-less on the light HUD (the old white puck read as a bright
+            // blob and fought the quiet brand); a faint fill on the dark HUD so the
+            // control still separates from the material. Matches the workflow chip
+            // and ghost buttons on the same surface. No puck shadow - the HUD leans
+            // on hairlines, not floating shadows.
+            layer?.backgroundColor = (dark ? MPColors.bgRaised.withAlphaComponent(0.55) : NSColor.clear).cgColor
+            layer?.borderWidth = dark ? 1 : 0.5
+            layer?.borderColor = (dark ? MPColors.borderStrong : MPColors.border).cgColor
+            layer?.shadowOpacity = 0
+            // The backlit on-air ring is dropped (the app's most neon element, against
+            // the brand): the coral core carries record/stop, the outer hairline gives
+            // the affordance.
+            ringLayer.borderWidth = 0
             coreLayer.backgroundColor = MPColors.pulse600.cgColor
         }
     }
