@@ -23,7 +23,12 @@ final class AppGlyphView: NSImageView {
     private static func loadGlyph(for source: AppSource) -> NSImage? {
         let name = filename(for: source)
         if let cached = glyphCache[name] { return cached }
-        if let url = Bundle.module.url(forResource: name, withExtension: "svg", subdirectory: "AppGlyphs"),
+        // No `subdirectory:` - the target bundles resources with `.process`, which
+        // flattens the tree, so the glyphs land at the bundle root, not under an
+        // `AppGlyphs/` folder. Passing a subdirectory returned nil and rendered every
+        // source glyph blank across the prompt, HUD, and library rows. Matches the
+        // flat lookup MeetingSourceScanner / MuteLabelsLoader already use.
+        if let url = Bundle.module.url(forResource: name, withExtension: "svg"),
            let img = NSImage(contentsOf: url) {
             glyphCache[name] = img
             return img
@@ -31,7 +36,7 @@ final class AppGlyphView: NSImageView {
         // Fallback path - should always exist; if it doesn't, NSImageView
         // just renders blank, which is a graceful degradation.
         if let cached = glyphCache["_fallback"] { return cached }
-        if let url = Bundle.module.url(forResource: "_fallback", withExtension: "svg", subdirectory: "AppGlyphs"),
+        if let url = Bundle.module.url(forResource: "_fallback", withExtension: "svg"),
            let img = NSImage(contentsOf: url) {
             glyphCache["_fallback"] = img
             return img

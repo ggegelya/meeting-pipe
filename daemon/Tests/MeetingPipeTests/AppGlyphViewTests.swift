@@ -36,4 +36,19 @@ final class AppGlyphViewTests: XCTestCase {
         // A Zoom bundle id with a stale browser-style displayName still resolves to zoom.
         XCTAssertEqual(AppGlyphView.filename(for: source("us.zoom.xos", "Chrome")), "zoom")
     }
+
+    // Regression (glyph bundling): the filename mapping above is only half the
+    // contract - the file must also resolve from the resource bundle. `.process`
+    // flattens resources to the bundle root, so the old `subdirectory: "AppGlyphs"`
+    // lookup returned nil and rendered every glyph blank on the prompt, HUD, and
+    // library rows. These load through the real bundle so the regression can't return.
+    func test_known_source_actually_loads_its_glyph_from_the_bundle() {
+        let view = AppGlyphView(source: source("com.microsoft.teams", "Microsoft Teams"))
+        XCTAssertNotNil(view.image, "Teams glyph should resolve and load from the resource bundle")
+    }
+
+    func test_unknown_source_loads_the_fallback_glyph_from_the_bundle() {
+        let view = AppGlyphView(source: source("com.unknown.app", "Mystery App"))
+        XCTAssertNotNil(view.image, "Unknown source should fall back to _fallback.svg from the bundle")
+    }
 }
