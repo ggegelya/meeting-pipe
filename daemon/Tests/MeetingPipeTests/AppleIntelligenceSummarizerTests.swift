@@ -126,4 +126,28 @@ final class AppleIntelligenceSummarizerTests: XCTestCase {
         XCTAssertFalse(auto.contains("Team context"))
         XCTAssertTrue(auto.contains("SAME language"))
     }
+
+    // LOCAL7: the language directive is forceful and applies to every field, not
+    // a one-line aside the system model was ignoring on Ukrainian.
+    func test_language_directive_is_forceful_and_field_wide() {
+        let forced = AppleIntelligenceSummarizer.languageDirective("uk")
+        XCTAssertTrue(forced.contains("`uk`"))
+        XCTAssertTrue(forced.contains("non-negotiable"))
+        XCTAssertTrue(forced.contains("EVERY string value"))
+
+        let auto = AppleIntelligenceSummarizer.languageDirective("auto")
+        XCTAssertTrue(auto.contains("SAME language"))
+        XCTAssertTrue(auto.contains("do not switch to English or Russian"))
+    }
+
+    // LOCAL8 viability fixes: the system model ignored the bullet cap (~11 vs 5)
+    // and echoed raw dialogue on short meetings; both instruction sets restate them.
+    func test_instructions_cap_bullets_and_forbid_echo() {
+        let s = AppleIntelligenceSummarizer.instructions(teamContext: "", summaryLanguage: "auto")
+        XCTAssertTrue(s.contains("at most 5 summary bullets"))
+        XCTAssertTrue(s.lowercased().contains("never echo"))
+
+        let reduce = AppleIntelligenceSummarizer.reduceInstructions(summaryLanguage: "auto")
+        XCTAssertTrue(reduce.contains("at most 5 summary bullets"))
+    }
 }

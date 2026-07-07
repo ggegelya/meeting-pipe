@@ -26,7 +26,7 @@ struct PipelineSectionView: View {
                             ("anthropic",          "Anthropic"),
                             ("local",              "Local MLX"),
                             ("auto",               "Auto"),
-                            ("apple_intelligence", "Apple"),
+                            ("apple_intelligence", "Apple (experimental)"),
                         ]
                     )
                 }
@@ -162,9 +162,9 @@ struct PipelineSectionView: View {
             Text("Tries Anthropic first; falls back to local if the API fails or the key is missing.")
         case "apple_intelligence":
             if let reason = AppleIntelligenceSummarizer.availabilityReason {
-                Text("On-device Apple Intelligence (macOS 26+). Currently unavailable: \(reason).")
+                Text("Experimental, not recommended for daily use. On-device Apple Intelligence (macOS 26+), currently unavailable: \(reason).")
             } else {
-                Text("On-device Apple Intelligence (macOS 26+). No outbound API calls; the system model produces the summary.")
+                Text("Experimental, not recommended for daily use. On-device Apple Intelligence (macOS 26+) is native and zero-egress, but its small context forces heavy chunking on long meetings, it can mislabel Ukrainian, and it may echo dialogue on short meetings. Prefer Local MLX for a zero-egress backend.")
             }
         default:
             Text("Calls api.anthropic.com. Requires an Anthropic API key (set it under Integrations).")

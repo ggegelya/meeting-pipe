@@ -23,6 +23,8 @@ from mp.summarize_local import (
     DEFAULT_REQUEST_TIMEOUT_SEC,
     LocalSummaryClient,
     LocalSummaryError,
+    _expected_summary_language,
+    _language_signature,
     _largest_balanced_json_object,
     scaled_request_timeout,
 )
@@ -298,3 +300,134 @@ def test_largest_balanced_object_returns_largest_of_two() -> None:
 def test_largest_balanced_object_returns_none_when_unbalanced() -> None:
     assert _largest_balanced_json_object("no braces here") is None
     assert _largest_balanced_json_object("{ unbalanced") is None
+
+
+# ----- Language honoring (LOCAL7) -----
+
+
+def _uk_summary_obj() -> dict:
+    return {
+        "title": "Планування спринту",
+        "summary": ["Обговорили обсяг, ризики і терміни релізу."],
+        "decisions": [],
+        "actions": [],
+        "questions": [],
+        "attendees": ["Олена"],
+        "detected_language": "uk",
+    }
+
+
+def test_language_signature_reads_scripts() -> None:
+    assert _language_signature("Sprint planning: we aligned on scope and risks.") == "en"
+    assert _language_signature("Обговорили обсяг, ризики і терміни релізу.") == "uk"
+    assert _language_signature("Обсудили объём, риски и сроки выпуска.") == "ru"
+    # Too little signal to be sure -> None, so it never triggers a retry.
+    assert _language_signature("short") is None
+    assert _language_signature("") is None
+
+
+def test_expected_summary_language_rules() -> None:
+    uk_transcript = "Привіт, давайте почнемо. Це важливе питання і рішення."
+    en_transcript = "Hello everyone, let us begin the sprint review now."
+    # A verifiable forced code is honored regardless of the transcript.
+    assert _expected_summary_language("uk", en_transcript) == "uk"
+    assert _expected_summary_language("en", uk_transcript) == "en"
+    # A non-verifiable forced Latin code is left alone (no false English retry).
+    assert _expected_summary_language("de", en_transcript) is None
+    # auto trusts only a Cyrillic transcript read; a Latin transcript stays
+    # unverified since the detector cannot separate Latin languages.
+    assert _expected_summary_language("auto", uk_transcript) == "uk"
+    assert _expected_summary_language("auto", en_transcript) is None
+
+
+def test_language_mismatch_triggers_one_retry(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    # summary_language=uk, but attempt 1 answers in English; the client must
+    # detect the drift and replay once, returning the corrected Ukrainian summary.
+    host, port, server = fake_server
+    calls = {"n": 0}
+
+    def builder(_: dict) -> dict:
+        calls["n"] += 1
+        obj = _valid_summary_obj() if calls["n"] == 1 else _uk_summary_obj()
+        return {"choices": [{"message": {"content": json.dumps(obj)}}]}
+
+    server.builder = builder  # type: ignore[attr-defined]
+    with LocalSummaryClient(
+        host=host, port=port, manage_subprocess=False, summary_language="uk"
+    ) as c:
+        s = c.summarize(
+            system_prompt="Summarize.", transcript="A: привіт, є питання.",
+            model="ignored", max_tokens=512,
+        )
+    assert calls["n"] == 2, "expected exactly one language-correction retry"
+    assert s.title == "Планування спринту"
+
+
+def test_language_match_does_not_retry(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    host, port, server = fake_server
+    calls = {"n": 0}
+
+    def builder(_: dict) -> dict:
+        calls["n"] += 1
+        return {"choices": [{"message": {"content": json.dumps(_uk_summary_obj())}}]}
+
+    server.builder = builder  # type: ignore[attr-defined]
+    with LocalSummaryClient(
+        host=host, port=port, manage_subprocess=False, summary_language="uk"
+    ) as c:
+        s = c.summarize(
+            system_prompt="Summarize.", transcript="A: привіт.",
+            model="ignored", max_tokens=512,
+        )
+    assert calls["n"] == 1, "a matching language must not trigger a retry"
+    assert s.detected_language == "uk"
+
+
+def test_unverifiable_forced_language_never_retries(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    # Backend forced to German: the detector cannot verify Latin sub-languages,
+    # so an English-looking summary must NOT be mistaken for a mismatch.
+    host, port, server = fake_server
+    calls = {"n": 0}
+
+    def builder(_: dict) -> dict:
+        calls["n"] += 1
+        return {"choices": [{"message": {"content": json.dumps(_valid_summary_obj())}}]}
+
+    server.builder = builder  # type: ignore[attr-defined]
+    with LocalSummaryClient(
+        host=host, port=port, manage_subprocess=False, summary_language="de"
+    ) as c:
+        c.summarize(
+            system_prompt="Summarize.", transcript="Hallo, wir beginnen jetzt.",
+            model="ignored", max_tokens=512,
+        )
+    assert calls["n"] == 1, "an unverifiable target must never trigger a retry"
+
+
+def test_language_reinforcement_lands_in_system_prompt(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    host, port, server = fake_server
+    captured: dict = {}
+
+    def builder(payload: dict) -> dict:
+        captured.update(payload)
+        return {"choices": [{"message": {"content": json.dumps(_uk_summary_obj())}}]}
+
+    server.builder = builder  # type: ignore[attr-defined]
+    with LocalSummaryClient(
+        host=host, port=port, manage_subprocess=False, summary_language="uk"
+    ) as c:
+        c.summarize(
+            system_prompt="Summarize.", transcript="A: привіт.",
+            model="ignored", max_tokens=512,
+        )
+    system_msg = captured["messages"][0]["content"]
+    assert "Ukrainian" in system_msg
+    assert "українською" in system_msg

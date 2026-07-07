@@ -172,6 +172,8 @@ struct AppleIntelligenceSummarizer {
     static func instructions(teamContext: String, summaryLanguage: String) -> String {
         var s = """
         You summarize meeting transcripts into a strict JSON object. Be concise and factual. \
+        Summarize in your own words: never echo or transcribe raw dialogue, and never quote long \
+        verbatim passages. Use at most 5 summary bullets, each a single short sentence. \
         Do not invent action items: when no owner is named, set owner to null and confidence to "low". \
         Decisions contain only statements with explicit commitment language (will / agreed / decided / approved).
         """
@@ -186,18 +188,28 @@ struct AppleIntelligenceSummarizer {
     static func reduceInstructions(summaryLanguage: String) -> String {
         "You merge several partial meeting summaries (each a JSON object) into a single final "
             + "summary JSON object. Deduplicate bullets, decisions, action items, questions, and "
-            + "attendees. Keep the highest-confidence owner for each action.\n\n"
+            + "attendees. Keep the highest-confidence owner for each action. Keep at most 5 "
+            + "summary bullets in the final object.\n\n"
             + languageDirective(summaryLanguage)
     }
 
+    /// Forceful, field-by-field language directive (LOCAL7). The system model
+    /// mislabelled and drifted Ukrainian in the engine comparison, so the target
+    /// is restated as non-negotiable and applied to every string field rather
+    /// than left as a one-line aside.
     static func languageDirective(_ code: String) -> String {
         let c = code.trimmingCharacters(in: .whitespaces).lowercased()
         if c.isEmpty || c == "auto" || c.count != 2 {
-            return "Write the summary in the SAME language as the transcript "
-                + "(English transcript yields an English summary, Ukrainian yields Ukrainian)."
+            return "Output language (non-negotiable): write EVERY string value, the title, "
+                + "every summary bullet, decision, action task, and question, in the SAME "
+                + "language as the transcript. A Ukrainian transcript yields a Ukrainian "
+                + "summary; do not switch to English or Russian. An English transcript yields "
+                + "an English summary. Keep proper nouns and code identifiers verbatim."
         }
-        return "Write the summary in language `\(c)` (ISO 639-1) regardless of the transcript's "
-            + "language; preserve proper nouns and code identifiers verbatim."
+        return "Output language (non-negotiable): write EVERY string value, the title, every "
+            + "summary bullet, decision, action task, and question, in language `\(c)` "
+            + "(ISO 639-1), regardless of the transcript's language. Do not switch to any "
+            + "other language. Keep proper nouns and code identifiers verbatim."
     }
 
     static let schemaDirective = """
