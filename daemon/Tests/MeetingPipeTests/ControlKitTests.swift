@@ -101,4 +101,25 @@ final class ControlKitTests: XCTestCase {
         XCTAssertEqual(MPButtonMetrics.iconSize, 24)
         XCTAssertEqual(MPButtonMetrics.pressScale, 0.97, accuracy: 0.001)
     }
+
+    // MARK: - Prompt Record button (renders where MPButton could not)
+
+    func test_promptRecordButton_has_an_opaque_teal_fill() {
+        // Regression: MPButton fills via layer.backgroundColor behind an NSButtonCell,
+        // which did not composite on the prompt's vibrant hudWindow material, so the
+        // Record button drew invisible. PromptRecordButton fills the layer directly
+        // (like RecordKey). Pin the fill so it can't silently go clear/invisible again.
+        let button = PromptRecordButton(target: nil, action: nil)
+        button.frame = NSRect(x: 0, y: 0, width: 80, height: 26)
+        button.layoutSubtreeIfNeeded()
+        let fill = button.layer?.backgroundColor
+        XCTAssertNotNil(fill, "the Record capsule must have a fill")
+        XCTAssertEqual(fill?.alpha ?? 0, 1, accuracy: 0.01, "the fill must be opaque, not clear/invisible")
+        let comps = fill?.components ?? []
+        if comps.count >= 3 {
+            XCTAssertGreaterThan(comps[1], comps[0], "teal fill: green dominates red")
+            XCTAssertGreaterThan(comps[2], comps[0], "teal fill: blue dominates red")
+        }
+        XCTAssertEqual(button.intrinsicContentSize.height, 26)  // capsule matching the button language
+    }
 }

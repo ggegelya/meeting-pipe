@@ -1,6 +1,6 @@
 import AppKit
 
-/// Detection prompt: a Notion-style horizontal pill centered near the top of the screen. The primary action is a labelled teal `MPButton` ("Record"); secondary actions (Record BYO, Always, Skip, Screen Recording Settings) live under a chevron menu rather than inline buttons, so the right cluster stays quiet. Lifecycle: `present` shows the panel and starts the mic monitor; `dismiss` fades it out and stops the monitor. One panel at a time; the delegate carries outcome clicks back to the Coordinator.
+/// Detection prompt: a Notion-style horizontal pill centered near the top of the screen. The primary action is a labelled teal capsule (`PromptRecordButton`); secondary actions (Record BYO, Always, Skip, Screen Recording Settings) live under a chevron menu rather than inline buttons, so the right cluster stays quiet. Lifecycle: `present` shows the panel and starts the mic monitor; `dismiss` fades it out and stops the monitor. One panel at a time; the delegate carries outcome clicks back to the Coordinator.
 protocol MeetingPromptDelegate: AnyObject {
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecord source: AppSource)
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseSkip source: AppSource)
@@ -192,14 +192,15 @@ final class MeetingPromptWindow {
         self.workflowChip = chip
 
         // --- Right cluster: [Record] primary + ⌄ menu ---
-        // The primary action is a labelled teal capsule (the design-system primary
-        // button), not the old concentric record key: on a decision prompt a labelled
-        // affordance is the clearest primary, and it folds the key plus its separate
-        // "Record" label into one control. "Record (BYO)" and the other secondary
-        // actions live under the ⌄ menu so the cluster stays quiet.
-        let record = MPButton(title: "Record", style: .primary,
-                              target: bg, action: #selector(RoundedBackgroundView.didClickRecord))
-        record.bindAsDefault()
+        // The primary action is a labelled teal capsule. It is a purpose-built control
+        // (PromptRecordButton), not the shared MPButton: MPButton fills via its layer
+        // backgroundColor sitting behind an NSButtonCell, and that does not composite on
+        // the prompt's vibrant hudWindow material - the button rendered invisible. This
+        // capsule uses the same layer-fill + NSTextField approach as the record key,
+        // which does render here. It folds the old key plus its separate "Record" label
+        // into one control; "Record (BYO)" and the other secondary actions live under
+        // the ⌄ menu so the cluster stays quiet.
+        let record = PromptRecordButton(target: bg, action: #selector(RoundedBackgroundView.didClickRecord))
         record.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(record)
 
@@ -606,6 +607,73 @@ private final class ChevronMenuButton: NSButton {
         chev.line(to: NSPoint(x: mid.x,     y: mid.y - 2.5))
         chev.line(to: NSPoint(x: mid.x + 4, y: mid.y + 1.5))
         chev.stroke()
+    }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
+
+/// Primary "Record" action on the prompt: a filled signal-teal capsule with a white
+/// label. Purpose-built rather than reusing `MPButton(.primary)` because that fills via
+/// `layer.backgroundColor` behind an `NSButtonCell`, which does not composite on the
+/// prompt's vibrant `hudWindow` material (the button drew invisible). This uses the same
+/// layer-fill + `NSTextField` approach as `RecordKey`, which renders here. `NSControl`
+/// (not `NSButton`) so there is no cell in the way; click is a manual mouse-tracking
+/// `sendAction`, mirroring `RecordKey`.
+final class PromptRecordButton: NSControl {
+    private let titleLabel = NSTextField(labelWithString: "Record")
+
+    init(target: AnyObject?, action: Selector?) {
+        super.init(frame: .zero)
+        self.target = target
+        self.action = action
+        wantsLayer = true
+        layer?.backgroundColor = MPColors.signalFill.cgColor   // deep teal, both modes (clears white 4.5:1)
+        layer?.masksToBounds = true
+        toolTip = "Record this meeting"
+
+        titleLabel.font = .systemFont(ofSize: MPType.textBase, weight: MPType.semibold)
+        titleLabel.textColor = MPColors.fgOnSignal
+        titleLabel.alignment = .center
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleLabel)
+        NSLayoutConstraint.activate([
+            titleLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("Record")
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    // 26pt tall capsule matching the button language; width hugs the label + 14pt each side.
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: ceil(titleLabel.intrinsicContentSize.width) + 28, height: 26)
+    }
+
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = bounds.height / 2   // full-radius capsule
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // Manual tracking so releasing outside cancels, like a real button; a quick
+        // opacity dip is the press feedback. Mirrors RecordKey (no NSButtonCell here).
+        layer?.opacity = 0.82
+        var inside = true
+        while true {
+            guard let next = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) else { break }
+            if next.type == .leftMouseDragged {
+                inside = bounds.contains(convert(next.locationInWindow, from: nil))
+                layer?.opacity = inside ? 0.82 : 1.0
+            } else {
+                inside = bounds.contains(convert(next.locationInWindow, from: nil))
+                break
+            }
+        }
+        layer?.opacity = 1.0
+        if inside, isEnabled { sendAction(action, to: target) }
     }
 
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
