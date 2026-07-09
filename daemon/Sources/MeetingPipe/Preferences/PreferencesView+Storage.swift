@@ -12,6 +12,7 @@ struct StorageSectionView: View {
     @StateObject private var stats: StorageStatsStore
 
     @State private var confirmingEviction = false
+    @State private var pendingMove: LibraryMover.Plan?
 
     init(store: ConfigStore, workflowStore: WorkflowStore) {
         self.store = store
@@ -33,6 +34,7 @@ struct StorageSectionView: View {
                 .disabled(stats.isScanning)
             }
 
+            syncGroup
             libraryGroup
             policyGroup
             cachesGroup
@@ -50,6 +52,82 @@ struct StorageSectionView: View {
         } message: {
             Text("Every downloaded model except the one Pipeline is configured to use. They re-download on demand.")
         }
+        .confirmationDialog(
+            "Move the library?",
+            isPresented: Binding(get: { pendingMove != nil }, set: { if !$0 { pendingMove = nil } }),
+            titleVisibility: .visible
+        ) {
+            if let plan = pendingMove {
+                Button("Move \(plan.fileCount) files (\(byteText(plan.bytes)))") {
+                    pendingMove = nil
+                    Task { await stats.executeMove(plan) }
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingMove = nil }
+        } message: {
+            if let plan = pendingMove {
+                Text("\(plan.source.path)\nmoves to\n\(plan.destination.path)")
+            }
+        }
+    }
+
+    // MARK: Cloud sync (SEC12)
+
+    /// Only rendered when a provider is detected. A library that stays on this Mac
+    /// needs no reassurance pill; a library that does not is the most important
+    /// thing on this screen, so it goes first.
+    @ViewBuilder
+    private var syncGroup: some View {
+        if let provider = stats.syncProvider {
+            SettingsGroup("Cloud sync") {
+                SettingsRow(
+                    stats.promisesZeroEgress
+                        ? "This Mac promises zero egress, and the library is syncing anyway"
+                        : "Your recordings leave this Mac",
+                    sublabel: provider.evidence,
+                    alignTop: true,
+                    showsDivider: false
+                ) {
+                    HStack(spacing: MPSpace.s2) {
+                        SettingsStatusPill(
+                            tone: stats.promisesZeroEgress ? .denied : .needed,
+                            icon: "icloud.and.arrow.up",
+                            text: provider.name
+                        )
+                        Button("Move library…") { chooseNewLibraryRoot() }
+                            .buttonStyle(.mpGhost)
+                    }
+                }
+            } footer: {
+                if let error = stats.moveError {
+                    Text(error).foregroundStyle(.mpDanger)
+                } else if stats.promisesZeroEgress {
+                    Text("Regulated mode and NDA workflows force summarization on-device, but they cannot stop \(provider.name) from uploading the recording after it is written. Move the library outside the synced folder, or turn the sync off.")
+                } else {
+                    Text("Everything meeting-pipe writes here, recordings included, is uploaded by \(provider.name).")
+                }
+            }
+        } else if stats.moveError != nil {
+            SettingsGroup("Cloud sync") {
+                SettingsRow("Move failed", sublabel: stats.moveError, alignTop: true, showsDivider: false) {
+                    EmptyView()
+                }
+            }
+        }
+    }
+
+    /// Ask for a destination, plan the move, and hand the plan to the confirmation
+    /// dialog. Nothing on disk changes until the user confirms.
+    private func chooseNewLibraryRoot() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.message = "Pick a folder outside every cloud-sync folder. Your recordings folder keeps its name inside it."
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        pendingMove = stats.planMove(to: destination)
     }
 
     // MARK: Groups

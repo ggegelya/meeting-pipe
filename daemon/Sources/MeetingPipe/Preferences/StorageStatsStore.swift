@@ -9,6 +9,13 @@ import SwiftUI
 final class StorageStatsStore: ObservableObject {
     @Published private(set) var stats: StorageStats?
     @Published private(set) var isScanning = false
+    /// The cloud-sync client that owns the library, if any (SEC12). Refreshed on
+    /// every scan, so it follows an assisted move without a restart.
+    @Published private(set) var syncProvider: CloudSyncDetector.SyncProvider?
+    /// True when this Mac promises zero egress (regulated mode, or any NDA
+    /// workflow), which turns a synced library from a warning into a contradiction.
+    @Published private(set) var promisesZeroEgress = false
+    @Published var moveError: String?
 
     private let workflowStore: WorkflowStore
     private let configStore: ConfigStore
@@ -18,12 +25,21 @@ final class StorageStatsStore: ObservableObject {
         self.workflowStore = workflowStore
     }
 
+    var libraryURL: URL {
+        URL(fileURLWithPath: (configStore.outputDirPath as NSString).expandingTildeInPath)
+    }
+
     func rescan() async {
         guard !isScanning else { return }
         isScanning = true
         defer { isScanning = false }
 
-        let libraryDir = URL(fileURLWithPath: (configStore.outputDirPath as NSString).expandingTildeInPath)
+        let libraryDir = libraryURL
+        promisesZeroEgress = configStore.regulatedMode
+            || workflowStore.workflows.contains { $0.flags.ndaMode }
+        syncProvider = await Task.detached(priority: .userInitiated) {
+            CloudSyncDetector.detect(path: libraryDir)
+        }.value
         let originalsDir = MuteRedactor.originalsDirectory()
         let waveformCacheDir = WaveformPeaksLoader.cacheDirectory()
         let hubRoot = StorageScanner.hubRoot(home: FileManager.default.homeDirectoryForCurrentUser)
@@ -77,6 +93,34 @@ final class StorageStatsStore: ObservableObject {
             "count": directories.count,
             "bytes_freed": bytes,
         ])
+        await rescan()
+    }
+
+    /// Build the move plan for a user-chosen destination, or surface why not.
+    /// Never moves anything: the caller confirms the returned plan first.
+    func planMove(to destinationParent: URL) -> LibraryMover.Plan? {
+        do {
+            moveError = nil
+            return try LibraryMover.plan(source: libraryURL, destinationParent: destinationParent)
+        } catch {
+            moveError = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// Execute a confirmed plan, then repoint `[recording] output_dir` at the new
+    /// root. Config comes last: if the move fails, the daemon keeps writing where
+    /// the recordings still are.
+    func executeMove(_ plan: LibraryMover.Plan) async {
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try LibraryMover.execute(plan)
+            }.value
+            configStore.outputDirPath = plan.destination.path
+            moveError = nil
+        } catch {
+            moveError = error.localizedDescription
+        }
         await rescan()
     }
 

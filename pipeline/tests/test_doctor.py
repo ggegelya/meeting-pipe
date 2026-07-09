@@ -16,9 +16,11 @@ from mp.config import Config
 from mp.doctor import (
     _estimate_model_gb,
     _scan_recorder_log_for_tcc,
+    check_library_sync,
     check_local_stack,
     check_storage,
 )
+from mp.doctor import main as doctor_main
 
 
 def _write_log(tmp_path: Path, lines: list[str]) -> Path:
@@ -181,3 +183,110 @@ def test_check_storage_tolerates_a_library_that_does_not_exist_yet(capsys, tmp_p
 def test_check_storage_without_config_warns_and_returns(capsys) -> None:
     check_storage(None)
     assert "[WARN] config did not load" in capsys.readouterr().out
+
+
+# ---------- cloud-sync egress check (SEC12) ----------------------------------
+
+
+def _synced_library(tmp_path: Path) -> Path:
+    """A library inside a fake `~/Library/CloudStorage/Dropbox-Personal`."""
+    library = tmp_path / "Library" / "CloudStorage" / "Dropbox-Personal" / "Meetings" / "raw"
+    library.mkdir(parents=True)
+    return library
+
+
+def _nda_workflows(tmp_path: Path) -> Path:
+    directory = tmp_path / "workflows"
+    directory.mkdir()
+    (directory / "secret.toml").write_text(
+        'name = "Client X"\n\n[flags]\nnda_mode = true\n', encoding="utf-8"
+    )
+    return directory
+
+
+def test_check_library_sync_is_ok_for_a_local_library(capsys, tmp_path) -> None:
+    library = tmp_path / "Meetings" / "raw"
+    library.mkdir(parents=True)
+    check_library_sync(_storage_cfg(library), home=tmp_path, workflows_dir=tmp_path / "none")
+    assert "[ OK ] no meeting data is inside a cloud-sync folder" in capsys.readouterr().out
+
+
+def test_check_library_sync_warns_when_synced_and_nothing_promises_zero_egress(
+    capsys, tmp_path
+) -> None:
+    check_library_sync(
+        _storage_cfg(_synced_library(tmp_path)), home=tmp_path, workflows_dir=tmp_path / "none"
+    )
+    out = capsys.readouterr().out
+    assert "[WARN] library is synced to Dropbox" in out
+    assert "[FAIL]" not in out
+
+
+def test_check_library_sync_fails_under_regulated_mode(capsys, tmp_path) -> None:
+    cfg = Config.model_validate({
+        "recording": {"output_dir": str(_synced_library(tmp_path))},
+        "modes": {"regulated_mode": True},
+    })
+    check_library_sync(cfg, home=tmp_path, workflows_dir=tmp_path / "none")
+    out = capsys.readouterr().out
+    assert "[FAIL] library is synced to Dropbox" in out
+    assert "regulated_mode is ON" in out
+
+
+def test_check_library_sync_fails_when_any_nda_workflow_exists(capsys, tmp_path) -> None:
+    check_library_sync(
+        _storage_cfg(_synced_library(tmp_path)),
+        home=tmp_path,
+        workflows_dir=_nda_workflows(tmp_path),
+    )
+    out = capsys.readouterr().out
+    assert "[FAIL] library is synced to Dropbox" in out
+    assert "NDA workflows: Client X" in out
+
+
+def test_check_library_sync_flags_the_published_sink_separately(capsys, tmp_path) -> None:
+    # The daemon's assisted move relocates the recordings and digests, not the
+    # filesystem sink. A summary left inside iCloud has to still be visible.
+    local_library = tmp_path / "Meetings" / "raw"
+    local_library.mkdir(parents=True)
+    published = tmp_path / "Library" / "CloudStorage" / "OneDrive-Contoso" / "published"
+    published.mkdir(parents=True)
+    cfg = Config.model_validate({
+        "recording": {"output_dir": str(local_library)},
+        "output": {"sinks": ["filesystem"]},
+        "filesystem": {"output_dir": str(published)},
+    })
+    check_library_sync(cfg, home=tmp_path, workflows_dir=tmp_path / "none")
+    out = capsys.readouterr().out
+    assert "[WARN] published summaries is synced to OneDrive" in out
+
+
+def test_check_library_sync_deduplicates_roots_in_one_synced_tree(capsys, tmp_path) -> None:
+    # library + digests are siblings; saying it twice is noise.
+    root = tmp_path / "Library" / "CloudStorage" / "Dropbox-Personal" / "Meetings"
+    (root / "raw").mkdir(parents=True)
+    (root / "digests").mkdir()
+    check_library_sync(_storage_cfg(root / "raw"), home=tmp_path, workflows_dir=tmp_path / "none")
+    out = capsys.readouterr().out
+    assert out.count("synced to Dropbox") == 1
+
+
+def test_doctor_main_still_exits_zero_on_a_hard_fail(monkeypatch, tmp_path) -> None:
+    # Doctor is a diagnostic, not a gate. SEC12's FAIL is a marker, not an exit
+    # code; callers grep for "[FAIL]". Breaking that would break every existing
+    # invocation on a half-configured Mac.
+    cfg = Config.model_validate({
+        "recording": {"output_dir": str(_synced_library(tmp_path))},
+        "modes": {"regulated_mode": True},
+    })
+    monkeypatch.setattr("mp.doctor.check_secrets", lambda: dict.fromkeys(
+        ["ANTHROPIC_API_KEY", "NOTION_TOKEN", "HF_TOKEN"], False
+    ))
+    monkeypatch.setattr("mp.doctor.check_config", lambda: cfg)
+    monkeypatch.setattr("mp.doctor.check_ml_runtimes", lambda: None)
+    monkeypatch.setattr("mp.doctor.check_local_stack", lambda _cfg: None)
+    monkeypatch.setattr("mp.doctor.check_screen_recording", lambda: None)
+    monkeypatch.setattr("mp.doctor.check_storage", lambda _cfg, home=None: check_library_sync(
+        cfg, home=tmp_path, workflows_dir=tmp_path / "none"
+    ))
+    assert doctor_main([]) == 0

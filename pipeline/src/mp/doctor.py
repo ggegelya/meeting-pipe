@@ -20,7 +20,7 @@ from pathlib import Path
 
 import httpx
 
-from . import storage
+from . import cloudsync, storage, workflows
 from .config import CONFIG_PATH, KEYCHAIN_SERVICE, Config, load_secrets
 from .endpoints import (
     ANTHROPIC_API_BASE,
@@ -353,14 +353,92 @@ def check_storage(cfg: Config | None, home: Path | None = None) -> None:
     free = storage.free_bytes(library)
     if free is None:
         _warn("could not determine free disk space")
-        return
-    # Roughly 14 hours of recording. Below that, an unattended day of meetings
-    # can plausibly fill the disk before anyone looks at doctor again.
-    low_water = 10 * 1000 ** 3
-    if free < low_water:
-        _warn(f"free disk {storage.human_bytes(free)}; set an audio retention policy on a workflow, or free space")
     else:
-        _ok(f"free disk {storage.human_bytes(free)}")
+        # Roughly 14 hours of recording. Below that, an unattended day of meetings
+        # can plausibly fill the disk before anyone looks at doctor again.
+        low_water = 10 * 1000 ** 3
+        if free < low_water:
+            _warn(f"free disk {storage.human_bytes(free)}; set an audio retention policy on a workflow, or free space")
+        else:
+            _ok(f"free disk {storage.human_bytes(free)}")
+
+    check_library_sync(cfg, home=home)
+
+
+def _synced_roots(cfg: Config, home: Path | None) -> list[tuple[str, cloudsync.SyncProvider]]:
+    """Every on-disk root meeting-pipe writes to that a sync client owns.
+
+    Not just the recordings dir: `digests/` and the filesystem sink's `published/`
+    hold generated summaries, and the daemon's assisted move deliberately relocates
+    only the recordings and digests. Deduped by sync root, since the three are
+    usually siblings inside one synced tree and saying so three times is noise.
+    """
+    library = cfg.recording.output_dir
+    roots: list[tuple[str, Path]] = [
+        ("library", library),
+        ("digests", storage.digests_dir(library)),
+    ]
+    if "filesystem" in cfg.output.sinks:
+        # `filesystem.output_dir` is a raw string with a possible `~`;
+        # `detect_sync_provider` expands it.
+        roots.append(("published summaries", Path(cfg.filesystem.output_dir)))
+
+    found: list[tuple[str, cloudsync.SyncProvider]] = []
+    seen: set[Path] = set()
+    for label, path in roots:
+        provider = cloudsync.detect_sync_provider(path, home=home)
+        if provider is None or provider.root in seen:
+            continue
+        seen.add(provider.root)
+        found.append((label, provider))
+    return found
+
+
+def check_library_sync(
+    cfg: Config,
+    home: Path | None = None,
+    workflows_dir: Path | None = None,
+) -> None:
+    """Is the library silently uploading to a cloud provider? (SEC12)
+
+    An OS-level hole in the zero-egress promise: `egress_guard` clamps this
+    process, but it cannot stop iCloud from syncing the WAV that was just written.
+    The default `~/Documents/Meetings/` sits inside iCloud's Desktop & Documents
+    scope, so this is the common case, not the exotic one.
+
+    A synced root is a WARN. A synced root under `regulated_mode`, or on a Mac with
+    any NDA workflow, is a FAIL: those modes exist precisely to promise that
+    nothing leaves the machine.
+
+    `main()` still returns 0. Doctor is a diagnostic, not a gate, and this one
+    exception is not worth breaking every caller that relies on that contract.
+    Grep for `[FAIL]`.
+    """
+    synced = _synced_roots(cfg, home)
+    if not synced:
+        _ok("no meeting data is inside a cloud-sync folder")
+        return
+
+    nda_workflows = workflows.nda_workflow_names(workflows_dir)
+    zero_egress_promised = cfg.modes.regulated_mode or bool(nda_workflows)
+
+    for label, provider in synced:
+        if zero_egress_promised:
+            _fail(f"{label} is synced to {provider.name}, and this Mac promises zero egress")
+        else:
+            _warn(f"{label} is synced to {provider.name}; this data leaves your Mac")
+        _info(provider.evidence)
+
+    if zero_egress_promised:
+        if cfg.modes.regulated_mode:
+            _info("regulated_mode is ON")
+        if nda_workflows:
+            _info(f"NDA workflows: {', '.join(nda_workflows)}")
+        _info("summarization stays on-device, but the recording is uploaded after it is written")
+
+    _info("fix: Preferences > Storage > Move library..., and pick a folder outside the synced tree")
+    if any(p.name == "iCloud Drive" for _, p in synced):
+        _info("     or turn off System Settings > [your name] > iCloud > Desktop & Documents Folders")
 
 
 def check_huggingface(present: bool) -> None:

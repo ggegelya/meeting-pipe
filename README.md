@@ -287,6 +287,21 @@ The sweep runs when the daemon launches and after each meeting finishes. Compres
 
 **Caches.** Waveform peaks live in `~/Library/Caches/MeetingPipe/waveforms/` and are recomputed the next time you open a meeting's Audio tab. Downloaded local models live in `~/.cache/huggingface/hub/`; **Evict unused** deletes every one except the model Preferences ▸ Pipeline is configured to use, and they re-download on demand.
 
+### Your library may be uploading to iCloud
+
+meeting-pipe keeps summarization on your Mac. It cannot keep macOS from syncing the file after it is written, and **the default library path is inside iCloud's sync scope**: if System Settings ▸ [your name] ▸ iCloud ▸ **Desktop & Documents Folders** is on, everything under `~/Documents/Meetings/` (recordings, transcripts, summaries) uploads to Apple. Dropbox, Google Drive, and OneDrive do the same to any library placed inside them.
+
+This is an operating-system behaviour, not something the app can override, so meeting-pipe detects it and tells you:
+
+- **Preferences ▸ Storage** shows a **Cloud sync** panel naming the provider, with a **Move library…** button.
+- `mp doctor` prints `[WARN] library is synced to ...` under `== storage ==`, and checks the `digests/` and `published/` folders too.
+- Under `regulated_mode`, or on a Mac with any NDA workflow, the same finding is a `[FAIL]`, not a warning. Those modes promise that nothing leaves your Mac, and a synced library breaks that promise no matter what the summarizer does. (`mp doctor` still exits 0 either way; it is a diagnostic, not a gate. Grep for `[FAIL]` if you want to fail a script on it.)
+
+**To fix it**, either move the library or turn the sync off:
+
+- **Preferences ▸ Storage ▸ Move library…** asks for a folder outside every sync folder, shows you exactly what it will move and how much, and moves the recordings folder and its `digests/` sibling only after you confirm. It refuses while a recording or a pipeline job is in flight, and it refuses a destination that is itself synced. Your `published/` folder, if you use the filesystem sink, is not moved: `mp doctor` will keep reporting it until you point `filesystem.output_dir` somewhere local.
+- Or turn off System Settings ▸ [your name] ▸ iCloud ▸ Desktop & Documents Folders, which affects far more than meeting-pipe.
+
 ---
 
 ## Improving local quality

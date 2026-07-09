@@ -311,6 +311,30 @@ Events: `audio_compressed`, `audio_dropped`, `audio_retention_swept` (category `
 
 ---
 
+## Cloud-sync detection (SEC12)
+
+The zero-egress promise is enforced inside the pipeline process (`egress_guard`), but the filesystem can undo it: the default library at `~/Documents/Meetings/` sits inside iCloud's Desktop & Documents scope, and if that setting is on, every WAV and transcript uploads to Apple with nothing in meeting-pipe aware of it.
+
+One rule set, two implementations: `mp.cloudsync.detect_sync_provider` (doctor's text line) and `CloudSyncDetector.detect` (the Preferences status pill). The duplication is deliberate. The alternative is a `mp storage-status --json` subprocess plus a JSON contract, for what is a path check; both sides are unit-tested against real extended attributes. **Change one, change the other.**
+
+Walk the library path and its ancestors, up to **and including** `$HOME`, then stop. Home is checked (a home directory that is itself a sync root syncs everything under it); nothing above it is (a Mac whose home lives under a folder named `Dropbox` is not evidence). Signals, in descending confidence:
+
+1. `~/Library/CloudStorage/<Provider>-<account>`, the modern File Provider root. Provider is in the directory name.
+2. `~/Library/Mobile Documents/`, iCloud Drive proper.
+3. The xattr `com.apple.icloud.desktop`, which macOS stamps on `~/Documents` and `~/Desktop` under Desktop & Documents sync.
+4. The xattr `com.apple.file-provider-domain-id`, the generic "a sync client owns this" marker. Reports an unnamed provider, still enough to warn.
+5. A directory literally named `Dropbox` / `Google Drive` / `OneDrive...`, for clients predating File Provider.
+
+**Two dead ends, recorded so nobody re-walks them.** `Path.resolve()` / `resolvingSymlinksInPath()` does *not* reveal Desktop & Documents sync: macOS leaves `~/Documents` at its own path and symlinks `~/Library/Mobile Documents/com~apple~CloudDocs/Documents` **back to it**, so the resolution runs the wrong way. And `MobileMeAccounts.plist`'s `MOBILE_DOCUMENTS` service being enabled means iCloud *Drive* is on, not Desktop & Documents; keying on it flags every Mac with iCloud Drive. The service that governs Desktop & Documents is `CLOUDDESKTOP` (`Enabled: true` on older macOS, `status: "active"` on macOS 26), consulted only as a corroborator.
+
+Note for tests: `com.apple.icloud.desktop` can be written by an unprivileged process, `com.apple.file-provider-domain-id` cannot. Stamp the first for real; fake the read for the second.
+
+**Severity.** A synced root is a `[WARN]`. A synced root under `regulated_mode`, or on a Mac with any NDA workflow (`mp.workflows.nda_workflow_names`, the only Python that reads the workflows dir), is a `[FAIL]`. `mp doctor` still returns 0 either way: it is a diagnostic, not a gate, and callers grep for `[FAIL]`.
+
+`mp doctor` checks every on-disk root it writes (`recording.output_dir`, the `digests/` sibling, and the filesystem sink's `published/`), deduped by sync root. The daemon's assisted move (`LibraryMover`) relocates the recordings and digests only, so doctor is what surfaces a `published/` still inside iCloud.
+
+---
+
 ## Speaker enrollment (FEAT3-VOICEPRINT / FEAT3-ROSTER)
 
 Speaker enrollment learns voices so "me vs them" holds on the mono / merged recordings where the stereo mic-channel trick can't, and recurring named people surface by name. Four artifacts:
