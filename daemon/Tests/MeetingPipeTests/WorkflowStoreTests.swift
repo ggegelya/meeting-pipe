@@ -208,6 +208,71 @@ final class WorkflowStoreTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(byName["Plain"]).flags.redactMutedSpans, "a workflow that never opted in stays off")
     }
 
+    // MARK: STOR1 retention
+
+    func test_retention_round_trips_through_toml() throws {
+        let dir = try makeTempDir()
+        let store = WorkflowStore(directory: dir)
+        var wf = Workflow(name: "Standups", isDefault: true)
+        wf.retention = WorkflowRetention(policy: .compress, afterDays: 7)
+        try store.upsert(wf)
+
+        let reloaded = WorkflowStore(directory: dir)
+        reloaded.load()
+        XCTAssertEqual(reloaded.workflows[0].retention, WorkflowRetention(policy: .compress, afterDays: 7))
+    }
+
+    func test_keep_forever_workflow_writes_no_retention_table() throws {
+        // Retention deletes audio. A workflow that never opted in must be
+        // byte-unchanged on disk, so nobody reading the TOML thinks it opted in.
+        let dir = try makeTempDir()
+        let store = WorkflowStore(directory: dir)
+        let wf = Workflow(name: "Plain", isDefault: true)
+        try store.upsert(wf)
+        let toml = try String(contentsOf: dir.appendingPathComponent("\(wf.id.uuidString).toml"), encoding: .utf8)
+        XCTAssertFalse(toml.contains("retention"))
+    }
+
+    func test_missing_retention_table_decodes_to_keep_forever() throws {
+        let dir = try makeTempDir()
+        let url = dir.appendingPathComponent("\(UUID().uuidString).toml")
+        try #"""
+        id = "\#(UUID().uuidString)"
+        name = "Legacy"
+        color = "#FF6B6B"
+        context_prompt = ""
+        is_default = true
+        order = 0
+        """#.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = WorkflowStore(directory: dir)
+        store.load()
+        XCTAssertEqual(store.workflows[0].retention.policy, .keep)
+    }
+
+    func test_unrecognized_retention_policy_fails_safe_to_keep() throws {
+        // A policy name a future build wrote. Deleting audio on a value we do not
+        // understand is the one outcome that must never happen.
+        let dir = try makeTempDir()
+        let url = dir.appendingPathComponent("\(UUID().uuidString).toml")
+        try #"""
+        id = "\#(UUID().uuidString)"
+        name = "FromTheFuture"
+        color = "#FF6B6B"
+        context_prompt = ""
+        is_default = true
+        order = 0
+
+        [retention]
+        policy = "shred"
+        after_days = 1
+        """#.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = WorkflowStore(directory: dir)
+        store.load()
+        XCTAssertEqual(store.workflows[0].retention.policy, .keep)
+    }
+
     func test_unreadable_workflow_file_is_skipped() throws {
         // A malformed TOML file under the workflows dir should not block
         // loading the rest of the set.

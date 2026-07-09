@@ -269,6 +269,26 @@ Ties on score break by the workflow's `order` (ascending). Manual recordings (`C
 
 ---
 
+## Storage
+
+An hour of recorded meeting is about 0.7 GB of stereo WAV, and nothing used to reclaim it. **Preferences ▸ Storage** shows what is actually on disk: the library's total size, how those bytes split across retention policies, the kept pre-redaction originals, and the two caches (waveform peaks, downloaded models) that are safe to throw away. `mp doctor` prints the same numbers under `== storage ==`. Both are read-only; nothing is deleted without you asking.
+
+**Retention is per workflow**, set in the workflow editor under *Audio retention*, because a client call and a standup deserve different answers. Three policies:
+
+| Policy | What happens |
+| --- | --- |
+| **Keep the audio forever** | The default. Nothing is ever reclaimed. |
+| **Compress it to FLAC** | The WAV is transcoded to FLAC in place. Lossless, so playback, the waveform, and any later reprocessing all still work. Quiet speech roughly halves; a noisy room saves less. |
+| **Delete the audio** | The transcript, summary, and every sidecar stay. The recording is gone, and a deleted recording cannot be re-transcribed. |
+
+A policy only ever acts on a **settled** meeting: one that finished and published, and that isn't sitting in the Library's **Needs you** scope. A failed run, a paste-pending bundle, a no-speech result, and a partially-published meeting are all left alone, however old they get. So is whatever is recording right now. Meetings with no workflow (manual recordings, or ones whose workflow you deleted) are never touched.
+
+The sweep runs when the daemon launches and after each meeting finishes. Compression needs `ffmpeg` on your `PATH`; without it the sweep logs a warning and skips. A compress writes the FLAC, reopens it, and compares durations before it deletes the WAV, so an interrupted transcode leaves the original in place.
+
+**Caches.** Waveform peaks live in `~/Library/Caches/MeetingPipe/waveforms/` and are recomputed the next time you open a meeting's Audio tab. Downloaded local models live in `~/.cache/huggingface/hub/`; **Evict unused** deletes every one except the model Preferences ▸ Pipeline is configured to use, and they re-download on demand.
+
+---
+
 ## Improving local quality
 
 When `summarization.backend` is `"local"`, you can grade each published summary so the local model gets better over time. There are two surfaces:

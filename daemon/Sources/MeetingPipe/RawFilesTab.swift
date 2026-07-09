@@ -43,7 +43,7 @@ struct RawFilesTab: View {
                         .truncationMode(.middle)
                     Spacer()
                     Button {
-                        NSWorkspace.shared.activateFileViewerSelecting([meeting.wavURL])
+                        NSWorkspace.shared.activateFileViewerSelecting([meeting.revealURL])
                     } label: {
                         Label("Open folder", systemImage: "folder")
                     }
@@ -181,7 +181,11 @@ enum RawFilesLister {
 
     static func classify(name: String, stem: String) -> RawFileEntry.Kind {
         // Kind ordering doubles as the sort key; match most specific suffix first.
-        if name == "\(stem).wav" { return .wav }
+        // A compressed meeting's recording is `<stem>.flac` (STOR1); both sort and
+        // render as the recording row.
+        if MeetingStore.finalRecordingExtensions.contains(where: { name == "\(stem).\($0)" }) {
+            return .wav
+        }
         if name == "\(stem).meta.json" { return .meta }
         if name == "\(stem).run.json" { return .run }
         if name == "\(stem).summary.json" { return .summaryJSON }

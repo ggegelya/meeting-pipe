@@ -285,6 +285,32 @@ Seconds from recording start, half-open `[start_sec, end_sec)`. Only genuine app
 
 ---
 
+## Audio retention (STOR1)
+
+**The recording's extension is not a constant.** A meeting's final recording is `<stem>.wav` as the recorder wrote it, `<stem>.flac` after a `compress` retention policy has run, or absent entirely after a `drop` policy. `MeetingStore.finalRecordingExtensions` is the single list, `MeetingStore.finalRecordingURL(stem:in:)` the single resolver, and `Meeting.audioURL` is `URL?` so the compiler forces every audio affordance to handle absence. Don't reconstruct `"\(stem).wav"` by hand. The one exception is `MeetingStore.sidecarAnchorURL(stem:in:)`, for the two callers (`mp roster enroll --wav`, `PipelineLauncher.appleContext`) that only derive sibling sidecar paths from the URL and never open it.
+
+FLAC and not AAC, because `diarize.py` reads channels through `soundfile` (libsndfile), which decodes FLAC and not AAC: a lossy transcode would make a retried or regenerated meeting unreadable to the pipeline, on top of being irreversible in an archive.
+
+**`[retention]` in `~/.config/meeting-pipe/workflows/<uuid>.toml`.** Written by `WorkflowStore.encode`, read by `.decode`. The table is **omitted entirely** while the workflow keeps its audio forever, so a workflow that never opted in stays byte-unchanged on disk:
+
+```toml
+[retention]
+policy = "keep" | "compress" | "drop"
+after_days = 30
+```
+
+Two fail-safes, because the policy deletes irreplaceable audio: a missing table decodes to `keep`, and so does a `policy` value this build doesn't recognise (one a newer build wrote).
+
+**One reaper, two scopes.** `Coordinator.reapStorage()` runs at launch and after every pipeline job, off-main, and calls two sweeps that share a scheduler and the `coordinator` event category but not an algorithm. `OriginalsReaper` is bounded-cache eviction over `originals/` (age, then oldest-first under a byte ceiling). `AudioRetentionSweep` applies each workflow's policy to settled meetings in `raw/`, deciding through the pure `AudioRetention.decide`. Neither ever touches the live recording.
+
+A meeting is eligible only when **settled**: `.done` and not a member of the Library's `Needs you` scope. `AudioRetention.isSettled` and `LibraryScope.needsYou.includes` have to agree, and a test pins that. A meeting whose workflow carries no policy, whose workflow was deleted, or which has no workflow at all keeps its audio forever.
+
+`compress` writes `<stem>.flac.writing`, moves it into place, reopens it with `AVAudioFile` and compares durations, and only then deletes the WAV. Every failure path leaves the WAV untouched. The waveform peaks cache is keyed on the stem but validated on the recording's size + mtime, so a transcode invalidates it in place; `drop` and `softDeleteMeeting` purge it outright, since nothing will re-derive it.
+
+Events: `audio_compressed`, `audio_dropped`, `audio_retention_swept` (category `coordinator`).
+
+---
+
 ## Speaker enrollment (FEAT3-VOICEPRINT / FEAT3-ROSTER)
 
 Speaker enrollment learns voices so "me vs them" holds on the mono / merged recordings where the stereo mic-channel trick can't, and recurring named people surface by name. Four artifacts:

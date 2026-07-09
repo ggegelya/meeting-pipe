@@ -85,7 +85,7 @@ final class MeetingDragItemTests: XCTestCase {
         let meeting = Meeting(
             stem: stem,
             startedAt: Date(),
-            wavURL: dir.appendingPathComponent("\(stem).wav"),
+            audioURL: dir.appendingPathComponent("\(stem).wav"),
             recordingsDir: dir,
             summaryTitle: nil, meetingTitle: nil,
             sourceBundleID: nil, sourceDisplayName: nil, sourceKind: nil,

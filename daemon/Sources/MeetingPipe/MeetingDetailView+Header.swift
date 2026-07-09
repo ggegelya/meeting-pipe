@@ -341,7 +341,7 @@ extension MeetingDetailView {
             MPGhostIconButton(
                 systemImage: "folder",
                 help: "Show raw files in Finder"
-            ) { NSWorkspace.shared.activateFileViewerSelecting([meeting.wavURL]) }
+            ) { NSWorkspace.shared.activateFileViewerSelecting([meeting.revealURL]) }
         }
     }
 
@@ -389,7 +389,7 @@ extension MeetingDetailView {
         if FileManager.default.fileExists(atPath: metaURL.path) {
             NSWorkspace.shared.open(metaURL)
         } else {
-            NSWorkspace.shared.activateFileViewerSelecting([meeting.wavURL])
+            NSWorkspace.shared.activateFileViewerSelecting([meeting.revealURL])
         }
     }
 

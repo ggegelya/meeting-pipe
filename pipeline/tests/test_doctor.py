@@ -13,7 +13,12 @@ from pathlib import Path
 import pytest
 
 from mp.config import Config
-from mp.doctor import _estimate_model_gb, _scan_recorder_log_for_tcc, check_local_stack
+from mp.doctor import (
+    _estimate_model_gb,
+    _scan_recorder_log_for_tcc,
+    check_local_stack,
+    check_storage,
+)
 
 
 def _write_log(tmp_path: Path, lines: list[str]) -> Path:
@@ -135,3 +140,44 @@ def test_check_local_stack_ok_when_ram_and_disk_ample(capsys, monkeypatch) -> No
     check_local_stack(cfg)
     out = capsys.readouterr().out
     assert "comfortably fits" in out
+
+
+# ---------- storage (STOR1) --------------------------------------------------
+
+
+def _storage_cfg(library: Path) -> Config:
+    return Config.model_validate({"recording": {"output_dir": str(library)}})
+
+
+def test_check_storage_reports_the_library_size(capsys, tmp_path, monkeypatch) -> None:
+    library = tmp_path / "Meetings" / "raw"
+    library.mkdir(parents=True)
+    (library / "20260101-120000.wav").write_bytes(b"x" * 1_500_000)
+    monkeypatch.setattr("mp.storage.free_bytes", lambda _p: 500 * 1000 ** 3)
+
+    check_storage(_storage_cfg(library), home=tmp_path)
+    out = capsys.readouterr().out
+    assert "[ OK ] library 1.5 MB" in out
+    assert "[ OK ] free disk 500.0 GB" in out
+
+
+def test_check_storage_warns_on_a_nearly_full_disk(capsys, tmp_path, monkeypatch) -> None:
+    library = tmp_path / "raw"
+    library.mkdir()
+    monkeypatch.setattr("mp.storage.free_bytes", lambda _p: 2 * 1000 ** 3)
+
+    check_storage(_storage_cfg(library), home=tmp_path)
+    out = capsys.readouterr().out
+    assert "[WARN] free disk 2.0 GB" in out
+    assert "audio retention policy" in out
+
+
+def test_check_storage_tolerates_a_library_that_does_not_exist_yet(capsys, tmp_path) -> None:
+    check_storage(_storage_cfg(tmp_path / "never" / "recorded"), home=tmp_path)
+    out = capsys.readouterr().out
+    assert "does not exist yet" in out
+
+
+def test_check_storage_without_config_warns_and_returns(capsys) -> None:
+    check_storage(None)
+    assert "[WARN] config did not load" in capsys.readouterr().out

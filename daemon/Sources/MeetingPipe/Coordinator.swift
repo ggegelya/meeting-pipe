@@ -107,13 +107,6 @@ final class Coordinator: NSObject {
             launcher: resolvedLauncher,
             transcriptionRunner: runner
         )
-        // PreferencesWindow needs both stores; without them (test/headless)
-        // the menu item is a no-op instead of a crash.
-        if let configStore = configStore, let secretsStore = secretsStore {
-            self.preferencesWindow = PreferencesWindow(store: configStore, secrets: secretsStore)
-        } else {
-            self.preferencesWindow = nil
-        }
         // Snapshot the recordings dir at init for the library root; a live
         // change needs a daemon restart for the library window (rare).
         let recordingsDir: URL = {
@@ -138,6 +131,18 @@ final class Coordinator: NSObject {
         )
         self.workflowStore = workflowStore
         libraryModel.workflowStore = workflowStore
+
+        // PreferencesWindow needs all three stores; without config + secrets
+        // (test/headless) the menu item is a no-op instead of a crash. Built after
+        // the workflow store because the Storage section reports per-workflow
+        // retention (STOR1).
+        if let configStore = configStore, let secretsStore = secretsStore {
+            self.preferencesWindow = PreferencesWindow(
+                store: configStore, secrets: secretsStore, workflows: workflowStore
+            )
+        } else {
+            self.preferencesWindow = nil
+        }
 
         // Shared HAL + AX buses centralise CoreAudio/AX registrations;
         // adapters dispatch per-bundle. LogEventAdapter bridges
@@ -228,10 +233,11 @@ final class Coordinator: NSObject {
             onDone: { [weak self] stem, recordingsDir, pageURL in
                 guard let self = self else { return }
                 self.libraryModel.activeProcessing = nil
-                // ADR 0016 / MIC13: keep the originals folder bounded through a
-                // long-running session, not only at launch. Runs on every
-                // completion path below (including the empty-skip early return).
-                self.reapOriginals()
+                // ADR 0016 / MIC13 / STOR1: keep the originals folder and the raw/
+                // library bounded through a long-running session, not only at
+                // launch. Runs on every completion path below (including the
+                // empty-skip early return).
+                self.reapStorage()
                 // A no-speech / suspect-transcript skip finishes with no summary
                 // and no page. The pipeline wrote <stem>.empty.json; post an
                 // honest terminal notice and skip the completion tone, rather
@@ -426,9 +432,10 @@ final class Coordinator: NSObject {
         // the directory before that scan's async merges create any new final WAVs.
         reconcileStrandedJobs()
         // Reclaim kept full recordings past their retention window (ADR 0016 /
-        // MIC13). The originals folder is separate from raw/, so this never races
-        // the orphan/stranded sweeps above.
-        reapOriginals()
+        // MIC13) and apply per-workflow audio retention to raw/ (STOR1). Both run
+        // after the orphan/stranded sweeps above, which is what keeps retention
+        // from ever seeing a recording those sweeps are about to re-enqueue.
+        reapStorage()
     }
 
     /// Fire every startup TCC dialog in order. macOS serializes the prompts
@@ -492,14 +499,26 @@ final class Coordinator: NSObject {
         }
     }
 
-    /// Reclaim kept full recordings (`originals/`) past their retention window
-    /// (ADR 0016 / MIC13). Runs off-main: a light directory scan plus a few
-    /// deletes, no reason to stall the main queue. The canonical redacted
-    /// artifact in raw/ is never touched, so this is independent of the recording
-    /// and pipeline state machines.
-    private func reapOriginals() {
+    /// The one storage sweep, two scopes (MIC13 + STOR1):
+    ///   1. `OriginalsReaper` reclaims kept full recordings (`originals/`) past
+    ///      their retention window (ADR 0016). Bounded-cache eviction.
+    ///   2. `AudioRetentionSweep` applies each workflow's audio retention policy
+    ///      to settled meetings in `raw/`. Per-meeting policy, not eviction.
+    ///
+    /// Different algorithms, one scheduler and one event category. Runs off-main:
+    /// a directory scan, some deletes, and (for `compress`) an ffmpeg subprocess.
+    /// Neither scope touches a live recording or a non-terminal meeting, so this
+    /// is independent of the recording and pipeline state machines.
+    private func reapStorage() {
+        // Snapshot main-owned state before detaching.
+        let dir = liveOutputDir
+        let policies = Dictionary(
+            uniqueKeysWithValues: workflowStore.workflows.map { ($0.id, $0.retention) }
+        )
+        let liveStem = libraryModel.liveRecordingStem
         Task.detached(priority: .background) {
             OriginalsReaper.sweep()
+            AudioRetentionSweep.sweep(in: dir, policies: policies, liveStem: liveStem)
         }
     }
 

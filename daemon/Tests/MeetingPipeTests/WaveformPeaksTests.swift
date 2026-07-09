@@ -109,7 +109,7 @@ final class WaveformPeaksTests: XCTestCase {
             let frac = Float(i) / Float(total - 1)
             return (frac * 0.5, frac * 1.0)
         }
-        let peaks = try WaveformPeaksLoader.compute(wavURL: wavURL)
+        let peaks = try WaveformPeaksLoader.compute(audioURL: wavURL)
         XCTAssertEqual(peaks.durationSec, 1.0, accuracy: 0.01)
         XCTAssertGreaterThan(peaks.binCount, 40)   // ~50 bins/sec
         // Late-file bins should be louder than early ones for both
@@ -146,7 +146,7 @@ final class WaveformPeaksTests: XCTestCase {
             seconds: 60 * 60
         ) { _, _ in (0.1, 0.1) }
         let started = Date()
-        let peaks = try WaveformPeaksLoader.compute(wavURL: wavURL)
+        let peaks = try WaveformPeaksLoader.compute(audioURL: wavURL)
         let elapsed = Date().timeIntervalSince(started)
         XCTAssertLessThan(
             elapsed, budgetSec,

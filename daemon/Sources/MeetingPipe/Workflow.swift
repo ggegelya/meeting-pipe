@@ -26,6 +26,34 @@ enum WorkflowSink: Codable, Equatable, Hashable {
     }
 }
 
+/// What a workflow does with a settled meeting's audio once its retention window elapses (STOR1). Stereo WAV runs ~0.7 GB per recorded hour, so an unbounded `raw/` is the library's largest liability; a policy is how the owner trades archive fidelity for disk.
+enum RetentionPolicy: String, Codable, Equatable, Hashable, CaseIterable {
+    /// Never touch the audio. The default, and the only byte-preserving option.
+    case keep
+    /// Transcode the WAV to FLAC in place. Lossless, and stays reprocessable:
+    /// both `AVAudioFile` (playback, waveform) and the pipeline's `soundfile`
+    /// channel reads decode FLAC. AAC was rejected for exactly that second
+    /// reason, on top of being a one-way door. Savings depend entirely on the
+    /// signal: quiet speech roughly halves, a noisy room barely compresses.
+    case compress
+    /// Delete the audio, keeping the transcript, summary, and every sidecar. The
+    /// meeting stays in the Library with its audio affordances disabled.
+    case drop
+}
+
+/// Per-workflow audio retention (STOR1). Absent from a workflow's TOML means `keep` forever, so every workflow predating this stays byte-unchanged until the owner opts it in.
+struct WorkflowRetention: Codable, Equatable, Hashable {
+    var policy: RetentionPolicy = .keep
+    /// Days after the meeting started before the policy may act. Only counted for
+    /// a settled meeting; a `Needs you` row is never touched however old it is.
+    var afterDays: Int = 30
+
+    enum CodingKeys: String, CodingKey {
+        case policy
+        case afterDays = "after_days"
+    }
+}
+
 /// Per-workflow behavioural toggles. Separate struct so future flags land without touching the Workflow shape.
 struct WorkflowFlags: Codable, Equatable, Hashable {
     /// Forces `backend = .local` and `sinks = [.filesystem]` regardless of other fields. Surfaced in the HUD so a misroute is visible before recording starts.
@@ -69,6 +97,8 @@ struct Workflow: Codable, Equatable, Hashable, Identifiable {
     /// Pinned summarisation backend, or nil to inherit the global default.
     var backend: WorkflowBackend?
     var flags: WorkflowFlags
+    /// What happens to this workflow's meeting audio once it settles (STOR1). Defaults to keep-forever.
+    var retention: WorkflowRetention
     /// Exactly one workflow has this set; the matcher falls back to it when no rule matches.
     var isDefault: Bool
     /// User-defined display order; ties break alphabetically by name.
@@ -84,6 +114,7 @@ struct Workflow: Codable, Equatable, Hashable, Identifiable {
         sinks: [WorkflowSink] = [.notion(databaseId: "")],
         backend: WorkflowBackend? = nil,
         flags: WorkflowFlags = WorkflowFlags(),
+        retention: WorkflowRetention = WorkflowRetention(),
         isDefault: Bool = false,
         order: Int = 0
     ) {
@@ -96,6 +127,7 @@ struct Workflow: Codable, Equatable, Hashable, Identifiable {
         self.sinks = sinks
         self.backend = backend
         self.flags = flags
+        self.retention = retention
         self.isDefault = isDefault
         self.order = order
     }

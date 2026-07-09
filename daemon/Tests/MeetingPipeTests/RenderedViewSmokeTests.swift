@@ -24,6 +24,22 @@ final class RenderedViewSmokeTests: XCTestCase {
         XCTAssertNotNil(WorkflowChip(name: "Untagged", colorHex: nil).body)
     }
 
+    @MainActor
+    func test_storageSectionView_builds_before_the_first_scan_lands() throws {
+        // The section renders with `stats == nil` for however long the disk scan
+        // takes; the placeholder path has to be construction-safe.
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mp-storage-smoke-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let view = StorageSectionView(
+            store: try ConfigStore(configURL: dir.appendingPathComponent("config.toml")),
+            workflowStore: WorkflowStore(directory: dir.appendingPathComponent("workflows"))
+        )
+        XCTAssertNotNil(view.body)
+    }
+
     func test_summaryRenderedView_builds_for_populated_and_empty() {
         let summary = MeetingSummary(
             title: "Weekly sync",
@@ -59,7 +75,7 @@ final class RenderedViewSmokeTests: XCTestCase {
     private func detailView(backend: String?, modelId: String? = nil) -> MeetingDetailView {
         MeetingDetailView(meeting: Meeting(
             stem: "s", startedAt: Date(),
-            wavURL: URL(fileURLWithPath: "/tmp/s.wav"),
+            audioURL: URL(fileURLWithPath: "/tmp/s.wav"),
             recordingsDir: URL(fileURLWithPath: "/tmp"),
             summaryTitle: nil, meetingTitle: nil,
             sourceBundleID: nil, sourceDisplayName: nil, sourceKind: nil,

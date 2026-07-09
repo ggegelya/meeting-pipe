@@ -6,12 +6,15 @@ final class PreferencesWindow {
     private var window: NSWindow?
     private let store: ConfigStore
     private let secrets: SecretsStore
+    /// Read by the Storage section to attribute library bytes to retention policies (STOR1).
+    private let workflows: WorkflowStore
     /// Shared selection state for `show(initial:)` deeplinks.
     private let selectionState = PreferencesSelectionState()
 
-    init(store: ConfigStore, secrets: SecretsStore) {
+    init(store: ConfigStore, secrets: SecretsStore, workflows: WorkflowStore) {
         self.store = store
         self.secrets = secrets
+        self.workflows = workflows
     }
 
     /// Open the window, optionally deeplinking to `initial`. Idempotent: re-call brings the existing window to front.
@@ -31,6 +34,7 @@ final class PreferencesWindow {
         let view = PreferencesView(
             store: store,
             secrets: secrets,
+            workflows: workflows,
             selectionState: selectionState
         )
         let host = NSHostingController(rootView: MPControlAccent(view))

@@ -188,9 +188,70 @@ final class MeetingStoreTests: XCTestCase {
         let store = MeetingStore(recordingsDir: dir)
         let rows = store.performScan(directory: dir)
         XCTAssertEqual(rows.count, 1)
-        XCTAssertEqual(rows.first?.wavURL.lastPathComponent, "\(stem).wav",
+        XCTAssertEqual(rows.first?.audioURL?.lastPathComponent, "\(stem).wav",
                        "the row points at the merged wav, not .mic.wav")
         XCTAssertEqual(rows.first?.status, .done)
+    }
+
+    // MARK: STOR1 - the recording's extension, and its absence
+
+    func test_flac_recording_is_recognized_as_the_final_recording() throws {
+        let dir = try tempDir()
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
+        try writeFile(dir.appendingPathComponent("\(stem).flac"))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{}")
+        let rows = MeetingStore(recordingsDir: dir).performScan(directory: dir)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.audioURL?.lastPathComponent, "\(stem).flac")
+        XCTAssertEqual(rows.first?.status, .done)
+    }
+
+    func test_meeting_survives_when_a_drop_policy_reclaimed_its_audio() throws {
+        // The `drop` retention policy leaves the transcript and summary behind. The
+        // row must still render, with no audio to point at.
+        let dir = try tempDir()
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{}")
+        try writeFile(dir.appendingPathComponent("\(stem).md"), "# transcript")
+        let rows = MeetingStore(recordingsDir: dir).performScan(directory: dir)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertNil(rows.first?.audioURL)
+        XCTAssertEqual(rows.first?.status, .done)
+    }
+
+    func test_audioless_meeting_recovers_its_duration_from_the_transcript_sidecar() throws {
+        let dir = try tempDir()
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{}")
+        try writeFile(dir.appendingPathComponent("\(stem).json"), #"{"audio_seconds": 1830.5}"#)
+        let rows = MeetingStore(recordingsDir: dir).performScan(directory: dir)
+        XCTAssertEqual(rows.first?.durationSec, 1830.5)
+    }
+
+    func test_no_audio_and_no_terminal_sidecar_is_still_no_row() throws {
+        // The TECH-A17 phantom-row guard: a dead orphan must not animate a spinner
+        // forever. Only a terminal sidecar earns an audio-less row.
+        let dir = try tempDir()
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
+        try writeFile(dir.appendingPathComponent("\(stem).md"), "# transcript")
+        XCTAssertEqual(MeetingStore(recordingsDir: dir).performScan(directory: dir).count, 0)
+    }
+
+    func test_finalRecordingURL_prefers_wav_then_flac_then_nil() throws {
+        let dir = try tempDir()
+        XCTAssertNil(MeetingStore.finalRecordingURL(stem: "s", in: dir))
+        try writeFile(dir.appendingPathComponent("s.flac"))
+        XCTAssertEqual(MeetingStore.finalRecordingURL(stem: "s", in: dir)?.pathExtension, "flac")
+        try writeFile(dir.appendingPathComponent("s.wav"))
+        XCTAssertEqual(MeetingStore.finalRecordingURL(stem: "s", in: dir)?.pathExtension, "wav")
+    }
+
+    func test_sidecarAnchorURL_falls_back_to_the_conventional_wav_path() throws {
+        let dir = try tempDir()
+        XCTAssertEqual(
+            MeetingStore.sidecarAnchorURL(stem: "s", in: dir).lastPathComponent, "s.wav",
+            "callers only derive sibling sidecar paths from it, so a missing file is fine"
+        )
     }
 
     func test_failed_when_processing_older_than_staleness_threshold() throws {
@@ -669,7 +730,7 @@ final class MeetingStoreTests: XCTestCase {
         Meeting(
             stem: stem,
             startedAt: date,
-            wavURL: URL(fileURLWithPath: "/tmp/\(stem).wav"),
+            audioURL: URL(fileURLWithPath: "/tmp/\(stem).wav"),
             recordingsDir: URL(fileURLWithPath: "/tmp"),
             summaryTitle: nil,
             meetingTitle: nil,

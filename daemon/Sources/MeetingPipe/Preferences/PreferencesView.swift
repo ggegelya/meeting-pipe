@@ -6,12 +6,13 @@ final class PreferencesSelectionState: ObservableObject {
     @Published var current: PreferencesItem = .general
 }
 
-/// Sidebar items for the Preferences window (TECH-E4). IA per the Claude-Design handoff, refined in DSN1: General (hotkeys, appearance), Recording (output, debounce, allowlist), Prompt (timeout, stop conditions), Pipeline (summarization), Integrations (Anthropic, Notion), Permissions (TCC, regulated mode), Advanced (config/logs).
+/// Sidebar items for the Preferences window (TECH-E4). IA per the Claude-Design handoff, refined in DSN1: General (hotkeys, appearance), Recording (output, debounce, allowlist), Prompt (timeout, stop conditions), Pipeline (summarization), Storage (library size, retention, caches), Integrations (Anthropic, Notion), Permissions (TCC, regulated mode), Advanced (config/logs).
 enum PreferencesItem: String, CaseIterable, Identifiable, Hashable {
     case general
     case recording
     case prompt
     case pipeline
+    case storage
     case integrations
     case permissions
     case advanced
@@ -24,6 +25,7 @@ enum PreferencesItem: String, CaseIterable, Identifiable, Hashable {
         case .recording:    return "Recording"
         case .prompt:       return "Prompt"
         case .pipeline:     return "Pipeline"
+        case .storage:      return "Storage"
         case .integrations: return "Integrations"
         case .permissions:  return "Permissions"
         case .advanced:     return "Advanced"
@@ -37,6 +39,7 @@ enum PreferencesItem: String, CaseIterable, Identifiable, Hashable {
         case .recording:    return "mic"
         case .prompt:       return "waveform"
         case .pipeline:     return "cpu"
+        case .storage:      return "internaldrive"
         case .integrations: return "powerplug"
         case .permissions:  return "lock.shield"
         case .advanced:     return "command"
@@ -48,6 +51,7 @@ enum PreferencesItem: String, CaseIterable, Identifiable, Hashable {
 struct PreferencesView: View {
     @ObservedObject var store: ConfigStore
     @ObservedObject var secrets: SecretsStore
+    @ObservedObject var workflows: WorkflowStore
     @ObservedObject var selectionState: PreferencesSelectionState
     @StateObject private var doctor = DoctorRunner()
 
@@ -81,6 +85,8 @@ struct PreferencesView: View {
             PromptSectionView(store: store)
         case .pipeline:
             PipelineSectionView(store: store)
+        case .storage:
+            StorageSectionView(store: store, workflowStore: workflows)
         case .integrations:
             IntegrationsSectionView(
                 store: store,

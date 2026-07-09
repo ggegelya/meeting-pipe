@@ -438,7 +438,7 @@ struct MeetingRow: View, Equatable {
         .disabled(inFlight != nil)
 
         Button("Reveal in Finder") {
-            NSWorkspace.shared.activateFileViewerSelecting([meeting.wavURL])
+            NSWorkspace.shared.activateFileViewerSelecting([meeting.revealURL])
         }
 
         Divider()
@@ -491,7 +491,7 @@ struct MeetingRow: View, Equatable {
     /// #2): there is no auto-fix for silence, so the action that helps is opening
     /// the audio to hear what happened.
     private func revealRecording() {
-        NSWorkspace.shared.activateFileViewerSelecting([meeting.wavURL])
+        NSWorkspace.shared.activateFileViewerSelecting([meeting.revealURL])
     }
 
     private func runRetry() {

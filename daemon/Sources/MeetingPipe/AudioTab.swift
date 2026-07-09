@@ -10,7 +10,9 @@ struct AudioTab: View {
 
     enum LoadState {
         case loading
-        case ready(WaveformPeaks)
+        /// Peaks plus the recording they came from, so the drag source never has
+        /// to re-resolve an extension the retention policy may have changed.
+        case ready(WaveformPeaks, URL)
         case empty
         case failed(String)
     }
@@ -49,7 +51,9 @@ struct AudioTab: View {
         }
         .task(id: meeting.stem) {
             await reload()
-            playback.load(url: meeting.wavURL)
+            if let audio = meeting.audioURL {
+                playback.load(url: audio)
+            }
         }
     }
 
@@ -63,9 +67,9 @@ struct AudioTab: View {
             emptyState
         case .failed(let msg):
             errorState(msg)
-        case .ready(let peaks):
+        case .ready(let peaks, let audio):
             WaveformContainer(peaks: peaks, zoom: zoom, playback: playback)
-                .draggable(meeting.wavURL)
+                .draggable(audio)
         }
     }
 
@@ -160,15 +164,17 @@ struct AudioTab: View {
     @MainActor
     private func reload() async {
         let stem = meeting.stem
-        let wavURL = meeting.wavURL
-        guard FileManager.default.fileExists(atPath: wavURL.path) else {
+        // No recording: retention dropped it, or it was never written. The empty
+        // state already says "No audio for this meeting."
+        guard let audioURL = meeting.audioURL,
+              FileManager.default.fileExists(atPath: audioURL.path) else {
             state = .empty
             return
         }
         state = .loading
         let result: Result<WaveformPeaks, Error> = await Task.detached(priority: .userInitiated) {
             do {
-                let peaks = try WaveformPeaksLoader.load(wavURL: wavURL)
+                let peaks = try WaveformPeaksLoader.load(audioURL: audioURL)
                 return .success(peaks)
             } catch {
                 return .failure(error)
@@ -179,7 +185,7 @@ struct AudioTab: View {
         case .success(let peaks) where peaks.binCount == 0:
             state = .empty
         case .success(let peaks):
-            state = .ready(peaks)
+            state = .ready(peaks, audioURL)
         case .failure(let err):
             state = .failed(err.localizedDescription)
         }

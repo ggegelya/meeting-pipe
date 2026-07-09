@@ -153,6 +153,16 @@ final class WorkflowStore: ObservableObject {
         flags["redact_muted_spans"] = wf.flags.redactMutedSpans
         doc["flags"] = flags
 
+        // Omit the table entirely while the workflow keeps its audio forever
+        // (STOR1's default), so every workflow predating retention stays
+        // byte-unchanged on disk. An absent table decodes back to `.keep`.
+        if wf.retention != WorkflowRetention() {
+            let retention = TOMLTable()
+            retention["policy"] = wf.retention.policy.rawValue
+            retention["after_days"] = wf.retention.afterDays
+            doc["retention"] = retention
+        }
+
         let rulesArr = TOMLArray()
         for r in wf.matchingRules {
             let t = TOMLTable()
@@ -199,6 +209,14 @@ final class WorkflowStore: ObservableObject {
             flags.redactMutedSpans = f["redact_muted_spans"]?.bool ?? false
         }
 
+        // A missing table, or a policy name a newer build wrote, decodes to
+        // keep-forever. Retention deletes audio, so it fails safe.
+        var retention = WorkflowRetention()
+        if let r = doc["retention"]?.table {
+            retention.policy = (r["policy"]?.string).flatMap(RetentionPolicy.init(rawValue:)) ?? .keep
+            retention.afterDays = max(1, r["after_days"]?.int ?? retention.afterDays)
+        }
+
         var rules: [WorkflowMatchingRule] = []
         if let arr = doc["matching_rules"]?.array {
             for value in arr {
@@ -240,6 +258,7 @@ final class WorkflowStore: ObservableObject {
             sinks: sinks,
             backend: backend,
             flags: flags,
+            retention: retention,
             isDefault: isDefault,
             order: order
         )

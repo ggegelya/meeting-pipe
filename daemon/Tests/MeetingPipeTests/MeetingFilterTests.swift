@@ -162,7 +162,7 @@ final class MeetingFilterTests: XCTestCase {
         Meeting(
             stem: stem,
             startedAt: date,
-            wavURL: URL(fileURLWithPath: "/tmp/\(stem).wav"),
+            audioURL: URL(fileURLWithPath: "/tmp/\(stem).wav"),
             recordingsDir: URL(fileURLWithPath: "/tmp"),
             summaryTitle: nil, meetingTitle: nil,
             sourceBundleID: bundleID,

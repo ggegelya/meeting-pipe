@@ -62,6 +62,8 @@ struct WorkflowEditor: View {
     @State private var backend: WorkflowBackend? = nil
     @State private var ndaMode: Bool = false
     @State private var redactMutedSpans: Bool = false
+    @State private var retentionPolicy: RetentionPolicy = .keep
+    @State private var retentionAfterDays: Int = 30
     @State private var pendingDeleteAlert: Bool = false
     @State private var saveError: String?
     @State private var colorPopoverOpen: Bool = false
@@ -81,6 +83,7 @@ struct WorkflowEditor: View {
                 sinksSection
                 backendSection
                 flagsSection
+                retentionSection
                 defaultSection
                 if let err = saveError {
                     Text(err)
@@ -461,6 +464,43 @@ struct WorkflowEditor: View {
         }
     }
 
+    /// STOR1. Deliberately the last thing in the editor before Default: it is the
+    /// only setting here that deletes data, and it should read as a decision, not
+    /// a toggle you flip on the way past.
+    private var retentionSection: some View {
+        SettingsGroup("Audio retention") {
+            SettingsRow("When a meeting is done", showsDivider: retentionPolicy != .keep) {
+                SettingsMenuPicker(
+                    selection: $retentionPolicy,
+                    options: [
+                        (RetentionPolicy.keep,     "Keep the audio forever"),
+                        (.compress,                "Compress it to FLAC"),
+                        (.drop,                    "Delete the audio"),
+                    ],
+                    width: 260
+                )
+            }
+            if retentionPolicy != .keep {
+                SettingsRow("After", sublabel: "Days from the meeting's start.", showsDivider: false) {
+                    SettingsMenuPicker(
+                        selection: $retentionAfterDays,
+                        options: [(7, "7 days"), (30, "30 days"), (90, "90 days"), (365, "1 year")],
+                        width: 140
+                    )
+                }
+            }
+        } footer: {
+            switch retentionPolicy {
+            case .keep:
+                Text("Nothing is ever reclaimed. An hour of meeting is about 0.7 GB.")
+            case .compress:
+                Text("Lossless: the recording still plays, still shows a waveform, and can still be reprocessed. Quiet speech roughly halves; a noisy room saves less.")
+            case .drop:
+                Text("The transcript and summary are kept, the recording is not. This cannot be undone, and a deleted recording cannot be re-transcribed.")
+            }
+        }
+    }
+
     private var defaultSection: some View {
         SettingsGroup("Default") {
             SettingsToggleRow(
@@ -507,6 +547,8 @@ struct WorkflowEditor: View {
         backend = workflow.backend
         ndaMode = workflow.flags.ndaMode
         redactMutedSpans = workflow.flags.redactMutedSpans
+        retentionPolicy = workflow.retention.policy
+        retentionAfterDays = workflow.retention.afterDays
         saveError = nil
     }
 
@@ -527,6 +569,7 @@ struct WorkflowEditor: View {
         clone.backend = backend
         clone.flags.ndaMode = ndaMode
         clone.flags.redactMutedSpans = redactMutedSpans
+        clone.retention = WorkflowRetention(policy: retentionPolicy, afterDays: retentionAfterDays)
         do {
             try store.upsert(clone)
             saveError = nil

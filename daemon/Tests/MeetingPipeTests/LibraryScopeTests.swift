@@ -201,7 +201,7 @@ final class LibraryScopeTests: XCTestCase {
         var m = Meeting(
             stem: stem,
             startedAt: startedAt,
-            wavURL: URL(fileURLWithPath: "/tmp/\(stem).wav"),
+            audioURL: URL(fileURLWithPath: "/tmp/\(stem).wav"),
             recordingsDir: URL(fileURLWithPath: "/tmp"),
             summaryTitle: nil, meetingTitle: nil,
             sourceBundleID: nil, sourceDisplayName: nil, sourceKind: nil,

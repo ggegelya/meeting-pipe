@@ -211,7 +211,9 @@ struct TranscriptTab: View {
         }
         .task(id: meeting.stem) {
             await reload()
-            playback.load(url: meeting.wavURL)
+            if let audio = meeting.audioURL {
+                playback.load(url: audio)
+            }
         }
         .sheet(item: $editingSegment) { seg in
             TranscriptLineEditor(
@@ -333,7 +335,7 @@ struct TranscriptTab: View {
         segments = result?.segments ?? []
         language = result?.language
         // Small sidecar; a synchronous read on main is fine, like the corrections overlay.
-        markers = MarkerFile.read(forFinal: meeting.wavURL)?.markers.map(\.tSeconds) ?? []
+        markers = MarkerFile.read(stem: stem, in: dir)?.markers.map(\.tSeconds) ?? []
         loadedForStem = stem
         loading = false
     }

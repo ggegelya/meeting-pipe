@@ -20,6 +20,7 @@ from pathlib import Path
 
 import httpx
 
+from . import storage
 from .config import CONFIG_PATH, KEYCHAIN_SERVICE, Config, load_secrets
 from .endpoints import (
     ANTHROPIC_API_BASE,
@@ -313,6 +314,55 @@ def check_local_stack(cfg: Config | None) -> None:
             _ok(f"free disk {free_gb} GB fits the ~{need_gb} GB download")
 
 
+def check_storage(cfg: Config | None, home: Path | None = None) -> None:
+    """Report what meeting-pipe is holding on disk (STOR1).
+
+    Stereo WAV runs about 0.7 GB per recorded hour, so the library is the
+    product's largest liability and the number nobody had a way to see. The two
+    caches below it are rebuildable and safe to delete; the kept originals are
+    reaped on a 30-day window by the daemon.
+
+    `home` is injectable so tests can scan a `tmp_path` tree instead of the real
+    HuggingFace cache.
+    """
+    print("\n== storage ==")
+    if cfg is None:
+        _warn("config did not load; skipping storage checks")
+        return
+
+    library = cfg.recording.output_dir
+    _info(f"library = {library}")
+    if not library.exists():
+        _info("library does not exist yet; nothing recorded so far")
+    library_bytes = storage.bytes_on_disk(library)
+    digests_bytes = storage.bytes_on_disk(storage.digests_dir(library))
+    _ok(f"library {storage.human_bytes(library_bytes)} (digests {storage.human_bytes(digests_bytes)})")
+
+    originals_bytes = storage.bytes_on_disk(storage.originals_dir(home))
+    if originals_bytes:
+        _info(f"kept originals {storage.human_bytes(originals_bytes)} (reaped after 30 days)")
+
+    caches = [
+        ("waveform peaks", storage.bytes_on_disk(storage.waveform_cache_dir(home))),
+        ("model cache", storage.bytes_on_disk(storage.hf_hub_root(home))),
+    ]
+    for label, size in caches:
+        if size:
+            _info(f"{label} {storage.human_bytes(size)} (rebuildable)")
+
+    free = storage.free_bytes(library)
+    if free is None:
+        _warn("could not determine free disk space")
+        return
+    # Roughly 14 hours of recording. Below that, an unattended day of meetings
+    # can plausibly fill the disk before anyone looks at doctor again.
+    low_water = 10 * 1000 ** 3
+    if free < low_water:
+        _warn(f"free disk {storage.human_bytes(free)}; set an audio retention policy on a workflow, or free space")
+    else:
+        _ok(f"free disk {storage.human_bytes(free)}")
+
+
 def check_huggingface(present: bool) -> None:
     """Optional HF_TOKEN check. Kept for users who deliberately opt back
     into a pyannote-based diarization workflow. The default pipeline no
@@ -411,7 +461,7 @@ def check_screen_recording() -> None:
 def main(argv: list[str]) -> int:
     if argv and argv[0] in {"-h", "--help"}:
         print("usage: mp doctor")
-        print("Validates secrets, config, and live access to Anthropic / Notion / HuggingFace.")
+        print("Validates secrets, config, storage, and live access to Anthropic / Notion / HuggingFace.")
         return 0
 
     print("mp doctor — preflight check\n")
@@ -419,6 +469,7 @@ def main(argv: list[str]) -> int:
     cfg = check_config()
     check_ml_runtimes()
     check_local_stack(cfg)
+    check_storage(cfg)
     # SEC11: under regulated_mode the pipeline is zero-egress, so doctor must not
     # reach any cloud API either. Skip the live Anthropic / Notion / HuggingFace
     # probes and say why, instead of silently pinging out.

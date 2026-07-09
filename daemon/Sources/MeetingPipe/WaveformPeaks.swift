@@ -49,25 +49,34 @@ enum WaveformPeaksLoader {
         case cacheWriteFailed(String)
     }
 
-    /// Return cached peaks if fresh (size + mtime match), otherwise recompute and write cache.
-    static func load(wavURL: URL) throws -> WaveformPeaks {
-        let attrs = try FileManager.default.attributesOfItem(atPath: wavURL.path)
-        let wavSize = (attrs[.size] as? Int64) ?? 0
-        let wavMTime = (attrs[.modificationDate] as? Date) ?? Date(timeIntervalSince1970: 0)
+    /// Return cached peaks if fresh (size + mtime match), otherwise recompute and
+    /// write cache. The cache is keyed on the stem but validated on the recording's
+    /// size + mtime, so STOR1's `wav` to `flac` transcode invalidates it in place:
+    /// the next open re-derives the peaks from the compressed file.
+    static func load(audioURL: URL) throws -> WaveformPeaks {
+        let attrs = try FileManager.default.attributesOfItem(atPath: audioURL.path)
+        let audioSize = (attrs[.size] as? Int64) ?? 0
+        let audioMTime = (attrs[.modificationDate] as? Date) ?? Date(timeIntervalSince1970: 0)
 
-        let cacheURL = cachePath(for: wavURL)
-        if let cached = readCache(at: cacheURL, expectedSize: wavSize, expectedMTime: wavMTime) {
+        let cacheURL = cachePath(for: audioURL)
+        if let cached = readCache(at: cacheURL, expectedSize: audioSize, expectedMTime: audioMTime) {
             return cached
         }
 
-        let peaks = try compute(wavURL: wavURL)
-        try? writeCache(peaks, at: cacheURL, wavSize: wavSize, wavMTime: wavMTime)
+        let peaks = try compute(audioURL: audioURL)
+        try? writeCache(peaks, at: cacheURL, wavSize: audioSize, wavMTime: audioMTime)
         return peaks
     }
 
-    static func cachePath(for wavURL: URL) -> URL {
-        let stem = WaveformPeaksLoader.stem(of: wavURL)
-        return cacheDirectory()
+    static func cachePath(for audioURL: URL) -> URL {
+        cachePath(stem: WaveformPeaksLoader.stem(of: audioURL))
+    }
+
+    /// Stem-addressed cache path, for callers that have no recording to derive it
+    /// from: the retention sweep purges a dropped meeting's peaks, and the delete
+    /// cascade purges a trashed one's.
+    static func cachePath(stem: String) -> URL {
+        cacheDirectory()
             .appendingPathComponent("\(stem).peaks", isDirectory: false)
     }
 
@@ -83,12 +92,13 @@ enum WaveformPeaksLoader {
         return dir
     }
 
-    /// Decode wavURL into per-channel max-abs bins. Mono input is duplicated into both
-    /// lanes so the view doesn't crash on hand-imported files.
-    static func compute(wavURL: URL) throws -> WaveformPeaks {
+    /// Decode `audioURL` into per-channel max-abs bins. Mono input is duplicated into
+    /// both lanes so the view doesn't crash on hand-imported files. Codec-agnostic:
+    /// `AVAudioFile.processingFormat` is Float32 whatever the file holds on disk.
+    static func compute(audioURL: URL) throws -> WaveformPeaks {
         let file: AVAudioFile
         do {
-            file = try AVAudioFile(forReading: wavURL)
+            file = try AVAudioFile(forReading: audioURL)
         } catch {
             throw LoadError.openFailed(error.localizedDescription)
         }

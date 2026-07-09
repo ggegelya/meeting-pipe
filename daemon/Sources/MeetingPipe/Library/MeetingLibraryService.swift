@@ -30,15 +30,14 @@ final class MeetingLibraryService {
         self.summarizationBackend = summarizationBackend
     }
 
-    /// Retry the full `mp run-all` pipeline. Enqueues the same subprocess the normal flow uses so the processing badge updates and sidecars get overwritten. Fails immediately if the wav is missing; all other errors surface via the existing pipeline notifier.
+    /// Retry the full `mp run-all` pipeline. Enqueues the same subprocess the normal flow uses so the processing badge updates and sidecars get overwritten. Fails immediately when the recording is missing (never written, or reclaimed by a `drop` retention policy); all other errors surface via the existing pipeline notifier.
     func retryMeeting(stem: String) -> Result<Void, Error> {
         let dir = outputDir()
-        let wavURL = dir.appendingPathComponent("\(stem).wav")
-        guard FileManager.default.fileExists(atPath: wavURL.path) else {
+        guard let audioURL = MeetingStore.finalRecordingURL(stem: stem, in: dir) else {
             return .failure(NSError(
                 domain: "MeetingLibraryService", code: 1,
                 userInfo: [NSLocalizedDescriptionKey:
-                    "No audio at \(wavURL.lastPathComponent) - cannot retry"]
+                    "No audio for \(stem) - cannot retry"]
             ))
         }
         Log.writeLine("daemon", "retry pipeline → \(stem)")
@@ -47,7 +46,7 @@ final class MeetingLibraryService {
         ])
         // Drop the failure sidecar immediately so the row leaves the failed set before the run finishes. The dispatcher writes a fresh sidecar if it fails again.
         PipelineFailureSidecar.clear(stem: stem, in: dir)
-        enqueue(wavURL, .auto)
+        enqueue(audioURL, .auto)
         return .success(())
     }
 
@@ -156,7 +155,8 @@ final class MeetingLibraryService {
         Log.event(category: "coordinator", action: "roster_enroll_requested", attributes: [
             "stem": stem, "label": label,
         ])
-        launcher.rosterEnroll(name: trimmed, label: label, wav: dir.appendingPathComponent("\(stem).wav")) { [weak self] result in
+        let anchor = MeetingStore.sidecarAnchorURL(stem: stem, in: dir)
+        launcher.rosterEnroll(name: trimmed, label: label, wav: anchor) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success:
@@ -274,8 +274,8 @@ final class MeetingLibraryService {
     /// workflow context overriding the global team_context), used to prefill the
     /// reprocess editor. Reuses the same resolution the Apple summary path uses.
     func effectiveContextPrompt(stem: String) -> String {
-        let wav = outputDir().appendingPathComponent("\(stem).wav")
-        return PipelineLauncher.appleContext(for: wav).teamContext
+        let anchor = MeetingStore.sidecarAnchorURL(stem: stem, in: outputDir())
+        return PipelineLauncher.appleContext(for: anchor).teamContext
     }
 
     /// Promote the candidate preview to the live summary (TECH-A16). Does NOT
@@ -369,6 +369,10 @@ final class MeetingLibraryService {
                 if firstFailure == nil { firstFailure = error }
             }
         }
+        // The waveform peaks cache lives under Caches/, outside both trees, and is
+        // keyed on the stem. Nothing will ever re-derive it for a deleted meeting,
+        // so remove it rather than leave it to age out (it leaked before STOR1).
+        try? fm.removeItem(at: WaveformPeaksLoader.cachePath(stem: stem))
         Log.event(category: "coordinator", action: "meeting_deleted", attributes: [
             "stem": stem,
             "files_count": matching.count,
@@ -386,10 +390,9 @@ final class MeetingLibraryService {
             "\(stem).summary.md",
             "\(stem).md",
             "\(stem).summary.json",
-            "\(stem).wav",
             "\(stem).notion.json",
             "\(stem).meta.json",
-        ]
+        ] + MeetingStore.finalRecordingExtensions.map { "\(stem).\($0)" }
         var copied = 0
         for name in candidates {
             let src = dir.appendingPathComponent(name)

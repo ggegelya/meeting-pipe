@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import Foundation
 
-/// One row in the Library list, materialized from on-disk sidecars alongside `<stem>.wav`.
+/// One row in the Library list, materialized from on-disk sidecars alongside the recording.
 struct Meeting: Identifiable, Hashable {
 
     /// Coarse lifecycle state derived from which sidecars exist on disk. `.failed` uses a precise `<stem>.error.json` signal; other states infer from presence/absence of summary/paste-ready sidecars, with an age fallback when no sidecar was written.
@@ -21,7 +21,11 @@ struct Meeting: Identifiable, Hashable {
 
     let stem: String
     let startedAt: Date
-    let wavURL: URL
+    /// The meeting's recording, `<stem>.wav` or `<stem>.flac` (STOR1 compresses a
+    /// settled meeting's audio in place). Nil when a `drop` retention policy
+    /// reclaimed the audio and only the transcript + summary remain, so every
+    /// audio affordance has to gate on it rather than assume a file.
+    let audioURL: URL?
     let recordingsDir: URL
 
     let summaryTitle: String?     // from <stem>.summary.json["title"]
@@ -89,6 +93,21 @@ struct Meeting: Identifiable, Hashable {
     var hasCorrections: Bool = false
 
     var id: String { stem } // stems are unique per recording (datetime-derived)
+
+    /// A file to select in Finder for "Reveal" / "Open folder". Prefers the
+    /// recording; falls back to the summary or transcript when a `drop` retention
+    /// policy reclaimed the audio, and to the directory itself when nothing else
+    /// survives. Stats the disk, so only call it from a user action, never the
+    /// scroll path.
+    var revealURL: URL {
+        if let audio = audioURL { return audio }
+        let fm = FileManager.default
+        for name in ["\(stem).summary.md", "\(stem).md", "\(stem).json"] {
+            let candidate = recordingsDir.appendingPathComponent(name)
+            if fm.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return recordingsDir
+    }
 
     /// True when the meeting was recorded zero-egress, i.e. forced on-device and
     /// local-only by an NDA workflow or global regulated mode. Drives the
@@ -348,13 +367,44 @@ final class MeetingStore: ObservableObject {
     /// from a failed start is minutes+ stale. Generous vs the per-buffer cadence.
     static let liveCaptureFreshnessSec: TimeInterval = 60
 
-    /// The final merged recording (`<stem>.wav`), excluding the `.mic.wav` /
-    /// `.system.wav` capture intermediates that also carry the `wav` extension.
+    /// Extensions a final recording can carry, in resolution order. `wav` is what
+    /// the recorder writes; `flac` is what STOR1's `compress` retention policy
+    /// leaves behind. Lossless both ways, and both decode through `AVAudioFile`
+    /// (playback, waveform) and `soundfile` (the pipeline's channel reads), so a
+    /// compressed meeting stays fully reprocessable.
+    static let finalRecordingExtensions = ["wav", "flac"]
+
+    /// The final merged recording (`<stem>.wav` or `<stem>.flac`), excluding the
+    /// `.mic.wav` / `.system.wav` capture intermediates that also carry the `wav`
+    /// extension.
     static func isFinalRecording(_ url: URL) -> Bool {
         let name = url.lastPathComponent
-        return url.pathExtension == "wav"
+        return finalRecordingExtensions.contains(url.pathExtension)
             && !name.hasSuffix(".mic.wav")
             && !name.hasSuffix(".system.wav")
+    }
+
+    /// Resolve a stem's final recording on disk, whichever extension it carries.
+    /// Nil when the audio was never written or a `drop` policy reclaimed it. The
+    /// one place that reconstructs a recording path from a stem, so a new codec
+    /// lands in `finalRecordingExtensions` and nowhere else.
+    static func finalRecordingURL(stem: String, in directory: URL) -> URL? {
+        let fm = FileManager.default
+        for ext in finalRecordingExtensions {
+            let url = directory.appendingPathComponent("\(stem).\(ext)")
+            if fm.fileExists(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
+    /// A recording-shaped path for callers that only derive *sibling sidecar*
+    /// paths from it (`<stem>.embeddings.json`, `<stem>.meta.json`) and never open
+    /// the file: `mp roster enroll --wav` and `PipelineLauncher.appleContext`. Uses
+    /// the real recording when one exists, and the conventional `.wav` path when
+    /// retention reclaimed it, since only the stem and the directory are read.
+    static func sidecarAnchorURL(stem: String, in directory: URL) -> URL {
+        finalRecordingURL(stem: stem, in: directory)
+            ?? directory.appendingPathComponent("\(stem).wav")
     }
 
     /// A `.mic.wav` capture intermediate modified within `liveCaptureFreshnessSec`,
@@ -374,23 +424,18 @@ final class MeetingStore: ObservableObject {
         files: [URL],
         directory: URL
     ) -> (meeting: Meeting, cacheable: Bool)? {
-        // The merged recording is `<stem>.wav`. The `.mic.wav` / `.system.wav`
-        // capture intermediates also end in `.wav`, but exist only mid-recording
-        // (merged then deleted at stop) or as orphans an interrupted / failed
-        // start left behind. Prefer the final wav; fall back to a *fresh*
-        // intermediate so a live recording still shows a row, but never to a
-        // stale one. Otherwise a dead orphan (e.g. the burst a mid-meeting input
-        // device change can trigger) surfaces as a phantom `.processing` row that
-        // animates a spinner and re-evaluates every scan, burning CPU and
-        // janking the list (TECH-A17). No wav at all = no row.
-        let wav: URL
-        if let finalWav = files.first(where: { MeetingStore.isFinalRecording($0) }) {
-            wav = finalWav
-        } else if let liveCapture = MeetingStore.freshCaptureIntermediate(in: files) {
-            wav = liveCapture
-        } else {
-            return nil
-        }
+        // The merged recording is `<stem>.wav` (or `<stem>.flac` once STOR1's
+        // `compress` policy has run). The `.mic.wav` / `.system.wav` capture
+        // intermediates also end in `.wav`, but exist only mid-recording (merged
+        // then deleted at stop) or as orphans an interrupted / failed start left
+        // behind. Prefer the final recording; fall back to a *fresh* intermediate
+        // so a live recording still shows a row, but never to a stale one.
+        // Otherwise a dead orphan (e.g. the burst a mid-meeting input device
+        // change can trigger) surfaces as a phantom `.processing` row that
+        // animates a spinner and re-evaluates every scan, burning CPU and janking
+        // the list (TECH-A17).
+        let audio: URL? = files.first(where: { MeetingStore.isFinalRecording($0) })
+            ?? MeetingStore.freshCaptureIntermediate(in: files)
         guard let startedAt = MeetingStore.parseStem(stem) else { return nil }
 
         let metaURL = files.first { $0.lastPathComponent.hasSuffix(".meta.json") }
@@ -424,13 +469,21 @@ final class MeetingStore: ObservableObject {
             failure = nil
         }
 
-        let wavMtime = (try? wav.resourceValues(forKeys: [.contentModificationDateKey])
-            .contentModificationDate)
+        // Duration is the recording's last-write minus the stem's start time. When
+        // a `drop` policy reclaimed the audio there is nothing to stat, so fall
+        // back to the transcript sidecar's `audio_seconds`, which the transcriber
+        // recorded from the file that no longer exists. Only read on that rare
+        // path: parsing a full transcript to recover one number is not worth it
+        // for the common case, and the result is cached with the `.done` row.
         let duration: TimeInterval?
-        if let m = wavMtime, m > startedAt {
-            duration = m.timeIntervalSince(startedAt)
+        if let audio = audio {
+            let mtime = (try? audio.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate)
+            duration = mtime.flatMap { $0 > startedAt ? $0.timeIntervalSince(startedAt) : nil }
         } else {
-            duration = nil
+            duration = transcriptJSON
+                .flatMap { readJSON(at: $0) }
+                .flatMap { $0["audio_seconds"] as? Double }
         }
 
         let status: Meeting.Status
@@ -459,8 +512,18 @@ final class MeetingStore: ObservableObject {
                 status = .processing
             }
             cacheable = false
-            _ = transcriptJSON  // currently informational only
         }
+
+        // A stem with neither audio nor a terminal sidecar is a dead orphan, not a
+        // meeting: no row (TECH-A17). A terminal row whose audio a `drop` policy
+        // reclaimed still has a transcript and a summary worth showing, so it
+        // survives the guard the old "no wav at all = no row" rule would have
+        // failed it on.
+        let hasTerminalSidecar = summaryURL != nil
+            || errorURL != nil
+            || pasteReadyURL != nil
+            || emptyURL != nil
+        guard audio != nil || hasTerminalSidecar else { return nil }
 
         // The marker's reason distinguishes "No speech" from a degenerate
         // transcript so the row reads honestly (PIPE3). Read only for `.empty`
@@ -485,7 +548,7 @@ final class MeetingStore: ObservableObject {
         let meeting = Meeting(
             stem: stem,
             startedAt: startedAt,
-            wavURL: wav,
+            audioURL: audio,
             recordingsDir: directory,
             summaryTitle: (summary?.title).flatMap { $0.isEmpty ? nil : $0 },
             meetingTitle: (meta?["meeting_title"] as? String),
@@ -573,7 +636,7 @@ final class MeetingStore: ObservableObject {
     /// agree (PIPE3 / AUD-16b, which flagged that age-inferred stalls were
     /// excluded from the badge):
     ///   1. an explicit `<stem>.error.json` failure with no superseding summary, and
-    ///   2. an age-inferred stall: a final `.wav` with no terminal sidecar whose
+    ///   2. an age-inferred stall: a final recording with no terminal sidecar whose
     ///      stem start time is older than `Meeting.staleProcessingThresholdSec`.
     /// Filename-only (plus the stem's encoded start time) so it stays cheap enough
     /// to run on every menu open and is unit-testable. `now` is injected for tests.
@@ -583,7 +646,7 @@ final class MeetingStore: ObservableObject {
             var error = false
             var paste = false
             var empty = false
-            var finalWav = false
+            var finalRecording = false
         }
         var byStem: [String: Flags] = [:]
         for name in fileNames {
@@ -600,8 +663,9 @@ final class MeetingStore: ObservableObject {
             } else if name.hasSuffix(EmptyMarker.suffix) {
                 f.empty = true
             }
-            if name.hasSuffix(".wav") && !name.hasSuffix(".mic.wav") && !name.hasSuffix(".system.wav") {
-                f.finalWav = true
+            if finalRecordingExtensions.contains(where: { name.hasSuffix(".\($0)") }),
+               !name.hasSuffix(".mic.wav"), !name.hasSuffix(".system.wav") {
+                f.finalRecording = true
             }
             byStem[stem] = f
         }
@@ -613,7 +677,7 @@ final class MeetingStore: ObservableObject {
             // Age-inferred stall: a merged recording whose pipeline wrote no
             // terminal sidecar and is past the staleness window. Mirrors
             // `buildMeeting`'s age-inferred `.failed` via the same constant.
-            guard f.finalWav, let started = parseStem(stem),
+            guard f.finalRecording, let started = parseStem(stem),
                   now.timeIntervalSince(started) > Meeting.staleProcessingThresholdSec else {
                 continue
             }

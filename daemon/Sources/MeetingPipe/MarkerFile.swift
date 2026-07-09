@@ -48,7 +48,15 @@ struct MarkerFile: Codable {
 
     /// Read the flagged markers for `final`, or nil when none exists.
     static func read(forFinal final: URL) -> MarkerFile? {
-        let url = url(forFinal: final)
+        read(stem: final.deletingPathExtension().lastPathComponent,
+             in: final.deletingLastPathComponent())
+    }
+
+    /// Read the flagged markers for a stem. The stem-addressed form, for readers
+    /// that have no recording to derive the path from: a `drop` retention policy
+    /// reclaims the audio but leaves the markers alongside the transcript.
+    static func read(stem: String, in directory: URL) -> MarkerFile? {
+        let url = directory.appendingPathComponent("\(stem).markers.json")
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(MarkerFile.self, from: data)
     }
