@@ -4,7 +4,7 @@ description: Implement a backlog task from the active backlog, one task per sess
 
 You're picking up a single backlog task: $ARGUMENTS
 
-1. Read the task definition from the active backlog: the highest-numbered `docs/backlog/meetingpipe-q<N>-backlog.md` (currently `docs/backlog/meetingpipe-q6-backlog.md`; earlier quarters are archived beside it). The task ID format is `<letter><number>` (e.g. `E5`); ids no longer carry the `TECH-` prefix, so strip a legacy `TECH-` if the argument includes one. Find the task's `| <ID> |` row in the Table of contents for its Status and one-line Comment, then read its full spec: the line starting with `**<ID>` in the Task specs section below the table, or, for an item the Task specs mark as carried from Q4 unchanged, the `**<ID>` spec in `docs/backlog/q4-final.md` (search the id). If you can't find it, stop and tell me.
+1. Read the task definition from the active backlog: the highest-numbered `docs/backlog/meetingpipe-q<N>-backlog.md` (currently `docs/backlog/meetingpipe-q6-backlog.md`; earlier quarters are archived beside it, and the current quarter's shipped items live in `docs/backlog/q<N>-final.md`). The task ID format is `<letter><number>` (e.g. `E5`); ids no longer carry the `TECH-` prefix, so strip a legacy `TECH-` if the argument includes one. Find the task's `| <ID> |` row in the Table of contents for its Status and one-line Comment, then read its full spec: the line starting with `**<ID>` in the Task specs section below the table, or, for an item the Task specs mark as carried from Q4 unchanged, the `**<ID>` spec in `docs/backlog/q4-final.md` (search the id). If you can't find it, stop and tell me.
 2. Read the orientation docs the task touches:
    - [`CLAUDE.md`](CLAUDE.md) at the repo root for git workflow, verification, and conventions worth knowing.
    - [`ARCHITECTURE.md`](ARCHITECTURE.md) for the subsystem map.
@@ -12,18 +12,26 @@ You're picking up a single backlog task: $ARGUMENTS
    - [`ARCHITECTURE.md#glossary`](ARCHITECTURE.md#glossary) for any term in the task description you don't recognise.
    - `daemon/CLAUDE.md` if the task touches Swift, `pipeline/CLAUDE.md` if it touches Python. Both load automatically when you read files in those subtrees.
 3. Read the existing files the task points at (file paths in the backlog entry are authoritative; check they still exist before editing).
-4. Implement the task. Stop and ask before introducing any new dependency, before extending a global stylesheet, or before extending an existing pattern flagged in CLAUDE.md as needing approval.
+4. Implement the task. Stop and ask before introducing any new dependency, before extending a global stylesheet, or before extending an existing pattern flagged in CLAUDE.md as needing approval. De-CLI standing rule (see the backlog delegation section): if the task ships a user-facing capability, its UI affordance ships in the same task; a CLI-only ship is `partial`, not done. Owner-dev diagnostics (dogfood, analyze-detection, corrections-stats, train-adapter, spike harnesses) are exempt.
 5. Argue back if the task has a better path. The backlog isn't gospel; if you have a concrete reason to deviate, name it before implementing.
 6. Verify before declaring done:
    - **Swift edits:** `cd daemon && swift build` and (with full Xcode) `swift test`.
    - **Python edits:** `cd pipeline && uv run --extra dev ruff check src tests` and `uv run --extra dev pytest -q`.
-   - Update README.md if user-visible behaviour or contracts changed.
-7. Mark the task `[DONE]` in the active backlog file (prefix the `**<ID>...` line; keep the trail, don't delete).
-8. Commit on `main` (no branch) using the repository's configured git identity:
+7. Docs sync check (mandatory, after verification): diff what you changed against the orientation docs and update any that drifted, in the same commit:
+   - `README.md` when user-visible behaviour, flows, CLI usage, or troubleshooting changed.
+   - `ARCHITECTURE.md` when you added, renamed, moved, or retired a module, subcommand, sidecar, or subsystem responsibility (the pipeline subcommand table and the daemon file map are the usual suspects).
+   - `CONVENTIONS.md` when a pattern, schema, or event category changed (the sidecar and marker schemas live there).
+   - Root / `daemon/` / `pipeline/` `CLAUDE.md` when anything their quick indexes or gotcha lists name changed.
+   - `design/` docs when a UI surface changed.
+   "No docs affected" is a legitimate outcome, but only after actually checking; name the docs you checked in the summary either way. Stale docs mislead every later session, so treat a needed-but-skipped doc update as a failed verification.
+8. Mark the outcome in the backlog:
+   - **Done-done:** move the task to the running quarter archive `docs/backlog/q<N>-final.md` in the same commit: its ToC row (Status `done`, a one-line ship note in the Comment) and its full Task-spec text (prefixed `[DONE]`) both move there, and both are removed from the active backlog. Create the archive file with its running-archive header if this quarter's doesn't exist yet.
+   - **Partial or owner-owed:** keep the row in the active backlog with that Status and the remainder named in the Comment; do not move it.
+9. Commit on `main` (no branch) using the repository's configured git identity:
    ```bash
    git commit -m "<ID>: <short summary>"
    ```
-   One logical commit. Don't push.
-9. Summarise: changed files, decisions that weren't in the spec, anything I'd want to know that the diff doesn't show.
+   One logical commit covering the implementation, the doc updates, and the backlog move together. Don't push.
+10. Summarise: changed files, decisions that weren't in the spec, which docs you checked in step 7 (and which you updated), anything I'd want to know that the diff doesn't show.
 
 If the task is a P3 deferred item, or its prerequisites aren't done, stop and tell me; don't ship a half-implementation.

@@ -37,13 +37,14 @@ Voice: address the user as "you" in second person. Refer to the system in third 
 
 ## Design Principles
 
-Five strategic principles. These shape decisions about what to build and why; visual rules live in DESIGN.md.
+Six strategic principles. These shape decisions about what to build and why; visual rules live in DESIGN.md.
 
 1. **Local-first is a UI commitment, not just a backend setting.** Every surface that lets the user route data shows the local option at the same visual level as the cloud one. Regulated mode and BYO mode get first-class affordances on the prompt panel and the Workflow editor, not "Advanced" tucks.
 2. **Truthful states, not aspirational ones.** Status copy describes literal current state. "Idle", "Detected Zoom", "Recording", "Stopping...", "Processing...". Never "Listening" or "Standing by". When the daemon is unsure, the UI says so; it does not paper over with a confident label.
 3. **Quiet about the AI.** No sparkle, no "AI summary" badge, no Claude branding in product chrome. The summary just appears in Notion. The local-vs-cloud backend choice is exposed because it has privacy consequences, not because it is a feature to celebrate.
 4. **Match the mac, then earn deviations.** Default to AppKit conventions: SF Pro at 13px, SF Symbols, sentence case for chrome (Title Case for menu commands), hairline borders not heavy shadows, fixed window sizes, system Dark Mode auto-follow, cool-porcelain canvas. When a custom pattern is right (the Library's smart-folder rail, the workflow tint on the HUD, the two-channel waveform), keep it grounded in native materials.
 5. **Show the work; never hide a failure.** When detection misses, the manual hotkey is one keypress away and the Permissions tab tells the user exactly which grant is missing. When a sink fails, the row's status pill says why and the other sinks still fire. When a long meeting skips Anthropic, the `.READY_FOR_MANUAL.md` sidecar tells the user what to paste into Claude Code. No silent fallbacks, no quiet degradations.
+6. **The CLI is an escape hatch, not a surface.** Every product operation gets a UI affordance; the `mp` CLI and the daemon's argv commands exist for debugging, dogfood, and owner-dev diagnostics. A capability that ships CLI-only is unfinished (standing rule since 2026-07; the backlog delegation contract enforces it). The persona above reads CLI flags fine, but that is tolerance, not preference.
 
 ## Accessibility & Inclusion
 
