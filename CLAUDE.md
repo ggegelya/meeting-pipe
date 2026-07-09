@@ -19,6 +19,7 @@ Personal macOS product (single-user, not for sale). Two trees:
 | [`PRODUCT.md`](./PRODUCT.md) | Strategic UX context: register, users, brand personality (local-first, quiet, deliberate), anti-references, design principles, a11y floor. Read before any UI work or design judgement call. |
 | [`design/`](./design/) | Visual system: `colors_and_type.css` (tokens), `README.md` (voice + visual rules + iconography), `ui_kits/macos_app/` (JSX recreations of surfaces). The "match this" doc for chrome. |
 | `daemon/CLAUDE.md` | Auto-loads when you touch Swift. Short Swift-specific gotchas. |
+| `daemon/Sources/MeetingPipeCore/CLAUDE.md` | Auto-loads inside the Core target. The island rules (strict concurrency, dependency floor, pure `decide()`). |
 | `pipeline/CLAUDE.md` | Auto-loads when you touch Python. Short Python-specific gotchas. |
 
 The active backlog lives in [`docs/backlog/`](./docs/backlog/): the highest-numbered `meetingpipe-q<N>-backlog.md` (currently `meetingpipe-q6-backlog.md`; earlier quarters are archived beside it). Task IDs look like `E5` (no `TECH-` prefix; historical code/ADR references keep the old `TECH-` form as provenance). The `/tech-task <ID>` slash command is the codified delegation contract.
@@ -34,7 +35,7 @@ The active backlog lives in [`docs/backlog/`](./docs/backlog/): the highest-numb
 | Daemon tests | `cd daemon && swift test` — needs full Xcode; Command Line Tools alone errors on `import XCTest`. Write tests anyway; CI (macos-14) runs them. |
 | Fast rebuild + relaunch | `./scripts/rebuild.sh` — for live-testing daemon changes against a running install. |
 
-CI enforces ruff strictly (any F401 unused import fails). Run ruff locally before committing. CI deliberately installs only light deps and bypasses `uv sync` so torch / whisperx / mlx don't download; the heavy imports live inside function bodies (see `pipeline/CLAUDE.md`).
+CI enforces ruff strictly (any F401 unused import fails). Run ruff locally before committing. CI deliberately installs only light deps and bypasses `uv sync`, so the darwin/arm64-only packages (`mlx-lm`, `mlx-embeddings`) and the heavy `soundfile` / `numpy` pair never download on the Linux runner; their imports live inside function bodies (see `pipeline/CLAUDE.md`). ASR and diarization moved to Swift/FluidAudio long ago; there is no torch or whisperx in this repo.
 
 ## Git workflow
 

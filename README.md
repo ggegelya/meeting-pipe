@@ -52,7 +52,7 @@ A global hotkey (default `⌃⌥M`) toggles recording manually if detection miss
 
 For meetings longer than ~1 hour, the pipeline writes the transcript to disk along with a paste-into-Claude-Code bundle and **does not call the Anthropic API**. See "Long meetings" below.
 
-The on-screen prompt also has a **Record (BYO)** button: same flow, but opt-in per-meeting — useful for sensitive calls or when you'd rather hand-summarise. After the recording finishes, save your summary as `<stem>.summary.md` next to the transcript and run `mp publish-from-paste <stem>.md` to push it to Notion.
+The on-screen prompt also has a **Record (BYO)** button: same flow, but opt-in per-meeting - useful for sensitive calls or when you'd rather hand-summarise. After the recording finishes, the meeting's Summary tab shows a **Paste your summary** box: drop your text in, hit **Save & publish**, and it fans out to your configured sinks. (`mp publish-from-paste <stem>.md` does the same thing from a shell, reading `<stem>.summary.md` off disk.)
 
 ---
 
@@ -159,7 +159,11 @@ You can run any pipeline stage on its own audio file — useful for debugging or
 ~/.local/share/meeting-pipe/venv/bin/mp run-all ~/Documents/Meetings/raw/20260428-1430.wav
 
 # Or step-by-step (transcription is done by the daemon, not the CLI)
-mp summarize    <transcript.md>
+mp summarize <transcript.md>
+mp publish   <summary.json>     # fans out to every configured sink
+
+# publish-notion is the legacy single-sink escape hatch; the daemon uses
+# `mp publish` so an obsidian-only workflow reaches its actual sinks.
 mp publish-notion <summary.json>
 
 # Preflight check (validates secrets + live API access + which sinks
@@ -460,13 +464,13 @@ There are no microphone or output-device settings — the daemon auto-detects bo
 
 **The recording is silent / very quiet.** Check `recorder.log` for the `duration check` line at the end of a recording. With the in-process recorder it should always read `ratio=~100%`. If it doesn't, the Screen Recording permission may not have been granted (system audio capture is gated). Check System Settings ▸ Privacy & Security ▸ Screen Recording — MeetingPipe should be enabled.
 
-**The recording is missing system audio (only my voice).** ScreenCaptureKit needs Screen Recording permission. After granting, restart the daemon: `launchctl kickstart -k gui/$(id -u)/com.meetingpipe.daemon`.
+**The recording is missing system audio (only my voice).** ScreenCaptureKit needs Screen Recording permission. After granting, restart the daemon: pick **Quit MeetingPipe** from the menu-bar icon and the LaunchAgent brings it straight back (TECH-UX7).
 
 **Speaker labels look wrong (one person split across many speakers, or multiple people collapsed into one).** Diarization is done on-device by FluidAudio (pyannote) in the daemon, with no user-facing tuning knobs. A hard miss on a stereo recording falls back to channel-aware labelling (your mic vs the system mix). If labels are consistently wrong, capture the recording as a detection-corpus trace (TECH-C6) so the regression is reproducible.
 
 **The transcript I see right after stop has speaker labels but the next day they look different.** That can't happen — transcript files (`<stem>.json`, `<stem>.md`) are written once and not modified. If you see this, you're probably looking at two different runs (a re-run via `mp run-all <wav>` overwrote the first). Check `pipeline.log` for two "run-all" sections matching the file's timestamp.
 
-**The menu bar icon shows "Idle" but I'm in a meeting.** Open Console.app, filter on `subsystem:com.meetingpipe.daemon`. The detector emits an `os_log` line for every state change. If you see no events, restart the daemon: `launchctl kickstart -k gui/$(id -u)/com.meetingpipe.daemon`.
+**The menu bar icon shows "Idle" but I'm in a meeting.** Open Console.app, filter on `subsystem:com.meetingpipe.daemon`. The detector emits an `os_log` line for every state change. If you see no events, restart the daemon with **Quit MeetingPipe** from the menu-bar icon; it relaunches itself. (**Quit (do not relaunch)** is the one that actually stops it.)
 
 **Notion publish fails with 401 / 404.**
 - 401 → `NOTION_TOKEN` is wrong or revoked. `mp doctor` confirms.

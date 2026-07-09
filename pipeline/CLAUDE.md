@@ -21,6 +21,7 @@ CI runs ruff strictly — any F401 unused import fails the pipeline job. Run loc
       from .my_cmd import main as run
       return run(rest)
   ```
+  A new subcommand also adds a row to the subcommand table in [`../ARCHITECTURE.md`](../ARCHITECTURE.md), in the same commit. The table went 17 modules stale before DOC7 rebuilt it; every session that reads it to orient is the cost.
 - **Every entry point calls `entry.prepare(...)` first.** Workflow overlay, then arm the egress guard on the resolved config, then load secrets. Never hand-roll the triple: arming before the overlay misses a per-meeting NDA workflow, loading secrets before arming hands the cloud tokens to the `mlx_lm.server` child. Clamps key off `config.zero_egress(cfg)`, never a fresh `regulated or nda` boolean. See [`../CONVENTIONS.md`](../CONVENTIONS.md) "The entry contract".
 - **Services as `Protocol`s.** `services.py` defines narrow contracts; concrete implementations live next to use sites (`AnthropicSummaryClient` in `summarize.py`, `NotionRestPublisher` in `publish_notion.py`). Tests inject in-memory fakes, not SDK mocks.
 - **Pydantic schemas as the contract.** `MeetingSummary` (in `schemas.py`) is the JSON shape every publisher expects. Adding a field means updating the schema + every publisher + the tests.

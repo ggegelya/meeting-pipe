@@ -91,8 +91,8 @@ The daemon seeds the tokens into its process env at launch + on each Preferences
 
 Pure logic lives in its own type with explicit inputs (a `Date`, a `Bool`, a function pointer) so XCTest can drive it without AVFoundation, NSWorkspace, or TCC. Examples in repo:
 
-- `SilenceDetector.SilenceDecision` — `decide(at: Date, micRMS:, systemRMS:) → Action` with no AVAudioEngine dependency. Test feeds synthetic RMS sequences.
-- `MicGate.decide(state:)` - pure precedence over the fused mute signals, no AX or CoreAudio dependency.
+- `MicGate.decide(state:)` - pure precedence over the fused mute signals, no AX or CoreAudio dependency. Test feeds synthetic probe states.
+- `AudioRetention.decide(...)` - pure keep / compress / drop verdict over a meeting's age and workflow policy, no filesystem dependency (STOR1).
 - `WorkflowMatcher.match(source:workflows:)` — pure function, full unit coverage.
 
 When a subsystem grows non-trivial conditional logic, lift the decision into a `decide(…)`-style entry point on its own type before adding the next branch.

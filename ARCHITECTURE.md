@@ -224,7 +224,15 @@ flowchart TD
 ### Lifecycle entry points
 
 - `App.swift` — `@main`. NSApplication accessory app. Reads `UISettings`, applies theme, sets up `ConfigStore` + `SecretsStore`, constructs `Coordinator`, wires `StatusBarController`, kicks off `SystemAudioCapture.prewarm`.
-- `Coordinator.swift` — the spine. Owns the `AppState` machine (`State.swift`), drives every transition, dispatches between subsystems. ~1500 lines, the only place where everything meets.
+- `Coordinator.swift` - the spine (633 lines, plus the `Coordinator+Session` / `+Delegates` / `+MenuActions` extensions). Constructs and owns every subsystem and routes between them. The place where everything meets.
+- `MeetingSessionController.swift` - one meeting's lifetime, lifted out of the Coordinator by TECH-ARCH2 (915 lines): the two verdict-consumer Tasks, the recording begin/stop path, the prompt timeout, the MicGate and lifecycle engage/disengage, and meta-sidecar writing. It reaches back into its host through `unowned let coordinator`, which is why it has almost no unit coverage (ARCH4 extracts the seam).
+
+The four collaborators the spine delegates to, in `Coordination/`:
+
+- `DetectionStateMachine.swift` - the recording-side state machine (`.idle`, `.prompting` / `.suppressed`, `.recording`, `.stopping`) and the `RepromptCooldown` facade. Main queue only.
+- `SinkDispatcher.swift` - the post-recording queue: FluidAudio transcription, then `mp run-all`, serially. Owns the failure-sidecar stage attribution.
+- `PipelineJobDispatcher.swift` - routes job completion to the user-facing surfaces (done notification, error banner, queue-depth badge). Side effects injected as closures.
+- `ConfigRefreshCoordinator.swift` - the daemon's response to configuration changes (eager reload, model pre-fetch on a backend flip).
 
 ### Detection - "is the user in a meeting?"
 
@@ -305,25 +313,48 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 
 ### Subcommands (one module each)
 
+One module per subcommand, registered in `__main__.py`. **Adding a subcommand means adding a row here in the same commit.**
+
 | Module | Subcommand | Output |
 |---|---|---|
 | `orchestrate.py` | `mp run-all <wav>` | reads the daemon transcript, then summarize, then publish; fail-fast |
 | `summarize.py` | `mp summarize <transcript.md>` | `<stem>.summary.json`, `<stem>.summary.md` |
-| `summarize_local.py` | (called from `summarize`) | on-device MLX path |
+| `summarize_local.py` | `mp serve-local`, and called from `summarize` | on-device MLX path; also the warm `mlx_lm.server` the daemon can pre-launch |
+| `publish_cmd.py` | `mp publish <summary.json>` | fan an existing summary out to all sinks (the Apple Intelligence hand-off) |
 | `publish_notion.py` | `mp publish-notion <summary.json>` | Notion page (idempotent) |
-| `publish_obsidian.py` | (called via router) | Markdown note in vault |
-| `publish_fs.py` | (called via router) | three files in a directory |
-| `publish_router.py` | (called from `orchestrate`) | fan-out over `output.sinks`, plus `<stem>.publish.json` |
-| `publish_cmd.py` | `mp publish <summary.json>` | fan an existing summary out to all sinks |
 | `publish_from_paste.py` | `mp publish-from-paste <transcript.md>` | BYO summary, then publish |
-| `workflow.py` | (called from `orchestrate`) | applies `.meta.json` overrides |
-| `diarize.py` | (called from `orchestrate`) | channel-aware speaker labels when daemon diarization is missing |
+| `diarize_cleanup.py` | `mp cleanup-diarization <transcript.json>` | LLM pass merging same-speaker labels (TECH-DIAR1) |
+| `ask.py` | `mp ask <question>` | engine-backed, cited answer over the library (AI3) |
+| `digest.py` | `mp digest` | weekly review digest, on-device (AI4) |
+| `actions.py` | `mp actions` | open action items across the library (TECH-FEAT4 + AI1) |
+| `roster_cmd.py` | `mp roster {enroll,list,forget}` | named-speaker voiceprint management (FEAT3-ROSTER) |
+| `backup.py` | `mp backup <dir>` | dated tar.gz of the non-recreatable state + manifest (STOR2) |
+| `restore.py` | `mp restore <archive>` | unpack a backup into this Mac's configured roots (STOR2) |
 | `doctor.py` | `mp doctor` | preflight diagnostics |
 | `logs_cmd.py` | `mp logs` | `events.jsonl` pretty-printer / filter |
-| `dogfood.py` | `mp dogfood` | side-by-side backend comparison |
 | `prefetch_model.py` | `mp prefetch-model <repo>` | MLX model download (JSONL progress) |
 | `corrections.py` | `mp corrections-stats` | aggregate over correction records |
 | `analyze_detection.py` | `mp analyze-detection` | meeting-end detection audit |
+| `dogfood.py` | `mp dogfood` | side-by-side backend comparison |
+| `ai2_spike.py` | `mp ai2-spike` | long-context RAG latency + faithfulness harness |
+
+### Sinks
+
+- `publish_router.py` - the fan-out over `effective_sinks(cfg)`. Runs each publisher, isolates their failures, and writes `<stem>.publish.json` with this run's outcome. Owns the `EXIT_PUBLISH_FAILED` contract (PIPE1).
+- `publish_obsidian.py` - Markdown note in the vault. `publish_fs.py` - three files in a directory. `publish_lan.py` - the same three files onto a mounted SMB/NFS share, atomically and behind a reachability check (TECH-FEAT1). `publish_notion.py` doubles as the `NotionRestPublisher` used by the router.
+
+### AI band (engine-backed, on-device by default)
+
+- `engine.py` - free-form text completion honouring `effective_backend()`. Every AI feature routes through it, so the egress clamp has one place to bite.
+- `embed_index.py` - the on-device embedding index over the library. `rag.py` - durable retrieval assembly for cited answers. Both back `ask.py` and `digest.py`.
+- `chunking.py` - the transcript chunking primitive. `prompt_safety.py` - wraps transcript text as untrusted data, not instructions (TECH-SEC6).
+
+### Per-meeting data
+
+- `workflow.py` - applies the `<stem>.meta.json` overrides onto the config. `workflows.py` - reads the workflow TOMLs the daemon owns (only to name the NDA ones, for `doctor`).
+- `diarize.py` - channel-aware speaker labels when daemon diarization is missing. `voiceprint.py` - the persisted self-voiceprint. `roster.py` - the named-third-party voiceprint roster (FEAT3).
+- `glossary.py` - deterministic post-ASR vocabulary normalization at finalize (ASR1). `markers.py` - the read side of `<stem>.markers.json` (FEAT8). `markdown.py` - renders a structured transcript to speaker-segmented Markdown. `transcript_quality.py` - the cheap degenerate-transcript checks (LOCAL2/AUD-21).
+- `corrections.py` - the `<stem>.run.json` run sidecar, the empty-skip marker, and the correction corpus.
 
 ### Shared services and contracts
 
@@ -333,6 +364,9 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 - `entry.py` - the entry contract (SEC13): `prepare()` applies the workflow overlay, arms the egress guard on the resolved config, then loads secrets. Every subcommand that can reach a sink, an engine, or a token starts here, so no path can forget the clamp.
 - `egress_guard.py` - the security spine (TECH-SEC3). When armed it patches httpx's transports to raise on any non-loopback request, pops the cloud tokens out of `os.environ`, and forces `HF_HUB_OFFLINE` so the huggingface_hub `requests` stack (which httpx never sees) refuses to fetch. `child_env()` carries the same posture across a subprocess boundary.
 - `events.py` — Python mirror of Swift's `Log.event`. Appends to `~/Library/Logs/MeetingPipe/pipeline_events.jsonl`.
+- `endpoints.py` - the external-service URLs and API versions, in one place so nothing hardcodes a host.
+- `storage.py` - where state lives on disk and how big it is (backs `doctor`'s disk numbers and STOR1's reaper).
+- `cloudsync.py` - is the library sitting inside an iCloud / Dropbox folder? (SEC12; the zero-egress promise the filesystem can undo.)
 
 ---
 
