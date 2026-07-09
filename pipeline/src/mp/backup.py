@@ -36,9 +36,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import storage
+from . import entry, storage
 from .config import KEYCHAIN_SERVICE, MANAGED_SECRET_KEYS, Config
-from .egress_guard import arm_for_config
 
 MANIFEST_NAME = "manifest.json"
 MANIFEST_SCHEMA_VERSION = 1
@@ -202,8 +201,9 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
 
-    cfg = Config.load()
-    arm_for_config(cfg)  # TECH-SEC3: local-only work, but the entry contract is the entry contract.
+    # SEC13: local-only work, but the entry contract is the entry contract.
+    # `secrets=False`: a backup names the Keychain items, it never reads them.
+    cfg = entry.prepare(secrets=False)
 
     include_audio = not args.no_audio
     archive = create_backup(cfg, args.directory, include_audio=include_audio)

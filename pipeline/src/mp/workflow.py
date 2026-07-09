@@ -23,7 +23,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from .config import Config
+from .config import Config, zero_egress
 
 log = logging.getLogger("mp.workflow")
 
@@ -70,7 +70,7 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
     if bool(meta.get("regulated_mode")) and not overlay.modes.regulated_mode:
         overlay.modes.regulated_mode = True
         changed.append("regulated_mode (from sidecar)")
-    zero_egress = nda_mode or overlay.modes.regulated_mode
+    clamped = zero_egress(overlay)
 
     backend_raw = meta.get("workflow_backend")
     if isinstance(backend_raw, str) and backend_raw in {"anthropic", "local", "auto", "apple_intelligence"}:
@@ -102,7 +102,7 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
     # `effectiveBackend` / effective_sinks), we re-apply here so a misconfigured
     # workflow (NDA + backend=anthropic somewhere upstream) still keeps the
     # meeting on-device.
-    if zero_egress:
+    if clamped:
         if overlay.summarization.backend != "local":
             overlay.summarization.backend = "local"  # type: ignore[assignment]
             changed.append("zero_egress→backend=local")

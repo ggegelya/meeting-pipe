@@ -21,6 +21,7 @@ CI runs ruff strictly — any F401 unused import fails the pipeline job. Run loc
       from .my_cmd import main as run
       return run(rest)
   ```
+- **Every entry point calls `entry.prepare(...)` first.** Workflow overlay, then arm the egress guard on the resolved config, then load secrets. Never hand-roll the triple: arming before the overlay misses a per-meeting NDA workflow, loading secrets before arming hands the cloud tokens to the `mlx_lm.server` child. Clamps key off `config.zero_egress(cfg)`, never a fresh `regulated or nda` boolean. See [`../CONVENTIONS.md`](../CONVENTIONS.md) "The entry contract".
 - **Services as `Protocol`s.** `services.py` defines narrow contracts; concrete implementations live next to use sites (`AnthropicSummaryClient` in `summarize.py`, `NotionRestPublisher` in `publish_notion.py`). Tests inject in-memory fakes, not SDK mocks.
 - **Pydantic schemas as the contract.** `MeetingSummary` (in `schemas.py`) is the JSON shape every publisher expects. Adding a field means updating the schema + every publisher + the tests.
 - **Idempotent publishers.** Each sink runs through `publish_router.fanout`; one failing doesn't block the others. Re-publish must be upsert, not duplicate (Notion derives its page slug deterministically from the meeting stem).
@@ -43,5 +44,6 @@ CI runs ruff strictly — any F401 unused import fails the pipeline job. Run loc
 
 - Don't add a new top-level import for a heavy dep. Move it inside the function body.
 - Don't introduce a new package without asking. The current dep list is deliberately small.
+- Don't spawn a subprocess with an inherited env. Pass `env=egress_guard.child_env()` so a zero-egress run cannot egress from inside the child (the httpx patch only covers this process).
 - Don't `print(...)` for event-stream data. Use `events.emit(...)` so `mp logs` and `mp analyze-detection` see it.
 - Don't bypass `services.Protocol` boundaries — tests can't fake what they can't see.

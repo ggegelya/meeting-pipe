@@ -22,6 +22,11 @@ Idempotent. If the model is already fully cached, emits one
 ``started`` with `total_bytes == cached_bytes`, then jumps straight
 to ``complete``. The daemon's "is the model cached" check is the
 authoritative one; this command just always-runs and short-circuits.
+
+This is the one command that deliberately does not arm the egress guard
+(SEC13): downloading a model is the whole point, and a cached model is what
+lets a later regulated / NDA run stay offline. `summarize_local._spawn` fails
+closed with a pointer here when a zero-egress run meets an uncached model.
 """
 from __future__ import annotations
 
@@ -51,11 +56,21 @@ def _emit(event: str, repo_id: str, **attrs: Any) -> None:
     events.emit("prefetch", event, repo_id=repo_id, **attrs)
 
 
-def _hf_cache_dir(repo_id: str) -> Path:
+def hf_cache_dir(repo_id: str) -> Path:
     """HuggingFace caches at `~/.cache/huggingface/hub/models--<sanitized>/`.
     Sanitisation replaces `/` with `--` per huggingface_hub conventions."""
     sanitized = "models--" + repo_id.replace("/", "--")
     return Path.home() / ".cache" / "huggingface" / "hub" / sanitized
+
+
+def model_is_cached(repo_id: str) -> bool:
+    """Whether `repo_id` has weights on disk already, i.e. whether a load can
+    succeed with the network off. Deliberately coarse: it answers "is there a
+    downloaded snapshot here", not "is it the current revision", because the
+    caller (SEC13's zero-egress spawn gate) only needs to know whether going
+    offline will strand the model load."""
+    snapshots = hf_cache_dir(repo_id) / "snapshots"
+    return snapshots.is_dir() and any(snapshots.iterdir())
 
 
 def _bytes_on_disk(path: Path) -> int:
@@ -104,7 +119,7 @@ def prefetch(repo_id: str) -> int:
     Returns the process exit code. 0 = success or already-cached,
     1 = failure (also emits a `failed` event before returning).
     """
-    cache_dir = _hf_cache_dir(repo_id)
+    cache_dir = hf_cache_dir(repo_id)
     total_bytes, revision = _repo_metadata(repo_id)
     cached_bytes = _bytes_on_disk(cache_dir)
 

@@ -50,6 +50,8 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
+from . import egress_guard
+from .prefetch_model import model_is_cached
 from .prompt_safety import wrap_untrusted
 from .schemas import MeetingSummary, SUMMARY_TOOL
 
@@ -457,6 +459,19 @@ class LocalSummaryClient:
                 "Neither 'mlx_lm.server' nor 'python3' found on PATH. "
                 "Install mlx-lm (`pip install mlx-lm`) before using the local backend."
             )
+        # SEC13: under a zero-egress run the child gets HF_HUB_OFFLINE=1, so an
+        # uncached model would strand its load inside a subprocess whose stdout
+        # we throw away, surfacing as an opaque "exited during startup". Fail
+        # closed here instead, and say what to do about it. Downloading the
+        # model from inside a regulated / NDA run is exactly what the guard
+        # exists to prevent, so this is a refusal, not a fallback.
+        if egress_guard.is_armed() and not model_is_cached(self._model):
+            raise LocalSummaryError(
+                f"Model {self._model!r} is not in the local HuggingFace cache, and this "
+                f"is a regulated/NDA run, so it cannot be downloaded now. Fetch it "
+                f"outside a zero-egress meeting first:\n"
+                f"    mp prefetch-model {self._model}"
+            )
         cmd = build_server_command(self._model, self._host, self._port)
         log.info("spawning mlx_lm.server: %s", " ".join(cmd))
         # Detach into a new process group so a Ctrl-C in the daemon does
@@ -464,6 +479,11 @@ class LocalSummaryClient:
         kwargs: dict[str, Any] = {
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.STDOUT,
+            # SEC13: the guard patches httpx in *this* process; the child speaks
+            # its own stack. Hand it an environment with the cloud tokens gone
+            # and huggingface_hub pinned offline, so a zero-egress run cannot
+            # egress from inside the model server either.
+            "env": egress_guard.child_env(),
         }
         if hasattr(os, "setsid"):
             kwargs["preexec_fn"] = os.setsid

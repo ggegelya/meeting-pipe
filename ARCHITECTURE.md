@@ -325,7 +325,9 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 
 - `services.py` — `Protocol`s for the three external dependencies (`SummaryClient`, `Publisher`, `Diarizer`). Concrete implementations live next to use sites; tests inject fakes.
 - `schemas.py` — pydantic models. `MeetingSummary` is the JSON contract the publishers expect.
-- `config.py`: TOML loader for `~/.config/meeting-pipe/config.toml` (same file the daemon reads). `load_secrets` pulls the API tokens from the macOS Keychain via `/usr/bin/security` (SEC8).
+- `config.py`: TOML loader for `~/.config/meeting-pipe/config.toml` (same file the daemon reads). `load_secrets` pulls the API tokens from the macOS Keychain via `/usr/bin/security` (SEC8), and declines to when the egress guard is armed. `zero_egress` / `effective_backend` / `effective_sinks` are the single owners of the regulated + NDA clamps (TECH-ARCH1).
+- `entry.py` - the entry contract (SEC13): `prepare()` applies the workflow overlay, arms the egress guard on the resolved config, then loads secrets. Every subcommand that can reach a sink, an engine, or a token starts here, so no path can forget the clamp.
+- `egress_guard.py` - the security spine (TECH-SEC3). When armed it patches httpx's transports to raise on any non-loopback request, pops the cloud tokens out of `os.environ`, and forces `HF_HUB_OFFLINE` so the huggingface_hub `requests` stack (which httpx never sees) refuses to fetch. `child_env()` carries the same posture across a subprocess boundary.
 - `events.py` — Python mirror of Swift's `Log.event`. Appends to `~/Library/Logs/MeetingPipe/pipeline_events.jsonl`.
 
 ---

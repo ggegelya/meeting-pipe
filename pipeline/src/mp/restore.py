@@ -20,10 +20,9 @@ import json
 import tarfile
 from pathlib import Path
 
-from . import storage
+from . import entry, storage
 from .backup import CONFIG_PRESERVED, EXCLUDED_NAMES, MANIFEST_NAME, backup_roots
 from .config import Config
-from .egress_guard import arm_for_config
 
 
 class RestoreError(Exception):
@@ -134,8 +133,9 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
 
-    cfg = Config.load()
-    arm_for_config(cfg)
+    # SEC13: local-only work, but the entry contract is the entry contract.
+    # `secrets=False`: a restore rebuilds files, the owner re-enters tokens.
+    cfg = entry.prepare(secrets=False)
 
     try:
         manifest = read_manifest(args.archive.expanduser())

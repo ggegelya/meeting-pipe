@@ -25,9 +25,8 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import embed_index, engine, rag
-from .config import Config, load_secrets
-from .egress_guard import arm_for_config
+from . import embed_index, engine, entry, rag
+from .config import Config
 
 log = logging.getLogger("mp.ask")
 
@@ -157,9 +156,7 @@ def main(argv: list[str]) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
-    cfg = Config.load()
-    arm_for_config(cfg)  # TECH-SEC3: block non-loopback egress under regulated/NDA
-    load_secrets()
+    cfg = entry.prepare()  # SEC13: arm, then secrets. Library-wide, so no meeting anchor.
 
     root = Path(args.dir) if args.dir is not None else cfg.recording.output_dir
     question = " ".join(args.question).strip()

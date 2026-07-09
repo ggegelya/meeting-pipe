@@ -29,13 +29,11 @@ from typing import Any, Protocol, runtime_checkable
 
 import anthropic
 
-from . import events
+from . import entry, events
 from .chunking import chunked_windows
-from .config import Config, effective_backend, load_secrets, require_env
-from .egress_guard import arm_for_config
+from .config import Config, effective_backend, require_env
 from .markdown import render_markdown
 from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
-from .workflow import apply_overrides as apply_workflow_overrides
 
 log = logging.getLogger("mp.diarize_cleanup")
 
@@ -120,10 +118,7 @@ def cleanup_transcript(
     Emits a `pipeline`/`diarize_cleanup` event with the merge and
     reattribution counts and the wall-clock latency.
     """
-    cfg = cfg or Config.load()
-    cfg = apply_workflow_overrides(cfg, transcript_json)
-    arm_for_config(cfg)  # TECH-SEC3: block non-loopback egress under regulated/NDA
-    load_secrets()
+    cfg = entry.prepare(cfg, transcript_json)  # SEC13: overlay, arm, secrets
 
     structured = json.loads(transcript_json.read_text(encoding="utf-8"))
     segments: list[dict[str, Any]] = structured.get("segments") or []

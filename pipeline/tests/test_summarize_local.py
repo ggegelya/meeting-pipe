@@ -19,6 +19,7 @@ from typing import Callable
 
 import pytest
 
+from mp import egress_guard
 from mp.summarize_local import (
     DEFAULT_REQUEST_TIMEOUT_SEC,
     LocalSummaryClient,
@@ -431,3 +432,87 @@ def test_language_reinforcement_lands_in_system_prompt(
     system_msg = captured["messages"][0]["content"]
     assert "Ukrainian" in system_msg
     assert "українською" in system_msg
+
+
+# ----- SEC13: the spawned server is inside the egress boundary -----
+
+
+def _fake_spawn(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Capture the argv + kwargs `_spawn` would hand `subprocess.Popen`, without
+    launching anything. `_wait_for_health` polls `proc.poll()`, so the stand-in
+    reports "still running" and the caller is expected to stop before that."""
+    captured: dict = {}
+
+    class _FakeProc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    def _popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr("mp.summarize_local.subprocess.Popen", _popen)
+    monkeypatch.setattr("mp.summarize_local.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("mp.summarize_local.model_is_cached", lambda repo: True)
+    return captured
+
+
+def test_spawn_hands_the_child_a_scrubbed_env_when_armed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guard patches httpx in *this* process; `mlx_lm.server` is a separate
+    process with its own stack. Under a zero-egress run it must inherit no cloud
+    token and must find huggingface_hub pinned offline."""
+    for key in ("ANTHROPIC_API_KEY", "NOTION_TOKEN", "HF_TOKEN"):
+        monkeypatch.setenv(key, "secret-value")
+    captured = _fake_spawn(monkeypatch)
+    egress_guard.arm("test")
+
+    LocalSummaryClient(host="127.0.0.1", port=8765)._spawn()
+
+    env = captured["kwargs"]["env"]
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "NOTION_TOKEN" not in env
+    assert "HF_TOKEN" not in env
+    assert env["HF_HUB_OFFLINE"] == "1"
+    assert env["HF_HUB_DISABLE_TELEMETRY"] == "1"
+
+
+def test_spawn_keeps_the_env_intact_when_disarmed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret-value")
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    captured = _fake_spawn(monkeypatch)
+
+    LocalSummaryClient(host="127.0.0.1", port=8765)._spawn()
+
+    env = captured["kwargs"]["env"]
+    assert env["ANTHROPIC_API_KEY"] == "secret-value"
+    assert "HF_HUB_OFFLINE" not in env
+
+
+def test_spawn_fails_closed_on_an_uncached_model_under_zero_egress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail-closed beats silent egress: an uncached model under regulated/NDA
+    would otherwise be downloaded from huggingface.co by the child."""
+    _fake_spawn(monkeypatch)
+    monkeypatch.setattr("mp.summarize_local.model_is_cached", lambda repo: False)
+    egress_guard.arm("test")
+
+    client = LocalSummaryClient(host="127.0.0.1", port=8765, model="mlx-community/Nope-4bit")
+    with pytest.raises(LocalSummaryError) as exc:
+        client._spawn()
+    assert "mp prefetch-model mlx-community/Nope-4bit" in str(exc.value)
+
+
+def test_spawn_allows_an_uncached_model_when_egress_is_permitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cache gate is a zero-egress rule, not a general one: a normal run may
+    still let mlx_lm.server pull the weights on first use."""
+    captured = _fake_spawn(monkeypatch)
+    monkeypatch.setattr("mp.summarize_local.model_is_cached", lambda repo: False)
+
+    LocalSummaryClient(host="127.0.0.1", port=8765)._spawn()
+    assert captured["cmd"][0].endswith("mlx_lm.server")

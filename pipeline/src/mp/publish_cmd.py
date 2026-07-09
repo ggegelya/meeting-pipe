@@ -14,10 +14,8 @@ import logging
 import sys
 from pathlib import Path
 
-from .config import Config, load_secrets
-from .egress_guard import arm_for_config
+from . import entry
 from .publish_router import fanout
-from .workflow import apply_overrides as apply_workflow_overrides
 
 log = logging.getLogger("mp.publish")
 
@@ -32,10 +30,7 @@ def main(argv: list[str]) -> int:
         return 1
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    cfg = Config.load()
-    cfg = apply_workflow_overrides(cfg, summary_json)
-    arm_for_config(cfg)  # TECH-SEC3: block non-loopback egress under regulated/NDA
-    load_secrets()
+    cfg = entry.prepare(anchor=summary_json)  # SEC13: overlay, arm, secrets
 
     stem = summary_json.name.removesuffix(".summary.json")
     transcript_md = summary_json.parent / f"{stem}.md"

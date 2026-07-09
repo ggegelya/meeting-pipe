@@ -280,8 +280,8 @@ def check_local_stack(cfg: Config | None) -> None:
     _info(f"model = {model_id}")
     need_gb = _estimate_model_gb(model_id)
 
-    from .prefetch_model import _bytes_on_disk, _hf_cache_dir
-    cache_dir = _hf_cache_dir(model_id)
+    from .prefetch_model import _bytes_on_disk, hf_cache_dir
+    cache_dir = hf_cache_dir(model_id)
     cached_gb = round(_bytes_on_disk(cache_dir) / (1024 ** 3), 1)
     if cached_gb > 0:
         _ok(f"model cache present (~{cached_gb} GB at {cache_dir})")

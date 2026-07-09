@@ -451,11 +451,11 @@ def main(argv: list[str]) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
-    from .config import Config
-    from .egress_guard import arm_for_config
+    from . import entry
 
-    cfg = Config.load()
-    arm_for_config(cfg)  # zero-egress: loopback chat + in-process embedding are unaffected
+    # SEC13 entry contract; zero-egress leaves loopback chat + in-process
+    # embedding unaffected, so the spike runs identically under regulated mode.
+    cfg = entry.prepare()
     root = Path(args.dir) if args.dir is not None else cfg.recording.output_dir
     gen_model = args.gen_model or cfg.summarization.local_model
 

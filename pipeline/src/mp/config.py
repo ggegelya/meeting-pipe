@@ -81,8 +81,10 @@ class Summarization(BaseModel):
     #                network/auth failure.
     # When `modes.regulated_mode = true` the local backend is forced
     # regardless of this setting (summarize._select_backend), so no
-    # transcript leaves the machine. test_regulated_local_zero_egress
-    # locks the zero-egress contract in.
+    # transcript reaches a cloud provider. test_regulated_local_zero_egress
+    # locks the zero-egress contract in. (The LAN sink still writes summaries
+    # and transcripts to a mounted share by design; "zero egress" here means
+    # no cloud egress, not "nothing leaves this process".)
     #   "apple_intelligence": on-device macOS 26 Foundation Model. The summary
     #                is produced in the Swift daemon, not here; the Python
     #                run-all finalizes the transcript then hands off (the
@@ -209,20 +211,38 @@ class Config(BaseModel):
         return cls(**raw)
 
 
+def zero_egress(cfg: Config) -> bool:
+    """True when this run may not reach a cloud service (SEC13).
+
+    The two ways that happens are the global `regulated_mode` and the
+    per-meeting `workflow_nda_mode` the workflow overlay resolves. Every clamp
+    in the codebase keys off exactly this predicate: `effective_backend` pins
+    the on-device summarizer, `effective_sinks` drops the Notion sink,
+    `egress_guard.arm_for_config` blocks non-loopback HTTP and scrubs the cloud
+    tokens, `workflow.apply_overrides` re-applies both fail-closed, and
+    `publish_notion.publish` short-circuits before instantiating a publisher.
+    They used to each carry their own copy of the `regulated or nda` boolean;
+    this is the single owner (TECH-ARCH1).
+
+    Note the LAN sink is deliberately *not* clamped: it writes to a mounted
+    on-prem share by design. "Zero egress" is a no-cloud-egress promise.
+    """
+    return cfg.modes.regulated_mode or cfg.modes.workflow_nda_mode
+
+
 def effective_backend(cfg: Config) -> str:
     """The summarization backend after the regulated/NDA force-local rule.
 
-    `regulated_mode` (global) and `workflow_nda_mode` (per-meeting, set by the
-    workflow overlay) are both hard zero-egress guarantees: each pins the
-    on-device path regardless of the configured backend, so no transcript can
-    leave the machine. This is the single chokepoint (TECH-ARCH1) that
-    replaces the copies of the same `if regulated and backend != local`
-    block in summarize._select_backend, orchestrate, and
-    diarize_cleanup._select_cleanup_backend. Callers keep their own
-    apple_intelligence / auto handling on top of the value returned here.
+    Under `zero_egress` the on-device path is pinned regardless of the
+    configured backend, so no transcript reaches a cloud provider. This is the
+    single chokepoint (TECH-ARCH1) that replaces the copies of the same
+    `if regulated and backend != local` block in summarize._select_backend,
+    orchestrate, and diarize_cleanup._select_cleanup_backend. Callers keep
+    their own apple_intelligence / auto handling on top of the value returned
+    here.
     """
     backend = cfg.summarization.backend
-    if (cfg.modes.regulated_mode or cfg.modes.workflow_nda_mode) and backend != "local":
+    if zero_egress(cfg) and backend != "local":
         return "local"
     return backend
 
@@ -230,14 +250,14 @@ def effective_backend(cfg: Config) -> str:
 def effective_sinks(cfg: Config) -> list[str]:
     """The output sinks after the regulated/NDA egress clamp.
 
-    Notion is the one publisher that transmits off-device, so under a
-    zero-egress mode (`regulated_mode` or `workflow_nda_mode`) it is dropped
-    here, the single chokepoint (TECH-ARCH1) that build_publishers routes
-    through. This folds in the TECH-SEC2 clamp that previously lived inline in
-    publish_router._build_one. Local-only sinks (obsidian, filesystem) are
-    preserved in their configured order.
+    Notion is the one publisher that transmits to a cloud service, so under
+    `zero_egress` it is dropped here, the single chokepoint (TECH-ARCH1) that
+    build_publishers routes through. This folds in the TECH-SEC2 clamp that
+    previously lived inline in publish_router._build_one. Local-only sinks
+    (obsidian, filesystem) and the on-prem LAN sink are preserved in their
+    configured order.
     """
-    if cfg.modes.regulated_mode or cfg.modes.workflow_nda_mode:
+    if zero_egress(cfg):
         return [s for s in cfg.output.sinks if s != "notion"]
     return list(cfg.output.sinks)
 
@@ -267,9 +287,14 @@ def load_secrets(reader=_keychain_get) -> None:
     still missing or empty (a hand-run `mp` without the daemon, or a shell that exported an empty string,
     which Claude Code does) from the Keychain, treating "" as absent so the real value wins.
 
-    A token the daemon deliberately withheld for a zero-egress run may be refilled here, exactly as the old
-    secrets.env re-read did; the pipeline egress guard (TECH-SEC3) is the authoritative network-layer backstop.
+    SEC13: a zero-egress run refills nothing. Refilling used to undo the daemon's SEC5 strip, collapsing
+    defense-in-depth to the single httpx layer and handing the cloud tokens to the mlx_lm.server child.
+    Every entry point arms the guard before calling this (see `mp.entry.prepare`), so the ordering holds;
+    `egress_guard.arm` has already scrubbed anything the daemon did pass in.
     """
+    from . import egress_guard
+    if egress_guard.is_armed():
+        return
     for key in MANAGED_SECRET_KEYS:
         if os.environ.get(key):
             continue

@@ -81,7 +81,7 @@ security find-generic-password    -s com.meetingpipe.daemon -a ANTHROPIC_API_KEY
 security delete-generic-password  -s com.meetingpipe.daemon -a ANTHROPIC_API_KEY
 ```
 
-The daemon seeds the tokens into its process env at launch + on each Preferences save, so pipeline subprocesses inherit them with no per-spawn secret read; a hand-run `mp` reads the Keychain directly. The pipeline egress guard stays the authoritative zero-egress backstop, so a token stripped from a subprocess env for a regulated/NDA run and re-read here still cannot egress.
+The daemon seeds the tokens into its process env at launch + on each Preferences save, so pipeline subprocesses inherit them with no per-spawn secret read; a hand-run `mp` reads the Keychain directly. Under a zero-egress run the daemon's SEC5 strip is no longer undone: `load_secrets()` declines to refill once `egress_guard.is_armed()`, and `arm()` pops any token that did arrive (SEC13). The httpx transport patch remains the network-layer backstop underneath that.
 
 ---
 
@@ -154,6 +154,22 @@ if cmd in {"my-cmd", "my_cmd"}:
 ```
 
 Use `argparse` inside `main`; don't share argparse instances across modules.
+
+### The entry contract (SEC13)
+
+Any subcommand that can reach a sink, an engine, or a token calls `mp.entry.prepare(...)` before anything else. It resolves the per-meeting workflow overlay, arms the egress guard on the *resolved* config, then loads the Keychain secrets, in that order.
+
+```python
+cfg = entry.prepare(cfg, wav)             # a meeting-scoped command
+cfg = entry.prepare()                     # library-wide (mp ask, mp digest)
+cfg = entry.prepare(secrets=False)        # local-only (mp backup, mp restore)
+```
+
+Don't hand-roll the three calls. Arming before the overlay misses `workflow_nda_mode` for every per-meeting NDA workflow; loading secrets before arming leaves the cloud tokens in `os.environ` for the `mlx_lm.server` child to inherit. Both failures are silent.
+
+`config.zero_egress(cfg)` is the single predicate behind every clamp (`effective_backend`, `effective_sinks`, `arm_for_config`, `workflow.apply_overrides`, `publish_notion.publish`). Write new clamps against it, never against `regulated_mode or workflow_nda_mode` directly.
+
+`mp prefetch-model` is the one command that deliberately never arms: fetching a model is its purpose, and a cached model is what lets a later zero-egress run stay offline.
 
 ### Test discipline
 

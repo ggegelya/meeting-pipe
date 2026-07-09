@@ -28,9 +28,8 @@ from typing import Any
 import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from .config import Config, load_secrets, require_env
-from .egress_guard import arm_for_config
-from .workflow import apply_overrides as apply_workflow_overrides
+from . import entry
+from .config import Config, require_env, zero_egress
 from .endpoints import NOTION_API_BASE, NOTION_API_VERSION, notion_page_url
 from .schemas import MeetingSummary
 from .services import MeetingPublisher
@@ -132,25 +131,21 @@ def publish(
     """Publish the summary; return {page_id, page_url, idempotent: bool}.
 
     Pass a custom `publisher` to redirect output (e.g. local-only, test
-    capture); defaults to `NotionRestPublisher`. Honours both `regulated_mode`
-    and a per-meeting NDA workflow by short-circuiting before any publisher is
-    instantiated, and arms the process-wide egress guard on the resolved config
-    as the structural backstop. This entry point backs both `mp publish-notion`
-    and `mp publish-from-paste`; the run-all / `mp publish` path goes through
-    publish_router.fanout, which drops the Notion sink under regulated_mode (SEC2).
+    capture); defaults to `NotionRestPublisher`. Short-circuits under
+    `config.zero_egress` before any publisher is instantiated, and arms the
+    process-wide egress guard on the resolved config as the structural backstop.
+    This entry point backs both `mp publish-notion` and `mp publish-from-paste`;
+    the run-all / `mp publish` path goes through publish_router.fanout, whose
+    `effective_sinks` drops the Notion sink under the same predicate (SEC2).
     """
-    cfg = cfg or Config.load()
-    # Workflow overlay (TECH-B4). `apply_overrides` derives the stem
-    # from any per-meeting filename, so passing the summary JSON path
-    # directly resolves to the same `<stem>.meta.json` the daemon wrote.
-    cfg = apply_workflow_overrides(cfg, summary_json)
-    # TECH-SEC3: arm the egress guard on the RESOLVED config (after the overlay
-    # sets workflow_nda_mode), so this legacy publish path can never POST to a
-    # non-loopback host under regulated/NDA even if the clamp below regresses.
-    arm_for_config(cfg)
-    load_secrets()
+    # `mp publish-notion <summary.json>` is an explicit "put this in Notion"
+    # instruction, so the skip keys off `zero_egress` (SEC13) rather than off
+    # `effective_sinks`: a user whose `output.sinks` omits notion still means it
+    # when they name the subcommand. Both clamps now read the same predicate, so
+    # the zero-egress invariant has exactly one owner (TECH-ARCH1).
+    cfg = entry.prepare(cfg, summary_json)
 
-    if cfg.modes.regulated_mode or cfg.modes.workflow_nda_mode:
+    if zero_egress(cfg):
         log.info("regulated_mode/NDA active → skipping Notion publish")
         return {"page_id": None, "page_url": None, "regulated": cfg.modes.regulated_mode}
 

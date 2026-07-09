@@ -151,7 +151,7 @@ def test_main_refuses_regulated_meeting(tmp_path: Path, monkeypatch) -> None:
     regulated = Config()
     regulated.modes.regulated_mode = True
     monkeypatch.setattr(Config, "load", lambda: regulated)
-    monkeypatch.setattr("mp.dogfood.load_secrets", lambda *a, **k: None)
+    monkeypatch.setattr("mp.entry.load_secrets", lambda *a, **k: None)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")  # present: must still refuse
 
     anthropic = Mock()
@@ -170,7 +170,7 @@ def test_main_runs_non_regulated_meeting(tmp_path: Path, monkeypatch) -> None:
     transcript.write_text("**A**: hi there\n", encoding="utf-8")
 
     monkeypatch.setattr(Config, "load", lambda: Config())  # not regulated
-    monkeypatch.setattr("mp.dogfood.load_secrets", lambda *a, **k: None)
+    monkeypatch.setattr("mp.entry.load_secrets", lambda *a, **k: None)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
 
     ran: list[int] = []
@@ -190,7 +190,7 @@ def test_main_passes_local_model_override(tmp_path: Path, monkeypatch) -> None:
     transcript.write_text("**A**: hi there\n", encoding="utf-8")
 
     monkeypatch.setattr(Config, "load", lambda: Config())
-    monkeypatch.setattr("mp.dogfood.load_secrets", lambda *a, **k: None)
+    monkeypatch.setattr("mp.entry.load_secrets", lambda *a, **k: None)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
 
     seen: dict = {}

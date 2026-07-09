@@ -1,21 +1,26 @@
-"""Tests for the process-wide HTTP egress firewall (TECH-SEC3).
+"""Tests for the process-wide egress firewall (TECH-SEC3, hardened by SEC13).
 
 These drive real `httpx.Client` / `httpx.AsyncClient` instances through the
 default transport (the path the Anthropic SDK and the Notion publisher take),
 but stub the guard's downstream (`_orig_sync` / `_orig_async`) so a permitted
 request lands on a fake instead of a real socket. The block path short-circuits
 before the transport, so it never opens a connection either.
+
+The SEC13 tests below cover the two layers httpx cannot see: the process
+environment (which the `mlx_lm.server` child inherits) and the huggingface_hub
+`requests` stack (which the transport patch never touches).
 """
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 import httpx
 import pytest
 
 from mp import egress_guard
-from mp.config import Config
+from mp.config import MANAGED_SECRET_KEYS, Config, load_secrets
 from mp.egress_guard import EgressBlocked
 
 
@@ -92,3 +97,68 @@ def test_arm_for_config_noop_when_unrestricted() -> None:
     cfg = Config()
     assert egress_guard.arm_for_config(cfg) is False
     assert not egress_guard.is_armed()
+
+
+# ----- SEC13: the process boundary -----
+
+
+def test_arm_scrubs_cloud_tokens_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in MANAGED_SECRET_KEYS:
+        monkeypatch.setenv(key, "secret-value")
+    egress_guard.arm("test")
+    for key in MANAGED_SECRET_KEYS:
+        assert key not in os.environ, f"{key} survived arm()"
+
+
+def test_arm_forces_huggingface_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    egress_guard.arm("test")
+    # mlx_embeddings / mlx_lm.server reach huggingface_hub over `requests`, which
+    # the httpx transport patch never sees. The env is the only lever.
+    assert os.environ["HF_HUB_OFFLINE"] == "1"
+    assert os.environ["HF_HUB_DISABLE_TELEMETRY"] == "1"
+
+
+def test_arm_rescrubs_on_every_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The httpx patch installs once and `arm()` early-returns after it, but the
+    scrub must not be behind that early return: a caller can load secrets between
+    two arms."""
+    egress_guard.arm("first")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "leaked-back-in")
+    egress_guard.arm("second")
+    assert "ANTHROPIC_API_KEY" not in os.environ
+
+
+def test_child_env_is_scrubbed_when_armed() -> None:
+    base = {"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "k", "NOTION_TOKEN": "t", "HF_TOKEN": "h"}
+    egress_guard.arm("test")
+    env = egress_guard.child_env(base)
+    assert env["PATH"] == "/usr/bin"
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "NOTION_TOKEN" not in env
+    assert "HF_TOKEN" not in env
+    assert env["HF_HUB_OFFLINE"] == "1"
+    # The caller's dict is never mutated.
+    assert base["ANTHROPIC_API_KEY"] == "k"
+
+
+def test_child_env_passes_through_when_disarmed() -> None:
+    base = {"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "k"}
+    assert not egress_guard.is_armed()
+    assert egress_guard.child_env(base) == base
+
+
+def test_load_secrets_refills_when_disarmed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    load_secrets(reader=lambda key: f"from-keychain-{key}")
+    assert os.environ["ANTHROPIC_API_KEY"] == "from-keychain-ANTHROPIC_API_KEY"
+
+
+def test_load_secrets_declines_to_refill_when_armed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SEC13(b): the daemon strips the tokens for a zero-egress run (SEC5) and
+    `load_secrets` used to hand them straight back from the Keychain, collapsing
+    defense-in-depth to the single httpx layer."""
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    egress_guard.arm("test")
+    load_secrets(reader=lambda key: pytest.fail("keychain read under a zero-egress run"))
+    assert "NOTION_TOKEN" not in os.environ

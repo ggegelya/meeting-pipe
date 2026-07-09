@@ -33,14 +33,13 @@ from tenacity import (
     wait_exponential,
 )
 
-from .config import Config, effective_backend, load_secrets, require_env
-from .egress_guard import arm_for_config
+from . import entry
+from .config import Config, effective_backend, require_env
 from .markers import FLAGGED_INSTRUCTION, flagged_moments_block
 from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
 from .services import SummaryClient
 from .workflow import _read_meta
-from .workflow import apply_overrides as apply_workflow_overrides
 
 log = logging.getLogger("mp.summarize")
 
@@ -308,14 +307,10 @@ def summarize(
     naming which path actually produced the summary. Phase 2's
     correction loop reads those fields from the run sidecar.
     """
-    cfg = cfg or Config.load()
-    # Workflow overlay (TECH-B4). Apply when the daemon wrote a meta
-    # sidecar for this stem so the standalone `mp summarize` (used by
-    # the Library's "Regenerate" action) honours the same per-meeting
-    # context / backend overrides that `run-all` would.
-    cfg = apply_workflow_overrides(cfg, transcript_md)
-    arm_for_config(cfg)  # TECH-SEC3: block non-loopback egress under regulated/NDA
-    load_secrets()
+    # The entry contract (SEC13): overlay, arm, secrets. The overlay matters for
+    # the standalone `mp summarize` (the Library's "Regenerate" action) so it
+    # honours the same per-meeting context / backend overrides `run-all` would.
+    cfg = entry.prepare(cfg, transcript_md)
 
     transcript = transcript_md.read_text(encoding="utf-8")
     if not transcript.strip():

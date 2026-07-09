@@ -19,12 +19,11 @@ import re
 import sys
 from pathlib import Path
 
-from .config import Config, load_secrets
-from .egress_guard import arm_for_config
+from . import entry
+from .config import Config
 from .publish_router import fanout
 from .schemas import ActionItem, MeetingSummary
 from .summarize import _render_summary_md
-from .workflow import apply_overrides as apply_workflow_overrides
 
 log = logging.getLogger("mp.publish_from_paste")
 
@@ -186,10 +185,15 @@ def _extract_language_hint(text: str) -> str:
 
 def publish_from_paste(transcript_md: Path, cfg: Config | None = None) -> dict:
     """Read `<stem>.summary.md` next to the transcript, parse, publish."""
-    cfg = cfg or Config.load()
-    # Egress is armed per-branch below, after the workflow overlay resolves
-    # workflow_nda_mode (arming pre-overlay would miss a per-meeting NDA), so the
-    # NDA/regulated clamp is in force before any sink runs. (TECH-SEC3)
+    # The entry contract (SEC13): overlay, arm, secrets, once, before either
+    # branch. `<stem>.md` and `<stem>.summary.json` resolve to the same meta
+    # sidecar, so anchoring on the transcript is equivalent to the old
+    # post-parse overlay and puts the NDA/regulated clamp in force before any
+    # sink or token is reachable. Folding the overlay in this early also means a
+    # meeting *recorded* under regulated mode (sidecar `regulated_mode`, DSN6)
+    # now takes the preserve-untouched branch below even if the global flag has
+    # since been turned off.
+    cfg = entry.prepare(cfg, transcript_md)
     stem = transcript_md.stem
     summary_md_path = transcript_md.parent / f"{stem}.summary.md"
     summary_json_path = transcript_md.parent / f"{stem}.summary.json"
@@ -213,11 +217,9 @@ def publish_from_paste(transcript_md: Path, cfg: Config | None = None) -> dict:
 
     if cfg.modes.regulated_mode:
         # Don't touch the user's hand-written .summary.md and don't write the
-        # .summary.json sidecar: regulated_mode means "nothing leaves this
-        # machine, and nothing on disk gets rewritten without an explicit user
-        # action". Arm the egress guard as the structural backstop, then skip
-        # every sink (global regulated needs no overlay to know it must skip).
-        arm_for_config(cfg)
+        # .summary.json sidecar: regulated_mode means "nothing reaches a cloud
+        # service, and nothing on disk gets rewritten without an explicit user
+        # action". The guard is already armed by `entry.prepare` above.
         log.info(
             "regulated_mode=true, preserving %s untouched and skipping publish",
             summary_md_path,
@@ -236,13 +238,9 @@ def publish_from_paste(transcript_md: Path, cfg: Config | None = None) -> dict:
     summary_md_path.write_text(_render_summary_md(summary), encoding="utf-8")
 
     # Route through the fanout so every configured sink receives the summary,
-    # not just Notion (PIPE2/AUD-15). The fanout neither applies the workflow
-    # overlay nor arms the egress guard, so do both here first (mirroring
-    # `mp publish`): an NDA workflow still drops the Notion sink, and the title
-    # comes from the shared apply_meeting_title path inside fanout.
-    cfg = apply_workflow_overrides(cfg, summary_json_path)
-    arm_for_config(cfg)
-    load_secrets()
+    # not just Notion (PIPE2/AUD-15). An NDA workflow still drops the Notion
+    # sink (`effective_sinks`), and the title comes from the shared
+    # apply_meeting_title path inside fanout.
     return fanout(summary_json=summary_json_path, cfg=cfg, transcript_md=transcript_md)
 
 

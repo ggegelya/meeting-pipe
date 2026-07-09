@@ -4,6 +4,7 @@ the real API. Covers create, idempotent update, and regulated-mode skip.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import httpx
@@ -156,6 +157,41 @@ def test_nda_workflow_skips_notion_and_arms_guard(tmp_path: Path, monkeypatch):
     assert result["page_id"] is None, "NDA must skip the Notion publish"
     assert not (tmp_path / f"{stem}.notion.json").exists()
     assert egress_guard.is_armed(), "the egress guard must arm on the resolved NDA config"
+
+
+def test_nda_workflow_scrubs_the_notion_token(tmp_path: Path, monkeypatch):
+    """SEC13: arming does not just block the socket, it takes the credential away,
+    so a regression in the skip above fails closed on a missing token rather than
+    POSTing the summary."""
+    summary_path = _write_summary(tmp_path)
+    stem = summary_path.name.removesuffix(".summary.json")
+    (tmp_path / f"{stem}.meta.json").write_text(
+        json.dumps({"workflow_nda_mode": True}), encoding="utf-8"
+    )
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-must-not-be-used")
+
+    publish(summary_path, cfg=_cfg())
+    assert "NOTION_TOKEN" not in os.environ
+
+
+def test_explicit_publish_notion_ignores_the_configured_sink_list(tmp_path: Path, monkeypatch):
+    """SEC13(c): the skip keys off `config.zero_egress`, not `effective_sinks`.
+    `mp publish-notion <summary.json>` names its sink, so an `output.sinks` that
+    omits notion (a routing preference, not an egress rule) must not silently
+    turn the command into a no-op."""
+    summary_path = _write_summary(tmp_path)
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
+    cfg = _cfg()
+    cfg.output.sinks = ["obsidian"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            return httpx.Response(200, json={"id": "page-1", "url": "https://www.notion.so/page-1"})
+        return httpx.Response(404, json={"message": "unexpected route"})
+
+    _install_mock_transport(monkeypatch, handler)
+    result = publish(summary_path, cfg=cfg)
+    assert result["page_id"] == "page-1"
 
 
 def test_update_deletes_all_children_in_parallel(tmp_path: Path, monkeypatch):

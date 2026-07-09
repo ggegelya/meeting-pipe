@@ -9,6 +9,7 @@ from mp.config import (
     effective_backend,
     effective_sinks,
     load_secrets,
+    zero_egress,
 )
 
 
@@ -36,6 +37,18 @@ def test_load_secrets_treats_empty_env_as_missing(monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     load_secrets(reader=lambda account: "sk-kc" if account == "ANTHROPIC_API_KEY" else None)
     assert os.environ["ANTHROPIC_API_KEY"] == "sk-kc"
+
+
+# --- TECH-ARCH1 / SEC13: zero_egress is the single owner of the clamp predicate ---
+
+
+def test_zero_egress_is_true_for_regulated_and_for_nda() -> None:
+    assert zero_egress(Config.model_validate({"modes": {"regulated_mode": True}}))
+    assert zero_egress(Config.model_validate({"modes": {"workflow_nda_mode": True}}))
+
+
+def test_zero_egress_is_false_by_default() -> None:
+    assert not zero_egress(Config())
 
 
 # --- TECH-ARCH1: effective_backend / effective_sinks chokepoint ---

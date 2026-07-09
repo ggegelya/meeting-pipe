@@ -25,10 +25,10 @@ import time
 from importlib import resources
 from pathlib import Path
 
-from .config import Config, effective_backend, load_secrets
+from . import entry
+from .config import Config, effective_backend
 from .corrections import set_publish_state, write_empty_marker, write_run_sidecar
 from .transcript_quality import transcript_issues
-from .egress_guard import arm_for_config
 from .diarize import (
     apply_speaker_labels,
     assign_speakers_by_channel,
@@ -46,7 +46,6 @@ from .markdown import render_markdown
 from .markers import flagged_moments_block
 from .publish_router import fanout as publish_fanout, publish_state
 from .summarize import summarize
-from .workflow import apply_overrides as apply_workflow_overrides
 
 log = logging.getLogger("mp.run_all")
 
@@ -236,16 +235,11 @@ def run_all(
     Defaults to reading `MP_FORCE_BYO=1` from the environment so the
     Swift launcher can opt in per-meeting without flag plumbing.
     """
-    cfg = cfg or Config.load()
-    # Apply per-meeting workflow overrides from the daemon-written meta
-    # sidecar (TECH-B4). No-op for shell-invoked `mp run-all` against
-    # wavs that have no sidecar; otherwise replaces team_context /
-    # backend / sinks / notion DB for this single run.
-    cfg = apply_workflow_overrides(cfg, wav)
-    # Structural egress backstop (TECH-SEC3): once regulated/NDA is resolved,
-    # block all non-loopback HTTP for the rest of this process.
-    arm_for_config(cfg)
-    load_secrets()
+    # The entry contract (SEC13): per-meeting workflow overrides from the
+    # daemon-written meta sidecar (TECH-B4), then the structural egress backstop
+    # on the resolved config (TECH-SEC3), then secrets. No-op overlay for
+    # shell-invoked `mp run-all` against wavs that have no sidecar.
+    cfg = entry.prepare(cfg, wav)
 
     if force_byo is None:
         force_byo = os.environ.get("MP_FORCE_BYO") == "1"

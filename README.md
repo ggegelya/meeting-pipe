@@ -446,7 +446,7 @@ See [`config.example.toml`](./config.example.toml). Highlights:
 - `obsidian.vault_path`: required when `"obsidian"` is in `sinks`. The publisher writes to `<vault>/<obsidian.folder>/<date> <slug>.md` with YAML front-matter; `obsidian.attach_audio = true` copies the recording into `<vault>/<obsidian.attachments_subfolder>/`. `obsidian.template_path` points at a custom template (the built-in template covers the common case).
 - `filesystem.output_dir`: where the filesystem sink drops the three files.
 - `lan.mount_path`: target directory on an already-mounted SMB/NFS share for the `"lan"` sink. Same three files as the filesystem sink, but written atomically and only after a reachability check (it never creates the mount root itself, so a down share fails loudly instead of writing to local disk). On-prem, no cloud egress, so it survives regulated mode. `lan.host` is an optional label used only in the unreachable error.
-- `modes.regulated_mode`: when `true`, the Notion sink no-ops at upsert time. Pair with `summarization.backend = "local"` for full zero-egress (every outbound HTTP request would assert in tests).
+- `modes.regulated_mode`: when `true`, the Notion sink no-ops at upsert time. Pair with `summarization.backend = "local"` for full zero-egress. A zero-egress run (this flag, or a per-meeting NDA workflow) also strips the cloud API tokens from the pipeline process and pins Hugging Face offline, so nothing downstream, including the local model server it spawns, can reach the network.
 
 There are no microphone or output-device settings — the daemon auto-detects both. Change the system default input in System Settings ▸ Sound to swap mics.
 
@@ -478,6 +478,14 @@ As a safety net, the daemon also watches the audio level. After 90 s of unbroken
 - `mlx-lm not found`: rerun `scripts/install.sh` (or `cd pipeline && uv sync`). The dep is declared in `pyproject.toml` with an Apple-Silicon marker; non-arm64 hosts fall back to `backend="anthropic"` automatically.
 - `mlx_lm.server did not become healthy within 120s`: the model is being downloaded for the first time. The default `Qwen2.5-7B-Instruct-4bit` is ~4.3 GB; check `~/.cache/huggingface/hub/` size growth. A previously-interrupted download is now detected as incomplete and resumed (it no longer reports ready while partial); watch the menu-bar download row and use its **Retry** if the fetch failed.
 - Output looks fine but `mp doctor` still warns "regulated_mode + backend = anthropic": expected. `regulated_mode` does not by itself force the local backend. Set `summarization.backend = "local"` explicitly for the zero-egress contract.
+
+**A regulated or NDA meeting fails with "Model ... is not in the local HuggingFace cache".** A zero-egress run refuses to download a model, because doing so would send a request to huggingface.co from a meeting that promised not to. Fetch the model once from a normal run, then re-run the meeting:
+
+```bash
+mp prefetch-model mlx-community/Qwen2.5-7B-Instruct-4bit
+```
+
+This bites after changing `summarization.local_model` and then recording an NDA meeting before any ordinary one has warmed the cache.
 
 **I uninstalled and reinstalled but macOS still says "permission denied" and won't re-prompt.** With the self-signed "MeetingPipe Dev" signing cert (the default), Screen Recording grants survive rebuilds, so this is now rare. If it still happens:
 - `scripts/install.sh --reset-tcc` (or `scripts/uninstall.sh --reset-tcc`) clears the TCC cache for a clean re-grant. Note that macOS Notifications live outside TCC and must be reset manually in System Settings → Notifications → MeetingPipe.
