@@ -50,6 +50,11 @@ Subcommands:
                               Manage named-speaker voiceprints: name an
                               unknown THEM-A cluster so a recurring person
                               surfaces by name across meetings (FEAT3-ROSTER)
+  backup <dir> [--no-audio]   Archive the library, config, workflows, roster, and
+                              corrections into a dated tar.gz, plus a manifest
+                              naming the Keychain items (values never exported)
+  restore <archive> [--dry-run] [--force]
+                              Unpack a backup into this Mac's configured roots
   digest [--since N] [--publish] [--dir P] [--out-dir P] [--json]
                               Weekly review digest of aging open actions +
                               recent decisions, generated on-device; writes to
@@ -131,6 +136,12 @@ def main() -> int:
         return run(rest)
     if cmd == "roster":
         from .roster_cmd import main as run
+        return run(rest)
+    if cmd == "backup":
+        from .backup import main as run
+        return run(rest)
+    if cmd == "restore":
+        from .restore import main as run
         return run(rest)
     if cmd in {"ai2-spike", "ai2_spike"}:
         from .ai2_spike import main as run

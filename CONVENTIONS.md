@@ -335,6 +335,22 @@ Note for tests: `com.apple.icloud.desktop` can be written by an unprivileged pro
 
 ---
 
+## Backup and restore (STOR2)
+
+`mp.storage` owns every root path, with an injectable `home` so tests point the whole tree at a `tmp_path`. `mp backup` and `mp restore` and `mp doctor` all resolve through it, so they cannot drift on what "the library" means.
+
+`mp backup <dir>` writes `meeting-pipe-backup-<YYYYMMDD-HHMMSS>.tar.gz`, stdlib `tarfile`, gzip **level 1**: JSON sidecars compress well even at level 1 while WAV barely compresses at any level, so the default level 6 burns minutes of CPU on a multi-gigabyte library for nothing. Each root goes under a stable prefix (`library/`, `digests/`, `config/`, `corrections/`) rather than an absolute path, which is what lets a new Mac restore to a different library location.
+
+**Never archived**, each with a reason in the manifest's `excluded` list: `originals/` (ADR 0016 makes them 0600 and Time-Machine-excluded; a tarball on a NAS would undo that), `secrets.env`, `.last-backup.json` (a fact about *this* Mac), `published/`, and the caches. Keychain values are never exported; the manifest names the three items under service `com.meetingpipe.daemon` and `mp restore` prints the `security add-generic-password` commands.
+
+`mp restore <archive>` maps prefixes back to **this** machine's roots via `backup_roots(cfg)`, refuses a destination that already has files (`--force` overrides), and extracts with `tarfile`'s `data` filter so a crafted member cannot escape; a `FilterError` surfaces as a `RestoreError`, not a traceback.
+
+**The config-root exception.** A new Mac must write `config.toml` *before* restoring, since that file names the destinations. So `config.toml` (and `.last-backup.json`) do not count toward the config root's occupancy check, and the backup's `config.toml` never overwrites an existing one: it names the old Mac's paths, and restoring it would repoint `output_dir` at a library that is not there. Every other config file (workflows, roster, voiceprint, glossary) restores normally. Found by walking the runbook; keep the runbook walkable.
+
+`mp doctor` reports the last backup's age from `~/.config/meeting-pipe/.last-backup.json`. Informational only: the owner may be relying on Time Machine.
+
+---
+
 ## Speaker enrollment (FEAT3-VOICEPRINT / FEAT3-ROSTER)
 
 Speaker enrollment learns voices so "me vs them" holds on the mono / merged recordings where the stereo mic-channel trick can't, and recurring named people surface by name. Four artifacts:

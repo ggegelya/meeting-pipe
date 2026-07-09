@@ -11,6 +11,17 @@ import shutil
 from pathlib import Path
 
 
+def config_dir(home: Path | None = None) -> Path:
+    """`~/.config/meeting-pipe/`: config.toml, workflows/, voiceprint, roster,
+    glossary. Mirrors `config.CONFIG_PATH.parent` with an injectable home."""
+    return (home or Path.home()) / ".config" / "meeting-pipe"
+
+
+def backup_marker(home: Path | None = None) -> Path:
+    """Stamped by `mp backup` so `mp doctor` can report the last backup's age."""
+    return config_dir(home) / ".last-backup.json"
+
+
 def app_support_dir(home: Path | None = None) -> Path:
     """`~/Library/Application Support/MeetingPipe/`: the corrections corpus and
     the kept pre-redaction originals."""

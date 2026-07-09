@@ -304,6 +304,47 @@ This is an operating-system behaviour, not something the app can override, so me
 
 ---
 
+## Backup, and moving to a new Mac
+
+What cannot be recreated is scattered across four places: the library, the config directory (config, workflows, voiceprint, roster, glossary), the corrections corpus, and three Keychain items. `mp backup` gathers the four, names the Keychain items, and exports no secret.
+
+```bash
+mp backup ~/Backups              # a dated meeting-pipe-backup-YYYYMMDD-HHMMSS.tar.gz
+mp backup ~/Backups --no-audio   # sidecars only; much smaller, meetings restore without audio
+```
+
+`mp doctor` then reports how long ago that ran, under `== storage ==`.
+
+**In the archive:** the library (recordings plus every sidecar), `digests/`, `~/.config/meeting-pipe/`, and `~/Library/Application Support/MeetingPipe/corrections/`.
+
+**Deliberately not in the archive:**
+
+- **Keychain values.** The manifest names the three items (`ANTHROPIC_API_KEY`, `NOTION_TOKEN`, `HF_TOKEN` under service `com.meetingpipe.daemon`); the secrets themselves are never exported. You re-add them by hand.
+- **`originals/`**, the kept pre-redaction recordings. [ADR 0016](./docs/decisions/) makes them mode 0600 and excludes them from Time Machine because they are the most sensitive thing on disk; putting them in a tarball you copy to a NAS would undo that. The redacted recording in the library *is* backed up.
+- `secrets.env` (the legacy plaintext file), `published/` (republish regenerates it), and the caches.
+
+### Moving to a new Mac
+
+1. **Install** meeting-pipe (see [Install](#install)) and write `~/.config/meeting-pipe/config.toml` with `recording.output_dir` set to where you want the library on *this* Mac. Pick somewhere outside iCloud's Desktop & Documents scope while you are here.
+2. **Restore.** Destinations come from the config you just wrote, not from wherever the backup was taken, so the library can live at a different path than before.
+   ```bash
+   mp restore ~/Backups/meeting-pipe-backup-20260709-215757.tar.gz --dry-run   # look first
+   mp restore ~/Backups/meeting-pipe-backup-20260709-215757.tar.gz
+   ```
+   Restore refuses to write into a root that already has files (pass `--force` if you mean it), and it keeps the `config.toml` you wrote in step 1 rather than the backup's, which names the old Mac's paths. Everything else under the config directory (workflows, roster, voiceprint, glossary) is restored.
+3. **Re-add the three Keychain items.** `mp restore` prints the exact commands:
+   ```bash
+   security add-generic-password -U -s com.meetingpipe.daemon -a ANTHROPIC_API_KEY -w '<value>'
+   security add-generic-password -U -s com.meetingpipe.daemon -a NOTION_TOKEN      -w '<value>'
+   security add-generic-password -U -s com.meetingpipe.daemon -a HF_TOKEN          -w '<value>'
+   ```
+   `HF_TOKEN` is optional. Skip any you do not use.
+4. **`mp doctor`.** It should report the library at its new path, no cloud sync, and your local model stack.
+
+Per [ADR 0003](./docs/decisions/) nothing here is magic: a `cp -R` of the same four roots works just as well, and `mp restore` is only unpacking a tarball into them.
+
+---
+
 ## Improving local quality
 
 When `summarization.backend` is `"local"`, you can grade each published summary so the local model gets better over time. There are two surfaces:

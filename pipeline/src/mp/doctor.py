@@ -11,11 +11,13 @@ uses the messages endpoint with `max_tokens=1` (cheapest possible request,
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -362,7 +364,32 @@ def check_storage(cfg: Config | None, home: Path | None = None) -> None:
         else:
             _ok(f"free disk {storage.human_bytes(free)}")
 
+    check_last_backup(home=home)
     check_library_sync(cfg, home=home)
+
+
+def check_last_backup(home: Path | None = None, now: datetime | None = None) -> None:
+    """How long since `mp backup` last ran (STOR2).
+
+    Informational, never a failure: the owner may well be relying on Time Machine.
+    A missing marker means no `mp backup` has run on this Mac, which is worth
+    saying once rather than nagging about.
+    """
+    marker = storage.backup_marker(home)
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        taken = datetime.fromisoformat(data["at"])
+    except (OSError, ValueError, KeyError):
+        _info("no `mp backup` has run on this Mac (see the README backup runbook)")
+        return
+
+    now = now or datetime.now(timezone.utc)
+    if taken.tzinfo is None:
+        taken = taken.replace(tzinfo=timezone.utc)
+    days = (now - taken).days
+    when = "today" if days == 0 else f"{days} day{'s' if days != 1 else ''} ago"
+    suffix = "" if data.get("audio_included", True) else ", without recordings"
+    _info(f"last backup {when}{suffix}: {data.get('archive', marker)}")
 
 
 def _synced_roots(cfg: Config, home: Path | None) -> list[tuple[str, cloudsync.SyncProvider]]:

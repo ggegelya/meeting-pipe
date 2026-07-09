@@ -8,14 +8,18 @@ that's the surface whose regression would silently regress the
 """
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from mp import storage
 from mp.config import Config
 from mp.doctor import (
     _estimate_model_gb,
     _scan_recorder_log_for_tcc,
+    check_last_backup,
     check_library_sync,
     check_local_stack,
     check_storage,
@@ -269,6 +273,47 @@ def test_check_library_sync_deduplicates_roots_in_one_synced_tree(capsys, tmp_pa
     check_library_sync(_storage_cfg(root / "raw"), home=tmp_path, workflows_dir=tmp_path / "none")
     out = capsys.readouterr().out
     assert out.count("synced to Dropbox") == 1
+
+
+# ---------- last-backup age (STOR2) ------------------------------------------
+
+
+def _stamp_backup(home: Path, at: datetime, *, audio: bool = True) -> None:
+    marker = storage.backup_marker(home)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({
+        "at": at.isoformat(), "archive": "/backups/x.tar.gz", "audio_included": audio,
+    }))
+
+
+def test_check_last_backup_reports_the_age(capsys, tmp_path) -> None:
+    now = datetime(2026, 7, 10, tzinfo=timezone.utc)
+    _stamp_backup(tmp_path, now - timedelta(days=3))
+    check_last_backup(home=tmp_path, now=now)
+    out = capsys.readouterr().out
+    assert "last backup 3 days ago" in out
+    assert "/backups/x.tar.gz" in out
+
+
+def test_check_last_backup_says_today_and_flags_a_no_audio_backup(capsys, tmp_path) -> None:
+    now = datetime(2026, 7, 10, 12, tzinfo=timezone.utc)
+    _stamp_backup(tmp_path, now - timedelta(hours=2), audio=False)
+    check_last_backup(home=tmp_path, now=now)
+    out = capsys.readouterr().out
+    assert "last backup today, without recordings" in out
+
+
+def test_check_last_backup_without_a_marker_points_at_the_runbook(capsys, tmp_path) -> None:
+    check_last_backup(home=tmp_path)
+    assert "no `mp backup` has run on this Mac" in capsys.readouterr().out
+
+
+def test_check_last_backup_tolerates_a_corrupt_marker(capsys, tmp_path) -> None:
+    marker = storage.backup_marker(tmp_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("not json")
+    check_last_backup(home=tmp_path)
+    assert "no `mp backup` has run" in capsys.readouterr().out
 
 
 def test_doctor_main_still_exits_zero_on_a_hard_fail(monkeypatch, tmp_path) -> None:
