@@ -473,4 +473,32 @@ final class SinkDispatcherTests: XCTestCase {
                        "an in-process ASR fault records the transcribe stage")
         XCTAssertTrue(driver.startedFiles.isEmpty, "pipeline must not run when ASR fails")
     }
+
+    // MARK: - failure-stage attribution (PIPE1)
+
+    /// `mp` exits 3 when every configured sink failed. That leaves a complete
+    /// summary on disk, so the failure is attributed to publish rather than to the
+    /// coarse pipeline stage, which is what lets the Library retry publish alone.
+    func test_publish_failed_exit_code_maps_to_the_publish_stage() {
+        let err = PipelineLauncher.LaunchError.nonZeroExit(
+            PipelineLauncher.publishFailedExitCode, "every sink failed"
+        )
+        XCTAssertEqual(SinkDispatcher.stage(for: err), .publish)
+        XCTAssertTrue(SinkDispatcher.stage(for: err).retriesFromSummary)
+    }
+
+    func test_other_non_zero_exits_stay_on_the_pipeline_stage() {
+        let err = PipelineLauncher.LaunchError.nonZeroExit(1, "summarize blew up")
+        XCTAssertEqual(SinkDispatcher.stage(for: err), .pipeline)
+        XCTAssertFalse(SinkDispatcher.stage(for: err).retriesFromSummary)
+    }
+
+    func test_missing_executable_stays_on_the_launch_stage() {
+        XCTAssertEqual(SinkDispatcher.stage(for: PipelineLauncher.LaunchError.mpNotFound), .launch)
+    }
+
+    func test_a_timeout_is_not_mistaken_for_a_publish_failure() {
+        let err = PipelineLauncher.LaunchError.timeout(90 * 60)
+        XCTAssertEqual(SinkDispatcher.stage(for: err), .pipeline)
+    }
 }

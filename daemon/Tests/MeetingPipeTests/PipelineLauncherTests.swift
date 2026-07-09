@@ -156,4 +156,61 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertNil(PipelineLauncher.parseProgress("__MP_PROGRESS__ not-json"))
         XCTAssertNil(PipelineLauncher.parseProgress(#"__MP_PROGRESS__ {"elapsed_s":1}"#))
     }
+
+    // MARK: - PublishResult (PIPE1)
+
+    private func writePublishSidecar(_ json: String, stem: String, in dir: URL) throws {
+        try json.write(to: dir.appendingPathComponent("\(stem).publish.json"),
+                       atomically: true, encoding: .utf8)
+    }
+
+    private func makeTempDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("publish-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    func test_publish_result_reads_state_and_page_url() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try writePublishSidecar(#"""
+        {"schema_version":1,"state":"full","page_url":"https://notion.so/p","sinks":{}}
+        """#, stem: "m", in: dir)
+
+        let result = PublishResult.load(stem: "m", in: dir)
+        XCTAssertEqual(result?.state, "full")
+        XCTAssertEqual(result?.pageURL?.absoluteString, "https://notion.so/p")
+    }
+
+    /// A local-only workflow publishes successfully and has no page to link to.
+    func test_publish_result_tolerates_a_null_page_url() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try writePublishSidecar(#"{"schema_version":1,"state":"full","page_url":null,"sinks":{}}"#,
+                                stem: "m", in: dir)
+
+        let result = PublishResult.load(stem: "m", in: dir)
+        XCTAssertEqual(result?.state, "full")
+        XCTAssertNil(result?.pageURL)
+    }
+
+    /// Every `run-all` short-circuit (no speech, BYO, too long, Apple hand-off)
+    /// stops before publish and writes no sidecar. That reads as no page URL, not
+    /// as a failure, and must never fall back to a stale `<stem>.notion.json`.
+    func test_publish_result_is_nil_when_the_run_never_published() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try "{\"page_url\":\"https://notion.so/stale\"}".write(
+            to: dir.appendingPathComponent("m.notion.json"), atomically: true, encoding: .utf8
+        )
+        XCTAssertNil(PublishResult.load(stem: "m", in: dir))
+    }
+
+    func test_publish_result_is_nil_on_malformed_json() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try writePublishSidecar("{ not json", stem: "m", in: dir)
+        XCTAssertNil(PublishResult.load(stem: "m", in: dir))
+    }
 }

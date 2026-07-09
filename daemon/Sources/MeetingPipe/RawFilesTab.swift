@@ -102,10 +102,11 @@ struct RawFileEntry: Identifiable, Equatable {
         case summaryMarkdown = 4
         case meta = 5
         case run = 6
-        case notion = 7
-        case obsidian = 8
-        case readyForManual = 9
-        case correction = 10  // (lives in App Support, not here, but kept as a slot)
+        case publish = 7      // <stem>.publish.json, this run's fanout outcome (PIPE1)
+        case notion = 8
+        case obsidian = 9
+        case readyForManual = 10
+        case correction = 11  // (lives in App Support, not here, but kept as a slot)
         case other = 99
 
         static func < (lhs: Kind, rhs: Kind) -> Bool {
@@ -121,6 +122,7 @@ struct RawFileEntry: Identifiable, Equatable {
             case .summaryMarkdown: return "Summary (Markdown)"
             case .meta: return "Meta sidecar"
             case .run: return "Pipeline run sidecar"
+            case .publish: return "Publish result"
             case .notion: return "Notion publish sidecar"
             case .obsidian: return "Obsidian publish sidecar"
             case .readyForManual: return "Manual-paste handoff"
@@ -135,7 +137,7 @@ struct RawFileEntry: Identifiable, Equatable {
             case .transcript: return "text.bubble"
             case .markdownTranscript: return "doc.plaintext"
             case .summaryJSON, .summaryMarkdown: return "doc.text"
-            case .meta, .run: return "info.circle"
+            case .meta, .run, .publish: return "info.circle"
             case .notion: return "link"
             case .obsidian: return "link"
             case .readyForManual: return "hand.raised"
@@ -188,6 +190,7 @@ enum RawFilesLister {
         }
         if name == "\(stem).meta.json" { return .meta }
         if name == "\(stem).run.json" { return .run }
+        if name == "\(stem).publish.json" { return .publish }
         if name == "\(stem).summary.json" { return .summaryJSON }
         if name == "\(stem).summary.md" { return .summaryMarkdown }
         if name == "\(stem).notion.json" { return .notion }

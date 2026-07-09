@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 from . import entry
-from .publish_router import fanout
+from .publish_router import EXIT_PUBLISH_FAILED, all_sinks_failed, fanout
 
 log = logging.getLogger("mp.publish")
 
@@ -43,6 +43,12 @@ def main(argv: list[str]) -> int:
     if failures:
         for name, err in failures:
             log.error("sink %s failed: %s", name, err)
+    # PIPE1/AUD-30: the Apple Intelligence completion path runs this directly and
+    # used to read `<stem>.notion.json` unconditionally on a zero exit, so an
+    # all-sinks-failed publish looked like a success carrying a stale page URL.
+    if all_sinks_failed(pub):
+        log.error("publish failed on every sink")
+        return EXIT_PUBLISH_FAILED
     log.info("publish done: page_url=%s", pub.get("page_url"))
     return 0
 

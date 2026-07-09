@@ -4,10 +4,11 @@ import Foundation
 /// Daemon-owned; distinct from `<stem>.run.json` which is written by `mp run-all` only on success. A SIGKILL'd pipeline writes nothing - the daemon is the only observer of every failure mode. Success clears a stale failure sidecar.
 enum PipelineFailureSidecar {
 
-    /// Coarse stage label. Does not split summarize vs publish inside `mp run-all`; `reason` carries that detail.
+    /// Coarse stage label. `reason` carries the detail. `publish` is split out from `pipeline` because it is the one stage whose retry can reuse work already on disk (PIPE1).
     enum Stage: String {
         case transcribe   // FluidAudio ASR + diarization, in-process
         case pipeline     // mp run-all: summarize + publish
+        case publish      // every configured sink failed; the summary is on disk (PIPE1)
         case launch       // mp executable missing or could not spawn
         case interrupted  // daemon restart stranded a queued/in-flight job (PIPE3)
 
@@ -15,10 +16,14 @@ enum PipelineFailureSidecar {
             switch self {
             case .transcribe:  return "Transcription"
             case .pipeline:    return "Summarize and publish"
+            case .publish:     return "Publishing"
             case .launch:      return "Pipeline launch"
             case .interrupted: return "Interrupted"
             }
         }
+
+        /// True when a retry can skip straight to publishing the existing `<stem>.summary.json` instead of re-running summarize. Only the publish stage qualifies: it is the one failure that leaves a complete, paid-for summary behind.
+        var retriesFromSummary: Bool { self == .publish }
     }
 
     struct Failure: Equatable {

@@ -141,7 +141,7 @@ final class LibraryWindowModel: ObservableObject {
         coordinator?.menuPreferences()
     }
 
-    /// Republish via `mp publish-notion`. Async-wraps the Coordinator callback so SwiftUI callers can `await` the result.
+    /// Republish via `mp publish` (the sink fanout). Async-wraps the Coordinator callback so SwiftUI callers can `await` the result.
     func republishMeeting(stem: String) async -> Result<URL?, Error> {
         guard let coordinator = coordinator else {
             return .failure(NSError(

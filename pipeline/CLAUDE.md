@@ -25,6 +25,7 @@ CI runs ruff strictly — any F401 unused import fails the pipeline job. Run loc
 - **Services as `Protocol`s.** `services.py` defines narrow contracts; concrete implementations live next to use sites (`AnthropicSummaryClient` in `summarize.py`, `NotionRestPublisher` in `publish_notion.py`). Tests inject in-memory fakes, not SDK mocks.
 - **Pydantic schemas as the contract.** `MeetingSummary` (in `schemas.py`) is the JSON shape every publisher expects. Adding a field means updating the schema + every publisher + the tests.
 - **Idempotent publishers.** Each sink runs through `publish_router.fanout`; one failing doesn't block the others. Re-publish must be upsert, not duplicate (Notion derives its page slug deterministically from the meeting stem).
+- **A publish that landed nowhere exits 3.** `run-all` / `publish` / `publish-from-paste` return `publish_router.EXIT_PUBLISH_FAILED` when every configured sink failed, and `fanout` records the run's outcome in `<stem>.publish.json`. Zero sinks configured is a success (`all_sinks_failed`, not `publish_state == "none"`). A new command that fans out inherits both or it lies to the daemon.
 
 ## Tests
 

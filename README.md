@@ -210,6 +210,8 @@ The window is a smart-folder rail + scoped list + context-aware detail pane, wit
 - **List** — the scoped meetings list with the existing filter chips (App / Status / Date) layered on top.
 - **Detail pane** — single meeting selected → the meeting detail (Summary / Transcript / Audio / Corrections / Raw); multiple selected → batch actions; no meeting but a workflow scope active → workflow inspector (Trigger / Modes / Output / Backend + Recent meetings + Edit workflow); otherwise the empty-state nudge.
 
+A failed row names the stage that failed, and **Retry** does the least work that stage needs. When the failure was `Publishing` (every configured sink rejected the summary, e.g. Notion was down), Retry republishes the summary already on disk rather than re-transcribing and re-summarizing the meeting, so a retry after an outage costs nothing and cannot produce a different summary than the one you already reviewed. Every other stage retries the whole pipeline. A publish that landed nowhere never reports success, so it will not clear the failed row or notify you with a link to the previous meeting's page.
+
 Preferences is no longer a rail item — it lives on the toolbar's gear icon. Workflows are no longer a top-level tab — they're rail scopes.
 
 If you've never recorded anything the list shows `No recordings yet - Start a meeting in Zoom / Teams / Meet / Webex / Slack, or press ⌃⌥M.` Otherwise:

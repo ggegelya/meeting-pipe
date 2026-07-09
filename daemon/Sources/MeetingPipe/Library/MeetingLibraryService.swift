@@ -30,9 +30,28 @@ final class MeetingLibraryService {
         self.summarizationBackend = summarizationBackend
     }
 
-    /// Retry the full `mp run-all` pipeline. Enqueues the same subprocess the normal flow uses so the processing badge updates and sidecars get overwritten. Fails immediately when the recording is missing (never written, or reclaimed by a `drop` retention policy); all other errors surface via the existing pipeline notifier.
+    /// Retry a failed meeting, reusing whatever the failed run already produced (PIPE1).
+    ///
+    /// A publish-stage failure left a complete `<stem>.summary.json` behind, so the retry republishes that summary instead of re-running `mp run-all`, which would re-transcribe and pay the summarizer a second time for a result it already has. Every other stage retries the full pipeline: enqueuing the same subprocess the normal flow uses, so the processing badge updates and the sidecars get overwritten.
+    ///
+    /// Fails immediately when the work the chosen path needs is missing (no recording for a full retry, no summary for a publish retry); all other errors surface via the existing pipeline notifier.
     func retryMeeting(stem: String) -> Result<Void, Error> {
         let dir = outputDir()
+        let failure = PipelineFailureSidecar.read(stem: stem, in: dir)
+        let summaryURL = dir.appendingPathComponent("\(stem).summary.json")
+
+        if failure?.stage.retriesFromSummary == true,
+           FileManager.default.fileExists(atPath: summaryURL.path) {
+            Log.writeLine("daemon", "retry publish → \(stem)")
+            Log.event(category: "coordinator", action: "retry_requested", attributes: [
+                "stem": stem, "scope": "publish",
+            ])
+            PipelineFailureSidecar.clear(stem: stem, in: dir)
+            // republishMeeting rewrites a publish-stage failure sidecar if the sinks fail again, so the row returns to the failed set rather than looking done.
+            republishMeeting(stem: stem) { _ in }
+            return .success(())
+        }
+
         guard let audioURL = MeetingStore.finalRecordingURL(stem: stem, in: dir) else {
             return .failure(NSError(
                 domain: "MeetingLibraryService", code: 1,
@@ -42,7 +61,7 @@ final class MeetingLibraryService {
         }
         Log.writeLine("daemon", "retry pipeline → \(stem)")
         Log.event(category: "coordinator", action: "retry_requested", attributes: [
-            "stem": stem,
+            "stem": stem, "scope": "run_all",
         ])
         // Drop the failure sidecar immediately so the row leaves the failed set before the run finishes. The dispatcher writes a fresh sidecar if it fails again.
         PipelineFailureSidecar.clear(stem: stem, in: dir)
@@ -417,7 +436,9 @@ final class MeetingLibraryService {
         return .success(copied)
     }
 
-    /// Re-run `mp publish-notion` via the same subprocess the orchestrator uses (TECH-A5). Caller must have already written the corrected summary to `<stem>.summary.json`. Returns the Notion page URL, or nil under regulated_mode / when the link is absent from the sidecar.
+    /// Re-run the sink fanout (`mp publish`) via the same subprocess the orchestrator uses (TECH-A5). Caller must have already written the corrected summary to `<stem>.summary.json`. Returns the page URL of the first successful page-producing sink, or nil under regulated_mode / for a local-only workflow.
+    ///
+    /// A failure writes a publish-stage `<stem>.error.json` (PIPE1). Without it a failed republish left the row looking done, so the meeting was never offered a retry and the user's edits sat unpublished.
     func republishMeeting(
         stem: String,
         completion: @escaping (Result<URL?, Error>) -> Void
@@ -440,6 +461,7 @@ final class MeetingLibraryService {
             DispatchQueue.main.async {
                 switch result {
                 case .success(let url):
+                    PipelineFailureSidecar.clear(stem: stem, in: dir)
                     Log.event(category: "coordinator", action: "republish_succeeded", attributes: [
                         "stem": stem,
                         "page_url": url?.absoluteString ?? NSNull(),
@@ -449,6 +471,12 @@ final class MeetingLibraryService {
                         "stem": stem,
                         "error": err.localizedDescription,
                     ])
+                    // Durably mark the row failed so it can be retried; the banner is gone in seconds.
+                    PipelineFailureSidecar.write(
+                        stem: stem, in: dir,
+                        stage: SinkDispatcher.stage(for: err),
+                        reason: err.localizedDescription
+                    )
                     self?.notifyError("Republish failed: \(err.localizedDescription)")
                 }
                 completion(result)

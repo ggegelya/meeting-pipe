@@ -25,7 +25,7 @@ When a task ships done-done, move it to the running quarter archive [`q6-final.m
 
 ## Priority bands
 
-- **P1**: correctness, a broken core promise, or a high-leverage must-have; do first. This quarter P1 interleaves the open correctness/detection debt (PIPE1, MIC, END6, VALID1, C6-FINISH) with the engineering-health must-haves the 2026-07-10 architecture review added (DOC7, ARCH4; SEC13 shipped). The archive-stewardship P1 band from the 2026-07-05 feature review (MIC13, STOR1, STOR2, SEC12, ASR1, FEAT8) shipped and lives in [`q6-final.md`](./q6-final.md).
+- **P1**: correctness, a broken core promise, or a high-leverage must-have; do first. This quarter P1 interleaves the open correctness/detection debt (MIC, END6, VALID1, C6-FINISH) with the engineering-health must-haves the 2026-07-10 architecture review added (DOC7, ARCH4; SEC13 and PIPE1 shipped). The archive-stewardship P1 band from the 2026-07-05 feature review (MIC13, STOR1, STOR2, SEC12, ASR1, FEAT8) shipped and lives in [`q6-final.md`](./q6-final.md).
 - **P2**: polish, power-user payoff, and the half-closed loops (digest/paste/long-meeting surfacing, the provider seam).
 - **P3**: deferred; listed so the trail stays readable. Leave P3 alone unless a task explicitly promotes it.
 
@@ -33,7 +33,6 @@ When a task ships done-done, move it to the running quarter archive [`q6-final.m
 
 | ID | Task | Category | Status | Priority | Comment |
 |---|---|---|---|---|---|
-| PIPE1 | Honest publish-failure contract | Pipeline | new | P1 | All-sinks-failed exits 0: daemon clears error.json, emits pipeline_succeeded, can notify a stale URL; retry re-summarizes. Independently re-confirmed by the 2026-07-10 review. (AUD-14) |
 | MIC15 | Capture-time input-device identity + dead-mic warning | Recording | new | P1 | Mic recorded 4.5 min of noise floor (wrong system-default input, a Bluetooth headset idle in A2DP) while system audio was clean, and nothing warned; log + record the captured device, warn post-stop when the mic is dead under live system audio, optional start-time "running-somewhere" mismatch nudge. Cannot read the meeting app's own device (no macOS API). (20260707-150057) |
 | DOC7 | Documentation truth sweep | Docs | new | P1 | Verified drift misleads sessions: deleted SilenceDetector still cited in CONVENTIONS + daemon/CLAUDE.md, Coordinator "~1500 lines" (it is 633, and MeetingSessionController is undocumented), 17 pipeline modules missing from ARCHITECTURE.md incl. engine/egress_guard, stale README flows, root CLAUDE.md torch/whisperx ghost. Cheap, high leverage. (2026-07-10 review) |
 | ARCH4 | Test seam for the daemon spine | Architecture | new | P1 | Coordinator + MeetingSessionController (~1,600 lines, every transition, the state-machine invariants) has zero constructible test coverage; SessionHost protocol + fake + first branch tests, retire the 14-method Library middle man, typed LibraryError. (2026-07-10 review) |
@@ -195,7 +194,7 @@ Origin: an owner-commissioned architecture and gaps review (2026-07-10), run as 
 
 ### Carried from Q4 unchanged
 
-Full specs in [`q4-final.md`](./q4-final.md) (search the id). Detection and capture: MIC10, MIC7, MIC8, END5 (MIC13 shipped; row in [`q6-final.md`](./q6-final.md)). Pipeline and distribution: PIPE1, DIST1, CAL1. Deferred (promote on a real trigger only): I7 (trigger amended 2026-07-10, see the review section above), I8, G1, D8, CAP1, BRAND1..9. One-line reminders live in the ToC Comment column above; the id-searchable full text stays in q4-final so each carried spec has a single owner.
+Full specs in [`q4-final.md`](./q4-final.md) (search the id). Detection and capture: MIC10, MIC7, MIC8, END5 (MIC13 shipped; row in [`q6-final.md`](./q6-final.md)). Pipeline and distribution: DIST1, CAL1 (PIPE1 shipped; row in [`q6-final.md`](./q6-final.md)). Deferred (promote on a real trigger only): I7 (trigger amended 2026-07-10, see the review section above), I8, G1, D8, CAP1, BRAND1..9. One-line reminders live in the ToC Comment column above; the id-searchable full text stays in q4-final so each carried spec has a single owner.
 
 ### Watch list (monitor, promote on a real recurrence)
 

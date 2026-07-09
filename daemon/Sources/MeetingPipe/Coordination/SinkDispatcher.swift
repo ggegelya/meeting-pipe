@@ -147,16 +147,9 @@ final class SinkDispatcher {
                         "file": job.file.lastPathComponent,
                         "error": err.localizedDescription,
                     ])
-                    // A missing executable is the only launch-stage failure; everything else faults inside summarize/publish.
-                    let stage: PipelineFailureSidecar.Stage
-                    if case PipelineLauncher.LaunchError.mpNotFound = err {
-                        stage = .launch
-                    } else {
-                        stage = .pipeline
-                    }
                     PipelineFailureSidecar.write(
                         stem: loc.stem, in: loc.dir,
-                        stage: stage, reason: err.localizedDescription
+                        stage: SinkDispatcher.stage(for: err), reason: err.localizedDescription
                     )
                 }
                 self.completeActiveJob(job, with: result)
@@ -210,5 +203,17 @@ final class SinkDispatcher {
     private static func sidecarLocation(for job: ProcessingJob) -> (stem: String, dir: URL) {
         (job.file.deletingPathExtension().lastPathComponent,
          job.file.deletingLastPathComponent())
+    }
+
+    /// Attribute a pipeline failure to the stage that produced it. A missing executable is the only launch-stage failure. `mp` exits `publishFailedExitCode` when every configured sink failed (PIPE1), which leaves a complete summary on disk, so the Library can retry publish alone. Everything else faults somewhere inside summarize/publish and gets the coarse `.pipeline` label. Internal for `SinkDispatcherTests`.
+    static func stage(for error: Error) -> PipelineFailureSidecar.Stage {
+        switch error {
+        case PipelineLauncher.LaunchError.mpNotFound:
+            return .launch
+        case PipelineLauncher.LaunchError.nonZeroExit(PipelineLauncher.publishFailedExitCode, _):
+            return .publish
+        default:
+            return .pipeline
+        }
     }
 }

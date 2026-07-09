@@ -18,7 +18,13 @@ import pytest
 
 from mp.config import Config
 from mp.diarize import cosine_similarity
-from mp.orchestrate import _finalize_streamed_transcript, _write_manual_bundle, run_all
+from mp.orchestrate import (
+    _finalize_streamed_transcript,
+    _write_manual_bundle,
+    main as orchestrate_main,
+    run_all,
+)
+from mp.publish_router import EXIT_PUBLISH_FAILED
 from mp.roster import EMBEDDING_DIM, RosterStore
 from mp.voiceprint import VoiceprintStore
 
@@ -516,3 +522,84 @@ def test_manual_bundle_without_markers_has_no_flagged_section(tmp_path: Path):
     md.write_text("# Transcript\n", encoding="utf-8")
     bundle = _write_manual_bundle(md, char_count=90000, threshold=80000)
     assert "User-flagged moments" not in bundle.read_text(encoding="utf-8")
+
+
+# --- PIPE1 / AUD-14: an all-sinks-failed run is not a completed run ----------
+
+
+def _all_sinks_failed_result() -> dict:
+    return {
+        "page_id": None,
+        "page_url": None,
+        "sinks": {"notion": {"error": "503 from api.notion.com"}},
+        "failures": [("notion", "503 from api.notion.com")],
+    }
+
+
+def _run_with_publish_result(tmp_path: Path, pub: dict, monkeypatch) -> dict:
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    stem = "20260516-0900"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)
+    summary_json = tmp_path / f"{stem}.summary.json"
+    summary_json.write_text("{}", encoding="utf-8")
+    with patch("mp.orchestrate.summarize",
+               return_value={"json": summary_json, "md": tmp_path / f"{stem}.summary.md"}), \
+         patch("mp.orchestrate.publish_fanout", return_value=pub):
+        return run_all(wav, cfg=Config())
+
+
+def test_run_all_flags_publish_failed_when_every_sink_failed(tmp_path: Path, monkeypatch):
+    result = _run_with_publish_result(tmp_path, _all_sinks_failed_result(), monkeypatch)
+    assert result["publish_failed"] is True
+    # The transcript and summary are real work and stay addressable, which is what
+    # lets the daemon offer a publish-only retry instead of re-summarizing.
+    assert result["summary_json"]
+    assert result["transcript_md"]
+
+
+def test_run_all_emits_run_failed_not_run_completed_on_publish_failure(
+    tmp_path: Path, monkeypatch
+):
+    """The daemon keyed "clear the error sidecar, notify published" off a zero exit
+    while the event log said `run_completed`. Both had to stop lying."""
+    emitted: list[tuple] = []
+    monkeypatch.setattr("mp.orchestrate.events.emit",
+                        lambda cat, action, **attrs: emitted.append((cat, action, attrs)))
+    _run_with_publish_result(tmp_path, _all_sinks_failed_result(), monkeypatch)
+
+    actions = [a for _, a, _ in emitted]
+    assert "run_completed" not in actions
+    assert "run_failed" in actions
+    failed = next(attrs for _, a, attrs in emitted if a == "run_failed")
+    assert failed["stage"] == "publish"
+    assert "503" in failed["error"]
+
+
+def test_run_all_completes_normally_on_a_partial_publish(tmp_path: Path, monkeypatch):
+    pub = {
+        "page_id": "p", "page_url": "u",
+        "sinks": {"notion": {"error": "boom"}, "obsidian": {"idempotent": False}},
+        "failures": [("notion", "boom")],
+    }
+    result = _run_with_publish_result(tmp_path, pub, monkeypatch)
+    assert "publish_failed" not in result
+
+
+def test_run_all_completes_when_no_sink_was_configured(tmp_path: Path, monkeypatch):
+    pub = {"page_id": None, "page_url": None, "sinks": {}, "failures": [], "regulated": True}
+    result = _run_with_publish_result(tmp_path, pub, monkeypatch)
+    assert "publish_failed" not in result
+
+
+def test_main_returns_the_publish_failed_exit_code(tmp_path: Path, monkeypatch):
+    """The exit code is the whole Swift-side contract: it is what tells the daemon
+    to stamp stage=publish rather than clear the failure sidecar."""
+    wav = tmp_path / "20260516-0900.wav"
+    wav.write_bytes(b"")
+    monkeypatch.setattr("mp.orchestrate.run_all", lambda w: {"publish_failed": True})
+    assert orchestrate_main([str(wav)]) == EXIT_PUBLISH_FAILED
+
+    monkeypatch.setattr("mp.orchestrate.run_all", lambda w: {"page_url": "u"})
+    assert orchestrate_main([str(wav)]) == 0

@@ -273,6 +273,30 @@ The moments the user flagged mid-recording with the flag-moment hotkey (FEAT8). 
 
 ---
 
+## Publish result (`<stem>.publish.json`)
+
+This run's publish outcome (PIPE1). A Python-to-Swift surface: `publish_router.fanout` writes it (atomically) at the end of every fanout, and the daemon reads it back through `PublishResult.load`. Shape:
+
+```json
+{
+  "schema_version": 1,
+  "state": "full",
+  "page_url": "https://www.notion.so/...",
+  "ts": "2026-07-10T09:15:00+00:00",
+  "sinks": { "notion": { "ok": true, "page_url": "https://...", "error": null } }
+}
+```
+
+`state` is `full` (every sink succeeded), `partial` (some did), or `none` (every sink failed, or none ran). `page_url` is the first successful sink that produced one, and null for a local-only workflow.
+
+The reason this exists rather than the daemon reading the per-sink `<stem>.<sink>.json` sidecars: a publisher that raises never writes its sidecar, so an earlier successful run's `<stem>.notion.json` survives and is indistinguishable from a fresh one. That is how an all-sinks-failed run used to notify "Meeting published" with a stale URL. This file is rewritten on every fanout, so it always describes the run that just finished.
+
+Absent whenever the pipeline short-circuited before publish (no speech, suspect transcript, BYO, long-meeting bundle, Apple hand-off). Absent reads as "nothing published, nothing failed", never as a reason to fall back to a per-sink sidecar.
+
+**All-sinks-failed is an exit code, not just a file.** `mp run-all`, `mp publish`, and `mp publish-from-paste` exit `3` (`publish_router.EXIT_PUBLISH_FAILED`, mirrored by `PipelineLauncher.publishFailedExitCode`) when every configured sink failed. `SinkDispatcher.stage(for:)` maps that exit to `PipelineFailureSidecar.Stage.publish`, which is the one stage whose retry republishes the existing `<stem>.summary.json` instead of paying the summarizer twice. Zero sinks configured is a clean success, not a failure: see `publish_router.all_sinks_failed`, which is deliberately narrower than `publish_state(...) == "none"`.
+
+---
+
 ## Daemon-internal recording artifacts
 
 Four artifacts the daemon both writes and reads. Unlike `<stem>.meta.json`, none is part of the Swift-to-Python contract: the redactor and orphan recovery consume them before any pipeline run, so the pipeline never reads them directly (recovery does *rebuild* `<stem>.meta.json` from the manifest below). The MIC4/MIC5 capture-first work introduced the first three; REC2 added the recovery manifest. Documented here per DOC6.

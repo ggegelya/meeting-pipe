@@ -47,7 +47,7 @@ protocol PipelineDriver: AnyObject {
     func runAll(wav: URL, summaryMode: SummaryMode, onProgress: ((PipelineProgress) -> Void)?, completion: @escaping (Result<URL?, Error>) -> Void)
     /// Terminate the in-flight `run-all` subprocess, if any (TECH-UX5 Cancel). Defaulted no-op.
     func cancelActiveRun()
-    /// Re-run the publish step against an existing `<stem>.summary.json`. Returns the Notion page URL on success (nil when regulated_mode is on).
+    /// Re-run the publish step against an existing `<stem>.summary.json`. Returns the page URL of the first successful page-producing sink, nil when there is none (regulated_mode, or a local-only workflow). An all-sinks-failed publish is a failure, not a nil-success (PIPE1).
     func publish(summaryJSON: URL, completion: @escaping (Result<URL?, Error>) -> Void)
     /// Re-run only the summarize step against an existing transcript (Library "Regenerate summary" action).
     func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
@@ -135,10 +135,32 @@ extension PipelineDriver {
     }
 }
 
+/// This run's publish outcome, read from `<stem>.publish.json` (PIPE1). Written fresh by `publish_router.fanout` on every run, so unlike the per-sink sidecars it can never be a leftover from a previous one. Absent whenever the pipeline short-circuited before publish (no speech, BYO, too long, Apple hand-off), which reads as "nothing published, nothing failed".
+struct PublishResult: Equatable {
+    /// `"full"`, `"partial"`, or `"none"` (every sink failed, or none ran).
+    let state: String
+    /// The page URL of the first successful sink that produced one. Nil for a local-only workflow, and nil when no page-producing sink succeeded.
+    let pageURL: URL?
+
+    static func load(stem: String, in dir: URL) -> PublishResult? {
+        let url = dir.appendingPathComponent("\(stem).publish.json")
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let state = obj["state"] as? String else {
+            return nil
+        }
+        let pageURL = (obj["page_url"] as? String).flatMap(URL.init(string:))
+        return PublishResult(state: state, pageURL: pageURL)
+    }
+}
+
 /// Spawns `mp` pipeline subcommands out of process so transcription doesn't block the daemon.
 final class PipelineLauncher: PipelineDriver {
     /// Hard wallclock cap for `run-all`. Worst legitimate run is ~30 min for a 3-hour input; 90 min ensures the daemon never sits in `.handoff` indefinitely (May 2026 incident: a 3h file pinned 4 cores for 13h before manual kill).
     static let defaultMaxRuntime: TimeInterval = 90 * 60
+
+    /// Exit code `mp run-all` / `mp publish` / `mp publish-from-paste` use for "every configured sink failed" (PIPE1). Mirrors `publish_router.EXIT_PUBLISH_FAILED`. Distinct from 1 (any other failure) and 2 (usage) so the failure can be attributed to the publish stage without parsing stderr.
+    static let publishFailedExitCode: Int32 = 3
 
     private let maxRuntime: TimeInterval
 
@@ -239,17 +261,18 @@ final class PipelineLauncher: PipelineDriver {
                     self.completeViaAppleIntelligence(wav: wav, completion: completion)
                     return
                 }
-                // Orchestrator writes <wav-stem>.notion.json with page_url; read it back as the success value.
-                let stem = wav.deletingPathExtension().lastPathComponent
-                let sidecar = wav.deletingLastPathComponent().appendingPathComponent("\(stem).notion.json")
-                completion(.success(Self.readPageURL(from: sidecar)))
+                // The orchestrator writes <stem>.publish.json for this run; read the
+                // page URL back from it. It used to read <stem>.notion.json, which a
+                // previous successful run may have left behind (PIPE1/AUD-14).
+                completion(.success(PublishResult.load(stem: appleStem, in: appleDir)?.pageURL))
             }
         }
     }
 
-    /// Spawn `mp publish <summary.json>` (the fanout) and return the resulting page URL (from `<stem>.notion.json`).
+    /// Spawn `mp publish <summary.json>` (the fanout) and return the resulting page URL (from this run's `<stem>.publish.json`).
     /// Routing republish through the fanout (PIPE2/AUD-15) means an obsidian-only or other non-Notion workflow
-    /// reaches its configured sinks instead of always getting a Notion page; the page URL is nil when Notion is not a sink.
+    /// reaches its configured sinks instead of always getting a Notion page; the page URL is nil when no page-producing sink ran.
+    /// An all-sinks-failed publish exits `publishFailedExitCode` and surfaces here as a failure, not a nil-success (PIPE1/AUD-30).
     /// Never sets `MP_FORCE_BYO` - publish is identical regardless of how the summary was produced.
     /// Publish is far quicker than transcribe + summarize; 10 min is generous headroom for the sinks on a slow link.
     func publish(
@@ -264,9 +287,8 @@ final class PipelineLauncher: PipelineDriver {
                 let stem = summaryJSON.lastPathComponent.replacingOccurrences(
                     of: ".summary.json", with: ""
                 )
-                let sidecar = summaryJSON.deletingLastPathComponent()
-                    .appendingPathComponent("\(stem).notion.json")
-                completion(.success(Self.readPageURL(from: sidecar)))
+                let dir = summaryJSON.deletingLastPathComponent()
+                completion(.success(PublishResult.load(stem: stem, in: dir)?.pageURL))
             }
         }
     }
@@ -275,7 +297,7 @@ final class PipelineLauncher: PipelineDriver {
     /// "<q>" --out <tmp>`, which retrieves over the on-device embedding index,
     /// synthesizes an engine-backed answer with verified `[stem]` citations, and
     /// writes the result JSON; this reads it back (the same sidecar-read pattern as
-    /// `readPageURL`, since `runMP` reports only success/failure, not stdout). No
+    /// `PublishResult.load`, since `runMP` reports only success/failure, not stdout). No
     /// `meeting:` URL, so `cloudSecretPolicy(for: nil)` applies the global
     /// regulated / backend posture; the Python side arms the egress guard and
     /// `effective_backend()` forces local under regulated. Async per AI2's verdict,
@@ -428,8 +450,7 @@ final class PipelineLauncher: PipelineDriver {
                 case .failure(let error):
                     completion(.failure(error))
                 case .success:
-                    let sidecar = dir.appendingPathComponent("\(stem).notion.json")
-                    completion(.success(Self.readPageURL(from: sidecar)))
+                    completion(.success(PublishResult.load(stem: stem, in: dir)?.pageURL))
                 }
             }
         }
@@ -606,18 +627,6 @@ final class PipelineLauncher: PipelineDriver {
             watchdog.cancel()
             completion(.failure(error))
         }
-    }
-
-    /// Read `page_url` from an orchestrator sidecar (`<stem>.notion.json`), nil if
-    /// absent/regulated. Shared by the run-all / publish / Apple-publish success paths.
-    static func readPageURL(from sidecar: URL) -> URL? {
-        guard let data = try? Data(contentsOf: sidecar),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let urlStr = obj["page_url"] as? String,
-              let url = URL(string: urlStr) else {
-            return nil
-        }
-        return url
     }
 
     /// One-way flag for the watchdog-to-terminationHandler signal. Uses NSLock because Swift stdlib has no public atomic Bool; cheap for a one-shot flip.

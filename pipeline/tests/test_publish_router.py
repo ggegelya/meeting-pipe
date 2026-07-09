@@ -10,6 +10,7 @@ import pytest
 from mp.config import Config
 from mp.publish_router import (
     PublisherBuildError,
+    all_sinks_failed,
     build_publishers,
     fanout,
     publish_state,
@@ -60,7 +61,7 @@ def test_fanout_runs_all_sinks_in_order(tmp_path: Path) -> None:
     assert pubs[0].calls[0].name == "20260506-1500.notion.json"
     assert pubs[1].calls[0].name == "20260506-1500.obsidian.json"
     assert pubs[2].calls[0].name == "20260506-1500.filesystem.json"
-    # Top-level fields mirror the first sink's result for back-compat.
+    # Top-level fields carry the first successful page-producing sink (PIPE1).
     assert res["page_id"] == "id-notion"
     assert res["failures"] == []
 
@@ -303,3 +304,99 @@ def test_publish_state_classifies_fanout_result() -> None:
         {"sinks": {"notion": {"error": "boom"}, "filesystem": {"ok": True}}}
     ) == "partial"
     assert publish_state({"sinks": {"notion": {"error": "boom"}}}) == "none"
+
+
+# ----- PIPE1: the honest publish-failure contract -----
+
+
+def test_all_sinks_failed_distinguishes_nothing_ran_from_everything_failed() -> None:
+    # "No publisher ran" is a clean success (a regulated run whose only sink was
+    # Notion). "Every publisher failed" is the case that must exit non-zero.
+    assert all_sinks_failed({"sinks": {}}) is False
+    assert all_sinks_failed({}) is False
+    assert all_sinks_failed({"sinks": {"notion": {"error": "boom"}}}) is True
+    assert all_sinks_failed(
+        {"sinks": {"notion": {"error": "boom"}, "obsidian": {"error": "boom"}}}
+    ) is True
+    assert all_sinks_failed(
+        {"sinks": {"notion": {"error": "boom"}, "obsidian": {"page_id": "x"}}}
+    ) is False
+
+
+def test_fanout_page_url_comes_from_the_first_successful_page_producing_sink(
+    tmp_path: Path,
+) -> None:
+    """AUD-30: the old rule was "whatever the first sink returned", so a page-less
+    obsidian ahead of Notion reported no URL, and a failed Notion reported its
+    error dict's absent URL rather than the next sink's."""
+    cfg = Config()
+    summary_json = tmp_path / "m.summary.json"
+    _write_summary_json(summary_json)
+
+    class _Pageless(_RecordingPublisher):
+        def upsert(self, **kw: Any) -> dict[str, Any]:
+            super().upsert(**kw)
+            return {"idempotent": False}
+
+    res = fanout(summary_json=summary_json, cfg=cfg, transcript_md=None,
+                 publishers=[_Pageless("obsidian"), _RecordingPublisher("notion")])
+    assert res["page_url"] == "u://notion"
+    assert res["page_id"] == "id-notion"
+
+
+def test_fanout_reports_no_page_url_when_the_page_producing_sink_failed(
+    tmp_path: Path,
+) -> None:
+    cfg = Config()
+    summary_json = tmp_path / "m.summary.json"
+    _write_summary_json(summary_json)
+    res = fanout(summary_json=summary_json, cfg=cfg, transcript_md=None,
+                 publishers=[_RecordingPublisher("notion", fail=True)])
+    assert res["page_url"] is None
+    assert all_sinks_failed(res) is True
+
+
+def test_fanout_writes_a_run_scoped_publish_sidecar(tmp_path: Path) -> None:
+    cfg = Config()
+    summary_json = tmp_path / "20260506-1500.summary.json"
+    _write_summary_json(summary_json)
+    fanout(summary_json=summary_json, cfg=cfg, transcript_md=None,
+           publishers=[_RecordingPublisher("notion"),
+                       _RecordingPublisher("obsidian", fail=True)])
+
+    written = json.loads((tmp_path / "20260506-1500.publish.json").read_text())
+    assert written["schema_version"] == 1
+    assert written["state"] == "partial"
+    assert written["page_url"] == "u://notion"
+    assert written["sinks"]["notion"]["ok"] is True
+    assert written["sinks"]["obsidian"]["ok"] is False
+    assert "blew up" in written["sinks"]["obsidian"]["error"]
+    assert written["ts"]
+
+
+def test_publish_sidecar_is_rewritten_not_left_stale(tmp_path: Path) -> None:
+    """The whole point of the run-scoped sidecar: a failing publisher never writes
+    its own per-sink sidecar, so a stale `<stem>.notion.json` from an earlier
+    successful run would otherwise be the daemon's only source of a page URL."""
+    cfg = Config()
+    summary_json = tmp_path / "m.summary.json"
+    _write_summary_json(summary_json)
+
+    fanout(summary_json=summary_json, cfg=cfg, transcript_md=None,
+           publishers=[_RecordingPublisher("notion")])
+    assert json.loads((tmp_path / "m.publish.json").read_text())["page_url"] == "u://notion"
+
+    fanout(summary_json=summary_json, cfg=cfg, transcript_md=None,
+           publishers=[_RecordingPublisher("notion", fail=True)])
+    after = json.loads((tmp_path / "m.publish.json").read_text())
+    assert after["state"] == "none"
+    assert after["page_url"] is None
+
+
+def test_fanout_with_no_publishers_is_a_success_not_a_failure(tmp_path: Path) -> None:
+    cfg = Config()
+    summary_json = tmp_path / "m.summary.json"
+    _write_summary_json(summary_json)
+    res = fanout(summary_json=summary_json, cfg=cfg, transcript_md=None, publishers=[])
+    assert all_sinks_failed(res) is False
+    assert json.loads((tmp_path / "m.publish.json").read_text())["state"] == "none"

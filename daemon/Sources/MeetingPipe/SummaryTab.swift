@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Summary tab (TECH-A5). Read-only by default; the Edit button swaps in `CorrectionEditorBody`. Save persists a correction record and overwrites `<stem>.summary.json`; "Save & Republish" additionally spawns `mp publish-notion`.
+/// Summary tab (TECH-A5). Read-only by default; the Edit button swaps in `CorrectionEditorBody`. Save persists a correction record and overwrites `<stem>.summary.json`; "Save & Republish" additionally spawns `mp publish`, the sink fanout.
 struct SummaryTab: View {
     @EnvironmentObject var libraryModel: LibraryWindowModel
     /// Observed so an in-place rewrite of this stem's summary.json (after Retry /

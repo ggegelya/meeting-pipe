@@ -23,6 +23,7 @@ swift test                # full Xcode required locally (CI on macos-14 has it)
 
 - Don't call Anthropic / Notion APIs from the daemon. Outbound HTTP belongs in the pipeline.
 - Don't add a key to `MeetingMetaSidecar.build` without also updating `mp.workflow.apply_overrides` on the Python side. They're a single contract; the sidecar is the only Swift to Python surface.
+- Don't read a per-sink sidecar (`<stem>.notion.json`) to learn whether a run published. A failed publisher never writes one, so an earlier run's file survives. Read `<stem>.publish.json` via `PublishResult.load` (PIPE1).
 - Don't log or write files from inside an audio render callback (`MeetingRecorder` taps, `SystemAudioCapture`). Those run on real-time threads; blocking work there glitches the recording.
 - Don't `print(...)` for event-stream data. Use `Log.event(category:action:attributes:)` so `mp logs` / `mp analyze-detection` see it.
 - Don't pile inline styles into a SwiftUI view. The shared primitives (`SettingsGroup`, `SettingsRow`, `SettingsSegmented`, `SettingsSlider`, `SettingsStatusPill`, `SettingsSecretField`, `SettingsHotkeyField` in `Preferences/PreferencesControls.swift`) are the design system. Add new primitives there rather than parallel one-offs.

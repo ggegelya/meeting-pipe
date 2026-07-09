@@ -9,10 +9,19 @@ transient Notion outage shouldn't lose the local Obsidian copy.
 Idempotency is per-sink: each publisher gets its own
 `<wav-dir>/<stem>.<sink-name>.json` sidecar so re-runs are safe. The
 naming convention is fixed by `MeetingPublisher.name` (P3.1).
+
+Every fanout also writes one run-scoped `<stem>.publish.json` recording what
+actually happened (PIPE1). The per-sink sidecars cannot answer that: a
+publisher that raises never writes one, so a stale sidecar from an earlier
+successful run survives and the daemon has no way to tell it from a fresh one.
+That is how an all-sinks-failed run used to notify "Meeting published" with the
+previous run's Notion URL.
 """
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +31,16 @@ from .schemas import MeetingSummary
 from .services import MeetingPublisher
 
 log = logging.getLogger("mp.publish_router")
+
+# Exit code reserved for "every configured sink failed" (PIPE1). Distinct from 1
+# (any other failure) and 2 (usage) so the daemon can attribute the failure to
+# the publish stage without parsing stderr. Mirrored by
+# `PipelineLauncher.publishFailedExitCode` in Swift.
+EXIT_PUBLISH_FAILED = 3
+
+#: Run-scoped result sidecar. Rewritten on every fanout, so it is never stale.
+PUBLISH_SIDECAR_SUFFIX = ".publish.json"
+PUBLISH_SIDECAR_SCHEMA_VERSION = 1
 
 
 class PublisherBuildError(RuntimeError):
@@ -116,12 +135,18 @@ def fanout(
     pubs = publishers if publishers is not None else build_publishers(cfg)
     if not pubs:
         log.warning("no publishers configured; returning local-only result")
-        return {
+        # No sink ran, which is not the same as every sink failing: a regulated
+        # run with only the Notion sink configured lands here and is a clean
+        # success. `all_sinks_failed` keeps the two apart (PIPE1).
+        result = {
             "page_id": None,
             "page_url": None,
             "sinks": {},
+            "failures": [],
             "regulated": cfg.modes.regulated_mode,
         }
+        _write_publish_sidecar(summary_json, result)
+        return result
 
     summary = MeetingSummary.model_validate_json(
         summary_json.read_text(encoding="utf-8")
@@ -155,14 +180,31 @@ def fanout(
             events.emit("publisher", "sink_failed", sink=p.name, file=stem,
                         error=str(e), error_type=type(e).__name__)
 
-    primary = next(iter(per_sink.values())) if per_sink else {}
+    landed = _landed_page(per_sink)
     out = {
-        "page_id": primary.get("page_id"),
-        "page_url": primary.get("page_url"),
+        "page_id": landed.get("page_id"),
+        "page_url": landed.get("page_url"),
         "sinks": per_sink,
         "failures": failures,
     }
+    _write_publish_sidecar(summary_json, out)
     return out
+
+
+def _landed_page(per_sink: dict[str, Any]) -> dict[str, Any]:
+    """The first sink that succeeded *and* produced a page URL (PIPE1/AUD-30).
+
+    The old rule was "whatever the first sink in configuration order returned",
+    which reported no URL when a page-less sink (obsidian, filesystem) happened
+    to be listed ahead of Notion, and which said nothing about whether the sink
+    it picked had actually succeeded. Sinks that publish no page (the local ones)
+    contribute no URL; a run where every page-producing sink failed reports none,
+    rather than inheriting the last successful run's.
+    """
+    for res in per_sink.values():
+        if isinstance(res, dict) and not res.get("error") and res.get("page_url"):
+            return res
+    return {}
 
 
 def publish_state(result: dict[str, Any]) -> str:
@@ -181,3 +223,55 @@ def publish_state(result: dict[str, Any]) -> str:
     if failed >= len(sinks):
         return "none"
     return "partial"
+
+
+def all_sinks_failed(result: dict[str, Any]) -> bool:
+    """True when at least one publisher ran and every one of them failed (PIPE1).
+
+    Deliberately narrower than ``publish_state(result) == "none"``, which also
+    covers "no publisher ran at all". Nothing-to-do is a success (a regulated run
+    whose only sink was Notion); everything-failed is the case where the pipeline
+    must exit non-zero rather than let the daemon clear `<stem>.error.json` and
+    announce a meeting that never landed anywhere.
+    """
+    sinks = result.get("sinks") or {}
+    return bool(sinks) and all(
+        isinstance(r, dict) and r.get("error") for r in sinks.values()
+    )
+
+
+def publish_sidecar_path(summary_json: Path) -> Path:
+    stem = summary_json.name.removesuffix(".summary.json")
+    return summary_json.parent / f"{stem}{PUBLISH_SIDECAR_SUFFIX}"
+
+
+def _write_publish_sidecar(summary_json: Path, result: dict[str, Any]) -> None:
+    """Record this run's publish outcome next to the summary (PIPE1).
+
+    Rewritten on every fanout, so the daemon reading it always sees the run that
+    just finished. Atomic, and best-effort: a write failure is logged but never
+    turns a successful publish into a failed one. The daemon degrades to "no page
+    URL" when the file is absent (every `run-all` short-circuit leaves none).
+    """
+    sinks = result.get("sinks") or {}
+    payload = {
+        "schema_version": PUBLISH_SIDECAR_SCHEMA_VERSION,
+        "state": publish_state(result),
+        "page_url": result.get("page_url"),
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "sinks": {
+            name: {
+                "ok": not (isinstance(res, dict) and res.get("error")),
+                "page_url": res.get("page_url") if isinstance(res, dict) else None,
+                "error": res.get("error") if isinstance(res, dict) else None,
+            }
+            for name, res in sinks.items()
+        },
+    }
+    path = publish_sidecar_path(summary_json)
+    try:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as e:
+        log.warning("publish sidecar write failed: %s", e)

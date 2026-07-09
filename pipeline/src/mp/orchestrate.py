@@ -44,7 +44,12 @@ from . import events
 from .glossary import load_glossary
 from .markdown import render_markdown
 from .markers import flagged_moments_block
-from .publish_router import fanout as publish_fanout, publish_state
+from .publish_router import (
+    EXIT_PUBLISH_FAILED,
+    all_sinks_failed,
+    fanout as publish_fanout,
+    publish_state,
+)
 from .summarize import summarize
 
 log = logging.getLogger("mp.run_all")
@@ -493,16 +498,30 @@ def _run_all_inner(
         except Exception as e:  # noqa: BLE001
             log.warning("publish_state update failed: %s", e)
 
-    log.info("done: page_url=%s", pub.get("page_url"))
-    events.emit("pipeline", "run_completed", wav=str(wav),
-                page_url=pub.get("page_url"))
-    return {
+    result = {
         "transcript_json": str(t["json"]),
         "transcript_md": str(t["md"]),
         "summary_json": str(s["json"]),
         "summary_md": str(s["md"]),
         **pub,
     }
+
+    # Every configured sink failed (PIPE1/AUD-14). The transcript and summary are
+    # on disk and worth keeping, so this is not an exception, but it is not a
+    # completed run either: say so in the event log and let `main` exit non-zero.
+    # Reporting `run_completed` here is what let the daemon clear the failure
+    # sidecar and announce a meeting that never landed anywhere.
+    if all_sinks_failed(pub):
+        reason = "; ".join(f"{name}: {err}" for name, err in pub.get("failures", []))
+        log.error("publish failed on every sink: %s", reason)
+        events.emit("pipeline", "run_failed", wav=str(wav), stage="publish",
+                    error=reason, error_type="PublishFailed")
+        return {**result, "publish_failed": True}
+
+    log.info("done: page_url=%s", pub.get("page_url"))
+    events.emit("pipeline", "run_completed", wav=str(wav),
+                page_url=pub.get("page_url"))
+    return result
 
 
 _DAEMON_BACKENDS = frozenset({"fluidaudio"})
@@ -675,10 +694,16 @@ def main(argv: list[str]) -> int:
         return 1
     _configure_logging()
     try:
-        run_all(wav)
+        result = run_all(wav)
     except Exception as e:  # noqa: BLE001
         log.exception("run-all failed: %s", e)
         return 1
+    # PIPE1: an all-sinks-failed publish is a failed run. The daemon reads this
+    # exit code to stamp `<stem>.error.json` with stage=publish, which in turn
+    # makes the Library offer a publish-only retry over the summary we just wrote
+    # rather than paying for a second summarize.
+    if result.get("publish_failed"):
+        return EXIT_PUBLISH_FAILED
     return 0
 
 

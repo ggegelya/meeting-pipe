@@ -10,7 +10,8 @@ import httpx
 import pytest
 
 from mp.config import Config
-from mp.publish_from_paste import parse_summary_md, publish_from_paste
+from mp.publish_from_paste import main as paste_main, parse_summary_md, publish_from_paste
+from mp.publish_router import EXIT_PUBLISH_FAILED
 
 
 def _summary_md_canonical() -> str:
@@ -276,3 +277,32 @@ def test_publish_from_paste_routes_through_fanout(tmp_path, monkeypatch):
     # summary json the paste wrote.
     assert calls["summary_json"] == tmp_path / "20260430-1500.summary.json"
     assert result["sinks"]["obsidian"]["ok"] is True
+
+
+# ----- PIPE1: the paste path shares the honest-failure contract -----
+
+
+def test_main_exits_publish_failed_when_every_sink_failed(tmp_path, monkeypatch):
+    """The daemon's in-app paste box (TECH-UX3) treats a zero exit as "published"
+    and clears the failure sidecar, so this path lies the same way `run-all` did."""
+    transcript = tmp_path / "20260516-0900.md"
+    transcript.write_text("# transcript", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "mp.publish_from_paste.publish_from_paste",
+        lambda t: {"sinks": {"notion": {"error": "boom"}}, "failures": [("notion", "boom")]},
+    )
+    assert paste_main([str(transcript)]) == EXIT_PUBLISH_FAILED
+
+
+def test_main_exits_zero_on_a_regulated_skip(tmp_path, monkeypatch):
+    """A regulated paste writes nothing and publishes nothing. That is the
+    documented behaviour, not a failure."""
+    transcript = tmp_path / "20260516-0900.md"
+    transcript.write_text("# transcript", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "mp.publish_from_paste.publish_from_paste",
+        lambda t: {"page_id": None, "page_url": None, "regulated": True},
+    )
+    assert paste_main([str(transcript)]) == 0

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import entry
 from .config import Config
-from .publish_router import fanout
+from .publish_router import EXIT_PUBLISH_FAILED, all_sinks_failed, fanout
 from .schemas import ActionItem, MeetingSummary
 from .summarize import _render_summary_md
 
@@ -258,10 +258,16 @@ def main(argv: list[str]) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     try:
-        publish_from_paste(transcript)
+        result = publish_from_paste(transcript)
     except Exception as e:  # noqa: BLE001
         log.error("publish-from-paste failed: %s", e)
         return 1
+    # Same honest-failure contract as `run-all` and `mp publish` (PIPE1): the
+    # daemon's paste box treats a zero exit as "published" and clears the failure
+    # sidecar, so an all-sinks-failed paste must not exit zero.
+    if all_sinks_failed(result):
+        log.error("publish-from-paste failed on every sink")
+        return EXIT_PUBLISH_FAILED
     return 0
 
 

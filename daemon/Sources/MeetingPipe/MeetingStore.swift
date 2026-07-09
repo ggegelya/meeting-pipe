@@ -455,6 +455,7 @@ final class MeetingStore: ObservableObject {
                 && !lc.hasSuffix(".summary.json")
                 && !lc.hasSuffix(".summary.candidate.json")   // TECH-A16 preview sidecar
                 && !lc.hasSuffix(".notion.json")
+                && !lc.hasSuffix(".publish.json")             // PIPE1 run-scoped publish result
                 && !lc.hasSuffix(PipelineFailureSidecar.suffix)
         }
 

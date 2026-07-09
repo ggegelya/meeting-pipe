@@ -144,7 +144,7 @@ flowchart TB
 
 ### Data contracts
 
-The daemon and pipeline share state through files on disk, not IPC. Five sidecars per meeting; the schemas live in [`CONVENTIONS.md`](./CONVENTIONS.md). The library window also reads the same files.
+The daemon and pipeline share state through files on disk, not IPC. Six sidecars per meeting; the schemas live in [`CONVENTIONS.md`](./CONVENTIONS.md). The library window also reads the same files.
 
 ```mermaid
 flowchart LR
@@ -162,6 +162,7 @@ flowchart LR
         SUMM[".summary.json<br/>LLM output"]
         NOT[".notion.json<br/>page URL"]
         RUN[".run.json<br/>run metadata"]
+        PUB[".publish.json<br/>this run's outcome"]
     end
 
     subgraph Pipe["Python pipeline (mp run-all)"]
@@ -178,11 +179,13 @@ flowchart LR
     PS --> SUMM
     PP --> NOT
     PP --> RUN
+    PP --> PUB
     WAV --> DL
     META --> DL
     TRANSCRIPT --> DL
     SUMM --> DL
     NOT --> DL
+    PUB --> DL
 ```
 
 ### Workflow resolution
@@ -310,7 +313,8 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 | `publish_notion.py` | `mp publish-notion <summary.json>` | Notion page (idempotent) |
 | `publish_obsidian.py` | (called via router) | Markdown note in vault |
 | `publish_fs.py` | (called via router) | three files in a directory |
-| `publish_router.py` | (called from `orchestrate`) | fan-out over `output.sinks` |
+| `publish_router.py` | (called from `orchestrate`) | fan-out over `output.sinks`, plus `<stem>.publish.json` |
+| `publish_cmd.py` | `mp publish <summary.json>` | fan an existing summary out to all sinks |
 | `publish_from_paste.py` | `mp publish-from-paste <transcript.md>` | BYO summary, then publish |
 | `workflow.py` | (called from `orchestrate`) | applies `.meta.json` overrides |
 | `diarize.py` | (called from `orchestrate`) | channel-aware speaker labels when daemon diarization is missing |
@@ -359,14 +363,17 @@ lifecycle verdict .ended (or hotkey, or silence backstop)
        workflow.apply_overrides -> context_prompt, backend, sinks
        summarize -> Anthropic OR mlx_lm.server (per workflow.backend)
        publish_router fanout -> notion + obsidian + filesystem (per workflow.sinks)
-       sidecar updates -> <stem>.run.json, <stem>.notion.json, ...
-  -> daemon notifies "published"
+       sidecar updates -> <stem>.run.json, <stem>.publish.json, <stem>.notion.json, ...
+       exit 0 (published, fully or partially) OR exit 3 (every sink failed)
+  -> daemon reads <stem>.publish.json for the page URL, notifies "published"
+     (on exit 3 instead: writes <stem>.error.json stage=publish, row becomes retryable)
 ```
 
 ### Cross-cutting
 
-- **`<stem>.meta.json`** — the only Swift→Python contract surface. Schema lives in `MeetingMetaSidecar.swift` (writer) and `mp.workflow.apply_overrides` (reader). Don't add keys to one without the other.
-- **`<stem>.error.json`** is the daemon-internal failure sidecar. Written when a pipeline run fails (transcribe / summarize / launch) with the failed stage and reason; read by the Library to mark the meeting row failed until the owner retries. Cleared on the next successful run. Not a Swift to Python contract: the daemon both writes and reads it.
+- **`<stem>.meta.json`** is the only Swift to Python contract surface for *routing*. Schema lives in `MeetingMetaSidecar.swift` (writer) and `mp.workflow.apply_overrides` (reader). Don't add keys to one without the other.
+- **`<stem>.publish.json`** is the Python→Swift contract surface for *outcome* (PIPE1). `publish_router.fanout` rewrites it on every run with the publish state, the landed page URL, and the per-sink detail; `PublishResult.load` reads it. It exists because a failing publisher never writes its own per-sink sidecar, so the daemon could not tell a fresh `<stem>.notion.json` from one an earlier run left behind. Schema in [`CONVENTIONS.md`](./CONVENTIONS.md#publish-result-stempublishjson).
+- **`<stem>.error.json`** is the daemon-internal failure sidecar. Written when a pipeline run fails (transcribe / summarize / publish / launch) with the failed stage and reason; read by the Library to mark the meeting row failed until the owner retries. Cleared on the next successful run. Not a Swift to Python contract: the daemon both writes and reads it.
 - **Event log** (`events.jsonl` from Swift + `pipeline_events.jsonl` from Python): one JSON object per line, fields `{ts, category, action, ...attrs}`. Schema and the full category list live in [`CONVENTIONS.md`](./CONVENTIONS.md#event-log-schema).
 - **Logs directory** (`~/Library/Logs/MeetingPipe/`) — both event logs, plus `daemon.log`, `detector.log`, `recording.log`, `pipeline.log`, `launchd.out.log`, `launchd.err.log`.
 
@@ -377,6 +384,7 @@ lifecycle verdict .ended (or hotkey, or silence backstop)
 - **State machine never reaches two `.recording` states**, and `.stopping` always advances to `.idle` after the WAV closes. `AppState` enum (`State.swift`) is the contract; every transition lives in `Coordinator`.
 - **Pipeline runs concurrently with recording.** Processing jobs queue in `Coordinator.processingJobs` and execute serially; the recording state machine is independent of queue depth. A new meeting can start while the last one is still transcribing.
 - **Sinks are idempotent and isolated.** `publish_router.fanout` runs each sink; one failing doesn't block the others. Notion uses a deterministic page slug derived from the meeting stem so re-publish is upsert, not duplicate.
+- **A publish that landed nowhere is a failed run.** When every configured sink fails, the pipeline exits `3` rather than 0, emits `run_failed` with `stage=publish` rather than `run_completed`, and reports no page URL. The daemon stamps a `stage=publish` failure sidecar; the Library's Retry then republishes the existing summary instead of re-running summarize (PIPE1). Zero sinks configured is a success, not a failure.
 - **Unknown TOML keys survive.** `ConfigStore` round-trips through `TOMLTable` and only touches the fields it models. Pipeline-side fields the daemon doesn't know about (`transcription.model`, `summarization.team_context`, …) stay untouched.
 - **TCC grants survive rebuilds.** `scripts/install.sh` and `scripts/rebuild.sh` codesign adhoc with a stable `--identifier com.meetingpipe.daemon` and bind Info.plist into the signature. The cdhash still changes per rebuild (no Developer ID), so Screen Recording requires one toggle after rebuild, but Mic + Notifications + Accessibility survive.
 - **`Log.event` failures never crash the daemon.** A malformed attribute drops the event silently. Same in `mp.events.emit`.
@@ -398,6 +406,8 @@ lifecycle verdict .ended (or hotkey, or silence backstop)
 | `~/Documents/Meetings/raw/<stem>.recovery.json` | daemon writes + reads | start-time identity manifest (`{summary_mode, meta}`) written at recording start so orphan recovery routes a crash-interrupted BYO/NDA/regulated meeting on-device instead of auto-egressing it; the meta payload is replayed into a rebuilt `.meta.json` (REC2) |
 | `~/Library/Application Support/MeetingPipe/originals/<stem>.wav` | daemon writes | kept full (un-redacted) recording, the recovery source only; 0600, Time-Machine/iCloud-excluded, outside the Library-scanned `raw/` tree (ADR 0016, DOC6) |
 | `~/Documents/Meetings/raw/<stem>.{json,md,summary.*,correction.json}` | pipeline writes, daemon reads | transcripts / summaries / corrections |
+| `~/Documents/Meetings/raw/<stem>.publish.json` | pipeline writes, daemon reads | this run's publish outcome: state, landed page URL, per-sink detail. Rewritten every run, so it is never stale (PIPE1) |
+| `~/Documents/Meetings/raw/<stem>.error.json` | daemon writes + reads | failure sidecar: the stage that failed (`transcribe` / `pipeline` / `publish` / `launch` / `interrupted`) and why. Drives the Library's failed row and its stage-aware Retry |
 | `~/Library/Logs/MeetingPipe/` | both | tail-able text logs + JSONL event logs |
 | `~/Library/LaunchAgents/com.meetingpipe.daemon.plist` | install.sh writes | LaunchAgent |
 | `~/Applications/MeetingPipe.app/` | install.sh / rebuild.sh writes | installed bundle |

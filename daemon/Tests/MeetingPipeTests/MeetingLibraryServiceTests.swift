@@ -140,6 +140,84 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertEqual(enqueued.first?.1, .auto)
     }
 
+    // MARK: - stage-aware retry (PIPE1)
+
+    /// A publish-stage failure left a paid-for summary on disk, so the retry
+    /// republishes it instead of re-running run-all, which would re-transcribe and
+    /// re-summarize to reproduce a result it already has.
+    func test_retry_after_a_publish_failure_republishes_instead_of_rerunning() throws {
+        try touch("meeting.wav")
+        try touch("meeting.summary.json", contents: "{}")
+        PipelineFailureSidecar.write(stem: "meeting", in: dir, stage: .publish, reason: "notion 503")
+
+        let result = service.retryMeeting(stem: "meeting")
+        guard case .success = result else { return XCTFail("expected success") }
+
+        XCTAssertTrue(enqueued.isEmpty, "a publish failure must not re-run the whole pipeline")
+        XCTAssertEqual(driver.publishInputs.count, 1)
+        XCTAssertEqual(driver.publishInputs.first?.lastPathComponent, "meeting.summary.json")
+    }
+
+    /// The summary is what makes the shortcut safe. Without one there is nothing
+    /// to republish, so the retry falls back to the full pipeline.
+    func test_retry_after_a_publish_failure_without_a_summary_runs_the_full_pipeline() throws {
+        try touch("meeting.wav")
+        PipelineFailureSidecar.write(stem: "meeting", in: dir, stage: .publish, reason: "notion 503")
+
+        let result = service.retryMeeting(stem: "meeting")
+        guard case .success = result else { return XCTFail("expected success") }
+
+        XCTAssertTrue(driver.publishInputs.isEmpty)
+        XCTAssertEqual(enqueued.count, 1)
+    }
+
+    /// A summarize-stage failure produced no trustworthy summary, so its retry
+    /// re-runs everything even though a stale `<stem>.summary.json` may exist.
+    func test_retry_after_a_pipeline_failure_runs_the_full_pipeline() throws {
+        try touch("meeting.wav")
+        try touch("meeting.summary.json", contents: "{}")
+        PipelineFailureSidecar.write(stem: "meeting", in: dir, stage: .pipeline, reason: "boom")
+
+        let result = service.retryMeeting(stem: "meeting")
+        guard case .success = result else { return XCTFail("expected success") }
+
+        XCTAssertTrue(driver.publishInputs.isEmpty)
+        XCTAssertEqual(enqueued.count, 1)
+    }
+
+    /// A failed republish must leave the row failed and retryable. Without the
+    /// sidecar the Library showed the meeting as done and never offered a retry.
+    func test_failed_republish_writes_a_publish_stage_failure_sidecar() throws {
+        try touch("m.summary.json", contents: "{}")
+        service.republishMeeting(stem: "m") { _ in }
+        driver.finishPublish(.failure(PipelineLauncher.LaunchError.nonZeroExit(
+            PipelineLauncher.publishFailedExitCode, "every sink failed"
+        )))
+        drainMainQueue()
+
+        let failure = PipelineFailureSidecar.read(stem: "m", in: dir)
+        XCTAssertEqual(failure?.stage, .publish)
+        XCTAssertEqual(failure?.stage.displayName, "Publishing")
+    }
+
+    func test_successful_republish_clears_a_stale_failure_sidecar() throws {
+        try touch("m.summary.json", contents: "{}")
+        PipelineFailureSidecar.write(stem: "m", in: dir, stage: .publish, reason: "notion 503")
+
+        service.republishMeeting(stem: "m") { _ in }
+        driver.finishPublish(.success(URL(string: "https://notion.so/p")))
+        drainMainQueue()
+
+        XCTAssertNil(PipelineFailureSidecar.read(stem: "m", in: dir))
+    }
+
+    /// The service resolves every launcher completion back onto the main queue.
+    private func drainMainQueue() {
+        let drained = expectation(description: "drain")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 1.0)
+    }
+
     // MARK: - export
 
     func test_export_copies_present_artifacts_and_skips_missing() throws {
