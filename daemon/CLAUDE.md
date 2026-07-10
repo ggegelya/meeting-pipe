@@ -41,5 +41,5 @@ swift test                # full Xcode required locally (CI on macos-14 has it)
 | Library UI | `LibraryWindow.swift`, `LibraryListView.swift`, `MeetingDetailView.swift`, `MeetingStore.swift` |
 | Preferences | `PreferencesWindow.swift`, `Preferences/PreferencesView.swift`, `Preferences/PreferencesControls.swift`, `Preferences/UISettings.swift` |
 | Permissions | `PermissionsCenter.swift` |
-| Pipeline subprocess | `PipelineLauncher.swift` |
+| Pipeline subprocess | `PipelineLauncher.swift`, `LocalServerReaper.swift` (kills an `mlx_lm.server` orphaned by a watchdog SIGKILL) |
 | Event log | `Logger.swift` (`Log.event` / `Log.writeLine` / `Log.main`) |

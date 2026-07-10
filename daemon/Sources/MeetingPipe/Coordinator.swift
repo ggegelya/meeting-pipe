@@ -499,16 +499,20 @@ final class Coordinator: NSObject {
         }
     }
 
-    /// The one storage sweep, two scopes (MIC13 + STOR1):
+    /// The launch sweep, three scopes (MIC13 + STOR1 + LOCAL10):
     ///   1. `OriginalsReaper` reclaims kept full recordings (`originals/`) past
     ///      their retention window (ADR 0016). Bounded-cache eviction.
     ///   2. `AudioRetentionSweep` applies each workflow's audio retention policy
     ///      to settled meetings in `raw/`. Per-meeting policy, not eviction.
+    ///   3. `LocalServerReaper` kills an `mlx_lm.server` left behind by an `mp`
+    ///      the pipeline watchdog SIGKILLed. Reclaims RAM, not disk, but it is
+    ///      the same "clean up what a previous run leaked" slot, and a launch is
+    ///      the moment we can be sure no `mp` of ours is mid-summarize.
     ///
     /// Different algorithms, one scheduler and one event category. Runs off-main:
-    /// a directory scan, some deletes, and (for `compress`) an ffmpeg subprocess.
-    /// Neither scope touches a live recording or a non-terminal meeting, so this
-    /// is independent of the recording and pipeline state machines.
+    /// a directory scan, some deletes, an ffmpeg subprocess (for `compress`), and
+    /// a `ps` probe. No scope touches a live recording or a non-terminal meeting,
+    /// so this is independent of the recording and pipeline state machines.
     private func reapStorage() {
         // Snapshot main-owned state before detaching.
         let dir = liveOutputDir
@@ -519,6 +523,7 @@ final class Coordinator: NSObject {
         Task.detached(priority: .background) {
             OriginalsReaper.sweep()
             AudioRetentionSweep.sweep(in: dir, policies: policies, liveStem: liveStem)
+            LocalServerReaper.reapIfOrphaned()
         }
     }
 

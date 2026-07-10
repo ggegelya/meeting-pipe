@@ -610,6 +610,14 @@ final class PipelineLauncher: PipelineDriver {
             try? logHandle?.close()
             if retainForCancel { self.setActiveRunProcess(nil) }   // TECH-UX5: run finished/killed
             if timedOut.isSet {
+                // LOCAL10: we just killed an `mp` that may have been mid-summarize on
+                // the local backend. Neither SIGTERM nor SIGKILL runs its `finally`, so
+                // the multi-GB `mlx_lm.server` it detached is now an orphan that only
+                // its marker can identify. Reap it off this queue: the reap waits on a
+                // graceful exit and must not stall the termination handler.
+                DispatchQueue.global(qos: .utility).async {
+                    LocalServerReaper.reapIfOrphaned()
+                }
                 completion(.failure(LaunchError.timeout(timeout)))
                 return
             }

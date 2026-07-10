@@ -485,6 +485,8 @@ As a safety net, the daemon also watches the audio level. After 90 s of unbroken
 - `mlx_lm.server did not become healthy within 120s`: the model is being downloaded for the first time. The default `Qwen2.5-7B-Instruct-4bit` is ~4.3 GB; check `~/.cache/huggingface/hub/` size growth. A previously-interrupted download is now detected as incomplete and resumed (it no longer reports ready while partial); watch the menu-bar download row and use its **Retry** if the fetch failed.
 - Output looks fine but `mp doctor` still warns "regulated_mode + backend = anthropic": expected. `regulated_mode` does not by itself force the local backend. Set `summarization.backend = "local"` explicitly for the zero-egress contract.
 
+**Several GB of RAM stay used after a summary run, and `mp doctor` reports an "orphaned mlx_lm.server".** The local model server runs detached, so it survives its parent being force-killed, which is what the pipeline watchdog does to a run that wedges past its timeout. The daemon reaps such a server the moment its watchdog fires, and again at every launch, so this should be self-healing. If a report persists, MeetingPipe has not restarted since the orphan appeared: quit and relaunch it from the menu-bar icon, or kill the pid `mp doctor` names.
+
 **A regulated or NDA meeting fails with "Model ... is not in the local HuggingFace cache".** A zero-egress run refuses to download a model, because doing so would send a request to huggingface.co from a meeting that promised not to. Fetch the model once from a normal run, then re-run the meeting:
 
 ```bash

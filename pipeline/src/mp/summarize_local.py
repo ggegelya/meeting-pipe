@@ -50,7 +50,7 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
-from . import egress_guard
+from . import egress_guard, local_server
 from .prefetch_model import model_is_cached
 from .prompt_safety import wrap_untrusted
 from .schemas import MeetingSummary, SUMMARY_TOOL
@@ -488,6 +488,11 @@ class LocalSummaryClient:
         if hasattr(os, "setsid"):
             kwargs["preexec_fn"] = os.setsid
         self._proc = subprocess.Popen(cmd, **kwargs)
+        # LOCAL10: that same setsid means a SIGKILL of this process (the daemon's
+        # pipeline watchdog does exactly that to a wedged run) leaves the server
+        # running with no one who knows about it. Record who it is, so `mp doctor`
+        # can report it and the daemon can reap it.
+        local_server.write_marker(pid=self._proc.pid, port=self._port, model=self._model)
 
     def _wait_for_health(self, timeout_sec: float) -> None:
         deadline = time.monotonic() + timeout_sec
@@ -520,7 +525,13 @@ class LocalSummaryClient:
         proc = self._proc
         self._proc = None
         if proc is None:
+            # A server we health-checked into rather than spawned (the warm
+            # `mp serve-local` path). Not ours to kill, and it has no marker.
             return
+        # LOCAL10: we own this one, so drop its marker whether or not the kill
+        # below finds it already dead. A marker outliving its server would make
+        # the next `doctor` run lie.
+        local_server.clear_marker()
         if proc.poll() is not None:
             return
         try:

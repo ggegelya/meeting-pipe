@@ -295,6 +295,7 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 ### Plumbing
 
 - `PipelineLauncher.swift` — spawns `mp run-all <wav>` as a subprocess. Each job is one `ProcessingJob` (see `State.swift`); the queue runs them serially so two whisper invocations don't thrash the GPU.
+- `LocalServerReaper.swift` — kills an `mlx_lm.server` that outlived the `mp` which spawned it (LOCAL10). The server setsid's into its own session, so a watchdog SIGKILL of `mp` leaves it resident; Python's `mlx-server.json` marker names it. Reaps at launch (from `Coordinator.reapStorage()`) and right after the watchdog kills a job.
 - `PermissionsCenter.swift` — single source of truth for the four TCC permissions (mic, Screen Recording, Accessibility, Notifications). Polls for live-flip detection; publishes a `permissionGranted` PassthroughSubject the Coordinator listens to (so the detector wakes up the moment Accessibility flips on mid-meeting).
 - `HotkeyManager.swift` — Carbon RegisterEventHotKey for global hotkeys (toggle + force-stop).
 - `Notifier.swift` — UNUserNotificationCenter wrapper (record / skip prompts, "meeting published" alerts).
@@ -368,6 +369,7 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 - `endpoints.py` - the external-service URLs and API versions, in one place so nothing hardcodes a host.
 - `storage.py` - where state lives on disk and how big it is (backs `doctor`'s disk numbers and STOR1's reaper).
 - `cloudsync.py` - is the library sitting inside an iCloud / Dropbox folder? (SEC12; the zero-egress promise the filesystem can undo.)
+- `local_server.py` - the ownership marker for the detached `mlx_lm.server` (LOCAL10). `_spawn` registers it, a clean `close()` clears it, and a live server with a dead owner is an orphan `mp doctor` reports and `LocalServerReaper` (Swift) kills.
 
 ---
 

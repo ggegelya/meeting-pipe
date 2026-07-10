@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -316,6 +317,41 @@ def check_local_stack(cfg: Config | None) -> None:
             _ok(f"free disk {free_gb} GB fits the ~{need_gb} GB download")
 
 
+def check_local_server(home: Path | None = None) -> None:
+    """Report an `mlx_lm.server` that outlived the `mp` that spawned it (LOCAL10).
+
+    The server detaches into its own session so a signal aimed at `mp`'s process
+    group misses it; when the daemon's watchdog SIGKILLs a wedged `run-all`, the
+    parent's idle timer dies with it and a multi-GB server is left resident. The
+    daemon reaps one at launch, so a report here means either the daemon has not
+    restarted since, or the orphan appeared in this session.
+    """
+    from . import local_server
+
+    print("\n== local model server ==")
+    marker = local_server.read_marker(home)
+    if marker is None:
+        _ok("no detached mlx_lm.server is registered")
+        return
+
+    orphan = local_server.orphaned_server(home)
+    if orphan is None:
+        pid = marker.get("pid")
+        _ok(f"mlx_lm.server (pid {pid}) is owned by a live `mp` process")
+        return
+
+    pid = orphan.get("pid")
+    model = orphan.get("model", "unknown")
+    spawned = orphan.get("spawned_at")
+    age = ""
+    if isinstance(spawned, (int, float)):
+        hours = max(0.0, (time.time() - spawned) / 3600.0)
+        age = f", up {hours:.1f}h" if hours >= 1 else f", up {hours * 60:.0f}m"
+    _warn(f"orphaned mlx_lm.server: pid {pid}, model {model}{age}")
+    _info("its `mp` process was killed (usually the pipeline watchdog) and it holds several GB of RAM")
+    _info("restart MeetingPipe to reap it, or: kill " + str(pid))
+
+
 def check_storage(cfg: Config | None, home: Path | None = None) -> None:
     """Report what meeting-pipe is holding on disk (STOR1).
 
@@ -574,6 +610,7 @@ def main(argv: list[str]) -> int:
     cfg = check_config()
     check_ml_runtimes()
     check_local_stack(cfg)
+    check_local_server()
     check_storage(cfg)
     # SEC11: under regulated_mode the pipeline is zero-egress, so doctor must not
     # reach any cloud API either. Skip the live Anthropic / Notion / HuggingFace

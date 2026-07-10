@@ -297,6 +297,32 @@ Absent whenever the pipeline short-circuited before publish (no speech, suspect 
 
 ---
 
+## Local model server marker (`~/Library/Logs/MeetingPipe/mlx-server.json`)
+
+Who owns the detached `mlx_lm.server` (LOCAL10). A Python-to-Swift surface: `mp.local_server.write_marker` writes it (atomically, `0600`) from `LocalSummaryClient._spawn`, `clear_marker` removes it on a clean termination, and the daemon reads it back through `LocalServerReaper.parseMarker`. Shape:
+
+```json
+{
+  "schema_version": 1,
+  "pid": 4242,
+  "owner_pid": 1111,
+  "port": 8765,
+  "model": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+  "spawned_at": 1770000000.0
+}
+```
+
+The server is spawned with `preexec_fn=os.setsid`, so it lives in its own session and a signal aimed at `mp`'s process group misses it. Every clean exit path in `mp` calls `close()` and kills it. The one path that does not is a SIGKILL of `mp` itself, which is precisely what `PipelineLauncher`'s watchdog does to a wedged `run-all`: no `finally` runs, the parent's idle-timeout `threading.Timer` dies with the parent, and a multi-GB server is left resident with nothing on the machine that knows it exists. This file is that knowledge.
+
+**An orphan is a live server with a dead owner.** Both sides apply the same two rules, and they have to agree or the daemon and `mp doctor` will describe the same marker differently:
+
+- `pid` counts as the server only when `ps -o command= -p <pid>` contains `mlx_lm.server`. Liveness alone is not enough: pids are recycled, and this pid gets signalled.
+- `owner_pid` counts as alive only when its command looks like a Python `mp` invocation. A recycled owner pid must not shield an orphan.
+
+A marker whose server is already gone is stale, not an orphan, and is cleared in passing. Two triggers reap: `Coordinator.reapStorage()` at launch, and `PipelineLauncher`'s termination handler right after the watchdog kills a job (the case that creates the orphan). `mp doctor` reports one without killing it. `mp serve-local` writes no marker at all: the daemon spawns it directly and holds its lifetime through a child handle, so it can never be orphaned this way.
+
+---
+
 ## Daemon-internal recording artifacts
 
 Four artifacts the daemon both writes and reads. Unlike `<stem>.meta.json`, none is part of the Swift-to-Python contract: the redactor and orphan recovery consume them before any pipeline run, so the pipeline never reads them directly (recovery does *rebuild* `<stem>.meta.json` from the manifest below). The MIC4/MIC5 capture-first work introduced the first three; REC2 added the recovery manifest. Documented here per DOC6.
