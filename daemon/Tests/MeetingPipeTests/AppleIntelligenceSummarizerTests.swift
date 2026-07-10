@@ -29,6 +29,69 @@ final class AppleIntelligenceSummarizerTests: XCTestCase {
         XCTAssertEqual(AppleIntelligenceSummarizer.parse(text)?.title, "Sprint planning")
     }
 
+    // MARK: - PIPE6: deterministic unsupported-language recovery
+
+    func test_unsupported_language_error_is_recognized() {
+        // The framework surfaces the rejection as a message; a few phrasings map.
+        let framework = NSError(domain: "FoundationModels", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "An unsupported language or locale was used.",
+        ])
+        XCTAssertTrue(AppleIntelligenceError.isUnsupportedLanguageError(framework))
+        let alt = NSError(domain: "x", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: "This language is not supported by the model.",
+        ])
+        XCTAssertTrue(AppleIntelligenceError.isUnsupportedLanguageError(alt))
+        // Unrelated failures must not be misclassified (they stay same-backend retryable).
+        let timeout = NSError(domain: "x", code: 3, userInfo: [
+            NSLocalizedDescriptionKey: "The request timed out.",
+        ])
+        XCTAssertFalse(AppleIntelligenceError.isUnsupportedLanguageError(timeout))
+    }
+
+    func test_unsupported_language_is_deterministic_and_carries_the_marker() {
+        let err = AppleIntelligenceError.unsupportedLanguage("Ukrainian")
+        XCTAssertTrue(err.isDeterministicBackendFailure)
+        // The reason the Library reads carries the shared marker, so a failed row
+        // recognizes it as backend-switch-recoverable.
+        XCTAssertTrue((err.errorDescription ?? "").localizedCaseInsensitiveContains(
+            AppleIntelligenceError.unsupportedLanguageMarker))
+        // Other Apple errors are NOT deterministic backend failures.
+        XCTAssertFalse(AppleIntelligenceError.parseFailed("x").isDeterministicBackendFailure)
+        XCTAssertFalse(AppleIntelligenceError.emptyTranscript.isDeterministicBackendFailure)
+    }
+
+    func test_meeting_recognizes_backend_switch_recoverable_failure() {
+        // The Meeting computed flag matches the marker the error stamps into the
+        // reason (producer/consumer share the constant), so the two cannot drift.
+        let recoverable = AppleIntelligenceError.unsupportedLanguage("uk").errorDescription!
+        XCTAssertTrue(failedMeeting(reason: recoverable).failureSuggestsLocalReSummarize)
+        XCTAssertFalse(failedMeeting(reason: "network timeout").failureSuggestsLocalReSummarize)
+        XCTAssertFalse(failedMeeting(reason: nil).failureSuggestsLocalReSummarize)
+    }
+
+    private func failedMeeting(reason: String?) -> Meeting {
+        Meeting(
+            stem: "20260707-1500",
+            startedAt: Date(timeIntervalSince1970: 0),
+            audioURL: URL(fileURLWithPath: "/tmp/20260707-1500.wav"),
+            recordingsDir: URL(fileURLWithPath: "/tmp"),
+            summaryTitle: nil,
+            meetingTitle: nil,
+            sourceBundleID: nil,
+            sourceDisplayName: nil,
+            sourceKind: nil,
+            workflowName: nil,
+            workflowColor: nil,
+            durationSec: nil,
+            backend: nil,
+            modelId: nil,
+            status: .failed,
+            failureReason: reason,
+            failureStage: "pipeline",
+            searchableText: ""
+        )
+    }
+
     func test_parse_garbage_returns_nil() {
         XCTAssertNil(AppleIntelligenceSummarizer.parse("there is no json here, sorry"))
     }

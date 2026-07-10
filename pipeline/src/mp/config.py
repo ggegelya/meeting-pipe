@@ -247,6 +247,58 @@ def effective_backend(cfg: Config) -> str:
     return backend
 
 
+# The valid `summarization.backend` values; mirror of the Literal on
+# `Summarization.backend`. Kept as a set so the one-shot override (PIPE6) can
+# validate a CLI value without re-deriving it from the Literal type.
+BACKENDS: frozenset[str] = frozenset({"anthropic", "local", "auto", "apple_intelligence"})
+
+
+def with_backend_override(cfg: Config, backend: str) -> Config:
+    """Return a copy of ``cfg`` with a one-shot summarization backend override
+    (PIPE6): the Library's "Re-summarize with..." and `mp summarize --backend`.
+
+    Request-scoped, so the caller uses the returned config for this run only and
+    never persists it (rewriting the workflow's backend stays WF8's job). Apply it
+    to the *config field*, after the workflow overlay, not to ``effective_backend``'s
+    result: the regulated/NDA clamp then still bites, so a `--backend anthropic`
+    on a regulated meeting is still forced to local and cannot widen egress.
+    """
+    if backend not in BACKENDS:
+        raise ValueError(
+            f"unknown backend {backend!r}; choose one of {', '.join(sorted(BACKENDS))}"
+        )
+    return cfg.model_copy(
+        update={"summarization": cfg.summarization.model_copy(update={"backend": backend})}
+    )
+
+
+def extract_backend_flag(argv: list[str]) -> tuple[list[str], str | None]:
+    """Pull a one-shot ``--backend <value>`` / ``--backend=<value>`` out of
+    ``argv`` (PIPE6), returning the remaining args and the validated override (or
+    None). Raises ``ValueError`` on a missing or unknown value so the CLI can turn
+    it into a usage error. Shared by `mp summarize` and `mp run-all`."""
+    out: list[str] = []
+    override: str | None = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--backend":
+            if i + 1 >= len(argv):
+                raise ValueError("--backend requires a value")
+            override, i = argv[i + 1], i + 2
+            continue
+        if a.startswith("--backend="):
+            override, i = a.split("=", 1)[1], i + 1
+            continue
+        out.append(a)
+        i += 1
+    if override is not None and override not in BACKENDS:
+        raise ValueError(
+            f"unknown backend {override!r}; choose one of {', '.join(sorted(BACKENDS))}"
+        )
+    return out, override
+
+
 def effective_sinks(cfg: Config) -> list[str]:
     """The output sinks after the regulated/NDA egress clamp.
 

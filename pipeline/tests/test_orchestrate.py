@@ -109,6 +109,25 @@ def test_env_var_triggers_byo(tmp_path: Path, monkeypatch):
     assert result["skipped"] == "byo"
 
 
+def test_run_all_threads_backend_override_to_summarize(tmp_path: Path, monkeypatch):
+    """PIPE6: a one-shot backend override reaches the summarize call, so a re-run
+    over the existing transcript uses the chosen backend without rewriting the
+    workflow."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    stem = "20260707-1500"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)
+    summary_json = tmp_path / f"{stem}.summary.json"
+    summary_json.write_text("{}", encoding="utf-8")
+
+    with patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}) as s, \
+         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+        run_all(wav, cfg=Config(), backend="local")
+
+    assert s.call_args.kwargs["backend"] == "local"
+
+
 def test_fluidaudio_sidecar_skips_finalize_diarization(tmp_path: Path, monkeypatch):
     """The daemon writes `<stem>.json` with FluidAudio segments already
     speaker-labelled. The orchestrator should trust those labels and
@@ -598,8 +617,8 @@ def test_main_returns_the_publish_failed_exit_code(tmp_path: Path, monkeypatch):
     to stamp stage=publish rather than clear the failure sidecar."""
     wav = tmp_path / "20260516-0900.wav"
     wav.write_bytes(b"")
-    monkeypatch.setattr("mp.orchestrate.run_all", lambda w: {"publish_failed": True})
+    monkeypatch.setattr("mp.orchestrate.run_all", lambda w, **_: {"publish_failed": True})
     assert orchestrate_main([str(wav)]) == EXIT_PUBLISH_FAILED
 
-    monkeypatch.setattr("mp.orchestrate.run_all", lambda w: {"page_url": "u"})
+    monkeypatch.setattr("mp.orchestrate.run_all", lambda w, **_: {"page_url": "u"})
     assert orchestrate_main([str(wav)]) == 0

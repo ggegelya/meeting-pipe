@@ -120,9 +120,10 @@ final class MeetingLibraryService {
         return .success(())
     }
 
-    /// Re-run `mp summarize` against the existing transcript, then republish. Backend-override env var is not yet piped into `mp summarize` (TECH-B); uses the configured backend at subprocess time.
+    /// Re-run `mp summarize` against the existing transcript, then republish. Passing `backend` re-summarizes on a one-shot engine (PIPE6, the Library's "Re-summarize with..."); `nil` uses the configured/workflow backend. The override is request-scoped: it does not rewrite the workflow, and regulated/NDA still force local.
     func regenerateMeeting(
         stem: String,
+        backend: String? = nil,
         completion: @escaping (Result<URL?, Error>) -> Void
     ) {
         let dir = outputDir()
@@ -132,11 +133,12 @@ final class MeetingLibraryService {
                 name: transcriptURL.lastPathComponent, action: "regenerate")))
             return
         }
-        Log.writeLine("daemon", "regenerate requested → \(stem)")
+        Log.writeLine("daemon", "regenerate requested → \(stem)\(backend.map { " (backend=\($0))" } ?? "")")
         Log.event(category: "coordinator", action: "regenerate_started", attributes: [
             "stem": stem,
+            "backend": backend ?? NSNull(),
         ])
-        launcher.summarize(transcriptMD: transcriptURL) { [weak self] result in
+        launcher.summarize(transcriptMD: transcriptURL, backend: backend) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 switch result {

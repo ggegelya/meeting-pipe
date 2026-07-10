@@ -11,6 +11,8 @@ final class MeetingLibraryServiceTests: XCTestCase {
     /// handed and parks each completion so the test resolves it.
     private final class FakeDriver: PipelineDriver {
         private(set) var summarizeInputs: [URL] = []
+        /// PIPE6: the one-shot backend override forwarded into each summarize call.
+        private(set) var summarizeBackends: [String?] = []
         private(set) var publishInputs: [URL] = []
         private(set) var publishFromPasteInputs: [URL] = []
         private(set) var previewInputs: [URL] = []
@@ -42,7 +44,12 @@ final class MeetingLibraryServiceTests: XCTestCase {
         }
 
         func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+            summarize(transcriptMD: transcriptMD, backend: nil, completion: completion)
+        }
+
+        func summarize(transcriptMD: URL, backend: String?, completion: @escaping (Result<Void, Error>) -> Void) {
             summarizeInputs.append(transcriptMD)
+            summarizeBackends.append(backend)
             summarizeCompletions.append(completion)
         }
 
@@ -304,6 +311,15 @@ final class MeetingLibraryServiceTests: XCTestCase {
         wait(for: [drained2], timeout: 1.0)
         guard case .success(let url)? = captured else { return XCTFail("expected success") }
         XCTAssertEqual(url?.absoluteString, "https://notion.example/page")
+    }
+
+    func test_regenerate_with_backend_threads_override_to_summarize() throws {
+        // PIPE6: "Re-summarize with Local/Anthropic" reuses the transcript and
+        // passes the one-shot backend into `mp summarize --backend`.
+        try touch("m.md")
+        service.regenerateMeeting(stem: "m", backend: "local") { _ in }
+        XCTAssertEqual(driver.summarizeInputs.count, 1)
+        XCTAssertEqual(driver.summarizeBackends, ["local"], "the one-shot backend must reach mp summarize")
     }
 
     // MARK: - publish-from-paste (TECH-UX3)

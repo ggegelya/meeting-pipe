@@ -13,7 +13,9 @@ mp — meeting-pipe pipeline
 usage: mp <subcommand> [args...]
 
 Subcommands:
-  summarize <transcript.md>   Summarize per config backend (anthropic/local/auto) -> <stem>.summary.json/.md
+  summarize <transcript.md>   Summarize per config backend -> <stem>.summary.json/.md
+                              [--backend anthropic|local|auto] re-summarizes on
+                              a one-shot backend (regulated/NDA still force local)
   publish <summary.json>      Fan an existing summary out to all configured
                               sinks (used by the Apple Intelligence backend)
   publish-notion <summary.json>
@@ -24,6 +26,7 @@ Subcommands:
   run-all <wav>               Run summarize + publish on the daemon-produced
                               `<stem>.json`. ASR + diarization live in Swift
                               (FluidAudio) and are NOT invoked here.
+                              [--backend ...] as for summarize.
   cleanup-diarization <transcript.json>
                               LLM pass that merges same-speaker labels and
                               reattributes obvious mistakes, then rewrites

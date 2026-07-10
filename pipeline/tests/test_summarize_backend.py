@@ -65,6 +65,42 @@ def test_select_backend_unknown_raises() -> None:
         _select_backend(cfg)
 
 
+def test_extract_backend_flag_parses_and_validates() -> None:
+    from mp.config import extract_backend_flag
+    assert extract_backend_flag(["x.md"]) == (["x.md"], None)
+    assert extract_backend_flag(["x.md", "--backend", "local"]) == (["x.md"], "local")
+    assert extract_backend_flag(["--backend=anthropic", "x.md"]) == (["x.md"], "anthropic")
+    # Unknown value and a missing value are usage errors, surfaced as ValueError.
+    with pytest.raises(ValueError):
+        extract_backend_flag(["x.md", "--backend", "bogus"])
+    with pytest.raises(ValueError):
+        extract_backend_flag(["x.md", "--backend"])
+
+
+def test_backend_override_selects_the_chosen_backend() -> None:
+    # PIPE6: a one-shot override changes which client _select_backend builds,
+    # without mutating the persisted config field on the original.
+    from mp.config import with_backend_override
+    from mp.summarize_local import LocalSummaryClient
+    cfg = _local_cfg(backend="anthropic")
+    overridden = with_backend_override(cfg, "local")
+    assert isinstance(_select_backend(overridden), LocalSummaryClient)
+    assert cfg.summarization.backend == "anthropic"  # original untouched
+
+
+def test_backend_override_still_clamps_under_regulated() -> None:
+    # PIPE6 + TECH-ARCH1: a one-shot override to anthropic on a regulated meeting
+    # is still forced local. The override is applied to the config field, so
+    # effective_backend's zero-egress clamp still bites; the override cannot widen
+    # egress.
+    from mp.config import effective_backend, with_backend_override
+    from mp.summarize_local import LocalSummaryClient
+    cfg = _local_cfg(backend="local", regulated=True)
+    overridden = with_backend_override(cfg, "anthropic")
+    assert effective_backend(overridden) == "local"
+    assert isinstance(_select_backend(overridden), LocalSummaryClient)
+
+
 def test_regulated_mode_forces_local_over_anthropic() -> None:
     # regulated_mode is a hard zero-egress guarantee: even with the
     # default backend=anthropic, _select_backend must resolve to the

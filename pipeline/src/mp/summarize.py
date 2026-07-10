@@ -35,7 +35,14 @@ from tenacity import (
 
 from . import entry
 from .backend_fallback import run_with_local_fallback
-from .config import Config, effective_backend, parse_local_endpoint, require_env
+from .config import (
+    Config,
+    effective_backend,
+    extract_backend_flag,
+    parse_local_endpoint,
+    require_env,
+    with_backend_override,
+)
 from .markdown import render_summary_md
 from .markers import FLAGGED_INSTRUCTION, flagged_moments_block
 from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
@@ -310,6 +317,7 @@ def summarize(
     *,
     client: SummaryClient | None = None,
     out_suffix: str | None = None,
+    backend: str | None = None,
 ) -> SummaryOutput:
     """Read `<stem>.md` and write `<stem>.summary.json` + `<stem>.summary.md`.
 
@@ -329,6 +337,14 @@ def summarize(
     # the standalone `mp summarize` (the Library's "Regenerate" action) so it
     # honours the same per-meeting context / backend overrides `run-all` would.
     cfg = entry.prepare(cfg, transcript_md)
+
+    # PIPE6: a one-shot backend override for this re-summarize, applied AFTER the
+    # workflow overlay so it wins over the workflow's persisted backend but still
+    # flows through effective_backend's regulated/NDA clamp. Request-scoped; the
+    # workflow TOML is untouched (rewriting it is WF8's job).
+    if backend is not None:
+        cfg = with_backend_override(cfg, backend)
+        log.info("summarize: one-shot backend override -> %s", backend)
 
     transcript = transcript_md.read_text(encoding="utf-8")
     if not transcript.strip():
@@ -608,19 +624,28 @@ def main(argv: list[str]) -> int:
             cfg.summarization.summary_language,
         ))
         return 0
+    try:
+        argv, backend_override = extract_backend_flag(argv)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     # `--candidate` writes a `<stem>.summary.candidate.json/.md` preview without
     # overwriting the live summary, for the Library's local re-run (TECH-A16).
     candidate = "--candidate" in argv
     positional = [a for a in argv if not a.startswith("--")]
     if not positional:
-        print("usage: mp summarize <transcript.md> [--candidate]", file=sys.stderr)
+        print(
+            "usage: mp summarize <transcript.md> [--candidate] "
+            "[--backend anthropic|local|auto|apple_intelligence]",
+            file=sys.stderr,
+        )
         return 2
     md = Path(positional[0]).expanduser().resolve()
     if not md.exists():
         print(f"No such file: {md}", file=sys.stderr)
         return 1
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    summarize(md, out_suffix="candidate" if candidate else None)
+    summarize(md, out_suffix="candidate" if candidate else None, backend=backend_override)
     return 0
 
 

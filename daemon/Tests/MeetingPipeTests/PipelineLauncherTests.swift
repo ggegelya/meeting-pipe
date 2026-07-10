@@ -144,6 +144,43 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertTrue(policy.stripNotion)
     }
 
+    func testPolicyBackendOverrideAnthropicKeepsKeyOnApplePinnedMeeting() throws {
+        // PIPE6 gotcha: "Re-summarize with Anthropic" on a meeting whose persisted
+        // backend is apple_intelligence must keep ANTHROPIC_API_KEY, or the re-run
+        // fails with no key. The override wins over the sidecar backend.
+        let cfg = writeConfig("[summarization]\nbackend = \"anthropic\"\n")
+        defer { try? FileManager.default.removeItem(at: cfg) }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mtg-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let wav = dir.appendingPathComponent("20260707-1500.wav")
+        let meta = dir.appendingPathComponent("20260707-1500.meta.json")
+        try #"{"workflow_backend": "apple_intelligence"}"#.data(using: .utf8)!.write(to: meta)
+
+        // Without the override the meeting is on-device (apple), so the key is stripped.
+        let base = PipelineLauncher.cloudSecretPolicy(for: wav, configURL: cfg)
+        XCTAssertTrue(base.stripAnthropic)
+        // With the anthropic override the re-run needs and keeps the key.
+        let overridden = PipelineLauncher.cloudSecretPolicy(
+            for: wav, backendOverride: "anthropic", configURL: cfg
+        )
+        XCTAssertFalse(overridden.stripAnthropic)
+        XCTAssertFalse(overridden.stripNotion)
+    }
+
+    func testPolicyBackendOverrideCannotWidenEgressUnderRegulated() {
+        // PIPE6 + TECH-ARCH1: even an anthropic override is forced local under
+        // regulated mode, so both tokens are still stripped.
+        let cfg = writeConfig("[modes]\nregulated_mode = true\n")
+        defer { try? FileManager.default.removeItem(at: cfg) }
+        let policy = PipelineLauncher.cloudSecretPolicy(
+            for: nil, backendOverride: "anthropic", configURL: cfg
+        )
+        XCTAssertTrue(policy.stripAnthropic)
+        XCTAssertTrue(policy.stripNotion)
+    }
+
     // MARK: - progress sentinel parsing (TECH-UX5)
 
     func test_parseProgress_extracts_stage_and_elapsed() {

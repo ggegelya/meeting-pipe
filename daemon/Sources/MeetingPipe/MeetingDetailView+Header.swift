@@ -199,6 +199,13 @@ extension MeetingDetailView {
             Button("Reprocess\u{2026}") {
                 toolbarAction("reprocess") { _ = libraryModel.retryMeeting(stem: meeting.stem) }
             }
+            // PIPE6: re-summarize the existing transcript on a one-shot backend
+            // without rewriting the workflow (that stays WF8's Reprocess). Regulated
+            // / NDA still force local. Reuses regenerate (summarize + republish).
+            Menu("Re-summarize with\u{2026}") {
+                Button("Local (on-device)") { runReSummarize(backend: "local") }
+                Button("Anthropic (cloud)") { runReSummarize(backend: "anthropic") }
+            }
             // No "Edit transcript" here: there is no transcript-wide edit mode.
             // Transcripts are corrected per line, via the hover pencil or the
             // right-click "Edit text..." in the Transcript tab (TECH-UX12).
@@ -382,6 +389,14 @@ extension MeetingDetailView {
             "stem": meeting.stem,
         ])
         body()
+    }
+
+    /// PIPE6: re-summarize the existing transcript on a one-shot backend (summarize
+    /// + republish via `regenerateMeeting`), from the "Re-summarize with..." menu.
+    func runReSummarize(backend: String) {
+        toolbarAction("re_summarize_\(backend)") {
+            Task { _ = await libraryModel.regenerateMeeting(stem: meeting.stem, backend: backend) }
+        }
     }
 
     func openMetaJSON() {

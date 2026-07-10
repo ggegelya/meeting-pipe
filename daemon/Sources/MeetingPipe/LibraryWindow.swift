@@ -167,11 +167,11 @@ final class LibraryWindowModel: ObservableObject {
         }
     }
 
-    /// Regenerate summary via `mp summarize` then republish. Same async-wrap pattern as `republishMeeting`.
-    func regenerateMeeting(stem: String) async -> Result<URL?, Error> {
+    /// Regenerate summary via `mp summarize` then republish. Same async-wrap pattern as `republishMeeting`. `backend` re-summarizes on a one-shot engine (PIPE6, the "Re-summarize with..." affordance); `nil` uses the configured/workflow backend.
+    func regenerateMeeting(stem: String, backend: String? = nil) async -> Result<URL?, Error> {
         guard let library = library else { return .failure(Unwired.libraryUnavailable) }
         return await withCheckedContinuation { (cont: CheckedContinuation<Result<URL?, Error>, Never>) in
-            library.regenerateMeeting(stem: stem) { result in
+            library.regenerateMeeting(stem: stem, backend: backend) { result in
                 cont.resume(returning: result)
             }
         }

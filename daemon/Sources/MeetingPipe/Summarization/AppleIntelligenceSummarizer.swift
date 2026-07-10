@@ -7,13 +7,44 @@ enum AppleIntelligenceError: Error, LocalizedError {
     case unavailable(String)
     case emptyTranscript
     case parseFailed(String)
+    /// PIPE6: the on-device model rejected the transcript's language/locale (the
+    /// case that stranded `20260707-150057`). Deterministic: a same-backend retry
+    /// fails again, so the Library offers a local re-summarize instead.
+    case unsupportedLanguage(String)
+
+    /// PIPE6: stable phrase embedded in the unsupported-language reason so the
+    /// Library can recognize it from `<stem>.error.json` (which carries only a
+    /// free-text reason) without a schema change. Producer and consumer share this
+    /// constant so they cannot drift; see `Meeting.failureSuggestsLocalReSummarize`.
+    static let unsupportedLanguageMarker = "unsupported language or locale"
 
     var errorDescription: String? {
         switch self {
         case .unavailable(let why): return "Apple Intelligence is not available: \(why)"
         case .emptyTranscript: return "Transcript is empty; nothing to summarize."
         case .parseFailed(let detail): return "Apple Intelligence returned an unparseable summary: \(detail)"
+        case .unsupportedLanguage(let detail):
+            return "Apple Intelligence: \(Self.unsupportedLanguageMarker) for this transcript. \(detail)"
         }
+    }
+
+    /// PIPE6: true for a deterministic failure that re-running on the SAME backend
+    /// cannot fix, so the recovery is a different-backend re-summarize (local), not
+    /// a plain retry.
+    var isDeterministicBackendFailure: Bool {
+        if case .unsupportedLanguage = self { return true }
+        return false
+    }
+
+    /// Whether an arbitrary error from the Foundation Models framework is an
+    /// unsupported-language/locale rejection. The framework does not vend a stable
+    /// public case reachable from the macOS 14 build, so this matches on the
+    /// message; pure and `internal` so it is unit-testable without the framework.
+    static func isUnsupportedLanguageError(_ error: Error) -> Bool {
+        let text = "\(error) \(error.localizedDescription)".lowercased()
+        return text.contains("unsupported language") || text.contains("unsupported locale")
+            || (text.contains("language") && text.contains("not supported"))
+            || (text.contains("locale") && text.contains("not supported"))
     }
 }
 
@@ -159,9 +190,21 @@ struct AppleIntelligenceSummarizer {
             ? "Merge these partial meeting summaries into one final summary. Reply with ONLY the JSON object."
             : "Summarize this meeting transcript. Reply with ONLY the JSON object."
         let prompt = header + "\n\n" + Self.schemaDirective + "\n\n" + body
-        let response = try await session.respond(to: prompt, options: GenerationOptions(temperature: 0.2))
-        guard let summary = Self.parse(response.content) else {
-            throw AppleIntelligenceError.parseFailed(String(response.content.prefix(200)))
+        let content: String
+        do {
+            let response = try await session.respond(to: prompt, options: GenerationOptions(temperature: 0.2))
+            content = response.content
+        } catch {
+            // PIPE6: surface an unsupported-language/locale rejection as a typed,
+            // recognizable error so the Library offers a local re-summarize instead
+            // of a doomed same-backend retry. Other errors propagate unchanged.
+            if AppleIntelligenceError.isUnsupportedLanguageError(error) {
+                throw AppleIntelligenceError.unsupportedLanguage(String("\(error)".prefix(200)))
+            }
+            throw error
+        }
+        guard let summary = Self.parse(content) else {
+            throw AppleIntelligenceError.parseFailed(String(content.prefix(200)))
         }
         return summary
     }

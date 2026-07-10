@@ -49,6 +49,14 @@ struct Meeting: Identifiable, Hashable {
     let failureReason: String?
     let failureStage: String?
 
+    /// PIPE6: true when the failure was a deterministic backend rejection (Apple Intelligence declining the transcript's language) that a same-backend retry cannot fix, so the failed-state view offers a local re-summarize instead. Matches the marker `AppleIntelligenceError` stamps into the reason, so producer and consumer cannot drift.
+    var failureSuggestsLocalReSummarize: Bool {
+        guard let reason = failureReason else { return false }
+        return reason.range(
+            of: AppleIntelligenceError.unsupportedLanguageMarker, options: .caseInsensitive
+        ) != nil
+    }
+
     /// Lowercased search corpus (TECH-A14): title + summary bullets + decisions + action tasks. Built once per scan so the filter loop never re-reads JSON. Transcripts excluded to keep the corpus bounded; full-transcript search is the FTS5 upgrade (TECH-A3).
     let searchableText: String
 

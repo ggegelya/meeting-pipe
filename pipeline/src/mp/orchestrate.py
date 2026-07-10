@@ -26,7 +26,7 @@ from importlib import resources
 from pathlib import Path
 
 from . import entry
-from .config import Config, effective_backend
+from .config import Config, effective_backend, extract_backend_flag, with_backend_override
 from .corrections import set_publish_state, write_empty_marker, write_run_sidecar
 from .transcript_quality import transcript_issues
 from .diarize import (
@@ -230,6 +230,7 @@ def run_all(
     cfg: Config | None = None,
     *,
     force_byo: bool | None = None,
+    backend: str | None = None,
 ) -> dict:
     """Run finalize -> summarize -> publish. Raises on first failure.
     ASR + diarization happen in Swift (FluidAudio) before this is
@@ -239,12 +240,20 @@ def run_all(
     finalize, even when the transcript is short enough to auto-summarize.
     Defaults to reading `MP_FORCE_BYO=1` from the environment so the
     Swift launcher can opt in per-meeting without flag plumbing.
+
+    `backend` is a one-shot summarization backend override for a re-run over an
+    existing recording (PIPE6). Applied here so the pre-summarize apple-handoff
+    decision reflects it, and threaded into `summarize` (which re-applies it after
+    its own overlay). It never rewrites the workflow's persisted backend.
     """
     # The entry contract (SEC13): per-meeting workflow overrides from the
     # daemon-written meta sidecar (TECH-B4), then the structural egress backstop
     # on the resolved config (TECH-SEC3), then secrets. No-op overlay for
     # shell-invoked `mp run-all` against wavs that have no sidecar.
     cfg = entry.prepare(cfg, wav)
+    if backend is not None:
+        cfg = with_backend_override(cfg, backend)
+        log.info("run-all: one-shot backend override -> %s", backend)
 
     if force_byo is None:
         force_byo = os.environ.get("MP_FORCE_BYO") == "1"
@@ -256,7 +265,9 @@ def run_all(
 
     heartbeat = _ProgressHeartbeat().start()
     try:
-        return _run_all_inner(wav, cfg, force_byo=force_byo, heartbeat=heartbeat)
+        return _run_all_inner(
+            wav, cfg, force_byo=force_byo, heartbeat=heartbeat, backend=backend
+        )
     except Exception as e:
         events.emit("pipeline", "run_failed", wav=str(wav),
                     error=str(e), error_type=type(e).__name__)
@@ -390,7 +401,8 @@ def _check_apple_handoff(wav: Path, t: dict[str, Path], md_text: str, cfg: Confi
 
 
 def _run_all_inner(
-    wav: Path, cfg: Config, *, force_byo: bool, heartbeat: "_ProgressHeartbeat | None" = None
+    wav: Path, cfg: Config, *, force_byo: bool,
+    heartbeat: "_ProgressHeartbeat | None" = None, backend: str | None = None,
 ) -> dict:
     def _stage(name: str) -> None:
         if heartbeat is not None:
@@ -454,7 +466,7 @@ def _run_all_inner(
     log.info("[2/3] summarize")
     _stage("summarize")
     events.emit("pipeline", "stage_started", stage="summarize")
-    s = summarize(t["md"], cfg=cfg)
+    s = summarize(t["md"], cfg=cfg, backend=backend)
     events.emit("pipeline", "stage_completed", stage="summarize", md=str(s["md"]))
 
     # Run sidecar: snapshot of which backend + model produced this
@@ -688,8 +700,16 @@ def _finalize_streamed_transcript(
 
 
 def main(argv: list[str]) -> int:
+    try:
+        argv, backend_override = extract_backend_flag(argv)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     if not argv:
-        print("usage: mp run-all <wav>", file=sys.stderr)
+        print(
+            "usage: mp run-all <wav> [--backend anthropic|local|auto|apple_intelligence]",
+            file=sys.stderr,
+        )
         return 2
     wav = Path(argv[0]).expanduser().resolve()
     if not wav.exists():
@@ -697,7 +717,7 @@ def main(argv: list[str]) -> int:
         return 1
     _configure_logging()
     try:
-        result = run_all(wav)
+        result = run_all(wav, backend=backend_override)
     except Exception as e:  # noqa: BLE001
         log.exception("run-all failed: %s", e)
         return 1

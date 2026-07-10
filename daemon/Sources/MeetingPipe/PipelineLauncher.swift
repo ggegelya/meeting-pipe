@@ -51,6 +51,8 @@ protocol PipelineDriver: AnyObject {
     func publish(summaryJSON: URL, completion: @escaping (Result<URL?, Error>) -> Void)
     /// Re-run only the summarize step against an existing transcript (Library "Regenerate summary" action).
     func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
+    /// As `summarize`, but with a one-shot backend override for a re-summarize on a chosen engine (PIPE6): `mp summarize --backend <backend>`. `nil` uses the configured backend. Defaulted to ignore the override so fakes need only implement the plain form.
+    func summarize(transcriptMD: URL, backend: String?, completion: @escaping (Result<Void, Error>) -> Void)
     /// Publish a hand-pasted summary (TECH-UX3): runs `mp publish-from-paste <transcript.md>`, which parses the sibling `<stem>.summary.md` the caller wrote and fans out to the sinks.
     func publishFromPaste(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// Re-run summarize into a `<stem>.summary.candidate.json` preview (TECH-A16), no publish. `contextOverride` (TECH-FEAT7) overrides only the CONTEXT block for this run when non-empty. Defaulted no-op.
@@ -92,6 +94,12 @@ extension PipelineDriver {
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "summarize unsupported by this driver"]
         )))
+    }
+
+    /// Default: ignore the backend override and defer to the plain `summarize`, so
+    /// fakes that implement only the completion form get the PIPE6 variant for free.
+    func summarize(transcriptMD: URL, backend: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+        summarize(transcriptMD: transcriptMD, completion: completion)
     }
 
     /// Default no-op stub; `PipelineLauncher` overrides this.
@@ -342,7 +350,22 @@ final class PipelineLauncher: PipelineDriver {
         transcriptMD: URL,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        runMP(["summarize", transcriptMD.path], timeout: 20 * 60, meeting: transcriptMD, completion: completion)
+        summarize(transcriptMD: transcriptMD, backend: nil, completion: completion)
+    }
+
+    /// PIPE6: re-summarize on a one-shot backend (`mp summarize --backend`), reusing
+    /// the transcript already on disk. The override does not rewrite the workflow,
+    /// and regulated/NDA still force local via `effective_backend`. `runMP` is told
+    /// the override so `cloudSecretPolicy` keeps the Anthropic key when the user
+    /// picks Anthropic on a meeting whose persisted backend is on-device.
+    func summarize(
+        transcriptMD: URL,
+        backend: String?,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        var args = ["summarize", transcriptMD.path]
+        if let backend { args += ["--backend", backend] }
+        runMP(args, timeout: 20 * 60, meeting: transcriptMD, backendOverride: backend, completion: completion)
     }
 
     /// Publish a hand-pasted summary (TECH-UX3). The caller has already written
@@ -531,6 +554,7 @@ final class PipelineLauncher: PipelineDriver {
         onProgress: ((PipelineProgress) -> Void)? = nil,
         retainForCancel: Bool = false,
         extraEnv: [String: String] = [:],
+        backendOverride: String? = nil,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         guard let mpPath = Self.findMP() else {
@@ -542,7 +566,10 @@ final class PipelineLauncher: PipelineDriver {
         p.arguments = mpPath.args + args
         // Inherit the daemon env (which carries the Keychain-sourced tokens, refreshed on each Preferences
         // save). TECH-SEC5: withhold cloud tokens this run is not allowed to use.
-        let policy = Self.cloudSecretPolicy(for: meeting)
+        // PIPE6: a one-shot backend override wins over the meeting's persisted
+        // backend when deciding which token to keep, so "Re-summarize with Anthropic"
+        // on an Apple-pinned meeting is not stripped of its key.
+        let policy = Self.cloudSecretPolicy(for: meeting, backendOverride: backendOverride)
         var env = Self.freshEnvironment(
             stripAnthropicKey: policy.stripAnthropic, stripNotionToken: policy.stripNotion
         )
@@ -678,6 +705,7 @@ final class PipelineLauncher: PipelineDriver {
     /// effective-config chokepoint (TECH-ARCH1) would own this.
     static func cloudSecretPolicy(
         for meeting: URL?,
+        backendOverride: String? = nil,
         configURL: URL = Config.defaultPath
     ) -> (stripAnthropic: Bool, stripNotion: Bool) {
         var regulated = false
@@ -698,7 +726,11 @@ final class PipelineLauncher: PipelineDriver {
                 sidecarBackend = obj["workflow_backend"] as? String
             }
         }
-        let backend = regulated ? "local" : (sidecarBackend ?? globalBackend)
+        // PIPE6: a one-shot backend override (Library "Re-summarize with...") wins
+        // over the meeting's persisted backend, so keeping/stripping a token reflects
+        // the engine actually about to run. It never wins over regulated: that still
+        // forces local and strips both tokens, so the override cannot widen egress.
+        let backend = regulated ? "local" : (backendOverride ?? sidecarBackend ?? globalBackend)
         let onDeviceSummary = regulated || nda || backend == "local" || backend == "apple_intelligence"
         return (stripAnthropic: onDeviceSummary, stripNotion: regulated || nda)
     }

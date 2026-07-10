@@ -407,8 +407,21 @@ struct SummaryTab: View {
                 }
                 .frame(maxWidth: 460, maxHeight: 150)
             }
-            Button("Retry pipeline") { runRetry() }
-                .controlSize(.large)
+            if meeting.failureSuggestsLocalReSummarize {
+                // PIPE6: the failure is a deterministic backend rejection (Apple
+                // Intelligence declining this transcript's language). A same-backend
+                // retry just fails again, so lead with a local re-summarize that
+                // works and keep the plain retry as the small fallback.
+                VStack(spacing: 6) {
+                    Button("Re-summarize with Local") { runReSummarize(backend: "local") }
+                        .controlSize(.large)
+                    Button("Retry on the same backend anyway") { runRetry() }
+                        .controlSize(.small)
+                }
+            } else {
+                Button("Retry pipeline") { runRetry() }
+                    .controlSize(.large)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
@@ -433,6 +446,23 @@ struct SummaryTab: View {
             alert.alertStyle = .warning
             alert.addButton(withTitle: "OK")
             alert.runModal()
+        }
+    }
+
+    /// PIPE6: re-summarize the existing transcript on a one-shot backend (summarize
+    /// + republish), for the failed-state recovery. Does not rewrite the workflow.
+    private func runReSummarize(backend: String) {
+        Task { @MainActor in
+            if case .failure(let err) = await libraryModel.regenerateMeeting(
+                stem: meeting.stem, backend: backend
+            ) {
+                let alert = NSAlert()
+                alert.messageText = "Re-summarize failed"
+                alert.informativeText = err.localizedDescription
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
         }
     }
 
