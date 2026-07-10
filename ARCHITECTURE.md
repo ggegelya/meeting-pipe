@@ -225,7 +225,8 @@ flowchart TD
 
 - `App.swift` — `@main`. NSApplication accessory app. Reads `UISettings`, applies theme, sets up `ConfigStore` + `SecretsStore`, constructs `Coordinator`, wires `StatusBarController`, kicks off `SystemAudioCapture.prewarm`.
 - `Coordinator.swift` - the spine (633 lines, plus the `Coordinator+Session` / `+Delegates` / `+MenuActions` extensions). Constructs and owns every subsystem and routes between them. The place where everything meets.
-- `MeetingSessionController.swift` - one meeting's lifetime, lifted out of the Coordinator by TECH-ARCH2 (915 lines): the two verdict-consumer Tasks, the recording begin/stop path, the prompt timeout, the MicGate and lifecycle engage/disengage, and meta-sidecar writing. It reaches back into its host through `unowned let coordinator`, which is why it has almost no unit coverage (ARCH4 extracts the seam).
+- `MeetingSessionController.swift` - one meeting's lifetime, lifted out of the Coordinator by TECH-ARCH2 (915 lines): the two verdict-consumer Tasks, the recording begin/stop path, the prompt timeout, the MicGate and lifecycle engage/disengage, and meta-sidecar writing. It reaches its host through `unowned let coordinator: any SessionHost` (ARCH4), not through `Coordinator` itself, so `MeetingSessionControllerBranchTests` drives the real controller against `FakeSessionHost`.
+- `SessionHost.swift` - the seam the session controller sees: every member it reads through `coordinator.`, and nothing else. The six UI / I/O collaborators (status bar, notifier, recorder, HUD, prompt window, job dispatcher) are protocol-typed because a test cannot have the real ones; everything else stays concrete because a test can already build it. `micAuthorizationStatus` lives here too, so the permission-denied branch is reachable without TCC. `Coordinator+SessionHost.swift` is the production conformance.
 
 The four collaborators the spine delegates to, in `Coordination/`:
 

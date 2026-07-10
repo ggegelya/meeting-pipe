@@ -53,7 +53,9 @@ Most start/stop/error sites pair an event line (structured) with a writeLine (re
 
 ### Error propagation
 
-Throwing functions for in-module calls, `Result<T, Error>` at protocol/API boundaries. Each subsystem declares its own nested `enum X: Error, LocalizedError` (see `MeetingRecorder.RecorderError`, `PipelineLauncher.LaunchError`). There is no unified `MeetingPipeError`. `LocalizedError.errorDescription` is what the notifier surfaces, so write user-facing strings there.
+Throwing functions for in-module calls, `Result<T, Error>` at protocol/API boundaries. Each subsystem declares its own nested `enum X: Error, LocalizedError` (see `MeetingRecorder.RecorderError`, `PipelineLauncher.LaunchError`, `MeetingLibraryService.LibraryError`). There is no unified `MeetingPipeError`. `LocalizedError.errorDescription` is what the notifier surfaces, so write user-facing strings there.
+
+Never `NSError(domain:code:userInfo:)`. A hand-rolled domain string plus `code: 1` carries no meaning a caller can branch on: `MeetingLibraryService` had eleven of them where "the file is missing" and "you typed nothing" were both code 1 in one method and both code 2 in another (ARCH4 replaced them with named cases).
 
 ### Test file naming
 

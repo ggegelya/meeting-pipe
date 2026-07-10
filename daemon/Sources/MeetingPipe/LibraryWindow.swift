@@ -108,8 +108,16 @@ final class LibraryWindowModel: ObservableObject {
     /// Non-`@Published` so toolbar reads don't republish the parent model; the toolbar observes it directly via `@ObservedObject`.
     let processing = ProcessingTracker()
 
-    /// Weak to avoid a retain cycle; drives menu actions (Start/Stop, Preferences).
+    /// Weak to avoid a retain cycle. Kept for the three things that are genuinely
+    /// the Coordinator's: start/stop a recording, open Preferences, cancel the
+    /// active pipeline job, and read the configured backend.
     weak var coordinator: Coordinator?
+
+    /// The library operations themselves (ARCH4). Injected by the Coordinator after
+    /// it builds the service, so this model calls `MeetingLibraryService` directly
+    /// instead of through twelve one-line Coordinator forwarders. Nil-able so
+    /// headless tests and the initial-state path don't need it.
+    var library: MeetingLibraryService?
 
     /// Backing store for the meetings list; the list view subscribes to it.
     let meetingStore: MeetingStore
@@ -120,6 +128,14 @@ final class LibraryWindowModel: ObservableObject {
     init(coordinator: Coordinator? = nil, recordingsDir: URL) {
         self.coordinator = coordinator
         self.meetingStore = MeetingStore(recordingsDir: recordingsDir)
+    }
+
+    /// A library action fired before the Coordinator wired the service. Only
+    /// reachable from a headless test or the pre-wiring initial state; the UI is
+    /// not on screen until `library` is set.
+    enum Unwired: Error, LocalizedError {
+        case libraryUnavailable
+        var errorDescription: String? { "The meeting library is not available yet." }
     }
 
     var isRecording: Bool {
@@ -141,16 +157,11 @@ final class LibraryWindowModel: ObservableObject {
         coordinator?.menuPreferences()
     }
 
-    /// Republish via `mp publish` (the sink fanout). Async-wraps the Coordinator callback so SwiftUI callers can `await` the result.
+    /// Republish via `mp publish` (the sink fanout). Async-wraps the service's completion so SwiftUI callers can `await` the result.
     func republishMeeting(stem: String) async -> Result<URL?, Error> {
-        guard let coordinator = coordinator else {
-            return .failure(NSError(
-                domain: "LibraryWindowModel", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
-            ))
-        }
+        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
         return await withCheckedContinuation { (cont: CheckedContinuation<Result<URL?, Error>, Never>) in
-            coordinator.republishMeeting(stem: stem) { result in
+            library.republishMeeting(stem: stem) { result in
                 cont.resume(returning: result)
             }
         }
@@ -158,14 +169,9 @@ final class LibraryWindowModel: ObservableObject {
 
     /// Regenerate summary via `mp summarize` then republish. Same async-wrap pattern as `republishMeeting`.
     func regenerateMeeting(stem: String) async -> Result<URL?, Error> {
-        guard let coordinator = coordinator else {
-            return .failure(NSError(
-                domain: "LibraryWindowModel", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
-            ))
-        }
+        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
         return await withCheckedContinuation { (cont: CheckedContinuation<Result<URL?, Error>, Never>) in
-            coordinator.regenerateMeeting(stem: stem) { result in
+            library.regenerateMeeting(stem: stem) { result in
                 cont.resume(returning: result)
             }
         }
@@ -187,45 +193,32 @@ final class LibraryWindowModel: ObservableObject {
     /// `contextOverride` (TECH-FEAT7) feeds an ad-hoc reprocess prompt for that
     /// run only; nil is the plain local re-run.
     func previewSummary(stem: String, contextOverride: String? = nil) async -> Result<Void, Error> {
-        guard let coordinator = coordinator else {
-            return .failure(NSError(
-                domain: "LibraryWindowModel", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
-            ))
-        }
+        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
         return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
-            coordinator.previewSummary(stem: stem, contextOverride: contextOverride) { cont.resume(returning: $0) }
+            library.previewSummary(stem: stem, contextOverride: contextOverride) { cont.resume(returning: $0) }
         }
     }
 
     /// TECH-FEAT7: the effective context prompt for prefilling the reprocess editor.
     func effectiveContextPrompt(stem: String) -> String {
-        coordinator?.effectiveContextPrompt(stem: stem) ?? ""
+        library?.effectiveContextPrompt(stem: stem) ?? ""
     }
 
     @discardableResult
     func keepCandidateSummary(stem: String) -> Result<Void, Error> {
-        coordinator?.keepCandidateSummary(stem: stem) ?? .failure(NSError(
-            domain: "LibraryWindowModel", code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
-        ))
+        library?.keepCandidate(stem: stem) ?? .failure(Unwired.libraryUnavailable)
     }
 
     func discardCandidateSummary(stem: String) {
-        coordinator?.discardCandidateSummary(stem: stem)
+        library?.discardCandidate(stem: stem)
     }
 
     /// Publish a hand-pasted summary (TECH-UX3): writes `<stem>.summary.md` and
     /// runs `mp publish-from-paste`. Async-wrapped like `republishMeeting`.
     func publishFromPaste(stem: String, summaryText: String) async -> Result<Void, Error> {
-        guard let coordinator = coordinator else {
-            return .failure(NSError(
-                domain: "LibraryWindowModel", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
-            ))
-        }
+        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
         return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
-            coordinator.publishFromPaste(stem: stem, summaryText: summaryText) { result in
+            library.publishFromPaste(stem: stem, summaryText: summaryText) { result in
                 cont.resume(returning: result)
             }
         }
@@ -234,14 +227,9 @@ final class LibraryWindowModel: ObservableObject {
     /// Ask a natural-language question across the library (AI3). Async-wrapped like
     /// `republishMeeting`; the AskView shows a spinner while this runs.
     func askMeetings(question: String) async -> Result<AskAnswer, Error> {
-        guard let coordinator = coordinator else {
-            return .failure(NSError(
-                domain: "LibraryWindowModel", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
-            ))
-        }
+        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
         return await withCheckedContinuation { (cont: CheckedContinuation<Result<AskAnswer, Error>, Never>) in
-            coordinator.askMeetings(question: question) { result in
+            library.askMeetings(question: question) { result in
                 cont.resume(returning: result)
             }
         }
@@ -250,14 +238,9 @@ final class LibraryWindowModel: ObservableObject {
     /// Enroll a meeting speaker into the named-speaker roster (FEAT3-ROSTER).
     /// Async-wrapped like `askMeetings`; the transcript naming sheet awaits it.
     func rosterEnroll(stem: String, label: String, name: String) async -> Result<Void, Error> {
-        guard let coordinator = coordinator else {
-            return .failure(NSError(
-                domain: "LibraryWindowModel", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
-            ))
-        }
+        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
         return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
-            coordinator.rosterEnroll(stem: stem, label: label, name: name) { result in
+            library.rosterEnroll(stem: stem, label: label, name: name) { result in
                 cont.resume(returning: result)
             }
         }
@@ -266,27 +249,18 @@ final class LibraryWindowModel: ObservableObject {
     /// Re-enqueue the full `mp run-all` pipeline for a stalled/failed meeting.
     @discardableResult
     func retryMeeting(stem: String) -> Result<Void, Error> {
-        coordinator?.retryMeeting(stem: stem) ?? .failure(NSError(
-            domain: "LibraryWindowModel", code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
-        ))
+        library?.retryMeeting(stem: stem) ?? .failure(Unwired.libraryUnavailable)
     }
 
     /// Move every sidecar for a stem to the Trash.
     @discardableResult
     func softDeleteMeeting(stem: String) -> Result<Void, Error> {
-        coordinator?.softDeleteMeeting(stem: stem) ?? .failure(NSError(
-            domain: "LibraryWindowModel", code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
-        ))
+        library?.softDeleteMeeting(stem: stem) ?? .failure(Unwired.libraryUnavailable)
     }
 
     /// Copy the standard human-facing artefacts for a stem to the chosen folder.
     func exportMeeting(stem: String, to destination: URL) -> Result<Int, Error> {
-        coordinator?.exportMeeting(stem: stem, to: destination) ?? .failure(NSError(
-            domain: "LibraryWindowModel", code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "Coordinator unavailable"]
-        ))
+        library?.exportMeeting(stem: stem, to: destination) ?? .failure(Unwired.libraryUnavailable)
     }
 }
 

@@ -209,6 +209,10 @@ final class Coordinator: NSObject {
         super.init()
         // Post-super.init: wire the model + status bar back to self.
         libraryModel.coordinator = self
+        // ARCH4: the Library window drives `MeetingLibraryService` directly. The
+        // coordinator reference above survives only for start/stop, Preferences,
+        // job cancellation, and the backend read.
+        libraryModel.library = library
         statusBar.libraryModel = libraryModel
         // The meeting-lifetime owner (TECH-ARCH2); holds an unowned backref.
         session = MeetingSessionController(coordinator: self)
@@ -600,8 +604,12 @@ final class Coordinator: NSObject {
         }
     )
 
-    /// Post-recording meeting operations (TECH-H1-FINISH); the methods
-    /// below forward to it so external callers keep the Coordinator API.
+    /// Post-recording meeting operations (TECH-H1-FINISH). Handed to
+    /// `libraryModel` in `init` so the Library window calls it directly (ARCH4);
+    /// the Coordinator keeps only `recentCorrectableMeetings` / `failedMeetingCount`
+    /// for the status-bar menu. `enqueue` reads `jobDispatcher` inside the closure,
+    /// not at construction, so forcing this lazy var in `init` is safe while that
+    /// IUO is still nil.
     lazy var library = MeetingLibraryService(
         outputDir: { [weak self] in
             self?.liveOutputDir ?? URL(fileURLWithPath: NSTemporaryDirectory())

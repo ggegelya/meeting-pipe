@@ -14,6 +14,7 @@ swift test                # full Xcode required locally (CI on macos-14 has it)
 ## Patterns to match
 
 - **Pure logic on its own type with explicit inputs.** When a subsystem grows non-trivial branching, lift the decision into a `decide(at: Date, …) → Action` style entry point on its own struct (see `MicGate.decide`, `AudioRetention.decide`, `MeetingSourceScorer.score`, `WorkflowMatcher.match`). The host that owns AVFoundation / NSWorkspace / TCC just forwards inputs in.
+- **`MeetingSessionController` talks to `SessionHost`, not `Coordinator`.** Adding a subsystem the session logic needs means adding it to `SessionHost` (and to `FakeSessionHost` in the tests), not reaching for `Coordinator`. Protocol-type it only if a test cannot construct the real thing; a global read (the way `beginRecording` used to call `AVCaptureDevice.authorizationStatus`) has to come through the host or it takes the branch back out of reach.
 - **Fully-qualified type name in stored-property initializers.** `Self.foo` errors with "covariant 'Self' type cannot be referenced from a stored property initializer" on Swift 5.9+. Write `StatusBarController.foo` instead. `lazy var` sidesteps this but only use lazy when deferred init is what you want.
 - **Combine subscriptions filter to value changes.** `removeDuplicates()` + `dropFirst()` before triggering rebuilds. The permissions poll runs at 2 s; subscribing to `objectWillChange` rebuilt the status-bar menu twice a second until the snapshot dedupe landed (`StatusBarController.PermissionsSnapshot`).
 - **`ObservableObject` + `@Published` debounce writes.** `ConfigStore.scheduleSave` is the template: 500 ms `Timer.scheduledTimer`, gated on an `isInitialized` flag so the init's `didSet` storm doesn't trigger a spurious save.
@@ -32,7 +33,7 @@ swift test                # full Xcode required locally (CI on macos-14 has it)
 
 | Subsystem | Entry file |
 |---|---|
-| State machine + dispatch | `Coordinator.swift` (+ its `Coordinator+*.swift` extensions), `MeetingSessionController.swift` (one meeting's lifetime), `Coordination/` (`DetectionStateMachine`, `SinkDispatcher`, `PipelineJobDispatcher`, `ConfigRefreshCoordinator`) |
+| State machine + dispatch | `Coordinator.swift` (+ its `Coordinator+*.swift` extensions), `MeetingSessionController.swift` (one meeting's lifetime), `SessionHost.swift` (the seam it sees instead of Coordinator), `Coordination/` (`DetectionStateMachine`, `SinkDispatcher`, `PipelineJobDispatcher`, `ConfigRefreshCoordinator`) |
 | Meeting detection (start + end) | `MeetingPipeCore/Lifecycle/` (`MeetingLifecycleCoordinator` + signals + per-app adapters), `MeetingDiscoveryWatcher.swift`, `MeetingSourceScanner.swift`, `MeetingSourceScorer.swift`, `Resources/meeting_apps.toml` |
 | Mute gating | `MeetingPipeCore/MicGate/` (`MicGate` + probes + per-app adapters), `MicGateWriter` |
 | Recording | `MeetingRecorder.swift`, `SystemAudioCapture.swift`, `MuteRedactor.swift` (offline redaction), `AudioRetention.swift` |

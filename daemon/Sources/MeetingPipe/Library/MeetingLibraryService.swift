@@ -3,6 +3,61 @@ import Foundation
 /// Post-recording operations: retry, regenerate, republish, soft-delete, export, and menu queries. Lifted out of `Coordinator` (TECH-H1-FINISH); `Log.event` category stays `coordinator` so the events.jsonl trace is unchanged. Dependencies are injected as closures: `outputDir` re-resolves on each call so Preferences edits take effect without restart. Threading: all methods must run on main, matching the Coordinator's own threading contract.
 final class MeetingLibraryService {
 
+    /// Why a library operation could not run (ARCH4 (d)).
+    ///
+    /// Replaces eleven ad-hoc `NSError(domain: "MeetingLibraryService", code: 1|2)`
+    /// throws whose codes carried no meaning: both "the file is missing" and "you
+    /// typed nothing" appeared as code 1 in one method and code 2 in another, so no
+    /// caller could ever branch on one. Per CONVENTIONS ("Error propagation"), each
+    /// subsystem declares its own nested `LocalizedError`; `errorDescription` is
+    /// what the notifier and the Library UI surface, so the strings stay
+    /// user-facing and unchanged from the NSError messages they replace.
+    enum LibraryError: Error, LocalizedError, Equatable {
+        /// No `.wav` for this meeting, so there is nothing to re-run the pipeline on.
+        case noAudio(stem: String)
+        /// The transcript a downstream action needs is absent. `action` completes
+        /// the sentence "cannot ...".
+        case noTranscript(name: String, action: String)
+        /// No `<stem>.summary.json` to republish; a corrected summary must be
+        /// written first.
+        case noSummary(stem: String)
+        /// Soft-delete found nothing on disk under this stem.
+        case noFiles(stem: String)
+        /// "Keep" pressed with no candidate summary alongside the live one.
+        case noCandidateSummary
+        /// Ask was invoked with a blank question.
+        case emptyQuestion
+        /// Speaker naming was invoked with a blank name.
+        case emptyName
+        /// The meeting carries no per-speaker embeddings, so no cluster can be named.
+        case noVoiceprints
+        /// "Save & publish" pressed with an empty paste box.
+        case emptyPastedSummary
+
+        var errorDescription: String? {
+            switch self {
+            case .noAudio(let stem):
+                return "No audio for \(stem) - cannot retry"
+            case .noTranscript(let name, let action):
+                return "No transcript at \(name) - cannot \(action)"
+            case .noSummary(let stem):
+                return "No summary.json for \(stem) - corrected summary must be written before republish"
+            case .noFiles(let stem):
+                return "No files found for \(stem)"
+            case .noCandidateSummary:
+                return "No candidate summary to keep"
+            case .emptyQuestion:
+                return "Type a question first."
+            case .emptyName:
+                return "Type a name first."
+            case .noVoiceprints:
+                return "No voiceprints for this meeting - only diarized meetings can be named."
+            case .emptyPastedSummary:
+                return "Paste a summary before saving."
+            }
+        }
+    }
+
     private let outputDir: () -> URL
     /// Resolves the app-private originals directory (ADR 0016 kept recordings) so
     /// soft-delete can cascade into it. Injected for hermetic tests; defaults to
@@ -53,11 +108,7 @@ final class MeetingLibraryService {
         }
 
         guard let audioURL = MeetingStore.finalRecordingURL(stem: stem, in: dir) else {
-            return .failure(NSError(
-                domain: "MeetingLibraryService", code: 1,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "No audio for \(stem) - cannot retry"]
-            ))
+            return .failure(LibraryError.noAudio(stem: stem))
         }
         Log.writeLine("daemon", "retry pipeline → \(stem)")
         Log.event(category: "coordinator", action: "retry_requested", attributes: [
@@ -77,11 +128,8 @@ final class MeetingLibraryService {
         let dir = outputDir()
         let transcriptURL = dir.appendingPathComponent("\(stem).md")
         guard FileManager.default.fileExists(atPath: transcriptURL.path) else {
-            completion(.failure(NSError(
-                domain: "MeetingLibraryService", code: 1,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "No transcript at \(transcriptURL.lastPathComponent) - cannot regenerate"]
-            )))
+            completion(.failure(LibraryError.noTranscript(
+                name: transcriptURL.lastPathComponent, action: "regenerate")))
             return
         }
         Log.writeLine("daemon", "regenerate requested → \(stem)")
@@ -116,10 +164,7 @@ final class MeetingLibraryService {
     func askMeetings(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            completion(.failure(NSError(
-                domain: "MeetingLibraryService", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Type a question first."]
-            )))
+            completion(.failure(LibraryError.emptyQuestion))
             return
         }
         Log.event(category: "coordinator", action: "ask_requested", attributes: ["chars": trimmed.count])
@@ -155,20 +200,13 @@ final class MeetingLibraryService {
     ) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            completion(.failure(NSError(
-                domain: "MeetingLibraryService", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Type a name first."]
-            )))
+            completion(.failure(LibraryError.emptyName))
             return
         }
         let dir = outputDir()
         let embeddingsURL = dir.appendingPathComponent("\(stem).embeddings.json")
         guard FileManager.default.fileExists(atPath: embeddingsURL.path) else {
-            completion(.failure(NSError(
-                domain: "MeetingLibraryService", code: 1,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "No voiceprints for this meeting - only diarized meetings can be named."]
-            )))
+            completion(.failure(LibraryError.noVoiceprints))
             return
         }
         Log.event(category: "coordinator", action: "roster_enroll_requested", attributes: [
@@ -204,18 +242,12 @@ final class MeetingLibraryService {
         let summaryMdURL = dir.appendingPathComponent("\(stem).summary.md")
         let trimmed = summaryText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            completion(.failure(NSError(
-                domain: "MeetingLibraryService", code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "Paste a summary before saving."]
-            )))
+            completion(.failure(LibraryError.emptyPastedSummary))
             return
         }
         guard FileManager.default.fileExists(atPath: transcriptURL.path) else {
-            completion(.failure(NSError(
-                domain: "MeetingLibraryService", code: 1,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "No transcript at \(transcriptURL.lastPathComponent) - cannot publish a pasted summary"]
-            )))
+            completion(.failure(LibraryError.noTranscript(
+                name: transcriptURL.lastPathComponent, action: "publish a pasted summary")))
             return
         }
         do {
@@ -265,11 +297,8 @@ final class MeetingLibraryService {
         let dir = outputDir()
         let transcriptURL = dir.appendingPathComponent("\(stem).md")
         guard FileManager.default.fileExists(atPath: transcriptURL.path) else {
-            completion(.failure(NSError(
-                domain: "MeetingLibraryService", code: 1,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "No transcript at \(transcriptURL.lastPathComponent) - cannot re-run"]
-            )))
+            completion(.failure(LibraryError.noTranscript(
+                name: transcriptURL.lastPathComponent, action: "re-run")))
             return
         }
         Log.event(category: "coordinator", action: "summary_preview_started", attributes: ["stem": stem])
@@ -306,10 +335,7 @@ final class MeetingLibraryService {
         let fm = FileManager.default
         let candJSON = candidateJSON(stem, in: dir)
         guard fm.fileExists(atPath: candJSON.path) else {
-            return .failure(NSError(
-                domain: "MeetingLibraryService", code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "No candidate summary to keep"]
-            ))
+            return .failure(LibraryError.noCandidateSummary)
         }
         do {
             try promote(candJSON, to: dir.appendingPathComponent("\(stem).summary.json"))
@@ -356,10 +382,7 @@ final class MeetingLibraryService {
             MeetingStore.stem(of: url) == stem
         }
         guard !matching.isEmpty else {
-            return .failure(NSError(
-                domain: "MeetingLibraryService", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "No files found for \(stem)"]
-            ))
+            return .failure(LibraryError.noFiles(stem: stem))
         }
         var firstFailure: Error?
         for url in matching {
@@ -446,11 +469,7 @@ final class MeetingLibraryService {
         let dir = outputDir()
         let summaryURL = dir.appendingPathComponent("\(stem).summary.json")
         guard FileManager.default.fileExists(atPath: summaryURL.path) else {
-            completion(.failure(NSError(
-                domain: "MeetingLibraryService", code: 1,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "No summary.json for \(stem) - corrected summary must be written before republish"]
-            )))
+            completion(.failure(LibraryError.noSummary(stem: stem)))
             return
         }
         Log.writeLine("daemon", "republish requested → \(stem)")

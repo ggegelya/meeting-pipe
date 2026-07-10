@@ -61,81 +61,25 @@ extension Coordinator {
         libraryWindow.show()
     }
 
-    func retryMeeting(stem: String) -> Result<Void, Error> {
-        library.retryMeeting(stem: stem)
-    }
-
-    func regenerateMeeting(
-        stem: String,
-        completion: @escaping (Result<URL?, Error>) -> Void
-    ) {
-        library.regenerateMeeting(stem: stem, completion: completion)
-    }
-
-    func softDeleteMeeting(stem: String) -> Result<Void, Error> {
-        library.softDeleteMeeting(stem: stem)
-    }
-
-    func exportMeeting(stem: String, to destination: URL) -> Result<Int, Error> {
-        library.exportMeeting(stem: stem, to: destination)
-    }
-
-    func republishMeeting(
-        stem: String,
-        completion: @escaping (Result<URL?, Error>) -> Void
-    ) {
-        library.republishMeeting(stem: stem, completion: completion)
-    }
-
-    func publishFromPaste(
-        stem: String,
-        summaryText: String,
-        completion: @escaping (Result<Void, Error>) -> Void
-    ) {
-        library.publishFromPaste(stem: stem, summaryText: summaryText, completion: completion)
-    }
-
-    /// Ask a natural-language question across the library (AI3). Forwards to the
-    /// library service, which spawns `mp ask` on-device.
-    func askMeetings(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
-        library.askMeetings(question: question, completion: completion)
-    }
-
-    /// Enroll a meeting speaker into the named-speaker roster (FEAT3-ROSTER).
-    /// Forwards to the library service, which spawns `mp roster enroll` on-device.
-    func rosterEnroll(stem: String, label: String, name: String, completion: @escaping (Result<Void, Error>) -> Void) {
-        library.rosterEnroll(stem: stem, label: label, name: name, completion: completion)
-    }
+    // ARCH4: the twelve one-line `library.foo(stem:)` forwarders that used to sit
+    // here are gone. `LibraryWindowModel` holds the `MeetingLibraryService` and
+    // calls it directly; a Coordinator hop that only re-typed the arguments was a
+    // middle man, not a boundary. What survives below is what is genuinely the
+    // Coordinator's: the job dispatcher and the config store.
+    //
+    // `recentCorrectableMeetings` / `failedMeetingCount` further down stay, because
+    // `StatusBarController` (not the Library window) is their caller and it holds a
+    // Coordinator, not a service.
 
     /// Cancel the active pipeline subprocess (TECH-UX5), e.g. from a stalled row.
     func cancelActiveJob() {
         jobDispatcher.cancelActive()
     }
 
-    // MARK: - Local re-run summary preview (TECH-A16)
-
     /// Configured summarization backend, so the UI can gate the local re-run
-    /// preview to `local` / `apple_intelligence`.
+    /// preview (TECH-A16) to `local` / `apple_intelligence`.
     var summarizationBackend: String {
         configStore?.summarizationBackend ?? "anthropic"
-    }
-
-    func previewSummary(stem: String, contextOverride: String? = nil, completion: @escaping (Result<Void, Error>) -> Void) {
-        library.previewSummary(stem: stem, contextOverride: contextOverride, completion: completion)
-    }
-
-    /// TECH-FEAT7: passthrough so the Library can prefill the reprocess editor.
-    func effectiveContextPrompt(stem: String) -> String {
-        library.effectiveContextPrompt(stem: stem)
-    }
-
-    @discardableResult
-    func keepCandidateSummary(stem: String) -> Result<Void, Error> {
-        library.keepCandidate(stem: stem)
-    }
-
-    func discardCandidateSummary(stem: String) {
-        library.discardCandidate(stem: stem)
     }
 
     /// Show the first-run onboarding window unless it has already been completed

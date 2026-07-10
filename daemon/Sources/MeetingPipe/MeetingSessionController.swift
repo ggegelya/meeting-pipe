@@ -13,9 +13,11 @@ import MeetingPipeCore
 /// stays the central state owner; this type holds only the per-meeting state.
 /// All methods run on the main queue, like Coordinator's.
 final class MeetingSessionController {
-    /// Back-reference to the state owner. `unowned` because Coordinator owns
-    /// this controller (so it never outlives the coordinator).
-    unowned let coordinator: Coordinator
+    /// Back-reference to the state owner, narrowed to the `SessionHost` seam
+    /// (ARCH4) so a test can drive this controller without a Coordinator and its
+    /// ~18 AppKit / AVFoundation subsystems. `unowned` because the host owns this
+    /// controller, so it never outlives the host.
+    unowned let coordinator: any SessionHost
 
     /// Workflow for the in-flight recording (TECH-B3); nil between meetings.
     /// Read by `writeMetaSidecar`, cleared after flush.
@@ -64,7 +66,7 @@ final class MeetingSessionController {
     /// `hasSystemAudio` read draws the line here (TECH-END3).
     private static let systemSilenceThresholdDb: Double = -50.0
 
-    init(coordinator: Coordinator) {
+    init(coordinator: any SessionHost) {
         self.coordinator = coordinator
     }
 
@@ -79,7 +81,7 @@ final class MeetingSessionController {
             for await verdict in self.coordinator.micGate.verdicts {
                 await MainActor.run {
                     self.latestVerdict = verdict
-                    self.coordinator.recorder.setMicGateVerdict(verdict)
+                    self.coordinator.audioRecorder.setMicGateVerdict(verdict)
                     let hasSystem = Double(self.latestSystemLevelDb) > Self.systemSilenceThresholdDb
                     self.coordinator.silenceBackstop.ingest(verdict: verdict, hasSystemAudio: hasSystem)
                 }
@@ -124,7 +126,7 @@ final class MeetingSessionController {
         case .prompting(let src), .suppressed(let src):
             // Keep the source so "Always for {App}" still attributes; clear every
             // suppression (cooldown + skip latch) so this explicit start isn't held off.
-            coordinator.promptWindow.dismiss()
+            coordinator.prompt.dismiss()
             coordinator.stateMachine.clearSuppression(bundleID: src.bundleID)
             beginRecording(source: src, summaryMode: .auto)
         case .recording(let file, let src, let mode):
@@ -149,9 +151,9 @@ final class MeetingSessionController {
         case .prompting(let src):
             // Same as Skip: don't record, return to idle, and cool down the bundle
             // so the next discovery poll doesn't immediately re-prompt this meeting.
-            coordinator.promptWindow.dismiss()
+            coordinator.prompt.dismiss()
             coordinator.stateMachine.abandonPrompt(source: src)
-            coordinator.statusBar.setIdle()
+            coordinator.statusUI.setIdle()
         case .idle, .suppressed, .stopping:
             break
         }
@@ -169,10 +171,10 @@ final class MeetingSessionController {
             ])
             return
         }
-        let startedAt = coordinator.recorder.startedAt ?? Date()
+        let startedAt = coordinator.audioRecorder.startedAt ?? Date()
         let elapsed = max(0, Date().timeIntervalSince(startedAt))
         markerSeconds.append(elapsed)
-        coordinator.recordingHUD.blink()
+        coordinator.hud.blink()
         Log.event(category: "recorder", action: "marker_flagged", attributes: [
             "file": file.lastPathComponent,
             "t_seconds": elapsed,
@@ -215,18 +217,18 @@ final class MeetingSessionController {
         // Mic is non-negotiable (no mic = silent recording, empty
         // transcript); Screen Recording stays optional. Re-probe
         // synchronously so a just-granted permission counts without restart.
-        let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        let micStatus = coordinator.micAuthorizationStatus
         if micStatus != .authorized {
             Log.main.warning("beginRecording aborted: microphone permission missing")
             Log.event(category: "coordinator", action: "recording_blocked", attributes: [
                 "reason": "mic_permission",
                 "status": "\(micStatus.rawValue)",
             ])
-            coordinator.notifier.notifyError("Microphone permission is required. Grant it in Preferences → Permissions, then try again.")
+            coordinator.notifications.notifyError("Microphone permission is required. Grant it in Preferences → Permissions, then try again.")
             // Deeplink to the Permissions section so the user can act.
             coordinator.menuPreferencesPermissions()
             coordinator.stateMachine.setIdle()
-            coordinator.statusBar.setIdle()
+            coordinator.statusUI.setIdle()
             return
         }
 
@@ -239,7 +241,7 @@ final class MeetingSessionController {
                 "summary_mode": summaryMode == .byo ? "byo" : "auto",
             ])
             coordinator.stateMachine.setIdle()
-            coordinator.statusBar.setIdle()
+            coordinator.statusUI.setIdle()
             return
         }
 
@@ -272,7 +274,7 @@ final class MeetingSessionController {
             guard let self = self else { return }
             defer { self.recordingStartInFlight = false }
             do {
-                let file = try await self.coordinator.recorder.start(
+                let file = try await self.coordinator.audioRecorder.start(
                     outputDir: self.coordinator.liveOutputDir,
                     captureMode: captureMode,
                     voiceProcessing: self.coordinator.liveVoiceProcessing
@@ -287,14 +289,14 @@ final class MeetingSessionController {
                 // on a clean stop in `stopRecording`.
                 self.writeRecoveryManifest(file: file, source: source, summaryMode: summaryMode)
                 self.coordinator.stateMachine.setRecording(file: file, source: source, summaryMode: summaryMode)
-                self.coordinator.statusBar.setRecording(file: file, source: source, summaryMode: summaryMode, workflow: resolvedWorkflow)
-                self.coordinator.recordingHUD.present(
+                self.coordinator.statusUI.setRecording(file: file, source: source, summaryMode: summaryMode, workflow: resolvedWorkflow)
+                self.coordinator.hud.present(
                     source: source,
                     workflow: resolvedWorkflow,
                     startedAt: Date(),
-                    levelProvider: { [weak self] in self?.coordinator.recorder.currentMicLevelDb() ?? -120 }
+                    levelProvider: { [weak self] in self?.coordinator.audioRecorder.currentMicLevelDb() ?? -120 }
                 )
-                self.coordinator.notifier.notifyRecordingStarted(file: file)
+                self.coordinator.notifications.notifyRecordingStarted(file: file)
                 Log.writeLine(
                     "daemon",
                     "recording started → \(file.path) source=\(source?.bundleID ?? "manual") mode=\(summaryMode == .byo ? "byo" : "auto") workflow=\(resolvedWorkflow?.name ?? "(none)")"
@@ -336,9 +338,9 @@ final class MeetingSessionController {
                     "cooldown_armed": source != nil,
                 ])
                 Log.main.error("failed to start recorder: \(error.localizedDescription)")
-                self.coordinator.notifier.notifyError("Could not start recording: \(error.localizedDescription)")
+                self.coordinator.notifications.notifyError("Could not start recording: \(error.localizedDescription)")
                 self.coordinator.stateMachine.setIdle()
-                self.coordinator.statusBar.setIdle()
+                self.coordinator.statusUI.setIdle()
             }
         }
     }
@@ -383,8 +385,8 @@ final class MeetingSessionController {
 
     func stopRecording(file: URL, source: AppSource?, summaryMode: SummaryMode) {
         coordinator.stateMachine.setStopping(file: file, source: source, summaryMode: summaryMode)
-        coordinator.statusBar.setStopping()
-        coordinator.recordingHUD.dismiss()
+        coordinator.statusUI.setStopping()
+        coordinator.hud.dismiss()
         disarmSystemLevelMirror()
         // Tear down per-meeting AX subscriptions; the verdict stream stays
         // open for the next meeting.
@@ -395,7 +397,7 @@ final class MeetingSessionController {
 
         // recorder.stop is async (off the UI); once flushed, enqueue for the
         // pipeline and return to .idle so the next meeting can start.
-        let recorder = coordinator.recorder
+        let recorder = coordinator.audioRecorder
         Task { @MainActor [weak self] in
             let producedUsableFinal = await recorder.stop()
             guard let self = self else { return }
@@ -417,12 +419,12 @@ final class MeetingSessionController {
                 ) {
                 case .micOnly:
                     let perm = SystemAudioCapture.permissionState
-                    self.coordinator.notifier.notifyMicOnlyRecording(file: file, permissionState: perm)
+                    self.coordinator.notifications.notifyMicOnlyRecording(file: file, permissionState: perm)
                     if perm == .denied || perm == .unknown {
-                        self.coordinator.statusBar.refreshMenuForPermissionChange()
+                        self.coordinator.statusUI.refreshMenuForPermissionChange()
                     }
                 case .interrupted:
-                    self.coordinator.notifier.notifyRemoteAudioInterrupted(file: file)
+                    self.coordinator.notifications.notifyRemoteAudioInterrupted(file: file)
                 case .none:
                     break
                 }
@@ -430,8 +432,8 @@ final class MeetingSessionController {
                 // FEAT8: flush the flagged moments next to the final wav so the
                 // pipeline and the Library transcript tab can read them.
                 MarkerFile.write(seconds: self.markerSeconds, forFinal: file)
-                self.coordinator.notifier.notifyProcessing(file: file)
-                self.coordinator.jobDispatcher.enqueue(file: file, summaryMode: summaryMode)
+                self.coordinator.notifications.notifyProcessing(file: file)
+                self.coordinator.jobs.enqueue(file: file, summaryMode: summaryMode)
                 // Clean finish: the meta sidecar is now on disk and the job is
                 // enqueued, so drop the start-time recovery manifest. Kept on the
                 // else branch below, where the merge failed and the orphan sweep
@@ -447,7 +449,7 @@ final class MeetingSessionController {
                 // meeting title / workflow for that run, and surface the failure
                 // now rather than enqueueing a missing file (REC1 / AUD-5).
                 self.writeMetaSidecar(file: file, source: source)
-                self.coordinator.notifier.notifyError(
+                self.coordinator.notifications.notifyError(
                     "Could not finalize \(file.lastPathComponent). The raw recording was kept and will be recovered on the next launch."
                 )
             }
@@ -460,7 +462,7 @@ final class MeetingSessionController {
                 self.coordinator.stateMachine.recordCooldownEnd(bundleID: bid)
             }
             self.coordinator.stateMachine.setIdle()
-            self.coordinator.statusBar.setIdle()
+            self.coordinator.statusUI.setIdle()
         }
     }
 
@@ -522,7 +524,7 @@ final class MeetingSessionController {
         ) { [weak self] in
             guard let self = self else { return }
             let action = (self.coordinator.configStore?.defaultPromptAction ?? "skip").lowercased()
-            self.coordinator.promptWindow.dismiss()
+            self.coordinator.prompt.dismiss()
             Log.event(category: "coordinator", action: "prompt_timeout", attributes: [
                 "bundle_id": source.bundleID,
                 "default_action": action,
@@ -547,10 +549,10 @@ final class MeetingSessionController {
                 // start-late action. The state machine stays `.idle` (START1); the
                 // menu-bar label is presentation-only and polls the real latch.
                 let bundleID = source.bundleID
-                self.coordinator.statusBar.setSuppressed(source) { [weak self] in
+                self.coordinator.statusUI.setSuppressed(source) { [weak self] in
                     self?.coordinator.stateMachine.isSkipLatched(bundleID: bundleID) ?? false
                 }
-                self.coordinator.notifier.notifySkippedMeeting(source: source)
+                self.coordinator.notifications.notifySkippedMeeting(source: source)
             }
         }
     }
@@ -592,12 +594,12 @@ final class MeetingSessionController {
         }
 
         coordinator.stateMachine.setPrompting(source: source)
-        coordinator.statusBar.setPrompting(source)
+        coordinator.statusUI.setPrompting(source)
         // The on-screen panel is the primary surface (not suppressed under
         // Focus modes); the banner stays off by default. Pass the resolved
         // workflow + full set so the chip and override menu render (TECH-B5).
         let promptWorkflow = workflowForPrompt(source: source)
-        coordinator.promptWindow.present(
+        coordinator.prompt.present(
             source: source,
             workflow: promptWorkflow,
             availableWorkflows: coordinator.workflowStore.workflows,
@@ -643,9 +645,9 @@ final class MeetingSessionController {
         switch coordinator.stateMachine.current {
         case .prompting, .suppressed:
             coordinator.stateMachine.cancelPromptTimeout()
-            coordinator.promptWindow.dismiss()
+            coordinator.prompt.dismiss()
             coordinator.stateMachine.setIdle()
-            coordinator.statusBar.setIdle()
+            coordinator.statusUI.setIdle()
         default:
             break
         }
@@ -663,10 +665,10 @@ final class MeetingSessionController {
     /// verdict there advances the streak with no cross-queue race. It was left
     /// unconsumed when TECH-END3 dropped the RMS SilenceDetector.
     func armSystemLevelMirror() {
-        coordinator.recorder.onSystemLevel = { [weak self] db in
+        coordinator.audioRecorder.onSystemLevel = { [weak self] db in
             self?.latestSystemLevelDb = db
         }
-        coordinator.recorder.onMicLevel = { [weak self] _ in
+        coordinator.audioRecorder.onMicLevel = { [weak self] _ in
             guard let self = self, let verdict = self.latestVerdict else { return }
             let hasSystem = Double(self.latestSystemLevelDb) > Self.systemSilenceThresholdDb
             self.coordinator.silenceBackstop.ingest(verdict: verdict, hasSystemAudio: hasSystem)
@@ -674,14 +676,14 @@ final class MeetingSessionController {
     }
 
     func disarmSystemLevelMirror() {
-        coordinator.recorder.onSystemLevel = nil
-        coordinator.recorder.onMicLevel = nil
+        coordinator.audioRecorder.onSystemLevel = nil
+        coordinator.audioRecorder.onMicLevel = nil
     }
 
     func handleIdleNotify() {
         Log.writeLine("daemon", "idle: surfacing 'still meeting?' banner")
         Log.event(category: "coordinator", action: "silence_notified")
-        coordinator.notifier.notifyStillMeeting()
+        coordinator.notifications.notifyStillMeeting()
     }
 
     func handleIdleAutoStop() {
@@ -703,7 +705,7 @@ final class MeetingSessionController {
                 "file": file.lastPathComponent,
             ])
             coordinator.silenceBackstop.keepAlive()
-            coordinator.notifier.notifyStillMeeting()
+            coordinator.notifications.notifyStillMeeting()
             return
         }
         Log.writeLine("daemon", "idle: auto-stop horizon reached - auto-stopping recording")
