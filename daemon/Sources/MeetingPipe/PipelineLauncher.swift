@@ -69,6 +69,8 @@ protocol PipelineDriver: AnyObject {
     func rosterEnroll(name: String, label: String, wav: URL, noRelabel: Bool, completion: @escaping (Result<Void, Error>) -> Void)
     /// Remove a name from the named-speaker roster (FEAT3-UNDO un-enroll): runs `mp roster forget`, so the voice is no longer auto-named in later meetings. Defaulted no-op.
     func rosterForget(name: String, completion: @escaping (Result<Void, Error>) -> Void)
+    /// Run a full library backup now (STOR3): `mp backup <dir>` writes a dated `tar.gz` into `dir` and updates `.last-backup.json`. Local-only (`entry.prepare(secrets=False)`), so no meeting anchor. Defaulted no-op.
+    func backup(dir: URL, completion: @escaping (Result<Void, Error>) -> Void)
 }
 
 extension PipelineDriver {
@@ -167,6 +169,14 @@ extension PipelineDriver {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "rosterForget unsupported by this driver"]
+        )))
+    }
+
+    /// Default no-op stub; `PipelineLauncher` overrides this.
+    func backup(dir: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "backup unsupported by this driver"]
         )))
     }
 }
@@ -382,6 +392,14 @@ final class PipelineLauncher: PipelineDriver {
     /// egress, so it needs no meeting anchor for the secret policy.
     func rosterForget(name: String, completion: @escaping (Result<Void, Error>) -> Void) {
         runMP(["roster", "forget", "--name", name], timeout: 30, meeting: nil, completion: completion)
+    }
+
+    /// STOR3: `mp backup <dir>`. Local-only (the pipeline arms `entry.prepare(secrets=False)`),
+    /// so no meeting anchor. `mp backup` prints only a final report and has no clean failure
+    /// exit code, so a failure surfaces here as `LaunchError.nonZeroExit(code, stderrTail)`.
+    /// A multi-gigabyte library can take minutes to tar, hence the generous cap.
+    func backup(dir: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        runMP(["backup", dir.path], timeout: 30 * 60, meeting: nil, completion: completion)
     }
 
     /// AI4: generate the weekly digest now (`mp digest`). Library-wide, so no meeting

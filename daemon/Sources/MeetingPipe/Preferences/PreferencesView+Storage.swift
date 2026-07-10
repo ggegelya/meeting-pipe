@@ -9,10 +9,18 @@ import SwiftUI
 /// the policy belongs. This section reports the consequences.
 struct StorageSectionView: View {
     @ObservedObject var store: ConfigStore
+    @ObservedObject private var ui = UISettings.shared
     @StateObject private var stats: StorageStatsStore
 
     @State private var confirmingEviction = false
     @State private var pendingMove: LibraryMover.Plan?
+
+    // STOR3: backup-now state. The launcher persists across renders so an in-flight
+    // backup reports back; it also self-retains its subprocess, so this is belt-and-braces.
+    @State private var launcher = PipelineLauncher()
+    @State private var backupInFlight = false
+    @State private var backupError: String?
+    @State private var lastBackupAge: String?
 
     init(store: ConfigStore, workflowStore: WorkflowStore) {
         self.store = store
@@ -36,10 +44,12 @@ struct StorageSectionView: View {
 
             syncGroup
             libraryGroup
+            backupGroup
             policyGroup
             cachesGroup
         }
         .task { await stats.rescan() }
+        .onAppear { refreshLastBackup() }
         .confirmationDialog(
             "Delete unused models?",
             isPresented: $confirmingEviction,
@@ -156,6 +166,86 @@ struct StorageSectionView: View {
                 valueText(stats.stats?.freeBytes)
             }
         }
+    }
+
+    // MARK: Backup (STOR3)
+
+    /// Spawns `mp backup <dir>` to a remembered destination. Restore stays a terminal
+    /// step (a new-Mac restore runs before the app is configured), so it is not
+    /// surfaced here - the footer points at the README runbook.
+    private var backupGroup: some View {
+        SettingsGroup("Backup") {
+            SettingsRow(
+                "Back up now",
+                sublabel: backupDestinationSublabel,
+                alignTop: true,
+                showsDivider: false
+            ) {
+                HStack(spacing: MPSpace.s2) {
+                    if backupInFlight {
+                        ProgressView().controlSize(.small)
+                    }
+                    Button(ui.backupDestinationPath == nil ? "Choose destination…" : "Change…") {
+                        chooseBackupDestination()
+                    }
+                    .buttonStyle(.mpGhost)
+                    .disabled(backupInFlight)
+                    Button("Back up now") { runBackup() }
+                        .buttonStyle(.mpGhost)
+                        .disabled(backupInFlight || ui.backupDestinationPath == nil)
+                }
+            }
+        } footer: {
+            if let error = backupError {
+                Text(error).foregroundStyle(.mpDanger)
+            } else {
+                Text(lastBackupAge ?? "No backup has run on this Mac yet. Restore is a terminal step; see the README backup runbook.")
+            }
+        }
+    }
+
+    private var backupDestinationSublabel: String {
+        ui.backupDestinationPath.map { "A dated archive of your library, config, and corrections lands in \($0)." }
+            ?? "A dated archive of your library, config, and corrections. Pick where it goes."
+    }
+
+    /// Pick (or change) the remembered backup destination. Defaults the panel to the
+    /// current destination so "Change…" opens where the last archive went.
+    private func chooseBackupDestination() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.message = "Pick a folder for meeting-pipe backups. Prefer one outside a cloud-synced folder if the library is sensitive."
+        if let current = ui.backupDestinationPath {
+            panel.directoryURL = URL(fileURLWithPath: current)
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        ui.backupDestinationPath = url.path
+        backupError = nil
+    }
+
+    private func runBackup() {
+        guard let dest = ui.backupDestinationPath, !backupInFlight else { return }
+        backupError = nil
+        backupInFlight = true
+        launcher.backup(dir: URL(fileURLWithPath: dest)) { result in
+            Task { @MainActor in
+                backupInFlight = false
+                switch result {
+                case .success:
+                    refreshLastBackup()
+                case .failure(let error):
+                    backupError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func refreshLastBackup() {
+        lastBackupAge = LastBackup.ageDescription()
     }
 
     private var policyGroup: some View {

@@ -321,7 +321,7 @@ mp backup ~/Backups              # a dated meeting-pipe-backup-YYYYMMDD-HHMMSS.t
 mp backup ~/Backups --no-audio   # sidecars only; much smaller, meetings restore without audio
 ```
 
-`mp doctor` then reports how long ago that ran, under `== storage ==`.
+Or from **Preferences ▸ Storage ▸ Backup**: pick a destination once (it is remembered) and click **Back up now**; the section shows how long ago the last backup ran and surfaces any failure inline. `mp doctor` reports the same age under `== storage ==`. Restore stays a terminal step (below): a new-Mac restore runs before the app is installed and configured.
 
 **In the archive:** the library (recordings plus every sidecar), `digests/`, `~/.config/meeting-pipe/`, and `~/Library/Application Support/MeetingPipe/corrections/`.
 

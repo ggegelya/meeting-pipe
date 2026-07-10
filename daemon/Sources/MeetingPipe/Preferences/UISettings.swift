@@ -81,6 +81,13 @@ final class UISettings: ObservableObject {
         didSet { UserDefaults.standard.set(digestMinute, forKey: Keys.digestMinute) }
     }
 
+    /// STOR3: the folder `mp backup` writes to, remembered so the user picks a
+    /// destination once. UI-only (the pipeline takes it as a CLI arg, never reads
+    /// this key); nil until the user first chooses one.
+    @Published var backupDestinationPath: String? {
+        didSet { UserDefaults.standard.set(backupDestinationPath, forKey: Keys.backupDestinationPath) }
+    }
+
     private enum Keys {
         static let theme = "mp.ui.theme"
         static let menuBarIconStyle = "mp.ui.menuBarIconStyle"
@@ -94,6 +101,7 @@ final class UISettings: ObservableObject {
         static let digestWeekday = "mp.ui.digestWeekday"
         static let digestHour = "mp.ui.digestHour"
         static let digestMinute = "mp.ui.digestMinute"
+        static let backupDestinationPath = "mp.ui.backupDestinationPath"
     }
 
     private init() {
@@ -115,6 +123,7 @@ final class UISettings: ObservableObject {
         self.digestWeekday = d.object(forKey: Keys.digestWeekday) as? Int ?? 1
         self.digestHour = d.object(forKey: Keys.digestHour) as? Int ?? 9
         self.digestMinute = d.object(forKey: Keys.digestMinute) as? Int ?? 0
+        self.backupDestinationPath = d.string(forKey: Keys.backupDestinationPath)
     }
 
     /// Apply the theme to `NSApp.appearance`. `nil` restores the system default.
