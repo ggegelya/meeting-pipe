@@ -49,6 +49,24 @@ def test_enroll_adds_to_roster_and_relabels_transcript(tmp_path, monkeypatch):
     assert "Alice" in emb["embeddings"] and "THEM-A" not in emb["embeddings"]
 
 
+def test_enroll_no_relabel_leaves_transcript_untouched(tmp_path, monkeypatch):
+    # FEAT3-UNDO: the daemon path folds the voiceprint but leaves <stem>.json's
+    # diarization labels intact (it shows the name via a reversible overlay), so
+    # the original label always survives an undo.
+    monkeypatch.setattr("mp.roster.ROSTER_PATH", tmp_path / "roster.json")
+    wav = _write_meeting(tmp_path)
+    assert roster_main(
+        ["enroll", "--name", "Alice", "--label", "THEM-A", "--wav", str(wav), "--no-relabel"]
+    ) == 0
+    # The roster gets the entry...
+    assert RosterStore(tmp_path / "roster.json").names() == ["Alice"]
+    # ...but the transcript labels and embeddings keys are untouched.
+    data = json.loads((wav.parent / f"{wav.stem}.json").read_text(encoding="utf-8"))
+    assert [s["speaker"] for s in data["segments"]] == ["THEM-A", "Me"]
+    emb = json.loads((wav.parent / f"{wav.stem}.embeddings.json").read_text(encoding="utf-8"))
+    assert "THEM-A" in emb["embeddings"] and "Alice" not in emb["embeddings"]
+
+
 def test_enroll_unknown_label_returns_error(tmp_path, monkeypatch):
     monkeypatch.setattr("mp.roster.ROSTER_PATH", tmp_path / "roster.json")
     wav = _write_meeting(tmp_path)

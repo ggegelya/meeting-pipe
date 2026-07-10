@@ -189,12 +189,13 @@ final class MeetingLibraryService {
         }
     }
 
-    /// Enroll a meeting speaker into the named-speaker roster (FEAT3-ROSTER).
-    /// Spawns `mp roster enroll`, which reads the speaker's embedding from
-    /// `<stem>.embeddings.json`, folds it into the named person, and relabels
-    /// the meeting transcript so the name shows at once (the directory watcher
-    /// refreshes the row). Errors flow through `completion` for inline display.
-    func rosterEnroll(
+    /// Name a meeting speaker (FEAT3-ROSTER / FEAT3-UNDO). Folds the speaker's
+    /// voiceprint into the named person via `mp roster enroll --no-relabel`, then
+    /// records the name in the reversible `SpeakerLabelStore` overlay rather than
+    /// rewriting `<stem>.json`. The transcript's diarization label is never
+    /// overwritten, so an undo can always restore it. Errors flow through
+    /// `completion` for inline display.
+    func nameSpeaker(
         stem: String,
         label: String,
         name: String,
@@ -215,20 +216,103 @@ final class MeetingLibraryService {
             "stem": stem, "label": label,
         ])
         let anchor = MeetingStore.sidecarAnchorURL(stem: stem, in: dir)
-        launcher.rosterEnroll(name: trimmed, label: label, wav: anchor) { [weak self] result in
+        launcher.rosterEnroll(name: trimmed, label: label, wav: anchor, noRelabel: true) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success:
+                    // Record the name in the overlay; the transcript file stays as-is.
+                    do {
+                        _ = try SpeakerLabelStore.setLabel(label, to: trimmed, stem: stem, in: dir)
+                    } catch {
+                        self?.notifyError("Enrolled the voice, but couldn't record the name: \(error.localizedDescription)")
+                        completion(.failure(error))
+                        return
+                    }
                     Log.event(category: "coordinator", action: "roster_enroll_done", attributes: [
                         "stem": stem, "label": label,
                     ])
+                    completion(.success(()))
                 case .failure(let err):
                     Log.event(category: "coordinator", action: "roster_enroll_failed", attributes: [
                         "stem": stem, "error": err.localizedDescription,
                     ])
                     self?.notifyError("Naming failed: \(err.localizedDescription)")
+                    completion(.failure(err))
+                }
+            }
+        }
+    }
+
+    /// Undo a naming (FEAT3-UNDO): drop the overlay so the cluster reverts to its
+    /// diarization label (recoverable because `<stem>.json` was never rewritten),
+    /// then un-enroll the voiceprint via `mp roster forget` so the voice is no
+    /// longer auto-named in later meetings. The revert is applied first and always,
+    /// so the display reverts even if the un-enroll subprocess fails.
+    func undoSpeakerNaming(
+        stem: String,
+        label: String,
+        name: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        let dir = outputDir()
+        do {
+            _ = try SpeakerLabelStore.removeLabel(label, stem: stem, in: dir)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+        Log.event(category: "coordinator", action: "roster_undo_requested", attributes: [
+            "stem": stem, "label": label,
+        ])
+        launcher.rosterForget(name: name) { [weak self] result in
+            DispatchQueue.main.async {
+                if case .failure(let err) = result {
+                    self?.notifyError("Reverted the name here, but couldn't remove \(name) from your roster: \(err.localizedDescription)")
                 }
                 completion(result)
+            }
+        }
+    }
+
+    /// Rename an already-named speaker (FEAT3-UNDO): re-enroll the same voiceprint
+    /// under the new name (no relabel), update the overlay, and forget the old name.
+    func renameSpeaker(
+        stem: String,
+        label: String,
+        oldName: String,
+        newName: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            completion(.failure(LibraryError.emptyName))
+            return
+        }
+        guard trimmed != oldName else {
+            completion(.success(()))
+            return
+        }
+        let dir = outputDir()
+        let anchor = MeetingStore.sidecarAnchorURL(stem: stem, in: dir)
+        launcher.rosterEnroll(name: trimmed, label: label, wav: anchor, noRelabel: true) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result {
+                case .success:
+                    do {
+                        _ = try SpeakerLabelStore.setLabel(label, to: trimmed, stem: stem, in: dir)
+                    } catch {
+                        self.notifyError("Enrolled the new name, but couldn't record it: \(error.localizedDescription)")
+                        completion(.failure(error))
+                        return
+                    }
+                    // Best-effort: the rename already took; drop the old roster name.
+                    self.launcher.rosterForget(name: oldName) { _ in }
+                    completion(.success(()))
+                case .failure(let err):
+                    self.notifyError("Rename failed: \(err.localizedDescription)")
+                    completion(.failure(err))
+                }
             }
         }
     }

@@ -69,6 +69,10 @@ enum TranscriptLoader {
         let segments: [TranscriptSegment]
         let language: String?
         let speakerOrder: [String]   // speaker IDs in first-seen order
+        /// Reversible speaker-label overrides (FEAT3-UNDO / FEAT3-SEGMENT). Resolved
+        /// at display time, not baked into `segments`, so the raw diarization label
+        /// stays recoverable. `.empty` from `parse` (no sidecar in a raw payload).
+        var speakerOverlay: SpeakerLabelStore.Overlay = .empty
     }
 
     static func load(stem: String, in directory: URL) -> Result? {
@@ -86,7 +90,8 @@ enum TranscriptLoader {
         return Result(
             segments: overlaid,
             language: parsed.language,
-            speakerOrder: parsed.speakerOrder
+            speakerOrder: parsed.speakerOrder,
+            speakerOverlay: SpeakerLabelStore.read(stem: stem, in: directory)
         )
     }
 
@@ -178,9 +183,12 @@ enum TranscriptDisplay {
 
 // MARK: - Transcript tab view
 
-/// A speaker label the roster naming sheet is open for (FEAT3-ROSTER).
+/// A speaker label the roster naming sheet is open for (FEAT3-ROSTER). `currentName`
+/// is set when re-opening to rename an already-named speaker (FEAT3-UNDO); nil for a
+/// first naming.
 struct NamingTarget: Identifiable {
     let label: String
+    var currentName: String? = nil
     var id: String { label }
 }
 
@@ -191,6 +199,9 @@ struct TranscriptTab: View {
 
     @State private var segments: [TranscriptSegment] = []
     @State private var language: String? = nil
+    /// Reversible speaker-label overrides (FEAT3-UNDO). Resolved at display time so
+    /// the diarization label in `<stem>.json` is never overwritten.
+    @State private var speakerOverlay: SpeakerLabelStore.Overlay = .empty
     /// Flagged-moment offsets (FEAT8) from `<stem>.markers.json`, rendered as
     /// anchor chips in the transcript.
     @State private var markers: [Double] = []
@@ -227,23 +238,54 @@ struct TranscriptTab: View {
         }
         .sheet(item: $namingTarget) { target in
             SpeakerNamingSheet(
-                currentDisplay: TranscriptDisplay.displayName(for: target.label),
-                onSave: { name in nameSpeaker(label: target.label, name: name) },
+                currentDisplay: target.currentName ?? TranscriptDisplay.displayName(for: target.label),
+                isRename: target.currentName != nil,
+                initialName: target.currentName ?? "",
+                onSave: { name in
+                    if let old = target.currentName {
+                        renameSpeaker(label: target.label, oldName: old, newName: name)
+                    } else {
+                        nameSpeaker(label: target.label, name: name)
+                    }
+                },
                 onCancel: { namingTarget = nil }
             )
         }
     }
 
-    /// Enroll a speaker into the roster under `name` (FEAT3-ROSTER). The `mp
-    /// roster enroll` subprocess relabels the on-disk transcript, so a reload
-    /// picks up the new name once it succeeds.
+    /// Enroll a speaker into the roster under `name` (FEAT3-ROSTER). Enrolls the
+    /// voiceprint but leaves `<stem>.json` untouched, recording the name in the
+    /// reversible overlay instead (FEAT3-UNDO); a reload then resolves the display.
     private func nameSpeaker(label: String, name: String) {
         namingTarget = nil
         Task {
-            let result = await libraryModel.rosterEnroll(stem: meeting.stem, label: label, name: name)
+            let result = await libraryModel.nameSpeaker(stem: meeting.stem, label: label, name: name)
             if case .success = result {
                 await reload()
             }
+        }
+    }
+
+    /// Undo a naming (FEAT3-UNDO): drop the overlay so the cluster reverts to its
+    /// diarization label, and un-enroll the voiceprint so it no longer auto-names
+    /// the voice in later meetings.
+    private func undoNaming(label: String, name: String) {
+        Task {
+            _ = await libraryModel.undoSpeakerNaming(stem: meeting.stem, label: label, name: name)
+            await reload()
+        }
+    }
+
+    /// Rename an already-named speaker (FEAT3-UNDO): re-enroll under the new name,
+    /// forget the old, and update the overlay.
+    private func renameSpeaker(label: String, oldName: String, newName: String) {
+        namingTarget = nil
+        guard oldName != newName else { return }
+        Task {
+            _ = await libraryModel.renameSpeaker(
+                stem: meeting.stem, label: label, oldName: oldName, newName: newName
+            )
+            await reload()
         }
     }
 
@@ -259,9 +301,14 @@ struct TranscriptTab: View {
                 segments: segments,
                 language: language,
                 markers: markers,
+                overlay: speakerOverlay,
                 playback: playback,
                 onEdit: { seg in editingSegment = seg },
-                onName: { label in namingTarget = NamingTarget(label: label) }
+                onName: { label in namingTarget = NamingTarget(label: label) },
+                onRename: { label, current in
+                    namingTarget = NamingTarget(label: label, currentName: current)
+                },
+                onUndoName: { label, current in undoNaming(label: label, name: current) }
             )
         }
     }
@@ -334,6 +381,7 @@ struct TranscriptTab: View {
         guard meeting.stem == stem else { return }
         segments = result?.segments ?? []
         language = result?.language
+        speakerOverlay = result?.speakerOverlay ?? .empty
         // Small sidecar; a synchronous read on main is fine, like the corrections overlay.
         markers = MarkerFile.read(stem: stem, in: dir)?.markers.map(\.tSeconds) ?? []
         loadedForStem = stem
@@ -348,11 +396,17 @@ private struct TranscriptList: View {
     let language: String?
     /// Flagged-moment offsets (FEAT8), anchored to their segments for chips.
     let markers: [Double]
+    /// Reversible speaker-label overrides (FEAT3-UNDO), resolved per row for display.
+    let overlay: SpeakerLabelStore.Overlay
     @ObservedObject var playback: AudioPlaybackController
     /// Called on "Edit text" context-menu action; the host owns sheet presentation.
     let onEdit: (TranscriptSegment) -> Void
     /// Called on "Name this speaker" (FEAT3-ROSTER) with the raw speaker label.
     let onName: (String) -> Void
+    /// Called on "Rename…" (FEAT3-UNDO) with the raw label and its current name.
+    let onRename: (String, String) -> Void
+    /// Called on "Undo naming" (FEAT3-UNDO) with the raw label and its current name.
+    let onUndoName: (String, String) -> Void
 
     /// Index of the segment containing the playback head. Updated via `onChange` so the binary search runs at most once per tick.
     @State private var activeIndex: Int? = nil
@@ -383,10 +437,13 @@ private struct TranscriptList: View {
                         }
                         TranscriptRow(
                             segment: seg,
+                            overlay: overlay,
                             isActive: seg.index == activeIndex,
                             onTap: { playback.playFrom(seg.start) },
                             onEdit: { onEdit(seg) },
-                            onName: { onName(seg.speakerID ?? "") }
+                            onName: onName,
+                            onRename: onRename,
+                            onUndoName: onUndoName
                         )
                         .id(seg.index)
                     }
@@ -449,14 +506,30 @@ private struct MarkerChipsRow: View {
 
 private struct TranscriptRow: View {
     let segment: TranscriptSegment
+    /// Reversible speaker-label overrides (FEAT3-UNDO); resolved for display + menu.
+    let overlay: SpeakerLabelStore.Overlay
     let isActive: Bool
     let onTap: () -> Void
     let onEdit: () -> Void
-    let onName: () -> Void
+    let onName: (String) -> Void
+    let onRename: (String, String) -> Void
+    let onUndoName: (String, String) -> Void
 
     /// Reveals the per-line Edit pencil on hover so transcript correction is
     /// discoverable without the right-click menu (TECH-UX12).
     @State private var isHovered = false
+
+    /// The name shown for this speaker, resolved through the overlay so an in-app
+    /// naming appears without rewriting `<stem>.json`.
+    private var displayName: String {
+        TranscriptDisplay.displayName(for: SpeakerLabelStore.displayLabel(for: segment, using: overlay))
+    }
+
+    /// The whole-cluster name assigned in-app (FEAT3-UNDO), or nil. Drives the menu:
+    /// a named cluster offers rename/undo, an unnamed nameable one offers naming.
+    private var clusterName: String? {
+        segment.speakerID.flatMap { overlay.labels[$0] }
+    }
 
     var body: some View {
         Button(action: onTap) {
@@ -467,7 +540,7 @@ private struct TranscriptRow: View {
                     .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] }
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
-                        Text(TranscriptDisplay.displayName(for: segment.speakerID))
+                        Text(displayName)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(TranscriptDisplay.color(for: segment.speakerID))
                         Text(TranscriptDisplay.timestamp(segment.start))
@@ -515,26 +588,51 @@ private struct TranscriptRow: View {
         }
         .contextMenu {
             Button("Edit text…", action: onEdit)
-            if TranscriptDisplay.isNameable(segment.speakerID) {
-                Button("Name this speaker…", action: onName)
+            if let raw = segment.speakerID {
+                if let name = clusterName {
+                    // FEAT3-UNDO: an in-app-named cluster is reversible.
+                    Button("Rename…") { onRename(raw, name) }
+                    Button("Undo naming", role: .destructive) { onUndoName(raw, name) }
+                } else if TranscriptDisplay.isNameable(raw) {
+                    Button("Name this speaker…") { onName(raw) }
+                }
             }
         }
     }
 }
 
-/// Name-entry sheet for enrolling a diarized speaker into the roster (FEAT3-ROSTER).
+/// Name-entry sheet for enrolling a diarized speaker into the roster (FEAT3-ROSTER),
+/// reused for renaming an already-named speaker (FEAT3-UNDO).
 private struct SpeakerNamingSheet: View {
     let currentDisplay: String
+    let isRename: Bool
     let onSave: (String) -> Void
     let onCancel: () -> Void
 
-    @State private var name: String = ""
+    @State private var name: String
+
+    init(
+        currentDisplay: String,
+        isRename: Bool = false,
+        initialName: String = "",
+        onSave: @escaping (String) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.currentDisplay = currentDisplay
+        self.isRename = isRename
+        self.onSave = onSave
+        self.onCancel = onCancel
+        _name = State(initialValue: initialName)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Name \(currentDisplay)")
+            Text(isRename ? "Rename \(currentDisplay)" : "Name \(currentDisplay)")
                 .font(.headline)
-            Text("Enrolls this voice into your roster so this person is named automatically in future meetings.")
+            // FEAT3-UNDO name-time honesty: state plainly that this enrolls a
+            // persistent voiceprint affecting future meetings, and that it is now
+            // reversible from the same menu.
+            Text("Enrolls this voice into your roster, so this person is named automatically in future meetings. You can undo the naming or remove them from your roster later from the speaker's right-click menu; the original diarization label is kept either way.")
                 .font(.caption)
                 .foregroundStyle(Color(MPColors.fgMuted))
             TextField("Name", text: $name)
@@ -544,7 +642,7 @@ private struct SpeakerNamingSheet: View {
                 Spacer()
                 Button("Cancel", role: .cancel, action: onCancel)
                     .keyboardShortcut(.cancelAction)
-                Button("Save", action: submit)
+                Button(isRename ? "Rename" : "Save", action: submit)
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
             }

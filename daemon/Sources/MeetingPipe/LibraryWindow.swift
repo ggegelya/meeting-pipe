@@ -235,12 +235,33 @@ final class LibraryWindowModel: ObservableObject {
         }
     }
 
-    /// Enroll a meeting speaker into the named-speaker roster (FEAT3-ROSTER).
-    /// Async-wrapped like `askMeetings`; the transcript naming sheet awaits it.
-    func rosterEnroll(stem: String, label: String, name: String) async -> Result<Void, Error> {
+    /// Name a meeting speaker (FEAT3-ROSTER / FEAT3-UNDO): enrolls the voiceprint and
+    /// records the name in the reversible overlay. Async-wrapped like `askMeetings`;
+    /// the transcript naming sheet awaits it.
+    func nameSpeaker(stem: String, label: String, name: String) async -> Result<Void, Error> {
         guard let library = library else { return .failure(Unwired.libraryUnavailable) }
         return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
-            library.rosterEnroll(stem: stem, label: label, name: name) { result in
+            library.nameSpeaker(stem: stem, label: label, name: name) { result in
+                cont.resume(returning: result)
+            }
+        }
+    }
+
+    /// Undo a speaker naming (FEAT3-UNDO): revert the label and un-enroll the voice.
+    func undoSpeakerNaming(stem: String, label: String, name: String) async -> Result<Void, Error> {
+        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
+            library.undoSpeakerNaming(stem: stem, label: label, name: name) { result in
+                cont.resume(returning: result)
+            }
+        }
+    }
+
+    /// Rename an already-named speaker (FEAT3-UNDO): re-enroll under the new name.
+    func renameSpeaker(stem: String, label: String, oldName: String, newName: String) async -> Result<Void, Error> {
+        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
+            library.renameSpeaker(stem: stem, label: label, oldName: oldName, newName: newName) { result in
                 cont.resume(returning: result)
             }
         }

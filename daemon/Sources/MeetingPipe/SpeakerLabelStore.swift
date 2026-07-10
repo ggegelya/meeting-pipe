@@ -1,0 +1,173 @@
+import Foundation
+
+/// Reversible speaker-label overrides in `<stem>.speaker_labels.json` (FEAT3-UNDO).
+///
+/// In-app speaker naming used to rewrite `<stem>.json` in place (baking the roster
+/// name over the diarization label), which made it a one-way door: the original
+/// `THEM-A` label was lost and there was no in-app undo. This store parallels
+/// `TranscriptCorrectionStore` for speaker labels: the daemon enrolls the voiceprint
+/// (`mp roster enroll --no-relabel`) but leaves `<stem>.json` untouched and records
+/// the assigned name here, resolved at load time. Undo just drops the override, so
+/// the diarization label always survives on disk.
+///
+/// Schema: `{ "labels": { "THEM-A": "Alice" }, "segments": { "42": "Bob" } }`.
+///   - `labels` maps a raw diarization cluster label to the whole-cluster name
+///     (FEAT3-UNDO's "Name this speaker").
+///   - `segments` maps a zero-based segment index (matching `TranscriptSegment.index`)
+///     to a per-segment override that wins over the cluster (FEAT3-SEGMENT's
+///     "Reassign to..."). The value is a raw label or a name; display resolves it
+///     through `TranscriptDisplay.displayName`.
+enum SpeakerLabelStore {
+
+    /// The parsed overlay. Empty maps read as "no overrides", so a missing or
+    /// malformed sidecar never hides the transcript's own labels.
+    struct Overlay: Equatable {
+        var labels: [String: String]
+        var segments: [Int: String]
+
+        static let empty = Overlay(labels: [:], segments: [:])
+        var isEmpty: Bool { labels.isEmpty && segments.isEmpty }
+    }
+
+    enum WriteError: Swift.Error, LocalizedError {
+        case serializationFailed(String)
+        case writeFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .serializationFailed(let s): return "Couldn't serialize speaker labels: \(s)"
+            case .writeFailed(let s):         return "Couldn't write speaker labels: \(s)"
+            }
+        }
+    }
+
+    static func path(stem: String, in directory: URL) -> URL {
+        directory.appendingPathComponent("\(stem).speaker_labels.json")
+    }
+
+    /// Reads the overlay. Returns `.empty` for a missing or malformed sidecar.
+    static func read(stem: String, in directory: URL) -> Overlay {
+        let url = path(stem: stem, in: directory)
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return .empty
+        }
+        var labels: [String: String] = [:]
+        if let raw = obj["labels"] as? [String: Any] {
+            for (k, v) in raw where !k.isEmpty {
+                if let s = v as? String, !s.isEmpty { labels[k] = s }
+            }
+        }
+        var segments: [Int: String] = [:]
+        if let raw = obj["segments"] as? [String: Any] {
+            for (k, v) in raw {
+                if let idx = Int(k), let s = v as? String, !s.isEmpty { segments[idx] = s }
+            }
+        }
+        return Overlay(labels: labels, segments: segments)
+    }
+
+    // MARK: - Cluster-level naming (FEAT3-UNDO)
+
+    /// Assign the whole `label` cluster the display name `name`. Overwrites any
+    /// prior name for that cluster.
+    @discardableResult
+    static func setLabel(_ label: String, to name: String, stem: String, in directory: URL) throws -> Overlay {
+        var overlay = read(stem: stem, in: directory)
+        overlay.labels[label] = name
+        try write(overlay: overlay, stem: stem, in: directory)
+        return overlay
+    }
+
+    /// Drop the name override for `label`, reverting the cluster to its diarization
+    /// label. The undo half of FEAT3-UNDO.
+    @discardableResult
+    static func removeLabel(_ label: String, stem: String, in directory: URL) throws -> Overlay {
+        var overlay = read(stem: stem, in: directory)
+        overlay.labels.removeValue(forKey: label)
+        try write(overlay: overlay, stem: stem, in: directory)
+        return overlay
+    }
+
+    // MARK: - Per-segment reassignment (FEAT3-SEGMENT)
+
+    /// Override a single segment's speaker (wins over its cluster's label). The
+    /// per-segment reassignment FEAT3-SEGMENT rides on this same overlay.
+    @discardableResult
+    static func setSegment(_ index: Int, to target: String, stem: String, in directory: URL) throws -> Overlay {
+        var overlay = read(stem: stem, in: directory)
+        overlay.segments[index] = target
+        try write(overlay: overlay, stem: stem, in: directory)
+        return overlay
+    }
+
+    @discardableResult
+    static func removeSegment(_ index: Int, stem: String, in directory: URL) throws -> Overlay {
+        var overlay = read(stem: stem, in: directory)
+        overlay.segments.removeValue(forKey: index)
+        try write(overlay: overlay, stem: stem, in: directory)
+        return overlay
+    }
+
+    // MARK: - Resolution (pure, no I/O)
+
+    /// The user-assigned override for a segment, or nil when it carries its
+    /// diarization label unchanged. A per-segment override (FEAT3-SEGMENT) wins over
+    /// the cluster name (FEAT3-UNDO). This is the value the row shows as a name and
+    /// the signal the context menu uses to offer undo/reassign instead of naming.
+    static func assignedLabel(for segment: TranscriptSegment, using overlay: Overlay) -> String? {
+        if let s = overlay.segments[segment.index] { return s }
+        if let raw = segment.speakerID, let name = overlay.labels[raw] { return name }
+        return nil
+    }
+
+    /// The label to render for a segment: the override if any, else the raw label.
+    /// Feed the result to `TranscriptDisplay.displayName`.
+    static func displayLabel(for segment: TranscriptSegment, using overlay: Overlay) -> String? {
+        assignedLabel(for: segment, using: overlay) ?? segment.speakerID
+    }
+
+    // MARK: - Internal
+
+    /// Atomic temp-file + rename. An empty overlay deletes the sidecar, so the next
+    /// load reads as "no overrides" (matching `TranscriptCorrectionStore`).
+    private static func write(overlay: Overlay, stem: String, in directory: URL) throws {
+        let url = path(stem: stem, in: directory)
+        let fm = FileManager.default
+        if overlay.isEmpty {
+            if fm.fileExists(atPath: url.path) {
+                do { try fm.removeItem(at: url) }
+                catch { throw WriteError.writeFailed(error.localizedDescription) }
+            }
+            return
+        }
+        var payload: [String: Any] = [:]
+        if !overlay.labels.isEmpty { payload["labels"] = overlay.labels }
+        if !overlay.segments.isEmpty {
+            payload["segments"] = Dictionary(uniqueKeysWithValues: overlay.segments.map { (String($0.key), $0.value) })
+        }
+        guard JSONSerialization.isValidJSONObject(payload) else {
+            throw WriteError.serializationFailed("payload not JSON-serializable")
+        }
+        let data: Data
+        do {
+            data = try JSONSerialization.data(
+                withJSONObject: payload,
+                options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            )
+        } catch {
+            throw WriteError.serializationFailed(error.localizedDescription)
+        }
+        let temp = url.appendingPathExtension("tmp")
+        do {
+            try data.write(to: temp, options: .atomic)
+            if fm.fileExists(atPath: url.path) {
+                _ = try? fm.removeItem(at: url)
+            }
+            try fm.moveItem(at: temp, to: url)
+        } catch {
+            try? fm.removeItem(at: temp)
+            throw WriteError.writeFailed(error.localizedDescription)
+        }
+    }
+}

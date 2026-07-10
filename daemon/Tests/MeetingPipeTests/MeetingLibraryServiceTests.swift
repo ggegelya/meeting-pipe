@@ -90,6 +90,26 @@ final class MeetingLibraryServiceTests: XCTestCase {
             guard !askCompletions.isEmpty else { return }
             askCompletions.removeFirst()(result)
         }
+
+        // FEAT3-UNDO roster plumbing.
+        private(set) var enrollInputs: [(name: String, label: String, noRelabel: Bool)] = []
+        private var enrollCompletions: [(Result<Void, Error>) -> Void] = []
+        private(set) var forgetInputs: [String] = []
+
+        func rosterEnroll(name: String, label: String, wav: URL, noRelabel: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
+            enrollInputs.append((name, label, noRelabel))
+            enrollCompletions.append(completion)
+        }
+
+        func rosterForget(name: String, completion: @escaping (Result<Void, Error>) -> Void) {
+            forgetInputs.append(name)
+            completion(.success(()))
+        }
+
+        func finishEnroll(_ result: Result<Void, Error>) {
+            guard !enrollCompletions.isEmpty else { return }
+            enrollCompletions.removeFirst()(result)
+        }
     }
 
     private var dir: URL!
@@ -128,6 +148,12 @@ final class MeetingLibraryServiceTests: XCTestCase {
             to: dir.appendingPathComponent(name),
             atomically: true, encoding: .utf8
         )
+    }
+
+    private func drainMain() {
+        let e = expectation(description: "drain")
+        DispatchQueue.main.async { e.fulfill() }
+        wait(for: [e], timeout: 1.0)
     }
 
     // MARK: - retry
@@ -320,6 +346,47 @@ final class MeetingLibraryServiceTests: XCTestCase {
         service.regenerateMeeting(stem: "m", backend: "local") { _ in }
         XCTAssertEqual(driver.summarizeInputs.count, 1)
         XCTAssertEqual(driver.summarizeBackends, ["local"], "the one-shot backend must reach mp summarize")
+    }
+
+    // MARK: - FEAT3-UNDO: reversible speaker naming
+
+    func test_nameSpeaker_enrolls_no_relabel_and_writes_overlay_on_success() throws {
+        try touch("m.embeddings.json")
+        var captured: Result<Void, Error>?
+        service.nameSpeaker(stem: "m", label: "THEM-A", name: "Alice") { captured = $0 }
+
+        XCTAssertEqual(driver.enrollInputs.count, 1)
+        XCTAssertEqual(driver.enrollInputs.first?.name, "Alice")
+        XCTAssertTrue(driver.enrollInputs.first?.noRelabel ?? false, "the daemon path must pass --no-relabel")
+        // The overlay is only written once the enroll succeeds.
+        XCTAssertTrue(SpeakerLabelStore.read(stem: "m", in: dir).labels.isEmpty)
+
+        driver.finishEnroll(.success(()))
+        drainMain()
+        XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels["THEM-A"], "Alice",
+                       "a successful naming records the name in the reversible overlay")
+        guard case .success? = captured else { return XCTFail("expected success") }
+    }
+
+    func test_nameSpeaker_missing_voiceprints_fails_without_overlay() {
+        var captured: Result<Void, Error>?
+        service.nameSpeaker(stem: "m", label: "THEM-A", name: "Alice") { captured = $0 }
+        guard case .failure? = captured else { return XCTFail("expected failure") }
+        XCTAssertTrue(driver.enrollInputs.isEmpty)
+        XCTAssertTrue(SpeakerLabelStore.read(stem: "m", in: dir).labels.isEmpty)
+    }
+
+    func test_undoSpeakerNaming_reverts_overlay_immediately_and_forgets() throws {
+        _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Alice", stem: "m", in: dir)
+        var captured: Result<Void, Error>?
+        service.undoSpeakerNaming(stem: "m", label: "THEM-A", name: "Alice") { captured = $0 }
+
+        // The label reverts synchronously; <stem>.json was never rewritten, so the
+        // original diarization label is fully restored.
+        XCTAssertTrue(SpeakerLabelStore.read(stem: "m", in: dir).labels.isEmpty)
+        drainMain()
+        XCTAssertEqual(driver.forgetInputs, ["Alice"], "undo must un-enroll the voice from the roster")
+        guard case .success? = captured else { return XCTFail("expected success") }
     }
 
     // MARK: - publish-from-paste (TECH-UX3)

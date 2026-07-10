@@ -1,9 +1,11 @@
 """mp roster: manage named-speaker voiceprints (FEAT3-ROSTER).
 
 `enroll` names one of a meeting's speakers (e.g. the "THEM-A" cluster): it reads
-that speaker's embedding from `<stem>.embeddings.json`, folds it into the named
-person's roster profile, and relabels the meeting's finalized transcript so the
-name shows immediately. The daemon's Library naming affordance spawns this.
+that speaker's embedding from `<stem>.embeddings.json` and folds it into the named
+person's roster profile. By default it also relabels the meeting's finalized
+transcript in place so the name shows immediately (the CLI path). The daemon's
+in-app naming passes `--no-relabel` and shows the name through a reversible overlay
+instead (FEAT3-UNDO), so an undo can always restore the original diarization label.
 """
 from __future__ import annotations
 
@@ -26,6 +28,13 @@ def main(argv: list[str]) -> int:
     )
     enroll.add_argument(
         "--wav", required=True, type=Path, help="Path to the meeting WAV (locates its sidecars)."
+    )
+    enroll.add_argument(
+        "--no-relabel", action="store_true",
+        help="Only fold the voiceprint into the roster; leave the transcript labels "
+             "untouched. The daemon's in-app naming uses this (FEAT3-UNDO): it shows "
+             "the name through a reversible overlay instead of rewriting <stem>.json, "
+             "so the original diarization label always survives an undo.",
     )
 
     sub.add_parser("list", help="List enrolled roster names.")
@@ -63,11 +72,15 @@ def main(argv: list[str]) -> int:
         return 2
 
     roster.enroll(args.name, embedding)
-    _relabel_transcript(wav, args.label, args.name)
+    if not args.no_relabel:
+        _relabel_transcript(wav, args.label, args.name)
 
     from . import events
 
-    events.emit("pipeline", "roster_enrolled", name=args.name, label=args.label, stem=wav.stem)
+    events.emit(
+        "pipeline", "roster_enrolled",
+        name=args.name, label=args.label, stem=wav.stem, relabeled=not args.no_relabel,
+    )
     print(f"enrolled {args.label!r} as {args.name!r}")
     return 0
 

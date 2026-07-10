@@ -63,6 +63,10 @@ protocol PipelineDriver: AnyObject {
     func ask(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void)
     /// Enroll a meeting speaker into the named-speaker roster (FEAT3-ROSTER): runs `mp roster enroll`, which reads the speaker's embedding from `<stem>.embeddings.json`, folds it into the named person, and relabels the meeting transcript so the name shows at once. Fully on-device. Defaulted no-op.
     func rosterEnroll(name: String, label: String, wav: URL, completion: @escaping (Result<Void, Error>) -> Void)
+    /// As `rosterEnroll`, but `noRelabel` passes `--no-relabel` so `<stem>.json` is not rewritten (FEAT3-UNDO: the daemon shows the name through a reversible overlay). Defaulted to forward to the plain form so fakes are unchanged.
+    func rosterEnroll(name: String, label: String, wav: URL, noRelabel: Bool, completion: @escaping (Result<Void, Error>) -> Void)
+    /// Remove a name from the named-speaker roster (FEAT3-UNDO un-enroll): runs `mp roster forget`, so the voice is no longer auto-named in later meetings. Defaulted no-op.
+    func rosterForget(name: String, completion: @escaping (Result<Void, Error>) -> Void)
 }
 
 extension PipelineDriver {
@@ -139,6 +143,20 @@ extension PipelineDriver {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "rosterEnroll unsupported by this driver"]
+        )))
+    }
+
+    /// Default: ignore `noRelabel` and defer to the plain `rosterEnroll`, so fakes
+    /// that implement only the plain form get the FEAT3-UNDO variant for free.
+    func rosterEnroll(name: String, label: String, wav: URL, noRelabel: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
+        rosterEnroll(name: name, label: label, wav: wav, completion: completion)
+    }
+
+    /// Default no-op stub; `PipelineLauncher` overrides this.
+    func rosterForget(name: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "rosterForget unsupported by this driver"]
         )))
     }
 }
@@ -338,10 +356,22 @@ final class PipelineLauncher: PipelineDriver {
     }
 
     func rosterEnroll(name: String, label: String, wav: URL, completion: @escaping (Result<Void, Error>) -> Void) {
-        runMP(
-            ["roster", "enroll", "--name", name, "--label", label, "--wav", wav.path],
-            timeout: 60, meeting: wav, completion: completion
-        )
+        rosterEnroll(name: name, label: label, wav: wav, noRelabel: false, completion: completion)
+    }
+
+    /// FEAT3-UNDO: `noRelabel` folds the voiceprint into the roster without rewriting
+    /// `<stem>.json`, so the daemon can show the name through a reversible overlay and
+    /// always restore the original diarization label on undo.
+    func rosterEnroll(name: String, label: String, wav: URL, noRelabel: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
+        var args = ["roster", "enroll", "--name", name, "--label", label, "--wav", wav.path]
+        if noRelabel { args.append("--no-relabel") }
+        runMP(args, timeout: 60, meeting: wav, completion: completion)
+    }
+
+    /// FEAT3-UNDO un-enroll: `mp roster forget --name`. Fully local (roster.json), no
+    /// egress, so it needs no meeting anchor for the secret policy.
+    func rosterForget(name: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        runMP(["roster", "forget", "--name", name], timeout: 30, meeting: nil, completion: completion)
     }
 
     /// Spawn `mp summarize <transcript.md>`. Uses the per-stage entry point (not orchestrate's run-all) so config + secrets are resolved the same way. Overwrites `<stem>.summary.json` and `<stem>.summary.md` in-place.

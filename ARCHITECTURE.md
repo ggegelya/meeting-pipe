@@ -291,6 +291,7 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 - `SecretsStore.swift` + `KeychainSecrets.swift`: Anthropic + Notion tokens in the macOS login Keychain via `/usr/bin/security` (SEC8), not a plaintext file. Migrates a legacy `secrets.env` on first launch, then deletes it.
 - `ConsentStore.swift` — per-bundle "always record this app" decisions.
 - `CorrectionStore.swift` — `<stem>.correction.json` records so the user's edits feed back into evals.
+- `SpeakerLabelStore.swift` — `<stem>.speaker_labels.json`, the reversible speaker-label overlay (FEAT3-UNDO). In-app naming enrolls the voiceprint but records the name here instead of rewriting `<stem>.json`, resolved at display time in `TranscriptLoader.load`; undo drops the entry. Parallels the text-correction overlay `TranscriptCorrectionStore`.
 - `MeetingStore.swift` — read-only catalog of `<stem>.meta.json` sidecars; powers the Library list. Watches the directory via `DispatchSource.makeFileSystemObjectSource`.
 
 ### Plumbing
@@ -446,6 +447,7 @@ lifecycle verdict .ended (or hotkey, or silence backstop)
 | `~/Library/Application Support/MeetingPipe/originals/<stem>.wav` | daemon writes | kept full (un-redacted) recording, the recovery source only; 0600, Time-Machine/iCloud-excluded, outside the Library-scanned `raw/` tree (ADR 0016, DOC6) |
 | `~/Documents/Meetings/raw/<stem>.{json,md,summary.*,correction.json}` | pipeline writes, daemon reads | transcripts / summaries / corrections |
 | `~/Documents/Meetings/raw/<stem>.publish.json` | pipeline writes, daemon reads | this run's publish outcome: state, landed page URL, per-sink detail. Rewritten every run, so it is never stale (PIPE1) |
+| `~/Documents/Meetings/raw/<stem>.speaker_labels.json` | daemon writes + reads | reversible speaker-label overlay (FEAT3-UNDO): in-app names resolved at display time so `<stem>.json` keeps its diarization labels. Not read by the pipeline |
 | `~/Documents/Meetings/raw/<stem>.error.json` | daemon writes + reads | failure sidecar: the stage that failed (`transcribe` / `pipeline` / `publish` / `launch` / `interrupted`) and why. Drives the Library's failed row and its stage-aware Retry |
 | `~/Library/Logs/MeetingPipe/` | both | tail-able text logs + JSONL event logs |
 | `~/Library/LaunchAgents/com.meetingpipe.daemon.plist` | install.sh writes | LaunchAgent |
