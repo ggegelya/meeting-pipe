@@ -11,12 +11,16 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 from .prompt_safety import clean_person
 
+# Named so consumers that coerce a free-form string onto this field (digest's
+# `_clamp_confidence`) can say so in their signature rather than returning `str`.
+Confidence = Literal["low", "medium", "high"]
+
 
 class ActionItem(BaseModel):
     task: str
     owner: str | None = None
     due: str | None = None  # ISO 8601 date if extractable
-    confidence: Literal["low", "medium", "high"] = "medium"
+    confidence: Confidence = "medium"
     # AI1: an item is open until explicitly resolved. Absent on legacy
     # `<stem>.summary.json` files, so it defaults to open; `done` is accepted as
     # an alias on read so the older spelling round-trips. Aging is computed off

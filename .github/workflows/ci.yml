@@ -155,13 +155,21 @@ jobs:
             "numpy>=1.26" \
             "soundfile>=0.12.1" \
             "pytest>=8.0.0" \
-            "ruff>=0.5.0"
+            "ruff>=0.5.0" \
+            "pyright>=1.1.400"
           uv pip install -e . --no-deps
 
       - name: Lint
         # Use the venv binary directly: `uv run` would trigger `uv sync`
         # and resolve the full project tree, including mlx-lm.
         run: .venv/bin/ruff check src tests
+
+      - name: Typecheck
+        # TYPE1: pyright basic over src/. Resolves imports against .venv via
+        # `[tool.pyright] venvPath`, so the light dep set above is what it sees;
+        # the three darwin-only imports absent here (mlx_embeddings, mlx.core,
+        # huggingface_hub) are suppressed at their lazy import sites.
+        run: .venv/bin/pyright
 
       - name: Test
         # All tests run against the pinned light dependency set. The

@@ -31,7 +31,7 @@ from pathlib import Path
 from . import actions as actions_mod
 from . import engine, entry, events
 from .config import Config
-from .schemas import ActionItem, MeetingSummary
+from .schemas import ActionItem, Confidence, MeetingSummary
 from .markdown import render_summary_md
 
 log = logging.getLogger("mp.digest")
@@ -40,7 +40,7 @@ DEFAULT_SINCE_DAYS = 7
 # Bound only the facts fed to the model (prompt size); the digest's own action
 # list stays complete. A narrative is a summary, so the top-aging slice is enough.
 MAX_FACTS = 30
-_CONFIDENCE = {"low", "medium", "high"}
+_CONFIDENCE: tuple[Confidence, ...] = ("low", "medium", "high")
 _STEM_DATE = re.compile(r"^(\d{8})")
 
 _NARRATE_SYSTEM = (
@@ -178,7 +178,8 @@ def narrate(cfg: Config, open_actions: list[actions_mod.OpenAction],
     return (_fallback_bullets(open_actions, decisions, today, since_days), "none")
 
 
-def _clamp_confidence(c: str) -> str:
+def _clamp_confidence(c: str) -> Confidence:
+    """Coerce a confidence string read off disk onto the schema's Literal."""
     return c if c in _CONFIDENCE else "medium"
 
 

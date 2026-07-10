@@ -6,10 +6,16 @@ Loaded when you touch files in this subtree. Full subsystem map in [`../ARCHITEC
 
 ```bash
 uv run --extra dev ruff check src tests       # from pipeline/
+uv run --extra dev pyright                    # from pipeline/ (basic mode, src/ only)
 uv run --extra dev pytest -q                  # from pipeline/
 ```
 
 CI runs ruff strictly — any F401 unused import fails the pipeline job. Run locally before committing.
+
+CI also runs pyright (TYPE1), configured in `pyproject.toml`'s `[tool.pyright]`. It covers `src/` only; `tests/` is full of deliberately-partial fakes and would need its own pass. Two things to know when it complains:
+
+- **Don't reach for a blanket suppression.** The errors it finds are usually real (`getattr(b, "type", ...)` defeats union narrowing where `b.type` does not; `isinstance(seg.get("end"), float)` narrows nothing about the value the comprehension then collects).
+- **The three imports CI cannot resolve** (`mlx_embeddings`, `mlx.core`, `huggingface_hub` — darwin/arm64-only, never installed on the Linux runner) carry a `# pyright: ignore[reportMissingImports]` at their lazy import site. That is deliberately per-site, not a global `reportMissingImports = "none"`, so a genuine typo in any other import still fails the build. A new heavy lazy import needs the same comment.
 
 ## Patterns to match
 

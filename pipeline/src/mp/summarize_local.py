@@ -474,25 +474,26 @@ class LocalSummaryClient:
             )
         cmd = build_server_command(self._model, self._host, self._port)
         log.info("spawning mlx_lm.server: %s", " ".join(cmd))
-        # Detach into a new process group so a Ctrl-C in the daemon does
-        # not also terminate the model server before we get to clean it up.
-        kwargs: dict[str, Any] = {
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.STDOUT,
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
             # SEC13: the guard patches httpx in *this* process; the child speaks
             # its own stack. Hand it an environment with the cloud tokens gone
             # and huggingface_hub pinned offline, so a zero-egress run cannot
             # egress from inside the model server either.
-            "env": egress_guard.child_env(),
-        }
-        if hasattr(os, "setsid"):
-            kwargs["preexec_fn"] = os.setsid
-        self._proc = subprocess.Popen(cmd, **kwargs)
+            env=egress_guard.child_env(),
+            # Detach into a new process group so a Ctrl-C in the daemon does
+            # not also terminate the model server before we get to clean it up.
+            # None is Popen's default, so a non-POSIX host just skips it.
+            preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+        )
+        self._proc = proc
         # LOCAL10: that same setsid means a SIGKILL of this process (the daemon's
         # pipeline watchdog does exactly that to a wedged run) leaves the server
         # running with no one who knows about it. Record who it is, so `mp doctor`
         # can report it and the daemon can reap it.
-        local_server.write_marker(pid=self._proc.pid, port=self._port, model=self._model)
+        local_server.write_marker(pid=proc.pid, port=self._port, model=self._model)
 
     def _wait_for_health(self, timeout_sec: float) -> None:
         deadline = time.monotonic() + timeout_sec

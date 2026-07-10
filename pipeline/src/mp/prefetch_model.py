@@ -96,7 +96,7 @@ def _repo_metadata(repo_id: str) -> tuple[int | None, str | None]:
     mutable `main` branch at download time, so the bytes fetched can differ from
     what was checked (SEC11)."""
     try:
-        from huggingface_hub import HfApi
+        from huggingface_hub import HfApi  # pyright: ignore[reportMissingImports]
     except ImportError:
         return None, None
     try:
@@ -105,7 +105,9 @@ def _repo_metadata(repo_id: str) -> tuple[int | None, str | None]:
         log.warning("HfApi().repo_info failed: %s", e)
         return None, None
     total = 0
-    for sib in (info.siblings or []):
+    # `repo_info` is typed as a Model/Dataset/Space union; only the model variant
+    # declares `siblings`, and we only ever pass model repo ids.
+    for sib in (getattr(info, "siblings", None) or []):
         # `size` is bytes per file when files_metadata=True; can be
         # None if the file lives in LFS without size metadata.
         if sib.size is not None:
@@ -146,7 +148,7 @@ def prefetch(repo_id: str) -> int:
         return 0
 
     try:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import snapshot_download  # pyright: ignore[reportMissingImports]
     except ImportError:
         _emit(
             "failed",

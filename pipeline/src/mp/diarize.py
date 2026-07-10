@@ -12,6 +12,12 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # `roster` imports `cosine_similarity` from this module, so importing it at
+    # runtime would close the cycle. The annotation only needs the name.
+    from .roster import RosterStore
 
 # Speaker labels for the stereo channel-aware path. Stable strings so
 # downstream Markdown renders consistently across recordings.
@@ -290,7 +296,7 @@ def them_label(idx: int) -> str:
 def resolve_speaker_labels(
     segments: list[dict],
     speaker_embeddings: dict[str, list[float]] | None,
-    roster,
+    roster: RosterStore,
     *,
     user_label: str = "",
     channel_me: str = USER_SPEAKER,
@@ -327,8 +333,11 @@ def resolve_speaker_labels(
 
 def apply_speaker_labels(segments: list[dict], mapping: dict[str, str]) -> list[dict]:
     """Return a new segment list with each speaker id replaced per `mapping`;
-    ids absent from the mapping are left unchanged."""
-    return [
-        {**s, "speaker": mapping.get(s.get("speaker"), s.get("speaker"))}
-        for s in segments
-    ]
+    ids absent from the mapping (and a segment with no speaker at all) are left
+    unchanged."""
+    out: list[dict] = []
+    for s in segments:
+        speaker = s.get("speaker")
+        resolved = mapping.get(speaker, speaker) if isinstance(speaker, str) else speaker
+        out.append({**s, "speaker": resolved})
+    return out

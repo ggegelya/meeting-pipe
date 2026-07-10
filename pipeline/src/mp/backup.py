@@ -209,7 +209,10 @@ def main(argv: list[str]) -> int:
     archive = create_backup(cfg, args.directory, include_audio=include_audio)
 
     with tarfile.open(archive, "r:gz") as tar:
-        manifest = json.loads(tar.extractfile(MANIFEST_NAME).read())
+        member = tar.extractfile(MANIFEST_NAME)
+        if member is None:  # pragma: no cover - create_backup always writes it
+            raise RuntimeError(f"backup archive {archive} carries no {MANIFEST_NAME}")
+        manifest = json.loads(member.read())
 
     print(f"wrote {archive}  ({storage.human_bytes(archive.stat().st_size)})")
     for root in manifest["roots"]:

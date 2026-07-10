@@ -185,6 +185,16 @@ cd pipeline && uv run --extra dev ruff check src tests
 
 Any F401 (unused import) fails CI. Run locally before committing. Config in `pipeline/pyproject.toml`.
 
+### Pyright checks the annotations (TYPE1)
+
+```bash
+cd pipeline && uv run --extra dev pyright
+```
+
+Basic mode over `src/` only, config in `pipeline/pyproject.toml`. The package was near-universally annotated long before anything verified the annotations, so drift landed silently. CI runs it as its own step and fails on a type regression.
+
+`tests/` is out of scope for now (its fakes are deliberately partial); ratcheting to `strict` is a later decision. The darwin/arm64-only imports the Linux runner cannot resolve (`mlx_embeddings`, `mlx.core`, `huggingface_hub`) are suppressed per-site with `# pyright: ignore[reportMissingImports]` rather than globally, so a real typo in any other import still fails. A new heavy lazy import needs the same comment.
+
 ---
 
 ## Event log schema

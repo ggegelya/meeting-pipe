@@ -36,7 +36,8 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .config import Config
@@ -59,8 +60,9 @@ _patched = False
 # The real httpx transport handlers, captured on first arm() and called through
 # to when a request is permitted. Module-level (not closure-local) so the patch
 # is installed exactly once and tests can stub the downstream without sockets.
-_orig_sync = None
-_orig_async = None
+# The guarded wrappers therefore read them at call time, never at definition time.
+_orig_sync: Callable[..., Any] | None = None
+_orig_async: Callable[..., Any] | None = None
 
 
 class EgressBlocked(RuntimeError):
@@ -143,14 +145,20 @@ def arm(reason: str = "regulated/nda") -> None:
             raise EgressBlocked(
                 f"egress to {request.url.host!r} blocked by the regulated/NDA egress guard"
             )
-        return _orig_sync(self, request)
+        handler = _orig_sync  # read at call time: tests stub the global
+        if handler is None:  # pragma: no cover - arm() sets it before installing us
+            raise EgressBlocked("egress guard installed without capturing the real transport")
+        return handler(self, request)
 
     async def _guarded_async(self: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
         if _armed and not _is_loopback(request.url.host):
             raise EgressBlocked(
                 f"egress to {request.url.host!r} blocked by the regulated/NDA egress guard"
             )
-        return await _orig_async(self, request)
+        handler = _orig_async  # read at call time: tests stub the global
+        if handler is None:  # pragma: no cover - arm() sets it before installing us
+            raise EgressBlocked("egress guard installed without capturing the real transport")
+        return await handler(self, request)
 
     httpx.HTTPTransport.handle_request = _guarded_sync  # type: ignore[method-assign]
     httpx.AsyncHTTPTransport.handle_async_request = _guarded_async  # type: ignore[method-assign]

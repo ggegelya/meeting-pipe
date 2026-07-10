@@ -26,7 +26,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import numpy as np
 
@@ -141,21 +141,23 @@ class MLXEmbedder:
         self.name = model_id
         self.model_id = model_id
         self.batch_size = batch_size
-        self._model = None
-        self._tokenizer = None
+        self._model: Any = None
+        self._tokenizer: Any = None
 
-    def _ensure_loaded(self) -> None:
-        if self._model is not None:
-            return
-        from mlx_embeddings.utils import load  # heavy; darwin/arm64 only
+    def _ensure_loaded(self) -> tuple[Any, Any]:
+        """Load on first use and hand the pair back, so callers hold a non-None
+        model + tokenizer rather than re-reading the optional attributes."""
+        if self._model is None:
+            from mlx_embeddings.utils import load  # pyright: ignore[reportMissingImports]
 
-        log.info("loading MLX embedding model %s", self.model_id)
-        self._model, self._tokenizer = load(self.model_id)
+            log.info("loading MLX embedding model %s", self.model_id)
+            self._model, self._tokenizer = load(self.model_id)
+        return self._model, self._tokenizer
 
     def embed(self, texts: list[str], kind: EmbedKind = "passage") -> np.ndarray:
-        import mlx.core as mx
+        import mlx.core as mx  # pyright: ignore[reportMissingImports]
 
-        self._ensure_loaded()
+        model, tokenizer = self._ensure_loaded()
         if not texts:
             return np.zeros((0, 0), dtype=np.float32)
         prefix = "query: " if kind == "query" else "passage: "
@@ -163,10 +165,10 @@ class MLXEmbedder:
         rows: list[np.ndarray] = []
         for start in range(0, len(prepared), self.batch_size):
             batch = prepared[start : start + self.batch_size]
-            enc = self._tokenizer.batch_encode_plus(
+            enc = tokenizer.batch_encode_plus(
                 batch, return_tensors="mlx", padding=True, truncation=True, max_length=512
             )
-            out = self._model(enc["input_ids"], attention_mask=enc["attention_mask"])
+            out = model(enc["input_ids"], attention_mask=enc["attention_mask"])
             emb = out.text_embeds
             mx.eval(emb)  # mlx is lazy; force the compute before leaving mlx-land
             rows.append(np.array(emb, dtype=np.float32))

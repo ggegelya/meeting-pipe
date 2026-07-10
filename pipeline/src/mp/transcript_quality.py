@@ -33,7 +33,9 @@ def _segment_text(segments: list[dict]) -> str:
 
 
 def _duration_sec(segments: list[dict]) -> float:
-    ends = [seg.get("end") for seg in segments if isinstance(seg.get("end"), (int, float))]
+    # Filter the extracted value, not the dict: `isinstance(seg.get("end"), ...)`
+    # narrows nothing about the value the comprehension goes on to collect.
+    ends = [e for e in (seg.get("end") for seg in segments) if isinstance(e, (int, float))]
     return float(max(ends)) if ends else 0.0
 
 

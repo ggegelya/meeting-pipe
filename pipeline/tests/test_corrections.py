@@ -359,9 +359,11 @@ def test_orchestrate_writes_run_sidecar(tmp_path: Path, monkeypatch):
 
 
 def test_orchestrate_tolerates_summarize_without_meta(tmp_path: Path, monkeypatch):
-    """Older test fixtures and the byo/long-meeting paths may return a
-    summarize dict without backend/model fields. The sidecar writer must
-    not raise; fields land empty."""
+    """A summarize dict without backend/model must not cost us the run sidecar;
+    the fields land empty. `summarize()` declares them (`SummaryOutput`), but a
+    TypedDict is a static promise Python does not enforce at runtime, and the
+    sidecar write is best-effort. (The byo / long-meeting paths this docstring
+    used to cite short-circuit before the sidecar write and never reach it.)"""
     from mp.config import Config
     from mp.orchestrate import run_all
 

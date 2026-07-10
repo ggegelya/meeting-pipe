@@ -39,6 +39,9 @@ dev = [
     "pytest-vcr>=1.0.2",
     "vcrpy>=6.0.1",
     "ruff>=0.5.0",
+    # TYPE1: the package is near-universally annotated; pyright is what makes the
+    # annotations load-bearing. Basic mode over src/ only, for now.
+    "pyright>=1.1.400",
 ]
 
 [project.scripts]
@@ -54,6 +57,25 @@ packages = ["src/mp"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+# TYPE1. Basic mode over src/ only: tests/ is full of deliberately-partial fakes
+# and would need its own pass. Ratcheting to strict is a later decision.
+#
+# CI installs a light dependency set (no mlx-lm / mlx-embeddings: darwin/arm64
+# wheels only, and no huggingface_hub, which rides in with them), so those three
+# imports would be unresolved there. They are suppressed at their (lazy) import
+# sites with `# pyright: ignore[reportMissingImports]` rather than globally, so a
+# genuine typo in any other import still fails the build.
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "basic"
+pythonVersion = "3.11"
+# Resolve imports against the project venv. Without this, a direct
+# `.venv/bin/pyright` (how CI invokes it, and how `ruff` / `pytest` are invoked
+# there) reports every third-party import as unresolved, because pyright reads
+# the interpreter from config, not from argv[0].
+venvPath = "."
+venv = ".venv"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

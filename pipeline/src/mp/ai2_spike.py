@@ -92,18 +92,20 @@ class MLXStreamClient:
         self._startup = startup_timeout_sec
         self._local = None
 
-    def _ensure_server(self) -> None:
+    def _ensure_server(self):
+        """Spawn + health-check on first use, and hand the client back so callers
+        hold a non-None reference rather than re-reading the optional attribute."""
         from .summarize_local import LocalSummaryClient
 
         if self._local is None:
             self._local = LocalSummaryClient(model=self._model, startup_timeout_sec=self._startup)
         self._local._ensure_running()  # spawn + health; the warm internal path
+        return self._local
 
     def stream(self, *, system: str, user: str, max_tokens: int) -> StreamTiming:
         import httpx
 
-        self._ensure_server()
-        base = self._local.base_url
+        base = self._ensure_server().base_url
         payload = {
             "model": self._model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],

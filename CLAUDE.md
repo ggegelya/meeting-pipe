@@ -29,6 +29,7 @@ The active backlog lives in [`docs/backlog/`](./docs/backlog/): the highest-numb
 | Step | Command (from repo root unless noted) |
 |---|---|
 | Pipeline lint | `cd pipeline && uv run --extra dev ruff check src tests` |
+| Pipeline typecheck | `cd pipeline && uv run --extra dev pyright` — pyright basic over `src/` (TYPE1); CI fails on a type regression |
 | Pipeline tests | `cd pipeline && uv run --extra dev pytest -q` |
 | Daemon build (debug) | `cd daemon && swift build` |
 | Daemon build (release) | `cd daemon && swift build -c release` |

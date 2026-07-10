@@ -20,7 +20,7 @@ import os
 import sys
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import anthropic
 import httpx
@@ -44,6 +44,17 @@ from .services import SummaryClient
 from .workflow import read_meta
 
 log = logging.getLogger("mp.summarize")
+
+
+class SummaryOutput(TypedDict):
+    """What `summarize()` wrote, and which path wrote it. `backend` / `model` are
+    what the run sidecar records, so a summary can always be attributed to the
+    engine that actually answered (`auto` resolves per call)."""
+
+    json: Path
+    md: Path
+    backend: str
+    model: str
 
 # Retry only on transient failures. BadRequestError / AuthenticationError /
 # PermissionDeniedError / NotFoundError are caller bugs, so failing fast is right.
@@ -294,7 +305,7 @@ def summarize(
     *,
     client: SummaryClient | None = None,
     out_suffix: str | None = None,
-) -> dict[str, Path | str]:
+) -> SummaryOutput:
     """Read `<stem>.md` and write `<stem>.summary.json` + `<stem>.summary.md`.
 
     The transcript path is the speaker-segmented Markdown produced by the
@@ -382,12 +393,12 @@ def summarize(
 
     backend, model_used = _identify_backend(client, cfg)
     log.info("Wrote %s and %s", json_path, md_path)
-    return {
-        "json": json_path,
-        "md": md_path,
-        "backend": backend,
-        "model": model_used,
-    }
+    return SummaryOutput(
+        json=json_path,
+        md=md_path,
+        backend=backend,
+        model=model_used,
+    )
 
 
 def _identify_backend(client: SummaryClient, cfg: Config) -> tuple[str, str]:

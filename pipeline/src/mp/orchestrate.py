@@ -464,13 +464,16 @@ def _run_all_inner(
     sidecar: Path | None = None
     try:
         sidecar = write_run_sidecar(
-            recordings_dir=Path(t["md"]).parent,
-            stem=Path(t["md"]).stem,
-            transcript_path=Path(t["md"]),
+            recordings_dir=t["md"].parent,
+            stem=t["md"].stem,
+            transcript_path=t["md"],
             transcript_chars=len(md_text),
-            summary_json_path=Path(s["json"]),
-            backend=str(s.get("backend") or ""),
-            model=str(s.get("model") or ""),
+            summary_json_path=s["json"],
+            # `SummaryOutput` promises these statically, but a TypedDict is not
+            # enforced at runtime and this write is best-effort: read them
+            # tolerantly rather than turn a missing key into a lost sidecar.
+            backend=s.get("backend", ""),
+            model=s.get("model", ""),
         )
         log.info("Wrote run sidecar: %s", sidecar)
     except Exception as e:  # noqa: BLE001
@@ -599,7 +602,8 @@ def _write_embeddings_sidecar(
         return
     by_label: dict[str, list[float]] = {}
     for raw_id, emb in speaker_embeddings.items():
-        by_label.setdefault(mapping.get(raw_id, raw_id), emb)  # first wins on collision
+        label = mapping.get(str(raw_id), str(raw_id))
+        by_label.setdefault(label, emb)  # first wins on collision
     path = wav.parent / f"{wav.stem}.embeddings.json"
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(

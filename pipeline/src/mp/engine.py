@@ -75,7 +75,10 @@ class AnthropicTextClient:
             system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user_message}],
         )
-        parts = [b.text for b in response.content if getattr(b, "type", None) == "text"]
+        # `b.type == "text"` rather than `getattr(b, "type", None)`: every content
+        # block carries `.type`, and the direct compare narrows the union down to
+        # TextBlock so `.text` is actually known to exist.
+        parts = [b.text for b in response.content if b.type == "text"]
         text = "".join(parts).strip()
         if not text:
             raise EngineError(f"Anthropic returned no text (stop_reason={response.stop_reason})")
