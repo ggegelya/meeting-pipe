@@ -43,10 +43,30 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         AppSource(bundleID: bundleID, displayName: "Zoom")
     }
 
-    /// `beginRecording` commits to a start, then does the work in a `Task`. Drain
-    /// that Task by yielding rather than sleeping on a wall clock.
-    private func drainStartTask() async {
-        for _ in 0..<20 { await Task.yield() }
+    /// `beginRecording` commits to a start, then does the work in a detached
+    /// `Task`. Wait for a condition that Task establishes, bounded, rather than
+    /// yielding a fixed number of times: a fixed yield count passes on an idle
+    /// machine and flakes under load (it did, once, while the pipeline suite was
+    /// saturating the CPU).
+    private func waitUntil(
+        _ predicate: () -> Bool,
+        _ what: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            if predicate() { return }
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 500_000)  // 0.5 ms
+        }
+        XCTFail("timed out waiting for \(what)", file: file, line: line)
+    }
+
+    /// For the branches that return *before* spawning the Task. Nothing to await;
+    /// a yield only proves the synchronous path already ran.
+    private func settle() async {
+        await Task.yield()
     }
 
     // MARK: - beginRecording: the permission gate
@@ -56,7 +76,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         host.micAuthorizationStatus = .denied
 
         controller.beginRecording(source: source(), summaryMode: .auto)
-        await drainStartTask()
+        await settle()
 
         // A silent recording with an empty transcript is worse than no recording,
         // so the refusal is total: the recorder is never touched.
@@ -76,7 +96,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         host.micAuthorizationStatus = .notDetermined
 
         controller.beginRecording(source: source(), summaryMode: .auto)
-        await drainStartTask()
+        await settle()
 
         XCTAssertEqual(host.recorderSpy.startCallCount, 0)
         XCTAssertEqual(host.stateMachine.current, .idle)
@@ -89,7 +109,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         host.dryRun = true
 
         controller.beginRecording(source: source(), summaryMode: .auto)
-        await drainStartTask()
+        await settle()
 
         // Detection ran; the recorder and HUD deliberately did not, so a workday
         // logs as detection-only signals.
@@ -112,7 +132,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         controller.beginRecording(source: source(), summaryMode: .auto)
         controller.beginRecording(source: source(), summaryMode: .auto)
         controller.beginRecording(source: source(), summaryMode: .auto)
-        await drainStartTask()
+        await waitUntil({ host.recorderSpy.startCallCount >= 1 }, "the first start to be entered")
 
         XCTAssertEqual(host.recorderSpy.startCallCount, 1)
     }
@@ -123,13 +143,12 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         host.recorderSpy.startBehaviour = .fail(MeetingRecorder.RecorderError.engineStartFailed("boom"))
 
         controller.beginRecording(source: source(), summaryMode: .auto)
-        await drainStartTask()
+        await waitUntil({ host.notifierSpy.errors.count == 1 }, "the failed start to resolve")
         XCTAssertEqual(host.recorderSpy.startCallCount, 1)
 
         host.recorderSpy.startBehaviour = .succeed
         controller.beginRecording(source: source(), summaryMode: .auto)
-        await drainStartTask()
-        XCTAssertEqual(host.recorderSpy.startCallCount, 2)
+        await waitUntil({ host.recorderSpy.startCallCount == 2 }, "the second start")
     }
 
     // MARK: - beginRecording: failure routing
@@ -139,9 +158,8 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         host.recorderSpy.startBehaviour = .fail(MeetingRecorder.RecorderError.engineStartFailed("boom"))
 
         controller.beginRecording(source: source(), summaryMode: .auto)
-        await drainStartTask()
+        await waitUntil({ host.notifierSpy.errors.count == 1 }, "the failure to be surfaced")
 
-        XCTAssertEqual(host.notifierSpy.errors.count, 1)
         XCTAssertTrue(host.notifierSpy.errors[0].contains("Could not start recording"))
         XCTAssertEqual(host.statusBarSpy.idleCount, 1)
         XCTAssertEqual(host.stateMachine.current, .idle)
@@ -157,9 +175,8 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         host.recorderSpy.startBehaviour = .fail(MeetingRecorder.RecorderError.engineStartFailed("boom"))
 
         controller.beginRecording(source: nil, summaryMode: .auto)
-        await drainStartTask()
+        await waitUntil({ host.notifierSpy.errors.count == 1 }, "the failure to be surfaced")
 
-        XCTAssertEqual(host.notifierSpy.errors.count, 1)
         XCTAssertEqual(host.stateMachine.current, .idle)
     }
 
@@ -174,7 +191,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
 
         controller.pendingWorkflowOverride = chosen.id
         controller.beginRecording(source: source(), summaryMode: .auto)
-        await drainStartTask()
+        await waitUntil({ !host.statusBarSpy.recordings.isEmpty }, "the recording to be announced")
 
         XCTAssertEqual(host.recorderSpy.startCallCount, 1)
         XCTAssertEqual(controller.activeWorkflow?.id, chosen.id)
@@ -187,7 +204,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         let (controller, host) = makeController()
 
         controller.beginRecording(source: source(), summaryMode: .byo)
-        await drainStartTask()
+        await waitUntil({ !host.statusBarSpy.recordings.isEmpty }, "the recording to be announced")
 
         XCTAssertEqual(host.recorderSpy.startCallCount, 1)
         XCTAssertEqual(host.hudSpy.presentCount, 1)
@@ -204,7 +221,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         host.liveVoiceProcessing = true
 
         controller.beginRecording(source: source(), summaryMode: .auto)
-        await drainStartTask()
+        await waitUntil({ host.recorderSpy.lastStartArgs != nil }, "the recorder to be started")
 
         XCTAssertEqual(host.recorderSpy.lastStartArgs?.outputDir, host.liveOutputDir)
         XCTAssertEqual(host.recorderSpy.lastStartArgs?.voiceProcessing, true)
@@ -231,11 +248,10 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         host.liveAutoConsentApps = ["us.zoom.xos"]
 
         controller.handleMeetingStarted(source: source())
-        await drainStartTask()
+        await waitUntil({ host.stateMachine.current.isRecording }, "auto-consent to start recording")
 
         XCTAssertEqual(host.promptSpy.presentCount, 0)
         XCTAssertEqual(host.recorderSpy.startCallCount, 1)
-        XCTAssertTrue(host.stateMachine.current.isRecording)
     }
 
     func test_handleMeetingStarted_withinTheRepromptCooldown_doesNothing() {
@@ -257,12 +273,11 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         let (controller, host) = makeController()
 
         controller.beginRecording(source: source(), summaryMode: .auto)
-        await drainStartTask()
-        XCTAssertTrue(host.stateMachine.current.isRecording)
+        await waitUntil({ host.stateMachine.current.isRecording }, "the first recording to start")
 
         // A second detection while already recording must not stack a start.
         controller.handleMeetingStarted(source: source("com.microsoft.teams2"))
-        await drainStartTask()
+        await settle()
 
         XCTAssertEqual(host.recorderSpy.startCallCount, 1)
         XCTAssertTrue(host.stateMachine.current.isRecording)
