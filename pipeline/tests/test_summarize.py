@@ -88,6 +88,72 @@ def test_summarize_calls_anthropic_and_writes_outputs(tmp_path: Path, monkeypatc
     assert call.kwargs["tools"][0]["name"] == "emit_meeting_summary"
 
 
+def test_summarize_repairs_divergent_cloud_language(tmp_path: Path, monkeypatch):
+    """LANG1: the cloud path now verifies its own output. An all-English transcript
+    whose first summary comes back with a Russian action + question block is
+    detected and repaired in one extra call; the clean repair is what gets written.
+    Uses an injected client, so no backend-specific mechanism is involved: this is
+    the backend-agnostic post-hoc check in `summarize()` itself."""
+    transcript = tmp_path / "20260707-123334.md"
+    transcript.write_text(
+        "# Transcript\n\n**A**: Let us review the sprint scope and the release plan.\n\n"
+        "**B**: We agreed to ship the migration on Friday after the regression pass.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    drifted = MeetingSummary(
+        title="Sprint review sync",
+        summary=["Reviewed the sprint scope and the release plan."],
+        decisions=["We will ship the migration on Friday."],
+        actions=[ActionItem(
+            task="Подготовить отчёт о регрессионном тестировании к пятнице.", owner=None,
+        )],
+        questions=["Нужно ли ограничивать размер расшифровки стенограммы?"],
+        attendees=["A", "B"],
+        detected_language="en",
+    )
+    clean = _make_summary()
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def summarize(self, *, system_prompt, transcript, model, max_tokens):
+            self.calls += 1
+            return drifted if self.calls == 1 else clean
+
+    client = _FakeClient()
+    out = summarize(transcript, cfg=Config(), client=client)
+    assert client.calls == 2, "a divergent cloud summary must be repaired exactly once"
+    written = MeetingSummary.model_validate_json(out["json"].read_text(encoding="utf-8"))
+    # The clean repair was kept, not the drifted first pass.
+    assert written.title == "Phase 6 sync"
+
+
+def test_summarize_no_repair_when_language_matches(tmp_path: Path, monkeypatch):
+    """The post-hoc check must not over-fire: an on-target summary is returned
+    without a second call."""
+    transcript = tmp_path / "x.md"
+    transcript.write_text(
+        "# Transcript\n\n**A**: We reviewed the plan and agreed to ship on Friday.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def summarize(self, **_):
+            self.calls += 1
+            return _make_summary()
+
+    client = _FakeClient()
+    summarize(transcript, cfg=Config(), client=client)
+    assert client.calls == 1, "a matching language must not trigger a repair call"
+
+
 def test_summarize_retries_on_schema_violation(tmp_path: Path, monkeypatch):
     transcript = tmp_path / "x.md"
     transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")

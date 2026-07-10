@@ -41,6 +41,11 @@ from .markers import FLAGGED_INSTRUCTION, flagged_moments_block
 from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
 from .services import SummaryClient
+from .summary_language import (
+    divergent_sections,
+    expected_summary_language,
+    language_reinforcement,
+)
 from .workflow import read_meta
 
 log = logging.getLogger("mp.summarize")
@@ -365,6 +370,12 @@ def summarize(
             model=cfg.summarization.model,
             max_tokens=cfg.summarization.max_tokens,
         )
+        # LANG1: verify the produced summary's language and repair it once if a
+        # section drifted, for every backend. Runs while the (possibly
+        # subprocess-backed) client is still open below, so a repair reuses it.
+        summary = _verify_and_repair_language(
+            client, summary, system_prompt, transcript, cfg
+        )
     finally:
         # The plain `local` backend owns an mlx_lm.server subprocess;
         # close it so it does not outlive this CLI process, matching the
@@ -399,6 +410,63 @@ def summarize(
         backend=backend,
         model=model_used,
     )
+
+
+def _verify_and_repair_language(
+    client: SummaryClient,
+    summary: MeetingSummary,
+    system_prompt: str,
+    transcript: str,
+    cfg: Config,
+) -> MeetingSummary:
+    """LANG1: verify the produced summary's language and repair it once, for any
+    backend.
+
+    Before LANG1 only the local client checked its own output (LOCAL7), and even
+    that omitted the action items; the Anthropic path verified nothing, so a
+    cloud summary whose ``questions`` / ``actions`` came back in the wrong
+    language shipped unchecked (confirmed on an all-English transcript that
+    produced Russian action items). Here, once the client has answered, we detect
+    the language of each language-bearing section and, if any diverges from the
+    language the transcript implies, re-ask the *same* client once with a
+    reinforced directive. The repair is kept only when it is clean; a failed or
+    still-divergent repair falls back to the original, so verification never costs
+    the summary itself.
+
+    A no-op when the language cannot be cheaply verified
+    (``expected_summary_language`` returns None) or when every section already
+    matches. The local client has usually repaired its own drift by the time we
+    get here (LOCAL7), so this is a cheap check for it and the first real safety
+    net for the cloud path.
+    """
+    target = expected_summary_language(cfg.summarization.summary_language, transcript)
+    if target is None:
+        return summary
+    diverging = divergent_sections(summary, target)
+    if not diverging:
+        return summary
+    log.warning(
+        "summary sections %s diverge from expected language %r; repairing",
+        diverging, target,
+    )
+    try:
+        repaired = client.summarize(
+            system_prompt=system_prompt + language_reinforcement(target),
+            transcript=transcript,
+            model=cfg.summarization.model,
+            max_tokens=cfg.summarization.max_tokens,
+        )
+    except Exception as e:  # a failed *repair* must never sink an already-valid summary
+        log.warning("language repair call failed (%s); keeping the original summary", e)
+        return summary
+    still = divergent_sections(repaired, target)
+    if still:
+        log.warning(
+            "language repair still diverges (%s); keeping the original summary", still
+        )
+        return summary
+    log.info("language repair produced a summary matching %r", target)
+    return repaired
 
 
 def _identify_backend(client: SummaryClient, cfg: Config) -> tuple[str, str]:

@@ -54,6 +54,12 @@ from . import egress_guard, local_server
 from .prefetch_model import model_is_cached
 from .prompt_safety import wrap_untrusted
 from .schemas import MeetingSummary, SUMMARY_TOOL
+from .summary_language import (
+    divergent_sections,
+    expected_summary_language,
+    language_correction_message,
+    language_reinforcement,
+)
 
 log = logging.getLogger("mp.summarize_local")
 
@@ -114,116 +120,11 @@ def build_server_command(model: str, host: str, port: int) -> list[str]:
     return cmd + ["--model", model, "--host", host, "--port", str(port)]
 
 
-# ----- Language honoring (LOCAL7) -----
-#
-# Local MLX models ignore the summary-language directive that Anthropic obeys:
-# the engine comparison saw the 7B drift Ukrainian to English and the 14B to
-# Russian. We reinforce the target right before the transcript and, after the
-# fact, detect the summary's language and replay once when it disagrees. The
-# detector is deliberately tiny: it only separates the languages this user
-# actually meets (English, Ukrainian, Russian) by script + signature letters,
-# and returns None when it cannot be sure, so a German or French meeting never
-# triggers a bogus retry.
-
-# Cyrillic letters that appear in Ukrainian but not Russian, and vice versa.
-# Presence of one set over the other is a reliable uk-vs-ru tell in running text.
-_UK_SIGNATURE = frozenset("іїєґІЇЄҐ")
-_RU_SIGNATURE = frozenset("ыэъёЫЭЪЁ")
-# Enough letters to trust a script read; a title plus one bullet clears this.
-_LANG_MIN_LETTERS = 12
-# The languages the cheap detector can actually verify. A forced code outside
-# this set (de, es, fr, ...) is left unverified rather than misread as English.
-_VERIFIABLE_LANGS = frozenset({"uk", "ru", "en"})
-# Human names + endonyms for the directive; the endonym reinforces the target
-# for a model that is drifting away from it.
-_LANGUAGE_NAMES = {
-    "uk": "Ukrainian (українською мовою)",
-    "ru": "Russian (на русском языке)",
-    "en": "English",
-}
-
-
-def _language_signature(text: str) -> str | None:
-    """Best-effort language of ``text``: "uk", "ru", "en", or None when there is
-    not enough signal to be sure. Script first (Cyrillic vs Latin), then uk vs ru
-    by signature letters. "en" really means "Latin script"; the detector does not
-    separate Latin languages, and callers must not ask it to (see
-    ``_expected_summary_language``). Pure, so it is unit-tested without a server."""
-    cyr = lat = uk = ru = 0
-    for ch in text:
-        if 0x0400 <= ord(ch) <= 0x04FF:  # Cyrillic block (covers uk + ru)
-            cyr += 1
-            if ch in _UK_SIGNATURE:
-                uk += 1
-            elif ch in _RU_SIGNATURE:
-                ru += 1
-        elif ch.isalpha():
-            # ASCII plus accented Latin (ä, é, ł, ...) and other alphabets count
-            # as Latin-ish for the coarse script read; Cyrillic is matched above.
-            lat += 1
-    if cyr + lat < _LANG_MIN_LETTERS:
-        return None
-    if cyr >= lat:
-        if uk > ru:
-            return "uk"
-        if ru > uk:
-            return "ru"
-        return None  # Cyrillic but ambiguous; do not act on a coin flip
-    return "en"
-
-
-def _expected_summary_language(summary_language: str, transcript: str) -> str | None:
-    """The language a local summary should come out in, or None when we cannot
-    cheaply verify it (and therefore must neither reinforce nor retry).
-
-    A forced ISO 639-1 code is honored only when the detector can check it
-    (uk / ru / en); other forced Latin codes (de, es, ...) are left alone rather
-    than risk forcing English on a German meeting. "auto" trusts a *Cyrillic*
-    read of the transcript only, since the detector cannot tell Latin languages
-    apart, so an English or German meeting in auto mode is left unverified."""
-    code = (summary_language or "auto").strip().lower()
-    if len(code) == 2 and code.isalpha():
-        return code if code in _VERIFIABLE_LANGS else None
-    sig = _language_signature(transcript)
-    return sig if sig in {"uk", "ru"} else None
-
-
-def _summary_detection_text(summary: MeetingSummary) -> str:
-    """The user-facing prose of a summary for the post-hoc language check: title
-    plus summary bullets plus decisions plus questions. Owners, dates, and enums
-    are skipped since they carry proper nouns and codes, not language signal."""
-    parts = [summary.title, *summary.summary, *summary.decisions, *summary.questions]
-    return " ".join(p for p in parts if p)
-
-
-def _language_reinforcement(target: str) -> str:
-    """A forceful, JSON-preserving restatement of the output language, appended
-    after the schema so it is the last thing the local model reads before the
-    transcript. Local models obey a directive placed here far more reliably than
-    one buried in the system preamble (the same reason the schema-rule block sits
-    where it does)."""
-    name = _LANGUAGE_NAMES.get(target, target)
-    return (
-        "\n\n---\n\n## Output language (non-negotiable)\n"
-        "Write every string value in the JSON object, the title, every summary "
-        "bullet, every decision, every action task, and every question, in "
-        f"{name}. Do not switch to English or any other language. Keep proper "
-        "nouns, product names, and code identifiers verbatim. This overrides any "
-        "default to English."
-    )
-
-
-def _language_correction_message(target: str) -> str:
-    """The corrective user message for the language-mismatch replay: same facts,
-    translated into the target language, JSON only."""
-    name = _LANGUAGE_NAMES.get(target, target)
-    return (
-        f"Your reply was not written in {name}. Rewrite the SAME summary with "
-        "identical facts, but translate every string value, the title, summary "
-        "bullets, decisions, action tasks, and questions, into "
-        f"{name}. Keep proper nouns and code identifiers verbatim. Reply with "
-        "ONLY the JSON object: no prose, no Markdown fences, no commentary."
-    )
+# Language honoring (LOCAL7) lives in `summary_language` now (LANG1 promoted it so
+# the Anthropic path shares the same detector). Local MLX models ignore the
+# summary-language directive that Anthropic obeys, so this client still reinforces
+# the target before the transcript and replays once when the produced summary's
+# language disagrees; both moves use the shared, per-section helpers imported above.
 
 
 class LocalSummaryError(RuntimeError):
@@ -308,13 +209,13 @@ class LocalSummaryClient:
             self._ensure_running()
             self._reset_idle_timer()
 
-            target = _expected_summary_language(self._summary_language, transcript)
+            target = expected_summary_language(self._summary_language, transcript)
             system_content = self._augment_with_schema(system_prompt)
             if target:
                 # Restate the target after the schema, where the local model's
                 # token attention is highest; the base directive already rode in
                 # via the system prompt but was being ignored (LOCAL7).
-                system_content += _language_reinforcement(target)
+                system_content += language_reinforcement(target)
             messages = [
                 {"role": "system", "content": system_content},
                 {"role": "user", "content": self._compose_user_message(transcript)},
@@ -364,20 +265,23 @@ class LocalSummaryClient:
         target: str,
         max_tokens: int,
     ) -> MeetingSummary:
-        """LOCAL7: replay once when the summary's detected language disagrees with
-        the target. Keeps the original summary when the language already reads as
-        the target (or is too short to tell) or when the retry fails to parse, so
-        a wrong guess costs at most one extra call, never the summary itself."""
-        actual = _language_signature(_summary_detection_text(summary))
-        if actual is None or actual == target:
+        """LOCAL7: replay once when any section of the summary reads as a language
+        other than the target. Keeps the original summary when every section
+        already reads as the target (or is too short to tell) or when the retry
+        fails to parse, so a wrong guess costs at most one extra call, never the
+        summary itself. Per-section (LANG1), so a drifted ``actions`` block is
+        caught even when the rest of the summary is already on target."""
+        diverging = divergent_sections(summary, target)
+        if not diverging:
             return summary
         log.warning(
-            "local summary reads as %r but %r was expected; replaying with a language directive",
-            actual, target,
+            "local summary sections %s diverge from expected language %r; "
+            "replaying with a language directive",
+            diverging, target,
         )
         retry_messages = base_messages + [
             {"role": "assistant", "content": prior_text},
-            {"role": "user", "content": _language_correction_message(target)},
+            {"role": "user", "content": language_correction_message(target)},
         ]
         try:
             retried = self._extract_summary(
@@ -388,9 +292,10 @@ class LocalSummaryClient:
                 "language-correction retry did not parse (%s); keeping the first summary", e
             )
             return summary
+        still = divergent_sections(retried, target)
         log.info(
-            "language-correction retry produced a summary that reads as %r",
-            _language_signature(_summary_detection_text(retried)) or "unknown",
+            "language-correction retry produced a summary; diverging sections now: %s",
+            still or "none",
         )
         return retried
 

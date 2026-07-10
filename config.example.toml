@@ -79,8 +79,12 @@ team_context = "FDA 21 CFR Part 11 regulated SaaS, .NET 8 + Angular + AWS EKS"
 # keeps generic labels. Also editable as "Your name" in Preferences -> Pipeline.
 user_label = ""
 # Output language. "auto" (default) mirrors the transcript's detected
-# language (Russian transcript → Russian summary). Force a specific
-# ISO 639-1 code to override (e.g. "en" for English-only).
+# language (Russian transcript → Russian summary). A fixed ISO 639-1 code
+# (e.g. "en" or "uk") is the safer setting: it removes the ambiguity that
+# lets a model localize a section into a language the transcript never
+# contained, and it is honored across every generated section on both the
+# cloud and local backends (LANG1). Prefer it if your meetings are always in
+# one language.
 summary_language = "auto"
 # Long-meeting guard: when the transcript markdown is longer than this many
 # characters (~roughly 80 000 ≈ 20 000 tokens ≈ 1 hour of speech), the

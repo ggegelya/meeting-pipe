@@ -349,6 +349,7 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 
 - `engine.py` - free-form text completion honouring `effective_backend()`. Every AI feature routes through it, so the egress clamp has one place to bite.
 - `backend_fallback.py` - the one implementation of the `auto` ladder: try Anthropic, drop to local when the cloud is unreachable or unwilling (connection, timeout, auth, 429, 5xx), let a caller bug propagate. Shared by `engine.complete_text` and `summarize._AutoFallbackClient` (PIPE7). It never decides *whether* cloud is allowed; `config.effective_backend` already did.
+- `summary_language.py` - the shared post-hoc language verifier (LANG1, generalizing LOCAL7): a cheap pure script detector plus a per-section divergence check (`divergent_sections`, including `actions[].task`). `summarize.summarize` runs it backend-agnostically after any client answers, so a cloud summary whose sections drift into an unexpected language is repaired once; `summarize_local` shares the same detector for its in-client replay.
 - `embed_index.py` - the on-device embedding index over the library. `rag.py` - durable retrieval assembly for cited answers. Both back `ask.py` and `digest.py`.
 - `chunking.py` - the transcript chunking primitive. `prompt_safety.py` - wraps transcript text as untrusted data, not instructions (TECH-SEC6).
 

@@ -24,8 +24,6 @@ from mp.summarize_local import (
     DEFAULT_REQUEST_TIMEOUT_SEC,
     LocalSummaryClient,
     LocalSummaryError,
-    _expected_summary_language,
-    _language_signature,
     _largest_balanced_json_object,
     scaled_request_timeout,
 )
@@ -318,29 +316,6 @@ def _uk_summary_obj() -> dict:
     }
 
 
-def test_language_signature_reads_scripts() -> None:
-    assert _language_signature("Sprint planning: we aligned on scope and risks.") == "en"
-    assert _language_signature("Обговорили обсяг, ризики і терміни релізу.") == "uk"
-    assert _language_signature("Обсудили объём, риски и сроки выпуска.") == "ru"
-    # Too little signal to be sure -> None, so it never triggers a retry.
-    assert _language_signature("short") is None
-    assert _language_signature("") is None
-
-
-def test_expected_summary_language_rules() -> None:
-    uk_transcript = "Привіт, давайте почнемо. Це важливе питання і рішення."
-    en_transcript = "Hello everyone, let us begin the sprint review now."
-    # A verifiable forced code is honored regardless of the transcript.
-    assert _expected_summary_language("uk", en_transcript) == "uk"
-    assert _expected_summary_language("en", uk_transcript) == "en"
-    # A non-verifiable forced Latin code is left alone (no false English retry).
-    assert _expected_summary_language("de", en_transcript) is None
-    # auto trusts only a Cyrillic transcript read; a Latin transcript stays
-    # unverified since the detector cannot separate Latin languages.
-    assert _expected_summary_language("auto", uk_transcript) == "uk"
-    assert _expected_summary_language("auto", en_transcript) is None
-
-
 def test_language_mismatch_triggers_one_retry(
     fake_server: tuple[str, int, ThreadingHTTPServer]
 ) -> None:
@@ -364,6 +339,41 @@ def test_language_mismatch_triggers_one_retry(
         )
     assert calls["n"] == 2, "expected exactly one language-correction retry"
     assert s.title == "Планування спринту"
+
+
+def test_action_only_language_drift_triggers_retry(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    # LANG1: a summary whose ONLY drifted section is `actions` must still trigger
+    # the local retry. Before LANG1 the local detector omitted the action items,
+    # so a Russian/English action block inside an on-target summary shipped
+    # unchecked. summary_language=uk; attempt 1 is Ukrainian except for an English
+    # action task; the per-section check must catch it and replay once.
+    host, port, server = fake_server
+    calls = {"n": 0}
+
+    def _uk_with_english_actions() -> dict:
+        obj = _uk_summary_obj()
+        obj["actions"] = [{
+            "task": "Prepare the regression report before the release on Friday.",
+            "owner": None, "due": None, "confidence": "medium", "resolved": False,
+        }]
+        return obj
+
+    def builder(_: dict) -> dict:
+        calls["n"] += 1
+        obj = _uk_with_english_actions() if calls["n"] == 1 else _uk_summary_obj()
+        return {"choices": [{"message": {"content": json.dumps(obj)}}]}
+
+    server.builder = builder  # type: ignore[attr-defined]
+    with LocalSummaryClient(
+        host=host, port=port, manage_subprocess=False, summary_language="uk"
+    ) as c:
+        c.summarize(
+            system_prompt="Summarize.", transcript="A: привіт, є питання.",
+            model="ignored", max_tokens=512,
+        )
+    assert calls["n"] == 2, "an English-only action block must trigger the language retry"
 
 
 def test_language_match_does_not_retry(
