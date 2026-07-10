@@ -58,6 +58,29 @@ final class UISettings: ObservableObject {
         didSet { UserDefaults.standard.set(playCompletionTone, forKey: Keys.playCompletionTone) }
     }
 
+    /// AI4-FINISH weekly-digest schedule. When enabled, `DigestSchedulerService` installs
+    /// a per-user LaunchAgent that runs `mp digest` at the chosen weekday + time. These are
+    /// the source of truth the controls re-render from; the installed plist is what actually
+    /// fires. The daemon, not the pipeline, reads them (the agent invokes `mp digest` directly).
+    @Published var digestScheduleEnabled: Bool {
+        didSet { UserDefaults.standard.set(digestScheduleEnabled, forKey: Keys.digestScheduleEnabled) }
+    }
+
+    /// Weekday for the scheduled digest, 1=Monday … 7=Sunday (ISO 8601). Default Monday.
+    @Published var digestWeekday: Int {
+        didSet { UserDefaults.standard.set(digestWeekday, forKey: Keys.digestWeekday) }
+    }
+
+    /// Hour (0–23) for the scheduled digest. Default 9.
+    @Published var digestHour: Int {
+        didSet { UserDefaults.standard.set(digestHour, forKey: Keys.digestHour) }
+    }
+
+    /// Minute (0–59) for the scheduled digest. Default 0.
+    @Published var digestMinute: Int {
+        didSet { UserDefaults.standard.set(digestMinute, forKey: Keys.digestMinute) }
+    }
+
     private enum Keys {
         static let theme = "mp.ui.theme"
         static let menuBarIconStyle = "mp.ui.menuBarIconStyle"
@@ -67,6 +90,10 @@ final class UISettings: ObservableObject {
         static let preloadLocalModelAtLaunch = "mp.ui.preloadLocalModelAtLaunch"
         static let disableAutoRestart = "mp.ui.disableAutoRestart"
         static let playCompletionTone = "mp.ui.playCompletionTone"
+        static let digestScheduleEnabled = "mp.ui.digestScheduleEnabled"
+        static let digestWeekday = "mp.ui.digestWeekday"
+        static let digestHour = "mp.ui.digestHour"
+        static let digestMinute = "mp.ui.digestMinute"
     }
 
     private init() {
@@ -83,6 +110,11 @@ final class UISettings: ObservableObject {
         self.preloadLocalModelAtLaunch = d.bool(forKey: Keys.preloadLocalModelAtLaunch)
         self.disableAutoRestart = d.bool(forKey: Keys.disableAutoRestart)
         self.playCompletionTone = d.bool(forKey: Keys.playCompletionTone)
+        self.digestScheduleEnabled = d.bool(forKey: Keys.digestScheduleEnabled)
+        // `object(forKey:)` so a never-set key falls to the default instead of 0.
+        self.digestWeekday = d.object(forKey: Keys.digestWeekday) as? Int ?? 1
+        self.digestHour = d.object(forKey: Keys.digestHour) as? Int ?? 9
+        self.digestMinute = d.object(forKey: Keys.digestMinute) as? Int ?? 0
     }
 
     /// Apply the theme to `NSApp.appearance`. `nil` restores the system default.

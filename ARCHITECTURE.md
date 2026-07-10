@@ -279,7 +279,7 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 - **Menu bar:** `StatusBarController.swift` — title, icons (outline/filled per `UISettings.menuBarIconStyle`), lock glyph for regulated mode, model-download progress, aggregate permission warning.
 - **Prompt panel:** `MeetingPromptWindow.swift` — the top-right "Record / Skip / Record (BYO)" panel that pops on detection.
 - **HUD:** `RecordingHUDWindow.swift` — the floating pulse while recording.
-- **Library window:** `LibraryWindow.swift` + `LibrarySidebar.swift` + `LibraryListView.swift` + `MeetingDetailView.swift` + tabs (`TranscriptTab`, `AudioTab`, `CorrectionsTab`, `RawFilesTab`). Reads `~/Documents/Meetings/raw/*.meta.json` via `MeetingStore.swift`. Filter / search via `MeetingFilter.swift`.
+- **Library window:** `LibraryWindow.swift` + `LibrarySidebar.swift` + `LibraryListView.swift` + `MeetingDetailView.swift` + tabs (`TranscriptTab`, `AudioTab`, `CorrectionsTab`, `RawFilesTab`). Reads `~/Documents/Meetings/raw/*.meta.json` via `MeetingStore.swift`. Filter / search via `MeetingFilter.swift`. The INSIGHTS rail group hosts the cross-library projection views: `FactsView` (DV1), `AskView` (AI3), and `DigestsView` (AI4, the weekly digests in the `digests` sibling).
 - **Preferences:** `PreferencesWindow.swift` (NSWindow shell) + `Preferences/PreferencesView.swift` (SwiftUI NavigationSplitView) + `Preferences/PreferencesControls.swift` (shared primitives: `SettingsGroup`, `SettingsRow`, `SettingsSegmented`, `SettingsHotkeyField`, …).
 - **Correction window:** `CorrectionWindow.swift` + `CorrectionEditor.swift` — inline edit of a generated summary, writes a correction record, optional republish.
 
@@ -305,6 +305,7 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 - `ModelDownloadSupervisor.swift` — spawns `mp prefetch-model` for local-backend MLX models; surfaces progress in the menu bar.
 - `WindowActivationManager.swift` — keeps the daemon Dock-less when no windows are visible but flips activation policy to `.regular` when the Library or Preferences window is open so Cmd+Tab works.
 - `LaunchAtLoginService.swift` — `SMAppService.mainApp` wrapper for the General-tab toggle.
+- `DigestSchedulerService.swift` — AI4: writes `~/Library/LaunchAgents/com.meetingpipe.digest.plist` (a `StartCalendarInterval` running `mp digest`) and `launchctl bootstrap`/`bootout`s it, driven by the Preferences → Pipeline digest toggle. Schedule state lives in `UISettings`.
 
 ---
 
@@ -451,6 +452,8 @@ lifecycle verdict .ended (or hotkey, or silence backstop)
 | `~/Documents/Meetings/raw/<stem>.error.json` | daemon writes + reads | failure sidecar: the stage that failed (`transcribe` / `pipeline` / `publish` / `launch` / `interrupted`) and why. Drives the Library's failed row and its stage-aware Retry |
 | `~/Library/Logs/MeetingPipe/` | both | tail-able text logs + JSONL event logs |
 | `~/Library/LaunchAgents/com.meetingpipe.daemon.plist` | install.sh writes | LaunchAgent |
+| `~/Library/LaunchAgents/com.meetingpipe.digest.plist` | `DigestSchedulerService` writes | optional weekly-digest LaunchAgent (AI4): a `StartCalendarInterval` that runs `mp digest`, installed/removed by the Preferences → Pipeline toggle |
+| `~/Documents/Meetings/digests/digest-<date>.summary.{json,md}` | `mp digest` writes, daemon reads | weekly review digest (AI4); a `digests` sibling of `raw/`, surfaced in the Library's Digests rail view |
 | `~/Applications/MeetingPipe.app/` | install.sh / rebuild.sh writes | installed bundle |
 
 Memory hygiene note: don't save file paths from this section into Claude memory — read them here when needed. They change.

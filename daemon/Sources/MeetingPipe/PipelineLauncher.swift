@@ -61,6 +61,8 @@ protocol PipelineDriver: AnyObject {
     func summarizePreviewViaApple(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void)
     /// Ask a natural-language question across the whole library (AI3): runs `mp ask`, which retrieves + synthesizes an engine-backed answer with verified `[stem]` citations on-device (honouring the backend + egress clamp), and returns the parsed answer. Defaulted no-op.
     func ask(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void)
+    /// Generate the weekly review digest now (AI4): runs `mp digest`, which writes `digest-<date>.summary.json/.md` into the `digests` library sibling. Library-wide, so `cloudSecretPolicy(for: nil)` applies the global egress posture. Defaulted no-op.
+    func digest(completion: @escaping (Result<Void, Error>) -> Void)
     /// Enroll a meeting speaker into the named-speaker roster (FEAT3-ROSTER): runs `mp roster enroll`, which reads the speaker's embedding from `<stem>.embeddings.json`, folds it into the named person, and relabels the meeting transcript so the name shows at once. Fully on-device. Defaulted no-op.
     func rosterEnroll(name: String, label: String, wav: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// As `rosterEnroll`, but `noRelabel` passes `--no-relabel` so `<stem>.json` is not rewritten (FEAT3-UNDO: the daemon shows the name through a reversible overlay). Defaulted to forward to the plain form so fakes are unchanged.
@@ -135,6 +137,14 @@ extension PipelineDriver {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "ask unsupported by this driver"]
+        )))
+    }
+
+    /// Default no-op stub; `PipelineLauncher` overrides this.
+    func digest(completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "digest unsupported by this driver"]
         )))
     }
 
@@ -372,6 +382,13 @@ final class PipelineLauncher: PipelineDriver {
     /// egress, so it needs no meeting anchor for the secret policy.
     func rosterForget(name: String, completion: @escaping (Result<Void, Error>) -> Void) {
         runMP(["roster", "forget", "--name", name], timeout: 30, meeting: nil, completion: completion)
+    }
+
+    /// AI4: generate the weekly digest now (`mp digest`). Library-wide, so no meeting
+    /// anchor; the Python side arms the egress guard and `effective_backend` forces local
+    /// under regulated. A generous cap covers a cold local model over the whole library.
+    func digest(completion: @escaping (Result<Void, Error>) -> Void) {
+        runMP(["digest"], timeout: 10 * 60, meeting: nil, completion: completion)
     }
 
     /// Spawn `mp summarize <transcript.md>`. Uses the per-stage entry point (not orchestrate's run-all) so config + secrets are resolved the same way. Overwrites `<stem>.summary.json` and `<stem>.summary.md` in-place.

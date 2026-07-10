@@ -235,6 +235,20 @@ final class LibraryWindowModel: ObservableObject {
         }
     }
 
+    /// The digests directory (AI4), or nil when the service isn't wired.
+    var digestsDirectory: URL? { library?.digestsDirectory }
+
+    /// Generate the weekly digest now (AI4). Async-wrapped like `askMeetings`; the Digests
+    /// view shows a spinner while this runs.
+    func generateDigest() async -> Result<Void, Error> {
+        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
+            library.generateDigest { result in
+                cont.resume(returning: result)
+            }
+        }
+    }
+
     /// Name a meeting speaker (FEAT3-ROSTER / FEAT3-UNDO): enrolls the voiceprint and
     /// records the name in the reversible overlay. Async-wrapped like `askMeetings`;
     /// the transcript naming sheet awaits it.
@@ -410,6 +424,11 @@ struct LibraryRootView: View {
                             scope = .allMeetings
                             meetingSelection = [stem]
                         }
+                    } else if case .digests = scope {
+                        // Digests (AI4): a read-only list of the weekly review digests,
+                        // each rendered inline. Self-contained, since a digest is not a
+                        // meeting and has no detail-pane row.
+                        DigestsView(model: model)
                     } else {
                         LibraryListView(
                             store: meetingStore,
@@ -488,6 +507,18 @@ struct LibraryRootView: View {
                     .font(.system(size: 36))
                     .foregroundStyle(Color(MPColors.fgSubtle))
                 Text("Answers are drawn from your meetings, on-device, with citations.")
+                    .foregroundStyle(Color(MPColors.fgMuted))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 260)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if case .digests = scope {
+            // Digests owns the center column (like Facts / Ask); the detail stays a hint.
+            VStack(spacing: 8) {
+                Image(systemName: "calendar.badge.clock")
+                    .font(.system(size: 36))
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+                Text("Weekly review digests of your open actions and recent decisions.")
                     .foregroundStyle(Color(MPColors.fgMuted))
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 260)

@@ -135,8 +135,70 @@ struct PipelineSectionView: View {
             } footer: {
                 Text("When the transcript exceeds this size, the pipeline writes a paste-into-Claude bundle instead of calling the Anthropic API. 0 disables the guard. ~80,000 chars ≈ 1 hour of speech.")
             }
+
+            SettingsGroup("Weekly digest") {
+                SettingsToggleRow("Scheduled weekly digest",
+                    sublabel: "Installs a per-user launch agent that runs `mp digest` on the day and time below; read the results in the Library's Digests view.",
+                    isOn: digestEnabledBinding)
+                SettingsRow("Day", sublabel: "Which day the digest runs.") {
+                    SettingsMenuPicker(selection: digestWeekdayBinding, options: Self.weekdayOptions, width: 140)
+                        .disabled(!ui.digestScheduleEnabled)
+                }
+                SettingsRow("Time", sublabel: "When it runs that day.", showsDivider: false) {
+                    DatePicker("", selection: digestTimeBinding, displayedComponents: .hourAndMinute)
+                        .labelsHidden()
+                        .disabled(!ui.digestScheduleEnabled)
+                }
+            } footer: {
+                Text("The digest summarizes your open actions and recent decisions across the whole library, on-device (no new egress). Generate one on demand from the Library's Digests view.")
+            }
         }
         .onAppear { voiceprintMeetings = VoiceprintProfile.meetingsLearned() }
+    }
+
+    // MARK: - Digest schedule (AI4)
+
+    private static let weekdayOptions: [(value: Int, label: String)] = [
+        (1, "Monday"), (2, "Tuesday"), (3, "Wednesday"), (4, "Thursday"),
+        (5, "Friday"), (6, "Saturday"), (7, "Sunday"),
+    ]
+
+    /// Re-render from UISettings, then (re)install or remove the launch agent so a
+    /// schedule change takes effect immediately, mirroring the launch-at-login toggle.
+    private func applyDigestSchedule() {
+        DigestSchedulerService.apply(
+            enabled: ui.digestScheduleEnabled,
+            weekday: ui.digestWeekday, hour: ui.digestHour, minute: ui.digestMinute
+        )
+    }
+
+    private var digestEnabledBinding: Binding<Bool> {
+        Binding(get: { ui.digestScheduleEnabled }, set: { on in
+            ui.digestScheduleEnabled = on
+            applyDigestSchedule()
+        })
+    }
+
+    private var digestWeekdayBinding: Binding<Int> {
+        Binding(get: { ui.digestWeekday }, set: { day in
+            ui.digestWeekday = day
+            applyDigestSchedule()
+        })
+    }
+
+    private var digestTimeBinding: Binding<Date> {
+        Binding(
+            get: {
+                Calendar.current.date(from: DateComponents(hour: ui.digestHour, minute: ui.digestMinute))
+                    ?? Date(timeIntervalSince1970: 0)
+            },
+            set: { newDate in
+                let c = Calendar.current.dateComponents([.hour, .minute], from: newDate)
+                ui.digestHour = c.hour ?? 9
+                ui.digestMinute = c.minute ?? 0
+                applyDigestSchedule()
+            }
+        )
     }
 
     private var voiceProfileSublabel: String {

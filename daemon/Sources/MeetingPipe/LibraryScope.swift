@@ -17,6 +17,9 @@ enum LibraryScope: Hashable {
     /// across the whole library. Like `.facts`, a view rather than a list filter
     /// (`includes` returns false).
     case ask
+    /// Digests projection (AI4): the weekly review digests in the `digests` library
+    /// sibling, read-only. Like `.facts`/`.ask`, a view rather than a list filter.
+    case digests
     case workflow(Workflow.ID)
 
     /// Rail row label and list header.
@@ -31,6 +34,7 @@ enum LibraryScope: Hashable {
         case .untagged:    return "Untagged"
         case .facts:       return "Facts"
         case .ask:         return "Ask"
+        case .digests:     return "Digests"
         case .workflow:    return ""   // resolved at render time via the store
         }
     }
@@ -45,6 +49,7 @@ enum LibraryScope: Hashable {
         case .untagged:    return "tag"
         case .facts:       return "list.bullet.rectangle"
         case .ask:         return "bubble.left.and.text.bubble.right"
+        case .digests:     return "calendar.badge.clock"
         case .workflow:    return nil
         }
     }
@@ -95,7 +100,7 @@ enum LibraryScope: Hashable {
             return Self.resolveWorkflow(for: meeting, in: workflows)?.flags.ndaMode == true
         case .untagged:
             return (meeting.workflowName?.isEmpty ?? true)
-        case .facts, .ask:
+        case .facts, .ask, .digests:
             // Not a list filter: these projections render in their own center
             // column, so no meeting "belongs" to the scope.
             return false

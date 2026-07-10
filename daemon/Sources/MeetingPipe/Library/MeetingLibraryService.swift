@@ -351,6 +351,28 @@ final class MeetingLibraryService {
         }
     }
 
+    /// The digests directory (AI4): a `digests` sibling of the recordings dir, mirroring
+    /// `mp digest`'s default output (`mp.storage.digests_dir`). Outside the Library-scanned
+    /// `raw/` tree, so digests never appear in the meeting list; the Digests rail view reads
+    /// it directly.
+    var digestsDirectory: URL {
+        outputDir().deletingLastPathComponent().appendingPathComponent("digests")
+    }
+
+    /// Generate the weekly review digest now (AI4). Spawns `mp digest`; the Digests view
+    /// reloads to pick up the new file.
+    func generateDigest(completion: @escaping (Result<Void, Error>) -> Void) {
+        Log.event(category: "coordinator", action: "digest_generate_requested", attributes: [:])
+        launcher.digest { [weak self] result in
+            DispatchQueue.main.async {
+                if case .failure(let err) = result {
+                    self?.notifyError("Digest failed: \(err.localizedDescription)")
+                }
+                completion(result)
+            }
+        }
+    }
+
     /// Publish a hand-pasted summary for a BYO / long-meeting paste-ready row (TECH-UX3). Writes the pasted text to `<stem>.summary.md`, then runs `mp publish-from-paste`, which parses it, writes `<stem>.summary.json`, and fans out to the sinks; the directory watcher then flips the row to `.done`. Errors flow back through `completion` so the detail pane can show them inline (not as a notification).
     func publishFromPaste(
         stem: String,
