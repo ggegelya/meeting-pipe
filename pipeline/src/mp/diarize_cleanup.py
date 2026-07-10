@@ -31,7 +31,7 @@ import anthropic
 
 from . import entry, events
 from .chunking import chunked_windows
-from .config import Config, effective_backend, require_env
+from .config import Config, effective_backend, parse_local_endpoint, require_env
 from .markdown import render_markdown
 from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
 
@@ -374,11 +374,19 @@ class LocalCleanupClient:
 
 
 def _select_cleanup_backend(cfg: Config) -> CleanupClient:
-    """Resolve the cleanup LLM backend, mirroring summarize._select_backend.
+    """Resolve the cleanup LLM backend.
 
     `regulated_mode` and the Apple Intelligence summary backend both pin
     the cleanup pass to the on-device MLX path (the Swift Foundation Model
     only summarizes; cleanup runs in Python and stays local for it).
+
+    `auto` resolves here by key presence alone. Unlike summarize and engine,
+    which share `backend_fallback.run_with_local_fallback`, cleanup does not
+    fall back at call time, and does not need to: `run_all` already treats a
+    cleanup failure as non-fatal and summarizes the un-cleaned transcript, so a
+    retry on a second backend would buy tidier speaker labels at the price of a
+    second model call on an optional polish pass. (Before PIPE7 this docstring
+    claimed to mirror `summarize._select_backend`, which it never did.)
     """
     # Shared regulated/NDA force-local rule via the single chokepoint
     # (config.effective_backend, TECH-ARCH1); the apple/auto collapse below is
@@ -394,10 +402,9 @@ def _select_cleanup_backend(cfg: Config) -> CleanupClient:
         backend = "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "local"
 
     if backend == "local":
-        from .summarize import _parse_local_endpoint
         from .summarize_local import LocalSummaryClient
 
-        host, port = _parse_local_endpoint(cfg.summarization.local_endpoint)
+        host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
         return LocalCleanupClient(
             LocalSummaryClient(model=cfg.summarization.local_model, host=host, port=port),
             max_tokens=cfg.summarization.max_tokens,

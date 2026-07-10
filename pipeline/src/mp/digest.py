@@ -32,7 +32,7 @@ from . import actions as actions_mod
 from . import engine, entry, events
 from .config import Config
 from .schemas import ActionItem, MeetingSummary
-from .summarize import _render_summary_md
+from .markdown import render_summary_md
 
 log = logging.getLogger("mp.digest")
 
@@ -254,7 +254,7 @@ def main(argv: list[str]) -> int:
     json_path = out_dir / f"{stem}.summary.json"
     md_path = out_dir / f"{stem}.summary.md"
     json_path.write_text(summary.model_dump_json(indent=2, exclude_none=False), encoding="utf-8")
-    md_path.write_text(_render_summary_md(summary), encoding="utf-8")
+    md_path.write_text(render_summary_md(summary), encoding="utf-8")
 
     published = False
     if args.publish:

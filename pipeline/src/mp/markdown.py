@@ -1,14 +1,23 @@
-"""Render a structured transcript dict to speaker-segmented Markdown.
+"""The pipeline's Markdown renderers.
 
-The structured shape is FluidAudio's `<stem>.json` sidecar (Swift writes
-it directly after recording). This module renders that into a human-
-readable `<stem>.md` for the library and downstream consumers.
+`render_markdown` turns a structured transcript dict into speaker-segmented
+Markdown. The structured shape is FluidAudio's `<stem>.json` sidecar (Swift
+writes it directly after recording); the render becomes the human-readable
+`<stem>.md` for the library and downstream consumers.
+
+`render_summary_md` turns a validated `MeetingSummary` into the human-readable
+`<stem>.summary.md`. It is the single rendering every consumer shares: the
+summarizer, `publish-from-paste`, `digest`, and the LAN and filesystem sinks.
+The filesystem sink used to carry its own copy of this function to avoid
+importing a private helper from `summarize`; the copy drifted (PIPE7).
 """
 from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+
+from .schemas import MeetingSummary
 
 _UNSET: object = object()
 _UNKNOWN_SPEAKER = "Speaker?"
@@ -66,4 +75,42 @@ def render_markdown(structured: dict[str, Any]) -> str:
         lines.append("Speakers (segment counts):")
         for spk, n in sorted(counts.items()):
             lines.append(f"- {spk}: {n}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_summary_md(s: MeetingSummary) -> str:
+    """Render a validated summary into the human-readable `<stem>.summary.md`."""
+    lines: list[str] = [f"# {s.title}", ""]
+    if s.attendees:
+        lines.append("**Attendees:** " + ", ".join(s.attendees))
+        lines.append("")
+    lines.append(f"_Language: {s.detected_language}_")
+    lines.append("")
+
+    lines.append("## Summary")
+    for bullet in s.summary:
+        lines.append(f"- {bullet}")
+    lines.append("")
+
+    if s.decisions:
+        lines.append("## Decisions")
+        for i, d in enumerate(s.decisions, 1):
+            lines.append(f"{i}. {d}")
+        lines.append("")
+
+    if s.actions:
+        lines.append("## Action Items")
+        for a in s.actions:
+            owner = a.owner or "_unassigned_"
+            due = f" - due {a.due}" if a.due else ""
+            box = "[x]" if a.resolved else "[ ]"
+            lines.append(f"- {box} **{owner}**: {a.task}{due}  _(confidence: {a.confidence})_")
+        lines.append("")
+
+    if s.questions:
+        lines.append("## Open Questions")
+        for q in s.questions:
+            lines.append(f"- {q}")
+        lines.append("")
+
     return "\n".join(lines).rstrip() + "\n"

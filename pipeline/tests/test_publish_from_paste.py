@@ -136,7 +136,7 @@ def test_resolved_round_trips_through_rendered_markdown():
     open one stays open. (The parser keeps the confidence suffix in the task
     text; that is a pre-existing BYO quirk and not what this test pins.)"""
     from mp.schemas import ActionItem, MeetingSummary
-    from mp.summarize import _render_summary_md
+    from mp.markdown import render_summary_md
 
     s = MeetingSummary(
         title="Recap",
@@ -148,7 +148,7 @@ def test_resolved_round_trips_through_rendered_markdown():
         ],
         detected_language="en",
     )
-    reparsed = parse_summary_md(_render_summary_md(s))
+    reparsed = parse_summary_md(render_summary_md(s))
     assert len(reparsed.actions) == 2
     closed, openn = reparsed.actions
     assert closed.task.startswith("Closed item")

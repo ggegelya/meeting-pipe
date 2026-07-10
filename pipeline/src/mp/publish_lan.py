@@ -27,12 +27,12 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .markdown import render_summary_md
 from .publish_fs import (
-    _file_url,
-    _load_sidecar,
-    _now_iso,
-    _render_summary_md,
-    _stem_from_summary,
+    file_url,
+    load_sidecar,
+    now_iso,
+    stem_from_summary,
 )
 from .schemas import MeetingSummary
 
@@ -63,9 +63,9 @@ class LanPublisher:
     ) -> dict[str, Any]:
         target = self._check_reachable()
         target.mkdir(parents=True, exist_ok=True)
-        stem = transcript_md.stem if transcript_md else _stem_from_summary(summary)
+        stem = transcript_md.stem if transcript_md else stem_from_summary(summary)
 
-        summary_md = _render_summary_md(summary)
+        summary_md = render_summary_md(summary)
         actions_json = json.dumps(
             [a.model_dump(mode="json") for a in summary.actions],
             indent=2, sort_keys=True,
@@ -78,12 +78,12 @@ class LanPublisher:
             (summary_md + "\n---\n" + actions_json + "\n---\n" + transcript_text).encode("utf-8")
         ).hexdigest()
 
-        existing = _load_sidecar(sidecar_path)
+        existing = load_sidecar(sidecar_path)
         if existing and existing.get("signature_sha256") == signature:
             log.info("lan sink unchanged, skipping write (sha=%s...)", signature[:8])
             return {
                 "page_id": existing.get("summary_path"),
-                "page_url": _file_url(Path(existing["summary_path"])) if existing.get("summary_path") else None,
+                "page_url": file_url(Path(existing["summary_path"])) if existing.get("summary_path") else None,
                 "idempotent": True,
                 "local": True,
             }
@@ -103,14 +103,14 @@ class LanPublisher:
                 "actions_path": str(actions_path),
                 "mount_path": str(target),
                 "signature_sha256": signature,
-                "ts": _now_iso(),
+                "ts": now_iso(),
             }, indent=2, sort_keys=True),
             encoding="utf-8",
         )
 
         return {
             "page_id": str(summary_path),
-            "page_url": _file_url(summary_path),
+            "page_url": file_url(summary_path),
             "idempotent": False,
             "local": True,
         }

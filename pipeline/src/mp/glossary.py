@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import CONFIG_PATH
-from .workflow import _read_meta
+from .workflow import read_meta
 
 log = logging.getLogger("mp.glossary")
 
@@ -189,7 +189,7 @@ def load_glossary(
     _merge_terms(terms, raw.get("terms"))
 
     if workflow_name is None and meeting_path is not None:
-        workflow_name = _read_meta(meeting_path).get("workflow_name")
+        workflow_name = read_meta(meeting_path).get("workflow_name")
     if workflow_name:
         wf = (raw.get("workflow") or {}).get(workflow_name)
         if isinstance(wf, dict):

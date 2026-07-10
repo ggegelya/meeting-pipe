@@ -23,7 +23,8 @@ import logging
 import os
 from dataclasses import dataclass
 
-from .config import Config, effective_backend, require_env
+from .backend_fallback import run_with_local_fallback
+from .config import Config, effective_backend, parse_local_endpoint, require_env
 
 log = logging.getLogger("mp.engine")
 
@@ -84,10 +85,9 @@ class AnthropicTextClient:
 def _local_client(cfg: Config, model: str | None):
     """A `LocalSummaryClient` pinned to (host, port) from config. Lazy import so
     non-local installs never pay the mlx cost for an ask that never runs local."""
-    from .summarize import _parse_local_endpoint
     from .summarize_local import LocalSummaryClient
 
-    host, port = _parse_local_endpoint(cfg.summarization.local_endpoint)
+    host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
     return LocalSummaryClient(
         model=model or cfg.summarization.local_model,
         host=host,
@@ -159,21 +159,25 @@ def complete_text(
     if backend == "auto":
         # Not reachable under regulated / NDA (effective_backend already forced
         # local there), so falling back to local on an Anthropic failure never
-        # egresses a zero-egress meeting. Read the key directly (require_env exits
-        # on miss, which would prevent the fallback).
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if api_key:
-            try:
-                client = AnthropicTextClient(api_key=api_key, model=model or cfg.summarization.model)
-                return EngineResult(
-                    text=client.complete(system_prompt=system_prompt, user_message=user_message, max_tokens=max_tokens),
-                    backend="anthropic", model=client.model,
-                )
-            except Exception as e:  # noqa: BLE001 - any Anthropic failure drops to local
-                log.warning("Anthropic backend failed (%s); falling back to local", e)
-        else:
-            log.info("ANTHROPIC_API_KEY not set; using local backend")
-        return _complete_local(cfg, system_prompt=system_prompt, user_message=user_message,
-                               max_tokens=max_tokens, model=model)
+        # egresses a zero-egress meeting. The ladder is shared with summarize
+        # (PIPE7): only an unreachable-or-unwilling cloud drops to local, so a
+        # BadRequestError still surfaces instead of silently re-running on a
+        # different model.
+        def _cloud() -> EngineResult:
+            client = AnthropicTextClient(
+                api_key=os.environ["ANTHROPIC_API_KEY"], model=model or cfg.summarization.model
+            )
+            return EngineResult(
+                text=client.complete(system_prompt=system_prompt, user_message=user_message,
+                                     max_tokens=max_tokens),
+                backend="anthropic", model=client.model,
+            )
+
+        def _local() -> EngineResult:
+            return _complete_local(cfg, system_prompt=system_prompt, user_message=user_message,
+                                   max_tokens=max_tokens, model=model)
+
+        result, _backend = run_with_local_fallback(cloud=_cloud, local=_local)
+        return result
 
     raise EngineError(f"unknown summarization.backend: {backend!r}")

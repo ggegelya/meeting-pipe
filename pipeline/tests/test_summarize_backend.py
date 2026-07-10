@@ -17,7 +17,8 @@ import httpx
 import pytest
 
 from mp.config import Config
-from mp.summarize import _AutoFallbackClient, _select_backend, _parse_local_endpoint
+from mp.config import parse_local_endpoint
+from mp.summarize import _AutoFallbackClient, _select_backend
 
 
 def _local_cfg(backend: str = "local", regulated: bool = False) -> Config:
@@ -103,11 +104,11 @@ def test_regulated_mode_forces_local_over_apple() -> None:
 
 
 def test_parse_local_endpoint_variants() -> None:
-    assert _parse_local_endpoint("http://127.0.0.1:8765") == ("127.0.0.1", 8765)
-    assert _parse_local_endpoint("https://localhost:9000/v1") == ("localhost", 9000)
-    assert _parse_local_endpoint("127.0.0.1") == ("127.0.0.1", 8765)
+    assert parse_local_endpoint("http://127.0.0.1:8765") == ("127.0.0.1", 8765)
+    assert parse_local_endpoint("https://localhost:9000/v1") == ("localhost", 9000)
+    assert parse_local_endpoint("127.0.0.1") == ("127.0.0.1", 8765)
     # Garbage in port slot falls back to the default port instead of raising.
-    assert _parse_local_endpoint("127.0.0.1:abc") == ("127.0.0.1", 8765)
+    assert parse_local_endpoint("127.0.0.1:abc") == ("127.0.0.1", 8765)
 
 
 # ----- Regulated + local: zero egress contract -----

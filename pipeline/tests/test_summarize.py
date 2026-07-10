@@ -10,10 +10,10 @@ import httpx
 import pytest
 
 from mp.config import Config, Recording
+from mp.markdown import render_summary_md
 from mp.summarize import (
     _load_system_prompt,
     _prior_meeting_context,
-    _render_summary_md,
     _summary_language_directive,
     summarize,
 )
@@ -36,7 +36,7 @@ def _make_summary() -> MeetingSummary:
 
 
 def test_render_summary_md_has_all_sections():
-    md = _render_summary_md(_make_summary())
+    md = render_summary_md(_make_summary())
     assert "# Phase 6 sync" in md
     assert "**Attendees:** Alice, Bob" in md
     assert "## Summary" in md

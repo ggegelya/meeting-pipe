@@ -49,7 +49,7 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
       - `regulated_mode`           → global zero-egress at record time (TECH-DSN6);
         folded in fail-closed, same effect as `workflow_nda_mode`
     """
-    meta = _read_meta(any_meeting_path)
+    meta = read_meta(any_meeting_path)
     if not meta:
         return cfg
 
@@ -116,7 +116,7 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
     return overlay
 
 
-def _read_meta(any_meeting_path: Path) -> dict[str, Any]:
+def read_meta(any_meeting_path: Path) -> dict[str, Any]:
     # Mirror the daemon's `MeetingStore.stem(of:)` rule: stem is the
     # filename substring before the first dot. Lets a single function
     # handle every per-meeting filename (`.wav`, `.md`, `.summary.json`,

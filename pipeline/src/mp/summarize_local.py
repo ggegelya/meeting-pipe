@@ -761,15 +761,14 @@ def main(argv: list[str]) -> int:
         print("Start mlx_lm.server for the configured local model and block.")
         return 0
 
-    from .config import Config
-    from .summarize import _parse_local_endpoint
+    from .config import Config, parse_local_endpoint
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     cfg = Config.load()
-    host, port = _parse_local_endpoint(cfg.summarization.local_endpoint)
+    host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
     host = _loopback_only(host)
     model = cfg.summarization.local_model
     cmd = build_server_command(model, host, port)

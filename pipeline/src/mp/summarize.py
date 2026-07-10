@@ -34,12 +34,14 @@ from tenacity import (
 )
 
 from . import entry
-from .config import Config, effective_backend, require_env
+from .backend_fallback import run_with_local_fallback
+from .config import Config, effective_backend, parse_local_endpoint, require_env
+from .markdown import render_summary_md
 from .markers import FLAGGED_INSTRUCTION, flagged_moments_block
 from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
 from .services import SummaryClient
-from .workflow import _read_meta
+from .workflow import read_meta
 
 log = logging.getLogger("mp.summarize")
 
@@ -164,7 +166,7 @@ def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
     first meeting in a workflow, or one with no prior decisions/open actions, is
     a clean no-op.
     """
-    workflow_id = _read_meta(transcript_md).get("workflow_id")
+    workflow_id = read_meta(transcript_md).get("workflow_id")
     if not workflow_id:
         return None
     out_dir = cfg.recording.output_dir
@@ -178,7 +180,7 @@ def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
         stem = summary_json.name.split(".", 1)[0]
         if stem >= current_stem:  # self or a later meeting; stems sort chronologically
             continue
-        if _read_meta(summary_json).get("workflow_id") != workflow_id:
+        if read_meta(summary_json).get("workflow_id") != workflow_id:
             continue
         if prior_stem is None or stem > prior_stem:
             prior_stem, prior_path = stem, summary_json
@@ -196,7 +198,7 @@ def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
     if not decisions and not open_actions:
         return None
 
-    workflow_name = _read_meta(transcript_md).get("workflow_name") or "this"
+    workflow_name = read_meta(transcript_md).get("workflow_name") or "this"
     lines = [
         "## Previous meeting in this series",
         "",
@@ -376,7 +378,7 @@ def summarize(
         summary.model_dump_json(indent=2, exclude_none=False),
         encoding="utf-8",
     )
-    md_path.write_text(_render_summary_md(summary), encoding="utf-8")
+    md_path.write_text(render_summary_md(summary), encoding="utf-8")
 
     backend, model_used = _identify_backend(client, cfg)
     log.info("Wrote %s and %s", json_path, md_path)
@@ -442,7 +444,7 @@ def _select_backend(cfg: Config) -> SummaryClient:
         )
     if backend == "local":
         from .summarize_local import LocalSummaryClient
-        host, port = _parse_local_endpoint(cfg.summarization.local_endpoint)
+        host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
         return LocalSummaryClient(
             model=cfg.summarization.local_model,
             host=host,
@@ -459,33 +461,15 @@ def _select_backend(cfg: Config) -> SummaryClient:
     raise ValueError(f"unknown summarization.backend: {backend!r}")
 
 
-def _parse_local_endpoint(endpoint: str) -> tuple[str, int]:
-    # "http://127.0.0.1:8765" → ("127.0.0.1", 8765). Defaults match
-    # LocalSummaryClient's defaults so a partially-malformed value
-    # degrades to "the right answer most of the time".
-    default_host, default_port = "127.0.0.1", 8765
-    s = endpoint.strip()
-    for prefix in ("http://", "https://"):
-        if s.startswith(prefix):
-            s = s[len(prefix):]
-            break
-    if "/" in s:
-        s = s.split("/", 1)[0]
-    if ":" in s:
-        host, port_s = s.rsplit(":", 1)
-        try:
-            return (host or default_host, int(port_s))
-        except ValueError:
-            return (host or default_host, default_port)
-    return (s or default_host, default_port)
-
-
 class _AutoFallbackClient:
     """`SummaryClient` that tries Anthropic first, falls back to local
     on network / auth / rate-limit / server-error failure (TECH-FEAT5).
     Built once per `summarize()` call so the Anthropic auth check is
     deferred until first use; that lets the fallback fire even when
     ANTHROPIC_API_KEY is unset.
+
+    The ladder itself lives in `backend_fallback.run_with_local_fallback`,
+    shared with `engine.complete_text` (PIPE7).
     """
 
     def __init__(self, cfg: Config) -> None:
@@ -503,84 +487,34 @@ class _AutoFallbackClient:
         model: str,
         max_tokens: int,
     ) -> MeetingSummary:
-        # Read directly rather than via require_env: that helper calls
-        # sys.exit on miss, which would prevent us from falling back.
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if api_key:
-            try:
-                primary = AnthropicSummaryClient(api_key=api_key)
-                result = primary.summarize(
-                    system_prompt=system_prompt, transcript=transcript,
-                    model=model, max_tokens=max_tokens,
-                )
-                self.last_used_backend = "anthropic"
-                self.last_used_model = model
-                return result
-            except (anthropic.APIConnectionError, anthropic.APITimeoutError,
-                    anthropic.AuthenticationError, anthropic.PermissionDeniedError,
-                    anthropic.RateLimitError, anthropic.InternalServerError) as e:
-                # TECH-FEAT5: also fall back on a sustained 429 (RateLimitError)
-                # or 5xx (InternalServerError). `_create_message` already retries
-                # these with backoff; once that is exhausted, a busy Anthropic
-                # should drop to local rather than fail the whole run.
-                log.warning("Anthropic backend failed (%s); falling back to local", e)
-        else:
-            log.warning("ANTHROPIC_API_KEY not set; using local backend")
-
-        from .summarize_local import LocalSummaryClient
-        host, port = _parse_local_endpoint(self._cfg.summarization.local_endpoint)
-        local_model = self._cfg.summarization.local_model
-        with LocalSummaryClient(
-            model=local_model,
-            host=host, port=port,
-            startup_timeout_sec=self._cfg.summarization.local_startup_timeout_sec,
-            request_timeout_sec=self._cfg.summarization.local_request_timeout_sec,
-            summary_language=self._cfg.summarization.summary_language,
-        ) as fallback:
-            result = fallback.summarize(
+        def _cloud() -> MeetingSummary:
+            primary = AnthropicSummaryClient(api_key=os.environ["ANTHROPIC_API_KEY"])
+            return primary.summarize(
                 system_prompt=system_prompt, transcript=transcript,
                 model=model, max_tokens=max_tokens,
             )
-            self.last_used_backend = "local"
-            self.last_used_model = local_model
-            return result
 
+        def _local() -> MeetingSummary:
+            from .summarize_local import LocalSummaryClient
+            host, port = parse_local_endpoint(self._cfg.summarization.local_endpoint)
+            with LocalSummaryClient(
+                model=self._cfg.summarization.local_model,
+                host=host, port=port,
+                startup_timeout_sec=self._cfg.summarization.local_startup_timeout_sec,
+                request_timeout_sec=self._cfg.summarization.local_request_timeout_sec,
+                summary_language=self._cfg.summarization.summary_language,
+            ) as fallback:
+                return fallback.summarize(
+                    system_prompt=system_prompt, transcript=transcript,
+                    model=model, max_tokens=max_tokens,
+                )
 
-def _render_summary_md(s: MeetingSummary) -> str:
-    lines: list[str] = [f"# {s.title}", ""]
-    if s.attendees:
-        lines.append("**Attendees:** " + ", ".join(s.attendees))
-        lines.append("")
-    lines.append(f"_Language: {s.detected_language}_")
-    lines.append("")
-
-    lines.append("## Summary")
-    for bullet in s.summary:
-        lines.append(f"- {bullet}")
-    lines.append("")
-
-    if s.decisions:
-        lines.append("## Decisions")
-        for i, d in enumerate(s.decisions, 1):
-            lines.append(f"{i}. {d}")
-        lines.append("")
-
-    if s.actions:
-        lines.append("## Action Items")
-        for a in s.actions:
-            owner = a.owner or "_unassigned_"
-            due = f" - due {a.due}" if a.due else ""
-            box = "[x]" if a.resolved else "[ ]"
-            lines.append(f"- {box} **{owner}**: {a.task}{due}  _(confidence: {a.confidence})_")
-        lines.append("")
-
-    if s.questions:
-        lines.append("## Open Questions")
-        for q in s.questions:
-            lines.append(f"- {q}")
-        lines.append("")
-
-    return "\n".join(lines).rstrip() + "\n"
+        result, backend = run_with_local_fallback(cloud=_cloud, local=_local)
+        self.last_used_backend = backend
+        self.last_used_model = (
+            model if backend == "anthropic" else self._cfg.summarization.local_model
+        )
+        return result
 
 
 def main(argv: list[str]) -> int:

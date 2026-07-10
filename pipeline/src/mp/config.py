@@ -262,6 +262,32 @@ def effective_sinks(cfg: Config) -> list[str]:
     return list(cfg.output.sinks)
 
 
+def parse_local_endpoint(endpoint: str) -> tuple[str, int]:
+    """Split `summarization.local_endpoint` into (host, port).
+
+    "http://127.0.0.1:8765" -> ("127.0.0.1", 8765). Defaults match
+    LocalSummaryClient's defaults so a partially-malformed value degrades to
+    "the right answer most of the time". Every caller that builds a
+    LocalSummaryClient from config goes through here (summarize, engine,
+    diarize_cleanup, summarize_local).
+    """
+    default_host, default_port = "127.0.0.1", 8765
+    s = endpoint.strip()
+    for prefix in ("http://", "https://"):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    if "/" in s:
+        s = s.split("/", 1)[0]
+    if ":" in s:
+        host, port_s = s.rsplit(":", 1)
+        try:
+            return (host or default_host, int(port_s))
+        except ValueError:
+            return (host or default_host, default_port)
+    return (s or default_host, default_port)
+
+
 def _keychain_get(account: str, service: str = KEYCHAIN_SERVICE) -> str | None:
     """Read a token from the macOS login Keychain via /usr/bin/security. None if absent/unreadable."""
     import subprocess

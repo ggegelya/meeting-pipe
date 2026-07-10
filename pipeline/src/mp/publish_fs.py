@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .markdown import render_summary_md
 from .schemas import MeetingSummary
 
 log = logging.getLogger("mp.publish_fs")
@@ -55,9 +56,9 @@ class FilesystemPublisher:
         sidecar_path: Path,
     ) -> dict[str, Any]:
         self._out.mkdir(parents=True, exist_ok=True)
-        stem = transcript_md.stem if transcript_md else _stem_from_summary(summary)
+        stem = transcript_md.stem if transcript_md else stem_from_summary(summary)
 
-        summary_md = _render_summary_md(summary)
+        summary_md = render_summary_md(summary)
         actions_json = json.dumps(
             [a.model_dump(mode="json") for a in summary.actions],
             indent=2, sort_keys=True,
@@ -70,12 +71,12 @@ class FilesystemPublisher:
             (summary_md + "\n---\n" + actions_json + "\n---\n" + transcript_text).encode("utf-8")
         ).hexdigest()
 
-        existing = _load_sidecar(sidecar_path)
+        existing = load_sidecar(sidecar_path)
         if existing and existing.get("signature_sha256") == signature:
             log.info("filesystem sink unchanged, skipping write (sha=%s...)", signature[:8])
             return {
                 "page_id": existing.get("summary_path"),
-                "page_url": _file_url(Path(existing["summary_path"])) if existing.get("summary_path") else None,
+                "page_url": file_url(Path(existing["summary_path"])) if existing.get("summary_path") else None,
                 "idempotent": True,
                 "local": True,
             }
@@ -96,57 +97,25 @@ class FilesystemPublisher:
                 "actions_path": str(actions_path),
                 "output_dir": str(self._out),
                 "signature_sha256": signature,
-                "ts": _now_iso(),
+                "ts": now_iso(),
             }, indent=2, sort_keys=True),
             encoding="utf-8",
         )
 
         return {
             "page_id": str(summary_path),
-            "page_url": _file_url(summary_path),
+            "page_url": file_url(summary_path),
             "idempotent": False,
             "local": True,
         }
 
 
 # ----- Helpers -----
+#
+# Public because the LAN sink (publish_lan) is a network-mount variant of this
+# one and shares them. They were private and imported anyway (PIPE7).
 
-def _render_summary_md(s: MeetingSummary) -> str:
-    """Same rendering as summarize._render_summary_md, copied here so
-    the filesystem publisher does not depend on a private helper in
-    a sibling module. Drift would surface as a test diff."""
-    lines: list[str] = [f"# {s.title}", ""]
-    if s.attendees:
-        lines.append("**Attendees:** " + ", ".join(s.attendees))
-        lines.append("")
-    lines.append(f"_Language: {s.detected_language}_")
-    lines.append("")
-    lines.append("## Summary")
-    for bullet in s.summary:
-        lines.append(f"- {bullet}")
-    lines.append("")
-    if s.decisions:
-        lines.append("## Decisions")
-        for i, d in enumerate(s.decisions, 1):
-            lines.append(f"{i}. {d}")
-        lines.append("")
-    if s.actions:
-        lines.append("## Action Items")
-        for a in s.actions:
-            owner = a.owner or "_unassigned_"
-            due = f" (due {a.due})" if a.due else ""
-            box = "[x]" if a.resolved else "[ ]"
-            lines.append(f"- {box} **{owner}**: {a.task}{due} _(confidence: {a.confidence})_")
-        lines.append("")
-    if s.questions:
-        lines.append("## Open Questions")
-        for q in s.questions:
-            lines.append(f"- {q}")
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def _stem_from_summary(summary: MeetingSummary) -> str:
+def stem_from_summary(summary: MeetingSummary) -> str:
     # Used only when no transcript is provided (rare). Falls back to
     # an ISO timestamp prefix so two consecutive summaries with the
     # same title do not collide.
@@ -154,15 +123,15 @@ def _stem_from_summary(summary: MeetingSummary) -> str:
     return f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}-{safe or 'meeting'}"
 
 
-def _file_url(p: Path) -> str:
+def file_url(p: Path) -> str:
     return "file://" + os.path.abspath(p).replace(" ", "%20")
 
 
-def _now_iso() -> str:
+def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _load_sidecar(p: Path) -> dict[str, Any] | None:
+def load_sidecar(p: Path) -> dict[str, Any] | None:
     if not p.exists():
         return None
     try:

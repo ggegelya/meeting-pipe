@@ -265,6 +265,130 @@ def run_all(
         heartbeat.stop()
 
 
+def _skip_result(t: dict[str, Path], reason: str, **extra: str) -> dict:
+    """The shape every short-circuit returns: the transcript we did produce, no
+    summary, no page, and the reason we stopped. `extra` carries the one
+    skip-specific key (`manual_bundle`, `apple_pending`) where there is one."""
+    return {
+        "transcript_json": str(t["json"]),
+        "transcript_md": str(t["md"]),
+        "summary_json": None,
+        "summary_md": None,
+        "page_id": None,
+        "page_url": None,
+        "skipped": reason,
+        **extra,
+    }
+
+
+def _mark_empty(wav: Path, reason: str) -> None:
+    """Terminal marker so the Library shows a real state instead of spinning in
+    "Processing" forever. Best-effort: a marker write failure must not turn a
+    clean skip into a crash."""
+    try:
+        write_empty_marker(recordings_dir=wav.parent, stem=wav.stem, reason=reason)
+    except OSError as exc:
+        log.warning("empty marker write failed: %s", exc)
+
+
+def _check_no_speech(wav: Path, t: dict[str, Path], structured: dict) -> dict | None:
+    """Empty transcript (silent audio, broken capture). Don't burn Anthropic
+    tokens summarizing nothing. Reads the structured JSON's segment count rather
+    than scanning the markdown: the previous `"**" not in md_text` heuristic
+    broke the moment any header line contained bold styling."""
+    if structured.get("segments"):
+        return None
+    log.warning("Transcript has no speaker turns — skipping summarize + publish.")
+    log.warning("  WAV: %s", wav)
+    log.warning("  MD : %s", t["md"])
+    events.emit("pipeline", "run_skipped", wav=str(wav), reason="no_speech")
+    _mark_empty(wav, "no_speech")
+    return _skip_result(t, "no_speech")
+
+
+def _check_suspect_transcript(wav: Path, t: dict[str, Path], structured: dict) -> dict | None:
+    """Degenerate transcript (LOCAL2/AUD-21). FluidAudio can emit garbage on real
+    audio without erroring (a decoder stuck on one phrase, or near-empty output
+    over a long recording). Summarizing it burns a model call and publishes
+    nonsense, so mark it suspect and stop, the way no-speech stops on genuine
+    silence. The checks (transcript_quality) are conservative so a real meeting is
+    never withheld; the marker's reason records the true cause for the Library to
+    surface (distinct UI: PIPE3)."""
+    suspect = transcript_issues(structured.get("segments", []))
+    if not suspect:
+        return None
+    log.warning("Transcript looks degenerate - skipping summarize + publish:")
+    for reason in suspect:
+        log.warning("  - %s", reason)
+    events.emit("pipeline", "run_skipped", wav=str(wav),
+                reason="suspect_transcript", issues="; ".join(suspect))
+    _mark_empty(wav, "suspect_transcript")
+    return _skip_result(t, "suspect_transcript")
+
+
+def _check_byo(wav: Path, t: dict[str, Path], md_text: str, force_byo: bool) -> dict | None:
+    """Explicit BYO request from the user (per-meeting toggle on the prompt
+    panel). Same machinery as the long-meeting guard: write the bundle and stop."""
+    if not force_byo:
+        return None
+    bundle = _write_manual_bundle(t["md"], len(md_text), threshold=0)
+    log.info("BYO summary requested — skipping Anthropic call.")
+    log.info("Manual-processing bundle written: %s", bundle)
+    log.info("Run `mp publish-from-paste %s` after saving your summary.", t["md"])
+    events.emit("pipeline", "run_skipped", wav=str(wav), reason="byo",
+                transcript_chars=len(md_text), bundle=str(bundle))
+    return _skip_result(t, "byo", manual_bundle=str(bundle))
+
+
+def _check_too_long(wav: Path, t: dict[str, Path], md_text: str, cfg: Config) -> dict | None:
+    """Long-meeting guard. Avoid Anthropic costs on a 1+ hour transcript by
+    handing it to the user for manual processing. Skipped for Apple Intelligence:
+    it is on-device and free, and chunks long transcripts itself, so the
+    paste-bundle escape hatch does not apply."""
+    threshold = cfg.summarization.skip_above_chars
+    if not threshold or len(md_text) <= threshold:
+        return None
+    if effective_backend(cfg) == "apple_intelligence":
+        return None
+    bundle = _write_manual_bundle(t["md"], len(md_text), threshold)
+    log.warning(
+        "Transcript is %d chars (threshold %d) — skipping summarize + publish.",
+        len(md_text), threshold,
+    )
+    log.warning("Manual-processing bundle written: %s", bundle)
+    events.emit("pipeline", "run_skipped", wav=str(wav), reason="too_long",
+                transcript_chars=len(md_text), threshold=threshold,
+                bundle=str(bundle))
+    return _skip_result(t, "too_long", manual_bundle=str(bundle))
+
+
+def _check_apple_handoff(wav: Path, t: dict[str, Path], md_text: str, cfg: Config) -> dict | None:
+    """Apple Intelligence hand-off. The macOS 26 Foundation Model is Swift-only,
+    so we finalize (and optionally clean) the transcript here, then stop and let
+    the daemon produce the summary on-device and run `mp publish`. The sentinel is
+    the signal the daemon watches for.
+
+    Runs after diarize_cleanup, not with the other short-circuits: the daemon
+    summarizes the transcript this function points it at, so the cleanup pass has
+    to have already rewritten it."""
+    if effective_backend(cfg) != "apple_intelligence":
+        return None
+    sentinel = wav.parent / f"{wav.stem}.apple_pending.json"
+    sentinel.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "transcript_md": str(t["md"]),
+            "transcript_json": str(t["json"]),
+        }),
+        encoding="utf-8",
+    )
+    log.info("Apple Intelligence backend: handing summary off to the daemon.")
+    log.info("Apple-pending sentinel written: %s", sentinel)
+    events.emit("pipeline", "run_skipped", wav=str(wav), reason="apple_pending",
+                transcript_chars=len(md_text), sentinel=str(sentinel))
+    return _skip_result(t, "apple_pending", apple_pending=str(sentinel))
+
+
 def _run_all_inner(
     wav: Path, cfg: Config, *, force_byo: bool, heartbeat: "_ProgressHeartbeat | None" = None
 ) -> dict:
@@ -295,118 +419,18 @@ def _run_all_inner(
     _apply_glossary(wav, t)
     events.emit("pipeline", "stage_completed", stage="finalize", md=str(t["md"]))
 
-    # Short-circuit #1: empty transcript (silent audio, broken capture).
-    # Don't burn Anthropic tokens summarizing nothing. Read the structured
-    # JSON's segment count rather than scanning the markdown — the previous
-    # `"**" not in md_text` heuristic broke the moment any header line
-    # contained bold styling.
     structured = json.loads(t["json"].read_text(encoding="utf-8"))
-    if not structured.get("segments"):
-        log.warning("Transcript has no speaker turns — skipping summarize + publish.")
-        log.warning("  WAV: %s", wav)
-        log.warning("  MD : %s", t["md"])
-        events.emit("pipeline", "run_skipped", wav=str(wav), reason="no_speech")
-        # Terminal marker so the Library shows a "No speech" state instead of
-        # spinning in "Processing" forever (this skip writes no summary/bundle,
-        # unlike the byo/too_long skips below). Best-effort: a marker write
-        # failure must not turn a clean skip into a crash.
-        try:
-            write_empty_marker(
-                recordings_dir=wav.parent, stem=wav.stem, reason="no_speech"
-            )
-        except OSError as exc:
-            log.warning("empty marker write failed: %s", exc)
-        return {
-            "transcript_json": str(t["json"]),
-            "transcript_md": str(t["md"]),
-            "summary_json": None,
-            "summary_md": None,
-            "page_id": None,
-            "page_url": None,
-            "skipped": "no_speech",
-        }
-
-    # Short-circuit #1b: degenerate transcript (LOCAL2/AUD-21). FluidAudio can
-    # emit garbage on real audio without erroring (a decoder stuck on one
-    # phrase, or near-empty output over a long recording). Summarizing it burns
-    # a model call and publishes nonsense, so mark it suspect and stop, the way
-    # #1 stops on genuine silence. The checks (transcript_quality) are
-    # conservative so a real meeting is never withheld; the marker's reason
-    # records the true cause for the Library to surface (distinct UI: PIPE3).
-    suspect = transcript_issues(structured.get("segments", []))
-    if suspect:
-        log.warning("Transcript looks degenerate - skipping summarize + publish:")
-        for reason in suspect:
-            log.warning("  - %s", reason)
-        events.emit("pipeline", "run_skipped", wav=str(wav),
-                    reason="suspect_transcript", issues="; ".join(suspect))
-        try:
-            write_empty_marker(
-                recordings_dir=wav.parent, stem=wav.stem, reason="suspect_transcript"
-            )
-        except OSError as exc:
-            log.warning("empty marker write failed: %s", exc)
-        return {
-            "transcript_json": str(t["json"]),
-            "transcript_md": str(t["md"]),
-            "summary_json": None,
-            "summary_md": None,
-            "page_id": None,
-            "page_url": None,
-            "skipped": "suspect_transcript",
-        }
+    skip = _check_no_speech(wav, t, structured) or _check_suspect_transcript(wav, t, structured)
+    if skip is not None:
+        return skip
 
     md_text = t["md"].read_text(encoding="utf-8")
-
-    # Short-circuit #2a: explicit BYO request from the user (per-meeting
-    # toggle on the prompt panel). Same machinery as the long-meeting
-    # guard — write the bundle and stop.
-    if force_byo:
-        bundle = _write_manual_bundle(t["md"], len(md_text), threshold=0)
-        log.info("BYO summary requested — skipping Anthropic call.")
-        log.info("Manual-processing bundle written: %s", bundle)
-        log.info("Run `mp publish-from-paste %s` after saving your summary.", t["md"])
-        events.emit("pipeline", "run_skipped", wav=str(wav), reason="byo",
-                    transcript_chars=len(md_text), bundle=str(bundle))
-        return {
-            "transcript_json": str(t["json"]),
-            "transcript_md": str(t["md"]),
-            "summary_json": None,
-            "summary_md": None,
-            "page_id": None,
-            "page_url": None,
-            "skipped": "byo",
-            "manual_bundle": str(bundle),
-        }
-
-    # Short-circuit #2b: long-meeting guard. Avoid Anthropic costs on a
-    # 1+ hour transcript by handing it to the user for manual processing.
-    # Skipped for Apple Intelligence: it is on-device and free, and chunks
-    # long transcripts itself, so the paste-bundle escape hatch does not apply.
-    threshold = cfg.summarization.skip_above_chars
-    if threshold and len(md_text) > threshold and effective_backend(cfg) != "apple_intelligence":
-        bundle = _write_manual_bundle(t["md"], len(md_text), threshold)
-        log.warning(
-            "Transcript is %d chars (threshold %d) — skipping summarize + publish.",
-            len(md_text), threshold,
-        )
-        log.warning("Manual-processing bundle written: %s", bundle)
-        events.emit("pipeline", "run_skipped", wav=str(wav), reason="too_long",
-                    transcript_chars=len(md_text), threshold=threshold,
-                    bundle=str(bundle))
-        return {
-            "transcript_json": str(t["json"]),
-            "transcript_md": str(t["md"]),
-            "summary_json": None,
-            "summary_md": None,
-            "page_id": None,
-            "page_url": None,
-            "skipped": "too_long",
-            "manual_bundle": str(bundle),
-        }
+    skip = _check_byo(wav, t, md_text, force_byo) or _check_too_long(wav, t, md_text, cfg)
+    if skip is not None:
+        return skip
 
     # Diarization cleanup (TECH-DIAR1): opt-in LLM pass that tidies the
-    # speaker labels before summarizing. Placed after every skip
+    # speaker labels before summarizing. Placed after every cost-guard skip
     # short-circuit so it runs only when we are actually going to
     # summarize, and so it inherits the same cost guards. Failure is
     # non-fatal: a summary on the un-cleaned transcript beats no run.
@@ -423,34 +447,9 @@ def _run_all_inner(
         except Exception as e:  # noqa: BLE001
             log.warning("diarize cleanup failed (non-fatal): %s", e)
 
-    # Short-circuit #2c: Apple Intelligence hand-off. The macOS 26 Foundation
-    # Model is Swift-only, so we finalize (and optionally clean) the transcript
-    # here, then stop and let the daemon produce the summary on-device and run
-    # `mp publish`. The sentinel is the signal the daemon watches for.
-    if effective_backend(cfg) == "apple_intelligence":
-        sentinel = wav.parent / f"{wav.stem}.apple_pending.json"
-        sentinel.write_text(
-            json.dumps({
-                "schema_version": 1,
-                "transcript_md": str(t["md"]),
-                "transcript_json": str(t["json"]),
-            }),
-            encoding="utf-8",
-        )
-        log.info("Apple Intelligence backend: handing summary off to the daemon.")
-        log.info("Apple-pending sentinel written: %s", sentinel)
-        events.emit("pipeline", "run_skipped", wav=str(wav), reason="apple_pending",
-                    transcript_chars=len(md_text), sentinel=str(sentinel))
-        return {
-            "transcript_json": str(t["json"]),
-            "transcript_md": str(t["md"]),
-            "summary_json": None,
-            "summary_md": None,
-            "page_id": None,
-            "page_url": None,
-            "skipped": "apple_pending",
-            "apple_pending": str(sentinel),
-        }
+    skip = _check_apple_handoff(wav, t, md_text, cfg)
+    if skip is not None:
+        return skip
 
     log.info("[2/3] summarize")
     _stage("summarize")

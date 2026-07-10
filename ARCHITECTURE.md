@@ -346,6 +346,7 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 ### AI band (engine-backed, on-device by default)
 
 - `engine.py` - free-form text completion honouring `effective_backend()`. Every AI feature routes through it, so the egress clamp has one place to bite.
+- `backend_fallback.py` - the one implementation of the `auto` ladder: try Anthropic, drop to local when the cloud is unreachable or unwilling (connection, timeout, auth, 429, 5xx), let a caller bug propagate. Shared by `engine.complete_text` and `summarize._AutoFallbackClient` (PIPE7). It never decides *whether* cloud is allowed; `config.effective_backend` already did.
 - `embed_index.py` - the on-device embedding index over the library. `rag.py` - durable retrieval assembly for cited answers. Both back `ask.py` and `digest.py`.
 - `chunking.py` - the transcript chunking primitive. `prompt_safety.py` - wraps transcript text as untrusted data, not instructions (TECH-SEC6).
 
@@ -353,7 +354,7 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 
 - `workflow.py` - applies the `<stem>.meta.json` overrides onto the config. `workflows.py` - reads the workflow TOMLs the daemon owns (only to name the NDA ones, for `doctor`).
 - `diarize.py` - channel-aware speaker labels when daemon diarization is missing. `voiceprint.py` - the persisted self-voiceprint. `roster.py` - the named-third-party voiceprint roster (FEAT3).
-- `glossary.py` - deterministic post-ASR vocabulary normalization at finalize (ASR1). `markers.py` - the read side of `<stem>.markers.json` (FEAT8). `markdown.py` - renders a structured transcript to speaker-segmented Markdown. `transcript_quality.py` - the cheap degenerate-transcript checks (LOCAL2/AUD-21).
+- `glossary.py` - deterministic post-ASR vocabulary normalization at finalize (ASR1). `markers.py` - the read side of `<stem>.markers.json` (FEAT8). `markdown.py` - the two renderers: `render_markdown` (structured transcript to speaker-segmented Markdown) and `render_summary_md` (a `MeetingSummary` to `<stem>.summary.md`, shared by summarize, publish-from-paste, digest, and the LAN + filesystem sinks). `transcript_quality.py` - the cheap degenerate-transcript checks (LOCAL2/AUD-21).
 - `corrections.py` - the `<stem>.run.json` run sidecar, the empty-skip marker, and the correction corpus.
 
 ### Shared services and contracts
