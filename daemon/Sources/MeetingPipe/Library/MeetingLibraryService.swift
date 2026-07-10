@@ -317,6 +317,40 @@ final class MeetingLibraryService {
         }
     }
 
+    /// Reassign a batch of transcript segments to a speaker (FEAT3-SEGMENT). A local
+    /// overlay write only: no embedding is folded into any roster centroid (a wrong
+    /// fold would poison it), so roster centroids are byte-identical after a
+    /// reassignment; enrollment stays the explicit "Name this speaker" path. The
+    /// reassignment resolves at display time and, on a later regenerate, in the summary
+    /// (via `mp`'s `speaker_overlay`). Synchronous: it only writes the sidecar.
+    @discardableResult
+    func reassignSegments(stem: String, indices: [Int], toLabel label: String) -> Result<Void, Error> {
+        guard !indices.isEmpty else { return .success(()) }
+        do {
+            _ = try SpeakerLabelStore.setSegments(indices, to: label, stem: stem, in: outputDir())
+            Log.event(category: "coordinator", action: "segment_reassigned", attributes: [
+                "stem": stem, "count": indices.count, "to": label,
+            ])
+            return .success(())
+        } catch {
+            notifyError("Reassign failed: \(error.localizedDescription)")
+            return .failure(error)
+        }
+    }
+
+    /// Revert a batch of per-segment reassignments to their cluster labels (FEAT3-SEGMENT).
+    @discardableResult
+    func resetSegmentReassignment(stem: String, indices: [Int]) -> Result<Void, Error> {
+        guard !indices.isEmpty else { return .success(()) }
+        do {
+            _ = try SpeakerLabelStore.removeSegments(indices, stem: stem, in: outputDir())
+            return .success(())
+        } catch {
+            notifyError("Reset failed: \(error.localizedDescription)")
+            return .failure(error)
+        }
+    }
+
     /// Publish a hand-pasted summary for a BYO / long-meeting paste-ready row (TECH-UX3). Writes the pasted text to `<stem>.summary.md`, then runs `mp publish-from-paste`, which parses it, writes `<stem>.summary.json`, and fans out to the sinks; the directory watcher then flips the row to `.done`. Errors flow back through `completion` so the detail pane can show them inline (not as a notification).
     func publishFromPaste(
         stem: String,

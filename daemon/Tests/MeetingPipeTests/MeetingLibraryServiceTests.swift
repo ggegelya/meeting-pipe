@@ -389,6 +389,17 @@ final class MeetingLibraryServiceTests: XCTestCase {
         guard case .success? = captured else { return XCTFail("expected success") }
     }
 
+    func test_reassignSegments_writes_overlay_and_reset_reverts() {
+        // FEAT3-SEGMENT: a batch reassignment is a local overlay write; reset reverts
+        // just the given segments.
+        guard case .success = service.reassignSegments(stem: "m", indices: [1, 2], toLabel: "THEM-B") else {
+            return XCTFail("expected success")
+        }
+        XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).segments, [1: "THEM-B", 2: "THEM-B"])
+        _ = service.resetSegmentReassignment(stem: "m", indices: [1])
+        XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).segments, [2: "THEM-B"])
+    }
+
     // MARK: - publish-from-paste (TECH-UX3)
 
     func test_publishFromPaste_writes_summary_md_and_invokes_driver() throws {

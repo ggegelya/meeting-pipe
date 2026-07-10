@@ -291,7 +291,7 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 - `SecretsStore.swift` + `KeychainSecrets.swift`: Anthropic + Notion tokens in the macOS login Keychain via `/usr/bin/security` (SEC8), not a plaintext file. Migrates a legacy `secrets.env` on first launch, then deletes it.
 - `ConsentStore.swift` — per-bundle "always record this app" decisions.
 - `CorrectionStore.swift` — `<stem>.correction.json` records so the user's edits feed back into evals.
-- `SpeakerLabelStore.swift` — `<stem>.speaker_labels.json`, the reversible speaker-label overlay (FEAT3-UNDO). In-app naming enrolls the voiceprint but records the name here instead of rewriting `<stem>.json`, resolved at display time in `TranscriptLoader.load`; undo drops the entry. Parallels the text-correction overlay `TranscriptCorrectionStore`.
+- `SpeakerLabelStore.swift` — `<stem>.speaker_labels.json`, the reversible speaker-label overlay (FEAT3-UNDO / FEAT3-SEGMENT). In-app naming enrolls the voiceprint but records the name here instead of rewriting `<stem>.json`, resolved at display time in `TranscriptLoader.load`; undo/reset drops the entry. `labels` name a cluster; `segments` reassign a single segment (rides on `SegmentSelection.swift`, the pure Cmd/Shift-click multi-select model). Read back by `mp.speaker_overlay` on a regenerate. Parallels the text-correction overlay `TranscriptCorrectionStore`.
 - `MeetingStore.swift` — read-only catalog of `<stem>.meta.json` sidecars; powers the Library list. Watches the directory via `DispatchSource.makeFileSystemObjectSource`.
 
 ### Plumbing
@@ -357,7 +357,7 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 ### Per-meeting data
 
 - `workflow.py` - applies the `<stem>.meta.json` overrides onto the config. `workflows.py` - reads the workflow TOMLs the daemon owns (only to name the NDA ones, for `doctor`).
-- `diarize.py` - channel-aware speaker labels when daemon diarization is missing. `voiceprint.py` - the persisted self-voiceprint. `roster.py` - the named-third-party voiceprint roster (FEAT3).
+- `diarize.py` - channel-aware speaker labels when daemon diarization is missing. `voiceprint.py` - the persisted self-voiceprint. `roster.py` - the named-third-party voiceprint roster (FEAT3). `speaker_overlay.py` - reads the daemon's `<stem>.speaker_labels.json` overlay and applies it when re-summarizing, so a regenerate reflects in-app namings + per-segment reassignments (FEAT3-UNDO / FEAT3-SEGMENT); the resolution mirrors Swift's `SpeakerLabelStore`.
 - `glossary.py` - deterministic post-ASR vocabulary normalization at finalize (ASR1). `markers.py` - the read side of `<stem>.markers.json` (FEAT8). `markdown.py` - the two renderers: `render_markdown` (structured transcript to speaker-segmented Markdown) and `render_summary_md` (a `MeetingSummary` to `<stem>.summary.md`, shared by summarize, publish-from-paste, digest, and the LAN + filesystem sinks). `transcript_quality.py` - the cheap degenerate-transcript checks (LOCAL2/AUD-21).
 - `corrections.py` - the `<stem>.run.json` run sidecar, the empty-skip marker, and the correction corpus.
 
@@ -447,7 +447,7 @@ lifecycle verdict .ended (or hotkey, or silence backstop)
 | `~/Library/Application Support/MeetingPipe/originals/<stem>.wav` | daemon writes | kept full (un-redacted) recording, the recovery source only; 0600, Time-Machine/iCloud-excluded, outside the Library-scanned `raw/` tree (ADR 0016, DOC6) |
 | `~/Documents/Meetings/raw/<stem>.{json,md,summary.*,correction.json}` | pipeline writes, daemon reads | transcripts / summaries / corrections |
 | `~/Documents/Meetings/raw/<stem>.publish.json` | pipeline writes, daemon reads | this run's publish outcome: state, landed page URL, per-sink detail. Rewritten every run, so it is never stale (PIPE1) |
-| `~/Documents/Meetings/raw/<stem>.speaker_labels.json` | daemon writes + reads | reversible speaker-label overlay (FEAT3-UNDO): in-app names resolved at display time so `<stem>.json` keeps its diarization labels. Not read by the pipeline |
+| `~/Documents/Meetings/raw/<stem>.speaker_labels.json` | daemon writes + reads; pipeline reads | reversible speaker-label overlay (FEAT3-UNDO / FEAT3-SEGMENT): in-app names + per-segment reassignments, resolved at display time so `<stem>.json` keeps its diarization labels. Read by `mp summarize` on a regenerate (`speaker_overlay`) so the summary reflects it |
 | `~/Documents/Meetings/raw/<stem>.error.json` | daemon writes + reads | failure sidecar: the stage that failed (`transcribe` / `pipeline` / `publish` / `launch` / `interrupted`) and why. Drives the Library's failed row and its stage-aware Retry |
 | `~/Library/Logs/MeetingPipe/` | both | tail-able text logs + JSONL event logs |
 | `~/Library/LaunchAgents/com.meetingpipe.daemon.plist` | install.sh writes | LaunchAgent |

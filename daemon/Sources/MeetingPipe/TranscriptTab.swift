@@ -192,6 +192,10 @@ struct NamingTarget: Identifiable {
     var id: String { label }
 }
 
+/// A transcript-row click, classified by held modifiers (FEAT3-SEGMENT multi-select):
+/// plain seeks, Cmd toggles the segment in the selection, Shift extends the range.
+enum SegmentClick { case plain, command, shift }
+
 struct TranscriptTab: View {
     @ObservedObject var playback: AudioPlaybackController
     @EnvironmentObject private var libraryModel: LibraryWindowModel
@@ -308,9 +312,24 @@ struct TranscriptTab: View {
                 onRename: { label, current in
                     namingTarget = NamingTarget(label: label, currentName: current)
                 },
-                onUndoName: { label, current in undoNaming(label: label, name: current) }
+                onUndoName: { label, current in undoNaming(label: label, name: current) },
+                onReassign: { indices, label in reassign(indices: indices, toLabel: label) },
+                onResetReassignment: { indices in resetReassignment(indices: indices) }
             )
         }
+    }
+
+    /// Reassign a batch of segments to a speaker (FEAT3-SEGMENT). Local overlay write,
+    /// then reload so the rows resolve the new labels; regenerate/republish are left to
+    /// the detail menu rather than auto-fired.
+    private func reassign(indices: [Int], toLabel label: String) {
+        _ = libraryModel.reassignSegments(stem: meeting.stem, indices: indices, toLabel: label)
+        Task { await reload() }
+    }
+
+    private func resetReassignment(indices: [Int]) {
+        _ = libraryModel.resetSegmentReassignment(stem: meeting.stem, indices: indices)
+        Task { await reload() }
     }
 
     /// Persists the edit and patches the in-memory segment so the row updates without a full reload.
@@ -407,12 +426,35 @@ private struct TranscriptList: View {
     let onRename: (String, String) -> Void
     /// Called on "Undo naming" (FEAT3-UNDO) with the raw label and its current name.
     let onUndoName: (String, String) -> Void
+    /// Called on "Reassign to…" (FEAT3-SEGMENT) with the target segment indices and the destination label.
+    let onReassign: ([Int], String) -> Void
+    /// Called on "Reset to original label" (FEAT3-SEGMENT) with the target segment indices.
+    let onResetReassignment: ([Int]) -> Void
 
     /// Index of the segment containing the playback head. Updated via `onChange` so the binary search runs at most once per tick.
     @State private var activeIndex: Int? = nil
+    /// Multi-segment selection for reassignment (FEAT3-SEGMENT); layered on Cmd/Shift-click so a plain click still seeks.
+    @State private var selection = SegmentSelection()
+
+    /// The distinct speakers present, each as (raw label, resolved display name), for
+    /// the "Reassign to..." menu. Pure so it is unit-testable.
+    static func speakerTargets(
+        segments: [TranscriptSegment], overlay: SpeakerLabelStore.Overlay
+    ) -> [(label: String, display: String)] {
+        var seen = Set<String>()
+        var out: [(label: String, display: String)] = []
+        for seg in segments {
+            guard let raw = seg.speakerID, !seen.contains(raw) else { continue }
+            seen.insert(raw)
+            out.append((raw, TranscriptDisplay.displayName(for: overlay.labels[raw] ?? raw)))
+        }
+        return out
+    }
 
     var body: some View {
         let markerMap = TranscriptMarkerLayout.assign(markers: markers, to: segments)
+        let order = segments.map(\.index)
+        let speakerTargets = Self.speakerTargets(segments: segments, overlay: overlay)
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
@@ -439,11 +481,34 @@ private struct TranscriptList: View {
                             segment: seg,
                             overlay: overlay,
                             isActive: seg.index == activeIndex,
-                            onTap: { playback.playFrom(seg.start) },
+                            isSelected: selection.contains(seg.index),
+                            reassignTargets: speakerTargets.filter {
+                                $0.label != (overlay.segments[seg.index] ?? seg.speakerID)
+                            },
+                            isReassigned: overlay.segments[seg.index] != nil,
+                            onSelect: { kind in
+                                switch kind {
+                                case .plain:
+                                    selection.plainClick(seg.index)
+                                    playback.playFrom(seg.start)
+                                case .command:
+                                    selection.toggle(seg.index)
+                                case .shift:
+                                    selection.extendTo(seg.index, in: order)
+                                }
+                            },
                             onEdit: { onEdit(seg) },
                             onName: onName,
                             onRename: onRename,
-                            onUndoName: onUndoName
+                            onUndoName: onUndoName,
+                            onReassignTo: { label in
+                                onReassign(selection.targets(for: seg.index), label)
+                                selection.clear()
+                            },
+                            onResetSegment: {
+                                onResetReassignment(selection.targets(for: seg.index))
+                                selection.clear()
+                            }
                         )
                         .id(seg.index)
                     }
@@ -509,11 +574,22 @@ private struct TranscriptRow: View {
     /// Reversible speaker-label overrides (FEAT3-UNDO); resolved for display + menu.
     let overlay: SpeakerLabelStore.Overlay
     let isActive: Bool
-    let onTap: () -> Void
+    /// Selected for a multi-segment reassignment (FEAT3-SEGMENT).
+    let isSelected: Bool
+    /// Other speakers present in the meeting, for the "Reassign to..." menu.
+    let reassignTargets: [(label: String, display: String)]
+    /// True when this segment carries a per-segment reassignment (offers "Reset").
+    let isReassigned: Bool
+    /// A modifier-classified click: plain seeks, Cmd toggles, Shift range-selects.
+    let onSelect: (SegmentClick) -> Void
     let onEdit: () -> Void
     let onName: (String) -> Void
     let onRename: (String, String) -> Void
     let onUndoName: (String, String) -> Void
+    /// Reassign the current selection (or just this segment) to a label.
+    let onReassignTo: (String) -> Void
+    /// Reset the current selection's (or this segment's) per-segment reassignment.
+    let onResetSegment: () -> Void
 
     /// Reveals the per-line Edit pencil on hover so transcript correction is
     /// discoverable without the right-click menu (TECH-UX12).
@@ -532,7 +608,7 @@ private struct TranscriptRow: View {
     }
 
     var body: some View {
-        Button(action: onTap) {
+        Button(action: { onSelect(Self.classifyClick()) }) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Circle()
                     .fill(TranscriptDisplay.color(for: segment.speakerID))
@@ -567,6 +643,14 @@ private struct TranscriptRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Selected-for-reassignment outline (FEAT3-SEGMENT), distinct from the
+        // playback-active fill so both can show. Non-interactive so it never eats a click.
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(isSelected ? Color.mpSignal.opacity(0.7) : .clear, lineWidth: 1.5)
+                .padding(.horizontal, 8)
+                .allowsHitTesting(false)
+        )
         // Hover affordance lives in the empty space beside the speaker/timestamp
         // line, so it never overlaps wrapped body text. The overlay is a sibling
         // layer over the row button, so its tap goes to Edit, not to seek.
@@ -597,7 +681,37 @@ private struct TranscriptRow: View {
                     Button("Name this speaker…") { onName(raw) }
                 }
             }
+            reassignMenu
         }
+    }
+
+    /// FEAT3-SEGMENT: reassign this segment (or the whole multi-selection) to another
+    /// speaker present in the meeting, or reset a prior reassignment. Label-only: no
+    /// voiceprint is enrolled, so roster centroids are untouched.
+    @ViewBuilder
+    private var reassignMenu: some View {
+        if !reassignTargets.isEmpty || isReassigned {
+            Divider()
+            if !reassignTargets.isEmpty {
+                Menu("Reassign to\u{2026}") {
+                    ForEach(reassignTargets, id: \.label) { target in
+                        Button(target.display) { onReassignTo(target.label) }
+                    }
+                }
+            }
+            if isReassigned {
+                Button("Reset to original label") { onResetSegment() }
+            }
+        }
+    }
+
+    /// The click kind from the current modifier flags (macOS): Cmd toggles the
+    /// selection, Shift range-selects, a plain click seeks (and clears the selection).
+    static func classifyClick() -> SegmentClick {
+        let mods = NSEvent.modifierFlags
+        if mods.contains(.command) { return .command }
+        if mods.contains(.shift) { return .shift }
+        return .plain
     }
 }
 

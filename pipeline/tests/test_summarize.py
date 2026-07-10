@@ -131,6 +131,35 @@ def test_summarize_repairs_divergent_cloud_language(tmp_path: Path, monkeypatch)
     assert written.title == "Phase 6 sync"
 
 
+def test_summarize_applies_speaker_overlay(tmp_path: Path, monkeypatch):
+    """FEAT3-UNDO/SEGMENT: a regenerate applies the daemon's speaker-label overlay to
+    the transcript fed to the model, so the summary + attendees reflect in-app names."""
+    stem = "20260101-0900"
+    (tmp_path / f"{stem}.json").write_text(
+        json.dumps({"language": "en", "segments": [
+            {"start": 0.0, "end": 1.0, "text": "let us start the review", "speaker": "THEM-A"},
+        ]}),
+        encoding="utf-8",
+    )
+    md = tmp_path / f"{stem}.md"
+    md.write_text("# Transcript\n\n**THEM-A**: let us start the review\n", encoding="utf-8")
+    (tmp_path / f"{stem}.speaker_labels.json").write_text(
+        json.dumps({"labels": {"THEM-A": "Alice"}, "segments": {}}), encoding="utf-8"
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    seen: dict = {}
+
+    class _FakeClient:
+        def summarize(self, *, system_prompt, transcript, model, max_tokens):
+            seen["transcript"] = transcript
+            return _make_summary()
+
+    summarize(md, cfg=Config(), client=_FakeClient())
+    assert "Alice" in seen["transcript"]
+    assert "THEM-A" not in seen["transcript"]
+
+
 def test_summarize_no_repair_when_language_matches(tmp_path: Path, monkeypatch):
     """The post-hoc check must not over-fire: an on-target summary is returned
     without a second call."""

@@ -267,6 +267,19 @@ final class LibraryWindowModel: ObservableObject {
         }
     }
 
+    /// Reassign a batch of transcript segments to a speaker (FEAT3-SEGMENT). Synchronous
+    /// (a local overlay write); the transcript view reloads to pick it up.
+    @discardableResult
+    func reassignSegments(stem: String, indices: [Int], toLabel label: String) -> Result<Void, Error> {
+        library?.reassignSegments(stem: stem, indices: indices, toLabel: label) ?? .failure(Unwired.libraryUnavailable)
+    }
+
+    /// Revert a batch of per-segment reassignments (FEAT3-SEGMENT).
+    @discardableResult
+    func resetSegmentReassignment(stem: String, indices: [Int]) -> Result<Void, Error> {
+        library?.resetSegmentReassignment(stem: stem, indices: indices) ?? .failure(Unwired.libraryUnavailable)
+    }
+
     /// Re-enqueue the full `mp run-all` pipeline for a stalled/failed meeting.
     @discardableResult
     func retryMeeting(stem: String) -> Result<Void, Error> {

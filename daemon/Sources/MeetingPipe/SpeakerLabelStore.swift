@@ -109,22 +109,49 @@ enum SpeakerLabelStore {
         return overlay
     }
 
-    // MARK: - Resolution (pure, no I/O)
-
-    /// The user-assigned override for a segment, or nil when it carries its
-    /// diarization label unchanged. A per-segment override (FEAT3-SEGMENT) wins over
-    /// the cluster name (FEAT3-UNDO). This is the value the row shows as a name and
-    /// the signal the context menu uses to offer undo/reassign instead of naming.
-    static func assignedLabel(for segment: TranscriptSegment, using overlay: Overlay) -> String? {
-        if let s = overlay.segments[segment.index] { return s }
-        if let raw = segment.speakerID, let name = overlay.labels[raw] { return name }
-        return nil
+    /// Reassign a batch of segments to `target` in one write (multi-select).
+    @discardableResult
+    static func setSegments(_ indices: [Int], to target: String, stem: String, in directory: URL) throws -> Overlay {
+        var overlay = read(stem: stem, in: directory)
+        for i in indices { overlay.segments[i] = target }
+        try write(overlay: overlay, stem: stem, in: directory)
+        return overlay
     }
 
-    /// The label to render for a segment: the override if any, else the raw label.
-    /// Feed the result to `TranscriptDisplay.displayName`.
+    /// Drop the per-segment overrides for a batch, reverting each to its cluster.
+    @discardableResult
+    static func removeSegments(_ indices: [Int], stem: String, in directory: URL) throws -> Overlay {
+        var overlay = read(stem: stem, in: directory)
+        for i in indices { overlay.segments.removeValue(forKey: i) }
+        try write(overlay: overlay, stem: stem, in: directory)
+        return overlay
+    }
+
+    // MARK: - Resolution (pure, no I/O)
+
+    /// The label to render for a segment: the per-segment reassignment if any, else
+    /// the raw diarization label, mapped through the cluster-name table. So a segment
+    /// reassigned to a named cluster shows that cluster's name, and an un-reassigned
+    /// segment shows its cluster's name when named. Matches the Python
+    /// `speaker_overlay.apply_overlay` resolution (the two must agree). Feed the
+    /// result to `TranscriptDisplay.displayName`.
     static func displayLabel(for segment: TranscriptSegment, using overlay: Overlay) -> String? {
-        assignedLabel(for: segment, using: overlay) ?? segment.speakerID
+        guard let base = overlay.segments[segment.index] ?? segment.speakerID else { return nil }
+        return overlay.labels[base] ?? base
+    }
+
+    /// The user-assigned override for a segment (a per-segment reassignment or a
+    /// cluster name), or nil when the segment carries its plain diarization label. A
+    /// per-segment override (FEAT3-SEGMENT) wins over the cluster name (FEAT3-UNDO).
+    /// The signal the row uses to show a name and to branch the context menu.
+    static func assignedLabel(for segment: TranscriptSegment, using overlay: Overlay) -> String? {
+        if overlay.segments[segment.index] != nil {
+            return displayLabel(for: segment, using: overlay)
+        }
+        if let raw = segment.speakerID, let name = overlay.labels[raw] {
+            return name
+        }
+        return nil
     }
 
     // MARK: - Internal

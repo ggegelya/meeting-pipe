@@ -49,6 +49,8 @@ CI also runs pyright (TYPE1), configured in `pyproject.toml`'s `[tool.pyright]`.
 
 `mp.workflow.apply_overrides` reads `<stem>.meta.json` and overlays workflow-resolved values on top of the global config. The schema is mirrored by Swift's `MeetingMetaSidecar.build`. Adding or renaming a key requires touching both sides + `test_workflow_overlay.py`. See [`../CONVENTIONS.md#sidecar-schema-stem-metajson`](../CONVENTIONS.md#sidecar-schema-stemmetajson).
 
+A second Swift-to-Python surface: `mp.speaker_overlay` reads `<stem>.speaker_labels.json` (the daemon's reversible speaker-label overlay, FEAT3-UNDO / FEAT3-SEGMENT) and applies it when re-summarizing, so a regenerate reflects in-app namings + reassignments. Its resolution (per-segment override, else raw speaker, then mapped through the cluster-name table) must stay byte-identical to Swift's `SpeakerLabelStore`; change one side and change the other.
+
 ## Don't
 
 - Don't add a new top-level import for a heavy dep. Move it inside the function body.

@@ -63,4 +63,20 @@ final class SpeakerLabelStoreTests: XCTestCase {
         XCTAssertEqual(reread.labels["THEM-A"], "Alice")
         XCTAssertEqual(reread.segments[3], "Bob")
     }
+
+    func test_reassigning_to_a_named_cluster_chains_to_the_name() throws {
+        // FEAT3-SEGMENT: reassigning a segment to the THEM-A cluster (named Alice)
+        // resolves to Alice, matching the Python resolution.
+        _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Alice", stem: "m", in: dir)
+        let overlay = try SpeakerLabelStore.setSegment(5, to: "THEM-A", stem: "m", in: dir)
+        XCTAssertEqual(SpeakerLabelStore.displayLabel(for: seg(5, speaker: "THEM-B"), using: overlay), "Alice")
+        XCTAssertEqual(SpeakerLabelStore.assignedLabel(for: seg(5, speaker: "THEM-B"), using: overlay), "Alice")
+    }
+
+    func test_batch_set_and_remove_segments() throws {
+        _ = try SpeakerLabelStore.setSegments([1, 2, 3], to: "Bob", stem: "m", in: dir)
+        XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).segments, [1: "Bob", 2: "Bob", 3: "Bob"])
+        _ = try SpeakerLabelStore.removeSegments([1, 3], stem: "m", in: dir)
+        XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).segments, [2: "Bob"])
+    }
 }
