@@ -6,7 +6,7 @@ import Foundation
 /// a second PRIMARY or 2.0 s of sustained ended-state promotes to `.ended`. This absorbs post-call
 /// chat-surface mic-grabs without the old `RepromptCooldown` patch.
 /// `Equatable` is hand-rolled to ignore `at` so tests compare cause, not wall-clock.
-public enum MeetingLifecycleVerdict: Equatable {
+public enum MeetingLifecycleVerdict: Equatable, Sendable {
     /// No meeting in flight. Recorder closed.
     case idle
 
@@ -54,7 +54,7 @@ public enum MeetingLifecycleVerdict: Equatable {
 }
 
 /// Per-meeting identity attached to every non-idle verdict; shared infra keys AX walks and HAL listeners on it.
-public struct MeetingLifecycleContext: Equatable {
+public struct MeetingLifecycleContext: Equatable, Sendable {
     /// Bundle ID, e.g. `"com.microsoft.teams2"`. For browser meetings this is the browser bundle and `kind` is `.browser`.
     public let bundleID: String
 
@@ -67,7 +67,7 @@ public struct MeetingLifecycleContext: Equatable {
     /// Best-effort title for the event log. May be nil before the title signal resolves.
     public let title: String?
 
-    public enum Kind: String, Equatable {
+    public enum Kind: String, Equatable, Sendable {
         case native
         case browser
     }
@@ -81,7 +81,7 @@ public struct MeetingLifecycleContext: Equatable {
 }
 
 /// Reason payload on `.endingProvisional` and `.ended` for events.jsonl attribution.
-public struct EndingReason: Equatable {
+public struct EndingReason: Equatable, Sendable {
     /// The first PRIMARY signal to flip to "ended", e.g. `"shareable_content_window_gone"`.
     public let leadingSignal: String
 
