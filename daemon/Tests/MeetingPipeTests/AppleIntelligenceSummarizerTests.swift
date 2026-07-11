@@ -213,4 +213,44 @@ final class AppleIntelligenceSummarizerTests: XCTestCase {
         let reduce = AppleIntelligenceSummarizer.reduceInstructions(summaryLanguage: "auto")
         XCTAssertTrue(reduce.contains("at most 5 summary bullets"))
     }
+
+    // MARK: - CI3 golden parity with the Python mirrors
+
+    /// Shared with `pipeline/tests/test_ci3_parity.py` via the same fixture file:
+    /// a divergence between `largestJSONObject` and `json_extract`'s
+    /// `largest_balanced_json_object` breaks one suite. Python is the source of truth.
+    func test_largestJSONObject_golden_parity_with_python() throws {
+        struct Case: Decodable { let name: String; let input: String; let expected: String? }
+        struct Doc: Decodable { let cases: [Case] }
+        guard let url = Bundle.module.url(forResource: "json-extract-golden", withExtension: "json") else {
+            return XCTFail("json-extract-golden.json not found in the test bundle")
+        }
+        let doc = try JSONDecoder().decode(Doc.self, from: Data(contentsOf: url))
+        XCTAssertFalse(doc.cases.isEmpty)
+        for c in doc.cases {
+            XCTAssertEqual(
+                AppleIntelligenceSummarizer.largestJSONObject(in: c.input), c.expected,
+                "json-extract golden mismatch in case \(c.name)"
+            )
+        }
+    }
+
+    /// Shared with `pipeline/tests/test_ci3_parity.py`: `renderMarkdown` must
+    /// reproduce `markdown.render_summary_md` byte-for-byte, including the resolved
+    /// action-item checkbox (`[x]`), which this mirror silently dropped before CI3.
+    func test_renderMarkdown_golden_parity_with_python() throws {
+        struct Case: Decodable { let name: String; let input: MeetingSummary; let expected: String }
+        struct Doc: Decodable { let cases: [Case] }
+        guard let url = Bundle.module.url(forResource: "summary-md-golden", withExtension: "json") else {
+            return XCTFail("summary-md-golden.json not found in the test bundle")
+        }
+        let doc = try JSONDecoder().decode(Doc.self, from: Data(contentsOf: url))
+        XCTAssertFalse(doc.cases.isEmpty)
+        for c in doc.cases {
+            XCTAssertEqual(
+                AppleIntelligenceSummarizer.renderMarkdown(c.input), c.expected,
+                "summary-md golden mismatch in case \(c.name)"
+            )
+        }
+    }
 }

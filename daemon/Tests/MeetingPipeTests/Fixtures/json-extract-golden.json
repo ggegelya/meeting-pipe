@@ -1,0 +1,40 @@
+{
+  "_comment": "CI3 golden vectors for the balanced-JSON-extraction mirror (Swift AppleIntelligenceSummarizer.largestJSONObject vs Python json_extract.largest_balanced_json_object). Python is the source of truth; do not hand-edit.",
+  "cases": [
+    {
+      "name": "prose_around",
+      "input": "noise before {\"a\": 1} trailing text",
+      "expected": "{\"a\": 1}"
+    },
+    {
+      "name": "picks_largest_top_level",
+      "input": "{} {\"a\": {\"b\": 2}} {}",
+      "expected": "{\"a\": {\"b\": 2}}"
+    },
+    {
+      "name": "brace_inside_string",
+      "input": "{\"k\": \"a}b{c\"}",
+      "expected": "{\"k\": \"a}b{c\"}"
+    },
+    {
+      "name": "escaped_quote_in_string",
+      "input": "{\"k\": \"he said \\\"hi\\\"\"}",
+      "expected": "{\"k\": \"he said \\\"hi\\\"\"}"
+    },
+    {
+      "name": "no_object",
+      "input": "plain text, no braces at all",
+      "expected": null
+    },
+    {
+      "name": "empty_object",
+      "input": "prefix {} suffix",
+      "expected": "{}"
+    },
+    {
+      "name": "unbalanced_is_none",
+      "input": "leading {\"a\": 1",
+      "expected": null
+    }
+  ]
+}

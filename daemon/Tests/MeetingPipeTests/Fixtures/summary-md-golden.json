@@ -1,0 +1,87 @@
+{
+  "_comment": "CI3 golden vectors for the summary-markdown mirror (Swift AppleIntelligenceSummarizer.renderMarkdown vs Python markdown.render_summary_md). Python is the source of truth; regenerate with scripts under git history, do not hand-edit.",
+  "cases": [
+    {
+      "name": "full_bilingual",
+      "input": {
+        "title": "Weekly Sync",
+        "attendees": [
+          "Alice",
+          "Bob"
+        ],
+        "summary": [
+          "Discussed roadmap",
+          "Reviewed metrics"
+        ],
+        "decisions": [
+          "Ship on Friday"
+        ],
+        "actions": [
+          {
+            "task": "Send notes",
+            "owner": "Alice",
+            "due": "2026-07-15",
+            "confidence": "high",
+            "resolved": true
+          },
+          {
+            "task": "Book room",
+            "owner": null,
+            "due": null,
+            "confidence": "low",
+            "resolved": false
+          }
+        ],
+        "questions": [
+          "When is the next review?"
+        ],
+        "detected_language": "uk"
+      },
+      "expected": "# Weekly Sync\n\n**Attendees:** Alice, Bob\n\n_Language: uk_\n\n## Summary\n- Discussed roadmap\n- Reviewed metrics\n\n## Decisions\n1. Ship on Friday\n\n## Action Items\n- [x] **Alice**: Send notes - due 2026-07-15  _(confidence: high)_\n- [ ] **_unassigned_**: Book room  _(confidence: low)_\n\n## Open Questions\n- When is the next review?\n"
+    },
+    {
+      "name": "minimal_defaults",
+      "input": {
+        "title": "Quick chat",
+        "summary": [
+          "One thing happened"
+        ]
+      },
+      "expected": "# Quick chat\n\n_Language: en_\n\n## Summary\n- One thing happened\n"
+    },
+    {
+      "name": "actions_checkbox_matrix",
+      "input": {
+        "title": "Standup",
+        "summary": [
+          "Status round"
+        ],
+        "actions": [
+          {
+            "task": "Ship fix",
+            "owner": "Carol",
+            "due": "tomorrow",
+            "confidence": "high",
+            "resolved": true
+          },
+          {
+            "task": "Investigate flake",
+            "owner": null,
+            "due": null,
+            "confidence": "medium",
+            "resolved": false
+          },
+          {
+            "task": "Close ticket",
+            "owner": "Dan",
+            "due": null,
+            "confidence": "low",
+            "resolved": true
+          }
+        ],
+        "detected_language": "en"
+      },
+      "expected": "# Standup\n\n_Language: en_\n\n## Summary\n- Status round\n\n## Action Items\n- [x] **Carol**: Ship fix - due tomorrow  _(confidence: high)_\n- [ ] **_unassigned_**: Investigate flake  _(confidence: medium)_\n- [x] **Dan**: Close ticket  _(confidence: low)_\n"
+    }
+  ]
+}

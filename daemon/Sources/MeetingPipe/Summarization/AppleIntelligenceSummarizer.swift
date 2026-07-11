@@ -306,7 +306,7 @@ struct AppleIntelligenceSummarizer {
     }
 
     /// Largest balanced top-level `{...}`, ignoring braces inside strings. Mirrors
-    /// `_largest_balanced_json_object` in summarize_local.py.
+    /// `json_extract.largest_balanced_json_object`; pinned by the CI3 golden fixture.
     static func largestJSONObject(in text: String) -> String? {
         let chars = Array(text)
         var best: (len: Int, lo: Int, hi: Int)?
@@ -358,8 +358,9 @@ struct AppleIntelligenceSummarizer {
         }
     }
 
-    /// Human-readable rendering mirroring `summarize._render_summary_md`, using a
+    /// Human-readable rendering mirroring `markdown.render_summary_md`, using a
     /// plain hyphen for the due-date separator (the project bans em-dashes).
+    /// Pinned by the CI3 golden fixture.
     static func renderMarkdown(_ s: MeetingSummary) -> String {
         var lines: [String] = ["# \(s.title)", ""]
         if !s.attendees.isEmpty {
@@ -381,7 +382,8 @@ struct AppleIntelligenceSummarizer {
             for a in s.actions {
                 let owner = (a.owner?.isEmpty == false) ? a.owner! : "_unassigned_"
                 let due = (a.due?.isEmpty == false) ? " - due \(a.due!)" : ""
-                lines.append("- [ ] **\(owner)**: \(a.task)\(due)  _(confidence: \(a.confidence))_")
+                let box = a.resolved ? "[x]" : "[ ]"
+                lines.append("- \(box) **\(owner)**: \(a.task)\(due)  _(confidence: \(a.confidence))_")
             }
             lines.append("")
         }
