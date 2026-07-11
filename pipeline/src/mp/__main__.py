@@ -27,6 +27,12 @@ Subcommands:
                               `<stem>.json`. ASR + diarization live in Swift
                               (FluidAudio) and are NOT invoked here.
                               [--backend ...] as for summarize.
+  merge-meetings <primary.wav> <fragment.wav> [<fragment.wav>...]
+                              Concatenate a dropped-and-rejoined call's stems
+                              into one meeting under the primary: merge audio +
+                              transcripts (with a gap marker), re-summarize, and
+                              republish (upsert). The daemon soft-deletes the
+                              fragments after a clean run (FEAT9).
   cleanup-diarization <transcript.json>
                               LLM pass that merges same-speaker labels and
                               reattributes obvious mistakes, then rewrites
@@ -109,6 +115,9 @@ def main() -> int:
         return run(rest)
     if cmd in {"run-all", "run_all"}:
         from .orchestrate import main as run
+        return run(rest)
+    if cmd in {"merge-meetings", "merge_meetings"}:
+        from .merge_meetings import main as run
         return run(rest)
     if cmd in {"cleanup-diarization", "cleanup_diarization"}:
         from .diarize_cleanup import main as run

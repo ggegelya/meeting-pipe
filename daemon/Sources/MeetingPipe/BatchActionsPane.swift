@@ -16,12 +16,15 @@ struct BatchActionsPane: View {
     @State private var state: BatchState = .idle
     @State private var confirmingDelete: Bool = false
     @State private var cancelRequested: Bool = false
+    /// Where the merged content landed, shown after a successful merge (FEAT9).
+    @State private var mergeNote: String?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 leadRow
                 selectionCard
+                mergeCard
                 republishCard
                 exportCard
                 dangerCard
@@ -106,6 +109,64 @@ struct BatchActionsPane: View {
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
+                }
+            }
+        }
+    }
+
+    // MARK: Merge card (FEAT9)
+
+    /// Merge a dropped-and-rejoined call's fragments into one meeting. Shown for
+    /// any multi-selection; the button is offered only when the pure eligibility
+    /// gate passes (same workflow, matching privacy posture, all finished, audio
+    /// present), otherwise the card explains why it can't.
+    private var mergeCard: some View {
+        cardSection(eyebrow: "Merge") {
+            VStack(spacing: 0) {
+                switch MeetingMergeEligibility.decide(meetings) {
+                case .success(let plan):
+                    actionRow(
+                        icon: "arrow.triangle.merge",
+                        title: "Merge into one meeting…",
+                        hint: "Joins \(meetings.count) recordings into “\(plan.primary.displayTitle)”, re-summarizes, and republishes. The other fragments move to Trash."
+                    )
+                    cardFooter {
+                        if case .running(let label, _, _) = state, label == "Merging" {
+                            Text("Merging \(meetings.count) recordings…")
+                                .font(.mpTextXS)
+                                .foregroundStyle(Color(MPColors.fgSubtle))
+                            Spacer()
+                            ProgressView().controlSize(.small)
+                        } else if case .finished(let label, let succeeded, let failed) = state,
+                                  label == "Merge" {
+                            finishedRow(succeeded: succeeded, failed: failed)
+                            if let note = mergeNote {
+                                Text(note)
+                                    .font(.mpTextXS)
+                                    .foregroundStyle(Color(MPColors.fgSubtle))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            Spacer()
+                        } else {
+                            Spacer()
+                            Button("Merge…") { Task { await runMerge() } }
+                                .buttonStyle(MPPrimaryButtonStyle())
+                                .disabled(isRunning)
+                        }
+                    }
+                case .failure(let reason):
+                    actionRow(
+                        icon: "arrow.triangle.merge",
+                        title: "Merge into one meeting…",
+                        hint: "Rejoin a dropped-and-rejoined call into a single meeting."
+                    )
+                    cardFooter {
+                        Text(reason.reason)
+                            .font(.mpTextXS)
+                            .foregroundStyle(Color(MPColors.fgSubtle))
+                        Spacer()
+                    }
                 }
             }
         }
@@ -327,6 +388,24 @@ struct BatchActionsPane: View {
             state = .running(label: "Republishing", done: i + 1, total: stems.count)
         }
         state = .finished(label: "Republish", succeeded: ok, failed: bad)
+    }
+
+    @MainActor
+    private func runMerge() async {
+        guard case .success(let plan) = MeetingMergeEligibility.decide(meetings) else { return }
+        mergeNote = nil
+        state = .running(label: "Merging", done: 0, total: 1)
+        let result = await libraryModel.mergeMeetings(
+            primary: plan.primary.stem,
+            fragments: plan.fragments.map(\.stem)
+        )
+        switch result {
+        case .success(let url):
+            mergeNote = url.map { "Published: \($0.absoluteString)" } ?? "Combined summary saved locally."
+            state = .finished(label: "Merge", succeeded: 1, failed: 0)
+        case .failure:
+            state = .finished(label: "Merge", succeeded: 0, failed: 1)
+        }
     }
 
     @MainActor

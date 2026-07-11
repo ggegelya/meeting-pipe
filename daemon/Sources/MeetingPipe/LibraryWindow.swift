@@ -209,6 +209,18 @@ final class LibraryWindowModel: ObservableObject {
         }
     }
 
+    /// FEAT9: merge fragmented recordings into the primary (concatenate + re-summarize
+    /// + republish, then soft-delete the fragments). Same async-wrap pattern as
+    /// `regenerateMeeting`; returns the primary's page URL.
+    func mergeMeetings(primary: String, fragments: [String]) async -> Result<URL?, Error> {
+        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Result<URL?, Error>, Never>) in
+            library.mergeMeetings(primaryStem: primary, fragmentStems: fragments) { result in
+                cont.resume(returning: result)
+            }
+        }
+    }
+
     /// Cancel the active pipeline job (TECH-UX5), e.g. from a stalled row.
     func cancelProcessing() {
         coordinator?.cancelActiveJob()

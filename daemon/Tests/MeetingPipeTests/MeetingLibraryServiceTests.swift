@@ -78,6 +78,19 @@ final class MeetingLibraryServiceTests: XCTestCase {
             publishFromPasteCompletions.removeFirst()(result)
         }
 
+        private(set) var mergeInputs: [(primary: URL, fragments: [URL])] = []
+        private var mergeCompletions: [(Result<URL?, Error>) -> Void] = []
+
+        func mergeMeetings(primary: URL, fragments: [URL], completion: @escaping (Result<URL?, Error>) -> Void) {
+            mergeInputs.append((primary, fragments))
+            mergeCompletions.append(completion)
+        }
+
+        func finishMerge(_ result: Result<URL?, Error>) {
+            guard !mergeCompletions.isEmpty else { return }
+            mergeCompletions.removeFirst()(result)
+        }
+
         private(set) var askInputs: [String] = []
         private var askCompletions: [(Result<AskAnswer, Error>) -> Void] = []
 
@@ -342,6 +355,52 @@ final class MeetingLibraryServiceTests: XCTestCase {
             return XCTFail("expected success even with no original to cascade into")
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("m.wav").path))
+    }
+
+    // MARK: - merge fragmented recordings (FEAT9)
+
+    func test_merge_success_trashes_fragments_and_returns_page_url() throws {
+        try touch("a.wav"); try touch("a.meta.json")
+        try touch("b.wav"); try touch("b.meta.json")
+        try touch("c.wav"); try touch("c.meta.json")
+
+        var captured: Result<URL?, Error>?
+        service.mergeMeetings(primaryStem: "a", fragmentStems: ["b", "c"]) { captured = $0 }
+
+        XCTAssertEqual(driver.mergeInputs.count, 1)
+        XCTAssertEqual(driver.mergeInputs.first?.primary.lastPathComponent, "a.wav")
+        XCTAssertEqual(driver.mergeInputs.first?.fragments.map(\.lastPathComponent), ["b.wav", "c.wav"])
+
+        driver.finishMerge(.success(URL(string: "https://notion.example/merged")))
+        drainMain()
+
+        guard case .success(let url)? = captured else { return XCTFail("expected success") }
+        XCTAssertEqual(url?.absoluteString, "https://notion.example/merged")
+        // Fragments are folded into the primary and retired; the primary survives.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("b.wav").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("c.wav").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("a.wav").path))
+    }
+
+    func test_merge_failure_keeps_fragments_and_notifies() throws {
+        try touch("a.wav"); try touch("b.wav")
+        var captured: Result<URL?, Error>?
+        service.mergeMeetings(primaryStem: "a", fragmentStems: ["b"]) { captured = $0 }
+        driver.finishMerge(.failure(PipelineLauncher.LaunchError.nonZeroExit(1, "boom")))
+        drainMain()
+        guard case .failure? = captured else { return XCTFail("expected failure") }
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: dir.appendingPathComponent("b.wav").path),
+            "a failed merge must not trash the fragment"
+        )
+        XCTAssertTrue(errors.contains { $0.contains("Merge failed") })
+    }
+
+    func test_merge_missing_primary_audio_fails_without_spawning() {
+        var captured: Result<URL?, Error>?
+        service.mergeMeetings(primaryStem: "ghost", fragmentStems: ["b"]) { captured = $0 }
+        guard case .failure? = captured else { return XCTFail("expected synchronous failure") }
+        XCTAssertTrue(driver.mergeInputs.isEmpty, "no audio should not spawn the merge subprocess")
     }
 
     // MARK: - republish / regenerate guards

@@ -324,6 +324,7 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 | Module | Subcommand | Output |
 |---|---|---|
 | `orchestrate.py` | `mp run-all <wav>` | reads the daemon transcript, then summarize, then publish; fail-fast |
+| `merge_meetings.py` | `mp merge-meetings <primary.wav> <fragment.wav>...` | FEAT9: concatenate a dropped-and-rejoined call's stems (audio + transcripts, with a gap marker), re-summarize, republish under the primary (upsert). Daemon soft-deletes the fragments after a clean run |
 | `summarize.py` | `mp summarize <transcript.md> [--backend <b>]` | `<stem>.summary.json`, `<stem>.summary.md`; `--backend` re-summarizes on a one-shot engine (PIPE6), regulated/NDA still force local |
 | `summarize_local.py` | `mp serve-local`, and called from `summarize` | on-device MLX path; also the warm `mlx_lm.server` the daemon can pre-launch |
 | `publish_cmd.py` | `mp publish <summary.json>` | fan an existing summary out to all sinks (the Apple Intelligence hand-off) |

@@ -73,6 +73,8 @@ protocol PipelineDriver: AnyObject {
     func rosterRename(old: String, new: String, completion: @escaping (Result<Void, Error>) -> Void)
     /// Run a full library backup now (STOR3): `mp backup <dir>` writes a dated `tar.gz` into `dir` and updates `.last-backup.json`. Local-only (`entry.prepare(secrets=False)`), so no meeting anchor. Defaulted no-op.
     func backup(dir: URL, completion: @escaping (Result<Void, Error>) -> Void)
+    /// Merge fragmented recordings into the primary (FEAT9): `mp merge-meetings <primary.wav> <fragment.wav>...` concatenates the audio + transcripts, re-summarizes, and republishes under the primary stem (upsert). Returns the primary's page URL. The primary anchors `cloudSecretPolicy`, matching the pipeline arming its egress guard on the primary's workflow. Defaulted no-op.
+    func mergeMeetings(primary: URL, fragments: [URL], completion: @escaping (Result<URL?, Error>) -> Void)
 }
 
 extension PipelineDriver {
@@ -187,6 +189,14 @@ extension PipelineDriver {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "backup unsupported by this driver"]
+        )))
+    }
+
+    /// Default no-op stub; `PipelineLauncher` overrides this.
+    func mergeMeetings(primary: URL, fragments: [URL], completion: @escaping (Result<URL?, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "mergeMeetings unsupported by this driver"]
         )))
     }
 }
@@ -344,6 +354,31 @@ final class PipelineLauncher: PipelineDriver {
                     of: ".summary.json", with: ""
                 )
                 let dir = summaryJSON.deletingLastPathComponent()
+                completion(.success(PublishResult.load(stem: stem, in: dir)?.pageURL))
+            }
+        }
+    }
+
+    /// Merge fragmented recordings (FEAT9): `mp merge-meetings <primary.wav> <fragment.wav>...`
+    /// concatenates the audio + transcripts (with a gap marker), re-summarizes, and
+    /// republishes under the primary stem via the upsert path. Anchored on the primary
+    /// so `cloudSecretPolicy` keeps exactly the tokens the primary's workflow allows,
+    /// matching the pipeline arming its egress guard on the primary. An all-sinks-failed
+    /// publish exits `publishFailedExitCode` and surfaces here as a failure, like `publish`.
+    /// Re-summarize + publish over a possibly-long merged transcript, so the same 20 min cap as summarize.
+    func mergeMeetings(
+        primary: URL,
+        fragments: [URL],
+        completion: @escaping (Result<URL?, Error>) -> Void
+    ) {
+        let args = ["merge-meetings", primary.path] + fragments.map(\.path)
+        runMP(args, timeout: 20 * 60, meeting: primary) { result in
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success:
+                let stem = primary.deletingPathExtension().lastPathComponent
+                let dir = primary.deletingLastPathComponent()
                 completion(.success(PublishResult.load(stem: stem, in: dir)?.pageURL))
             }
         }

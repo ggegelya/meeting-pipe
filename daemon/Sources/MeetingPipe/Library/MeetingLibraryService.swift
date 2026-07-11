@@ -685,6 +685,71 @@ final class MeetingLibraryService {
         }
     }
 
+    /// FEAT9: merge fragmented recordings into `primaryStem`. Resolves each stem's
+    /// audio, runs `mp merge-meetings` (concatenate + re-summarize + republish under
+    /// the primary), and on success soft-deletes each fragment, whose content now
+    /// lives under the primary's stem and page. The batch pane's eligibility gate
+    /// guarantees same-workflow + matching privacy posture before this is called, so
+    /// the pipeline's egress guard (armed on the primary) clamps the whole merge.
+    func mergeMeetings(
+        primaryStem: String,
+        fragmentStems: [String],
+        completion: @escaping (Result<URL?, Error>) -> Void
+    ) {
+        let dir = outputDir()
+        guard let primaryAudio = MeetingStore.finalRecordingURL(stem: primaryStem, in: dir) else {
+            completion(.failure(LibraryError.noAudio(stem: primaryStem)))
+            return
+        }
+        var fragmentAudios: [URL] = []
+        for stem in fragmentStems {
+            guard let url = MeetingStore.finalRecordingURL(stem: stem, in: dir) else {
+                completion(.failure(LibraryError.noAudio(stem: stem)))
+                return
+            }
+            fragmentAudios.append(url)
+        }
+        guard !fragmentAudios.isEmpty else {
+            completion(.failure(LibraryError.noFiles(stem: primaryStem)))
+            return
+        }
+        Log.writeLine("daemon", "merge requested → \(primaryStem) <- \(fragmentStems.joined(separator: ", "))")
+        Log.event(category: "coordinator", action: "merge_started", attributes: [
+            "primary": primaryStem,
+            "fragments": fragmentStems,
+        ])
+        launcher.mergeMeetings(primary: primaryAudio, fragments: fragmentAudios) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result {
+                case .success(let url):
+                    PipelineFailureSidecar.clear(stem: primaryStem, in: dir)
+                    // The fragments are folded into the primary now; retire them.
+                    // The note about where their content lives (the primary's page)
+                    // is surfaced by the batch pane on completion. A failed trash
+                    // does not undo a landed merge, so it is counted, not fatal.
+                    var trashed = 0
+                    for stem in fragmentStems {
+                        if case .success = self.softDeleteMeeting(stem: stem) { trashed += 1 }
+                    }
+                    Log.event(category: "coordinator", action: "merge_succeeded", attributes: [
+                        "primary": primaryStem,
+                        "fragments_trashed": trashed,
+                        "page_url": url?.absoluteString ?? NSNull(),
+                    ])
+                    completion(.success(url))
+                case .failure(let err):
+                    Log.event(category: "coordinator", action: "merge_failed", attributes: [
+                        "primary": primaryStem,
+                        "error": err.localizedDescription,
+                    ])
+                    self.notifyError("Merge failed: \(err.localizedDescription)")
+                    completion(.failure(err))
+                }
+            }
+        }
+    }
+
     /// Last `limit` meetings with a run sidecar (summarize completed), sorted newest-first by mtime.
     func recentCorrectableMeetings(limit: Int = 10) -> [(stem: String, displayName: String)] {
         let dir = outputDir()

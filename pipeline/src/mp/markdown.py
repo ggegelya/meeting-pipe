@@ -56,6 +56,19 @@ def render_markdown(structured: dict[str, Any]) -> str:
             buffer.clear()
 
     for seg in structured.get("segments", []):
+        if seg.get("kind") == "gap":
+            # An explicit recording-gap marker (FEAT9 merge). Render it as a
+            # divider note rather than a speaker turn so it reads as a break and
+            # never counts as a speaker / attendee.
+            flush()
+            current_speaker = _UNSET
+            note = (seg.get("text") or "").strip()
+            lines.append("---")
+            lines.append("")
+            if note:
+                lines.append(f"_{note}_")
+                lines.append("")
+            continue
         speaker = seg.get("speaker") or _UNKNOWN_SPEAKER
         text = (seg.get("text") or "").strip()
         if not text:
@@ -68,6 +81,8 @@ def render_markdown(structured: dict[str, Any]) -> str:
 
     counts: dict[str, int] = defaultdict(int)
     for seg in structured.get("segments", []):
+        if seg.get("kind") == "gap":
+            continue
         counts[seg.get("speaker") or _UNKNOWN_SPEAKER] += 1
     if counts:
         lines.append("---")

@@ -39,6 +39,12 @@ struct Meeting: Identifiable, Hashable {
     let workflowName: String?
     let workflowColor: String?
 
+    /// Stable workflow UUID from `<stem>.meta.json["workflow_id"]`. Lifted so a
+    /// same-workflow gate (FEAT9 merge) can compare identity rather than the
+    /// mutable, non-unique display name. Nil for manual (workflow-less)
+    /// recordings. Defaulted so test constructors need not supply it.
+    var workflowID: String? = nil
+
     let durationSec: TimeInterval?
     let backend: String?
     let modelId: String?
@@ -593,6 +599,7 @@ final class MeetingStore: ObservableObject {
             sourceKind: kind,
             workflowName: (meta?["workflow_name"] as? String),
             workflowColor: (meta?["workflow_color"] as? String),
+            workflowID: (meta?["workflow_id"] as? String),
             durationSec: duration,
             backend: (run?["backend"] as? String),
             modelId: (run?["model"] as? String),
