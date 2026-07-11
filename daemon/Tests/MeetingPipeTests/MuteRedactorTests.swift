@@ -250,6 +250,38 @@ final class MuteRedactorTests: XCTestCase {
         XCTAssertNil(MuteTimelineFile.read(forFinal: wav), "the bogus timeline is reaped so a reprocess won't retry it")
     }
 
+    func test_redactIfNeeded_always_redacts_a_manual_span_over_a_live_mic() async throws {
+        try requireFFmpeg()
+        // MIC14 invariant 1: a manual off-record span is explicit user intent, so it is redacted
+        // even over a mic carrying speech - the exact case the auto withhold above protects. This
+        // is the mirror assertion: same live mic, same whole-file span, but tagged `.manual`, so
+        // the outcome flips from withheld to redacted.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("redact-\(UUID().uuidString)")
+        let originals = dir.appendingPathComponent("originals")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let wav = dir.appendingPathComponent("rec.wav")
+        try writeStereoWav(at: wav, seconds: 1.0, left: 0.5, right: 0.5)  // a live mic
+        MuteTimelineFile.write(
+            spans: [MuteTimeline.Span(startSec: 0.0, endSec: 1.0, source: .manual)], forFinal: wav
+        )
+
+        let redacted = await MuteRedactor.redactIfNeeded(wav: wav, originalsDir: originals)
+        XCTAssertTrue(redacted, "a manual span is always redacted, exempt from the speech-bearing withhold")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: originals.appendingPathComponent("rec.wav").path),
+            "the full original is moved aside for recovery"
+        )
+        // The mic (left) channel is zeroed over the manual span in the redacted artifact.
+        let f = try AVAudioFile(forReading: wav)
+        let buf = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: AVAudioFrameCount(f.length))!
+        try f.read(into: buf)
+        let leftPeak = peak(buf.floatChannelData![0], from: 0, to: Int(buf.frameLength))
+        XCTAssertLessThan(leftPeak, 0.02, "the manual span's mic audio is zeroed in the consumed artifact")
+    }
+
     func test_redactIfNeeded_redacts_a_runaway_span_when_the_mic_is_silent() async throws {
         try requireFFmpeg()
         // A whole-recording mute over a silent mic loses nothing, so the guard

@@ -52,6 +52,12 @@ force_stop_hotkey = "ctrl+option+shift+m"
 # for an important moment (a quiet HUD blink); a no-op when idle. Markers
 # surface in the summary and as clickable chips in the transcript.
 flag_moment_hotkey = "ctrl+option+f"
+# Off-the-record hotkey (MIC14). While recording, toggles a span kept out of
+# the transcript, summary, and every published artifact (redacted before any
+# consumer; the full recording stays local for recovery); under a regulated /
+# NDA workflow the mic is zero-filled live instead. The HUD shows a persistent
+# "Off the record" state while on; an open span auto-closes at stop. No-op when idle.
+off_the_record_hotkey = "ctrl+option+o"
 prompt_timeout_sec = 30
 # After a recording for a bundle ends (or its prompt is skipped /
 # timed out), suppress detector-driven prompts for the same bundle for

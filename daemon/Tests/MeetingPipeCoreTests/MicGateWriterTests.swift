@@ -36,6 +36,18 @@ final class MicGateWriterTests: XCTestCase {
         XCTAssertEqual(result.action, .zeroed)
     }
 
+    func test_forceMuted_zeroes_even_a_hot_verdict() {
+        // MIC14: the off-the-record toggle forces the muted path under the regulated gate, so a
+        // hot verdict (the user speaking) is still zeroed - no off-record audio reaches disk.
+        let writer = MicGateWriter(sampleRate: 48_000, fadeDurationMillis: 0)
+        var samples: [Float] = [0.5, 0.5, 0.5]
+        let result = samples.withUnsafeMutableBufferPointer { buffer in
+            writer.apply(verdict: .hot(reason: .voiceActivityDetected), forceMuted: true, to: buffer)
+        }
+        XCTAssertEqual(samples, [0.0, 0.0, 0.0])
+        XCTAssertEqual(result.action, .zeroed)
+    }
+
     func test_hot_to_muted_applies_fade_out() {
         // 48kHz, 20ms = 960 samples.
         let writer = MicGateWriter(sampleRate: 48_000, fadeDurationMillis: 1)

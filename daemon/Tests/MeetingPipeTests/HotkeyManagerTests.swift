@@ -82,4 +82,15 @@ final class HotkeyManagerTests: XCTestCase {
         XCTAssertEqual(r?.modifiers, UInt32(controlKey | optionKey | shiftKey))
     }
 
+    func testOffTheRecordDefaultParses() {
+        // MIC14: the default "ctrl+option+o" must parse (a fourth Carbon binding), and it must not
+        // collide with the manual / force-stop / flag-moment defaults, or the registration guard
+        // silently drops it.
+        let r = HotkeyManager.parse("ctrl+option+o")
+        XCTAssertNotNil(r)
+        XCTAssertEqual(r?.keyCode, UInt32(kVK_ANSI_O))
+        XCTAssertEqual(r?.modifiers, UInt32(controlKey | optionKey))
+        XCTAssertNotEqual(HotkeyManager.parse("ctrl+option+o")?.keyCode, HotkeyManager.parse("ctrl+option+m")?.keyCode)
+    }
+
 }

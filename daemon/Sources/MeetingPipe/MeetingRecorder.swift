@@ -156,6 +156,10 @@ final class MeetingRecorder {
     private struct GateAccess {
         var verdict: MicGateVerdict = .uncertain(reasons: ["not_started"])
         var levelDb: Float = -120
+        /// MIC14: the off-the-record toggle. Set on the main thread via `setManualOffTheRecord`,
+        /// read on the render thread under the same lock as the verdict. While on, the buffer is a
+        /// manual span (capture-first) or force-zeroed (regulated gate).
+        var manualOffRecord: Bool = false
     }
     private let gateAccess = OSAllocatedUnfairLock(initialState: GateAccess())
 
@@ -273,9 +277,12 @@ final class MeetingRecorder {
         systemAccumFrames = 0
         micWriteFailures = WriteFailureTracker()
         systemWriteFailures = WriteFailureTracker()
-        // Reset so a prior session's fade/verdict can't bleed in; the
+        // Reset so a prior session's fade/verdict/off-record can't bleed in; the
         // writer itself is rebuilt below once the sample rate is bound.
-        gateAccess.withLock { $0.verdict = .uncertain(reasons: ["not_started"]) }
+        gateAccess.withLock {
+            $0.verdict = .uncertain(reasons: ["not_started"])
+            $0.manualOffRecord = false
+        }
         // No converter until a device change introduces a format mismatch.
         micConverter = nil
         captureRecoveryFailed = false
@@ -651,29 +658,35 @@ final class MeetingRecorder {
             // the mic is recorded live regardless of mute, so the meter shows the
             // live level; under the regulated gate it shows silence when gated,
             // matching what is actually written. The HUD polls it at 10 Hz.
-            let verdict = gateAccess.withLock { access -> MicGateVerdict in
+            let (verdict, offRecord) = gateAccess.withLock { access -> (MicGateVerdict, Bool) in
                 let current = access.verdict
-                access.levelDb = (mode.capturesLosslessly || current.passesLiveAudio) ? db : -120
-                return current
+                let off = access.manualOffRecord
+                // Under the regulated gate an off-record buffer is zeroed, so the meter shows
+                // silence; under capture-first the mic is still recorded (offline redaction), so
+                // the meter shows the live level even while off-record.
+                access.levelDb = (mode.capturesLosslessly || (current.passesLiveAudio && !off)) ? db : -120
+                return (current, off)
             }
             switch mode {
             case .regulatedGate:
-                // No audio at rest: apply the verdict in place; frame parity is
-                // preserved (ADR 0009), muted buffers fade to zero over 20 ms.
+                // No audio at rest: apply the verdict in place; an off-record toggle force-zeroes
+                // regardless of the verdict (MIC14). Frame parity preserved (ADR 0009); 20 ms fade.
                 if let writer = micGateWriter {
                     let bufPtr = UnsafeMutableBufferPointer(start: data[0], count: frameLen)
-                    writer.apply(verdict: verdict, to: bufPtr)
+                    writer.apply(verdict: verdict, forceMuted: offRecord, to: bufPtr)
                 }
             case .captureFirst, .captureFirstRedact:
-                // Lossless: never zero the mic. Record the muted span too, so an
-                // opt-in `.captureFirstRedact` recording can redact it offline
-                // from the consumed artifact while the full recording stays
-                // intact for recovery (TECH-MIC4). Under the default
-                // `.captureFirst` the timeline is recorded but never written
-                // (stop() skips it), so nothing is redacted.
+                // Lossless: never zero the mic. Record the span so an opt-in `.captureFirstRedact`
+                // recording can redact it offline while the full recording stays intact for
+                // recovery (TECH-MIC4). A manual off-record span (MIC14) is tagged `.manual` so it
+                // is redacted even under default `.captureFirst`, where auto mute spans stay in.
                 let startSec = Double(micFramePosition) / fileFormat.sampleRate
                 let endSec = Double(micFramePosition + Int64(frameLen)) / fileFormat.sampleRate
-                muteTimeline.add(startSec: startSec, endSec: endSec, muted: verdict.indicatesMute)
+                if offRecord {
+                    muteTimeline.add(startSec: startSec, endSec: endSec, muted: true, source: .manual)
+                } else {
+                    muteTimeline.add(startSec: startSec, endSec: endSec, muted: verdict.indicatesMute, source: .mute)
+                }
             }
             // MIC15(b): whole-recording mic coverage, computed for every mode (the regulated
             // gate zeroes the written buffer, but `db` above is the live pre-gate level). Only
@@ -1217,18 +1230,27 @@ final class MeetingRecorder {
             Log.writeLine("recorder", "WARN: neither mic nor system has audio data - leaving \(final.lastPathComponent) absent")
         }
 
-        // Persist the muted-span timeline for the offline redactor (TECH-MIC4).
-        // Only when redaction was opted in (`.captureFirstRedact`): the default
-        // `.captureFirst` keeps the full mic with no redaction (TECH-MIC9), and
-        // the regulated gate already removed muted audio in real time, so neither
-        // writes a timeline. Written next to the final WAV; skipped when no final
-        // was produced.
-        if captureMode == .captureFirstRedact, FileManager.default.fileExists(atPath: final.path) {
-            muteTimeline.finalize()
+        // Persist the muted-span timeline for the offline redactor (TECH-MIC4). Close any open
+        // span first (an off-record span still active at stop auto-closes here). `.captureFirstRedact`
+        // writes the whole timeline; default `.captureFirst` keeps the full mic with no redaction
+        // (TECH-MIC9) EXCEPT that a manual off-record span is explicit intent, so a manual-only
+        // timeline is written for it (MIC14); the regulated gate removed muted audio in real time,
+        // so it writes nothing. Skipped when no final was produced.
+        muteTimeline.finalize()
+        let hasFinal = FileManager.default.fileExists(atPath: final.path)
+        if captureMode == .captureFirstRedact, hasFinal {
             MuteTimelineFile.write(spans: muteTimeline.spans, forFinal: final)
             Log.event(category: "recorder", action: "mute_timeline_written", attributes: [
                 "file": final.lastPathComponent,
                 "muted_spans": muteTimeline.spans.count,
+            ])
+        } else if captureMode == .captureFirst, hasFinal, muteTimeline.hasManualSpan {
+            let manualSpans = muteTimeline.spans.filter { $0.source == .manual }
+            MuteTimelineFile.write(spans: manualSpans, forFinal: final)
+            Log.event(category: "recorder", action: "mute_timeline_written", attributes: [
+                "file": final.lastPathComponent,
+                "manual_spans": manualSpans.count,
+                "source": "manual",
             ])
         }
         // Clean finish only: drop the start-time capture-mode marker (orphan
@@ -1321,6 +1343,14 @@ final class MeetingRecorder {
     /// Snapshot of the most recent verdict. Visible to integration
     /// tests that drive `setMicGateVerdict` directly.
     var debugCurrentMicGateVerdict: MicGateVerdict { gateAccess.withLock { $0.verdict } }
+
+    /// MIC14: toggle the off-the-record state. Set on the main thread from the session
+    /// controller's hotkey handler; the render thread reads it under the same `gateAccess` lock as
+    /// the verdict. While on, the mic buffer is force-zeroed under the regulated gate or recorded
+    /// as a `.manual` timeline span under capture-first.
+    func setManualOffTheRecord(_ on: Bool) {
+        gateAccess.withLock { $0.manualOffRecord = on }
+    }
 
     // MARK: - RMS level emission (TECH-C2)
 

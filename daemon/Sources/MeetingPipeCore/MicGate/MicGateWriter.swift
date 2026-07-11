@@ -30,12 +30,16 @@ public final class MicGateWriter {
     }
 
     /// Apply the verdict to `buffer` in place. Returns the transformation kind for the audit log.
+    /// `forceMuted` overrides the verdict to the muted path regardless of what it says: the MIC14
+    /// off-the-record toggle uses it under the regulated gate to zero-fill live, so no off-record
+    /// audio is ever written at rest, with the same 20 ms fade as a normal mute.
     @discardableResult
     public func apply(
         verdict: MicGateVerdict,
+        forceMuted: Bool = false,
         to buffer: UnsafeMutableBufferPointer<Float>
     ) -> ApplyResult {
-        let isHot = verdict.passesLiveAudio
+        let isHot = !forceMuted && verdict.passesLiveAudio
         if inFade {
             return continueFade(buffer)
         }

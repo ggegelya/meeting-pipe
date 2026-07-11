@@ -282,6 +282,30 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         XCTAssertEqual(host.recorderSpy.startCallCount, 1)
         XCTAssertTrue(host.stateMachine.current.isRecording)
     }
+
+    // MARK: - MIC14: off-the-record toggle
+
+    func test_toggleOffTheRecord_whenIdle_isANoOp() async {
+        let (controller, host) = makeController()
+        controller.toggleOffTheRecord()
+        await settle()
+        XCTAssertTrue(host.recorderSpy.offTheRecordStates.isEmpty, "no recorder toggle when idle")
+        XCTAssertTrue(host.hudSpy.offTheRecordStates.isEmpty, "no HUD change when idle")
+    }
+
+    func test_toggleOffTheRecord_whileRecording_drivesRecorderAndHUD() async {
+        let (controller, host) = makeController()
+        let file = tempDir.appendingPathComponent("rec.wav")
+        host.stateMachine.setRecording(file: file, source: source(), summaryMode: .auto)
+
+        controller.toggleOffTheRecord()   // on
+        controller.toggleOffTheRecord()   // off
+        await settle()
+
+        // The toggle is idempotent per press and flips both the recorder and the HUD.
+        XCTAssertEqual(host.recorderSpy.offTheRecordStates, [true, false])
+        XCTAssertEqual(host.hudSpy.offTheRecordStates, [true, false])
+    }
 }
 
 /// `AppState`'s cases carry associated values, so a test that only cares "which

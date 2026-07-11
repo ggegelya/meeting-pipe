@@ -108,7 +108,14 @@ enum MuteRedactor {
         // guard withheld the ENTIRE redaction the moment any speech appeared (so a
         // mostly-muted all-hands kept its muted listening un-redacted) and redacted
         // timelines under 85% coverage unchecked; per-span analysis fixes both.
-        let (redactSpans, withheldSpans) = partitionSpans(wav: wav, spans: timeline.spans)
+        // MIC14: a manual off-record span is explicit user intent, so it is always redacted and
+        // exempt from the MIC12 speech-bearing withhold (which exists only to guard against a wrong
+        // AUTO mute oracle). Split by source: manual spans redact unconditionally; auto (`.mute`)
+        // spans keep the per-span speech guard below.
+        let manualSpans = timeline.spans.filter { $0.source == .manual }
+        let autoSpans = timeline.spans.filter { $0.source == .mute }
+        let (autoRedact, withheldSpans) = partitionSpans(wav: wav, spans: autoSpans)
+        let redactSpans = manualSpans + autoRedact
         if !withheldSpans.isEmpty {
             Log.event(category: "recorder", action: "mute_redaction_withheld", attributes: [
                 "file": wav.lastPathComponent,

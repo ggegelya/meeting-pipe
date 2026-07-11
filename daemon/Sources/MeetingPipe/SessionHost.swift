@@ -114,6 +114,9 @@ protocol SessionRecording: AnyObject {
     /// Returns whether a usable final artifact reached disk.
     func stop() async -> Bool
     func setMicGateVerdict(_ verdict: MicGateVerdict)
+    /// MIC14: toggle the off-the-record state (zero-fill live under the regulated gate, or record a
+    /// manual redaction span under capture-first).
+    func setManualOffTheRecord(_ on: Bool)
 }
 
 /// The recording HUD (`RecordingHUDWindow`).
@@ -121,6 +124,8 @@ protocol SessionHUDPresenting: AnyObject {
     func present(source: AppSource?, workflow: Workflow?, startedAt: Date, levelProvider: (() -> Float)?)
     func dismiss(animated: Bool)
     func blink()
+    /// MIC14: show or clear the persistent "Off the record" state on the HUD.
+    func setOffTheRecord(_ on: Bool)
 }
 
 /// The "record this meeting?" prompt (`MeetingPromptWindow`).

@@ -411,6 +411,20 @@ final class Coordinator: NSObject {
             Log.main.warning("Could not parse flag-moment hotkey: \(flagHotkey)")
         }
 
+        // Off-the-record hotkey (MIC14): toggles a manual redaction span on the active
+        // recording; a no-op when idle, like the others.
+        let offRecordHotkey = liveOffTheRecordHotkey
+        if offRecordHotkey == liveManualHotkey || offRecordHotkey == liveForceStopHotkey || offRecordHotkey == flagHotkey {
+            Log.main.warning("Off-the-record hotkey matches another hotkey - skipping registration")
+        } else if let parsed = HotkeyManager.parse(offRecordHotkey) {
+            hotkey.register(keyCode: parsed.keyCode, modifiers: parsed.modifiers) { [weak self] in
+                DispatchQueue.main.async { self?.session.toggleOffTheRecord() }
+            }
+            Log.main.info("Off-the-record hotkey registered: \(offRecordHotkey)")
+        } else {
+            Log.main.warning("Could not parse off-the-record hotkey: \(offRecordHotkey)")
+        }
+
         // Seed the regulated-mode glyph, wire the model-download status,
         // run the eager local-model prefetch, and subscribe to config
         // persistence. Owned by ConfigRefreshCoordinator (TECH-H1-FINISH).

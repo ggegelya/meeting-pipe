@@ -155,6 +155,7 @@ enum OrphanRecordingRecovery {
     /// decision and routing) before this runs.
     private static func cleanupStartMarkers(stem: String, in directory: URL) {
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(stem).capturemode"))
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(stem).offrecord"))
         RecordingManifest.remove(forStem: stem, in: directory)
     }
 
@@ -168,9 +169,15 @@ enum OrphanRecordingRecovery {
     /// were gated at capture; pre-MIC4 / legacy orphans carry no marker; none of
     /// those is quarantined.
     static func shouldQuarantine(stem: String, final: URL, in directory: URL) -> Bool {
+        // A written timeline means stop() ran and the redactor can do its job: never quarantine.
+        guard MuteTimelineFile.read(forFinal: final) == nil else { return false }
         let markerURL = directory.appendingPathComponent("\(stem).capturemode")
         let mode = (try? String(contentsOf: markerURL, encoding: .utf8)).flatMap(CaptureMode.init(marker:))
-        return mode == .captureFirstRedact && MuteTimelineFile.read(forFinal: final) == nil
+        // Quarantine a redaction-opt-in recording (as before), OR any recording that had a manual
+        // off-record span (MIC14): both were meant to have audio redacted, and the lost timeline
+        // means auto-publishing would leak it. A plain capture-first recording with no manual span
+        // keeps the full mic by design, so it still auto-processes.
+        return mode == .captureFirstRedact || OffRecordMarker.exists(forFinal: final)
     }
 
     /// Move a quarantined orphan to the app-private originals directory (kept for

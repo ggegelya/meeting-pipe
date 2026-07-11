@@ -53,4 +53,8 @@ extension Coordinator {
     var liveFlagMomentHotkey: String {
         configStore?.flagMomentHotkey ?? config.detection.flagMomentHotkey
     }
+
+    var liveOffTheRecordHotkey: String {
+        configStore?.offTheRecordHotkey ?? config.detection.offTheRecordHotkey
+    }
 }

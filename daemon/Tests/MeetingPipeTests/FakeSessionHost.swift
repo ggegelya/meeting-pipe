@@ -178,6 +178,9 @@ final class SpyRecorder: SessionRecording {
     }
 
     func setMicGateVerdict(_ verdict: MicGateVerdict) { verdicts.append(verdict) }
+
+    private(set) var offTheRecordStates: [Bool] = []
+    func setManualOffTheRecord(_ on: Bool) { offTheRecordStates.append(on) }
 }
 
 final class SpyHUD: SessionHUDPresenting {
@@ -185,6 +188,7 @@ final class SpyHUD: SessionHUDPresenting {
     private(set) var dismissCount = 0
     private(set) var blinkCount = 0
     private(set) var presentedWorkflows: [Workflow?] = []
+    private(set) var offTheRecordStates: [Bool] = []
 
     func present(source: AppSource?, workflow: Workflow?, startedAt: Date, levelProvider: (() -> Float)?) {
         presentCount += 1
@@ -192,6 +196,7 @@ final class SpyHUD: SessionHUDPresenting {
     }
     func dismiss(animated: Bool) { dismissCount += 1 }
     func blink() { blinkCount += 1 }
+    func setOffTheRecord(_ on: Bool) { offTheRecordStates.append(on) }
 }
 
 final class SpyPrompt: SessionPromptPresenting {

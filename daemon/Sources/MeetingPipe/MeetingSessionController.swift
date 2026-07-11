@@ -50,6 +50,11 @@ final class MeetingSessionController {
     /// at stop. Main-queue only, like every field here.
     private var markerSeconds: [Double] = []
 
+    /// Whether an off-the-record span is currently open (MIC14). Toggled by the hotkey; reset at
+    /// stop. Main-queue only. The recorder holds the render-thread copy; this drives the HUD +
+    /// the marker so the toggle is idempotent per press.
+    private var offTheRecordOn = false
+
     /// Latest system-audio dBFS (from `recorder.onSystemLevel`), read by
     /// the silence backstop. `-120` is the "no audio observed yet" sentinel.
     var latestSystemLevelDb: Float = -120
@@ -187,6 +192,32 @@ final class MeetingSessionController {
             "index": markerSeconds.count,
         ])
         Log.writeLine("recorder", "flagged moment #\(markerSeconds.count) at \(String(format: "%.1f", elapsed))s")
+    }
+
+    /// Toggle an off-the-record span on the active recording (MIC14). A no-op when idle, like the
+    /// flag-moment hotkey. Under the regulated/NDA gate the recorder zero-fills the span live; under
+    /// capture-first it records a `.manual` timeline span for the offline redactor, and we persist a
+    /// start-time marker so orphan recovery quarantines the recording if a crash loses the timeline.
+    func toggleOffTheRecord() {
+        guard case .recording(let file, _, _) = coordinator.stateMachine.current else {
+            Log.event(category: "recorder", action: "off_the_record_ignored", attributes: [
+                "state": DetectionStateMachine.label(coordinator.stateMachine.current),
+            ])
+            return
+        }
+        offTheRecordOn.toggle()
+        let on = offTheRecordOn
+        if on, activeCaptureMode?.capturesLosslessly ?? false {
+            // Write the marker BEFORE the recorder starts the span, so no off-record audio can
+            // exist on disk without the marker that flags it for quarantine.
+            OffRecordMarker.write(forFinal: file)
+        }
+        coordinator.audioRecorder.setManualOffTheRecord(on)
+        coordinator.hud.setOffTheRecord(on)
+        Log.event(category: "recorder", action: on ? "off_the_record_started" : "off_the_record_stopped", attributes: [
+            "file": file.lastPathComponent,
+        ])
+        Log.writeLine("recorder", "off the record \(on ? "started" : "stopped") for \(file.lastPathComponent)")
     }
 
     /// Pin the next recording to a workflow (prompt chevron, TECH-B5).
@@ -488,6 +519,10 @@ final class MeetingSessionController {
                     forStem: file.deletingPathExtension().lastPathComponent,
                     in: file.deletingLastPathComponent()
                 )
+                // Clean finish: the recorder wrote any manual off-record timeline, so drop the
+                // MIC14 orphan-quarantine marker. Kept on the else branch (merge failed), so the
+                // orphan sweep still quarantines a recording whose manual span was never persisted.
+                OffRecordMarker.remove(forFinal: file)
             } else {
                 // The merge/convert could not produce a usable final. stop() kept
                 // any capture intermediates and wrote a failure breadcrumb, so the
@@ -503,6 +538,7 @@ final class MeetingSessionController {
             self.activeWorkflow = nil
             self.activeCaptureMode = nil
             self.markerSeconds = []
+            self.offTheRecordOn = false
             // Arm the re-prompt cooldown so a post-call mic grab (Teams chat,
             // Zoom teardown toast) can't re-prompt right after the flush.
             if let bid = source?.bundleID {

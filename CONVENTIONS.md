@@ -343,15 +343,17 @@ A marker whose server is already gone is stale, not an orphan, and is cleared in
 
 ## Daemon-internal recording artifacts
 
-Four artifacts the daemon both writes and reads. Unlike `<stem>.meta.json`, none is part of the Swift-to-Python contract: the redactor and orphan recovery consume them before any pipeline run, so the pipeline never reads them directly (recovery does *rebuild* `<stem>.meta.json` from the manifest below). The MIC4/MIC5 capture-first work introduced the first three; REC2 added the recovery manifest. Documented here per DOC6.
+Five artifacts the daemon both writes and reads. Unlike `<stem>.meta.json`, none is part of the Swift-to-Python contract: the redactor and orphan recovery consume them before any pipeline run, so the pipeline never reads them directly (recovery does *rebuild* `<stem>.meta.json` from the manifest below). The MIC4/MIC5 capture-first work introduced the first three; REC2 added the recovery manifest; MIC14 added the off-record marker. Documented here per DOC6.
 
-**`<stem>.mute-timeline.json`** (TECH-MIC4), next to `<stem>.wav`. The muted spans the offline redactor (TECH-MIC5) zero-fills, written at stop only under capture-first-redact (an opt-in workflow). Shape:
+**`<stem>.mute-timeline.json`** (TECH-MIC4), next to `<stem>.wav`. The muted spans the offline redactor (TECH-MIC5) zero-fills. Shape:
 
 ```json
-{ "version": 1, "spans": [ { "start_sec": 1.5, "end_sec": 3.2 } ] }
+{ "version": 2, "spans": [ { "start_sec": 1.5, "end_sec": 3.2, "source": "mute" } ] }
 ```
 
-Seconds from recording start, half-open `[start_sec, end_sec)`. Only genuine app/hardware-mute spans are recorded, never `silentByRMS` (quiet) or `uncertain`, so redaction can never drop quiet-but-real speech. Written by `MuteTimelineFile.write`, read by `MuteRedactor`, and reaped after a successful redaction. Absent for default capture-first, regulated, and pre-MIC4 recordings.
+Seconds from recording start, half-open `[start_sec, end_sec)`. `source` (MIC14) is `mute` (the app/hardware-mute oracle, the auto path) or `manual` (an explicit off-the-record toggle); an absent `source` in a version-1 file decodes as `mute`. Only genuine app/hardware-mute spans are recorded on the auto path, never `silentByRMS` (quiet) or `uncertain`, so redaction can never drop quiet-but-real speech; the redactor withholds an auto span carrying speech (MIC12) but always redacts a `manual` span (explicit intent). Written by `MuteTimelineFile.write` (atomically), read by `MuteRedactor`, and reaped after a successful redaction. Written at stop under capture-first-redact (all spans) OR under default capture-first when a manual span exists (manual-only, MIC14); absent otherwise (default capture-first with no manual span, regulated, pre-MIC4).
+
+**`<stem>.offrecord`** (MIC14), next to `<stem>.wav`. An empty marker written the moment the off-the-record toggle is first turned on during a capture-first recording, removed at a clean stop. It closes an orphan-leak edge: the manual-only timeline is written only at stop, so a crash before stop would leave off-record audio in a recording that `OrphanRecordingRecovery` auto-publishes. The marker makes `shouldQuarantine` treat such an interrupted recording exactly like a redaction-opt-in orphan whose timeline was lost. Absent for recordings that never went off-record.
 
 **`<stem>.capturemode`** (TECH-MIC5 review), next to `<stem>.wav`. A one-line plain-text marker written at recording **start** so orphan recovery, after a crash where `stop()` never ran, can still apply the right privacy posture. One token (`CaptureMode.marker`): `capture_first`, `capture_first_redact`, or `regulated_gate`. Read by `OrphanRecordingRecovery.shouldQuarantine` (a capture-first-redact orphan with no timeline is quarantined, not auto-published). Removed at a clean stop that produced a final.
 
@@ -365,7 +367,7 @@ Seconds from recording start, half-open `[start_sec, end_sec)`. Only genuine app
 
 **`originals/<stem>.wav`** (ADR 0016), in `~/Library/Application Support/MeetingPipe/originals/`, NOT in the recordings dir. The kept full (un-redacted) recording, moved aside when `MuteRedactor` redacts the canonical `<stem>.wav`, and the quarantine destination for capture-first-redact orphans whose timeline was lost. Deliberately outside the Library-scanned `raw/` tree and the Raw Files tab's reach: mode `0600`, excluded from Time Machine and iCloud. The redacted artifact is what every consumer reads; this is the recovery source only. ADR 0016's mandated retention policy + reaper ships as `OriginalsReaper` (age + size bounded: 30 days / ~10 GB, reaped at launch and after each pipeline job), and meeting deletion cascades into it via `MeetingLibraryService.softDeleteMeeting` (MIC13).
 
-`schema_version` (CI2): `<stem>.meta.json` and every JSON sidecar writer that lacked one now stamp `schema_version: 1` (the `<stem>.error.json` failure sidecar and the pipeline publish receipts `<stem>.notion.json` / `.obsidian.json` / `.filesystem.json` / `.lan.json` / `.run.json` / `.empty.json` / `.apple_pending.json`). Two deliberate exceptions: `<stem>.mute-timeline.json` already carries its own `version: 1` (above), and `<stem>.summary.json` is the pydantic `MeetingSummary` data schema rather than a marker sidecar, so it is versioned through the model, not a stamp.
+`schema_version` (CI2): `<stem>.meta.json` and every JSON sidecar writer that lacked one now stamp `schema_version: 1` (the `<stem>.error.json` failure sidecar and the pipeline publish receipts `<stem>.notion.json` / `.obsidian.json` / `.filesystem.json` / `.lan.json` / `.run.json` / `.empty.json` / `.apple_pending.json`). Two deliberate exceptions: `<stem>.mute-timeline.json` already carries its own `version` (now `2` after MIC14 added the span `source`, above), and `<stem>.summary.json` is the pydantic `MeetingSummary` data schema rather than a marker sidecar, so it is versioned through the model, not a stamp.
 
 ---
 

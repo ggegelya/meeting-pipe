@@ -35,6 +35,8 @@ final class ConfigStore: ObservableObject {
     /// Flag-moment hotkey (FEAT8); third Carbon binding. Default
     /// `ctrl+option+f`.
     @Published var flagMomentHotkey: String { didSet { scheduleSave() } }
+    /// Off-the-record hotkey (MIC14); fourth Carbon binding. Default `ctrl+option+o`.
+    @Published var offTheRecordHotkey: String { didSet { scheduleSave() } }
     @Published var promptTimeoutSec: Double { didSet { scheduleSave() } }
     /// Action when the prompt times out: `"skip"` (default, suppress),
     /// `"record"`, or `"byo"`. Mirrors `[detection.default_prompt_action]`.
@@ -106,6 +108,7 @@ final class ConfigStore: ObservableObject {
         self.manualHotkey = det?["manual_hotkey"]?.string ?? "ctrl+option+m"
         self.forceStopHotkey = det?["force_stop_hotkey"]?.string ?? "ctrl+option+shift+m"
         self.flagMomentHotkey = det?["flag_moment_hotkey"]?.string ?? "ctrl+option+f"
+        self.offTheRecordHotkey = det?["off_the_record_hotkey"]?.string ?? "ctrl+option+o"
         self.promptTimeoutSec = det?["prompt_timeout_sec"]?.double ?? 30
         self.defaultPromptAction = det?["default_prompt_action"]?.string ?? "skip"
         self.repromptCooldownSec = det?["reprompt_cooldown_sec"]?.double ?? 60
@@ -176,6 +179,7 @@ final class ConfigStore: ObservableObject {
         ensureTable("detection")["manual_hotkey"] = manualHotkey
         ensureTable("detection")["force_stop_hotkey"] = forceStopHotkey
         ensureTable("detection")["flag_moment_hotkey"] = flagMomentHotkey
+        ensureTable("detection")["off_the_record_hotkey"] = offTheRecordHotkey
         ensureTable("detection")["prompt_timeout_sec"] = promptTimeoutSec
         ensureTable("detection")["default_prompt_action"] = defaultPromptAction
         ensureTable("detection")["reprompt_cooldown_sec"] = repromptCooldownSec

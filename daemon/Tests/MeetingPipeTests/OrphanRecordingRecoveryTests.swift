@@ -152,6 +152,22 @@ final class OrphanRecordingRecoveryTests: XCTestCase {
         )
     }
 
+    func test_shouldQuarantine_true_for_capture_first_orphan_with_a_manual_span() throws {
+        // MIC14: a default capture-first recording that had an off-record span, but crashed before
+        // stop() wrote the manual-only timeline, must be quarantined - auto-publishing it would
+        // leak the off-record audio. The `.offrecord` marker (written at the first toggle) is the
+        // signal that survives the crash.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let final = dir.appendingPathComponent("rec.wav")
+        try writeMarker(.captureFirst, stem: "rec", in: dir)
+        OffRecordMarker.write(forFinal: final)
+        XCTAssertTrue(
+            OrphanRecordingRecovery.shouldQuarantine(stem: "rec", final: final, in: dir),
+            "a lost manual off-record span must not auto-publish"
+        )
+    }
+
     func test_shouldQuarantine_false_when_a_timeline_exists() throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

@@ -34,6 +34,10 @@ final class RecordingHUDWindow {
     private var levelProvider: (() -> Float)?
     private var occlusionObserver: NSObjectProtocol?
 
+    /// The "Recording" state label, swapped to "Off the record" while a manual off-record span is
+    /// open (MIC14). Held so `setOffTheRecord` can retitle + retint it.
+    private weak var recordingLabel: NSTextField?
+
     // 60 → 76: at 60 the "Recording" label (8pt dot + 5pt gap + 50pt text = 63pt) and
     // workflow names past ~9 chars overflowed the pill and were sliced by the rounded
     // mask. 76 gives the label margin and lets names up to "Engineering" fit.
@@ -44,6 +48,8 @@ final class RecordingHUDWindow {
     // Degraded mode (TECH-UX4): the pill widens into a card so the banner text and retry button fit.
     private static let degradedPanelWidth: CGFloat = 232
     private static let bannerHeight: CGFloat = 60
+    // Off-the-record (MIC14): widen the pill just enough for the longer "Off the record" label.
+    private static let offRecordPanelWidth: CGFloat = 150
 
     func present(source: AppSource?, workflow: Workflow? = nil, startedAt: Date, levelProvider: (() -> Float)? = nil) {
         dismiss(animated: false)
@@ -216,6 +222,20 @@ final class RecordingHUDWindow {
         resizePanelAnchoringTopRight(width: Self.panelWidth, height: Self.panelHeight)
     }
 
+    // MARK: Off the record (MIC14)
+
+    /// Show or clear the persistent "Off the record" state: retitle + retint the state label so it
+    /// cannot be forgotten, and widen the pill just enough to fit the longer text. Idempotent.
+    /// Skips the resize while the degraded card owns the geometry (that rarer state dominates).
+    /// Main-queue only.
+    func setOffTheRecord(_ on: Bool) {
+        recordingLabel?.stringValue = on ? "Off the record" : "Recording"
+        recordingLabel?.textColor = on ? MPColors.pulse600 : MPColors.fgMuted
+        if degradedBanner == nil {
+            resizePanelAnchoringTopRight(width: on ? Self.offRecordPanelWidth : Self.panelWidth, height: Self.panelHeight)
+        }
+    }
+
     /// Resize keeping the panel's top-right corner fixed, so growing the
     /// degraded card doesn't yank a HUD the user dragged elsewhere.
     private func resizePanelAnchoringTopRight(width: CGFloat, height: CGFloat) {
@@ -284,6 +304,7 @@ final class RecordingHUDWindow {
         recordingLabel.font = .systemFont(ofSize: 10, weight: MPType.medium)
         recordingLabel.textColor = MPColors.fgMuted
         recordingLabel.translatesAutoresizingMaskIntoConstraints = false
+        self.recordingLabel = recordingLabel
 
         let dotRow = NSStackView(views: [dot, recordingLabel])
         dotRow.orientation = .horizontal
