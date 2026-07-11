@@ -47,4 +47,32 @@ final class MeetingSourceScannerTests: XCTestCase {
         XCTAssertTrue(MeetingSourceScanner.browserWindowIndicatesMeeting(title: "Webex Meeting - Acme"))
         XCTAssertTrue(MeetingSourceScanner.browserWindowIndicatesMeeting(title: "Huddle - #engineering"))
     }
+
+    // MARK: - PERF6: control-button AX-walk gate
+
+    func test_idle_app_with_no_cheap_signal_skips_the_control_walk() {
+        // The hot case (Teams backgrounded, no call): neither a meeting-titled window nor active
+        // process audio, so the three recursive AX walks are skipped.
+        XCTAssertFalse(MeetingSourceScanner.shouldWalkControlAX(
+            titleMatch: false, processAudioActive: false, bundleID: "com.microsoft.teams2"))
+    }
+
+    func test_meeting_titled_window_admits_the_control_walk() {
+        XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
+            titleMatch: true, processAudioActive: false, bundleID: "com.microsoft.teams2"))
+    }
+
+    func test_active_process_audio_admits_the_control_walk() {
+        XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
+            titleMatch: false, processAudioActive: true, bundleID: "us.zoom.xos"))
+    }
+
+    func test_webex_always_walks_even_without_a_cheap_signal() {
+        // Webex is excluded from the process-audio probe (ultrasound device discovery keeps its
+        // mic open), so it has no audio leg and must not be gated on title alone.
+        XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
+            titleMatch: false, processAudioActive: false, bundleID: "com.cisco.webexmeetingsapp"))
+        XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
+            titleMatch: false, processAudioActive: false, bundleID: "com.cisco.spark"))
+    }
 }

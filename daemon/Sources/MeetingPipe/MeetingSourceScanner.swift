@@ -146,6 +146,21 @@ final class MeetingSourceScanner {
         return candidates
     }
 
+    /// Cisco Webex keeps the mic open after a call for ultrasound device discovery, so its
+    /// process-audio signal cannot distinguish an active call from an idle post-call state.
+    private static let webexBundleIDs: Set<String> = ["com.cisco.webexmeetingsapp", "com.cisco.spark"]
+
+    /// PERF6: whether the three control-button AX walks (toolbar / leave / mute) are worth
+    /// running for a candidate. They are recursive AX-tree IPC and dominate idle discovery CPU,
+    /// so skip them for a backgrounded app that shows no cheap sign of a live meeting: no
+    /// meeting-titled window and no active process audio. Webex is exempt because it is excluded
+    /// from the audio probe (see `webexBundleIDs`), so it has no audio leg and must keep walking
+    /// rather than gate on title alone.
+    static func shouldWalkControlAX(titleMatch: Bool, processAudioActive: Bool, bundleID: String) -> Bool {
+        if webexBundleIDs.contains(bundleID) { return true }
+        return titleMatch || processAudioActive
+    }
+
     /// Populate the signal tuple. Each signal degrades to false on AX denied / read failure.
     /// `preTitleMatch` short-circuits the per-bundle recognizer: browsers pass the already-computed
     /// browser title/URL match (`true` for a plain tab vetted by URL/title; the real per-window result
@@ -158,6 +173,22 @@ final class MeetingSourceScanner {
         preTitleMatch: Bool?
     ) -> MeetingSourceCandidate.Signals {
         var signals = MeetingSourceCandidate.Signals()
+
+        // Cheap process-audio probe first: it is one of the two gate preconditions for the
+        // expensive AX walks below (PERF6) and needs no AX access. Webex excluded (see
+        // `webexBundleIDs`): a positive audio signal would push it above threshold long after
+        // the call ends.
+        if !MeetingSourceScanner.webexBundleIDs.contains(bundleID) {
+            let context = MeetingLifecycleContext(
+                bundleID: bundleID,
+                kind: kind == .browser ? .browser : .native,
+                pid: pid,
+                title: nil
+            )
+            if let active = ProcessAudioSignal.defaultProbe(context) {
+                signals.processAudioActive = active
+            }
+        }
 
         if axTrusted {
             let axApp = AXUIElementCreateApplication(pid)
@@ -174,33 +205,29 @@ final class MeetingSourceScanner {
                 }
             }
 
-            signals.callingControlsToolbar = MeetingAXHandleBuilder
-                .findCallingControlsToolbar(in: axApp, bundleID: bundleID) != nil
+            // PERF6: only descend the recursive control-button trees when a cheap precondition
+            // says a live meeting is plausible. An idle backgrounded app skips the walk and keeps
+            // the default (false) control signals, which the scorer treats identically to
+            // "walked and found nothing".
+            if MeetingSourceScanner.shouldWalkControlAX(
+                titleMatch: signals.titleMatch,
+                processAudioActive: signals.processAudioActive,
+                bundleID: bundleID
+            ) {
+                signals.callingControlsToolbar = MeetingAXHandleBuilder
+                    .findCallingControlsToolbar(in: axApp, bundleID: bundleID) != nil
 
-            signals.leaveButton = !MeetingAXHandleBuilder
-                .findAllLeaveButtons(in: axApp, bundleID: bundleID).isEmpty
+                signals.leaveButton = !MeetingAXHandleBuilder
+                    .findAllLeaveButtons(in: axApp, bundleID: bundleID).isEmpty
 
-            if let catalogue = MeetingSourceScanner.muteCatalogue {
-                signals.muteButton = !MeetingAXHandleBuilder
-                    .findAllMuteButtons(
-                        in: axApp,
-                        bundleID: bundleID,
-                        catalogue: catalogue
-                    ).isEmpty
-            }
-        }
-
-        // Webex excluded: Cisco keeps the mic open after meetings for ultrasound device discovery, so a positive audio signal would push Webex above threshold long after the call ends.
-        if bundleID != "com.cisco.webexmeetingsapp",
-           bundleID != "com.cisco.spark" {
-            let context = MeetingLifecycleContext(
-                bundleID: bundleID,
-                kind: kind == .browser ? .browser : .native,
-                pid: pid,
-                title: nil
-            )
-            if let active = ProcessAudioSignal.defaultProbe(context) {
-                signals.processAudioActive = active
+                if let catalogue = MeetingSourceScanner.muteCatalogue {
+                    signals.muteButton = !MeetingAXHandleBuilder
+                        .findAllMuteButtons(
+                            in: axApp,
+                            bundleID: bundleID,
+                            catalogue: catalogue
+                        ).isEmpty
+                }
             }
         }
 
