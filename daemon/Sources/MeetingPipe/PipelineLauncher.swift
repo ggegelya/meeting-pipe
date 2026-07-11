@@ -856,18 +856,54 @@ final class PipelineLauncher: PipelineDriver {
         return (stripAnthropic: onDeviceSummary, stripNotion: regulated || nda)
     }
 
-    /// Resolution order: prebuilt venv -> `uv run mp` from the repo's pipeline dir -> bare `mp` on PATH.
+    /// Resolution order: embedded runtime (DIST1) -> prebuilt venv -> `uv run mp` from the repo's pipeline dir -> bare `mp` on PATH.
     /// Exposed `internal` so other callers (e.g. the streaming transcriber) can reuse the same logic.
     struct MPInvocation {
         let shell: String
         let args: [String]
     }
 
+    /// DIST1: resolve the two direct tiers, injected so the priority (a
+    /// drag-installed app's own embedded runtime beats a dev-machine venv)
+    /// unit-tests without a real bundle. Returns nil to fall through to the
+    /// uv / PATH tiers in `findMP`.
+    ///
+    /// The embedded runtime is invoked as `python3 -m mp`, NOT the `bin/mp`
+    /// console script: pip bakes the build-time interpreter path into a console
+    /// script's shebang, which breaks the moment the .app is relocated to the
+    /// user's /Applications. `python3 -m mp` resolves the package relative to the
+    /// relocated interpreter, so it survives the move. The in-place venv keeps its
+    /// console script because it is installed where it runs.
+    static func resolveDirectMP(
+        embeddedRuntimePython: String?,
+        prebuiltVenvMP: String,
+        isExecutable: (String) -> Bool
+    ) -> MPInvocation? {
+        if let python = embeddedRuntimePython, isExecutable(python) {
+            return MPInvocation(shell: python, args: ["-m", "mp"])
+        }
+        if isExecutable(prebuiltVenvMP) {
+            return MPInvocation(shell: prebuiltVenvMP, args: [])
+        }
+        return nil
+    }
+
     static func findMP() -> MPInvocation? {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let venvBin = home.appendingPathComponent(".local/share/meeting-pipe/venv/bin/mp")
-        if FileManager.default.isExecutableFile(atPath: venvBin.path) {
-            return MPInvocation(shell: venvBin.path, args: [])
+
+        // DIST1: a drag-installed, self-contained app carries its own relocatable
+        // Python + wheels under `Contents/Resources/pipeline-runtime/`, so it needs
+        // no Homebrew / uv / venv on the machine. It wins over everything so a clean
+        // Mac (and a locked-down regulated Mac) runs entirely from the bundle.
+        let embeddedPython = Bundle.main.resourceURL?
+            .appendingPathComponent("pipeline-runtime/bin/python3").path
+        let venvBin = home.appendingPathComponent(".local/share/meeting-pipe/venv/bin/mp").path
+        if let direct = resolveDirectMP(
+            embeddedRuntimePython: embeddedPython,
+            prebuiltVenvMP: venvBin,
+            isExecutable: { FileManager.default.isExecutableFile(atPath: $0) }
+        ) {
+            return direct
         }
 
         // Walk up from the executable looking for `pipeline/pyproject.toml`.

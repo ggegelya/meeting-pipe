@@ -1627,11 +1627,21 @@ final class MeetingRecorder {
     }
 
     static func findFFmpeg() -> String? {
-        ExecutableResolver.resolve(
+        // DIST1: a drag-installed self-contained app carries a static ffmpeg under
+        // `Contents/Resources/pipeline-runtime/bin/`, so a clean Mac needs no
+        // Homebrew ffmpeg. Kept as a fallback (after `MEETINGPIPE_FFMPEG` and PATH)
+        // so a machine with its own ffmpeg still uses that; the bundled one is the
+        // safety net for a Mac that has none. (DEP1 may later port the merge to
+        // native AVFoundation, but MuteRedactor still shells ffmpeg, so the binary
+        // does not vanish from a merge-only port.)
+        let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("pipeline-runtime/bin/ffmpeg").path
+        return ExecutableResolver.resolve(
             name: "ffmpeg",
             envOverride: "MEETINGPIPE_FFMPEG",
             searchPath: true,
-            fallbacks: ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/local/bin/ffmpeg"]
+            fallbacks: [bundled, "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/local/bin/ffmpeg"]
+                .compactMap { $0 }
         )
     }
 

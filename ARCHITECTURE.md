@@ -297,7 +297,7 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 
 ### Plumbing
 
-- `PipelineLauncher.swift` — spawns `mp run-all <wav>` as a subprocess. Each job is one `ProcessingJob` (see `State.swift`); the queue runs them serially so two whisper invocations don't thrash the GPU.
+- `PipelineLauncher.swift` spawns `mp run-all <wav>` as a subprocess. Each job is one `ProcessingJob` (see `State.swift`); the queue runs them serially so two whisper invocations don't thrash the GPU. `findMP` resolves the pipeline: an embedded relocatable runtime in the app bundle (`Contents/Resources/pipeline-runtime/`, run as `python3 -m mp`, DIST1) → the prebuilt venv → `uv run` from the repo → bare `mp` on PATH; `MeetingRecorder.findFFmpeg` similarly falls back to a bundled `ffmpeg`, so a drag-installed app runs on a clean Mac.
 - `LocalServerReaper.swift` — kills an `mlx_lm.server` that outlived the `mp` which spawned it (LOCAL10). The server setsid's into its own session, so a watchdog SIGKILL of `mp` leaves it resident; Python's `mlx-server.json` marker names it. Reaps at launch (from `Coordinator.reapStorage()`) and right after the watchdog kills a job.
 - `PermissionsCenter.swift` — single source of truth for the four TCC permissions (mic, Screen Recording, Accessibility, Notifications). Polls for live-flip detection; publishes a `permissionGranted` PassthroughSubject the Coordinator listens to (so the detector wakes up the moment Accessibility flips on mid-meeting).
 - `HotkeyManager.swift` — Carbon RegisterEventHotKey for global hotkeys (toggle + force-stop + flag-moment + off-the-record).
