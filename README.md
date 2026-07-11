@@ -290,6 +290,8 @@ Each workflow lives as one TOML file under `~/.config/meeting-pipe/workflows/<uu
 
 Ties on score break by the workflow's `order` (ascending). Manual recordings (`Ctrl+Opt+M` with no detected source) always fall to the default.
 
+**Extra summary sections (WF7).** A workflow can add its own summary sections on top of the standard ones (Summary / Decisions / Action items / Open questions / Attendees). In the workflow editor's *Extra summary sections*, add a row per section: a name (e.g. "Billable follow-ups", "Feedback given / received") and an instruction telling the model what to put there. Those flow to the summarizer for every meeting in the workflow, and the produced sections render everywhere the summary does: the Library detail (read-only), Notion, Obsidian, and the filesystem/LAN Markdown. They also survive the BYO paste round-trip (any non-standard `##` heading in a hand-written `<stem>.summary.md` is kept as an extra section) and a correction edit (read-only there for now, but never dropped). Stored as `[[extra_sections]]` in the workflow TOML; a workflow that adds none keeps the standard shape unchanged.
+
 **Where it shows up.**
 - The **prompt panel** sprouts a chip next to the action buttons with the resolved workflow's color/emoji + name. Click it to pick a different workflow before clicking Record.
 - The **recording HUD** shows the workflow's name (with an "NDA" tag when applicable) below the elapsed timer. The recording dot itself stays coral - it signals recording, not the workflow (DSN25).

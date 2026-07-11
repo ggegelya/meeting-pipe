@@ -107,11 +107,31 @@ final class MetaContractFixtureTests: XCTestCase {
         XCTAssertEqual(reassigned["meeting_title"] as? String, "Design review")
     }
 
-    func test_all_fixtures_carry_schema_version_two() throws {
+    func test_all_fixtures_carry_schema_version_three() throws {
         for name in ["source-only-regulated", "workflow-full", "workflow-nda", "workflow-reassigned-to-nda"] {
             let f = try fixture(name)
-            XCTAssertEqual(f["schema_version"] as? Int, 2, "\(name) must carry schema_version 2")
+            XCTAssertEqual(f["schema_version"] as? Int, 3, "\(name) must carry schema_version 3")
         }
+    }
+
+    /// WF7: `workflow_extra_sections` is a workflow_* key omitted when the workflow
+    /// defines none, so like the MIC15 mic keys it is pinned here rather than baked
+    /// into every golden fixture. Present-only-when-set, filtered to usable rows.
+    func test_workflow_extra_sections_present_only_when_set() throws {
+        let source = AppSource(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .native)
+
+        var wf = Workflow(id: UUID(), name: "1:1")
+        wf.extraSections = [
+            WorkflowExtraSection(name: "Feedback", instruction: "Note feedback given or received."),
+            WorkflowExtraSection(name: "  ", instruction: "dropped: blank name"),
+        ]
+        let withSections = MeetingMetaSidecar.build(source: source, workflow: wf)
+        let raw = try XCTUnwrap(withSections["workflow_extra_sections"] as? [[String: String]])
+        XCTAssertEqual(raw, [["name": "Feedback", "instruction": "Note feedback given or received."]])
+
+        let bare = Workflow(id: UUID(), name: "Standup")
+        let noSections = MeetingMetaSidecar.build(source: source, workflow: bare)
+        XCTAssertNil(noSections["workflow_extra_sections"], "omitted when the workflow defines none")
     }
 
     /// MIC15: `mic_device_name` + `mic_silent` are informational top-level keys the Python reader
@@ -126,7 +146,7 @@ final class MetaContractFixtureTests: XCTestCase {
         )
         XCTAssertEqual(withMic["mic_device_name"] as? String, "AirPods Pro")
         XCTAssertEqual(withMic["mic_silent"] as? Bool, true)
-        XCTAssertEqual(withMic["schema_version"] as? Int, 2)
+        XCTAssertEqual(withMic["schema_version"] as? Int, 3)
 
         let quietMic = MeetingMetaSidecar.build(source: source, workflow: nil, micDeviceName: "AirPods Pro")
         XCTAssertEqual(quietMic["mic_device_name"] as? String, "AirPods Pro")

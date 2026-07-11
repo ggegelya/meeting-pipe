@@ -245,4 +245,4 @@ def test_contract_fixtures_carry_schema_version() -> None:
         "source-only-regulated", "workflow-full", "workflow-nda", "workflow-reassigned-to-nda"
     ):
         data = json.loads((_CONTRACT / f"{name}.meta.json").read_text(encoding="utf-8"))
-        assert data["schema_version"] == 2
+        assert data["schema_version"] == 3

@@ -57,6 +57,17 @@ class Transcription(BaseModel):
     model_config = {"extra": "ignore"}
 
 
+class ExtraSectionSpec(BaseModel):
+    """WF7: one workflow-defined extra summary section. `name` titles the section
+    in the output; `instruction` tells the model what to put there. Populated per
+    meeting by `workflow.apply_overrides` from `<stem>.meta.json`, not typically
+    hand-set in config.toml."""
+    name: str = ""
+    instruction: str = ""
+
+    model_config = {"extra": "ignore"}
+
+
 class Summarization(BaseModel):
     model: str = "claude-sonnet-4-6"
     max_tokens: int = 4000
@@ -138,6 +149,10 @@ class Summarization(BaseModel):
     # speaker by spoken time. Empty = no enrollment (labels stay
     # speaker_user / speaker_other). Set once; reused on every meeting.
     user_label: str = ""
+    # WF7: workflow-defined extra summary sections, overlaid per meeting by
+    # `workflow.apply_overrides` from the meta sidecar. Empty for a workflow that
+    # defines none (the common case), so the summary shape is unchanged.
+    extra_sections: list[ExtraSectionSpec] = Field(default_factory=list)
 
 
 class NotionCfg(BaseModel):

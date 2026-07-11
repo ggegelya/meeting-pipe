@@ -22,7 +22,7 @@ from pathlib import Path
 from . import entry
 from .config import Config
 from .publish_router import EXIT_PUBLISH_FAILED, all_sinks_failed, fanout
-from .schemas import ActionItem, MeetingSummary
+from .schemas import ActionItem, ExtraSection, MeetingSummary
 from .markdown import render_summary_md
 
 log = logging.getLogger("mp.publish_from_paste")
@@ -90,7 +90,35 @@ def parse_summary_md(text: str, *, fallback_title: str = "(untitled meeting)") -
         questions=questions,
         attendees=attendees,
         detected_language=detected_language,
+        extra_sections=_extract_extra_sections(text),
     )
+
+
+# The standard sections (lowercased) that map to typed fields; every other H2
+# is treated as a workflow-defined extra section (WF7). `transcript` is excluded
+# so a summary that inlines the transcript never captures it as a section.
+_KNOWN_SECTIONS = frozenset({
+    "summary", "decisions", "action items", "actions",
+    "open questions", "questions", "attendees", "transcript",
+})
+
+
+def _extract_extra_sections(text: str) -> list[ExtraSection]:
+    """WF7: any H2 section that isn't one of the standard ones round-trips as an
+    extra section, preserving its original-case name, so a hand-pasted summary
+    with a "## Billable follow-ups" block survives the BYO publish path."""
+    out: list[ExtraSection] = []
+    matches = list(_H2.finditer(text))
+    for i, m in enumerate(matches):
+        name = m.group(1).strip()
+        if name.lower() in _KNOWN_SECTIONS:
+            continue
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        content = _extract_bullets_or_numbered(text[start:end])
+        if content:
+            out.append(ExtraSection(name=name[:80], content=content))
+    return out
 
 
 def _split_sections(text: str) -> dict[str, str]:

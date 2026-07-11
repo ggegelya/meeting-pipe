@@ -148,4 +148,24 @@ final class MeetingSummaryTests: XCTestCase {
         XCTAssertEqual(loaded.title, "Sprint planning")
         XCTAssertNil(MeetingSummary.load(from: dir.appendingPathComponent("missing.json")))
     }
+
+    // MARK: - WF7 extra sections
+
+    func test_extra_sections_decode_and_survive_the_write_bridge() throws {
+        let s = try decode(
+            "{\"title\":\"t\",\"summary\":[\"s\"],"
+            + "\"extra_sections\":[{\"name\":\"Feedback\",\"content\":[\"good\",\"bad\"]}]}"
+        )
+        XCTAssertEqual(s.extraSections.count, 1)
+        XCTAssertEqual(s.extraSections[0].name, "Feedback")
+        XCTAssertEqual(s.extraSections[0].content, ["good", "bad"])
+        // A correction save reserializes through jsonObject(); extra sections are
+        // read-only in the editor but must round-trip, not vanish.
+        let rebuilt = try XCTUnwrap(MeetingSummary(jsonObject: s.jsonObject()))
+        XCTAssertEqual(rebuilt.extraSections, s.extraSections)
+    }
+
+    func test_missing_extra_sections_decodes_to_empty() throws {
+        XCTAssertEqual(try decode("{\"title\":\"t\"}").extraSections, [])
+    }
 }

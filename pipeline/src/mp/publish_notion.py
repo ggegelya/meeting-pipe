@@ -526,6 +526,15 @@ def _build_blocks(
         blocks.append(_h2("Open Questions"))
         blocks.append(_questions_toggle(summary.questions))
 
+    # WF7: workflow-defined extra sections, after the standard ones and before
+    # the transcript toggle. Skip an empty one so a bare heading never lands.
+    for sec in summary.extra_sections:
+        if not sec.content:
+            continue
+        blocks.append(_h2(sec.name))
+        for item in sec.content:
+            blocks.append(_bullet(item))
+
     if include_transcript and transcript_md and transcript_md.exists():
         blocks.append(_transcript_toggle(transcript_md.read_text(encoding="utf-8")))
 

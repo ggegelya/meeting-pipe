@@ -82,6 +82,30 @@
         "detected_language": "en"
       },
       "expected": "# Standup\n\n_Language: en_\n\n## Summary\n- Status round\n\n## Action Items\n- [x] **Carol**: Ship fix - due tomorrow  _(confidence: high)_\n- [ ] **_unassigned_**: Investigate flake  _(confidence: medium)_\n- [x] **Dan**: Close ticket  _(confidence: low)_\n"
+    },
+    {
+      "name": "extra_sections",
+      "input": {
+        "title": "Client call",
+        "summary": [
+          "Reviewed Q3 numbers"
+        ],
+        "extra_sections": [
+          {
+            "name": "Billable follow-ups",
+            "content": [
+              "Invoice Acme",
+              "Send the SOW"
+            ]
+          },
+          {
+            "name": "Empty section",
+            "content": []
+          }
+        ],
+        "detected_language": "en"
+      },
+      "expected": "# Client call\n\n_Language: en_\n\n## Summary\n- Reviewed Q3 numbers\n\n## Billable follow-ups\n- Invoice Acme\n- Send the SOW\n"
     }
   ]
 }

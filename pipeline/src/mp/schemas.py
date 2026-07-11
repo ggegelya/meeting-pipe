@@ -42,6 +42,15 @@ class ActionItem(BaseModel):
         return clean_person(v)
 
 
+class ExtraSection(BaseModel):
+    """A workflow-defined extra summary section (WF7). The workflow names the
+    section and gives the model an instruction; the model fills `content` as
+    bullets. Optional and tolerant: absent on every legacy summary and on any
+    summary from a workflow that defines no extra sections."""
+    name: str = Field(..., max_length=80)
+    content: list[str] = Field(default_factory=list)
+
+
 class MeetingSummary(BaseModel):
     title: str = Field(..., max_length=120)
     summary: list[str] = Field(..., max_length=10)
@@ -50,6 +59,10 @@ class MeetingSummary(BaseModel):
     questions: list[str] = Field(default_factory=list)
     attendees: list[str] = Field(default_factory=list)
     detected_language: str = "en"
+    # WF7: workflow-defined extra sections. Defaults empty so every existing
+    # `<stem>.summary.json` and every non-configuring workflow round-trips
+    # unchanged; a publisher renders these only when present.
+    extra_sections: list[ExtraSection] = Field(default_factory=list)
 
     @field_validator("attendees", mode="after")
     @classmethod
@@ -118,6 +131,22 @@ SUMMARY_TOOL = {
             "detected_language": {
                 "type": "string",
                 "description": "ISO 639-1 code, e.g. 'en' or 'uk'.",
+            },
+            "extra_sections": {
+                "type": "array",
+                "description": (
+                    "Only the extra sections the system prompt explicitly requests, "
+                    "each filled per its instruction. Omit or leave empty when none are requested."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "The requested section's exact name."},
+                        "content": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["name", "content"],
+                    "additionalProperties": False,
+                },
             },
         },
         "required": [

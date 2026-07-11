@@ -128,4 +128,15 @@ def render_summary_md(s: MeetingSummary) -> str:
             lines.append(f"- {q}")
         lines.append("")
 
+    # WF7: workflow-defined extra sections, after the standard ones. Skip an
+    # empty one (the model may return a requested-but-unfilled section) so the
+    # note never carries a bare heading.
+    for sec in s.extra_sections:
+        if not sec.content:
+            continue
+        lines.append(f"## {sec.name}")
+        for item in sec.content:
+            lines.append(f"- {item}")
+        lines.append("")
+
     return "\n".join(lines).rstrip() + "\n"

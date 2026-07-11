@@ -58,6 +58,7 @@ struct WorkflowEditor: View {
     @State private var contextPrompt: String = ""
     @State private var isDefault: Bool = false
     @State private var matchingRules: [WorkflowMatchingRule] = []
+    @State private var extraSections: [WorkflowExtraSection] = []
     @State private var sinks = SinkSelection()
     @State private var backend: WorkflowBackend? = nil
     @State private var ndaMode: Bool = false
@@ -80,6 +81,7 @@ struct WorkflowEditor: View {
                 identitySection
                 matchingRulesSection
                 contextSection
+                extraSectionsSection
                 sinksSection
                 backendSection
                 flagsSection
@@ -290,6 +292,68 @@ struct WorkflowEditor: View {
             set: { newValue in
                 if let i = matchingRules.firstIndex(where: { $0.id == id }) {
                     matchingRules[i][keyPath: keyPath] = newValue
+                }
+            }
+        )
+    }
+
+    // MARK: Extra sections (WF7)
+
+    private var extraSectionsSection: some View {
+        SettingsGroup("Extra summary sections") {
+            if extraSections.isEmpty {
+                SettingsFullRow(showsDivider: false) {
+                    Text("None - this workflow uses the standard summary shape.")
+                        .font(.mpTextSM)
+                        .foregroundStyle(Color(MPColors.fgMuted))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                ForEach(Array(extraSections.enumerated()), id: \.element.id) { idx, sec in
+                    SettingsFullRow(showsDivider: idx > 0) {
+                        extraSectionRow(id: sec.id)
+                    }
+                }
+            }
+            SettingsFullRow {
+                Button {
+                    extraSections.append(WorkflowExtraSection())
+                } label: {
+                    Label("Add section", systemImage: "plus")
+                }
+                .buttonStyle(.mpGhost)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } footer: {
+            Text("Extra sections the summarizer fills for every meeting in this workflow, on top of the standard ones. Name the section (e.g. \"Billable follow-ups\") and tell the model what to put there. Rendered read-only in the Library and in every publisher. A row with a blank name or instruction is ignored.")
+        }
+    }
+
+    private func extraSectionRow(id: UUID) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(spacing: 4) {
+                TextField("section name", text: sectionBinding(id, \.name))
+                    .textFieldStyle(.roundedBorder)
+                TextField("instruction for the model", text: sectionBinding(id, \.instruction))
+                    .textFieldStyle(.roundedBorder)
+            }
+            Button(role: .destructive) {
+                extraSections.removeAll { $0.id == id }
+            } label: {
+                Image(systemName: "minus.circle")
+            }
+            .buttonStyle(.borderless)
+        }
+    }
+
+    /// Id-keyed binding into `extraSections` (the `ruleBinding` idiom), so a row's
+    /// binding never goes stale when a different row is removed.
+    private func sectionBinding(_ id: UUID, _ keyPath: WritableKeyPath<WorkflowExtraSection, String>) -> Binding<String> {
+        Binding(
+            get: { extraSections.first(where: { $0.id == id })?[keyPath: keyPath] ?? "" },
+            set: { newValue in
+                if let i = extraSections.firstIndex(where: { $0.id == id }) {
+                    extraSections[i][keyPath: keyPath] = newValue
                 }
             }
         )
@@ -543,6 +607,7 @@ struct WorkflowEditor: View {
         contextPrompt = workflow.contextPrompt
         isDefault = workflow.isDefault
         matchingRules = workflow.matchingRules
+        extraSections = workflow.extraSections
         sinks = SinkSelection.from(workflow.sinks)
         backend = workflow.backend
         ndaMode = workflow.flags.ndaMode
@@ -565,6 +630,10 @@ struct WorkflowEditor: View {
         clone.contextPrompt = contextPrompt
         clone.isDefault = isDefault
         clone.matchingRules = matchingRules
+        clone.extraSections = extraSections.filter {
+            !$0.name.trimmingCharacters(in: .whitespaces).isEmpty
+                || !$0.instruction.trimmingCharacters(in: .whitespaces).isEmpty
+        }
         clone.sinks = sinks.toWorkflowSinks()
         clone.backend = backend
         clone.flags.ndaMode = ndaMode

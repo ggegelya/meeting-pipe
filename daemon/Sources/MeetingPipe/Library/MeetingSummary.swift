@@ -21,6 +21,27 @@ struct MeetingSummary: Decodable, Equatable {
     var questions: [String]
     var attendees: [String]
     var detectedLanguage: String?
+    /// WF7: workflow-defined extra sections. Read-only in the editor, but carried
+    /// through every read/write so an edit never drops them.
+    var extraSections: [ExtraSection]
+
+    struct ExtraSection: Decodable, Equatable {
+        var name: String
+        var content: [String]
+
+        enum CodingKeys: String, CodingKey { case name, content }
+
+        init(name: String = "", content: [String] = []) {
+            self.name = name
+            self.content = content
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = (try? c.decode(String.self, forKey: .name)) ?? ""
+            content = (try? c.decode([String].self, forKey: .content)) ?? []
+        }
+    }
 
     struct ActionItem: Decodable, Equatable {
         var task: String
@@ -59,6 +80,7 @@ struct MeetingSummary: Decodable, Equatable {
     enum CodingKeys: String, CodingKey {
         case title, summary, decisions, actions, questions, attendees
         case detectedLanguage = "detected_language"
+        case extraSections = "extra_sections"
     }
 
     init(
@@ -68,7 +90,8 @@ struct MeetingSummary: Decodable, Equatable {
         actions: [ActionItem] = [],
         questions: [String] = [],
         attendees: [String] = [],
-        detectedLanguage: String? = nil
+        detectedLanguage: String? = nil,
+        extraSections: [ExtraSection] = []
     ) {
         self.title = title
         self.summary = summary
@@ -77,6 +100,7 @@ struct MeetingSummary: Decodable, Equatable {
         self.questions = questions
         self.attendees = attendees
         self.detectedLanguage = detectedLanguage
+        self.extraSections = extraSections
     }
 
     init(from decoder: Decoder) throws {
@@ -89,6 +113,7 @@ struct MeetingSummary: Decodable, Equatable {
         attendees = (try? c.decode([String].self, forKey: .attendees)) ?? []
         let lang = (try? c.decodeIfPresent(String.self, forKey: .detectedLanguage)) ?? nil
         detectedLanguage = (lang?.isEmpty == true) ? nil : lang
+        extraSections = (try? c.decode([ExtraSection].self, forKey: .extraSections)) ?? []
     }
 
     // MARK: - Bridges to the disk format
@@ -136,6 +161,9 @@ struct MeetingSummary: Decodable, Equatable {
             "questions": questions,
             "attendees": attendees,
             "detected_language": detectedLanguage ?? "en",
+            // WF7: preserve the workflow-defined sections through an edit (the
+            // editor renders them read-only but must not drop them on save).
+            "extra_sections": extraSections.map { ["name": $0.name, "content": $0.content] },
         ]
     }
 }

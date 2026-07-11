@@ -83,6 +83,27 @@ struct WorkflowMatchingRule: Codable, Equatable, Hashable, Identifiable {
     }
 }
 
+/// A workflow-defined extra summary section (WF7). The model fills a section named `name` following `instruction`; it flows to the pipeline via `workflow_extra_sections` in the meta sidecar, and every publisher renders it. Same id-keyed shape as `WorkflowMatchingRule` so the editor's add/remove-row pattern reuses cleanly.
+struct WorkflowExtraSection: Codable, Equatable, Hashable, Identifiable {
+    var id: UUID = UUID()
+    /// Section title shown in the summary. A row with an empty name or instruction is dropped before it reaches the sidecar.
+    var name: String = ""
+    /// What the model should put in the section.
+    var instruction: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case instruction
+    }
+
+    init(id: UUID = UUID(), name: String = "", instruction: String = "") {
+        self.id = id
+        self.name = name
+        self.instruction = instruction
+    }
+}
+
 struct Workflow: Codable, Equatable, Hashable, Identifiable {
     let id: UUID
     var name: String
@@ -99,6 +120,8 @@ struct Workflow: Codable, Equatable, Hashable, Identifiable {
     var flags: WorkflowFlags
     /// What happens to this workflow's meeting audio once it settles (STOR1). Defaults to keep-forever.
     var retention: WorkflowRetention
+    /// Workflow-defined extra summary sections (WF7). Empty for a workflow that adds none.
+    var extraSections: [WorkflowExtraSection]
     /// Exactly one workflow has this set; the matcher falls back to it when no rule matches.
     var isDefault: Bool
     /// User-defined display order; ties break alphabetically by name.
@@ -115,6 +138,7 @@ struct Workflow: Codable, Equatable, Hashable, Identifiable {
         backend: WorkflowBackend? = nil,
         flags: WorkflowFlags = WorkflowFlags(),
         retention: WorkflowRetention = WorkflowRetention(),
+        extraSections: [WorkflowExtraSection] = [],
         isDefault: Bool = false,
         order: Int = 0
     ) {
@@ -128,8 +152,17 @@ struct Workflow: Codable, Equatable, Hashable, Identifiable {
         self.backend = backend
         self.flags = flags
         self.retention = retention
+        self.extraSections = extraSections
         self.isDefault = isDefault
         self.order = order
+    }
+
+    /// The extra sections worth persisting / sending: both fields non-blank. A half-filled editor row never reaches the sidecar or the model.
+    var usableExtraSections: [WorkflowExtraSection] {
+        extraSections.filter {
+            !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !$0.instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 
     /// Backend to stamp into the meta sidecar, or nil to inherit the global default (the sidecar then omits `workflow_backend`). NDA forces local regardless of the pin so the summary never leaves the Mac. Surfaced on the workflow chip so the user sees the resolution before pressing Record.

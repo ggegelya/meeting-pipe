@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "source_bundle_id": "com.microsoft.teams2",
   "source_display_name": "Microsoft Teams",
   "source_kind": "native",
@@ -8,6 +8,8 @@
   "workflow_color": "#BE353A",
   "workflow_context_prompt": "Privileged. Do not egress.",
   "workflow_backend": "local",
-  "workflow_sinks": ["filesystem"],
+  "workflow_sinks": [
+    "filesystem"
+  ],
   "workflow_nda_mode": true
 }

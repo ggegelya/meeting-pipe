@@ -49,6 +49,10 @@ identifiers) and structured fields (`owner` names as written in the transcript,
 
 9. **Attendees.** Inferred from speaker labels and self-identification ("This is Alex from QA"). If only generic labels (`speaker_0`, `speaker_1`, `Speaker?`) appear, return those verbatim.
 
+## Extra sections
+
+{extra_sections_directive}
+
 ## Output
 
 Call `emit_meeting_summary` exactly once. Do NOT emit free-form text. Do NOT emit

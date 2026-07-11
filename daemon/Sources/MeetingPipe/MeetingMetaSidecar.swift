@@ -3,8 +3,8 @@ import Foundation
 /// Pure builder for `<stem>.meta.json`. Canonical Swift-to-Python contract: the pipeline reads these keys via `mp.workflow.apply_overrides`. Unit-testable without a Coordinator.
 enum MeetingMetaSidecar {
 
-    /// Sidecar shape version. Bump when the key set or a key's semantics change so a future reader can migrate. The Python reader stays fail-open on it (an unknown key is ignored); the cross-language golden fixtures (CI2, `Fixtures/meta-contract/`) pin it on both sides. Bumped to 2 by MIC15 (added `mic_device_name` + `mic_silent`).
-    static let schemaVersion = 2
+    /// Sidecar shape version. Bump when the key set or a key's semantics change so a future reader can migrate. The Python reader stays fail-open on it (an unknown key is ignored); the cross-language golden fixtures (CI2, `Fixtures/meta-contract/`) pin it on both sides. Bumped to 2 by MIC15 (added `mic_device_name` + `mic_silent`); to 3 by WF7 (added `workflow_extra_sections`).
+    static let schemaVersion = 3
 
     /// Build the JSON-serializable dictionary for a finished recording. Returns an empty dict when neither source nor workflow is available (and not regulated); caller skips the write so the pipeline's no-sidecar fallback (LLM-derived title, global config) stays intact.
     ///
@@ -58,6 +58,15 @@ enum MeetingMetaSidecar {
                 dict["workflow_notion_database_id"] = wf.notionDatabaseID
             }
             dict["workflow_nda_mode"] = wf.flags.ndaMode
+            // WF7: workflow-defined extra summary sections. Omitted when the
+            // workflow defines none, so a workflow that predates WF7 stays
+            // byte-identical apart from the schema_version bump.
+            let sections = wf.usableExtraSections
+            if !sections.isEmpty {
+                dict["workflow_extra_sections"] = sections.map {
+                    ["name": $0.name, "instruction": $0.instruction]
+                }
+            }
         }
         // Stamp the version only on a sidecar we actually write. An empty dict
         // (no source, workflow, or regulated flag) must stay empty so the caller

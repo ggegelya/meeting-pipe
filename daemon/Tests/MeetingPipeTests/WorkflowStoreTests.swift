@@ -104,6 +104,40 @@ final class WorkflowStoreTests: XCTestCase {
         XCTAssertTrue(loaded.isDefault)
     }
 
+    func test_extra_sections_round_trip() throws {
+        let dir = try makeTempDir()
+        let store = WorkflowStore(directory: dir)
+        var wf = Workflow(id: UUID(), name: "1:1")
+        wf.extraSections = [
+            WorkflowExtraSection(name: "Feedback", instruction: "Note feedback given or received."),
+            WorkflowExtraSection(name: "Follow-ups", instruction: "List billable follow-ups."),
+        ]
+        try store.upsert(wf)
+        let reloaded = WorkflowStore(directory: dir)
+        reloaded.load()
+        let loaded = try XCTUnwrap(reloaded.workflows.first)
+        XCTAssertEqual(loaded.extraSections.count, 2)
+        XCTAssertEqual(loaded.extraSections[0].name, "Feedback")
+        XCTAssertEqual(loaded.extraSections[1].instruction, "List billable follow-ups.")
+    }
+
+    func test_no_extra_sections_omits_the_toml_key() throws {
+        let dir = try makeTempDir()
+        try WorkflowStore(directory: dir).upsert(Workflow(id: UUID(), name: "Standup"))
+        let toml = try tomlContents(in: dir)
+        XCTAssertFalse(toml.contains("extra_sections"),
+                       "a workflow with no sections stays byte-clean of the table")
+        let reloaded = WorkflowStore(directory: dir)
+        reloaded.load()
+        XCTAssertEqual(try XCTUnwrap(reloaded.workflows.first).extraSections, [])
+    }
+
+    private func tomlContents(in dir: URL) throws -> String {
+        let files = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        let toml = try XCTUnwrap(files.first { $0.pathExtension == "toml" })
+        return try String(contentsOf: toml, encoding: .utf8)
+    }
+
     func test_upsert_enforces_single_default() throws {
         let dir = try makeTempDir()
         let store = WorkflowStore(directory: dir)

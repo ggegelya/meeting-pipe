@@ -23,7 +23,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from .config import BACKENDS, Config, zero_egress
+from .config import BACKENDS, Config, ExtraSectionSpec, zero_egress
 
 log = logging.getLogger("mp.workflow")
 
@@ -83,6 +83,22 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
         if overlay.summarization.team_context != ctx:
             overlay.summarization.team_context = ctx
             changed.append("team_context")
+
+    # WF7: workflow-defined extra summary sections. A list of {name, instruction}
+    # dicts; kept only when both fields are non-empty so a half-filled row never
+    # asks the model for an unnamed section.
+    raw_sections = meta.get("workflow_extra_sections")
+    if isinstance(raw_sections, list):
+        specs = [
+            ExtraSectionSpec(name=s["name"].strip(), instruction=s["instruction"].strip())
+            for s in raw_sections
+            if isinstance(s, dict)
+            and isinstance(s.get("name"), str) and s["name"].strip()
+            and isinstance(s.get("instruction"), str) and s["instruction"].strip()
+        ]
+        if specs:
+            overlay.summarization.extra_sections = specs
+            changed.append(f"extra_sections={len(specs)}")
 
     sinks = meta.get("workflow_sinks")
     if isinstance(sinks, list) and sinks:

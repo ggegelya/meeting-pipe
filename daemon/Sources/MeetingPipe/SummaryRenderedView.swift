@@ -44,6 +44,12 @@ struct SummaryRenderedView: View {
                     AttendeeChips(names: attendees)
                 }
             }
+            // WF7: workflow-defined extra sections, read-only, after the standard ones.
+            ForEach(Array(extraSections.enumerated()), id: \.offset) { _, sec in
+                section(title: sec.name, systemImage: "list.bullet.rectangle") {
+                    bulletList(sec.content, numbered: false)
+                }
+            }
             // TECH-UI-4: the detected-language indicator moved to the detail header caption row.
         }
         .padding(MPSpace.s5)
@@ -58,6 +64,14 @@ struct SummaryRenderedView: View {
     private var decisions: [String]      { nonEmpty(summary.decisions) }
     private var questions: [String]      { nonEmpty(summary.questions) }
     private var attendees: [String]      { nonEmpty(summary.attendees) }
+    /// WF7: sections with a name and at least one non-empty bullet, content trimmed.
+    private var extraSections: [MeetingSummary.ExtraSection] {
+        summary.extraSections.compactMap { sec in
+            let content = nonEmpty(sec.content)
+            guard !sec.name.isEmpty, !content.isEmpty else { return nil }
+            return MeetingSummary.ExtraSection(name: sec.name, content: content)
+        }
+    }
     private var actions: [ActionItemRow.Action] {
         summary.actions.map { a in
             ActionItemRow.Action(

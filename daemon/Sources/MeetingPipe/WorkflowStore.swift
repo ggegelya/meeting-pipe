@@ -184,6 +184,21 @@ final class WorkflowStore: ObservableObject {
         }
         doc["sinks"] = sinksArr
 
+        // WF7: `[[extra_sections]]`, mirroring `matching_rules`. Omitted while a
+        // workflow defines none, so a workflow predating WF7 stays byte-unchanged
+        // on disk until it is edited (the `retention`-table precedent).
+        if !wf.extraSections.isEmpty {
+            let sectionsArr = TOMLArray()
+            for s in wf.extraSections {
+                let t = TOMLTable()
+                t["id"] = s.id.uuidString
+                t["name"] = s.name
+                t["instruction"] = s.instruction
+                sectionsArr.append(t)
+            }
+            doc["extra_sections"] = sectionsArr
+        }
+
         return doc.convert(to: .toml)
     }
 
@@ -248,6 +263,19 @@ final class WorkflowStore: ObservableObject {
             }
         }
 
+        var extraSections: [WorkflowExtraSection] = []
+        if let arr = doc["extra_sections"]?.array {
+            for value in arr {
+                guard let t = value.table else { continue }
+                let sid = (t["id"]?.string).flatMap { UUID(uuidString: $0) } ?? UUID()
+                extraSections.append(WorkflowExtraSection(
+                    id: sid,
+                    name: t["name"]?.string ?? "",
+                    instruction: t["instruction"]?.string ?? ""
+                ))
+            }
+        }
+
         return Workflow(
             id: id,
             name: name,
@@ -259,6 +287,7 @@ final class WorkflowStore: ObservableObject {
             backend: backend,
             flags: flags,
             retention: retention,
+            extraSections: extraSections,
             isDefault: isDefault,
             order: order
         )

@@ -37,6 +37,7 @@ from . import entry, speaker_overlay
 from .backend_fallback import run_with_local_fallback
 from .config import (
     Config,
+    ExtraSectionSpec,
     effective_backend,
     extract_backend_flag,
     parse_local_endpoint,
@@ -117,11 +118,32 @@ def _create_message(client: anthropic.Anthropic, **kwargs: Any) -> Any:
     return client.messages.create(**kwargs)
 
 
+def _extra_sections_directive(specs: list[ExtraSectionSpec] | None) -> str:
+    """WF7: the system-prompt block that asks the model to fill `extra_sections`.
+
+    A trusted instruction (the workflow author's, not the transcript's). When a
+    workflow defines no sections the model is told to leave `extra_sections`
+    empty, so an ordinary meeting's summary shape is unchanged."""
+    if not specs:
+        return "Leave `extra_sections` empty: no extra sections are requested for this meeting."
+    lines = [
+        "In addition to the standard fields, fill `extra_sections` with EXACTLY the "
+        "sections listed below, using each `name` verbatim and following its "
+        "instruction. Include a section even when this meeting gives it nothing "
+        "(use an empty `content` list). Do NOT add any section that is not listed here.",
+        "",
+    ]
+    for i, s in enumerate(specs, 1):
+        lines.append(f'{i}. "{s.name}": {s.instruction}')
+    return "\n".join(lines)
+
+
 def _load_system_prompt(
     team_context: str,
     summary_language: str = "auto",
     prior_context: str | None = None,
     flagged_note: bool = False,
+    extra_sections: list[ExtraSectionSpec] | None = None,
 ) -> str:
     # Loaded from the package so the installed venv has the prompt available.
     text = resources.files("mp.prompts").joinpath("meeting_summary.md").read_text(encoding="utf-8")
@@ -130,6 +152,7 @@ def _load_system_prompt(
         "{summary_language_directive}",
         _summary_language_directive(summary_language),
     )
+    text = text.replace("{extra_sections_directive}", _extra_sections_directive(extra_sections))
     # AI6: recurring-series continuity. Trusted block (our own prior summary),
     # so it sits before the untrusted-transcript boundary below.
     if prior_context:
@@ -377,6 +400,7 @@ def summarize(
         cfg.summarization.summary_language,
         prior_context=_prior_meeting_context(transcript_md, cfg),
         flagged_note=bool(flagged),
+        extra_sections=cfg.summarization.extra_sections,
     )
 
     owns_client = client is None

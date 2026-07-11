@@ -67,6 +67,7 @@ generated: {generated}
 
 {questions}
 
+{extra_sections}
 {transcript_section}
 """
 
@@ -224,6 +225,15 @@ class ObsidianPublisher:
         decisions = "\n".join(f"{i+1}. {d}" for i, d in enumerate(summary.decisions)) or "_none_"
         actions = "\n".join(_format_action(a) for a in summary.actions) or "_none_"
         questions = "\n".join(f"- {q}" for q in summary.questions) or "_none_"
+        # WF7: render each non-empty workflow-defined section as its own H2 block.
+        # Empty when the workflow defines none, so an ordinary note is unchanged.
+        # A custom template without `{extra_sections}` simply omits them.
+        extra_blocks = [
+            "## " + sec.name + "\n\n" + "\n".join(f"- {item}" for item in sec.content)
+            for sec in summary.extra_sections
+            if sec.content
+        ]
+        extra_sections = ("\n\n".join(extra_blocks) + "\n") if extra_blocks else ""
         transcript_section = ""
         if transcript_md and transcript_md.exists():
             transcript_section = "## Transcript\n\n" + transcript_md.read_text(encoding="utf-8")
@@ -245,6 +255,7 @@ class ObsidianPublisher:
             decisions=decisions,
             actions=actions,
             questions=questions,
+            extra_sections=extra_sections,
             transcript_section=transcript_section,
         )
 

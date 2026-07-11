@@ -236,7 +236,10 @@ final class CorrectionViewModel: ObservableObject {
             actions: items,
             questions: Self.trimmed(questions),
             attendees: Self.trimmed(attendees),
-            detectedLanguage: detectedLanguage
+            detectedLanguage: detectedLanguage,
+            // WF7: the editor renders extra sections read-only; carry the
+            // originals through unchanged so a correction save never drops them.
+            extraSections: originalSummary.extraSections
         )
     }
 

@@ -392,6 +392,12 @@ struct AppleIntelligenceSummarizer {
             for q in s.questions { lines.append("- \(q)") }
             lines.append("")
         }
+        // WF7: workflow-defined extra sections, mirroring markdown.render_summary_md.
+        for sec in s.extraSections where !sec.content.isEmpty {
+            lines.append("## \(sec.name)")
+            for item in sec.content { lines.append("- \(item)") }
+            lines.append("")
+        }
         return lines.joined(separator: "\n").trimmingCharacters(in: .newlines) + "\n"
     }
 }
