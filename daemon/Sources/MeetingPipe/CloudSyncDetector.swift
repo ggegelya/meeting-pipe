@@ -65,7 +65,13 @@ enum CloudSyncDetector {
         let mobileDocuments = home.appendingPathComponent("Library/Mobile Documents", isDirectory: true)
 
         var ancestor = resolved
-        while true {
+        // Bounded rather than `while true`: the `parent.path == ancestor.path` root
+        // guard below relies on Foundation's `deletingLastPathComponent()` behaviour
+        // at "/", which differs across OS versions (an out-of-home library walked
+        // without terminating on the macos-14 CI runner, exactly the loop this test
+        // name warns about). No real path is anywhere near this deep, so the cap only
+        // ever fires as a backstop. Mirrors `cloudsync.py`'s finite `path.parents` walk.
+        for _ in 0..<128 {
             let parent = ancestor.deletingLastPathComponent()
 
             if parent.standardizedFileURL == cloudStorage {
@@ -115,6 +121,9 @@ enum CloudSyncDetector {
             }
             ancestor = parent
         }
+        // Reached only if the walk never hit home or root within the cap; a path
+        // that deep is not inside any sync root we would recognise.
+        return nil
     }
 
     private static func cloudStorageProvider(_ directory: URL) -> String? {
@@ -129,10 +138,13 @@ enum CloudSyncDetector {
     static func extendedAttributeNames(at url: URL) -> Set<String> {
         url.path.withCString { path -> Set<String> in
             let size = listxattr(path, nil, 0, 0)
-            guard size > 0 else { return [] }
+            // Non-positive is "no attributes"; an implausibly large list is treated
+            // the same rather than allocated against (a detector must never be the
+            // thing that crashes, per cloudsync.py). A real name list is well under 64 KB.
+            guard size > 0, size <= 64 * 1024 else { return [] }
             var buffer = [CChar](repeating: 0, count: size)
             let read = listxattr(path, &buffer, size, 0)
-            guard read > 0 else { return [] }
+            guard read > 0, read <= size else { return [] }
 
             var names: Set<String> = []
             var start = 0
