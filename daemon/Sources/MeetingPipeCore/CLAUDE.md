@@ -1,4 +1,4 @@
-# MeetingPipeCore — the island
+# MeetingPipeCore: the island
 
 Loaded when you touch files in this subtree. This is a separate SPM target from the `MeetingPipe` executable, deliberately: it holds the verdict-fusion logic (meeting lifecycle, mute gating) where the cross-thread risk actually lives, so it can be unit-tested without dragging in the app.
 
