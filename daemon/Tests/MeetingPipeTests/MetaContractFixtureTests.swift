@@ -80,8 +80,35 @@ final class MetaContractFixtureTests: XCTestCase {
         XCTAssertEqual(dict as NSDictionary, try fixture("workflow-nda"))
     }
 
+    /// WF8: a post-hoc reassignment rewrites only the workflow block, keeping the
+    /// original source + title, and drops every stale key from the old workflow. Here
+    /// a cloud-recorded meeting (Chrome source, the `workflow-full` cloud workflow) is
+    /// reassigned to the NDA `Legal review` workflow: the result keeps the Chrome
+    /// source but the old `workflow_notion_database_id` and `workflow_emoji` are gone,
+    /// and the block collapses to local + filesystem.
+    func test_reassign_into_nda_drops_stale_cloud_keys_and_matches_fixture() throws {
+        let existing = try XCTUnwrap(fixture("workflow-full") as? [String: Any])
+        var nda = Workflow(
+            id: UUID(uuidString: "0A2B3C4D-0000-0000-0000-00000000F002")!,
+            name: "Legal review",
+            color: "#BE353A",
+            contextPrompt: "Privileged. Do not egress.",
+            sinks: [.notion(databaseId: "should-be-dropped"), .obsidian],
+            backend: .anthropic
+        )
+        nda.flags.ndaMode = true
+        let reassigned = MeetingMetaSidecar.reassigned(existing: existing, to: nda)
+        XCTAssertEqual(reassigned as NSDictionary, try fixture("workflow-reassigned-to-nda"))
+        // The stale cloud keys did not survive the move into NDA.
+        XCTAssertNil(reassigned["workflow_notion_database_id"])
+        XCTAssertNil(reassigned["workflow_emoji"])
+        // The original recording's source + title are preserved.
+        XCTAssertEqual(reassigned["source_bundle_id"] as? String, "com.google.Chrome")
+        XCTAssertEqual(reassigned["meeting_title"] as? String, "Design review")
+    }
+
     func test_all_fixtures_carry_schema_version_one() throws {
-        for name in ["source-only-regulated", "workflow-full", "workflow-nda"] {
+        for name in ["source-only-regulated", "workflow-full", "workflow-nda", "workflow-reassigned-to-nda"] {
             let f = try fixture(name)
             XCTAssertEqual(f["schema_version"] as? Int, 1, "\(name) must carry schema_version 1")
         }

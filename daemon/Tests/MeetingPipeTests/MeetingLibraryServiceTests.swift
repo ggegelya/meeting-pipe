@@ -156,6 +156,49 @@ final class MeetingLibraryServiceTests: XCTestCase {
         wait(for: [e], timeout: 1.0)
     }
 
+    // MARK: - reassign workflow (WF8)
+
+    func test_reassignWorkflow_rewrites_meta_and_drops_stale_cloud_keys() throws {
+        try touch("m1.meta.json", contents: """
+        {
+          "schema_version": 1,
+          "source_bundle_id": "com.google.Chrome",
+          "source_display_name": "Google Chrome",
+          "source_kind": "browser",
+          "meeting_title": "Design review",
+          "workflow_id": "0A2B3C4D-0000-0000-0000-00000000F001",
+          "workflow_name": "Client work",
+          "workflow_color": "#0E8C82",
+          "workflow_context_prompt": "Acme account.",
+          "workflow_backend": "anthropic",
+          "workflow_sinks": ["notion", "obsidian"],
+          "workflow_notion_database_id": "db-acme-123",
+          "workflow_nda_mode": false
+        }
+        """)
+        var nda = Workflow(
+            id: UUID(uuidString: "0A2B3C4D-0000-0000-0000-00000000F002")!,
+            name: "Legal review",
+            color: "#BE353A",
+            contextPrompt: "Privileged.",
+            sinks: [.filesystem],
+            backend: .local
+        )
+        nda.flags.ndaMode = true
+
+        XCTAssertNoThrow(try service.reassignWorkflow(stem: "m1", to: nda).get())
+
+        let data = try Data(contentsOf: dir.appendingPathComponent("m1.meta.json"))
+        let dict = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(dict["workflow_name"] as? String, "Legal review")
+        XCTAssertEqual(dict["workflow_nda_mode"] as? Bool, true)
+        XCTAssertEqual(dict["workflow_sinks"] as? [String], ["filesystem"])
+        XCTAssertNil(dict["workflow_notion_database_id"])
+        // The original recording's source + title survive the reassignment.
+        XCTAssertEqual(dict["source_bundle_id"] as? String, "com.google.Chrome")
+        XCTAssertEqual(dict["meeting_title"] as? String, "Design review")
+    }
+
     // MARK: - retry
 
     func test_retry_missing_wav_fails_without_enqueue() {

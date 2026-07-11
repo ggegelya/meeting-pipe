@@ -33,6 +33,8 @@ final class MeetingLibraryService {
         case noVoiceprints
         /// "Save & publish" pressed with an empty paste box.
         case emptyPastedSummary
+        /// A workflow reassignment (WF8) could not rewrite `<stem>.meta.json`.
+        case metaWriteFailed(stem: String)
 
         var errorDescription: String? {
             switch self {
@@ -54,6 +56,8 @@ final class MeetingLibraryService {
                 return "No voiceprints for this meeting - only diarized meetings can be named."
             case .emptyPastedSummary:
                 return "Paste a summary before saving."
+            case .metaWriteFailed(let stem):
+                return "Could not update the workflow for \(stem)."
             }
         }
     }
@@ -156,6 +160,42 @@ final class MeetingLibraryService {
                 }
             }
         }
+    }
+
+    /// Post-hoc workflow reassignment (WF8): rewrite `<stem>.meta.json`'s workflow block
+    /// to `workflow`, keeping the source, title, and regulated flag. Synchronous like
+    /// `writeTitle` / `softDeleteMeeting`: a plain file write, no subprocess. The atomic
+    /// write bumps the sidecar mtime, so `MeetingStore`'s directory watcher re-scans the
+    /// row (chip + scope membership) on its own. Regenerate / Republish are offered by
+    /// the caller, never fired here, so nothing egresses without the user choosing it.
+    @discardableResult
+    func reassignWorkflow(stem: String, to workflow: Workflow) -> Result<Void, Error> {
+        let dir = outputDir()
+        let metaURL = dir.appendingPathComponent("\(stem).meta.json")
+        var existing: [String: Any] = [:]
+        if let data = try? Data(contentsOf: metaURL),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            existing = obj
+        }
+        let updated = MeetingMetaSidecar.reassigned(existing: existing, to: workflow)
+        guard JSONSerialization.isValidJSONObject(updated),
+              let data = try? JSONSerialization.data(
+                  withJSONObject: updated, options: [.prettyPrinted, .sortedKeys]) else {
+            return .failure(LibraryError.metaWriteFailed(stem: stem))
+        }
+        do {
+            try data.write(to: metaURL, options: .atomic)
+        } catch {
+            return .failure(error)
+        }
+        Log.writeLine("daemon", "workflow reassigned → \(stem) → \(workflow.name)")
+        Log.event(category: "coordinator", action: "workflow_reassigned", attributes: [
+            "stem": stem,
+            "workflow_id": workflow.id.uuidString,
+            "workflow": workflow.name,
+            "nda": workflow.flags.ndaMode,
+        ])
+        return .success(())
     }
 
     /// Ask a natural-language question across the whole library (AI3). Spawns `mp

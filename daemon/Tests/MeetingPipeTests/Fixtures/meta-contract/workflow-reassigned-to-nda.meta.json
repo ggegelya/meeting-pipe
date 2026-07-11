@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "source_bundle_id": "com.google.Chrome",
+  "source_display_name": "Google Chrome",
+  "source_kind": "browser",
+  "meeting_title": "Design review",
+  "workflow_id": "0A2B3C4D-0000-0000-0000-00000000F002",
+  "workflow_name": "Legal review",
+  "workflow_color": "#BE353A",
+  "workflow_context_prompt": "Privileged. Do not egress.",
+  "workflow_backend": "local",
+  "workflow_sinks": ["filesystem"],
+  "workflow_nda_mode": true
+}

@@ -228,7 +228,21 @@ def test_contract_fixture_regulated_source_only_forces_zero_egress() -> None:
     assert result.output.sinks == ["filesystem"]
 
 
+def test_contract_fixture_reassigned_into_nda_forces_local_filesystem() -> None:
+    # WF8: a cloud-recorded meeting (Chrome source) reassigned to the NDA workflow.
+    # The reader must honour the post-hoc NDA block: local backend, filesystem only,
+    # and no leftover Notion database from the old cloud workflow.
+    cfg = Config()
+    result = apply_overrides(cfg, _CONTRACT / "workflow-reassigned-to-nda.meta.json")
+    assert result.modes.workflow_nda_mode is True
+    assert result.summarization.backend == "local"
+    assert result.output.sinks == ["filesystem"]
+    assert result.notion.database_id in (None, "")
+
+
 def test_contract_fixtures_carry_schema_version() -> None:
-    for name in ("source-only-regulated", "workflow-full", "workflow-nda"):
+    for name in (
+        "source-only-regulated", "workflow-full", "workflow-nda", "workflow-reassigned-to-nda"
+    ):
         data = json.loads((_CONTRACT / f"{name}.meta.json").read_text(encoding="utf-8"))
         assert data["schema_version"] == 1

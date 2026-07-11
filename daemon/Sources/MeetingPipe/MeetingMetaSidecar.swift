@@ -56,4 +56,24 @@ enum MeetingMetaSidecar {
         }
         return dict
     }
+
+    /// Rewrite the workflow block of an existing sidecar dict for a post-hoc workflow
+    /// reassignment (WF8). Everything not under the workflow block (source, title, the
+    /// top-level `regulated_mode`, any unknown key) is preserved; every `workflow_*`
+    /// key is dropped and rebuilt from `workflow` through `build`, so the omission
+    /// rules stay in one place and a stale cloud key (e.g. a `workflow_notion_database_id`
+    /// or `workflow_backend` from the old workflow) cannot survive a move into an NDA
+    /// workflow. Pure, so `MetaContractFixtureTests` can pin it without the service.
+    static func reassigned(existing: [String: Any], to workflow: Workflow) -> [String: Any] {
+        var dict = existing
+        for key in dict.keys where key.hasPrefix("workflow_") {
+            dict.removeValue(forKey: key)
+        }
+        let block = build(source: nil, workflow: workflow)
+        for (key, value) in block where key.hasPrefix("workflow_") {
+            dict[key] = value
+        }
+        dict["schema_version"] = schemaVersion
+        return dict
+    }
 }

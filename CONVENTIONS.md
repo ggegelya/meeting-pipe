@@ -269,7 +269,9 @@ Current keys (May 2026):
 
 Absence of the sidecar (`<stem>.meta.json` missing) is valid — the pipeline falls back to global config + LLM-derived title.
 
-A golden-fixture contract test pins these keys across both suites (CI2): three committed sidecar shapes in `daemon/Tests/MeetingPipeTests/Fixtures/meta-contract/` are built and verified by `MetaContractFixtureTests` (Swift) and read through `apply_overrides` by `test_workflow_overlay.py` (Python). A key rename on either side breaks one suite, so drift can't pass CI unnoticed.
+A golden-fixture contract test pins these keys across both suites (CI2): four committed sidecar shapes in `daemon/Tests/MeetingPipeTests/Fixtures/meta-contract/` are built and verified by `MetaContractFixtureTests` (Swift) and read through `apply_overrides` by `test_workflow_overlay.py` (Python). A key rename on either side breaks one suite, so drift can't pass CI unnoticed.
+
+The workflow assignment is not immutable: **WF8** ("Change workflow..." in the Library detail menu) rewrites a recorded meeting's workflow block post-hoc through `MeetingMetaSidecar.reassigned(existing:to:)`, which drops every `workflow_*` key and rebuilds it from the new workflow via `build` (so a stale cloud key like `workflow_notion_database_id` cannot survive a move into an NDA workflow), while preserving the source, title, and the top-level `regulated_mode`. The atomic write bumps the sidecar mtime, so `MeetingStore`'s directory watcher refreshes the row chip and scope counts on its own. The fourth fixture (`workflow-reassigned-to-nda`) is the rewrite case: a cloud-app source with an NDA workflow block, asserted on both sides.
 
 ---
 

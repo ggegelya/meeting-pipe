@@ -306,6 +306,13 @@ final class LibraryWindowModel: ObservableObject {
         library?.softDeleteMeeting(stem: stem) ?? .failure(Unwired.libraryUnavailable)
     }
 
+    /// Rewrite a meeting's workflow assignment (WF8). Returns the result so the caller
+    /// can gate its Regenerate / Republish follow-up on success and surface a failure.
+    @discardableResult
+    func reassignWorkflow(stem: String, to workflow: Workflow) -> Result<Void, Error> {
+        library?.reassignWorkflow(stem: stem, to: workflow) ?? .failure(Unwired.libraryUnavailable)
+    }
+
     /// Copy the standard human-facing artefacts for a stem to the chosen folder.
     func exportMeeting(stem: String, to destination: URL) -> Result<Int, Error> {
         library?.exportMeeting(stem: stem, to: destination) ?? .failure(Unwired.libraryUnavailable)

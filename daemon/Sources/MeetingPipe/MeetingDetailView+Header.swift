@@ -206,6 +206,17 @@ extension MeetingDetailView {
                 Button("Local (on-device)") { runReSummarize(backend: "local") }
                 Button("Anthropic (cloud)") { runReSummarize(backend: "anthropic") }
             }
+            // WF8: re-route a misrouted meeting. Rewrites the meta sidecar's workflow
+            // block (context prompt, sinks, DB, NDA posture), then offers Regenerate /
+            // Republish. NDA transitions confirm explicitly in `beginReassign`.
+            if let workflows = libraryModel.workflowStore?.workflows, !workflows.isEmpty {
+                Menu("Change workflow\u{2026}") {
+                    ForEach(workflows, id: \.id) { wf in
+                        Button(wf.name) { beginReassign(to: wf) }
+                            .disabled(wf.name == meeting.workflowName)
+                    }
+                }
+            }
             // No "Edit transcript" here: there is no transcript-wide edit mode.
             // Transcripts are corrected per line, via the hover pencil or the
             // right-click "Edit text..." in the Transcript tab (TECH-UX12).
@@ -397,6 +408,73 @@ extension MeetingDetailView {
         toolbarAction("re_summarize_\(backend)") {
             Task { _ = await libraryModel.regenerateMeeting(stem: meeting.stem, backend: backend) }
         }
+    }
+
+    /// WF8: reassign this meeting to `workflow`, rewriting the meta sidecar's workflow
+    /// block. Entering or leaving NDA is the sharp edge and confirms explicitly. On
+    /// success, offers Regenerate / Republish, never firing either on its own.
+    func beginReassign(to workflow: Workflow) {
+        let wasNDA = meeting.workflowNDAMode ?? false
+        let willNDA = workflow.flags.ndaMode
+        if wasNDA != willNDA, !confirmNDATransition(into: willNDA, workflowName: workflow.name) {
+            return
+        }
+        toolbarAction("change_workflow") {
+            switch libraryModel.reassignWorkflow(stem: meeting.stem, to: workflow) {
+            case .success:
+                offerReassignFollowups(to: workflow)
+            case .failure(let error):
+                presentReassignError(error)
+            }
+        }
+    }
+
+    /// Confirm an NDA boundary crossing. Into NDA re-clamps from now on but cannot
+    /// un-egress past publishes; out of NDA is a deliberate downgrade. Returns whether
+    /// the user confirmed.
+    private func confirmNDATransition(into willNDA: Bool, workflowName: String) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        if willNDA {
+            alert.messageText = "Move this meeting into the NDA workflow \(workflowName)?"
+            alert.informativeText = "From now on it summarizes on-device and publishes to the filesystem only. This cannot un-publish anything already sent to Notion or another sink."
+            alert.addButton(withTitle: "Move into NDA")
+        } else {
+            alert.messageText = "Move this meeting out of NDA into \(workflowName)?"
+            alert.informativeText = "This is a deliberate downgrade: a later Regenerate or Republish may send this meeting's summary to the cloud and to the new workflow's sinks."
+            alert.addButton(withTitle: "Move out of NDA")
+        }
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// Offer the two follow-ups with plain-English consequences. Regenerate re-summarizes
+    /// with the new context prompt then republishes; Republish re-sends the existing
+    /// summary to the new sinks / DB. Neither runs unless chosen.
+    private func offerReassignFollowups(to workflow: Workflow) {
+        let alert = NSAlert()
+        alert.messageText = "Moved to \(workflow.name)."
+        alert.informativeText = "Regenerate re-summarizes with the new workflow's context prompt, then publishes to its sinks. Republish keeps the summary and only re-sends it to the new workflow's sinks and database. Neither runs until you pick it."
+        alert.addButton(withTitle: "Regenerate")
+        alert.addButton(withTitle: "Republish")
+        alert.addButton(withTitle: "Not now")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            Task { _ = await libraryModel.regenerateMeeting(stem: meeting.stem) }
+        case .alertSecondButtonReturn:
+            Task { _ = await libraryModel.republishMeeting(stem: meeting.stem) }
+        default:
+            break
+        }
+    }
+
+    private func presentReassignError(_ error: Error) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Couldn't change the workflow."
+        alert.informativeText = error.localizedDescription
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     func openMetaJSON() {
