@@ -8,9 +8,8 @@ model invented (or mangled) is dropped, so a presented citation always resolves
 to a real meeting on disk.
 
 Pure and stdlib-only (no engine, no numpy), so the assembly + verification are
-unit-testable without a model. The AI2 spike (`ai2_spike.py`) carries its own
-copy of the packing shape as throwaway measurement scaffolding; this is the
-version `mp ask` ships on.
+unit-testable without a model. This is the packing shape the AI2 spike validated
+(that throwaway harness has since been retired); `mp ask` ships on it.
 """
 from __future__ import annotations
 

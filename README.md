@@ -424,12 +424,7 @@ mp ask "open action items on the migration" --json  # machine-readable
 mp ask "hiring plan" --model mlx-community/Qwen2.5-14B-Instruct-4bit  # 14B cites best (AI2)
 ```
 
-The first ask builds the embedding index (multilingual-e5 on MLX, en/uk) and caches it; later asks reuse it and rebuild only when the library changes. The same feature is reachable in the app as the Library rail's `Ask` view. The AI2 spike that gated this (long-context RAG latency + faithfulness on your Mac) is in [`docs/spikes/ai2-embedding-rag-latency.md`](./docs/spikes/ai2-embedding-rag-latency.md); its harness stays runnable:
-
-```bash
-mp ai2-spike --index-only                           # just build the embedding index
-mp ai2-spike --reuse-index --sizes 4000,8000,16000  # measure RAG TTFT + faithfulness
-```
+The first ask builds the embedding index (multilingual-e5 on MLX, en/uk) and caches it; later asks reuse it and rebuild only when the library changes. The same feature is reachable in the app as the Library rail's `Ask` view. The AI2 spike that gated this (long-context RAG latency + faithfulness on your Mac) is written up in [`docs/spikes/ai2-embedding-rag-latency.md`](./docs/spikes/ai2-embedding-rag-latency.md); its throwaway measurement harness has since been retired (git history preserves it), and the packing shape it validated now lives in the shipping `mp ask` path.
 
 To roll up commitments across every meeting, `mp actions` lists the action items the summarizer already extracted, soonest deadlines first. Each action carries a resolved flag, and a dated open action shows its age off the ISO due date:
 

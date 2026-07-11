@@ -24,4 +24,12 @@ final class RecordingHUDTests: XCTestCase {
         let mid = RecordingHUDWindow.normalizedLevel(db: -30)
         XCTAssertEqual(LEDMeterView.litCount(forLevel: mid, segments: 10), 5)
     }
+
+    // HYG1: the meter poll runs only while the panel is visible and a provider is set.
+    func test_shouldMeterTick_only_when_visible_and_provider_set() {
+        XCTAssertTrue(RecordingHUDWindow.shouldMeterTick(occlusionVisible: true, hasProvider: true))
+        XCTAssertFalse(RecordingHUDWindow.shouldMeterTick(occlusionVisible: false, hasProvider: true))
+        XCTAssertFalse(RecordingHUDWindow.shouldMeterTick(occlusionVisible: true, hasProvider: false))
+        XCTAssertFalse(RecordingHUDWindow.shouldMeterTick(occlusionVisible: false, hasProvider: false))
+    }
 }

@@ -62,9 +62,6 @@ Subcommands:
                               Weekly review digest of aging open actions +
                               recent decisions, generated on-device; writes to
                               disk and (with --publish) fans out to the sinks
-  ai2-spike [--sizes 4000,8000,16000] [--repeats N] [--index-only]
-                              Spike: build an on-device embedding index and
-                              measure long-context RAG latency + faithfulness
 
 Globals:
   --help, -h                  Show this message
@@ -145,9 +142,6 @@ def main() -> int:
         return run(rest)
     if cmd == "restore":
         from .restore import main as run
-        return run(rest)
-    if cmd in {"ai2-spike", "ai2_spike"}:
-        from .ai2_spike import main as run
         return run(rest)
 
     print(f"unknown subcommand: {cmd}\n", file=sys.stderr)

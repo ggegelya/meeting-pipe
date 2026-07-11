@@ -341,7 +341,6 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 | `corrections.py` | `mp corrections-stats` | aggregate over correction records |
 | `analyze_detection.py` | `mp analyze-detection` | meeting-end detection audit |
 | `dogfood.py` | `mp dogfood` | side-by-side backend comparison |
-| `ai2_spike.py` | `mp ai2-spike` | long-context RAG latency + faithfulness harness |
 
 ### Sinks
 

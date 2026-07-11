@@ -841,8 +841,14 @@ final class PipelineLauncher: PipelineDriver {
             for _ in 0..<10 {
                 let candidate = dir.appendingPathComponent("pipeline/pyproject.toml")
                 if FileManager.default.fileExists(atPath: candidate.path) {
-                    let uvCandidates = ["/opt/homebrew/bin/uv", "/usr/local/bin/uv"]
-                    if let uv = uvCandidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+                    // uv's Homebrew paths, plus its standalone-installer defaults
+                    // (`~/.local/bin`, `~/.cargo/bin`) the Homebrew-only pair missed (HYG1).
+                    let uvFallbacks = [
+                        "/opt/homebrew/bin/uv", "/usr/local/bin/uv",
+                        home.appendingPathComponent(".local/bin/uv").path,
+                        home.appendingPathComponent(".cargo/bin/uv").path,
+                    ]
+                    if let uv = ExecutableResolver.resolve(name: "uv", fallbacks: uvFallbacks) {
                         return MPInvocation(shell: uv, args: ["run", "--project", dir.appendingPathComponent("pipeline").path, "mp"])
                     }
                     break

@@ -68,6 +68,8 @@ One nuance worth keeping: `mlx_lm.server` prefix-caches, so within a single chat
 
 ## Re-run (runbook)
 
+> Note (2026-07-11, HYG1): the `mp ai2-spike` harness was retired as throwaway measurement scaffolding. The commands below are preserved as the record of how this spike was run, but are no longer runnable (git history has the module); the packing shape it validated now ships in `rag.py` / `mp ask`.
+
 ```bash
 cd pipeline
 uv run mp ai2-spike --index-only                       # build/refresh the index only

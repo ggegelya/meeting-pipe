@@ -86,6 +86,33 @@ def _bytes_on_disk(path: Path) -> int:
     return total
 
 
+def _incremental_bytes(path: Path, counted: dict[str, int]) -> int:
+    """Running byte total under `path`, statting only files not yet measured or
+    still in progress. `counted` (path -> size) is mutated in place so a later
+    tick reuses a finished file's size instead of re-statting the whole tree
+    every 2 s during a multi-GB download (HYG1). A finished blob's size is
+    stable; only HF's in-progress `*.incomplete` blobs keep getting statted.
+    """
+    if not path.exists():
+        return 0
+    seen: set[str] = set()
+    for p in path.rglob("*"):
+        key = str(p)
+        seen.add(key)
+        if key in counted and not key.endswith(".incomplete"):
+            continue
+        try:
+            if p.is_file() and not p.is_symlink():
+                counted[key] = p.stat().st_size
+        except OSError:
+            continue
+    # Drop vanished entries (an `.incomplete` renamed on completion) so a
+    # finished blob is never counted under both its temp and final name.
+    for stale in counted.keys() - seen:
+        del counted[stale]
+    return sum(counted.values())
+
+
 def _repo_metadata(repo_id: str) -> tuple[int | None, str | None]:
     """Best-effort (expected_on_disk_bytes, resolved_commit_sha) via the HF API.
 
@@ -182,10 +209,11 @@ def prefetch(repo_id: str) -> int:
     # download thread exits. Cap on no-op events so a hung download
     # eventually times out at the daemon end (the daemon is the
     # supervising layer, not us).
+    counted: dict[str, int] = {}
     last_emit = 0.0
     while worker.is_alive():
         time.sleep(2)
-        now_bytes = _bytes_on_disk(cache_dir)
+        now_bytes = _incremental_bytes(cache_dir, counted)
         # Throttle: only emit if either bytes grew OR 10s passed since
         # the last event (so the daemon's UI still ticks).
         if now_bytes > cached_bytes or (time.monotonic() - last_emit) > 10:

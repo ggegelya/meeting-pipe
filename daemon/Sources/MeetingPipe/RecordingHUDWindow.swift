@@ -32,6 +32,7 @@ final class RecordingHUDWindow {
     private var levelMeter: LEDMeterView?
     private var meterTicker: Timer?
     private var levelProvider: (() -> Float)?
+    private var occlusionObserver: NSObjectProtocol?
 
     // 60 → 76: at 60 the "Recording" label (8pt dot + 5pt gap + 50pt text = 63pt) and
     // workflow names past ~9 chars overflowed the pill and were sliced by the rounded
@@ -70,19 +71,60 @@ final class RecordingHUDWindow {
 
         // 10 Hz poll for the voice-activity meter (TECH-UX8). Polling keeps
         // the audio render thread free of any UI push.
-        if levelProvider != nil {
-            meterTicker = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-                guard let self = self, let provider = self.levelProvider else { return }
-                self.levelMeter?.level = RecordingHUDWindow.normalizedLevel(db: provider())
-            }
+        startMeterTickerIfNeeded()
+
+        // HYG1: the meter is invisible when the panel is occluded (another Space,
+        // or fully covered), so pause the 10 Hz timer there and resume when it shows.
+        occlusionObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification,
+            object: panel, queue: .main
+        ) { [weak self] _ in
+            self?.syncMeterToOcclusion()
+        }
+    }
+
+    /// HYG1: poll the mic level only while the panel is on-screen and a level
+    /// provider is set, so an occluded HUD doesn't wake the CPU 10x/second to
+    /// update a meter no one can see.
+    static func shouldMeterTick(occlusionVisible: Bool, hasProvider: Bool) -> Bool {
+        occlusionVisible && hasProvider
+    }
+
+    /// (Re)start the 10 Hz meter poll if a provider is set and it isn't already
+    /// running. Idempotent, so the occlusion observer can call it freely.
+    private func startMeterTickerIfNeeded() {
+        guard levelProvider != nil, meterTicker == nil else { return }
+        meterTicker = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self = self, let provider = self.levelProvider else { return }
+            self.levelMeter?.level = RecordingHUDWindow.normalizedLevel(db: provider())
+        }
+    }
+
+    private func stopMeterTicker() {
+        meterTicker?.invalidate()
+        meterTicker = nil
+    }
+
+    private func syncMeterToOcclusion() {
+        guard let panel = panel else { return }
+        if RecordingHUDWindow.shouldMeterTick(
+            occlusionVisible: panel.occlusionState.contains(.visible),
+            hasProvider: levelProvider != nil
+        ) {
+            startMeterTickerIfNeeded()
+        } else {
+            stopMeterTicker()
         }
     }
 
     func dismiss(animated: Bool = true) {
         ticker?.invalidate()
         ticker = nil
-        meterTicker?.invalidate()
-        meterTicker = nil
+        stopMeterTicker()
+        if let obs = occlusionObserver {
+            NotificationCenter.default.removeObserver(obs)
+            occlusionObserver = nil
+        }
         levelProvider = nil
         startedAt = nil
         pulseDot?.stopPulsing()

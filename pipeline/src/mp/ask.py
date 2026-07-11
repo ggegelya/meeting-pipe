@@ -85,7 +85,7 @@ def answer_question(
     empty-library case is handled by the caller (this assumes a non-empty index).
     """
     target_chars = max(1, context_tokens) * CHARS_PER_TOKEN
-    # Retrieve generously, then pack to the char budget (mirrors the AI2 spike).
+    # Retrieve generously, then pack to the char budget (the rag.py packing shape).
     k = max(8, target_chars // 500)
     hits = index.search(question, k=k)
     chunks = [h.chunk for h in hits]

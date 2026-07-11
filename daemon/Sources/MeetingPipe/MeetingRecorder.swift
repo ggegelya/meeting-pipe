@@ -1545,22 +1545,12 @@ final class MeetingRecorder {
     }
 
     static func findFFmpeg() -> String? {
-        if let override = ProcessInfo.processInfo.environment["MEETINGPIPE_FFMPEG"],
-           FileManager.default.isExecutableFile(atPath: override) {
-            return override
-        }
-        if let path = ProcessInfo.processInfo.environment["PATH"] {
-            for entry in path.split(separator: ":") {
-                let candidate = URL(fileURLWithPath: String(entry)).appendingPathComponent("ffmpeg")
-                if FileManager.default.isExecutableFile(atPath: candidate.path) {
-                    return candidate.path
-                }
-            }
-        }
-        for fallback in ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/local/bin/ffmpeg"] {
-            if FileManager.default.isExecutableFile(atPath: fallback) { return fallback }
-        }
-        return nil
+        ExecutableResolver.resolve(
+            name: "ffmpeg",
+            envOverride: "MEETINGPIPE_FFMPEG",
+            searchPath: true,
+            fallbacks: ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/local/bin/ffmpeg"]
+        )
     }
 
     /// After stop, sanity-check the WAV's audio duration vs wallclock.

@@ -1,4 +1,4 @@
-"""On-device embedding index over the meeting library (AI2 spike; AI3 base).
+"""On-device embedding index over the meeting library (AI3).
 
 Builds a small vector index from the summaries + transcripts already on disk,
 reusing `chunked_windows` for windowing. The embedding backend is pluggable:
@@ -6,14 +6,14 @@ reusing `chunked_windows` for windowing. The embedding backend is pluggable:
 - `MLXEmbedder` (production path): a multilingual-e5 model on MLX via
   `mlx_embeddings`. Runs fully on-device, en/uk capable, 384-d.
 - `HashingEmbedder` (fallback + tests): a numpy-only hashed-token vector. Not
-  semantic, but needs no model and runs identically on CI/Linux, so the index,
-  the AI2 harness, and the tests stay exercisable without the heavy MLX dep.
+  semantic, but needs no model and runs identically on CI/Linux, so the index
+  and the tests stay exercisable without the heavy MLX dep.
 
 `default_embedder()` picks MLX when `mlx_embeddings` is importable, else the
 hashing fallback. Search is cosine similarity over L2-normalized rows.
 
-This module is the durable artifact AI3 (engine-backed cited answers) builds on;
-the AI2 measurement harness in `ai2_spike.py` is the throwaway that consumes it.
+This module is the durable artifact AI3 (engine-backed cited answers) builds on,
+consumed by `rag.py` for `mp ask` and `mp digest`.
 The heavy MLX import is deferred into the methods that use it, per the pipeline's
 lazy-import contract, so importing this module costs only numpy.
 """
