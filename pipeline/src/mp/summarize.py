@@ -504,6 +504,13 @@ def _identify_backend(client: SummaryClient, cfg: Config) -> tuple[str, str]:
         )
     if isinstance(client, AnthropicSummaryClient):
         return "anthropic", cfg.summarization.model
+    # PROV1 providers: light modules, so a direct import here is cheap.
+    from .provider_claude_cli import ClaudeCLIClient
+    if isinstance(client, ClaudeCLIClient):
+        return "claude_cli", client.model
+    from .provider_openai import OpenAIClient
+    if isinstance(client, OpenAIClient):
+        return "openai", client.model
     # Local backend: import lazily so non-local installs do not pay
     # the mlx_lm import cost for an isinstance check.
     try:
@@ -560,6 +567,16 @@ def _select_backend(cfg: Config) -> SummaryClient:
         return AnthropicSummaryClient(api_key=api_key)
     if backend == "auto":
         return _AutoFallbackClient(cfg)
+    if backend == "claude_cli":
+        # PROV1: no API key; rides the user's Claude Code auth. A cloud backend,
+        # so it is unreachable here under zero_egress (effective_backend forced
+        # local) and refuses to spawn if the guard is somehow armed.
+        from .provider_claude_cli import ClaudeCLIClient
+        return ClaudeCLIClient()
+    if backend == "openai":
+        from .provider_openai import OpenAIClient
+        api_key = require_env("OPENAI_API_KEY")
+        return OpenAIClient(api_key=api_key, model=cfg.summarization.openai_model)
     raise ValueError(f"unknown summarization.backend: {backend!r}")
 
 
@@ -645,7 +662,7 @@ def main(argv: list[str]) -> int:
     if not positional:
         print(
             "usage: mp summarize <transcript.md> [--candidate] "
-            "[--backend anthropic|local|auto|apple_intelligence]",
+            "[--backend anthropic|local|auto|apple_intelligence|claude_cli|openai]",
             file=sys.stderr,
         )
         return 2

@@ -24,7 +24,7 @@ CONFIG_PATH = _expand("~/.config/meeting-pipe/config.toml")
 # scripts/install.sh all read/write the same generic-password items through /usr/bin/security. Keep the
 # service + managed-key names in sync with KeychainSecrets.swift and install.sh.
 KEYCHAIN_SERVICE = "com.meetingpipe.daemon"
-MANAGED_SECRET_KEYS = ("ANTHROPIC_API_KEY", "NOTION_TOKEN", "HF_TOKEN")
+MANAGED_SECRET_KEYS = ("ANTHROPIC_API_KEY", "NOTION_TOKEN", "HF_TOKEN", "OPENAI_API_KEY")
 
 
 class Recording(BaseModel):
@@ -89,7 +89,16 @@ class Summarization(BaseModel):
     #                is produced in the Swift daemon, not here; the Python
     #                run-all finalizes the transcript then hands off (the
     #                daemon writes the summary and runs `mp publish`).
-    backend: Literal["anthropic", "local", "auto", "apple_intelligence"] = "anthropic"
+    #   "claude_cli": spawn the headless `claude -p` CLI (PROV1). A CLOUD backend
+    #                (it egresses through a child process) that needs no API key,
+    #                riding the user's existing Claude Code auth. Forced to local
+    #                under regulated/NDA like every cloud backend.
+    #   "openai":    an OpenAI-compatible chat-completions API over httpx (PROV1),
+    #                key in the Keychain (OPENAI_API_KEY). Cloud; clamped by the
+    #                egress guard exactly like anthropic.
+    backend: Literal[
+        "anthropic", "local", "auto", "apple_intelligence", "claude_cli", "openai"
+    ] = "anthropic"
     # Default to the 7B-4bit (~4.3 GB resident): the engine-comparison sweet
     # spot (LOCAL6). On par with the 14B on action/decision capture but with
     # named owners, zero failures over the corpus, ~30% lower latency, and
@@ -107,6 +116,10 @@ class Summarization(BaseModel):
     # backstop, so generous values here only avoid premature cutoffs.
     local_startup_timeout_sec: float = 120.0
     local_request_timeout_sec: float = 120.0
+    # PROV1: model id for the `openai` backend (an OpenAI-compatible
+    # chat-completions endpoint). Ignored by every other backend. User-set to
+    # whatever their key can reach; the default is a widely-available model.
+    openai_model: str = "gpt-4o"
     # Opt-in LLM diarization cleanup (TECH-DIAR1). When true, run-all runs
     # an extra LLM pass after finalize that merges same-speaker labels and
     # reattributes obvious mistakes before summarizing. Off by default: it
@@ -242,6 +255,12 @@ def effective_backend(cfg: Config) -> str:
     here.
     """
     backend = cfg.summarization.backend
+    # Every non-local backend is a cloud backend, including the CLI providers
+    # (PROV1): `claude_cli` egresses through a child process outside the
+    # in-process httpx guard, so the fail-closed decision has to live here at the
+    # policy layer, not in the transport patch. Forcing local for anything but
+    # `local` under zero_egress covers them all, so a regulated/NDA run never
+    # selects (and so never spawns) a cloud provider.
     if zero_egress(cfg) and backend != "local":
         return "local"
     return backend
@@ -250,7 +269,16 @@ def effective_backend(cfg: Config) -> str:
 # The valid `summarization.backend` values; mirror of the Literal on
 # `Summarization.backend`. Kept as a set so the one-shot override (PIPE6) can
 # validate a CLI value without re-deriving it from the Literal type.
-BACKENDS: frozenset[str] = frozenset({"anthropic", "local", "auto", "apple_intelligence"})
+BACKENDS: frozenset[str] = frozenset(
+    {"anthropic", "local", "auto", "apple_intelligence", "claude_cli", "openai"}
+)
+
+# Backends that reach the cloud by spawning a child process rather than an
+# in-process httpx call (PROV1). They sit OUTSIDE the egress guard's transport
+# patch, so `effective_backend` classes them as cloud (forced local under
+# zero_egress, above) and each such provider also refuses to spawn while the
+# guard is armed, as defense in depth (the SEC10 posture).
+CLI_BACKENDS: frozenset[str] = frozenset({"claude_cli"})
 
 
 def with_backend_override(cfg: Config, backend: str) -> Config:

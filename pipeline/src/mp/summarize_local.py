@@ -52,6 +52,7 @@ from pydantic import ValidationError
 
 from . import egress_guard, local_server
 from .chunking import chunked_windows
+from .json_extract import largest_balanced_json_object
 from .prefetch_model import model_is_cached
 from .prompt_safety import wrap_untrusted
 from .schemas import MeetingSummary, SUMMARY_TOOL
@@ -754,47 +755,16 @@ class LocalSummaryClient:
         # brace counter, tracking string state so braces inside strings
         # do not throw off the depth. Picks the biggest top-level object,
         # which is robust to leading/trailing prose.
-        biggest = _largest_balanced_json_object(text)
+        biggest = largest_balanced_json_object(text)
         if biggest is not None:
             out.append((3, biggest))
         return out
 
 
-def _largest_balanced_json_object(text: str) -> str | None:
-    best: tuple[int, int, int] | None = None  # (length, start, end)
-    depth = 0
-    start = -1
-    in_str = False
-    escape = False
-    for i, ch in enumerate(text):
-        if in_str:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-            continue
-        if ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-            continue
-        if ch == "}":
-            if depth == 0:
-                continue
-            depth -= 1
-            if depth == 0 and start >= 0:
-                length = i - start + 1
-                if best is None or length > best[0]:
-                    best = (length, start, i + 1)
-                start = -1
-    if best is None:
-        return None
-    return text[best[1]:best[2]]
+# The balanced-object scan moved to `json_extract` (PROV1) so `claude_cli` shares
+# it. Kept as a module-level alias because `test_summarize_local` imports this
+# name directly; new call sites use `largest_balanced_json_object`.
+_largest_balanced_json_object = largest_balanced_json_object
 
 
 def main(argv: list[str]) -> int:

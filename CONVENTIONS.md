@@ -260,7 +260,7 @@ Current keys (May 2026):
 | `workflow_color` | hex string | UI tint, not behavioural |
 | `workflow_emoji` | string? | |
 | `workflow_context_prompt` | string | injected into summarization system prompt |
-| `workflow_backend` | (`"anthropic"` \| `"local"` \| `"auto"` \| `"apple_intelligence"`)? | per-workflow override; omitted when the workflow inherits the global default, so a global `apple_intelligence` setting stays reachable |
+| `workflow_backend` | (`"anthropic"` \| `"local"` \| `"auto"` \| `"apple_intelligence"` \| `"claude_cli"` \| `"openai"`)? | per-workflow override; omitted when the workflow inherits the global default, so a global setting stays reachable. `claude_cli` / `openai` are the PROV1 cloud backends; validated Python-side against `config.BACKENDS` |
 | `workflow_sinks` | array of strings | subset of `["notion", "obsidian", "filesystem"]` |
 | `workflow_notion_database_id` | string? | per-workflow Notion DB |
 | `workflow_nda_mode` | bool | forces backend=local + sinks=filesystem |

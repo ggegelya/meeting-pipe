@@ -17,6 +17,16 @@ ANTHROPIC_API_VERSION = "2023-06-01"
 ANTHROPIC_CONSOLE_KEYS_URL = "https://console.anthropic.com/settings/keys"
 ANTHROPIC_DOCTOR_PROBE_MODEL = "claude-haiku-4-5-20251001"
 
+# --- OpenAI (PROV1) ----------------------------------------------------------
+# The `openai` backend talks to an OpenAI-compatible chat-completions API over
+# raw httpx (not the openai SDK) so the egress guard's httpx patch clamps it
+# exactly like anthropic. `OPENAI_API_BASE` is overridable via config for a
+# compatible gateway; doctor probes `GET {base}/models` (unbilled) for auth.
+OPENAI_API_BASE = "https://api.openai.com/v1"
+OPENAI_CHAT_PATH = "/chat/completions"
+OPENAI_MODELS_PATH = "/models"
+OPENAI_KEYS_URL = "https://platform.openai.com/api-keys"
+
 # --- Notion ------------------------------------------------------------------
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_API_VERSION = "2022-06-28"

@@ -11,6 +11,9 @@ final class SecretsStore: ObservableObject {
     /// Live values. didSet → debounced save. Empty string means absent.
     @Published var anthropicAPIKey: String { didSet { scheduleSave() } }
     @Published var notionToken: String { didSet { scheduleSave() } }
+    /// PROV1: key for the `openai` summarization backend. Optional; only used
+    /// when summarization.backend = openai (claude_cli needs no key at all).
+    @Published var openaiAPIKey: String { didSet { scheduleSave() } }
 
     /// Fired after a successful Keychain write. `App` mirrors the values into the process env so the next
     /// pipeline spawn + the in-daemon Notion database picker pick them up without a restart.
@@ -21,11 +24,13 @@ final class SecretsStore: ObservableObject {
 
     private static let anthropicAccount = "ANTHROPIC_API_KEY"
     private static let notionAccount = "NOTION_TOKEN"
+    private static let openaiAccount = "OPENAI_API_KEY"
 
     init(backend: SecretsBackend = KeychainBackend()) {
         self.backend = backend
         self.anthropicAPIKey = backend.value(for: Self.anthropicAccount) ?? ""
         self.notionToken = backend.value(for: Self.notionAccount) ?? ""
+        self.openaiAPIKey = backend.value(for: Self.openaiAccount) ?? ""
         self.isInitialized = true
     }
 
@@ -55,6 +60,7 @@ final class SecretsStore: ObservableObject {
     private func persist() throws {
         try write(anthropicAPIKey, to: Self.anthropicAccount)
         try write(notionToken, to: Self.notionAccount)
+        try write(openaiAPIKey, to: Self.openaiAccount)
     }
 
     private func write(_ value: String, to account: String) throws {

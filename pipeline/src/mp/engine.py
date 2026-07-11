@@ -159,6 +159,25 @@ def complete_text(
                                                  max_tokens=max_tokens),
                             backend="anthropic", model=client.model)
 
+    if backend == "claude_cli":
+        # PROV1: cloud backend via headless `claude -p`, unreachable under
+        # zero_egress (effective_backend forced local). No API key.
+        from .provider_claude_cli import ClaudeCLIClient
+        cli = ClaudeCLIClient()
+        return EngineResult(
+            text=cli.complete(system_prompt=system_prompt, user_message=user_message, max_tokens=max_tokens),
+            backend="claude_cli", model=cli.model,
+        )
+
+    if backend == "openai":
+        from .provider_openai import OpenAIClient
+        api_key = require_env("OPENAI_API_KEY")
+        oai = OpenAIClient(api_key=api_key, model=cfg.summarization.openai_model)
+        return EngineResult(
+            text=oai.complete(system_prompt=system_prompt, user_message=user_message, max_tokens=max_tokens),
+            backend="openai", model=oai.model,
+        )
+
     if backend == "auto":
         # Not reachable under regulated / NDA (effective_backend already forced
         # local there), so falling back to local on an Anthropic failure never

@@ -36,6 +36,9 @@ from .endpoints import (
     NOTION_API_BASE,
     NOTION_API_VERSION,
     NOTION_INTEGRATIONS_URL,
+    OPENAI_API_BASE,
+    OPENAI_KEYS_URL,
+    OPENAI_MODELS_PATH,
 )
 
 
@@ -69,7 +72,11 @@ def check_secrets() -> dict[str, bool]:
     """
     print(f"\n== secrets ==  (macOS Keychain: {KEYCHAIN_SERVICE})")
     required = ("ANTHROPIC_API_KEY", "NOTION_TOKEN")
-    optional = ("HF_TOKEN",)
+    optional = ("HF_TOKEN", "OPENAI_API_KEY")
+    _optional_reason = {
+        "HF_TOKEN": "only used if you opt back into pyannote",
+        "OPENAI_API_KEY": "only used when summarization.backend = openai",
+    }
     load_secrets()
     presence: dict[str, bool] = {}
     for key in required + optional:
@@ -82,7 +89,7 @@ def check_secrets() -> dict[str, bool]:
         elif key in required:
             _fail(f"{key} not in Keychain; set it in the daemon's Preferences or re-run scripts/install.sh")
         else:
-            _info(f"{key} not set (optional — only used if you opt back into pyannote)")
+            _info(f"{key} not set (optional — {_optional_reason.get(key, 'optional')})")
     return presence
 
 
@@ -148,6 +155,69 @@ def check_anthropic(present: bool) -> None:
         return
     if resp.status_code == 200:
         _ok("API key valid — billable account, model access confirmed")
+    elif resp.status_code in (401, 403):
+        _fail(f"key rejected: HTTP {resp.status_code} — {resp.text[:200]}")
+    elif resp.status_code == 429:
+        _warn("key valid but rate-limited right now (HTTP 429)")
+    else:
+        _warn(f"unexpected status {resp.status_code}: {resp.text[:200]}")
+
+
+# ---------- claude CLI (PROV1) ---------------------------------------------
+
+def check_claude_cli(cfg: Config | None) -> None:
+    """Preflight the `claude_cli` backend: binary presence + version, no live
+    call (auth rides Claude Code and is verified on first use). A local probe, so
+    it is egress-free and runs even under regulated_mode."""
+    print("\n== claude CLI (claude_cli backend) ==")
+    from .provider_claude_cli import find_claude
+    backend = cfg.summarization.backend if cfg else "?"
+    binary = find_claude()
+    if binary is None:
+        if backend == "claude_cli":
+            _fail("`claude` not found but summarization.backend = claude_cli; install Claude Code")
+        else:
+            _info("`claude` not found (only needed when summarization.backend = claude_cli)")
+        return
+    version: str | None = None
+    try:
+        out = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10)
+        if out.returncode == 0:
+            version = (out.stdout or out.stderr or "").strip().splitlines()[0] or None
+    except (OSError, subprocess.SubprocessError):
+        version = None
+    _ok(f"`claude` found at {binary}" + (f" ({version})" if version else ""))
+    _info("no API key needed; claude_cli uses your Claude Code login, verified on first use")
+    if cfg is not None and cfg.modes.regulated_mode and backend == "claude_cli":
+        _warn("regulated_mode forces local; claude_cli would be overridden to on-device")
+
+
+# ---------- OpenAI (PROV1) -------------------------------------------------
+
+def check_openai(present: bool, cfg: Config | None) -> None:
+    """Live check for the `openai` backend: an unbilled `GET /models` confirms the
+    key. Skipped under regulated_mode by the caller (it egresses)."""
+    print("\n== OpenAI API (openai backend) ==")
+    backend = cfg.summarization.backend if cfg else "?"
+    if not present:
+        if backend == "openai":
+            _fail("OPENAI_API_KEY missing but summarization.backend = openai — skipping live check")
+        else:
+            _info("OPENAI_API_KEY not set (only needed when summarization.backend = openai)")
+        _info(f"create a key at: {OPENAI_KEYS_URL}")
+        return
+    api_key = os.environ["OPENAI_API_KEY"]
+    try:
+        resp = httpx.get(
+            f"{OPENAI_API_BASE}{OPENAI_MODELS_PATH}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10.0,
+        )
+    except httpx.HTTPError as e:
+        _fail(f"network error reaching api.openai.com: {e}")
+        return
+    if resp.status_code == 200:
+        _ok("API key valid — model list reachable")
     elif resp.status_code in (401, 403):
         _fail(f"key rejected: HTTP {resp.status_code} — {resp.text[:200]}")
     elif resp.status_code == 429:
@@ -602,7 +672,7 @@ def check_screen_recording() -> None:
 def main(argv: list[str]) -> int:
     if argv and argv[0] in {"-h", "--help"}:
         print("usage: mp doctor")
-        print("Validates secrets, config, storage, and live access to Anthropic / Notion / HuggingFace.")
+        print("Validates secrets, config, storage, the claude_cli binary, and live access to Anthropic / OpenAI / Notion / HuggingFace.")
         return 0
 
     print("mp doctor — preflight check\n")
@@ -612,15 +682,20 @@ def main(argv: list[str]) -> int:
     check_local_stack(cfg)
     check_local_server()
     check_storage(cfg)
+    # claude_cli is a local binary probe (no egress), so it runs regardless of
+    # regulated_mode; the live cloud probes below are the ones that must not fire
+    # under zero-egress.
+    check_claude_cli(cfg)
     # SEC11: under regulated_mode the pipeline is zero-egress, so doctor must not
-    # reach any cloud API either. Skip the live Anthropic / Notion / HuggingFace
-    # probes and say why, instead of silently pinging out.
+    # reach any cloud API either. Skip the live Anthropic / OpenAI / Notion /
+    # HuggingFace probes and say why, instead of silently pinging out.
     if cfg is not None and cfg.modes.regulated_mode:
         print("\n== cloud services ==")
-        _info("regulated_mode is ON; skipping the live Anthropic / Notion / HuggingFace probes")
+        _info("regulated_mode is ON; skipping the live Anthropic / OpenAI / Notion / HuggingFace probes")
         _info("doctor stays zero-egress under regulated mode: no transcript or token leaves this Mac")
     else:
         check_anthropic(presence["ANTHROPIC_API_KEY"])
+        check_openai(presence["OPENAI_API_KEY"], cfg)
         check_notion(presence["NOTION_TOKEN"], cfg)
         check_huggingface(presence["HF_TOKEN"])
     check_screen_recording()

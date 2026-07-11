@@ -42,6 +42,27 @@ class SummaryClient(Protocol):
 
 
 @runtime_checkable
+class TextClient(Protocol):
+    """Produces free-form assistant text from a single-turn prompt.
+
+    The unstructured counterpart to `SummaryClient`, backing `mp ask` and
+    `mp digest` via `engine.complete_text`. Formalized in PROV1 so a provider is
+    one module implementing both call shapes (structured summarize + free-form
+    complete); the two long-standing shapes previously had no shared contract for
+    this one, so `engine` duck-typed against concrete classes. Anthropic's
+    existing `AnthropicTextClient` satisfies it structurally and is left as-is.
+    """
+
+    def complete(
+        self,
+        *,
+        system_prompt: str,
+        user_message: str,
+        max_tokens: int,
+    ) -> str: ...
+
+
+@runtime_checkable
 class MeetingPublisher(Protocol):
     """Publishes a `MeetingSummary` to whatever sink is configured
     (Notion, an Obsidian vault, the local filesystem, ...).

@@ -33,6 +33,21 @@ struct IntegrationsSectionView: View {
                 Text("Used to summarize transcripts. Get a key at console.anthropic.com. Local MLX backend doesn't need this.")
             }
 
+            SettingsGroup("OpenAI") {
+                SettingsStackRow("API key", showsDivider: false) {
+                    SettingsSecretField(text: $secrets.openaiAPIKey, placeholder: "sk-…")
+                }
+                SettingsRow("Status") {
+                    if !secrets.openaiAPIKey.isEmpty {
+                        SettingsStatusPill(tone: .granted, icon: "checkmark.circle.fill", text: "Configured")
+                    } else {
+                        SettingsStatusPill(tone: .needed, icon: "exclamationmark.triangle.fill", text: "Not configured")
+                    }
+                }
+            } footer: {
+                Text("Only needed for the OpenAI summarization backend. Get a key at platform.openai.com. Anthropic, local, and Claude CLI backends don't need this.")
+            }
+
             SettingsGroup("Notion") {
                 SettingsStackRow("Integration token", showsDivider: false) {
                     SettingsSecretField(text: $secrets.notionToken, placeholder: "ntn_…")

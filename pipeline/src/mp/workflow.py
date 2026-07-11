@@ -23,7 +23,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from .config import Config, zero_egress
+from .config import BACKENDS, Config, zero_egress
 
 log = logging.getLogger("mp.workflow")
 
@@ -73,7 +73,7 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
     clamped = zero_egress(overlay)
 
     backend_raw = meta.get("workflow_backend")
-    if isinstance(backend_raw, str) and backend_raw in {"anthropic", "local", "auto", "apple_intelligence"}:
+    if isinstance(backend_raw, str) and backend_raw in BACKENDS:
         if overlay.summarization.backend != backend_raw:
             overlay.summarization.backend = backend_raw  # type: ignore[assignment]
             changed.append(f"backend={backend_raw}")

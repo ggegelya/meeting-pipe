@@ -23,7 +23,7 @@ struct PipelineSectionView: View {
 
             SettingsGroup("Summarization") {
                 SettingsRow("Backend", showsDivider: false) {
-                    // Dropdown (not segmented): four backends in a segmented
+                    // Dropdown (not segmented): several backends in a segmented
                     // control stretched the window off-screen; a menu stays a
                     // fixed width regardless of how many backends exist.
                     SettingsMenuPicker(
@@ -33,6 +33,8 @@ struct PipelineSectionView: View {
                             ("local",              "Local MLX"),
                             ("auto",               "Auto"),
                             ("apple_intelligence", "Apple (experimental)"),
+                            ("claude_cli",         "Claude CLI"),
+                            ("openai",             "OpenAI"),
                         ]
                     )
                 }
@@ -342,6 +344,10 @@ struct PipelineSectionView: View {
             } else {
                 Text("Experimental, not recommended for daily use. On-device Apple Intelligence (macOS 26+) is native and zero-egress, but its small context forces heavy chunking on long meetings, it can mislabel Ukrainian, and it may echo dialogue on short meetings. Prefer Local MLX for a zero-egress backend.")
             }
+        case "claude_cli":
+            Text("Runs the headless `claude` CLI (Claude Code). No API key needed: it uses your existing Claude Code login, so it summarizes at no extra API cost. A cloud backend, so a regulated or NDA workflow forces on-device instead.")
+        case "openai":
+            Text("Calls an OpenAI-compatible API. Requires an OpenAI API key (set OPENAI_API_KEY under Integrations); the model id is summarization.openai_model in config.toml.")
         default:
             Text("Calls api.anthropic.com. Requires an Anthropic API key (set it under Integrations).")
         }

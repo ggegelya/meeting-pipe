@@ -55,7 +55,9 @@ def test_zero_egress_is_false_by_default() -> None:
 
 
 def test_effective_backend_regulated_forces_local() -> None:
-    for configured in ("anthropic", "auto", "apple_intelligence"):
+    # PROV1: the CLI (claude_cli) and API (openai) cloud backends are forced
+    # local too, so a regulated run never selects them.
+    for configured in ("anthropic", "auto", "apple_intelligence", "claude_cli", "openai"):
         cfg = Config.model_validate({
             "summarization": {"backend": configured},
             "modes": {"regulated_mode": True},
@@ -64,7 +66,7 @@ def test_effective_backend_regulated_forces_local() -> None:
 
 
 def test_effective_backend_nda_forces_local() -> None:
-    for configured in ("anthropic", "auto", "apple_intelligence"):
+    for configured in ("anthropic", "auto", "apple_intelligence", "claude_cli", "openai"):
         cfg = Config.model_validate({
             "summarization": {"backend": configured},
             "modes": {"workflow_nda_mode": True},
@@ -75,9 +77,20 @@ def test_effective_backend_nda_forces_local() -> None:
 def test_effective_backend_passthrough_when_unrestricted() -> None:
     # Apple Intelligence and auto must survive when no zero-egress mode is on;
     # the per-call-site collapse (apple->daemon, auto->fallback) happens later.
-    for configured in ("anthropic", "auto", "apple_intelligence", "local"):
+    for configured in ("anthropic", "auto", "apple_intelligence", "local", "claude_cli", "openai"):
         cfg = Config.model_validate({"summarization": {"backend": configured}})
         assert effective_backend(cfg) == configured
+
+
+def test_cli_backends_are_a_subset_of_backends_and_cloud() -> None:
+    # PROV1: claude_cli is a valid backend AND classed as a CLI (cloud) backend,
+    # so effective_backend's non-local force-local rule catches it.
+    from mp.config import BACKENDS, CLI_BACKENDS
+
+    assert {"claude_cli", "openai"} <= BACKENDS
+    assert "claude_cli" in CLI_BACKENDS
+    assert CLI_BACKENDS <= BACKENDS
+    assert "local" not in CLI_BACKENDS
 
 
 def test_effective_sinks_drops_notion_under_zero_egress() -> None:

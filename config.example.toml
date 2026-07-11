@@ -102,6 +102,11 @@ skip_above_chars = 80000
 #                 First use downloads the model (~4.3 GB) into HF cache.
 #   "auto"      : try anthropic first, fall back to local on
 #                 network/auth failure.
+#   "claude_cli": spawn the headless `claude -p` CLI (PROV1). No API key; uses
+#                 your Claude Code login, so it summarizes at no marginal cost.
+#                 A cloud backend: forced local under regulated/NDA.
+#   "openai"    : an OpenAI-compatible API (PROV1), key OPENAI_API_KEY in the
+#                 Keychain, model id in `openai_model` below. Cloud backend.
 # Pair "local" with modes.regulated_mode = true for full zero-egress.
 backend = "anthropic"
 # Default local model is Qwen 7B-4bit (~4.3 GB on disk, ~30-90s/meeting on
@@ -113,6 +118,8 @@ backend = "anthropic"
 # "local"/"auto" so the first meeting does not wait for HF.
 local_model = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 local_endpoint = "http://127.0.0.1:8765"
+# Model id for the "openai" backend (PROV1). Ignored by every other backend.
+openai_model = "gpt-4o"
 # Local-backend timeouts (LOCAL2). `local_startup_timeout_sec` bounds the wait
 # for mlx_lm.server to report healthy; `local_request_timeout_sec` is the base
 # per-request read timeout, scaled up by `max_tokens` at call time so a long

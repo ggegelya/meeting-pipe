@@ -139,3 +139,12 @@ binary for summarize + publish.
   someone wants to ship a Python-free build (deferred per backlog).
 - Restoring a fallback ASR path. Trigger condition: a FluidAudio
   regression that breaks the user's workflow for more than a day.
+
+## Amendment: pluggable cloud providers (PROV1, 2026-07-11)
+
+This ADR's "summarize stays in Python for outbound HTTP" framing and the README's "Anthropic Messages API directly, not Claude Code" rationale both predate headless `claude -p`. PROV1 formalizes a provider seam over the two summarize call shapes (the structured `SummaryClient.summarize` and the free-form `TextClient.complete` behind `engine.complete_text`) and adds two backends beside `anthropic` / `local` / `auto` / `apple_intelligence`:
+
+- `claude_cli`: spawns Claude Code non-interactively (`claude -p --output-format json`, tools and MCP off), the prompt on stdin, validated through the same pydantic path. Zero marginal API cost on an existing Claude subscription, and no API key. The "the API surface is more deterministic than the interactive one" reasoning still holds for the default, so `anthropic` stays the default and `claude_cli` is opt-in.
+- `openai`: an OpenAI-compatible chat-completions API over raw httpx (not the openai SDK), so the egress guard's httpx transport patch clamps it exactly like anthropic, with no SDK-specific plumbing.
+
+The load-bearing constraint: a CLI provider egresses through a child process, OUTSIDE the in-process httpx egress guard, so `config.effective_backend` classes every CLI backend (`CLI_BACKENDS`) as cloud and forces local under regulated/NDA, and each CLI provider also refuses to spawn while the guard is armed (defense in depth, the SEC10 posture). `auto` keeps its anthropic-then-local ladder and never falls into a CLI provider. This does not overturn the daemon-stays-offline rule: all outbound work, including spawning `claude`, still happens in the Python pipeline, not the daemon.

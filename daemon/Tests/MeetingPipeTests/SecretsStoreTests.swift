@@ -51,6 +51,19 @@ final class SecretsStoreTests: XCTestCase {
         XCTAssertEqual(backend.value(for: "NOTION_TOKEN"), "ntn-new")
     }
 
+    func test_openai_key_round_trips() throws {
+        // PROV1: the openai backend's key is a first-class managed secret.
+        let backend = InMemorySecretsBackend(["OPENAI_API_KEY": "sk-openai-loaded"])
+        let store = SecretsStore(backend: backend)
+        XCTAssertEqual(store.openaiAPIKey, "sk-openai-loaded")
+        store.openaiAPIKey = "sk-openai-new"
+        try store.saveNow()
+        XCTAssertEqual(backend.value(for: "OPENAI_API_KEY"), "sk-openai-new")
+        store.openaiAPIKey = ""
+        try store.saveNow()
+        XCTAssertNil(backend.value(for: "OPENAI_API_KEY"))
+    }
+
     func test_clearing_a_value_removes_the_item() throws {
         // Blanking a field in Preferences should delete the Keychain item, not store an empty string.
         let backend = InMemorySecretsBackend(["ANTHROPIC_API_KEY": "sk-old", "NOTION_TOKEN": "ntn-keep"])

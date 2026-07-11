@@ -114,6 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let s = secrets else { return }
             setenv("ANTHROPIC_API_KEY", s.anthropicAPIKey, 1)
             setenv("NOTION_TOKEN", s.notionToken, 1)
+            setenv("OPENAI_API_KEY", s.openaiAPIKey, 1)
         }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)

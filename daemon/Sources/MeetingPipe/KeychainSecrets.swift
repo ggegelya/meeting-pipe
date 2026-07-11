@@ -13,7 +13,7 @@ enum KeychainSecrets {
     static let service = "com.meetingpipe.daemon"
     /// The token env-var names this layer manages. `HF_TOKEN` is optional (legacy pyannote opt-in) and only
     /// carried so a migrating `secrets.env` doesn't drop it; the UI edits the two required tokens.
-    static let managedKeys = ["ANTHROPIC_API_KEY", "NOTION_TOKEN", "HF_TOKEN"]
+    static let managedKeys = ["ANTHROPIC_API_KEY", "NOTION_TOKEN", "HF_TOKEN", "OPENAI_API_KEY"]
 }
 
 /// Reads, writes, and removes a small set of named secrets. Injected into `SecretsStore` and the migration
