@@ -148,6 +148,19 @@ Create a database with at least these properties:
 
 Share the database with your Notion integration (••• → "Add connections").
 
+### Optional properties (auto-filled when present)
+
+Beyond the three required columns, the pipeline probes your database on every publish and fills any of these optional properties it recognises by name and matching type. Add whichever you want to filter or group by; the sink never creates or changes columns, so a property you leave out is simply skipped.
+
+| Name           | Type         | Filled with                                       |
+| -------------- | ------------ | ------------------------------------------------- |
+| `Workflow`     | Select       | The workflow that recorded the meeting            |
+| `Source`       | Select       | The app the meeting came from (Zoom, Teams, ...)  |
+| `Attendees`    | Multi-select | Speaker names inferred for the meeting            |
+| `Open actions` | Number       | Count of unresolved action items                  |
+
+A property that exists under one of these names but with a different type is skipped with one log line, and a database that carries none of them behaves exactly as a bare `Name`/`Date`/`Status` database.
+
 ---
 
 ## Running by hand

@@ -79,7 +79,9 @@ def test_creates_page_when_no_sidecar(tmp_path: Path, monkeypatch):
 
     assert result["page_id"] == "page-new-123"
     assert not result["idempotent"]
-    assert calls == [("POST", "/v1/pages")]
+    # PIPE5: the schema probe runs first (fail-soft here, the DB route 404s),
+    # then the page is created.
+    assert calls == [("GET", "/v1/databases/db-abc"), ("POST", "/v1/pages")]
 
     sidecar = tmp_path / "20260428-1200.notion.json"
     assert sidecar.exists()
@@ -121,7 +123,10 @@ def test_updates_page_when_sidecar_exists(tmp_path: Path, monkeypatch):
     assert result["page_id"] == "page-existing-999"
 
     methods = [m for m, _ in routes]
-    assert methods[0] == "PATCH"  # property update first
+    # PIPE5: the schema probe (GET /databases) runs first; then the property
+    # update PATCH lands before any child blocks are wiped.
+    assert routes[0] == ("GET", "/v1/databases/db-abc")
+    assert methods.index("PATCH") < methods.index("DELETE")  # props before wipe
     assert "DELETE" in methods    # old children wiped
     # POSTs only happen when creating, never on idempotent updates.
     assert "POST" not in methods
@@ -464,3 +469,162 @@ def test_patch_pages_still_retries_on_502(tmp_path: Path, monkeypatch):
         "PATCH /v1/pages/{id} should retry on 502; "
         f"saw {len(patch_pages_calls)} calls"
     )
+
+
+# --- PIPE5: optional property enrichment --------------------------------------
+
+
+def _db_schema_response(schema: dict[str, str]) -> httpx.Response:
+    """A Notion `GET /databases/{id}` response carrying `{name: type}` props."""
+    return httpx.Response(
+        200,
+        json={"properties": {name: {"type": t} for name, t in schema.items()}},
+    )
+
+
+def _write_meta(tmp_path: Path, meta: dict) -> None:
+    (tmp_path / "20260428-1200.meta.json").write_text(
+        json.dumps(meta), encoding="utf-8"
+    )
+
+
+def test_enriches_optional_properties_when_db_defines_them(tmp_path: Path, monkeypatch):
+    """A DB carrying the optional columns gets them filled from the sidecars on
+    create: Workflow/Source from meta, Attendees/Open actions from the summary."""
+    summary_path = _write_summary(tmp_path)
+    _write_meta(tmp_path, {"workflow_name": "Client work", "source_display_name": "Zoom"})
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
+
+    schema = {
+        "Name": "title", "Date": "date", "Status": "select",
+        "Workflow": "select", "Source": "select",
+        "Attendees": "multi_select", "Open actions": "number",
+    }
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/databases/db-abc":
+            return _db_schema_response(schema)
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": "page-1", "url": "https://www.notion.so/page-1"})
+        return httpx.Response(404, json={"message": "unexpected"})
+
+    _install_mock_transport(monkeypatch, handler)
+    publish(summary_path, cfg=_cfg())
+
+    props = captured[0]["properties"]
+    assert props["Workflow"]["select"]["name"] == "Client work"
+    assert props["Source"]["select"]["name"] == "Zoom"
+    assert {o["name"] for o in props["Attendees"]["multi_select"]} == {"Alice", "Bob"}
+    assert props["Open actions"]["number"] == 1  # one unresolved action in _summary()
+    # base props unchanged
+    assert props["Name"]["title"][0]["text"]["content"] == "Test meeting"
+    assert props["Status"]["select"]["name"] == "Captured"
+
+
+def test_enriches_optional_properties_on_update_path(tmp_path: Path, monkeypatch):
+    """Republish (the upsert/update path) fills the same optional props, and a
+    property the DB does not define is not written even when we have the data."""
+    summary_path = _write_summary(tmp_path)
+    _write_meta(tmp_path, {"workflow_name": "Client work", "source_display_name": "Zoom"})
+    (tmp_path / "20260428-1200.notion.json").write_text(
+        json.dumps({"page_id": "page-existing", "page_url": "x"}), encoding="utf-8"
+    )
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
+
+    schema = {"Name": "title", "Date": "date", "Status": "select",
+              "Workflow": "select", "Open actions": "number"}
+    patched: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "GET" and path == "/v1/databases/db-abc":
+            return _db_schema_response(schema)
+        if request.method == "PATCH" and path == "/v1/pages/page-existing":
+            patched.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": "page-existing", "url": "x"})
+        if request.method == "GET" and path == "/v1/blocks/page-existing/children":
+            return httpx.Response(200, json={"results": [], "has_more": False})
+        if request.method == "PATCH" and path == "/v1/blocks/page-existing/children":
+            return httpx.Response(200, json={})
+        return httpx.Response(404, json={"message": f"unexpected {request.method} {path}"})
+
+    _install_mock_transport(monkeypatch, handler)
+    publish(summary_path, cfg=_cfg())
+
+    props = patched[0]["properties"]
+    assert props["Workflow"]["select"]["name"] == "Client work"
+    assert props["Open actions"]["number"] == 1
+    assert "Source" not in props      # not defined on this DB
+    assert "Attendees" not in props   # not defined on this DB
+
+
+def test_bare_db_writes_only_base_properties(tmp_path: Path, monkeypatch):
+    """Byte-identical guarantee: a DB with only Name/Date/Status gets exactly
+    those three, even when a rich meta sidecar is present."""
+    summary_path = _write_summary(tmp_path)
+    _write_meta(tmp_path, {"workflow_name": "Client work", "source_display_name": "Zoom"})
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/databases/db-abc":
+            return _db_schema_response({"Name": "title", "Date": "date", "Status": "select"})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": "page-1", "url": "https://x"})
+        return httpx.Response(404, json={"message": "unexpected"})
+
+    _install_mock_transport(monkeypatch, handler)
+    publish(summary_path, cfg=_cfg())
+
+    assert set(captured[0]["properties"].keys()) == {"Name", "Date", "Status"}
+
+
+def test_optional_property_type_mismatch_is_skipped(tmp_path: Path, monkeypatch):
+    """A property that exists by name but with the wrong type is skipped, not
+    written (which would 400 the whole publish)."""
+    summary_path = _write_summary(tmp_path)
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/databases/db-abc":
+            return _db_schema_response({
+                "Name": "title", "Date": "date", "Status": "select",
+                "Attendees": "rich_text",  # wrong type for our multi_select value
+            })
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": "p", "url": "https://x"})
+        return httpx.Response(404, json={"message": "unexpected"})
+
+    _install_mock_transport(monkeypatch, handler)
+    publish(summary_path, cfg=_cfg())
+
+    props = captured[0]["properties"]
+    assert "Attendees" not in props
+    assert set(props.keys()) == {"Name", "Date", "Status"}
+
+
+def test_schema_probe_failure_falls_back_to_base_properties(tmp_path: Path, monkeypatch):
+    """A database the integration cannot read (404 / not shared) must not break
+    publishing: enrichment collapses to the three base columns."""
+    summary_path = _write_summary(tmp_path)
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/databases/db-abc":
+            return httpx.Response(404, json={"message": "database not found"})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": "p", "url": "https://x"})
+        return httpx.Response(404, json={"message": "unexpected"})
+
+    _install_mock_transport(monkeypatch, handler)
+    result = publish(summary_path, cfg=_cfg())
+
+    assert result["page_id"] == "p"
+    assert set(captured[0]["properties"].keys()) == {"Name", "Date", "Status"}

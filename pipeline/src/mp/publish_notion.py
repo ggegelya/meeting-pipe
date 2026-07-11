@@ -11,9 +11,14 @@ Body structure (P4.3 redesign, see `_build_blocks`):
 4. Open Questions (collapsed toggle)
 5. Full transcript (collapsed toggle, written only when notion.include_full_transcript is true)
 
-Only the Name (title), Date, and Status properties are written. We
-deliberately keep property writes minimal so the user's database schema only
-needs those columns to exist.
+The Name (title), Date, and Status properties are always written, so a
+database needs only those three columns. Beyond them the sink probes the target
+database schema once per publish and fills any optional property it recognises
+by name and type (Workflow, Source, Attendees, Open actions), reading them from
+the meeting's sidecars (PIPE5). Enrichment is fail-soft: a database that lacks a
+property is skipped silently, a type mismatch is skipped with one log line, a
+failed probe collapses back to the three base columns, and the sink never
+creates or mutates database schema.
 """
 from __future__ import annotations
 
@@ -76,14 +81,26 @@ class NotionRestPublisher:
             headers=self._headers,
             timeout=30.0,
         ) as client:
+            # PIPE5: probe the target DB schema and load the meeting's meta sidecar
+            # once, so `_properties` can fill the optional columns this database
+            # actually defines. Both reads are fail-soft (empty on any failure), so
+            # a bare Name/Date/Status database publishes byte-identically to before.
+            db_props = _probe_db_properties(client, self._cfg.notion.database_id)
+            meta = _load_meta_beside(sidecar_path)
             if existing and existing.get("page_id"):
                 page_id = existing["page_id"]
                 log.info("Updating existing page %s", page_id)
-                page = _update_page(client, page_id, summary, self._cfg, body_blocks)
+                page = _update_page(
+                    client, page_id, summary, self._cfg, body_blocks,
+                    meta=meta, db_props=db_props,
+                )
                 idempotent = True
             else:
                 log.info("Creating new page in database %s", self._cfg.notion.database_id)
-                page = _create_page(client, self._cfg, summary, body_blocks)
+                page = _create_page(
+                    client, self._cfg, summary, body_blocks,
+                    meta=meta, db_props=db_props,
+                )
                 idempotent = False
 
         page_id = page["id"]
@@ -261,11 +278,17 @@ def _fetch_all_child_ids(client: httpx.Client, page_id: str) -> list[str]:
 
 
 def _create_page(
-    client: httpx.Client, cfg: Config, summary: MeetingSummary, body: list[dict]
+    client: httpx.Client,
+    cfg: Config,
+    summary: MeetingSummary,
+    body: list[dict],
+    *,
+    meta: dict[str, Any] | None = None,
+    db_props: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "parent": {"database_id": cfg.notion.database_id},
-        "properties": _properties(summary, cfg),
+        "properties": _properties(summary, cfg, meta=meta, db_props=db_props),
         "children": body,
     }
     # POST /pages is non-idempotent: Notion's edge has been observed to
@@ -280,6 +303,9 @@ def _update_page(
     summary: MeetingSummary,
     cfg: Config,
     body: list[dict],
+    *,
+    meta: dict[str, Any] | None = None,
+    db_props: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     # 1. Update properties. PATCH on a specific page is idempotent
     #    (same body applied twice is a no-op), safe to retry.
@@ -287,7 +313,7 @@ def _update_page(
         client,
         "PATCH",
         f"/pages/{page_id}",
-        json={"properties": _properties(summary, cfg)},
+        json={"properties": _properties(summary, cfg, meta=meta, db_props=db_props)},
     )
 
     # 2. Wipe existing children and replace. Notion has no atomic "replace
@@ -323,23 +349,133 @@ def _update_page(
 # --- Property + block builders ------------------------------------------------
 
 
-def _properties(summary: MeetingSummary, cfg: Config) -> dict[str, Any]:
+def _properties(
+    summary: MeetingSummary,
+    cfg: Config,
+    *,
+    meta: dict[str, Any] | None = None,
+    db_props: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Map MeetingSummary → Notion property objects.
 
-    The user's DB must have:
-      - Name   (title)
-      - Date   (date)
-      - Status (select)
-    No other properties are written, so the database needs only those three columns.
+    The user's DB must have Name (title), Date (date), and Status (select); these
+    three are always written. When `db_props` (the probed schema) and `meta` (the
+    `<stem>.meta.json` sidecar) are supplied, any recognised optional property the
+    database also defines is filled from the meeting's data (PIPE5); see
+    `_optional_properties`. Without them (the default), only the three base
+    columns are written, byte-identical to a pre-PIPE5 publish.
     """
     today = datetime.now(timezone.utc).date().isoformat()
-    return {
+    props: dict[str, Any] = {
         "Name": {
             "title": [{"type": "text", "text": {"content": summary.title[:120]}}],
         },
         "Date": {"date": {"start": today}},
         "Status": {"select": {"name": cfg.notion.default_status}},
     }
+    props.update(_optional_properties(summary, meta or {}, db_props or {}))
+    return props
+
+
+def _probe_db_properties(client: httpx.Client, database_id: str) -> dict[str, str]:
+    """Best-effort read of the target database's property schema (PIPE5).
+
+    Returns ``{property_name: notion_type}`` so `_optional_properties` fills only
+    the optional columns the database actually defines. Fail-soft: any failure
+    (unreachable, 4xx, malformed body) yields ``{}``, which collapses enrichment
+    back to the Name/Date/Status base set. This is a read; the sink never creates
+    or mutates schema.
+    """
+    if not database_id:
+        return {}
+    try:
+        resp = _request_retrying(client, "GET", f"/databases/{database_id}")
+    except Exception as e:  # noqa: BLE001
+        log.info("Notion schema probe failed (%s); writing base properties only", e)
+        return {}
+    props = resp.get("properties")
+    if not isinstance(props, dict):
+        return {}
+    out: dict[str, str] = {}
+    for name, spec in props.items():
+        if isinstance(spec, dict) and isinstance(spec.get("type"), str):
+            out[name] = spec["type"]
+    return out
+
+
+def _optional_properties(
+    summary: MeetingSummary,
+    meta: dict[str, Any],
+    db_props: dict[str, str],
+) -> dict[str, Any]:
+    """Fill the optional Notion properties the target database defines (PIPE5).
+
+    For each recognised property, write it only when the database carries a
+    property of that exact name AND the expected Notion type. A property the
+    database lacks is skipped silently; a name that exists with the wrong type is
+    skipped with one log line. Empty select/multi-select values are skipped so a
+    republish never wipes a hand-set field; ``Open actions`` writes its count
+    (including 0), which is the filterable signal the property exists for.
+    """
+    if not db_props:
+        return {}
+    out: dict[str, Any] = {}
+
+    def _fill(name: str, expected_type: str, value: Any) -> None:
+        actual = db_props.get(name)
+        if actual is None:
+            return  # not defined on this database; skip silently
+        if actual != expected_type:
+            log.info(
+                "Notion property %r is %s, expected %s for enrichment; skipping",
+                name, actual, expected_type,
+            )
+            return
+        if value is not None:
+            out[name] = value
+
+    workflow = _sanitize_option_name(meta.get("workflow_name"))
+    _fill("Workflow", "select", {"select": {"name": workflow}} if workflow else None)
+
+    source = _sanitize_option_name(meta.get("source_display_name"))
+    _fill("Source", "select", {"select": {"name": source}} if source else None)
+
+    attendees = [
+        clean for a in summary.attendees if (clean := _sanitize_option_name(a))
+    ][:25]
+    _fill(
+        "Attendees",
+        "multi_select",
+        {"multi_select": [{"name": a} for a in attendees]} if attendees else None,
+    )
+
+    open_actions = sum(1 for a in summary.actions if not a.resolved)
+    _fill("Open actions", "number", {"number": open_actions})
+
+    return out
+
+
+def _sanitize_option_name(value: Any) -> str:
+    """Coerce a value into a Notion select/multi-select option name.
+
+    Notion rejects option names containing a comma, so commas become spaces; the
+    name is trimmed and capped at Notion's practical length. Non-strings and
+    blanks return ``""`` so the caller skips them.
+    """
+    if not isinstance(value, str):
+        return ""
+    return value.replace(",", " ").strip()[:100]
+
+
+def _load_meta_beside(notion_sidecar: Path) -> dict[str, Any]:
+    """Load the daemon's `<stem>.meta.json` sitting next to the notion sidecar,
+    for property enrichment (PIPE5). Fail-soft: absent or malformed yields ``{}``.
+    Derives the stem from the notion sidecar path so both the `publish()` and the
+    `publish_router.fanout` call paths resolve the same meta file.
+    """
+    stem = notion_sidecar.name.removesuffix(".notion.json")
+    data = _load_sidecar(notion_sidecar.parent / f"{stem}.meta.json")
+    return data if isinstance(data, dict) else {}
 
 
 def _build_blocks(
