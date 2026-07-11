@@ -22,6 +22,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from . import events as events_mod
+
 LOGS_DIR = Path(os.path.expanduser("~/Library/Logs/MeetingPipe"))
 SOURCES = ("events.jsonl", "pipeline_events.jsonl")
 
@@ -46,21 +48,21 @@ def _parse_since(s: str) -> datetime:
 
 def _iter_events() -> Iterator[dict]:
     for name in SOURCES:
-        path = LOGS_DIR / name
-        if not path.exists():
-            continue
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    yield json.loads(line)
-                except json.JSONDecodeError:
-                    # A truncated tail line during concurrent write. Skip
-                    # rather than abort: the user is debugging, not
-                    # forensically auditing.
-                    continue
+        # PERF7: read the base log plus its rotated generations, so `mp logs`
+        # keeps working on the recent window after a rotation.
+        for path in events_mod.log_generations(LOGS_DIR / name):
+            with path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        yield json.loads(line)
+                    except json.JSONDecodeError:
+                        # A truncated tail line during concurrent write. Skip
+                        # rather than abort: the user is debugging, not
+                        # forensically auditing.
+                        continue
 
 
 def _filter(

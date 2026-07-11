@@ -125,6 +125,7 @@ def _configure_logging() -> None:
     stream.setFormatter(logging.Formatter(fmt))
     root.addHandler(stream)
 
+    events.rotate_if_needed(log_file)  # PERF7: rotate before opening the run's handle
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setFormatter(logging.Formatter(fmt))
     root.addHandler(file_handler)

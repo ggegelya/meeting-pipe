@@ -206,6 +206,8 @@ Two append-only JSONL files at `~/Library/Logs/MeetingPipe/`:
 - `events.jsonl` — written by the daemon via `Log.event(category:action:attributes:)` in `Logger.swift`.
 - `pipeline_events.jsonl` — written by the pipeline via `mp.events.emit(category, action, **attrs)` in `events.py`.
 
+Both self-bound by size (PERF7). A file that reaches ~5 MiB rotates `foo.ext` -> `foo.1.ext` (index before the extension so it stays valid JSONL), shifting older generations up and dropping the oldest past 3 backups. The same size cap covers the four tail-able text logs (`main.log`, `daemon.log`, `recorder.log`, `pipeline.log`). Both sides own the rotation: `Log.rotateIfNeeded` in Swift (called before every append) and `mp.events.rotate_if_needed` in Python (called before each open-for-append); the cap is `MEETINGPIPE_LOG_MAX_BYTES`-overridable for tests. Readers span the boundary via `Log.logGenerations` / `events.log_generations` (base plus generations, oldest first), so `mp logs` and `mp analyze-detection` keep working on the recent window.
+
 Every line is one JSON object with at least three fields:
 
 ```jsonc

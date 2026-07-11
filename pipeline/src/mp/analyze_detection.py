@@ -31,6 +31,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from . import events
+
 DEFAULT_EVENTS_PATH = Path(os.path.expanduser("~/Library/Logs/MeetingPipe/events.jsonl"))
 
 # Pairing window: any `lifecycle.ended` whose timestamp falls within the
@@ -386,7 +388,10 @@ def main(argv: list[str]) -> int:
 
     source = Path(args.source)
     since = _parse_since(args.since) if args.since else None
-    raw = list(iter_events(source))
+    # PERF7: read the base log plus its rotated generations. pair_sessions sorts
+    # by ts, so concatenation order does not matter, only that no session in the
+    # recent window is lost across a rotation boundary.
+    raw = [ev for p in events.log_generations(source) for ev in iter_events(p)]
     sessions = [classify_session(s) for s in pair_sessions(raw, since=since)]
     stats = aggregate(sessions)
 

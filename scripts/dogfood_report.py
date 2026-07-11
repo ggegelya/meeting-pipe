@@ -45,25 +45,39 @@ def _parse_ts(raw: object) -> datetime | None:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
+def _log_files(path: Path) -> list[Path]:
+    """PERF7: the base log plus its rotated generations (`events.1.jsonl`, ...),
+    oldest first, so the report still sees the recent window after rotation.
+    Stdlib-only mirror of mp.events.log_generations (this script imports no mp)."""
+    numbered: list[tuple[int, Path]] = []
+    for g in path.parent.glob(f"{path.stem}.*{path.suffix}"):
+        mid = g.name[len(path.stem) + 1 : len(g.name) - len(path.suffix)]
+        if mid.isdigit():
+            numbered.append((int(mid), g))
+    files = [g for _, g in sorted(numbered, reverse=True)]
+    if path.exists():
+        files.append(path)
+    return files
+
+
 def _load(path: Path, since: datetime | None) -> list[dict]:
-    if not path.exists():
-        return []
     events: list[dict] = []
-    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
-        if since is not None:
-            ts = _parse_ts(event.get("ts"))
-            if ts is not None and ts < since:
+    for source in _log_files(path):
+        for line in source.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if not line:
                 continue
-        events.append(event)
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if since is not None:
+                ts = _parse_ts(event.get("ts"))
+                if ts is not None and ts < since:
+                    continue
+            events.append(event)
     return events
 
 

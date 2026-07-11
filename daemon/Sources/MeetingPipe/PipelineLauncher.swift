@@ -667,6 +667,7 @@ final class PipelineLauncher: PipelineDriver {
         // Created 0600 (SEC14): it carries pipeline output, matching the SEC11 log posture,
         // rather than landing 0644 until the next-launch sweep tightens it.
         let logURL = Log.logsDir.appendingPathComponent("pipeline.log")
+        Log.rotateIfNeeded(logURL)  // PERF7: rotate before opening the run's handle
         if !FileManager.default.fileExists(atPath: logURL.path) {
             FileManager.default.createFile(
                 atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600]

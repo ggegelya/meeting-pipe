@@ -397,15 +397,15 @@ Run `mp corrections-stats` to see the current state of your corpus plus a Phase 
 
 Everything lives under `~/Library/Logs/MeetingPipe/`:
 
+- `main.log`     : app startup and general daemon notices
 - `daemon.log`   — state transitions, recording start/stop, pipeline kick-off
-- `detector.log` — meeting detection events (which app/tab, debounce timing)
 - `recorder.log` — recording lifecycle, duration parity check
 - `pipeline.log`: summarization and publishing (transcription runs in the daemon, not here)
 - `events.jsonl`: structured Swift-side events, one JSON object per line
 - `pipeline_events.jsonl`: structured Python-side events
 - `launchd.{out,err}.log` — daemon stdout/stderr
 
-`tail -F ~/Library/Logs/MeetingPipe/*.log` is the fastest way to debug live. For postmortem queries against a workday's worth of detection or pipeline events, use `mp logs`:
+The event logs and the four text logs self-bound by size: each rotates to `foo.1.ext` (then `.2`, `.3`) at ~5 MiB and drops the oldest, so the directory never grows without bound. `mp logs` reads across the rotated generations, so a postmortem query still spans the recent window. `tail -F ~/Library/Logs/MeetingPipe/*.log` is the fastest way to debug live. For postmortem queries against a workday's worth of detection or pipeline events, use `mp logs`:
 
 ```bash
 mp logs --since 1h                                  # everything in the last hour

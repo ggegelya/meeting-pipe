@@ -22,6 +22,54 @@ from typing import Any
 
 _log = logging.getLogger("mp.events")
 
+# PERF7: size-based rename rotation so the logs self-bound. `events.jsonl` grew to
+# 63 MB / 338k lines on the dogfood Mac with no trim; the pipeline's own logs grow
+# the same way. Kept byte-for-byte in step with Swift's Log.rotateIfNeeded.
+_LOG_MAX_BYTES_DEFAULT = 5 * 1024 * 1024
+_LOG_GENERATIONS = 3
+
+
+def _max_log_bytes() -> int:
+    raw = os.environ.get("MEETINGPIPE_LOG_MAX_BYTES")
+    return int(raw) if raw and raw.isdigit() else _LOG_MAX_BYTES_DEFAULT
+
+
+def _generation_path(path: Path, k: int) -> Path:
+    """``events.jsonl`` -> ``events.1.jsonl``. The index goes before the extension
+    so a rotated file stays valid JSONL / a tail-able log."""
+    return path.with_name(f"{path.stem}.{k}{path.suffix}")
+
+
+def rotate_if_needed(path: Path) -> None:
+    """Rename-rotate ``path`` when it reaches the size cap. ``path`` -> ``path.1``,
+    shifting older generations up and dropping the oldest, so a log family self-bounds
+    at ~``(_LOG_GENERATIONS + 1) * cap``. Atomic renames, so a concurrent writer that
+    loses the race just appends to a fresh file. Call before opening for append."""
+    try:
+        if path.stat().st_size < _max_log_bytes():
+            return
+    except OSError:
+        return
+    _generation_path(path, _LOG_GENERATIONS).unlink(missing_ok=True)
+    for k in range(_LOG_GENERATIONS - 1, 0, -1):
+        src = _generation_path(path, k)
+        if src.exists():
+            src.replace(_generation_path(path, k + 1))
+    path.replace(_generation_path(path, 1))
+
+
+def log_generations(path: Path) -> list[Path]:
+    """Existing log files for ``path``, oldest first (base last / newest), so a
+    reader concatenating them sees the recent window across a rotation boundary."""
+    out: list[Path] = []
+    for k in range(_LOG_GENERATIONS, 0, -1):
+        g = _generation_path(path, k)
+        if g.exists():
+            out.append(g)
+    if path.exists():
+        out.append(path)
+    return out
+
 
 def _events_path() -> Path:
     base = Path(os.path.expanduser("~/Library/Logs/MeetingPipe"))
@@ -42,6 +90,7 @@ def emit(category: str, action: str, **attrs: Any) -> None:
     record["action"] = action
     path = _events_path()
     try:
+        rotate_if_needed(path)
         line = json.dumps(record, sort_keys=True, default=str)
         with path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
