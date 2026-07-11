@@ -551,6 +551,9 @@ def _select_backend(cfg: Config) -> SummaryClient:
             startup_timeout_sec=cfg.summarization.local_startup_timeout_sec,
             request_timeout_sec=cfg.summarization.local_request_timeout_sec,
             summary_language=cfg.summarization.summary_language,
+            # PIPE4: one knob drives both the cloud paste-bundle guard and the local
+            # map-reduce routing, so a long local meeting summarizes instead of bundling.
+            map_reduce_above_chars=cfg.summarization.skip_above_chars,
         )
     if backend == "anthropic":
         api_key = require_env("ANTHROPIC_API_KEY")
@@ -602,6 +605,8 @@ class _AutoFallbackClient:
                 startup_timeout_sec=self._cfg.summarization.local_startup_timeout_sec,
                 request_timeout_sec=self._cfg.summarization.local_request_timeout_sec,
                 summary_language=self._cfg.summarization.summary_language,
+                # PIPE4: the auto->local fallback map-reduces a long transcript too.
+                map_reduce_above_chars=self._cfg.summarization.skip_above_chars,
             ) as fallback:
                 return fallback.summarize(
                     system_prompt=system_prompt, transcript=transcript,

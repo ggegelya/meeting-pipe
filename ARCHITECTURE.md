@@ -496,7 +496,7 @@ Project-specific terms. When in doubt, the code is authoritative; this is the or
 
 **Lockon** - the lifecycle and `MicGate` subsystems walk the meeting window's AX subtree once at recording start and cache the handles (Leave button, Mute button), so they observe the same window for the meeting's lifetime instead of re-walking. `MeetingAXWindowWatcher` picks up call-control windows that appear later.
 
-**Long-meeting guard** - `summarization.skip_above_chars` (default 80 000 ≈ 1 h of speech). When the transcript markdown exceeds this size, `mp run-all` skips summarize + publish and writes a `<stem>.READY_FOR_MANUAL.md` paste-bundle instead, so the user doesn't burn a ~$0.50 Anthropic call on a long meeting they may not even want summarized.
+**Long-meeting guard** - `summarization.skip_above_chars` (default 80 000 ≈ 1 h of speech). Cloud-only (PIPE4): when the transcript markdown exceeds this size AND the run would summarize on a cloud backend (`anthropic`, or `auto` with a key), `mp run-all` skips summarize + publish and writes a `<stem>.READY_FOR_MANUAL.md` paste-bundle instead, so the user doesn't burn a ~$0.50 Anthropic call on a long meeting. An on-device run is exempt: Apple Intelligence chunks it in the daemon, and the local MLX backend map-reduces it in `summarize_local` (window, then batched reduce, the LOCAL3 pattern), so a long local meeting summarizes for free rather than dead-ending in a bundle. `_will_summarize_locally` in `orchestrate.py` is the exemption predicate.
 
 **`<stem>.meta.json`** - see *Sidecar*.
 

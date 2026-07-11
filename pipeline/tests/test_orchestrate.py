@@ -19,7 +19,9 @@ import pytest
 from mp.config import Config
 from mp.diarize import cosine_similarity
 from mp.orchestrate import (
+    _check_too_long,
     _finalize_streamed_transcript,
+    _will_summarize_locally,
     _write_manual_bundle,
     main as orchestrate_main,
     run_all,
@@ -510,6 +512,79 @@ def test_apple_intelligence_bypasses_long_meeting_guard(tmp_path: Path, monkeypa
 
     assert result["skipped"] == "apple_pending"
     assert "manual_bundle" not in result
+
+
+# --- PIPE4: the long-meeting guard is cloud-only ----------------------------
+
+def test_will_summarize_locally_by_backend(monkeypatch):
+    """The guard exemption predicate (PIPE4): on-device backends are exempt, and
+    `auto` counts as local only when no Anthropic key is available (mirroring the
+    backend-fallback resolution). Regulated forces local even with a key."""
+    def cfg_for(backend: str) -> Config:
+        c = Config()
+        c.summarization.backend = backend
+        return c
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    assert _will_summarize_locally(cfg_for("local")) is True
+    assert _will_summarize_locally(cfg_for("apple_intelligence")) is True
+    assert _will_summarize_locally(cfg_for("anthropic")) is False
+    # `auto` with a key tries the cloud first, so it is not exempt.
+    assert _will_summarize_locally(cfg_for("auto")) is False
+    # Regulated forces local regardless of the key.
+    regulated = cfg_for("anthropic")
+    regulated.modes.regulated_mode = True
+    assert _will_summarize_locally(regulated) is True
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # Keyless `auto` resolves to local, so it is exempt (the owner's choice).
+    assert _will_summarize_locally(cfg_for("auto")) is True
+
+
+def test_check_too_long_bundles_for_cloud_but_not_local(tmp_path: Path, monkeypatch):
+    """`_check_too_long` writes a paste bundle for a cloud run over the threshold, but
+    exempts a local run (which map-reduces the transcript instead)."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    stem = "20260516-0900"
+    md = tmp_path / f"{stem}.md"
+    md.write_text("A: " + "word " * 50, encoding="utf-8")
+    t = {"md": md, "json": tmp_path / f"{stem}.json"}
+    wav = tmp_path / f"{stem}.wav"
+    long_text = md.read_text(encoding="utf-8")
+
+    cloud = Config()
+    cloud.summarization.backend = "anthropic"
+    cloud.summarization.skip_above_chars = 10
+    cloud_skip = _check_too_long(wav, t, long_text, cloud)
+    assert cloud_skip is not None and "manual_bundle" in cloud_skip
+    assert (tmp_path / f"{stem}.READY_FOR_MANUAL.md").exists()
+
+    (tmp_path / f"{stem}.READY_FOR_MANUAL.md").unlink()
+    local = Config()
+    local.summarization.backend = "local"
+    local.summarization.skip_above_chars = 10
+    assert _check_too_long(wav, t, long_text, local) is None
+    assert not (tmp_path / f"{stem}.READY_FOR_MANUAL.md").exists()
+
+
+def test_local_backend_over_threshold_reaches_summarize_without_bundle(tmp_path: Path, monkeypatch):
+    """End-to-end: a local run over the threshold no longer dead-ends in a bundle; the
+    orchestrator proceeds to `summarize` (which map-reduces on-device)."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    stem = "20260516-0900"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)
+    cfg = Config()
+    cfg.summarization.backend = "local"
+    cfg.summarization.skip_above_chars = 1  # any non-empty transcript exceeds this
+
+    with patch("mp.orchestrate.summarize", side_effect=RuntimeError("reached summarize")) as s:
+        with pytest.raises(RuntimeError, match="reached summarize"):
+            run_all(wav, cfg=cfg)
+    s.assert_called_once()
+    assert not (tmp_path / f"{stem}.READY_FOR_MANUAL.md").exists()
 
 
 # --- FEAT8: paste bundles carry the flagged moments --------------------------

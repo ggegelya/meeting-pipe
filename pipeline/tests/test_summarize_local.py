@@ -526,3 +526,66 @@ def test_spawn_allows_an_uncached_model_when_egress_is_permitted(
 
     LocalSummaryClient(host="127.0.0.1", port=8765)._spawn()
     assert captured["cmd"][0].endswith("mlx_lm.server")
+
+
+# ----- PIPE4: hierarchical map-reduce for long transcripts -----
+
+def test_map_reduce_windows_and_reduces_long_transcript(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    """A transcript over the threshold windows into several map calls, then reduces
+    the partials into one summary. Every call goes to the same warm local server."""
+    host, port, server = fake_server
+    requests: list[dict] = []
+
+    def builder(payload: dict) -> dict:
+        requests.append(payload)
+        return {"choices": [{"message": {"content": json.dumps(_valid_summary_obj())}}]}
+
+    server.builder = builder  # type: ignore[attr-defined]
+    # Comfortably longer than one 1500-char window so it splits into several.
+    transcript = "\n".join(
+        f"Speaker {i % 3}: point number {i} in this fairly long discussion." for i in range(200)
+    )
+    assert len(transcript) > 1500
+
+    with LocalSummaryClient(
+        host=host, port=port, manage_subprocess=False, map_reduce_above_chars=100
+    ) as c:
+        s = c.summarize(
+            system_prompt="Summarize.", transcript=transcript, model="ignored", max_tokens=512
+        )
+
+    assert s.title == "Standup"  # the merged summary parsed and validated
+    # More than one model call => it mapped windows and reduced, not a single pass.
+    assert len(requests) > 1
+    # At least one call was a reduce over the partial summaries.
+    user_msgs = [
+        m["content"] for r in requests for m in r["messages"] if m["role"] == "user"
+    ]
+    assert any("Merge these partial meeting summaries" in u for u in user_msgs)
+
+
+def test_short_transcript_is_single_pass_not_map_reduce(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    """Below the threshold the client makes exactly one call, no windows or reduce,
+    so the normal-length local path is unchanged by PIPE4."""
+    host, port, server = fake_server
+    requests: list[dict] = []
+
+    def builder(payload: dict) -> dict:
+        requests.append(payload)
+        return {"choices": [{"message": {"content": json.dumps(_valid_summary_obj())}}]}
+
+    server.builder = builder  # type: ignore[attr-defined]
+    with LocalSummaryClient(host=host, port=port, manage_subprocess=False) as c:
+        c.summarize(
+            system_prompt="Summarize.", transcript="A: hi. B: bye.", model="ignored", max_tokens=512
+        )
+
+    assert len(requests) == 1
+    user_msgs = [
+        m["content"] for r in requests for m in r["messages"] if m["role"] == "user"
+    ]
+    assert not any("Merge these partial" in u for u in user_msgs)

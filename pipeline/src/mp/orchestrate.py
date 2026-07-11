@@ -351,15 +351,32 @@ def _check_byo(wav: Path, t: dict[str, Path], md_text: str, force_byo: bool) -> 
     return _skip_result(t, "byo", manual_bundle=str(bundle))
 
 
+def _will_summarize_locally(cfg: Config) -> bool:
+    """Whether this run summarizes on-device, so the long-meeting guard should route
+    rather than bundle (PIPE4). True for ``local`` and ``apple_intelligence``, and for
+    ``auto`` only when no Anthropic key is available (mirroring
+    ``backend_fallback.run_with_local_fallback``'s resolution). ``entry.prepare`` ran
+    before this and loaded secrets, so the env is authoritative. Regulated / NDA already
+    fold to ``local`` in ``effective_backend``."""
+    backend = effective_backend(cfg)
+    if backend in ("local", "apple_intelligence"):
+        return True
+    if backend == "auto":
+        return not os.environ.get("ANTHROPIC_API_KEY")
+    return False
+
+
 def _check_too_long(wav: Path, t: dict[str, Path], md_text: str, cfg: Config) -> dict | None:
-    """Long-meeting guard. Avoid Anthropic costs on a 1+ hour transcript by
-    handing it to the user for manual processing. Skipped for Apple Intelligence:
-    it is on-device and free, and chunks long transcripts itself, so the
-    paste-bundle escape hatch does not apply."""
+    """Long-meeting guard, cloud-only (PIPE4). It exists to avoid Anthropic costs on a
+    1+ hour transcript by handing it to the user for manual processing. An on-device run
+    is free and does not overflow the bill, so it is exempt: Apple Intelligence chunks
+    long transcripts in the daemon, and the local MLX backend map-reduces them in
+    ``summarize_local`` (both above the same ``skip_above_chars`` threshold). The
+    paste-bundle escape hatch stays the cloud-over-threshold behaviour and the fallback."""
     threshold = cfg.summarization.skip_above_chars
     if not threshold or len(md_text) <= threshold:
         return None
-    if effective_backend(cfg) == "apple_intelligence":
+    if _will_summarize_locally(cfg):
         return None
     bundle = _write_manual_bundle(t["md"], len(md_text), threshold)
     log.warning(

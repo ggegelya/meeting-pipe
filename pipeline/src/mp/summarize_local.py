@@ -51,6 +51,7 @@ import httpx
 from pydantic import ValidationError
 
 from . import egress_guard, local_server
+from .chunking import chunked_windows
 from .prefetch_model import model_is_cached
 from .prompt_safety import wrap_untrusted
 from .schemas import MeetingSummary, SUMMARY_TOOL
@@ -76,6 +77,25 @@ DEFAULT_IDLE_TIMEOUT_SEC = 300.0
 # timeout never fires before a legitimate generation completes (LOCAL2/AUD-21).
 _SECONDS_PER_OUTPUT_TOKEN_FLOOR = 0.1
 
+# Map-reduce for long transcripts on the local backend (PIPE4), generalizing
+# AppleIntelligenceSummarizer's LOCAL3 batched reduce out of Swift. A transcript
+# over this many chars would overflow the model context in one call (AI2 measured
+# ~4K tokens safe on the owner's Mac; 16K OOM-crashed it), so summarize() windows
+# it, summarizes each window, then reduces the partials in batches. The threshold
+# is `summarization.skip_above_chars` in production (one knob drives both the cloud
+# paste-bundle guard and this local routing); the default here matches its default.
+DEFAULT_MAP_REDUCE_ABOVE_CHARS = 80_000
+# Per-window char budget. Cyrillic tokenizes at ~1.7 tokens/char, so ~1500 chars
+# keeps a worst-case map call near the ~4K-token safe budget once the fixed system
+# prompt, JSON schema, and output are added; an English window carries proportionally
+# more text under the same token ceiling. Overlap keeps a sentence spanning a window
+# boundary in at least one window (chunking.py snaps to whitespace).
+_MAP_WINDOW_CHARS = 1_500
+_MAP_OVERLAP_CHARS = 200
+# Partial summaries merged per reduce call, so the reduce input also stays under the
+# budget. Bounded below at 2 so the reduce always makes progress toward one summary.
+_REDUCE_BATCH = 4
+
 
 def scaled_request_timeout(base_sec: float, max_tokens: int) -> float:
     """Per-request read timeout: a fixed ``base_sec`` budget (connect + prefill
@@ -84,6 +104,32 @@ def scaled_request_timeout(base_sec: float, max_tokens: int) -> float:
     off mid-stream, while the daemon's 20-min watchdog remains the hard backstop
     (LOCAL2/AUD-21). Pure so it is unit-testable without a server."""
     return base_sec + max(0, max_tokens) * _SECONDS_PER_OUTPUT_TOKEN_FLOOR
+
+
+def _batched(items: list[MeetingSummary], size: int) -> list[list[MeetingSummary]]:
+    """Partition ``items`` into groups of ``size`` (floored at 2 so a reduce always
+    shrinks the list). Mirrors ``AppleIntelligenceSummarizer.batched`` (PIPE4)."""
+    step = max(2, size)
+    return [items[i:i + step] for i in range(0, len(items), step)]
+
+
+def _render_for_reduce(summary: MeetingSummary) -> str:
+    """Serialize a partial summary as compact JSON for the next reduce round's input
+    (mirrors ``AppleIntelligenceSummarizer.renderForReduce``)."""
+    return summary.model_dump_json()
+
+
+def _reduce_instructions() -> str:
+    """System prompt for a reduce call: merge partial summaries of DIFFERENT parts of
+    one meeting into a single whole-meeting summary (mirrors the Swift reduce prompt)."""
+    return (
+        "You merge several partial summaries of DIFFERENT parts of ONE meeting into a "
+        "single summary of the whole meeting. Deduplicate bullets, decisions, action "
+        "items, questions, and attendees; when the same action appears more than once "
+        "keep the one with the clearest owner. Do not invent anything not present in "
+        "the partials. Produce at most 5 summary bullets."
+    )
+
 
 # Loopback hosts the local model server may bind / be reached on.
 # meeting-pipe always runs that server on the same machine; a
@@ -152,6 +198,7 @@ class LocalSummaryClient:
         idle_timeout_sec: float = DEFAULT_IDLE_TIMEOUT_SEC,
         summary_language: str = "auto",
         manage_subprocess: bool = True,
+        map_reduce_above_chars: int = DEFAULT_MAP_REDUCE_ABOVE_CHARS,
     ) -> None:
         self._model = model
         self._host = _loopback_only(host)
@@ -162,6 +209,9 @@ class LocalSummaryClient:
         # LOCAL7: the target output language, so summarize() can reinforce it and
         # retry when the local model drifts. "auto" defers to the transcript.
         self._summary_language = summary_language
+        # PIPE4: a transcript longer than this routes through a hierarchical
+        # map-reduce instead of a single (context-overflowing) call. 0 disables it.
+        self._map_reduce_above_chars = map_reduce_above_chars
         # Test seam: when False we assume the caller has a server
         # already running on (host, port) and never spawn one.
         self._manage_subprocess = manage_subprocess
@@ -210,22 +260,109 @@ class LocalSummaryClient:
             self._reset_idle_timer()
 
             target = expected_summary_language(self._summary_language, transcript)
-            system_content = self._augment_with_schema(system_prompt)
-            if target:
-                # Restate the target after the schema, where the local model's
-                # token attention is highest; the base directive already rode in
-                # via the system prompt but was being ignored (LOCAL7).
-                system_content += language_reinforcement(target)
-            messages = [
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": self._compose_user_message(transcript)},
-            ]
-            summary, last_text = self._summarize_with_schema_retry(messages, max_tokens)
+            if self._map_reduce_above_chars and len(transcript) > self._map_reduce_above_chars:
+                # PIPE4: too long for one context; window -> map -> reduce.
+                return self._summarize_map_reduce(
+                    system_prompt=system_prompt, transcript=transcript,
+                    target=target, max_tokens=max_tokens,
+                )
+            summary, last_text, messages = self._summarize_once(
+                system_prompt, transcript, target, max_tokens
+            )
             if target:
                 summary = self._retry_on_language_mismatch(
                     summary, last_text, messages, target, max_tokens
                 )
             return summary
+
+    def _summarize_once(
+        self, system_prompt: str, text: str, target: str | None, max_tokens: int,
+    ) -> tuple[MeetingSummary, str, list[dict[str, str]]]:
+        """Build the schema-forcing messages for `text` and run the one
+        schema-violation repair loop. Shared by the single-pass path and each
+        map window; the caller applies the language-mismatch retry. Returns the
+        summary, the raw text it parsed from, and the messages (for that retry)."""
+        system_content = self._augment_with_schema(system_prompt)
+        if target:
+            # Restate the target after the schema, where the local model's token
+            # attention is highest; the base directive already rode in via the
+            # system prompt but was being ignored (LOCAL7).
+            system_content += language_reinforcement(target)
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": self._compose_user_message(text)},
+        ]
+        summary, last_text = self._summarize_with_schema_retry(messages, max_tokens)
+        return summary, last_text, messages
+
+    def _summarize_map_reduce(
+        self, *, system_prompt: str, transcript: str, target: str | None, max_tokens: int,
+    ) -> MeetingSummary:
+        """Hierarchical map-reduce for a transcript too long for one call (PIPE4),
+        generalizing ``AppleIntelligenceSummarizer.generate`` (LOCAL3). Windows the
+        transcript (Cyrillic-safe char budget), summarizes each window, then reduces
+        the partials in batches until one remains. Called with the lock held and the
+        server running (from ``summarize``); the final summary still passes through
+        the language-mismatch repair, so a drifted merge is caught."""
+        windows = list(chunked_windows(
+            transcript, max_chars=_MAP_WINDOW_CHARS, overlap_chars=_MAP_OVERLAP_CHARS,
+        ))
+        log.info("map-reduce: %d chars -> %d windows", len(transcript), len(windows))
+        if len(windows) <= 1:
+            summary, last_text, messages = self._summarize_once(
+                system_prompt, windows[0].text if windows else transcript, target, max_tokens
+            )
+            if target:
+                summary = self._retry_on_language_mismatch(
+                    summary, last_text, messages, target, max_tokens
+                )
+            return summary
+        partials = [self._map_window(system_prompt, w.text, target, max_tokens) for w in windows]
+        return self._reduce_partials(partials, target, max_tokens)
+
+    def _map_window(
+        self, system_prompt: str, text: str, target: str | None, max_tokens: int,
+    ) -> MeetingSummary:
+        """One map call: summarize a single window into a partial summary, reusing the
+        schema-retry + language-repair loops so a partial is well-formed on its own."""
+        self._reset_idle_timer()  # keep the server warm across a long map-reduce
+        summary, last_text, messages = self._summarize_once(system_prompt, text, target, max_tokens)
+        if target:
+            summary = self._retry_on_language_mismatch(summary, last_text, messages, target, max_tokens)
+        return summary
+
+    def _reduce_partials(
+        self, partials: list[MeetingSummary], target: str | None, max_tokens: int,
+    ) -> MeetingSummary:
+        """Merge partials in batches of ``_REDUCE_BATCH`` until one remains, so every
+        reduce call's input also stays under the context budget."""
+        while len(partials) > 1:
+            nxt: list[MeetingSummary] = []
+            for group in _batched(partials, _REDUCE_BATCH):
+                nxt.append(group[0] if len(group) == 1 else self._reduce_group(group, target, max_tokens))
+            partials = nxt
+        return partials[0]
+
+    def _reduce_group(
+        self, group: list[MeetingSummary], target: str | None, max_tokens: int,
+    ) -> MeetingSummary:
+        self._reset_idle_timer()
+        combined = "\n\n---\n\n".join(_render_for_reduce(p) for p in group)
+        system_content = self._augment_with_schema(_reduce_instructions())
+        if target:
+            system_content += language_reinforcement(target)
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": (
+                "Merge these partial meeting summaries into one summary of the whole "
+                "meeting. Reply with ONLY the JSON object described in the system "
+                "message.\n\n" + combined
+            )},
+        ]
+        summary, last_text = self._summarize_with_schema_retry(messages, max_tokens)
+        if target:
+            summary = self._retry_on_language_mismatch(summary, last_text, messages, target, max_tokens)
+        return summary
 
     def _summarize_with_schema_retry(
         self, messages: list[dict[str, str]], max_tokens: int

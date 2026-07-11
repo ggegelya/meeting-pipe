@@ -169,7 +169,7 @@ struct PipelineSectionView: View {
                     )
                 }
             } footer: {
-                Text("When the transcript exceeds this size, the pipeline writes a paste-into-Claude bundle instead of calling the Anthropic API. 0 disables the guard. ~80,000 chars ≈ 1 hour of speech.")
+                Text("When the transcript exceeds this size, a cloud backend writes a paste-into-Claude bundle instead of calling the Anthropic API; a local backend summarizes it on-device with a map-reduce, no bundle. 0 disables the guard. ~80,000 chars ≈ 1 hour of speech.")
             }
 
             SettingsGroup("Weekly digest") {

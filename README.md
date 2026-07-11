@@ -50,7 +50,7 @@ After you click Stop, the daemon transcribes the recording on-device with FluidA
 
 A global hotkey (default `⌃⌥M`) toggles recording manually if detection misses a meeting or you want a quick voice memo. A second hotkey (default `⌃⌥⇧M`) is a stop-only force-stop — it never starts a recording, so you can panic-press it without risking an accidental start.
 
-For meetings longer than ~1 hour, the pipeline writes the transcript to disk along with a paste-into-Claude-Code bundle and **does not call the Anthropic API**. See "Long meetings" below.
+For meetings longer than ~1 hour on a cloud backend, the pipeline writes the transcript to disk along with a paste-into-Claude-Code bundle and **does not call the Anthropic API**; on a local backend it summarizes them on-device at no cost instead. See "Long meetings" below.
 
 The on-screen prompt also has a **Record (BYO)** button: same flow, but opt-in per-meeting - useful for sensitive calls or when you'd rather hand-summarise. After the recording finishes, the meeting's Summary tab shows a **Paste your summary** box: drop your text in, hit **Save & publish**, and it fans out to your configured sinks. (`mp publish-from-paste <stem>.md` does the same thing from a shell, reading `<stem>.summary.md` off disk.)
 
@@ -188,18 +188,16 @@ mp dogfood --report   # aggregate filled scorecards into a ship/no-ship
 
 ## Long meetings
 
-The Anthropic API charges per token. A 1-hour meeting can cost real money to auto-summarize — and you might prefer to handle it yourself in Claude Code, where you have access to the full conversation context anyway.
+The Anthropic API charges per token. A 1-hour meeting can cost real money to auto-summarize on a cloud backend, and you might prefer to handle it yourself in Claude Code, where you have the full conversation context anyway. Summarizing the same meeting on-device is free, so the guard is **cloud-only** (PIPE4).
 
-Default behavior: if the transcript exceeds **80 000 characters** (~20 000 tokens, ~1 hour of speech), the pipeline:
+Default behavior when the transcript exceeds **80 000 characters** (~20 000 tokens, ~1 hour of speech) depends on the backend:
 
-1. Saves the transcript markdown as usual at `<stem>.md`.
-2. Writes a sidecar `<stem>.READY_FOR_MANUAL.md` containing the exact system prompt the pipeline would have used, plus a pointer to the transcript.
-3. **Skips** the Anthropic call and the Notion publish.
-4. Sends a desktop notification.
+- On a **cloud backend** (`anthropic`, or `auto` with an API key), the pipeline saves the transcript markdown at `<stem>.md`, writes a sidecar `<stem>.READY_FOR_MANUAL.md` (the exact system prompt it would have used, plus a pointer to the transcript), **skips** the Anthropic call and the Notion publish, and sends a desktop notification.
+- On an **on-device backend** (`local` MLX, Apple Intelligence, or keyless `auto`), there is no per-token cost, so the meeting is summarized anyway. The local backend splits the long transcript into overlapping windows, summarizes each, and merges the partial summaries in batches (a hierarchical map-reduce sized to stay within the model's context), so a long local meeting no longer dead-ends in a paste bundle.
 
-To process the meeting yourself: open Claude Code, paste the system prompt from the `.READY_FOR_MANUAL.md` file, attach (or paste) the transcript markdown, and ask for the summary. No API charge.
+To process a cloud-backend bundle yourself: open Claude Code, paste the system prompt from the `.READY_FOR_MANUAL.md` file, attach (or paste) the transcript markdown, and ask for the summary. No API charge.
 
-To change the threshold or disable the guard, edit `summarization.skip_above_chars` in `~/.config/meeting-pipe/config.toml`. Set to `0` to disable.
+To change the threshold, edit `summarization.skip_above_chars` in `~/.config/meeting-pipe/config.toml` (the one knob gates both the cloud bundle and the local map-reduce). Set to `0` to disable the guard.
 
 ---
 
