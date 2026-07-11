@@ -62,11 +62,18 @@ final class MeetingAXWindowWatcher {
     /// `blindClearThreshold` consecutive polls while a `.muted` was latched, so
     /// MicGate can stop honouring a stale app-mute (Teams compact/mini window).
     private let onMuteCleared: () -> Void
+    /// Reads the OS voice-activity state (independent of the app UI), so the poll can spot a
+    /// confidently-`.muted` read contradicted by sustained live voice (MIC10 part 2).
+    private let vadActiveProvider: () -> Bool
+    /// Called when the app-mute read stays `.muted` while VAD reports voice for the dwell: the
+    /// read is stale and should be discredited (the host mode-gates the actual clear).
+    private let onStaleMuteContradiction: () -> Void
     private let scheduler: Scheduler
     private let stateResolver: StateResolver
     private let pollInterval: TimeInterval
     private let localeResolver: AXMuteButtonProbe.LocaleResolver
     private let blindClearThreshold: Int
+    private var contradiction: VADContradictionTracker
 
     private var cancelPoll: (() -> Void)?
     /// Last fused state we injected; suppresses duplicate events so MicGate only sees real transitions.
@@ -76,6 +83,10 @@ final class MeetingAXWindowWatcher {
     private var consecutiveBlindPolls: Int = 0
     /// True once we've cleared a latched `.muted` for the current blind streak; reset on the next confident reading.
     private var clearedWhileBlind: Bool = false
+    /// True while a stale `.muted` (contradicted by sustained VAD) is being held back, so the poll
+    /// does not re-inject it; cleared the instant the contradiction ends, so a genuine mute latches
+    /// again (MIC10 part 2).
+    private var suppressingStaleMute: Bool = false
 
     static let defaultScheduler: Scheduler = { delay, action in
         let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in
@@ -91,20 +102,27 @@ final class MeetingAXWindowWatcher {
         eventLog: EventLog,
         onMuteEvent: @escaping (AXMuteButtonProbe.Event) -> Void,
         onMuteCleared: @escaping () -> Void = {},
+        vadActiveProvider: @escaping () -> Bool = { false },
+        onStaleMuteContradiction: @escaping () -> Void = {},
         scheduler: @escaping Scheduler = MeetingAXWindowWatcher.defaultScheduler,
         stateResolver: StateResolver? = nil,
         localeResolver: @escaping AXMuteButtonProbe.LocaleResolver = AXMuteButtonProbe.defaultLocaleResolver,
         pollInterval: TimeInterval = MeetingAXWindowWatcher.defaultPollInterval,
-        blindClearThreshold: Int = 3
+        blindClearThreshold: Int = 3,
+        contradictionDwellSeconds: Double = VADContradictionTracker.defaultDwellSeconds,
+        clock: @escaping VADContradictionTracker.Clock = { Date() }
     ) {
         self.bundleID = bundleID
         self.eventLog = eventLog
         self.onMuteEvent = onMuteEvent
         self.onMuteCleared = onMuteCleared
+        self.vadActiveProvider = vadActiveProvider
+        self.onStaleMuteContradiction = onStaleMuteContradiction
         self.scheduler = scheduler
         self.localeResolver = localeResolver
         self.pollInterval = pollInterval
         self.blindClearThreshold = blindClearThreshold
+        self.contradiction = VADContradictionTracker(dwellSeconds: contradictionDwellSeconds, clock: clock)
         // Capture values (not self) so the default resolver has no retain cycle.
         let axApp = AXUIElementCreateApplication(pid)
         self.stateResolver = stateResolver ?? {
@@ -130,6 +148,8 @@ final class MeetingAXWindowWatcher {
         pollCount = 0
         consecutiveBlindPolls = 0
         clearedWhileBlind = false
+        suppressingStaleMute = false
+        contradiction.reset()
     }
 
     // MARK: - Poll loop
@@ -139,12 +159,39 @@ final class MeetingAXWindowWatcher {
         let states = stateResolver()
         let fused = MeetingAXWindowWatcher.fuse(states)
 
+        // MIC10 part 2: a confident `.muted` read contradicted by sustained OS voice-activity means
+        // the read is stale (the live control moved into a UI our matchers don't recognise, e.g.
+        // Teams' mini window, so we're reading a backgrounded/pre-join button). Suppress the stale
+        // `.muted` so MicGate falls through to the live signals, and re-latch once the contradiction
+        // ends, so a genuine muted side-conversation is only briefly affected (the q4-final scope
+        // guard). Distinct from the blind-clear below, which handles an *unreadable* read; this
+        // handles a confidently-wrong one. The host mode-gates the actual clear (never under the
+        // regulated gate). VAD is read once per poll, so a probe read is not on any hot path.
+        let appMuted = (fused == .muted)
+        let vadActive = vadActiveProvider()
+        if contradiction.observe(appMuted: appMuted, vadActive: vadActive) {
+            suppressingStaleMute = true
+            lastEmitted = nil  // so a genuine `.muted` re-latches once the contradiction clears
+            eventLog.emit(category: "micgate", action: "mute_state_cleared_vad_contradiction", attributes: [
+                "bundle_id": bundleID,
+                "poll_count": pollCount,
+                "dwell_s": contradiction.dwell,
+            ])
+            onStaleMuteContradiction()
+        }
+        if !(appMuted && vadActive) {
+            suppressingStaleMute = false
+        }
+
         if let fused = fused {
             // A confident reading: the live control is visible again, so any
             // blind streak is over.
             consecutiveBlindPolls = 0
             clearedWhileBlind = false
-            if fused != lastEmitted {
+            // Hold a stale `.muted` back while we're discrediting it; an `.unmuted` always flows
+            // (it ends the contradiction and is the fix landing).
+            let suppress = suppressingStaleMute && fused == .muted
+            if fused != lastEmitted && !suppress {
                 // Log only on transition (and the multi-button case) so events.jsonl
                 // isn't flooded at 1 Hz. A change to `.unmuted` here is the signature
                 // of the fix working; a `buttons_found > 1` disagreement is the case

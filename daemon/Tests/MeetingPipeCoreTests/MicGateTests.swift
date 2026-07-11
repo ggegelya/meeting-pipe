@@ -232,6 +232,19 @@ final class MicGateIntegrationTests: XCTestCase {
         }
     }
 
+    /// `currentVadActive` (MIC10 part 2) is what the window watcher reads to detect a stale
+    /// app-mute; it must reflect the fused HAL VAD, with `nil` (unsupported) reading as not active.
+    func test_currentVadActive_reflects_the_fused_hal_vad() {
+        let gate = MicGate(catalogue: Self.catalogue, halBus: CoreAudioHALBus(), axBus: AXObserverBus())
+        XCTAssertFalse(gate.currentVadActive, "unset halVad reads as not active")
+        gate.debugUpdate { $0.halVad = true }
+        XCTAssertTrue(gate.currentVadActive)
+        gate.debugUpdate { $0.halVad = false }
+        XCTAssertFalse(gate.currentVadActive)
+        gate.debugUpdate { $0.halVad = nil }
+        XCTAssertFalse(gate.currentVadActive, "unsupported VAD reads as not active")
+    }
+
     /// The publish path is async on the gate's internal queue; wait a tick to drain.
     private func drainPublishQueue() {
         let exp = expectation(description: "drain")

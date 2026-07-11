@@ -23,6 +23,12 @@ final class MeetingSessionController {
     /// Read by `writeMetaSidecar`, cleared after flush.
     var activeWorkflow: Workflow?
 
+    /// Capture mode of the in-flight recording; nil between meetings. Read by the MIC10-part-2
+    /// stale-mute discredit so it only clears the AX mute in a capture-first mode, never under the
+    /// regulated/NDA gate (where a wrong un-mute would leak at-rest-free audio on genuine muted
+    /// side-talk); there the owner-owed re-scope (part 1) is the fix, not a VAD heuristic.
+    var activeCaptureMode: CaptureMode?
+
     /// User's explicit workflow pick from the prompt chevron (TECH-B5),
     /// consumed by the next `beginRecording`. Highest matcher precedence,
     /// so it wins over rule matches.
@@ -292,6 +298,7 @@ final class MeetingSessionController {
                     voiceProcessing: self.coordinator.liveVoiceProcessing
                 )
                 self.activeWorkflow = resolvedWorkflow
+                self.activeCaptureMode = captureMode
                 self.markerSeconds = []  // FEAT8: fresh marker batch per recording
                 // Persist the privacy + summary routing at START (REC2 / AUD-6) so a
                 // crash / kill / rebuild before stop() can still recover this meeting
@@ -494,6 +501,7 @@ final class MeetingSessionController {
             }
             // Drop the workflow + markers so they can't bleed into the next meeting.
             self.activeWorkflow = nil
+            self.activeCaptureMode = nil
             self.markerSeconds = []
             // Arm the re-prompt cooldown so a post-call mic grab (Teams chat,
             // Zoom teardown toast) can't re-prompt right after the flush.
@@ -805,6 +813,20 @@ final class MeetingSessionController {
             },
             onMuteCleared: { [weak self] in
                 self?.coordinator.micGate.clearAxMute()
+            },
+            vadActiveProvider: { [weak self] in
+                self?.coordinator.micGate.currentVadActive ?? false
+            },
+            onStaleMuteContradiction: { [weak self] in
+                guard let self = self else { return }
+                // MIC10 part 2: discredit the stale AX read, but only in a capture-first mode.
+                // Under the regulated/NDA gate a wrong un-mute would leak at-rest-free audio on a
+                // genuine muted side-conversation, so there we leave the mute in place (the re-scope
+                // in part 1, owner-owed on a live AX dump, is the real fix). Capture-first keeps the
+                // full recording regardless, so recovering the user's voice is the safe default.
+                if self.activeCaptureMode?.capturesLosslessly ?? false {
+                    self.coordinator.micGate.clearAxMute()
+                }
             }
         )
         watcher.start()

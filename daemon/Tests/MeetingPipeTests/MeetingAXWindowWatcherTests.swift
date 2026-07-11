@@ -68,6 +68,11 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         var count = 0
     }
 
+    /// Counts `onStaleMuteContradiction` calls (the MIC10 part-2 VAD-contradiction discredit).
+    final class ContradictionCounter {
+        var count = 0
+    }
+
     // MARK: - Fixtures
 
     private func makeWatcher(
@@ -76,7 +81,10 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         sink: EventSink,
         log: EventLog = NoopEventLog(),
         clears: ClearCounter? = nil,
-        blindClearThreshold: Int = 3
+        blindClearThreshold: Int = 3,
+        vadActive: @escaping () -> Bool = { false },
+        staleContradictions: ContradictionCounter? = nil,
+        contradictionDwellSeconds: Double = VADContradictionTracker.defaultDwellSeconds
     ) -> MeetingAXWindowWatcher {
         MeetingAXWindowWatcher(
             pid: 4242,
@@ -85,11 +93,14 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
             eventLog: log,
             onMuteEvent: { sink.events.append($0) },
             onMuteCleared: { clears?.count += 1 },
+            vadActiveProvider: vadActive,
+            onStaleMuteContradiction: { staleContradictions?.count += 1 },
             scheduler: scheduler,
             stateResolver: resolver,
             localeResolver: { "en" },
             pollInterval: 1.0,
-            blindClearThreshold: blindClearThreshold
+            blindClearThreshold: blindClearThreshold,
+            contradictionDwellSeconds: contradictionDwellSeconds
         )
     }
 
@@ -328,5 +339,66 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         scheduler.fire()      // blind #2
         scheduler.fire()      // blind #3 -> clear
         XCTAssertEqual(clears.count, 1)
+    }
+
+    // MARK: - MIC10 part 2: VAD-contradiction staleness
+
+    func test_vad_contradiction_discredits_and_suppresses_a_stale_muted_read() {
+        // The AX read stays confidently `.muted`, but VAD reports voice: a stale read. With a 0 s
+        // dwell the contradiction fires on the first poll; the `.muted` is held back (never
+        // injected) so MicGate falls through to the live voice.
+        let resolver = ScriptedResolver([[.muted]])
+        let scheduler = ManualScheduler()
+        let sink = EventSink()
+        let stale = ContradictionCounter()
+        let watcher = makeWatcher(
+            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink,
+            vadActive: { true }, staleContradictions: stale, contradictionDwellSeconds: 0
+        )
+
+        watcher.start()
+
+        XCTAssertEqual(stale.count, 1, "the stale read was discredited")
+        XCTAssertTrue(sink.events.isEmpty, "the stale .muted was suppressed, not injected")
+    }
+
+    func test_no_contradiction_when_vad_is_quiet() {
+        // A genuine mute (no voice) must inject `.muted` and never discredit.
+        let resolver = ScriptedResolver([[.muted]])
+        let scheduler = ManualScheduler()
+        let sink = EventSink()
+        let stale = ContradictionCounter()
+        let watcher = makeWatcher(
+            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink,
+            vadActive: { false }, staleContradictions: stale, contradictionDwellSeconds: 0
+        )
+
+        watcher.start()
+
+        XCTAssertEqual(stale.count, 0)
+        XCTAssertEqual(sink.events.map(\.state), [.muted])
+    }
+
+    func test_genuine_mute_relatches_once_the_voice_stops() {
+        // The scope guard: a muted side-conversation trips the contradiction, but the moment the
+        // voice stops the read is honoured again (re-latched), so privacy is only briefly affected.
+        var vad = true
+        let resolver = ScriptedResolver([[.muted]])   // always reads muted
+        let scheduler = ManualScheduler()
+        let sink = EventSink()
+        let stale = ContradictionCounter()
+        let watcher = makeWatcher(
+            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink,
+            vadActive: { vad }, staleContradictions: stale, contradictionDwellSeconds: 0
+        )
+
+        watcher.start()                       // poll 1: contradiction fires, .muted suppressed
+        XCTAssertEqual(stale.count, 1)
+        XCTAssertTrue(sink.events.isEmpty)
+
+        vad = false                           // the side-talk stops
+        scheduler.fire()                      // poll 2: contradiction clears -> .muted re-latches
+        XCTAssertEqual(sink.events.map(\.state), [.muted], "the genuine mute is honoured again")
+        XCTAssertEqual(stale.count, 1, "no new discredit")
     }
 }

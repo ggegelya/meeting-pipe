@@ -160,6 +160,13 @@ public final class MicGate {
         lock.withLock { lastVerdict }
     }
 
+    /// The current fused HAL voice-activity state, read under `lock`. The window watcher reads it
+    /// to detect a stale app-mute (MIC10 part 2): app says muted while the OS says the user is
+    /// speaking. `nil` (VAD unsupported on this input) reads as not-active.
+    public var currentVadActive: Bool {
+        lock.withLock { state.halVad == true }
+    }
+
     #if DEBUG
     /// Test-only: drive the same serialized state read-modify-write the probes
     /// use, so a concurrency test can interleave independent field writes from
