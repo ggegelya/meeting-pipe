@@ -105,6 +105,15 @@ final class LibraryWindowModel: ObservableObject {
     }
     @Published var openedFromInsight: InsightOrigin? = nil
 
+    /// AUTO1: a `meetingpipe://library?scope=...` (or ask / digest) deeplink sets
+    /// this; the root view switches the rail scope and clears it. Parallels
+    /// `pendingSelection`.
+    @Published var pendingScope: LibraryScope? = nil
+
+    /// AUTO1: a `meetingpipe://ask?q=...` deeplink sets this; `AskView` prefills the
+    /// question, runs it, then clears it.
+    @Published var pendingAskQuestion: String? = nil
+
     /// Non-`@Published` so toolbar reads don't republish the parent model; the toolbar observes it directly via `@ObservedObject`.
     let processing = ProcessingTracker()
 
@@ -382,6 +391,12 @@ struct LibraryRootView: View {
             scope = .allMeetings
             meetingSelection = [stem]
             model.pendingSelection = nil
+        }
+        .onChange(of: model.pendingScope) { _, newScope in
+            // AUTO1: a meetingpipe:// deeplink asked to open a specific rail.
+            guard let newScope else { return }
+            scope = newScope
+            model.pendingScope = nil
         }
         .sheet(item: $editingWorkflow, onDismiss: { editingWorkflow = nil }) { wf in
             if let store = model.workflowStore {

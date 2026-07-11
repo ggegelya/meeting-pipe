@@ -181,6 +181,17 @@ cat >"$APP_BUILD/Contents/Info.plist" <<'PLIST'
     <string>MeetingPipe records meeting audio for transcription. Audio never leaves your Mac.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>MeetingPipe captures system audio (other participants' voices) directly via Apple's process-tap API on macOS 14.2+. The same TCC entitlement gates audio process taps; no screen pixels are read.</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.meetingpipe.daemon</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>meetingpipe</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST

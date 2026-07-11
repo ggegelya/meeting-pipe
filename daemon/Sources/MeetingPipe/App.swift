@@ -55,6 +55,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         override ?? !disableAutoRestart
     }
 
+    /// AUTO1: handle a `meetingpipe://` deeplink (a Shortcuts "Open URL" action,
+    /// Raycast, Stream Deck, or `open meetingpipe://...`). Launch Services delivers
+    /// it here on the already-running instance once the scheme is registered in the
+    /// bundle Info.plist, so no App Intents metadata is needed. Parsed off the URL
+    /// and routed to the live coordinator, which applies the hotkey's own gates.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard let command = AutomationCommand.parse(url) else {
+                Log.event(category: "automation", action: "url_unrecognized",
+                          attributes: ["url": url.absoluteString])
+                continue
+            }
+            coordinator?.handleAutomation(command)
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.main.info("MeetingPipe starting")
 

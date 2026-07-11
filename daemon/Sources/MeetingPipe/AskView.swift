@@ -29,7 +29,23 @@ struct AskView: View {
             Divider()
             content
         }
-        .onAppear { fieldFocused = true }
+        .onAppear {
+            fieldFocused = true
+            // AUTO1: a meetingpipe://ask?q=... deeplink may have set the question
+            // before this view mounted (the scope switch mounts it).
+            consumePendingQuestion()
+        }
+        .onChange(of: model.pendingAskQuestion) { _, _ in consumePendingQuestion() }
+    }
+
+    /// AUTO1: prefill and run a deeplinked question once, then clear it so a later
+    /// manual edit isn't re-run.
+    private func consumePendingQuestion() {
+        guard let q = model.pendingAskQuestion,
+              !q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        model.pendingAskQuestion = nil
+        question = q
+        ask()
     }
 
     private var trimmedQuestion: String {

@@ -44,3 +44,4 @@ swift test                # full Xcode required locally (CI on macos-14 has it)
 | Permissions | `PermissionsCenter.swift` |
 | Pipeline subprocess | `PipelineLauncher.swift`, `LocalServerReaper.swift` (kills an `mlx_lm.server` orphaned by a watchdog SIGKILL) |
 | Event log | `Logger.swift` (`Log.event` / `Log.writeLine` / `Log.main`) |
+| Automation (`meetingpipe://`) | `Automation/AutomationCommand.swift` (pure parser), `Automation/Coordinator+Automation.swift` (router), `AppDelegate.application(_:open:)` in `App.swift`, `CFBundleURLTypes` in `scripts/install.sh` |

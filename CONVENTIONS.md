@@ -224,7 +224,7 @@ Every line is one JSON object with at least three fields:
 
 | Source | Categories |
 |---|---|
-| Daemon (`Log.event` / `EventLog.emit`) | `axbus`, `coordinator`, `correction`, `detector`, `doctor`, `halbus`, `library`, `lifecycle`, `main`, `micgate`, `recorder`, `signal`, `transcription`, `workflow` |
+| Daemon (`Log.event` / `EventLog.emit`) | `automation`, `axbus`, `coordinator`, `correction`, `detector`, `doctor`, `halbus`, `library`, `lifecycle`, `main`, `micgate`, `recorder`, `signal`, `transcription`, `workflow` |
 | Pipeline (`mp.events.emit`) | `pipeline`, `publisher` |
 
 ### Adding a new action

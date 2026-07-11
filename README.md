@@ -50,6 +50,19 @@ After you click Stop, the daemon transcribes the recording on-device with FluidA
 
 A global hotkey (default `⌃⌥M`) toggles recording manually if detection misses a meeting or you want a quick voice memo. A second hotkey (default `⌃⌥⇧M`) is a stop-only force-stop — it never starts a recording, so you can panic-press it without risking an accidental start.
 
+The same controls are reachable through a `meetingpipe://` URL scheme (AUTO1), so Shortcuts (via its built-in "Open URL" action), Raycast, Stream Deck, or a plain `open meetingpipe://toggle` in the shell can drive the daemon:
+
+| URL | Does |
+| --- | --- |
+| `meetingpipe://toggle` | Start or stop, like `⌃⌥M` |
+| `meetingpipe://record` | Start a recording if idle (`meetingpipe://record?byo=1` for the BYO variant) |
+| `meetingpipe://stop` | Stop only, like force-stop |
+| `meetingpipe://library` | Open the Library (`?scope=ask` / `?scope=digests` / `?scope=facts` to jump to a rail) |
+| `meetingpipe://ask?q=<question>` | Open the Ask rail with the question prefilled and run it |
+| `meetingpipe://digest` | Open the Digests rail and generate the weekly digest |
+
+External triggers respect exactly the gates the hotkey does: a denied-mic trigger routes to the Permissions tab instead of failing silently, and `record` never stacks a second recording on a live one. Everything stays local (Launch Services delivers the URL to the running daemon; no new egress). Registering the scheme is part of the bundle Info.plist, so a URL scheme added by an update needs one `scripts/install.sh` run (the fast `rebuild.sh` path does not rewrite Info.plist). Native App Intents (a first-class Shortcuts action, no URL typing) are not wired yet: the plain `swift build` bundle does not run the App Intents metadata step Shortcuts needs to discover them, so the URL scheme with Shortcuts' "Open URL" is the supported path for now.
+
 For meetings longer than ~1 hour on a cloud backend, the pipeline writes the transcript to disk along with a paste-into-Claude-Code bundle and **does not call the Anthropic API**; on a local backend it summarizes them on-device at no cost instead. See "Long meetings" below.
 
 The on-screen prompt also has a **Record (BYO)** button: same flow, but opt-in per-meeting - useful for sensitive calls or when you'd rather hand-summarise. After the recording finishes, the meeting's Summary tab shows a **Paste your summary** box: drop your text in, hit **Save & publish**, and it fans out to your configured sinks. (`mp publish-from-paste <stem>.md` does the same thing from a shell, reading `<stem>.summary.md` off disk.)
