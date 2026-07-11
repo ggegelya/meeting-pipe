@@ -151,6 +151,27 @@ class RosterStore:
         self._write(kept)
         return True
 
+    def rename(self, old: str, new: str) -> bool:
+        """Rename a roster person, keeping their samples and centroids untouched
+        (FEAT3-MANAGE). Returns True when `old` was found and now reads as `new`.
+        A no-op returns False and writes nothing: an empty `new`, an absent `old`,
+        or a `new` that collides with a different existing person (renaming is not
+        merging). Renaming a person to their current name is a True no-op."""
+        new = new.strip()
+        if not new:
+            return False
+        people = self._people()
+        person = next((p for p in people if p.get("name") == old), None)
+        if person is None:
+            return False
+        if new == old:
+            return True
+        if any(p.get("name") == new for p in people):
+            return False
+        person["name"] = new
+        self._write(people)
+        return True
+
     def _write(self, people: list[dict]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"schema_version": _SCHEMA_VERSION, "people": people}

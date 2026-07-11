@@ -42,6 +42,10 @@ def main(argv: list[str]) -> int:
     forget = sub.add_parser("forget", help="Remove a name from the roster.")
     forget.add_argument("--name", required=True)
 
+    rename = sub.add_parser("rename", help="Rename a roster person, keeping their voiceprint.")
+    rename.add_argument("--old", required=True, help="Current name.")
+    rename.add_argument("--new", required=True, help="New name.")
+
     args = parser.parse_args(argv)
 
     from .roster import RosterStore
@@ -57,6 +61,14 @@ def main(argv: list[str]) -> int:
         removed = roster.forget(args.name)
         print(f"{'removed' if removed else 'not found'}: {args.name}")
         return 0 if removed else 1
+
+    if args.action == "rename":
+        renamed = roster.rename(args.old, args.new)
+        if renamed:
+            from . import events
+            events.emit("pipeline", "roster_renamed", old=args.old, new=args.new)
+        print(f"{'renamed' if renamed else 'not renamed'}: {args.old!r} -> {args.new!r}")
+        return 0 if renamed else 1
 
     # enroll
     wav: Path = args.wav

@@ -1,4 +1,4 @@
-"""FEAT3-ROSTER: the `mp roster` CLI (enroll / list / forget)."""
+"""FEAT3-ROSTER: the `mp roster` CLI (enroll / list / forget / rename)."""
 from __future__ import annotations
 
 import json
@@ -83,3 +83,17 @@ def test_list_and_forget(tmp_path, monkeypatch, capsys):
     assert "Alice" in capsys.readouterr().out
     assert roster_main(["forget", "--name", "Alice"]) == 0
     assert roster_main(["forget", "--name", "Nobody"]) == 1
+
+
+def test_rename_via_cli(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("mp.roster.ROSTER_PATH", tmp_path / "roster.json")
+    wav = _write_meeting(tmp_path)
+    roster_main(["enroll", "--name", "Alice", "--label", "THEM-A", "--wav", str(wav)])
+
+    assert roster_main(["rename", "--old", "Alice", "--new", "Alicia"]) == 0
+    assert "renamed" in capsys.readouterr().out
+    assert RosterStore(tmp_path / "roster.json").names() == ["Alicia"]
+
+    # An absent person is a non-zero exit and leaves the roster unchanged.
+    assert roster_main(["rename", "--old", "Ghost", "--new", "X"]) == 1
+    assert RosterStore(tmp_path / "roster.json").names() == ["Alicia"]

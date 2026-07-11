@@ -23,6 +23,10 @@ enum Endpoints {
         /// it read-only for the Preferences status + Reset; the Python pipeline
         /// owns writing it at finalize.
         static let voiceprintRelative = ".config/meeting-pipe/voiceprint.json"
+        /// Pipeline-owned named-speaker roster (FEAT3-ROSTER). The daemon reads it
+        /// read-only for the Preferences ▸ Pipeline "People" list (FEAT3-MANAGE);
+        /// every mutation goes through `mp roster`, so the matching logic keeps one owner.
+        static let rosterRelative = ".config/meeting-pipe/roster.json"
         /// Pipeline-owned last-backup marker (STOR2). The daemon reads it read-only
         /// for the Preferences ▸ Storage "last backup N days ago" line (STOR3);
         /// `mp backup` owns writing it.

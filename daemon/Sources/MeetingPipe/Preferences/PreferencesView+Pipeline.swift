@@ -10,6 +10,12 @@ struct PipelineSectionView: View {
     @State private var showLocalModelConfig = false
     @State private var voiceprintMeetings = 0
 
+    // FEAT3-MANAGE: the named-speaker roster. Read directly for display (the
+    // `VoiceprintProfile` exception); mutations go through `mp roster` via `launcher`.
+    @State private var rosterPeople: [RosterProfile.Person] = []
+    @State private var rosterError: String?
+    @State private var launcher = PipelineLauncher()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsSectionHeader("Pipeline",
@@ -99,6 +105,36 @@ struct PipelineSectionView: View {
                 }
             }
 
+            SettingsGroup("People") {
+                if rosterPeople.isEmpty {
+                    SettingsRow("No named voices yet",
+                        sublabel: "Name a speaker from a meeting's transcript (right-click a speaker) and they show up here to rename or remove.",
+                        alignTop: true,
+                        showsDivider: false) {
+                        EmptyView()
+                    }
+                } else {
+                    ForEach(rosterPeople) { person in
+                        SettingsRow(person.name,
+                            sublabel: "\(person.sampleCount) voice sample\(person.sampleCount == 1 ? "" : "s")",
+                            showsDivider: person != rosterPeople.last) {
+                            HStack(spacing: MPSpace.s2) {
+                                Button("Rename…") { beginRename(person) }
+                                    .buttonStyle(.mpGhost)
+                                Button("Remove") { beginRemove(person) }
+                                    .buttonStyle(.mpGhost)
+                            }
+                        }
+                    }
+                }
+            } footer: {
+                if let error = rosterError {
+                    Text(error).foregroundStyle(.mpDanger)
+                } else {
+                    Text("Named voices are matched across meetings so a recurring person surfaces by name. Removing one stops it being auto-named; it does not change past transcripts.")
+                }
+            }
+
             SettingsGroup("Summarization prompt") {
                 SettingsRow("System prompt", alignTop: true, showsDivider: false) {
                     promptPreview
@@ -153,7 +189,85 @@ struct PipelineSectionView: View {
                 Text("The digest summarizes your open actions and recent decisions across the whole library, on-device (no new egress). Generate one on demand from the Library's Digests view.")
             }
         }
-        .onAppear { voiceprintMeetings = VoiceprintProfile.meetingsLearned() }
+        .onAppear {
+            voiceprintMeetings = VoiceprintProfile.meetingsLearned()
+            refreshRoster()
+        }
+    }
+
+    // MARK: - Roster (FEAT3-MANAGE)
+
+    private func refreshRoster() {
+        rosterPeople = RosterProfile.people()
+    }
+
+    private func beginRename(_ person: RosterProfile.Person) {
+        guard let entered = Self.promptForName(
+            title: "Rename “\(person.name)”",
+            message: "The voiceprint is kept; only the name changes.",
+            initial: person.name
+        ) else { return }
+        let trimmed = entered.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != person.name else { return }
+        rosterError = nil
+        Log.event(category: "coordinator", action: "roster_rename_requested",
+                  attributes: ["old": person.name, "new": trimmed])
+        launcher.rosterRename(old: person.name, new: trimmed) { result in
+            Task { @MainActor in
+                switch result {
+                case .success:
+                    Log.event(category: "coordinator", action: "roster_rename_done",
+                              attributes: ["old": person.name, "new": trimmed])
+                    refreshRoster()
+                case .failure(let error):
+                    Log.event(category: "coordinator", action: "roster_rename_failed",
+                              attributes: ["old": person.name, "error": error.localizedDescription])
+                    rosterError = "Rename failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func beginRemove(_ person: RosterProfile.Person) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Remove “\(person.name)” from the roster?"
+        alert.informativeText = "Their voice will no longer be auto-named in future meetings. Past transcripts are unchanged."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        rosterError = nil
+        Log.event(category: "coordinator", action: "roster_remove_requested",
+                  attributes: ["name": person.name])
+        launcher.rosterForget(name: person.name) { result in
+            Task { @MainActor in
+                switch result {
+                case .success:
+                    Log.event(category: "coordinator", action: "roster_remove_done",
+                              attributes: ["name": person.name])
+                    refreshRoster()
+                case .failure(let error):
+                    Log.event(category: "coordinator", action: "roster_remove_failed",
+                              attributes: ["name": person.name, "error": error.localizedDescription])
+                    rosterError = "Remove failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// A modal name prompt (NSAlert + text field), the AppKit idiom for the few text
+    /// inputs outside SwiftUI. Returns nil on cancel.
+    private static func promptForName(title: String, message: String, initial: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = initial
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        return alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil
     }
 
     // MARK: - Digest schedule (AI4)

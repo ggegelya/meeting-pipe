@@ -79,6 +79,50 @@ def test_forget_removes_person(tmp_path):
     assert roster.forget("Nobody") is False
 
 
+def test_rename_keeps_samples_and_centroids(tmp_path):
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    roster.enroll("Alice", _axis(0))
+    roster.enroll("Alice", _axis(0, tilt=0.1))
+    before = json.loads(path.read_text(encoding="utf-8"))["people"][0]
+    assert roster.rename("Alice", "Alicia") is True
+    after = json.loads(path.read_text(encoding="utf-8"))["people"][0]
+    assert after["name"] == "Alicia"
+    assert after["samples"] == before["samples"]
+    assert after["centroids"] == before["centroids"]
+    # The voiceprint still matches under the new name.
+    assert roster.match(_axis(0, tilt=0.05, tilt_axis=2)) == "Alicia"
+
+
+def test_rename_absent_person_is_false(tmp_path):
+    roster = RosterStore(tmp_path / "roster.json")
+    roster.enroll("Alice", _axis(0))
+    assert roster.rename("Nobody", "Somebody") is False
+    assert roster.names() == ["Alice"]
+
+
+def test_rename_collision_refuses_to_merge(tmp_path):
+    roster = RosterStore(tmp_path / "roster.json")
+    roster.enroll("Alice", _axis(0))
+    roster.enroll("Bob", _axis(1))
+    assert roster.rename("Alice", "Bob") is False
+    assert sorted(roster.names()) == ["Alice", "Bob"]
+
+
+def test_rename_to_same_name_is_true_noop(tmp_path):
+    roster = RosterStore(tmp_path / "roster.json")
+    roster.enroll("Alice", _axis(0))
+    assert roster.rename("Alice", "Alice") is True
+    assert roster.names() == ["Alice"]
+
+
+def test_rename_empty_new_is_false(tmp_path):
+    roster = RosterStore(tmp_path / "roster.json")
+    roster.enroll("Alice", _axis(0))
+    assert roster.rename("Alice", "  ") is False
+    assert roster.names() == ["Alice"]
+
+
 def test_malformed_file_is_empty_roster(tmp_path):
     path = tmp_path / "roster.json"
     path.write_text("{ not json", encoding="utf-8")

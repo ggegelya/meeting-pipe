@@ -331,7 +331,7 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 | `ask.py` | `mp ask <question>` | engine-backed, cited answer over the library (AI3) |
 | `digest.py` | `mp digest` | weekly review digest, on-device (AI4) |
 | `actions.py` | `mp actions` | open action items across the library (TECH-FEAT4 + AI1) |
-| `roster_cmd.py` | `mp roster {enroll,list,forget}` | named-speaker voiceprint management (FEAT3-ROSTER) |
+| `roster_cmd.py` | `mp roster {enroll,list,forget,rename}` | named-speaker voiceprint management (FEAT3-ROSTER; `rename` is FEAT3-MANAGE) |
 | `backup.py` | `mp backup <dir>` | dated tar.gz of the non-recreatable state + manifest (STOR2) |
 | `restore.py` | `mp restore <archive>` | unpack a backup into this Mac's configured roots (STOR2) |
 | `doctor.py` | `mp doctor` | preflight diagnostics |

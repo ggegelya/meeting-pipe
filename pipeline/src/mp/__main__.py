@@ -49,7 +49,7 @@ Subcommands:
                               embedding index (honours the backend + egress clamp)
   actions [--owner N] [--due-before D] [--min-confidence C] [--json]
                               List open action items across all your meetings
-  roster {enroll,list,forget} ...
+  roster {enroll,list,forget,rename} ...
                               Manage named-speaker voiceprints: name an
                               unknown THEM-A cluster so a recurring person
                               surfaces by name across meetings (FEAT3-ROSTER)
