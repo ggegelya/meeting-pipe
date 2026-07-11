@@ -46,6 +46,9 @@ Subcommands:
                               corpus, on-device (Phase 3)
   analyze-detection [--since 7d] [--source PATH] [--output FILE] [--json]
                               Audit detector end-signal reliability
+  classify-meetings [--llm] [--dir P] [--json]
+                              AI5 spike: label the library by meeting type
+                              (heuristic; --llm adds a local-engine label)
   ask <question...> [--context-tokens N] [--model M] [--rebuild] [--dir P] [--out F] [--json]
                               Ask a natural-language question about your meetings;
                               engine-backed, cited answers over the on-device
@@ -130,6 +133,9 @@ def main() -> int:
         return run(rest)
     if cmd in {"analyze-detection", "analyze_detection"}:
         from .analyze_detection import main as run
+        return run(rest)
+    if cmd in {"classify-meetings", "classify_meetings"}:
+        from .classify import main as run
         return run(rest)
     if cmd == "ask":
         from .ask import main as run

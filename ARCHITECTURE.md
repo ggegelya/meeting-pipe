@@ -342,6 +342,7 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 | `corrections.py` | `mp corrections-stats` | aggregate over correction records |
 | `train_adapter.py` | `mp train-adapter` | fine-tune a local LoRA adapter on the corrections corpus (LOCAL9, on-device) |
 | `analyze_detection.py` | `mp analyze-detection` | meeting-end detection audit |
+| `classify.py` | `mp classify-meetings` | AI5 spike: heuristic (+ optional local-LLM) meeting-type labels over the library |
 | `dogfood.py` | `mp dogfood` | side-by-side backend comparison (Anthropic vs local, or `--adapter` for base vs LoRA) |
 
 ### Sinks
