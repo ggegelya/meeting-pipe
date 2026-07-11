@@ -68,9 +68,31 @@ struct AudioTab: View {
         case .failed(let msg):
             errorState(msg)
         case .ready(let peaks, let audio):
-            WaveformContainer(peaks: peaks, zoom: zoom, playback: playback)
-                .draggable(audio)
+            VStack(alignment: .leading, spacing: 0) {
+                if let mic = meeting.micDeviceName, !mic.isEmpty {
+                    recordedWithCaption(mic)
+                }
+                WaveformContainer(peaks: peaks, zoom: zoom, playback: playback)
+                    .draggable(audio)
+            }
         }
+    }
+
+    /// Which input device the recorder captured (MIC15). Shown so a recording whose mic came out
+    /// silent can be traced to the wrong device at a glance, not just in the event log.
+    private func recordedWithCaption(_ mic: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "mic")
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgSubtle))
+            Text("Recorded with \(mic)")
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgMuted))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
     }
 
     private var footer: some View {

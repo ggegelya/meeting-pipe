@@ -164,10 +164,24 @@ struct MeetingRow: View, Equatable {
         }
     }
 
-    /// Status pill. NDA rows read "Kept local" (DSN22 #8): intent, not failure, so
-    /// it never scans as a sibling of Failed/Unpublished. NDA is a privacy mode.
+    /// Status pill, optionally preceded by the MIC15 dead-mic warning. The warning is
+    /// orthogonal to publish state (a "Ready" meeting can still have recorded a silent mic), so
+    /// it rides alongside rather than replacing the status pill.
     @ViewBuilder
     private var trailingPill: some View {
+        HStack(spacing: 6) {
+            if meeting.micWarning {
+                MPStatusPill(kind: .warning, label: "Mic silent")
+                    .help("Your microphone recorded almost nothing while the other side was captured. The wrong input device may be selected in System Settings, Sound, Input.")
+            }
+            statusPill
+        }
+    }
+
+    /// The publish/lifecycle status pill. NDA rows read "Kept local" (DSN22 #8): intent, not
+    /// failure, so it never scans as a sibling of Failed/Unpublished. NDA is a privacy mode.
+    @ViewBuilder
+    private var statusPill: some View {
         switch (effectiveStatus, isNDA) {
         case (_, true):
             MPStatusPill(kind: .nda, label: "Kept local")

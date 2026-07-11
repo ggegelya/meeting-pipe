@@ -73,6 +73,17 @@ struct Meeting: Identifiable, Hashable {
     var workflowNDAMode: Bool? = nil
     var regulatedMode: Bool? = nil
 
+    /// The input device the recorder captured, from `<stem>.meta.json["mic_device_name"]`
+    /// (MIC15). Shown in the detail pane so the user can tell which mic a recording used. Nil for
+    /// pre-MIC15 recordings and manual workflow-less runs. Defaulted so test constructors need
+    /// not supply it.
+    var micDeviceName: String? = nil
+
+    /// True when the post-stop dead-mic gate fired (`<stem>.meta.json["mic_silent"]`, MIC15): the
+    /// mic stayed at the noise floor while the system side was live. Drives the row warning pill.
+    /// Defaulted so test constructors need not supply it.
+    var micWarning: Bool = false
+
     /// Publish outcome from `<stem>.run.json["publish_state"]` (TECH-I6): "full"
     /// / "partial" / "none", nil for never-published rows. The pipeline writes it
     /// after fanout; drives the Library partial-publish badge. Defaulted so test
@@ -593,6 +604,8 @@ final class MeetingStore: ObservableObject {
             detectedLanguage: (summary?.detectedLanguage).flatMap { $0.isEmpty ? nil : $0 },
             workflowNDAMode: (meta?["workflow_nda_mode"] as? Bool),
             regulatedMode: (meta?["regulated_mode"] as? Bool),
+            micDeviceName: (meta?["mic_device_name"] as? String),
+            micWarning: (meta?["mic_silent"] as? Bool) ?? false,
             publishState: (run?["publish_state"] as? String),
             emptyReason: emptyReason,
             hasSummaryJSON: summaryURL != nil,

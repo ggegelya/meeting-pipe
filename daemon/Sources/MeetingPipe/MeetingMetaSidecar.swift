@@ -3,8 +3,8 @@ import Foundation
 /// Pure builder for `<stem>.meta.json`. Canonical Swift-to-Python contract: the pipeline reads these keys via `mp.workflow.apply_overrides`. Unit-testable without a Coordinator.
 enum MeetingMetaSidecar {
 
-    /// Sidecar shape version. Bump when the key set or a key's semantics change so a future reader can migrate. The Python reader stays fail-open on it (an unknown key is ignored); the cross-language golden fixtures (CI2, `Fixtures/meta-contract/`) pin it on both sides.
-    static let schemaVersion = 1
+    /// Sidecar shape version. Bump when the key set or a key's semantics change so a future reader can migrate. The Python reader stays fail-open on it (an unknown key is ignored); the cross-language golden fixtures (CI2, `Fixtures/meta-contract/`) pin it on both sides. Bumped to 2 by MIC15 (added `mic_device_name` + `mic_silent`).
+    static let schemaVersion = 2
 
     /// Build the JSON-serializable dictionary for a finished recording. Returns an empty dict when neither source nor workflow is available (and not regulated); caller skips the write so the pipeline's no-sidecar fallback (LLM-derived title, global config) stays intact.
     ///
@@ -12,7 +12,18 @@ enum MeetingMetaSidecar {
     /// makes the resolved zero-egress state (`regulated_mode || workflow_nda_mode`)
     /// readable: the Library badge stops inferring NDA, and a reprocess stays
     /// fail-closed even if the global flag later flips.
-    static func build(source: AppSource?, workflow: Workflow?, regulatedMode: Bool = false) -> [String: Any] {
+    /// `micDeviceName` / `micSilent` are the MIC15 top-level keys: which input device the OS
+    /// bound the recorder to (for the Library "which mic" detail), and whether the post-stop
+    /// dead-mic gate fired (drives the Library row warning). Both are informational; the Python
+    /// reader ignores them (fail-open). Added only to a sidecar we already write, so the
+    /// skip-empty invariant holds; `micSilent` is stamped only when true, like `regulated_mode`.
+    static func build(
+        source: AppSource?,
+        workflow: Workflow?,
+        regulatedMode: Bool = false,
+        micDeviceName: String? = nil,
+        micSilent: Bool = false
+    ) -> [String: Any] {
         var dict: [String: Any] = [:]
         // Global zero-egress state at record time. Top-level (not under the
         // workflow block) since it applies even to a manual, workflow-less run.
@@ -50,8 +61,16 @@ enum MeetingMetaSidecar {
         }
         // Stamp the version only on a sidecar we actually write. An empty dict
         // (no source, workflow, or regulated flag) must stay empty so the caller
-        // still skips the write and the pipeline's no-sidecar fallback holds.
+        // still skips the write and the pipeline's no-sidecar fallback holds. The
+        // MIC15 keys ride the same guard so a device-only sidecar can't spring into
+        // existence for an otherwise-empty manual run.
         if !dict.isEmpty {
+            if let micDeviceName = micDeviceName, !micDeviceName.isEmpty {
+                dict["mic_device_name"] = micDeviceName
+            }
+            if micSilent {
+                dict["mic_silent"] = true
+            }
             dict["schema_version"] = schemaVersion
         }
         return dict

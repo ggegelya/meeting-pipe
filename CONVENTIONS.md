@@ -267,7 +267,9 @@ Current keys (May 2026):
 | `workflow_notion_database_id` | string? | per-workflow Notion DB |
 | `workflow_nda_mode` | bool | forces backend=local + sinks=filesystem |
 | `regulated_mode` | bool? | global zero-egress at record time (TECH-DSN6); top-level (not under a workflow), written only when true. Drives the Library "Local only" badge and is folded into the overlay fail-closed, same effect as `workflow_nda_mode` |
-| `schema_version` | int | sidecar shape version (CI2), currently `1`. Stamped on every non-empty sidecar; the reader is fail-open on it (unknown values are ignored, not rejected). Bump when the key set or a key's semantics change |
+| `mic_device_name` | string? | which input device the recorder captured (MIC15), top-level, informational. The daemon records the system default input and cannot read the meeting client's own chosen device, so this is what makes a wrong-mic recording diagnosable; drives the Library "Recorded with ..." detail. Python ignores it (fail-open). Written only on a sidecar that already has routing content (the skip-empty invariant holds) |
+| `mic_silent` | bool? | the post-stop dead-mic gate fired (MIC15): the mic stayed at the noise floor over an un-muted stretch while the system side was live. Top-level, written only when true, informational (Python ignores it). Drives the Library row "Mic silent" warning pill |
+| `schema_version` | int | sidecar shape version (CI2), currently `2` (MIC15 added `mic_device_name` + `mic_silent`). Stamped on every non-empty sidecar; the reader is fail-open on it (unknown values are ignored, not rejected). Bump when the key set or a key's semantics change |
 
 Absence of the sidecar (`<stem>.meta.json` missing) is valid — the pipeline falls back to global config + LLM-derived title.
 

@@ -180,6 +180,20 @@ final class MeetingRecorder {
     private var micFramePosition: Int64 = 0
     private var muteTimeline = MuteTimeline()
 
+    /// Whole-recording mic coverage (MIC15). Accumulated on the render thread from the
+    /// per-buffer RMS the gate already computes (allocation-free, no extra vDSP pass): total
+    /// seconds, un-muted seconds, and the loudest un-muted per-buffer RMS. Snapshotted at
+    /// `stop()` into `lastMicCoverage` and read post-stop to warn about a dead mic under a live
+    /// system channel. Mode-independent (computed before the capture-mode switch) so the
+    /// regulated gate's zeroed output does not hide a dead input.
+    private var micTotalSeconds: Double = 0
+    private var micUnmutedSeconds: Double = 0
+    private var micPeakUnmutedDb: Float = -120
+
+    /// Input-device identity resolved at `start()` (MIC15 layer a). Stashed here because the
+    /// meta sidecar is written at stop; `stop()` snapshots it into `lastInputDevice`.
+    private var capturedInputDevice: InputDeviceIdentity?
+
     /// Per-source 1 s RMS accumulators; two pairs because mic + system run
     /// on independent threads at different sample rates.
     private var micAccumSumSq: Double = 0
@@ -191,6 +205,12 @@ final class MeetingRecorder {
     /// these to warn about a mic-only recording (Screen Recording denied).
     private(set) var lastMicFires: UInt64 = 0
     private(set) var lastSystemFires: UInt64 = 0
+
+    /// Mic coverage + input-device identity snapshotted at the last `stop()`, read by
+    /// `MeetingSessionController` for the dead-mic warning and the `mic_device_name` sidecar key
+    /// (MIC15). `lastInputDevice` is nil when no default input existed (mic permission ungranted).
+    private(set) var lastMicCoverage = MicCoverageSnapshot.empty
+    private(set) var lastInputDevice: InputDeviceIdentity?
 
     /// True once the system-audio channel was torn down by a failed start or a
     /// mid-meeting death and not recovered (REC4 / AUD-13). Snapshotted into
@@ -243,6 +263,10 @@ final class MeetingRecorder {
         lastMicFires = 0
         lastSystemFires = 0
         systemDegraded = false
+        micTotalSeconds = 0
+        micUnmutedSeconds = 0
+        micPeakUnmutedDb = -120
+        capturedInputDevice = nil
         micAccumSumSq = 0
         micAccumFrames = 0
         systemAccumSumSq = 0
@@ -296,6 +320,18 @@ final class MeetingRecorder {
         let micFormat = engine.inputNode.outputFormat(forBus: 0)
         guard micFormat.sampleRate > 0 else {
             throw RecorderError.fileCreateFailed("inputNode reports zero sample rate - Microphone permission likely not granted")
+        }
+
+        // MIC15(a): record which input device the OS bound us to. We capture the system default
+        // input and cannot read the meeting client's own chosen device, so logging the captured
+        // identity is what makes a wrong-mic recording diagnosable at all. Always logged; also
+        // persisted per-meeting (via lastInputDevice -> the meta sidecar) for the Library detail.
+        let inputDevice = InputDeviceResolver.resolveDefaultInput()
+        capturedInputDevice = inputDevice
+        if let inputDevice = inputDevice {
+            Log.event(category: "recorder", action: "input_device_resolved", attributes: inputDevice.eventAttributes)
+        } else {
+            Log.event(category: "recorder", action: "input_device_unresolved", attributes: [:])
         }
         // TECH-MIC3: capture mono. The mic is published mono anyway (the
         // stop-time merge folds it), so writing a multichannel mic file only
@@ -638,6 +674,16 @@ final class MeetingRecorder {
                 let startSec = Double(micFramePosition) / fileFormat.sampleRate
                 let endSec = Double(micFramePosition + Int64(frameLen)) / fileFormat.sampleRate
                 muteTimeline.add(startSec: startSec, endSec: endSec, muted: verdict.indicatesMute)
+            }
+            // MIC15(b): whole-recording mic coverage, computed for every mode (the regulated
+            // gate zeroes the written buffer, but `db` above is the live pre-gate level). Only
+            // un-muted frames count toward the peak, so a legitimately muted span cannot read as
+            // a dead mic. Allocation-free; reuses the per-buffer RMS already in hand.
+            let bufSeconds = Double(frameLen) / fileFormat.sampleRate
+            micTotalSeconds += bufSeconds
+            if !verdict.indicatesMute {
+                micUnmutedSeconds += bufSeconds
+                if db > micPeakUnmutedDb { micPeakUnmutedDb = db }
             }
             micFramePosition += Int64(frameLen)
         }
@@ -1013,6 +1059,12 @@ final class MeetingRecorder {
         self.lastMicFires = micFires
         self.lastSystemFires = systemFires
         self.lastSystemDegraded = systemDegraded
+        self.lastMicCoverage = MicCoverageSnapshot(
+            recordingSeconds: micTotalSeconds,
+            unmutedSeconds: micUnmutedSeconds,
+            peakUnmutedRmsDb: micPeakUnmutedDb
+        )
+        self.lastInputDevice = capturedInputDevice
         self.micFires = 0
         self.systemFires = 0
 

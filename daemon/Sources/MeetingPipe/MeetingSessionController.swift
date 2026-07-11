@@ -266,6 +266,18 @@ final class MeetingSessionController {
             redactMuted: resolvedWorkflow?.flags.redactMutedSpans ?? false
         )
 
+        // MIC15(c): early-catch nudge. Read the running-somewhere state BEFORE `recorder.start`
+        // arms the engine (once we hold the input device it always reads running, the confound
+        // that sank END6's end-side read). If the input we are about to record sits idle while
+        // another input device is active, the meeting client likely opened a different mic; warn
+        // now rather than after the call. Never a gate: we still record what we captured.
+        if InputDeviceResolver.defaultInputIsMismatched() {
+            coordinator.notifications.notifyInputDeviceMismatch()
+            Log.event(category: "recorder", action: "input_device_mismatch_warned", attributes: [
+                "bundle_id": source?.bundleID ?? "manual",
+            ])
+        }
+
         // Committed to starting: guard re-entry until this start resolves. The
         // recorder bounds the engine bring-up off the main thread, so the await
         // below never blocks the UI; the post-start wiring runs back on main.
@@ -428,7 +440,34 @@ final class MeetingSessionController {
                 case .none:
                     break
                 }
-                self.writeMetaSidecar(file: file, source: source)
+                // MIC15(b): the mirror-image warning. RemoteAudioWarning fires when the SYSTEM
+                // side is missing; this fires when the system side was fine the whole call but
+                // the MIC channel stayed at the noise floor over an un-muted stretch (a wrong /
+                // dead input device). Muted-whole-meeting is excluded by the un-muted-seconds
+                // floor inside `evaluate`.
+                let coverage = recorder.lastMicCoverage
+                let micWarning = MicCoverageWarning.evaluate(
+                    recordingSeconds: coverage.recordingSeconds,
+                    systemAudioPresentWholeCall: recorder.lastSystemFires > 0 && !recorder.lastSystemDegraded,
+                    unmutedSeconds: coverage.unmutedSeconds,
+                    peakUnmutedRmsDb: coverage.peakUnmutedRmsDb
+                )
+                if micWarning == .micRecordedNothing {
+                    self.coordinator.notifications.notifyMicRecordedNothing(file: file)
+                    Log.event(category: "recorder", action: "mic_recorded_nothing", attributes: [
+                        "file": file.lastPathComponent,
+                        "recording_seconds": coverage.recordingSeconds,
+                        "unmuted_seconds": coverage.unmutedSeconds,
+                        "peak_unmuted_db": Double(coverage.peakUnmutedRmsDb),
+                        "device": recorder.lastInputDevice?.displayName ?? "(unknown)",
+                    ])
+                }
+                self.writeMetaSidecar(
+                    file: file,
+                    source: source,
+                    micDeviceName: recorder.lastInputDevice?.displayName,
+                    micSilent: micWarning == .micRecordedNothing
+                )
                 // FEAT8: flush the flagged moments next to the final wav so the
                 // pipeline and the Library transcript tab can read them.
                 MarkerFile.write(seconds: self.markerSeconds, forFinal: file)
@@ -476,11 +515,13 @@ final class MeetingSessionController {
     /// workflow overrides the pipeline applies at run-all time). Writing
     /// it here keeps the sidecar a single atomic file: the pipeline
     /// reads `<stem>.meta.json` once and gets every per-meeting knob.
-    func writeMetaSidecar(file: URL, source: AppSource?) {
+    func writeMetaSidecar(file: URL, source: AppSource?, micDeviceName: String? = nil, micSilent: Bool = false) {
         let dict = MeetingMetaSidecar.build(
             source: source,
             workflow: activeWorkflow,
-            regulatedMode: coordinator.configStore?.regulatedMode ?? false
+            regulatedMode: coordinator.configStore?.regulatedMode ?? false,
+            micDeviceName: micDeviceName,
+            micSilent: micSilent
         )
         if dict.isEmpty { return }
         let stem = file.deletingPathExtension().lastPathComponent

@@ -241,6 +241,31 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(req)
     }
 
+    /// Posted when the mic channel stayed at the noise floor across an un-muted stretch while
+    /// the system side captured fine (MIC15). The likeliest cause is the OS default input being
+    /// a device other than the one the user speaks into (e.g. a Bluetooth headset idle in A2DP),
+    /// which the daemon records faithfully but cannot detect while it happens.
+    func notifyMicRecordedNothing(file: URL) {
+        let content = UNMutableNotificationContent()
+        content.title = "Your mic recorded almost nothing"
+        content.body = "The other side was captured, but your microphone stayed silent. Check System Settings, Sound, Input - the wrong input device may be selected."
+        content.sound = .default
+        let req = UNNotificationRequest(identifier: "mic-silent-\(file.lastPathComponent)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
+    /// Posted before a recording starts when the OS default input we are about to capture sits
+    /// idle while another input device is active (MIC15 layer c): the meeting client likely opened
+    /// a different mic, so warn early rather than discover the dead recording after the call.
+    func notifyInputDeviceMismatch() {
+        let content = UNMutableNotificationContent()
+        content.title = "Recording a possibly-wrong microphone"
+        content.body = "Another app appears to be using a different microphone than the one MeetingPipe will record. Check System Settings, Sound, Input if your voice should be captured."
+        content.sound = .default
+        let req = UNNotificationRequest(identifier: "input-mismatch-\(Int(Date().timeIntervalSince1970))", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
     /// Posted when a mid-recording input device change was recovered; capture continued with a short silent gap.
     func notifyCaptureRecovered() {
         post(

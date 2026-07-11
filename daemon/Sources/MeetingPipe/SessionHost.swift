@@ -93,6 +93,8 @@ protocol SessionNotifying: AnyObject {
     func notifyStillMeeting()
     func notifyMicOnlyRecording(file: URL, permissionState: SystemAudioCapture.PermissionState)
     func notifyRemoteAudioInterrupted(file: URL)
+    func notifyMicRecordedNothing(file: URL)
+    func notifyInputDeviceMismatch()
 }
 
 /// Audio capture (`MeetingRecorder`). `onMicLevel` / `onSystemLevel` are settable:
@@ -101,6 +103,10 @@ protocol SessionRecording: AnyObject {
     var startedAt: Date? { get }
     var lastSystemFires: UInt64 { get }
     var lastSystemDegraded: Bool { get }
+    /// Stop-time mic coverage + captured input-device identity (MIC15), read by the controller
+    /// for the dead-mic warning and the `mic_device_name` sidecar key.
+    var lastMicCoverage: MicCoverageSnapshot { get }
+    var lastInputDevice: InputDeviceIdentity? { get }
     var onMicLevel: ((Float) -> Void)? { get set }
     var onSystemLevel: ((Float) -> Void)? { get set }
     func currentMicLevelDb() -> Float

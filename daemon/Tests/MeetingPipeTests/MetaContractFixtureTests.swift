@@ -107,10 +107,39 @@ final class MetaContractFixtureTests: XCTestCase {
         XCTAssertEqual(reassigned["meeting_title"] as? String, "Design review")
     }
 
-    func test_all_fixtures_carry_schema_version_one() throws {
+    func test_all_fixtures_carry_schema_version_two() throws {
         for name in ["source-only-regulated", "workflow-full", "workflow-nda", "workflow-reassigned-to-nda"] {
             let f = try fixture(name)
-            XCTAssertEqual(f["schema_version"] as? Int, 1, "\(name) must carry schema_version 1")
+            XCTAssertEqual(f["schema_version"] as? Int, 2, "\(name) must carry schema_version 2")
         }
+    }
+
+    /// MIC15: `mic_device_name` + `mic_silent` are informational top-level keys the Python reader
+    /// ignores (fail-open), so they are pinned here rather than in a cross-language fixture. Both
+    /// ride the skip-empty guard: a device name alone can never spring a sidecar into existence
+    /// for an otherwise-empty manual run, and `mic_silent` is stamped only when true.
+    func test_mic_keys_present_only_when_set() throws {
+        let source = AppSource(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .native)
+
+        let withMic = MeetingMetaSidecar.build(
+            source: source, workflow: nil, micDeviceName: "AirPods Pro", micSilent: true
+        )
+        XCTAssertEqual(withMic["mic_device_name"] as? String, "AirPods Pro")
+        XCTAssertEqual(withMic["mic_silent"] as? Bool, true)
+        XCTAssertEqual(withMic["schema_version"] as? Int, 2)
+
+        let quietMic = MeetingMetaSidecar.build(source: source, workflow: nil, micDeviceName: "AirPods Pro")
+        XCTAssertEqual(quietMic["mic_device_name"] as? String, "AirPods Pro")
+        XCTAssertNil(quietMic["mic_silent"], "mic_silent is stamped only when true")
+
+        let bare = MeetingMetaSidecar.build(source: source, workflow: nil)
+        XCTAssertNil(bare["mic_device_name"])
+        XCTAssertNil(bare["mic_silent"])
+
+        // Skip-empty invariant: mic keys cannot create a sidecar out of an empty routing dict.
+        let empty = MeetingMetaSidecar.build(
+            source: nil, workflow: nil, micDeviceName: "AirPods Pro", micSilent: true
+        )
+        XCTAssertTrue(empty.isEmpty)
     }
 }
