@@ -353,13 +353,19 @@ struct TranscriptTab: View {
                       ])
             return
         }
-        Log.event(category: "correction", action: "transcript_correction",
-                  attributes: [
-                    "stem": meeting.stem,
-                    "segment_index": segment.index,
-                    "original_text": pipelineOriginal,
-                    "edited_text": edited,
-                  ])
+        // SEC14: the event log is grepped and shared in diagnostics, so it carries lengths by
+        // default, not the verbatim transcript sentences. The full text lands only under verbose.
+        var attributes: [String: Any] = [
+            "stem": meeting.stem,
+            "segment_index": segment.index,
+            "original_len": pipelineOriginal.count,
+            "edited_len": edited.count,
+        ]
+        if UISettings.shared.verboseLogging {
+            attributes["original_text"] = pipelineOriginal
+            attributes["edited_text"] = edited
+        }
+        Log.event(category: "correction", action: "transcript_correction", attributes: attributes)
         // Patch in-memory list immediately. Reverting to original drops the override from the store; we apply the same resolution the loader does so the text flips back too.
         if let i = segments.firstIndex(where: { $0.index == segment.index }) {
             segments[i] = TranscriptSegment(

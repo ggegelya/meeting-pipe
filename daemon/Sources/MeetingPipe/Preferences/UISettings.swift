@@ -31,7 +31,7 @@ final class UISettings: ObservableObject {
         didSet { UserDefaults.standard.set(showRegulatedBadge, forKey: Keys.showRegulatedBadge) }
     }
 
-    /// Exports `MP_VERBOSE=1` at daemon launch so pipeline subprocesses inherit it. Env propagation requires a restart; the in-process `Log.event` gate reads the live value.
+    /// Exports `MP_VERBOSE=1` at daemon launch so pipeline subprocesses inherit it. Env propagation requires a restart; verbose-only event fields (e.g. correction transcript text, SEC14) read this live value in-process.
     @Published var verboseLogging: Bool {
         didSet { UserDefaults.standard.set(verboseLogging, forKey: Keys.verboseLogging) }
     }

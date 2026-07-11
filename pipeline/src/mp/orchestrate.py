@@ -220,6 +220,9 @@ def _apply_glossary(wav: Path, t: dict[str, Path]) -> None:
         return
     t["json"].write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
     t["md"].write_text(render_markdown(structured), encoding="utf-8")
+    # SEC14: transcripts carry meeting content, so keep them user-private (0600), like the logs.
+    os.chmod(t["json"], 0o600)
+    os.chmod(t["md"], 0o600)
     events.emit("pipeline", "glossary_applied", exact=exact, fuzzy=fuzzy, segments=len(segments))
     log.info("glossary: %d exact + %d fuzzy substitutions across %d segments",
              exact, fuzzy, len(segments))
@@ -678,6 +681,9 @@ def _finalize_streamed_transcript(
         structured = {**streamed, "segments": segments, "finalized": True}
         json_path.write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
         md_path.write_text(render_markdown(structured), encoding="utf-8")
+        # SEC14: transcripts carry meeting content, so keep them user-private (0600), like the logs.
+        os.chmod(json_path, 0o600)
+        os.chmod(md_path, 0o600)
         return {"json": json_path, "md": md_path}
 
     diarization_failed = False
@@ -712,6 +718,9 @@ def _finalize_streamed_transcript(
     }
     json_path.write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(render_markdown(structured), encoding="utf-8")
+    # SEC14: transcripts carry meeting content, so keep them user-private (0600), like the logs.
+    os.chmod(json_path, 0o600)
+    os.chmod(md_path, 0o600)
     log.info("Finalized transcript: %s", json_path)
     return {"json": json_path, "md": md_path}
 

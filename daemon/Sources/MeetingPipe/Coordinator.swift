@@ -440,6 +440,12 @@ final class Coordinator: NSObject {
         // after the orphan/stranded sweeps above, which is what keeps retention
         // from ever seeing a recording those sweeps are about to re-enqueue.
         reapStorage()
+        // SEC14: one-time self-heal of any pre-existing 0644 transcript/summary
+        // artifacts to 0600 (new writes are already 0600). Mirrors the SEC11 log sweep.
+        let artifactsDir = liveOutputDir
+        Task.detached(priority: .background) {
+            MeetingStore.tightenArtifactPermissions(in: artifactsDir)
+        }
     }
 
     /// Fire every startup TCC dialog in order. macOS serializes the prompts

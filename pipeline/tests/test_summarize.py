@@ -77,6 +77,9 @@ def test_summarize_calls_anthropic_and_writes_outputs(tmp_path: Path, monkeypatc
 
     assert out["json"].exists()
     assert out["md"].exists()
+    # SEC14: summaries carry meeting content, so they land 0600 (owner-only), not 0644.
+    assert (out["json"].stat().st_mode & 0o777) == 0o600
+    assert (out["md"].stat().st_mode & 0o777) == 0o600
 
     parsed = MeetingSummary.model_validate_json(out["json"].read_text(encoding="utf-8"))
     assert parsed.title == "Phase 6 sync"

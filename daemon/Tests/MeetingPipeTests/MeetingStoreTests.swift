@@ -748,5 +748,33 @@ final class MeetingStoreTests: XCTestCase {
             searchableText: ""
         )
     }
+
+    func test_tighten_artifact_permissions_selfheals_transcripts_and_summaries() throws {
+        // SEC14: pre-existing 0644 transcript/summary artifacts are tightened to 0600
+        // at launch; a non-text artifact (the recording) is left untouched.
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        func write0644(_ name: String) -> URL {
+            let url = dir.appendingPathComponent(name)
+            FileManager.default.createFile(
+                atPath: url.path, contents: Data("{}".utf8),
+                attributes: [.posixPermissions: 0o644]
+            )
+            return url
+        }
+        let json = write0644("m.summary.json")
+        let md = write0644("m.summary.md")
+        let wav = write0644("m.wav")
+
+        MeetingStore.tightenArtifactPermissions(in: dir)
+
+        func mode(_ url: URL) throws -> Int {
+            try XCTUnwrap(FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int)
+        }
+        XCTAssertEqual(try mode(json), 0o600)
+        XCTAssertEqual(try mode(md), 0o600)
+        XCTAssertEqual(try mode(wav), 0o644)
+    }
 }
 

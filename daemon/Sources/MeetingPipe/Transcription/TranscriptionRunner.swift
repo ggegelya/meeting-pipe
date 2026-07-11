@@ -93,5 +93,7 @@ extension TranscriptSidecar {
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(self)
         try data.write(to: url, options: .atomic)
+        // SEC14: transcripts carry meeting content, so keep them user-private (0600), like originals/ and the logs.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }

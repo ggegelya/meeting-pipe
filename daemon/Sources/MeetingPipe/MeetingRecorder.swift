@@ -1516,6 +1516,8 @@ final class MeetingRecorder {
                 let proc = Process()
                 proc.executableURL = URL(fileURLWithPath: ffmpeg)
                 proc.arguments = args
+                // SEC14: ffmpeg needs none of the managed API tokens; don't leak them to the child.
+                proc.environment = Secrets.scrubbedEnvironment()
                 let errPipe = Pipe()
                 proc.standardError = errPipe
                 proc.standardOutput = FileHandle.nullDevice

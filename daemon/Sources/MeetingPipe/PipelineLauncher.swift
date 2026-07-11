@@ -664,9 +664,13 @@ final class PipelineLauncher: PipelineDriver {
         p.standardError = errPipe
 
         // Pipeline log co-located with daemon logs so the user can tail one place.
+        // Created 0600 (SEC14): it carries pipeline output, matching the SEC11 log posture,
+        // rather than landing 0644 until the next-launch sweep tightens it.
         let logURL = Log.logsDir.appendingPathComponent("pipeline.log")
         if !FileManager.default.fileExists(atPath: logURL.path) {
-            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+            FileManager.default.createFile(
+                atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600]
+            )
         }
         let logHandle = (try? FileHandle(forWritingTo: logURL))
         _ = try? logHandle?.seekToEnd()

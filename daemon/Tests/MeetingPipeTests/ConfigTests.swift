@@ -102,4 +102,23 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(cfg.recording.sampleRate, 16000)
         XCTAssertEqual(cfg.recording.outputDir.path, "/tmp/x")
     }
+
+    func test_scrubbed_environment_drops_every_managed_token() {
+        // SEC14: ffmpeg children spawn with this env; none of the API tokens may survive.
+        let base = [
+            "ANTHROPIC_API_KEY": "sk-a",
+            "NOTION_TOKEN": "ntn",
+            "OPENAI_API_KEY": "sk-o",
+            "HF_TOKEN": "hf",
+            "PATH": "/usr/bin",
+            "HOME": "/Users/x",
+        ]
+        let scrubbed = Secrets.scrubbedEnvironment(from: base)
+        for key in KeychainSecrets.managedKeys {
+            XCTAssertNil(scrubbed[key], "\(key) must not reach the ffmpeg child")
+        }
+        // Non-secret entries are preserved so ffmpeg still resolves its own PATH.
+        XCTAssertEqual(scrubbed["PATH"], "/usr/bin")
+        XCTAssertEqual(scrubbed["HOME"], "/Users/x")
+    }
 }

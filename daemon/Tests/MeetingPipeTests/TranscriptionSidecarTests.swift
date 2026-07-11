@@ -76,6 +76,24 @@ final class TranscriptionSidecarTests: XCTestCase {
         XCTAssertEqual(decoded.diarizationFailureReason, "skipped: no segments")
     }
 
+    func test_write_lands_owner_only_permissions() throws {
+        // SEC14: transcripts carry meeting content, so the writer lands them 0600
+        // (like originals/ and the logs), not the 0644 default.
+        let sidecar = TranscriptSidecar(
+            language: "en", segments: [], audioPath: "/tmp/x.wav", audioSeconds: 0,
+            model: "m", backend: "fluidaudio", diarization: false,
+            diarizationFailed: false, diarizationFailureReason: nil,
+            streaming: false, finalized: true
+        )
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sidecar-perms-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try sidecar.write(to: url)
+        let perms = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int
+        XCTAssertEqual(perms, 0o600)
+    }
+
     func test_speaker_embeddings_omitted_when_nil_present_when_set() throws {
         // Nil (the no-diarization common case) must keep the JSON byte-shape
         // identical to the pre-voiceprint sidecar: the key is absent, not null,

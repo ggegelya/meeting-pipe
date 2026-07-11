@@ -405,6 +405,22 @@ final class MeetingStore: ObservableObject {
         return nil
     }
 
+    /// Best-effort one-time tightening of the library's text artifacts to 0600 (SEC14).
+    /// New transcript writes are already 0600 (`TranscriptSidecar.write`) and the pipeline
+    /// chmods its summaries, so this only self-heals files that predate those changes
+    /// (transcripts and summaries were created 0644, unlike `originals/` and the logs).
+    /// Call once at startup; runs off-main since the library can hold many files.
+    static func tightenArtifactPermissions(in directory: URL) {
+        guard let items = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        ) else { return }
+        for url in items where url.pathExtension == "json" || url.pathExtension == "md" {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: url.path
+            )
+        }
+    }
+
     /// A recording-shaped path for callers that only derive *sibling sidecar*
     /// paths from it (`<stem>.embeddings.json`, `<stem>.meta.json`) and never open
     /// the file: `mp roster enroll --wav` and `PipelineLauncher.appleContext`. Uses

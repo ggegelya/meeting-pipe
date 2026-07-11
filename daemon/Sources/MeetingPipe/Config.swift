@@ -140,4 +140,15 @@ enum Secrets {
             }
         }
     }
+
+    /// The daemon seeds the managed API tokens into its own env (`loadIfPresent`) so pipeline
+    /// subprocesses can inherit them. A child that needs none of them, like ffmpeg, should not
+    /// see them (SEC14); this returns the process env with every managed token stripped.
+    static func scrubbedEnvironment(from base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        var env = base
+        for key in KeychainSecrets.managedKeys {
+            env.removeValue(forKey: key)
+        }
+        return env
+    }
 }

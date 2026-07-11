@@ -421,6 +421,9 @@ def summarize(
         encoding="utf-8",
     )
     md_path.write_text(render_summary_md(summary), encoding="utf-8")
+    # SEC14: summaries carry meeting content, so keep them user-private (0600), like the logs.
+    os.chmod(json_path, 0o600)
+    os.chmod(md_path, 0o600)
 
     backend, model_used = _identify_backend(client, cfg)
     log.info("Wrote %s and %s", json_path, md_path)
