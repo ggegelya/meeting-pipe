@@ -242,6 +242,76 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         )
     }
 
+    // MARK: - PERF5: tick gating
+
+    func test_tick_is_armed_only_while_ending_provisional() throws {
+        let fake = FakeAdapter()
+        let scheduler = ManualScheduler()
+        var now = Date(timeIntervalSince1970: 0)
+        let coordinator = MeetingLifecycleCoordinator(
+            adapters: [fake],
+            scheduler: scheduler.scheduler(),
+            clock: { now }
+        )
+
+        try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
+        flushEngine(coordinator)
+        // PERF5: engaged but idle -> the periodic tick is not armed.
+        XCTAssertNil(scheduler.tick, "tick must not run before a provisional end")
+
+        fake.emit(.init(kind: .shareableContentWindow, state: .live, timestamp: now, context: teamsContext))
+        flushEngine(coordinator)
+        coordinator.confirmRecording()
+        flushEngine(coordinator)
+        XCTAssertEqual(coordinator.current, .inMeeting(context: teamsContext))
+        XCTAssertNil(scheduler.tick, "tick stays disarmed through .starting / .inMeeting")
+
+        now = Date(timeIntervalSince1970: 1)
+        fake.emit(.init(kind: .shareableContentWindow, state: .ended, timestamp: now, context: teamsContext))
+        flushEngine(coordinator)
+        // PERF5: a provisional end arms the tick so the debounce can promote it.
+        XCTAssertNotNil(scheduler.tick, "tick arms when a provisional end is pending")
+
+        now = Date(timeIntervalSince1970: 4)
+        coordinator.tick()
+        flushEngine(coordinator)
+        XCTAssertEqual(
+            coordinator.current,
+            .ended(context: teamsContext, reason: EndingReason(leadingSignal: "shareable_content_window_gone"))
+        )
+        // PERF5: promoting to .ended disarms the tick again.
+        XCTAssertNil(scheduler.tick, "tick disarms once the end is confirmed")
+    }
+
+    func test_tick_disarms_when_provisional_end_reverts() throws {
+        let fake = FakeAdapter()
+        let scheduler = ManualScheduler()
+        var now = Date(timeIntervalSince1970: 0)
+        let coordinator = MeetingLifecycleCoordinator(
+            adapters: [fake],
+            scheduler: scheduler.scheduler(),
+            clock: { now }
+        )
+        try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
+        fake.emit(.init(kind: .shareableContentWindow, state: .live, timestamp: now, context: teamsContext))
+        flushEngine(coordinator)
+        coordinator.confirmRecording()
+        flushEngine(coordinator)
+
+        now = Date(timeIntervalSince1970: 1)
+        fake.emit(.init(kind: .shareableContentWindow, state: .ended, timestamp: now, context: teamsContext))
+        flushEngine(coordinator)
+        XCTAssertNotNil(scheduler.tick, "armed on the provisional end")
+
+        // The leading signal flips back to live before the debounce: the engine
+        // returns to .inMeeting (flicker-absorb) and the tick must disarm (PERF5).
+        now = Date(timeIntervalSince1970: 2)
+        fake.emit(.init(kind: .shareableContentWindow, state: .live, timestamp: now, context: teamsContext))
+        flushEngine(coordinator)
+        XCTAssertEqual(coordinator.current, .inMeeting(context: teamsContext))
+        XCTAssertNil(scheduler.tick, "tick disarms when the provisional end reverts")
+    }
+
     private func flushEngine(_ coordinator: MeetingLifecycleCoordinator) {
         let expectation = expectation(description: "engine drain")
         coordinator.tick()

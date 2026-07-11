@@ -89,9 +89,11 @@ public final class MeetingLifecycleCoordinator {
         try adapter.start(context: context, handle: handle) { [weak self] event in
             self?.ingest(event, generation: generation)
         }
-        cancelTick = scheduler(tickInterval) { [weak self] in
-            self?.tick(generation: generation)
-        }
+        // PERF5: the periodic tick is armed on demand by `reconcileTick`, only
+        // while the engine holds a provisional end (the sole phase `tick` acts on),
+        // instead of firing at `tickInterval` for the whole meeting. `engage` just
+        // reset the engine to `.idle` via `disengage()` above, so there is nothing
+        // to tick yet.
     }
 
     public func disengage() {
@@ -152,6 +154,7 @@ public final class MeetingLifecycleCoordinator {
             if let decision = self.engine.ingest(event) {
                 self.publish(decision.verdict)
             }
+            self.reconcileTick(generation: generation)
         }
     }
 
@@ -160,6 +163,33 @@ public final class MeetingLifecycleCoordinator {
             guard let self = self, self.currentGeneration() == generation else { return }
             if let decision = self.engine.tick(at: self.clock()) {
                 self.publish(decision.verdict)
+            }
+            self.reconcileTick(generation: generation)
+        }
+    }
+
+    /// PERF5: arm or disarm the periodic tick so it runs only while the engine
+    /// needs it. `engine.tick` advances an `.endingProvisional` toward `.ended`
+    /// on the debounce and is a no-op in every other phase, so the tick is
+    /// pointless for the rest of a meeting. Called on `engineQueue` after every
+    /// engine mutation: it samples the engine's pending state there (the only
+    /// queue that mutates the engine) and hops to main to touch the timer, since
+    /// `Timer.scheduledTimer` needs the main run loop and `cancelTick` is
+    /// main-only. A late reconcile from a superseded session is dropped by the
+    /// generation guard; `disengage` cancels the timer directly.
+    private func reconcileTick(generation: Int) {
+        let shouldRun = engine.hasPendingEndDeadline
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.currentGeneration() == generation else { return }
+            if shouldRun {
+                if self.cancelTick == nil {
+                    self.cancelTick = self.scheduler(self.tickInterval) { [weak self] in
+                        self?.tick(generation: generation)
+                    }
+                }
+            } else {
+                self.cancelTick?()
+                self.cancelTick = nil
             }
         }
     }
@@ -176,6 +206,7 @@ public final class MeetingLifecycleCoordinator {
             if let decision = self.engine.confirmRecording() {
                 self.publish(decision.verdict)
             }
+            self.reconcileTick(generation: self.currentGeneration())
         }
     }
 
@@ -188,6 +219,7 @@ public final class MeetingLifecycleCoordinator {
             if let decision = self.engine.confirmProvisionalEnd() {
                 self.publish(decision.verdict)
             }
+            self.reconcileTick(generation: self.currentGeneration())
         }
     }
 

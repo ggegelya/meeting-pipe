@@ -127,6 +127,15 @@ public final class PromotionEngine {
 
     public var debounceInterval: TimeInterval { debounce }
 
+    /// True while the engine holds a provisional end awaiting the debounce (or a
+    /// corroborating signal): the only phase in which `tick(at:)` can do work.
+    /// The lifecycle coordinator reads this to arm the periodic tick only when it
+    /// can matter, instead of running it for the whole meeting (PERF5).
+    public var hasPendingEndDeadline: Bool {
+        if case .endingProvisional = phase { return true }
+        return false
+    }
+
     public func reset() { phase = .idle }
 
     /// Ingest a PRIMARY signal event. Returns the verdict transition it triggered, or nil if the event doesn't change the phase.
