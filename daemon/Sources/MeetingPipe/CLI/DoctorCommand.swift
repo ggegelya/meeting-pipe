@@ -88,6 +88,25 @@ enum DoctorCommand {
         return out
     }
 
+    /// The probes unique to the daemon (AX trust, TCC permissions, per-app AX
+    /// reachability, events writability, orphan scan) - the ones `mp doctor`
+    /// cannot run. Excludes the `pipeline.*` probes, which the Preferences doctor
+    /// already exercises by spawning `mp doctor` alongside this (UX20 fold). Fast
+    /// enough to run inline on the main thread (no `pipeline.roundtrip` spawn).
+    static func daemonSelfCheckProbes() -> [Probe] {
+        var out: [Probe] = [
+            Probe(name: "accessibility.trusted", run: probeAXTrust),
+            Probe(name: "permission.screen_recording", run: probeScreenRecording),
+            Probe(name: "permission.microphone", run: probeMicrophone),
+        ]
+        for bundleID in knownMeetingBundleIDs {
+            out.append(Probe(name: "ax.app.\(bundleID)") { probeAppReachable(bundleID: bundleID) })
+        }
+        out.append(Probe(name: "events.writable", run: probeEventsWritable))
+        out.append(Probe(name: "library.orphans", run: probeOrphans))
+        return out
+    }
+
     /// Meeting apps to probe (subset of `meeting_apps.toml` native apps + Webex unified). "Not installed" is `.warn` so a non-Zoom user isn't told their machine is broken.
     static let knownMeetingBundleIDs: [String] = [
         "com.microsoft.teams2",

@@ -25,6 +25,9 @@ final class Coordinator: NSObject {
     let preferencesWindow: PreferencesWindow?
     /// Daemon's primary UI for browsing past recordings.
     let libraryWindow: LibraryWindow
+    /// Read-only in-app viewer over the JSONL event logs (UX20). No dependencies,
+    /// so it self-initializes; reads `Log.logsDir` lazily on show.
+    let diagnosticsWindow = DiagnosticsWindow()
     /// Observable mirror of recording state + processing queue +
     /// model-download progress; the library window reads it, the status
     /// bar writes it.

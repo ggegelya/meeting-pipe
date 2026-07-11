@@ -16,17 +16,35 @@ final class DoctorRunner: ObservableObject {
 
     private var process: Process?
 
-    /// Spawn `mp doctor`; no-op if already running.
+    /// Run the daemon self-check probes in-process, then spawn `mp doctor`. The two
+    /// halves are complementary: the Swift probes cover AX trust, TCC permissions,
+    /// per-app reachability, events writability, and the orphan scan (things
+    /// `mp doctor` cannot see); `mp doctor` covers credentials, network, and the
+    /// pipeline (UX20). No-op if already running.
     func run() {
         guard state != .running else { return }
+        state = .running
+
+        // Daemon self-check first (fast, in-process). Its FAIL/WARN lines are
+        // visible in the sheet; the exit badge tracks `mp doctor`.
+        var lines = ["== Daemon self-check =="]
+        DoctorCommand.execute(
+            probes: DoctorCommand.daemonSelfCheckProbes(),
+            writer: { lines.append($0) }
+        )
+        lines.append("")
+        lines.append("== mp doctor ==")
+        output = lines.joined(separator: "\n") + "\n"
+
+        spawnMPDoctor()
+    }
+
+    private func spawnMPDoctor() {
         guard let mp = PipelineLauncher.findMP() else {
-            output = "mp launcher not found. Did you run scripts/install.sh?\n"
+            output.append("mp launcher not found. Did you run scripts/install.sh?\n")
             state = .finished(exitCode: -1)
             return
         }
-
-        output = ""
-        state = .running
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: mp.shell)

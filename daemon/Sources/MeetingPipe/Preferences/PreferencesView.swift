@@ -109,7 +109,7 @@ struct PreferencesView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Image(systemName: "stethoscope")
-                Text("mp doctor").font(.headline)
+                Text("Doctor").font(.headline)
                 Spacer()
                 doctorStatusLabel
             }

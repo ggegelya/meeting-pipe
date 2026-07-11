@@ -567,6 +567,10 @@ final class StatusBarController {
         openLogs.target = coordinator
         menu.addItem(openLogs)
 
+        let openDiagnostics = NSMenuItem(title: "Diagnostics…", action: #selector(Coordinator.menuOpenDiagnostics), keyEquivalent: "")
+        openDiagnostics.target = coordinator
+        menu.addItem(openDiagnostics)
+
         let openRecordings = NSMenuItem(title: "Open Recordings Folder", action: #selector(Coordinator.menuOpenRecordings), keyEquivalent: "")
         openRecordings.target = coordinator
         menu.addItem(openRecordings)

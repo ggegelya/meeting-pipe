@@ -414,6 +414,8 @@ mp logs --since 2d --action pipeline_failed         # all pipeline failures
 mp logs --since 1d --json | jq 'select(.bundle_id=="us.zoom.xos")'
 ```
 
+No terminal needed for a quick triage: the menu bar's **Diagnostics…** item opens a read-only viewer over the same event logs, with the same since / category / action filters. And Preferences → Integrations → **Run doctor…** now runs the daemon's own self-check (Accessibility, Screen Recording, Microphone, per-app reachability, orphan scan) before `mp doctor`'s credential and network checks, so both halves are visible in one sheet.
+
 `--since` accepts ISO timestamps (`2026-05-06T10:00:00Z`) or short relative offsets (`Nh` / `Nm` / `Nd` / `Ns`).
 
 To ask a question across past meetings from the shell, `mp ask` gives an engine-backed, cited answer (AI3): it retrieves the most relevant excerpts from the on-device embedding index, synthesizes an answer with your configured backend, and carries `[stem]` citations that are verified against the retrieved meetings, so every citation resolves to a real meeting. It honours `effective_backend()` and the egress clamp (regulated / NDA force the on-device path with no cloud fallback), and per the AI2 spike it runs async with a ~4K-token context budget rather than as live chat:

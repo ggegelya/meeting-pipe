@@ -15,6 +15,11 @@ extension Coordinator {
         NSWorkspace.shared.open(Log.logsDir)
     }
 
+    /// Open the read-only Diagnostics window over the event logs (UX20).
+    @objc func menuOpenDiagnostics() {
+        diagnosticsWindow.show()
+    }
+
     @objc func menuOpenRecordings() {
         let dir = liveOutputDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

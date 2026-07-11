@@ -43,5 +43,6 @@ swift test                # full Xcode required locally (CI on macos-14 has it)
 | Preferences | `PreferencesWindow.swift`, `Preferences/PreferencesView.swift`, `Preferences/PreferencesControls.swift`, `Preferences/UISettings.swift` |
 | Permissions | `PermissionsCenter.swift` |
 | Pipeline subprocess | `PipelineLauncher.swift`, `LocalServerReaper.swift` (kills an `mlx_lm.server` orphaned by a watchdog SIGKILL) |
-| Event log | `Logger.swift` (`Log.event` / `Log.writeLine` / `Log.main`) |
+| Event log | `Logger.swift` (`Log.event` / `Log.writeLine` / `Log.main`; size-rotated via `Log.rotateIfNeeded`, read across generations via `Log.logGenerations`) |
+| Diagnostics viewer (UX20) | `DiagnosticsWindow.swift` + `DiagnosticsView.swift` + `DiagnosticsLog.swift` (read-only event-log viewer); `DoctorCommand.daemonSelfCheckProbes` folds the argv-doctor probes into the Preferences doctor sheet (`DoctorRunner`) |
 | Automation (`meetingpipe://`) | `Automation/AutomationCommand.swift` (pure parser), `Automation/Coordinator+Automation.swift` (router), `AppDelegate.application(_:open:)` in `App.swift`, `CFBundleURLTypes` in `scripts/install.sh` |
