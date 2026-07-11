@@ -99,6 +99,12 @@ struct AudioTab: View {
 
             Spacer()
 
+            PlaybackRateMenu(playback: playback)
+
+            Toggle("Skip silence", isOn: $playback.skipSilence)
+                .toggleStyle(.checkbox)
+                .help("Automatically jump silent gaps during playback. Silence is derived from the waveform.")
+
             Picker("Channels", selection: $playback.channelMode) {
                 Text("Mono").tag(PlaybackChannelMode.monoMixdown)
                 Text("Stereo").tag(PlaybackChannelMode.stereoOriginal)

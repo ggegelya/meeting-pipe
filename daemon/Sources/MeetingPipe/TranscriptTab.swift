@@ -873,6 +873,8 @@ private struct PlaybackBar: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(Color(MPColors.fgMuted))
                     .frame(width: 48, alignment: .leading)
+
+                PlaybackRateMenu(playback: playback)
             }
         }
     }

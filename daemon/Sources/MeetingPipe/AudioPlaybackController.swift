@@ -32,10 +32,34 @@ final class AudioPlaybackController: ObservableObject {
         }
     }
 
+    /// Pitch-corrected playback speed (UX17). Applies live via `AVAudioUnitTimePitch`,
+    /// no reschedule: the player node still consumes source frames, the unit
+    /// time-scales its output, so `computedCurrentTime()` (source-frame based) keeps
+    /// the transcript highlight synced at every rate.
+    @Published var playbackRate: Float = 1.0 {
+        didSet {
+            guard oldValue != playbackRate else { return }
+            timePitch.rate = playbackRate
+        }
+    }
+
+    /// Optional: hop silent gaps during playback (UX17). Spans are derived from the
+    /// waveform peaks cache, computed off-main on load.
+    @Published var skipSilence: Bool = false
+
+    static let rateOptions: [Float] = [1.0, 1.25, 1.5, 2.0]
+    static func rateLabel(_ r: Float) -> String {
+        r == r.rounded() ? "\(Int(r))x" : "\(r)x"
+    }
+
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
+    /// Pitch-corrected time-stretch, spliced between the player and the mixer.
+    private let timePitch = AVAudioUnitTimePitch()
     private var audioFile: AVAudioFile?
     private var connectedFormat: AVAudioFormat?
+    /// Silent spans (seconds) for skip-silence, derived from the peaks cache.
+    private var silentSpans: [SilenceScanner.Span] = []
 
     /// Bounded for hour-long recordings; 8-chunk prefetch keeps the player fed.
     private static let chunkFrames: AVAudioFrameCount = 16_384
@@ -56,6 +80,7 @@ final class AudioPlaybackController: ObservableObject {
     init() {
         self.channelMode = UISettings.shared.playbackChannelMode
         engine.attach(playerNode)
+        engine.attach(timePitch)
     }
 
     deinit {
@@ -74,7 +99,10 @@ final class AudioPlaybackController: ObservableObject {
             let format = file.processingFormat
             connectedFormat = format
             engine.disconnectNodeOutput(playerNode)
-            engine.connect(playerNode, to: engine.mainMixerNode, format: format)
+            engine.disconnectNodeOutput(timePitch)
+            engine.connect(playerNode, to: timePitch, format: format)
+            engine.connect(timePitch, to: engine.mainMixerNode, format: format)
+            timePitch.rate = playbackRate
             loadedURL = url
             duration = Double(file.length) / format.sampleRate
             currentTime = 0
@@ -83,6 +111,7 @@ final class AudioPlaybackController: ObservableObject {
             playSegmentStartFrame = 0
             scheduledCursor = 0
             scheduleAhead()
+            loadSilentSpans(for: url)
         } catch {
             audioFile = nil
             connectedFormat = nil
@@ -152,6 +181,7 @@ final class AudioPlaybackController: ObservableObject {
         connectedFormat = nil
         scheduledCursor = 0
         playSegmentStartFrame = 0
+        silentSpans = []
     }
 
     private func restartFromCurrentTime() {
@@ -260,5 +290,43 @@ final class AudioPlaybackController: ObservableObject {
     private func tick() {
         guard audioFile != nil else { return }
         currentTime = computedCurrentTime()
+        maybeSkipSilence()
+    }
+
+    // MARK: - Skip silence (UX17)
+
+    /// Load the peaks (cache-or-compute, off-main) and derive the silent spans.
+    /// Cheap on a cache hit; a cold cache computes once, shared with the Audio tab.
+    private func loadSilentSpans(for url: URL) {
+        silentSpans = []
+        Task.detached(priority: .utility) { [weak self] in
+            let spans: [SilenceScanner.Span]
+            if let peaks = try? WaveformPeaksLoader.load(audioURL: url) {
+                spans = SilenceScanner.spans(peaks: peaks)
+            } else {
+                spans = []
+            }
+            await MainActor.run { [weak self] in
+                guard let self, self.loadedURL == url else { return }
+                self.silentSpans = spans
+            }
+        }
+    }
+
+    /// If playback is inside a silent span with meaningful silence still ahead, seek
+    /// past it. Landing at `span.end` moves the next tick out of the span, so this
+    /// self-limits to one seek per gap; the transcript highlight follows the jump
+    /// through `currentTime`.
+    private func maybeSkipSilence() {
+        guard skipSilence, isPlaying, !silentSpans.isEmpty else { return }
+        let t = currentTime
+        for span in silentSpans {
+            if span.start > t { break }
+            if t >= span.start, t < span.end - 0.3 {
+                let target = min(span.end, duration)
+                if target > t + 0.3 { seek(to: target) }
+                return
+            }
+        }
     }
 }
