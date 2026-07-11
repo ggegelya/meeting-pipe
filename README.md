@@ -389,7 +389,7 @@ When `summarization.backend` is `"local"`, you can grade each published summary 
 
 Every grade lands as one JSON file under `~/Library/Application Support/MeetingPipe/corrections/<stem>.json`. The corpus stays on your machine. Nothing in this loop touches the network, regardless of which summarization backend you use.
 
-Run `mp corrections-stats` to see the current state of your corpus plus a Phase 3 readiness check (the upcoming local-LoRA training needs ~20 corrections covering ~200 minutes of speech before it can fine-tune a per-user adapter). Pass `--json` for a script-friendly form.
+Run `mp corrections-stats` to see the current state of your corpus plus a Phase 3 readiness check (pass `--json` for a script-friendly form). Once you have ~20 corrections covering ~200 minutes of speech, `mp train-adapter --adapter-path <dir>` fine-tunes a per-user LoRA on the corpus on-device via MLX (fully local, no egress). A/B the result against the base model with `mp dogfood --adapter <dir>` (a local-only comparison, no cloud baseline) and grade the runs; if the adapter wins, opt it into the local backend by setting `summarization.local_adapter_path = "<dir>"` in `~/.config/meeting-pipe/config.toml`. Nothing is ever applied silently, and an honest negative result (the adapter is not worth adopting) is a fine outcome: the corpus stays a useful record either way.
 
 ---
 

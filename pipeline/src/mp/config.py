@@ -116,6 +116,11 @@ class Summarization(BaseModel):
     # backstop, so generous values here only avoid premature cutoffs.
     local_startup_timeout_sec: float = 120.0
     local_request_timeout_sec: float = 120.0
+    # LOCAL9: path to a locally-trained LoRA adapter (`mp train-adapter`). Empty
+    # (the default) serves the base model; set it to opt a fine-tuned adapter into
+    # the local backend. Never applied unless explicitly set, and fully on-device,
+    # so a regulated/NDA run can use it too.
+    local_adapter_path: str = ""
     # PROV1: model id for the `openai` backend (an OpenAI-compatible
     # chat-completions endpoint). Ignored by every other backend. User-set to
     # whatever their key can reach; the default is a widely-available model.

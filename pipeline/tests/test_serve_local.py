@@ -52,6 +52,7 @@ def test_serve_local_execs_server_for_configured_model(monkeypatch):
             local_model="mlx-community/Custom-7B-4bit",
             # A non-loopback host must be clamped before it reaches execvp.
             local_endpoint="http://0.0.0.0:9999",
+            local_adapter_path="",  # LOCAL9: no adapter -> base model served
         )
     )
     monkeypatch.setattr(config_mod.Config, "load", classmethod(lambda cls: fake_cfg))

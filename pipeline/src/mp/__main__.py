@@ -41,6 +41,9 @@ Subcommands:
                               local model and block (launch-time warm path)
   corrections-stats [--dir P] [--json]
                               Aggregate the local correction corpus (Phase 2)
+  train-adapter --adapter-path P [--model M] [--iters N] [--force] [--dry-run]
+                              Fine-tune a local LoRA adapter on the corrections
+                              corpus, on-device (Phase 3)
   analyze-detection [--since 7d] [--source PATH] [--output FILE] [--json]
                               Audit detector end-signal reliability
   ask <question...> [--context-tokens N] [--model M] [--rebuild] [--dir P] [--out F] [--json]
@@ -121,6 +124,9 @@ def main() -> int:
         return run(rest)
     if cmd in {"corrections-stats", "corrections_stats"}:
         from .corrections import main as run
+        return run(rest)
+    if cmd in {"train-adapter", "train_adapter"}:
+        from .train_adapter import main as run
         return run(rest)
     if cmd in {"analyze-detection", "analyze_detection"}:
         from .analyze_detection import main as run

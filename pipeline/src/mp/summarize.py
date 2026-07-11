@@ -564,6 +564,8 @@ def _select_backend(cfg: Config) -> SummaryClient:
             # PIPE4: one knob drives both the cloud paste-bundle guard and the local
             # map-reduce routing, so a long local meeting summarizes instead of bundling.
             map_reduce_above_chars=cfg.summarization.skip_above_chars,
+            # LOCAL9: opt-in fine-tuned adapter; empty config keeps the base model.
+            adapter_path=cfg.summarization.local_adapter_path or None,
         )
     if backend == "anthropic":
         api_key = require_env("ANTHROPIC_API_KEY")
@@ -627,6 +629,8 @@ class _AutoFallbackClient:
                 summary_language=self._cfg.summarization.summary_language,
                 # PIPE4: the auto->local fallback map-reduces a long transcript too.
                 map_reduce_above_chars=self._cfg.summarization.skip_above_chars,
+                # LOCAL9: opt-in fine-tuned adapter; empty config keeps the base model.
+                adapter_path=self._cfg.summarization.local_adapter_path or None,
             ) as fallback:
                 return fallback.summarize(
                     system_prompt=system_prompt, transcript=transcript,

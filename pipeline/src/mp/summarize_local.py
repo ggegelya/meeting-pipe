@@ -151,7 +151,9 @@ def _loopback_only(host: str) -> str:
     return DEFAULT_HOST
 
 
-def build_server_command(model: str, host: str, port: int) -> list[str]:
+def build_server_command(
+    model: str, host: str, port: int, adapter_path: str | None = None
+) -> list[str]:
     """Argv for an ``mlx_lm.server`` bound to (host, port) serving ``model``.
 
     Shared by ``LocalSummaryClient`` (its lazy per-call spawn) and ``mp
@@ -159,12 +161,18 @@ def build_server_command(model: str, host: str, port: int) -> list[str]:
     start the identical server and the warm one is reused by the health check.
     Prefers the standalone entry point; falls back to ``python -m`` so the user
     does not have to manage which interpreter has mlx-lm installed.
+
+    ``adapter_path`` (LOCAL9), when set, serves a locally-trained LoRA adapter on
+    top of the base model; empty/None serves the base model unchanged.
     """
     if shutil.which("mlx_lm.server") is not None:
         cmd = ["mlx_lm.server"]
     else:
         cmd = [sys.executable, "-m", "mlx_lm.server"]
-    return cmd + ["--model", model, "--host", host, "--port", str(port)]
+    cmd = cmd + ["--model", model, "--host", host, "--port", str(port)]
+    if adapter_path:
+        cmd += ["--adapter-path", adapter_path]
+    return cmd
 
 
 # Language honoring (LOCAL7) lives in `summary_language` now (LANG1 promoted it so
@@ -200,6 +208,7 @@ class LocalSummaryClient:
         summary_language: str = "auto",
         manage_subprocess: bool = True,
         map_reduce_above_chars: int = DEFAULT_MAP_REDUCE_ABOVE_CHARS,
+        adapter_path: str | None = None,
     ) -> None:
         self._model = model
         self._host = _loopback_only(host)
@@ -216,6 +225,8 @@ class LocalSummaryClient:
         # Test seam: when False we assume the caller has a server
         # already running on (host, port) and never spawn one.
         self._manage_subprocess = manage_subprocess
+        # LOCAL9: optional LoRA adapter path served on top of the base model.
+        self._adapter_path = adapter_path
 
         self._proc: subprocess.Popen[bytes] | None = None
         self._lock = threading.Lock()
@@ -515,7 +526,7 @@ class LocalSummaryClient:
                 f"outside a zero-egress meeting first:\n"
                 f"    mp prefetch-model {self._model}"
             )
-        cmd = build_server_command(self._model, self._host, self._port)
+        cmd = build_server_command(self._model, self._host, self._port, self._adapter_path)
         log.info("spawning mlx_lm.server: %s", " ".join(cmd))
         proc = subprocess.Popen(
             cmd,
@@ -795,7 +806,9 @@ def main(argv: list[str]) -> int:
     host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
     host = _loopback_only(host)
     model = cfg.summarization.local_model
-    cmd = build_server_command(model, host, port)
+    # LOCAL9: the warm server serves the configured adapter too, so it matches the
+    # lazy per-call spawn (LocalSummaryClient) and the daemon reuses one server.
+    cmd = build_server_command(model, host, port, cfg.summarization.local_adapter_path or None)
     log.info("serve-local: exec %s", " ".join(cmd))
     try:
         os.execvp(cmd[0], cmd)

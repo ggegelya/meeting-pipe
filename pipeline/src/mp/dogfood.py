@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import entry
-from .config import Config, zero_egress
+from .config import Config, parse_local_endpoint, zero_egress
 from .schemas import MeetingSummary
 from .summarize import (
     AnthropicSummaryClient,
@@ -116,6 +116,59 @@ def run_one(
     return out_path
 
 
+def run_one_adapter(
+    transcript_md: Path,
+    *,
+    cfg: Config,
+    runs_dir: Path,
+    adapter_path: Path,
+    local_model: str | None = None,
+) -> Path:
+    """LOCAL9 A/B: summarize `transcript_md` with the local base model and again
+    with the same model plus `adapter_path`, no cloud call, and write a base-vs-
+    adapter comparison the reviewer grades like the Anthropic-vs-local one.
+
+    The two servers use different ports so the adapter run never reuses the base
+    server on a health-check race (which would silently compare base against base).
+    """
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    transcript = transcript_md.read_text(encoding="utf-8")
+    if not transcript.strip():
+        raise ValueError(f"empty transcript: {transcript_md}")
+
+    sys_prompt = _load_system_prompt(
+        cfg.summarization.team_context,
+        cfg.summarization.summary_language,
+    )
+    model_id = local_model or cfg.summarization.local_model
+    host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
+
+    log.info("running local base (%s)...", model_id)
+    with LocalSummaryClient(model=model_id, host=host, port=port) as base_client:
+        base = base_client.summarize(
+            system_prompt=sys_prompt, transcript=transcript,
+            model=model_id, max_tokens=cfg.summarization.max_tokens,
+        )
+
+    log.info("running local + adapter (%s)...", adapter_path)
+    with LocalSummaryClient(
+        model=model_id, host=host, port=port + 1, adapter_path=str(adapter_path)
+    ) as adapter_client:
+        adapted = adapter_client.summarize(
+            system_prompt=sys_prompt, transcript=transcript,
+            model=model_id, max_tokens=cfg.summarization.max_tokens,
+        )
+
+    out_path = runs_dir / f"{transcript_md.stem}.dogfood.md"
+    out_path.write_text(
+        _render_comparison(transcript_md, base, adapted,
+                           labels=("Local base", "Local + adapter")),
+        encoding="utf-8",
+    )
+    log.info("wrote %s", out_path)
+    return out_path
+
+
 _FRONTMATTER_TEMPLATE = """\
 ---
 transcript: {transcript}
@@ -131,8 +184,9 @@ notes: ""
 
 def _render_comparison(
     transcript_md: Path,
-    anthropic_summary: MeetingSummary,
-    local_summary: MeetingSummary,
+    baseline_summary: MeetingSummary,
+    candidate_summary: MeetingSummary,
+    labels: tuple[str, str] = ("Anthropic (baseline)", "Local (MLX)"),
 ) -> str:
     front = _FRONTMATTER_TEMPLATE.format(
         transcript=str(transcript_md),
@@ -141,19 +195,19 @@ def _render_comparison(
     parts: list[str] = [front]
     parts.append(f"# Dogfood comparison: `{transcript_md.name}`")
     parts.append("")
-    parts.append("Score the local backend in the front-matter above, then run "
+    parts.append(f"Score the {labels[1]} backend in the front-matter above, then run "
                  "`mp dogfood --report` to aggregate.")
     parts.append("")
-    parts.append("## Anthropic (baseline)")
+    parts.append(f"## {labels[0]}")
     parts.append("")
     parts.append("```json")
-    parts.append(anthropic_summary.model_dump_json(indent=2, exclude_none=False))
+    parts.append(baseline_summary.model_dump_json(indent=2, exclude_none=False))
     parts.append("```")
     parts.append("")
-    parts.append("## Local (MLX)")
+    parts.append(f"## {labels[1]}")
     parts.append("")
     parts.append("```json")
-    parts.append(local_summary.model_dump_json(indent=2, exclude_none=False))
+    parts.append(candidate_summary.model_dump_json(indent=2, exclude_none=False))
     parts.append("```")
     parts.append("")
     return "\n".join(parts) + "\n"
@@ -301,6 +355,9 @@ def main(argv: list[str]) -> int:
                    help=f"Where to write the report (default: {DEFAULT_REPORT_PATH}).")
     p.add_argument("--local-model", default=None,
                    help="MLX model for the local side (default: config summarization.local_model).")
+    p.add_argument("--adapter", type=Path, default=None,
+                   help="Compare local base vs local + this LoRA adapter (LOCAL9), no cloud call, "
+                        "instead of Anthropic vs local.")
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO,
@@ -328,6 +385,14 @@ def main(argv: list[str]) -> int:
     # so the refusal is reported for the right reason even when no key is set
     # (and SEC13's arm has by then scrubbed the key regardless).
     cfg = entry.prepare(anchor=transcript_md)
+    if args.adapter is not None:
+        # LOCAL9 base-vs-adapter A/B: both sides are on-device, so there is no cloud
+        # baseline and no zero_egress refusal; a regulated/NDA meeting is fine here.
+        run_one_adapter(
+            transcript_md, cfg=cfg, runs_dir=args.runs_dir,
+            adapter_path=args.adapter, local_model=args.local_model,
+        )
+        return 0
     if zero_egress(cfg):
         sys.stderr.write(
             f"{transcript_md.name} is a regulated/NDA meeting; mp dogfood would POST "

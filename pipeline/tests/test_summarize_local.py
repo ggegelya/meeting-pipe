@@ -25,6 +25,7 @@ from mp.summarize_local import (
     LocalSummaryClient,
     LocalSummaryError,
     _largest_balanced_json_object,
+    build_server_command,
     scaled_request_timeout,
 )
 
@@ -274,6 +275,15 @@ def test_non_loopback_host_is_clamped() -> None:
 def test_loopback_host_is_preserved() -> None:
     c = LocalSummaryClient(host="localhost", port=8765, manage_subprocess=False)
     assert c.base_url == "http://localhost:8765"
+
+
+def test_build_server_command_appends_adapter_path_only_when_set() -> None:
+    # LOCAL9: the base model serves unchanged when no adapter is configured...
+    base = build_server_command("m", "127.0.0.1", 8765)
+    assert "--adapter-path" not in base
+    # ...and the LoRA adapter is served on top when local_adapter_path is set.
+    adapted = build_server_command("m", "127.0.0.1", 8765, "/adapters/mine")
+    assert adapted[adapted.index("--adapter-path") + 1] == "/adapters/mine"
 
 
 # ----- Pure helper: balanced JSON scanner -----

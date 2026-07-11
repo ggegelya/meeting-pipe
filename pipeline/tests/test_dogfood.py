@@ -201,3 +201,28 @@ def test_main_passes_local_model_override(tmp_path: Path, monkeypatch) -> None:
 
     assert rc == 0
     assert seen["local_model"] == "mlx-community/Qwen2.5-3B-Instruct-4bit"
+
+
+def test_main_adapter_mode_runs_locally_without_cloud(tmp_path: Path, monkeypatch) -> None:
+    """LOCAL9: --adapter compares local base vs local + adapter, no cloud call, so it
+    needs no ANTHROPIC_API_KEY and does not refuse a regulated/NDA meeting."""
+    transcript = tmp_path / "20260501-1300.md"
+    transcript.write_text("**A**: hi there\n", encoding="utf-8")
+
+    regulated = Config()
+    regulated.modes.regulated_mode = True  # would refuse in the cloud (Anthropic) path
+    monkeypatch.setattr(Config, "load", lambda: regulated)
+    monkeypatch.setattr("mp.entry.load_secrets", lambda *a, **k: None)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)  # no key required
+
+    anthropic = Mock()
+    monkeypatch.setattr("mp.dogfood.AnthropicSummaryClient", anthropic)
+    seen: dict = {}
+    monkeypatch.setattr("mp.dogfood.run_one_adapter",
+                        lambda *a, **k: seen.update(k) or (tmp_path / "out.md"))
+
+    rc = main([str(transcript), "--adapter", str(tmp_path / "adapter")])
+
+    assert rc == 0
+    assert str(seen["adapter_path"]) == str(tmp_path / "adapter")
+    anthropic.assert_not_called()  # adapter mode never builds a cloud baseline
