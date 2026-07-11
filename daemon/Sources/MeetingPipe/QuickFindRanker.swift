@@ -1,6 +1,6 @@
 import Foundation
 
-/// Pure-logic ranker for the quick-find panel (TECH-A3). Split from the view so XCTest can exercise ranking directly.
+/// Pure-logic ranker for the quick-find panel (TECH-A3, its FTS5 index shipped as UX16). Split from the view so XCTest can exercise ranking directly; `ftsMatches` adds transcript-depth matches on top of the field-weight ranking.
 enum QuickFindRanker {
 
     /// A scored result. `hitField` is shown as a subtitle so the user can see why the result surfaced.
@@ -26,6 +26,10 @@ enum QuickFindRanker {
     private static let recencyMaxBonus: Double = 8
     private static let recencyHalfLifeDays: Double = 365
 
+    /// UX16: baseline score for a meeting the FTS index matched (on its transcript) that no in-memory
+    /// field matched. Below the lowest field weight (summary = 20) so field matches always rank above.
+    private static let transcriptBaseline: Double = 10
+
     /// Trims, lowercases, collapses whitespace. Returns nil for empty input so callers can skip ranking and show recents.
     static func normalizeQuery(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -33,10 +37,14 @@ enum QuickFindRanker {
         return trimmed.lowercased()
     }
 
-    /// Top-N matches. Empty query returns the newest `limit` meetings unscored.
+    /// Top-N matches. Empty query returns the newest `limit` meetings unscored. `ftsMatches` (UX16)
+    /// are stems the FTS index matched (on transcript depth); one that no in-memory field matched is
+    /// surfaced below the field matches with a transcript baseline, so Quick Find searches full
+    /// transcripts too. Defaulted empty so the ranking tests drive it unchanged.
     static func rank(
         query rawQuery: String,
         in meetings: [Meeting],
+        ftsMatches: Set<String> = [],
         limit: Int = 50,
         now: Date = Date()
     ) -> [Match] {
@@ -50,6 +58,10 @@ enum QuickFindRanker {
         for m in meetings {
             if let match = score(query: q, against: m, now: now) {
                 out.append(match)
+            } else if ftsMatches.contains(m.stem) {
+                let ageDays = max(now.timeIntervalSince(m.startedAt) / 86_400, 0)
+                let bonus = max(0, recencyMaxBonus * (1 - min(ageDays / recencyHalfLifeDays, 1)))
+                out.append(Match(meeting: m, score: transcriptBaseline + bonus, hitField: "transcript"))
             }
         }
         // Stable sort: score desc, then recency desc, then stem desc so equal scores are deterministic across renders.

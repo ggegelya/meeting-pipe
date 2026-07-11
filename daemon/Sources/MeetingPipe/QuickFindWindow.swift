@@ -2,15 +2,20 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// Menu-bar quick-find floating panel (TECH-A3). Enter opens the selected meeting, Esc dismisses, arrows move selection. Not annotated `@MainActor` so it remains usable from the non-isolated `Coordinator`, which already calls it on the main thread.
+/// Menu-bar quick-find floating panel (TECH-A3; opened with Cmd+K since UX16). Enter opens the selected meeting, Esc dismisses, arrows move selection. Searches the same FTS5 index as the Library filter bar (UX16). Not annotated `@MainActor` so it remains usable from the non-isolated `Coordinator`, which already calls it on the main thread.
 final class QuickFindWindow {
 
     private let model: QuickFindModel
     private var panel: NSPanel?
 
-    init(meetingStore: MeetingStore, onSelect: @escaping (Meeting) -> Void) {
+    init(
+        meetingStore: MeetingStore,
+        ftsMatches: @escaping (String) -> Set<String>? = { _ in nil },
+        onSelect: @escaping (Meeting) -> Void
+    ) {
         let placeholder = QuickFindModel(
             meetingStore: meetingStore,
+            ftsMatches: ftsMatches,
             onSelect: onSelect,
             onDismiss: {}
         )
@@ -64,16 +69,21 @@ final class QuickFindModel: ObservableObject {
     @Published var selectedIndex: Int = 0
 
     private let meetingStore: MeetingStore
+    /// UX16: FTS candidate stems for the query, so Quick Find searches full transcripts too. Nil
+    /// (empty query / no index) means field-only ranking, unchanged.
+    private let ftsMatches: (String) -> Set<String>?
     private let onSelect: (Meeting) -> Void
     var onDismiss: () -> Void
     private var cancellables: Set<AnyCancellable> = []
 
     init(
         meetingStore: MeetingStore,
+        ftsMatches: @escaping (String) -> Set<String>? = { _ in nil },
         onSelect: @escaping (Meeting) -> Void,
         onDismiss: @escaping () -> Void
     ) {
         self.meetingStore = meetingStore
+        self.ftsMatches = ftsMatches
         self.onSelect = onSelect
         self.onDismiss = onDismiss
         meetingStore.objectWillChange
@@ -108,6 +118,7 @@ final class QuickFindModel: ObservableObject {
         let m = QuickFindRanker.rank(
             query: query,
             in: meetingStore.meetings,
+            ftsMatches: ftsMatches(query) ?? [],
             limit: 50
         )
         self.matches = m

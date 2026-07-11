@@ -542,9 +542,9 @@ final class StatusBarController {
         let quickFind = NSMenuItem(
             title: "Quick Find…",
             action: #selector(Coordinator.menuQuickFind),
-            keyEquivalent: "f"
+            keyEquivalent: "k"
         )
-        quickFind.keyEquivalentModifierMask = [.command, .shift]
+        quickFind.keyEquivalentModifierMask = [.command]
         quickFind.target = coordinator
         menu.addItem(quickFind)
 

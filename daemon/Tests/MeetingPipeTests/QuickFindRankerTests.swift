@@ -161,4 +161,21 @@ final class QuickFindRankerTests: XCTestCase {
         XCTAssertNil(QuickFindRanker.normalizeQuery("   "))
         XCTAssertNil(QuickFindRanker.normalizeQuery(""))
     }
+
+    // MARK: - UX16: FTS transcript matches
+
+    func test_fts_transcript_match_surfaces_below_field_matches() {
+        // "a" matches on its title; "b" matches only via the FTS transcript set (no in-memory field).
+        let a = make(stem: "a", startedAt: daysAgo(0), summaryTitle: "Budget review")
+        let b = make(stem: "b", startedAt: daysAgo(0), summaryTitle: "Unrelated standup")
+        let ranked = QuickFindRanker.rank(query: "budget", in: [a, b], ftsMatches: ["b"], now: now)
+        XCTAssertEqual(ranked.map { $0.meeting.stem }, ["a", "b"], "the field match ranks above the transcript-only match")
+        XCTAssertEqual(ranked.last?.hitField, "transcript")
+    }
+
+    func test_empty_fts_set_leaves_ranking_unchanged() {
+        // The default empty set keeps the pre-FTS behaviour: a non-matching meeting is dropped.
+        let a = make(stem: "a", startedAt: daysAgo(0), summaryTitle: "Unrelated")
+        XCTAssertTrue(QuickFindRanker.rank(query: "budget", in: [a], now: now).isEmpty)
+    }
 }

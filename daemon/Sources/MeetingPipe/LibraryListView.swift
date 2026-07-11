@@ -50,6 +50,7 @@ struct LibraryListView: View {
         .onChange(of: scope) { _, _ in recomputeDerived() }
         .onChange(of: workflows.count) { _, _ in recomputeDerived() }
         .onChange(of: filter) { _, _ in recomputeDerived() }
+        .onChange(of: libraryModel.searchIndexRevision) { _, _ in recomputeDerived() }
     }
 
     /// Scope header: title + count. Workflow scopes resolve the title via the snapshot.
@@ -85,7 +86,8 @@ struct LibraryListView: View {
             storeRevision: store.revision,
             scope: scope,
             workflowsCount: workflows.count,
-            filter: filter
+            filter: filter,
+            searchRevision: libraryModel.searchIndexRevision
         )
         if key == lastDerivedKey { return }
         lastDerivedKey = key
@@ -96,7 +98,11 @@ struct LibraryListView: View {
         } else {
             scoped = store.meetings.filter { scope.includes($0, workflows: workflows) }
         }
-        let filtered = MeetingFilterEngine.apply(filter, to: scoped)
+        // UX16: the free-text field runs through the FTS index (transcript + summary depth); the
+        // chips stay in-memory equality filters inside `apply`. nil = no index / empty query, so it
+        // falls back to the in-memory corpus and search never regresses.
+        let ftsMatches = libraryModel.matchingStems(filter.query)
+        let filtered = MeetingFilterEngine.apply(filter, to: scoped, ftsMatches: ftsMatches)
         let facets = MeetingFacets.build(from: scoped)
         let groups = MeetingGroup.group(filtered, now: Date())
         derived = DerivedList(
@@ -124,11 +130,15 @@ struct LibraryListView: View {
         let scope: LibraryScope
         let workflowsCount: Int
         let filter: MeetingFilter
+        /// UX16: bumps when a background index build completes, so a held query re-derives against
+        /// the now-complete transcript matches.
+        let searchRevision: Int
         static let empty = DerivedKey(
             storeRevision: -1,
             scope: .allMeetings,
             workflowsCount: 0,
-            filter: MeetingFilter()
+            filter: MeetingFilter(),
+            searchRevision: -1
         )
     }
 

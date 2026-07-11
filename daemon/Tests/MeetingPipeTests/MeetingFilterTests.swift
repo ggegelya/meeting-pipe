@@ -1,10 +1,11 @@
 import XCTest
 @testable import MeetingPipe
 
-/// Pure-logic coverage for the in-memory filter (TECH-A14). When the
-/// FTS5 upgrade lands (TECH-A3), these test cases should keep passing
-/// against the new engine — they express the contract the view relies
-/// on, not the implementation.
+/// Pure-logic coverage for the in-memory filter (TECH-A14). UX16's FTS5 merge
+/// (the retired TECH-A3 upgrade) kept these cases passing: `apply`'s `ftsMatches`
+/// defaults to nil, so the in-memory arm is unchanged; the UX16 section below
+/// covers the merged behaviour. They express the contract the view relies on,
+/// not the implementation.
 final class MeetingFilterTests: XCTestCase {
 
     // MARK: searchableText extraction
@@ -128,6 +129,42 @@ final class MeetingFilterTests: XCTestCase {
         filter.query = "design"
         filter.workflow = "Client work"
         let filtered = MeetingFilterEngine.apply(filter, to: meetings)
+        XCTAssertEqual(filtered.map(\.stem), ["a"])
+    }
+
+    // MARK: UX16 - FTS merge (the free-text branch)
+
+    func test_apply_surfaces_a_transcript_only_match_via_fts() {
+        // "budget" is in neither meeting's in-memory corpus, but the FTS index matched "a" on its
+        // transcript body. Without FTS nothing matches; with it, "a" surfaces.
+        let meetings = [m("a", searchable: "sprint planning"), m("b", searchable: "design review")]
+        var filter = MeetingFilter()
+        filter.query = "budget"
+        XCTAssertTrue(MeetingFilterEngine.apply(filter, to: meetings).isEmpty)
+        let filtered = MeetingFilterEngine.apply(filter, to: meetings, ftsMatches: ["a"])
+        XCTAssertEqual(filtered.map(\.stem), ["a"])
+    }
+
+    func test_apply_keeps_in_memory_matches_when_fts_has_not_reached_them() {
+        // The union: a title/summary match survives even if the index has not indexed the stem yet
+        // (FTS returns an empty set), so search never regresses below the pre-FTS behaviour.
+        let meetings = [m("a", searchable: "quarterly budget review")]
+        var filter = MeetingFilter()
+        filter.query = "budget"
+        let filtered = MeetingFilterEngine.apply(filter, to: meetings, ftsMatches: [])
+        XCTAssertEqual(filtered.map(\.stem), ["a"])
+    }
+
+    func test_apply_chips_still_narrow_fts_matches() {
+        // FTS matched both stems, but the workflow chip narrows to one: chips stay in-memory filters.
+        let meetings = [
+            m("a", searchable: "x", workflow: "Client work"),
+            m("b", searchable: "y", workflow: "General"),
+        ]
+        var filter = MeetingFilter()
+        filter.query = "budget"
+        filter.workflow = "Client work"
+        let filtered = MeetingFilterEngine.apply(filter, to: meetings, ftsMatches: ["a", "b"])
         XCTAssertEqual(filtered.map(\.stem), ["a"])
     }
 

@@ -39,7 +39,7 @@ swift test                # full Xcode required locally (CI on macos-14 has it)
 | Recording | `MeetingRecorder.swift`, `SystemAudioCapture.swift`, `MuteRedactor.swift` (offline redaction), `AudioRetention.swift` |
 | Transcription (ASR + diarization) | `Transcription/` (`FluidAudioRunner`, `TranscriptionRunner`, `SegmentBuilder`, `TranscriptionService`) |
 | Workflows | `Workflow.swift`, `WorkflowStore.swift`, `WorkflowMatcher.swift`, `WorkflowsView.swift` |
-| Library UI | `LibraryWindow.swift`, `LibraryListView.swift`, `MeetingDetailView.swift`, `MeetingStore.swift` |
+| Library UI | `LibraryWindow.swift`, `LibraryListView.swift`, `MeetingDetailView.swift`, `MeetingStore.swift`; search: `SearchIndex.swift` (SQLite FTS5) + `SearchIndexer.swift` + `SearchQuery.swift` (UX16) |
 | Preferences | `PreferencesWindow.swift`, `Preferences/PreferencesView.swift`, `Preferences/PreferencesControls.swift`, `Preferences/UISettings.swift` |
 | Permissions | `PermissionsCenter.swift` |
 | Pipeline subprocess | `PipelineLauncher.swift`, `LocalServerReaper.swift` (kills an `mlx_lm.server` orphaned by a watchdog SIGKILL) |

@@ -131,12 +131,35 @@ final class LibraryWindowModel: ObservableObject {
     /// Backing store for the meetings list; the list view subscribes to it.
     let meetingStore: MeetingStore
 
+    /// The FTS5 search index over transcripts + summaries (UX16). Attached by the Coordinator so
+    /// headless tests don't touch the real cache; when nil the list falls back to in-memory search.
+    private(set) var searchIndexer: SearchIndexer?
+    /// Mirrors `searchIndexer.indexRevision` onto this model so the list (which observes this model)
+    /// re-derives when a background index build completes and new transcript matches become available.
+    @Published private(set) var searchIndexRevision: Int = 0
+    private var searchCancellable: AnyCancellable?
+
     /// Assigned by the Coordinator after it builds the store (TECH-B). Nil-able so headless tests and the initial-state path don't need it.
     weak var workflowStore: WorkflowStore?
 
     init(coordinator: Coordinator? = nil, recordingsDir: URL) {
         self.coordinator = coordinator
         self.meetingStore = MeetingStore(recordingsDir: recordingsDir)
+    }
+
+    /// Wire the FTS index (UX16). Called by the Coordinator with an indexer built over `meetingStore`;
+    /// mirrors its revision so the list refreshes as the index catches up.
+    func attachSearchIndexer(_ indexer: SearchIndexer) {
+        searchIndexer = indexer
+        searchCancellable = indexer.$indexRevision
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] rev in self?.searchIndexRevision = rev }
+    }
+
+    /// FTS candidate stems for the free-text query, or nil to fall back to in-memory search (empty
+    /// query or no index). The list intersects these with the scoped + chip-filtered meetings.
+    func matchingStems(_ query: String) -> Set<String>? {
+        searchIndexer?.matchingStems(query)
     }
 
     /// A library action fired before the Coordinator wired the service. Only

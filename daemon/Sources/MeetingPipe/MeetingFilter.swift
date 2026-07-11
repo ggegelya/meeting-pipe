@@ -1,6 +1,6 @@
 import Foundation
 
-/// Filter state for the library list (TECH-A14). Pure value type; SwiftUI re-runs it trivially and tests drive every branch without rendering. FTS5 over full transcripts is the TECH-A3 upgrade path; nothing here blocks it.
+/// Filter state for the library list (TECH-A14). Pure value type; SwiftUI re-runs it trivially and tests drive every branch without rendering. FTS5 over full transcripts shipped as UX16 (the retired TECH-A3 upgrade path): `MeetingFilterEngine.apply` takes the FTS candidate stems, the chips stay in-memory equality filters.
 struct MeetingFilter: Equatable {
     var query: String = ""
     var workflow: String? = nil           // nil = any
@@ -30,9 +30,14 @@ struct MeetingFilter: Equatable {
 
 /// Pure filter applier, split out so tests can drive it without SwiftUI.
 enum MeetingFilterEngine {
+    /// `ftsMatches` (UX16): the stems the FTS5 index matched for `filter.query`, or nil to search
+    /// in-memory only (empty query, or the index is unavailable). Chips + date stay in-memory
+    /// equality filters; only the free-text branch consults FTS. Defaulted so the pre-FTS callers
+    /// and the contract tests drive it unchanged.
     static func apply(
         _ filter: MeetingFilter,
         to meetings: [Meeting],
+        ftsMatches: Set<String>? = nil,
         now: Date = Date()
     ) -> [Meeting] {
         if filter.isEmpty { return meetings }
@@ -44,14 +49,19 @@ enum MeetingFilterEngine {
             if let bid = filter.sourceBundleID, m.sourceBundleID != bid { return false }
             if let st = filter.status, m.status != st { return false }
             if let cut = cutoff, m.startedAt < cut { return false }
-            if !needles.isEmpty {
-                let hay = m.searchableText
-                for n in needles {
-                    if !hay.contains(n) { return false }
-                }
-            }
+            if !needles.isEmpty && !matchesQuery(m, needles: needles, ftsMatches: ftsMatches) { return false }
             return true
         }
+    }
+
+    /// A meeting matches the free-text query when the FTS index matched it (transcript depth) OR its
+    /// in-memory corpus contains every token (UX16). The in-memory arm keeps title/summary search
+    /// working before the index catches up and covers a stem the index hasn't reached; the FTS arm
+    /// adds full-transcript reach. Union, so search never regresses below the pre-FTS behaviour.
+    static func matchesQuery(_ m: Meeting, needles: [String], ftsMatches: Set<String>?) -> Bool {
+        if let ftsMatches, ftsMatches.contains(m.stem) { return true }
+        let hay = m.searchableText
+        return needles.allSatisfy { hay.contains($0) }
     }
 
     /// Lowercases, splits on whitespace, drops empties. ANDs at the call site ("client zoom" requires both words).

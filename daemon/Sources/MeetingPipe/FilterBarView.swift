@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Single 36pt filter bar: search input with match-count badge, Workflow chip, App/Status/Date ref-chips, and a trailing Clear button. The TECH-A3 FTS5 upgrade drops in behind `MeetingFilterEngine.apply` without touching this view.
+/// Single 36pt filter bar: search input with match-count badge, Workflow chip, App/Status/Date ref-chips, and a trailing Clear button. UX16's FTS5 search (the retired TECH-A3 upgrade) landed behind `MeetingFilterEngine.apply` without touching this view.
 struct FilterBarView: View {
     @Binding var filter: MeetingFilter
     let facets: MeetingFacets

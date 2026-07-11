@@ -119,6 +119,9 @@ final class Coordinator: NSObject {
             return config.recording.outputDir
         }()
         let libraryModel = LibraryWindowModel(recordingsDir: recordingsDir)
+        // UX16: the FTS5 search index, built over the same store. Attached here (not in the model's
+        // init) so headless tests never touch the real cache and fall back to in-memory search.
+        libraryModel.attachSearchIndexer(SearchIndexer(store: libraryModel.meetingStore))
         self.libraryModel = libraryModel
         self.libraryWindow = LibraryWindow(model: libraryModel)
         // Load workflows synchronously so the matcher (TECH-B3) and
@@ -622,6 +625,7 @@ final class Coordinator: NSObject {
 
     lazy var quickFindWindow: QuickFindWindow = QuickFindWindow(
         meetingStore: libraryModel.meetingStore,
+        ftsMatches: { [weak self] query in self?.libraryModel.matchingStems(query) },
         onSelect: { [weak self] meeting in
             self?.openMeeting(stem: meeting.stem)
         }

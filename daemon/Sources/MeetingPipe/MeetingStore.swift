@@ -57,7 +57,7 @@ struct Meeting: Identifiable, Hashable {
         ) != nil
     }
 
-    /// Lowercased search corpus (TECH-A14): title + summary bullets + decisions + action tasks. Built once per scan so the filter loop never re-reads JSON. Transcripts excluded to keep the corpus bounded; full-transcript search is the FTS5 upgrade (TECH-A3).
+    /// Lowercased search corpus (TECH-A14): title + summary bullets + decisions + action tasks. Built once per scan so the filter loop never re-reads JSON. Transcripts stay excluded here to keep the scan cheap; UX16's `SearchIndexer` reads the transcript body off the scan path and adds it to the FTS5 index (the retired TECH-A3 upgrade), so full-transcript search rides on top of this corpus without slowing the scan.
     let searchableText: String
 
     /// True when the summary sidecar is newer than the newest publish sidecar (`.notion.json` / `.obsidian.json`), i.e. the meeting was edited or regenerated since it was last published, so the row offers an inline Republish (TECH-UX2). False when never published. Computed during the scan from prefetched file mtimes; defaulted so test constructors need not supply it.
