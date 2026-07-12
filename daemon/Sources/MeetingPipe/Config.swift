@@ -9,7 +9,7 @@ struct Config {
         var autoConsentApps: [String]
         /// `AVAudioInputNode.setVoiceProcessingEnabled(true)`: Apple VoIP DSP (noise suppression, echo cancellation, AGC), mono only. Costs dynamic range. Default false - see load() comment.
         var voiceProcessing: Bool
-        /// Pause mic capture while the user is muted in the meeting client (AX probe, best-effort). Falls back to recording when AX is denied or the mute control is unrecognized.
+        /// Track in-app mute in the meeting client (AX probe, best-effort). Does NOT pause the mic: the default is capture-first (ADR 0016), so the verdict only feeds the per-workflow redaction timeline and the idle backstop; only the regulated / NDA gate zeroes the mic live. No-op when AX is denied or the mute control is unrecognized.
         var honorAppMute: Bool
     }
 

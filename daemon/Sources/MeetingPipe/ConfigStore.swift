@@ -22,8 +22,10 @@ final class ConfigStore: ObservableObject {
     /// gain system-wide so other clients hear the user quietly. Applies next
     /// recording.
     @Published var voiceProcessing: Bool { didSet { scheduleSave() } }
-    /// When true, MicGate zeroes mic frames while the client reports muted
-    /// (or system input mute is on); off keeps recording through in-app mute.
+    /// When true, MicGate observes the client's mute button (or system input
+    /// mute) and records it to the muted-span timeline (capture-first, ADR 0016):
+    /// the mic is still recorded in full, redaction is a per-workflow opt-in, and
+    /// only the regulated / NDA gate zeroes the mic live. Off skips mute tracking.
     @Published var honorAppMute: Bool { didSet { scheduleSave() } }
 
     @Published var debounceStartSec: Double { didSet { scheduleSave() } }

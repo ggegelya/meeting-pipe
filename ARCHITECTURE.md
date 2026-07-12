@@ -85,12 +85,12 @@ sequenceDiagram
     LC->>Coord: verdict .starting
     Coord->>User: prompt panel (Record? Skip?)
     User->>Coord: Record
-    Coord->>Rec: start(outputDir, voiceProcessing)
+    Coord->>Rec: start(outputDir, captureMode, voiceProcessing)
     Coord->>Gate: engage(handles)
     loop every audio buffer
         Rec->>Gate: per-buffer mic RMS
         Gate-->>Rec: MicGateVerdict
-        Note right of Rec: MicGateWriter applies the<br/>verdict in place, 20 ms fade,<br/>frame parity preserved
+        Note right of Rec: capture-first records the verdict to the<br/>mute timeline; only regulated/NDA zeros<br/>the mic in place (20 ms fade, frame parity)
     end
     User->>LC: clicks Leave
     LC->>Coord: verdict .ended
@@ -106,7 +106,7 @@ sequenceDiagram
 
 ### Verdict-fusion stack
 
-The post-detection layer that decides, every audio buffer, whether your mic should be audible or silent. Four probes feed `MicGate`; its verdict drives both the writer (shapes the recorded audio) and the silence backstop (auto-stops dead meetings).
+The post-detection layer that reads, every audio buffer, whether you look muted in the meeting client. Four probes feed `MicGate`; by default (capture-first, ADR 0016) its verdict drives the muted-span timeline for opt-in offline redaction and the silence backstop (auto-stops dead meetings), never the recorded mic. Only under the regulated / NDA gate does the verdict silence the mic in real time through `MicGateWriter`.
 
 ```mermaid
 flowchart TB
@@ -257,9 +257,9 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 - `MeetingRecorder.swift` - AVAudioEngine for mic capture + the `SystemAudioCapture` source for everything else, mixed and written to disk. `MicGateWriter` applies the per-buffer mute verdict in place. At start it resolves the bound input device (`MeetingPipeCore/Infra/InputDeviceIdentity`) and snapshots whole-recording mic coverage; `MeetingSessionController` reads both at stop to persist which mic was used (`mic_device_name`) and to fire the dead-mic warning (`MicCoverageWarning`, the mirror of `RemoteAudioWarning`) when the mic stayed silent under a live system channel (MIC15).
 - `SystemAudioCapture.swift` - ScreenCaptureKit + ProcessTap (macOS 14.2+) capture of every-other-process audio. The `excludesCurrentProcessAudio` API is the macOS 14 hard floor.
 
-### Mute gating - "don't record me while I'm muted"
+### Mute gating - track mute, redact the notes or gate live
 
-- `MeetingPipeCore/MicGate/` - the `MicGate` verdict-fusion subsystem. Probes (HAL system mute, HAL voice-activity detection, an AX read of the meeting client's Mute button, a per-buffer RMS gate) feed `MicGate.decide`; `MicGateWriter` zeros the mic channel with a short fade while muted, preserving frame alignment with system audio.
+- `MeetingPipeCore/MicGate/` - the `MicGate` verdict-fusion subsystem. Probes (HAL system mute, HAL voice-activity detection, an AX read of the meeting client's Mute button, a per-buffer RMS gate) feed `MicGate.decide`. By default (capture-first, ADR 0016) the verdict is recorded as a muted-span timeline, not applied: the mic is captured in full, and only a per-workflow `redactMutedSpans` opt-in removes those spans from the consumed artifact offline. Under the regulated / NDA gate `MicGateWriter` zeros the mic channel in real time with a short fade instead, preserving frame alignment with system audio (no audio at rest).
 - `MeetingPipeCore/MicGate/IdleStopBackstop.swift` - the meeting-idle backstop (TECH-END3). Off one idle streak, gated on the fused `MicGate` verdict plus a live-system-audio mirror (not raw RMS, so ambient noise cannot keep a dead meeting open), it fires the nudge then the auto-stop. Supersedes the old `SilenceDetector` and `MicOnlySilenceBackstop`.
 
 ### Transcription - "ASR + speaker labels, on device"
@@ -512,7 +512,7 @@ Project-specific terms. When in doubt, the code is authoritative; this is the or
 
 **`<stem>.run.json`, `<stem>.notion.json`** - per-stage output sidecars written by the pipeline so re-runs are idempotent (publishers know which page id they already posted to).
 
-**Mic gate** - the `MicGate` verdict-fusion subsystem (`MeetingPipeCore/MicGate/`) decides, per audio buffer, whether the recorded mic channel carries audio or zero-amplitude frames. `MicGateWriter` applies the verdict in place with a short fade, preserving frame alignment with system audio. The verdict fuses HAL system mute, HAL voice-activity detection, an AX read of the meeting client's Mute button, and a per-buffer RMS gate. See TECH-G-MIC.
+**Mic gate** - the `MicGate` verdict-fusion subsystem (`MeetingPipeCore/MicGate/`) reads, per audio buffer, whether you look muted in the meeting client. The verdict fuses HAL system mute, HAL voice-activity detection, an AX read of the meeting client's Mute button, and a per-buffer RMS gate. By default (capture-first, ADR 0016) it is recorded as a muted-span timeline for opt-in offline redaction, never applied to the recorded mic; only under the regulated / NDA gate does `MicGateWriter` zero the mic channel in place with a short fade (preserving frame alignment with system audio). See TECH-G-MIC.
 
 **NDA mode** - per-workflow flag (`Workflow.flags.ndaMode`). When true, the workflow's effective backend forces to `"local"` and effective sinks force to `["filesystem"]`, regardless of what the workflow's fields say. The HUD and status-bar title show " · NDA" so the user can confirm at a glance. Distinct from *regulated mode*: NDA is per-workflow, regulated is global.
 

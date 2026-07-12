@@ -29,7 +29,7 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(store.transcriptionLanguage, "en")
         // Recording / detection knobs surfaced in Preferences.
         XCTAssertFalse(store.voiceProcessing, "voice_processing defaults off; VPIO drops mic gain system-wide")
-        XCTAssertTrue(store.honorAppMute, "honor_app_mute defaults on; MicGate zeroes mic when in-app muted")
+        XCTAssertTrue(store.honorAppMute, "honor_app_mute defaults on; MicGate tracks in-app mute for the redaction timeline + idle backstop, not live zeroing (ADR 0016)")
         XCTAssertEqual(store.repromptCooldownSec, 60)
         XCTAssertEqual(store.micOnlySilenceSec, 900)  // TECH-END3: idle auto-stop horizon, 15 min
     }

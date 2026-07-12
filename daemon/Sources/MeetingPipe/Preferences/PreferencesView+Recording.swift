@@ -39,15 +39,15 @@ struct RecordingSectionView: View {
             }
 
             SettingsGroup("Microphone") {
-                SettingsToggleRow("Pause mic when muted",
-                    sublabel: "Pauses mic capture while you're muted in Teams / Zoom / Slack / Webex. Uses the locale catalogue (en, uk, de, es, fr, ja, pt, ru).",
+                SettingsToggleRow("Track in-app mute",
+                    sublabel: "Watches your mute button in Teams / Zoom / Slack / Webex (locale catalogue: en, uk, de, es, fr, ja, pt, ru). The mic is always recorded in full; tracking lets a workflow's \"Redact muted spans\" remove those moments from the notes offline, and helps auto-stop a dead meeting. Only a regulated / NDA workflow silences the mic live.",
                     isOn: $store.honorAppMute,
                     showsDivider: false)
                 SettingsToggleRow("Voice processing",
                     sublabel: "Apple's noise-suppression + AGC. Drops your mic gain system-wide while recording, so other apps hear you quietly. Off by default; flip on only for solo voice memos.",
                     isOn: $store.voiceProcessing)
             } footer: {
-                Text("Voice processing takes effect on the next recording. Mute pausing applies to every meeting.")
+                Text("Voice processing takes effect on the next recording. Mute tracking applies to every meeting.")
             }
 
             SettingsGroup("Detection") {

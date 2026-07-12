@@ -22,13 +22,16 @@ auto_consent_apps = []
 # call). The recorder reverts the VP unit on stop, but the live
 # degradation while recording is unavoidable.
 voice_processing = false
-# When true, the recorder pauses local mic capture while the user is
-# muted in the active meeting client (Teams / Zoom / Slack huddle).
-# Detected via Accessibility on the meeting window the recording was
-# attributed to. Best-effort: if AX is denied or the client's mute
-# control isn't recognised, the recorder keeps capturing everything
-# (current behaviour). Flip to false if you want the mic to always
-# record regardless of in-app mute (e.g. archival use cases).
+# When true, the daemon TRACKS your in-app mute in the active meeting
+# client (Teams / Zoom / Slack / Webex), detected via Accessibility on the
+# attributed meeting window. It does NOT pause or zero the mic: by default
+# the mic is recorded in full (capture-first, ADR 0016). Tracking only
+# records a muted-span timeline that a per-workflow "redact muted spans"
+# opt-in uses to remove those moments from the notes offline, and feeds the
+# idle auto-stop backstop. Only a regulated / NDA workflow silences the mic
+# in real time. Best-effort: if AX is denied or the mute control isn't
+# recognised, mute simply isn't tracked. Flip to false to skip mute
+# tracking entirely (e.g. archival use cases).
 honor_app_mute = true
 
 # No microphone or output-device fields here — the daemon captures system
