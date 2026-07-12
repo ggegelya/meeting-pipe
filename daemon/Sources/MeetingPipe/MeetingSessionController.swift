@@ -55,6 +55,21 @@ final class MeetingSessionController {
     /// the marker so the toggle is idempotent per press.
     private var offTheRecordOn = false
 
+    /// DET1: one-shot flag set by `handleMicInUseDwell` and consumed by the very next
+    /// `handleMeetingStarted`, marking that prompt as mic-in-use-originated. A flag (not a bundle
+    /// that lingers) so that a whitelist prompt after a *skipped* DET1 prompt always resets the tag
+    /// below, and can never be mis-tagged as DET1 (and thus mic-release-stopped mid-call).
+    private var micTierPromptSource = false
+    /// DET1: the bundle of the current prompt if it originated from the mic-in-use tier, else nil.
+    /// Set for every prompt by `handleMeetingStarted` (from `micTierPromptSource`), read by
+    /// `beginRecording` to tag a DET1 recording. Cleared there and reset on every prompt.
+    private var micTierPromptBundle: String?
+    /// DET1: the bundle of an in-flight recording that DET1's tier started. When the mic for this
+    /// bundle is released (the call ended), the recording is stopped - a DET1 recording engages no
+    /// lifecycle, so this mic-release end is its reliable stop (the idle backstop can be starved of
+    /// a mic-gate verdict). nil for whitelist / manual recordings, which keep their own end path.
+    private var micTierRecordingBundle: String?
+
     /// Latest system-audio dBFS (from `recorder.onSystemLevel`), read by
     /// the silence backstop. `-120` is the "no audio observed yet" sentinel.
     var latestSystemLevelDb: Float = -120
@@ -315,6 +330,13 @@ final class MeetingSessionController {
             ])
         }
 
+        // DET1: decide the mic-in-use tag NOW, synchronously, from the prompt this record answers.
+        // The engine bring-up below is an `await`, during which a concurrent `handleMeetingStarted`
+        // (a different meeting discovered while we start) could wipe `micTierPromptBundle`; reading
+        // it after the await would then leave this DET1 recording untagged and thus never stopped.
+        let isMicTierRecording = source?.bundleID != nil && source?.bundleID == micTierPromptBundle
+        micTierPromptBundle = nil
+
         // Committed to starting: guard re-entry until this start resolves. The
         // recorder bounds the engine bring-up off the main thread, so the await
         // below never blocks the UI; the post-start wiring runs back on main.
@@ -338,6 +360,10 @@ final class MeetingSessionController {
                 // regulated / workflow / title), which orphan recovery replays. Cleared
                 // on a clean stop in `stopRecording`.
                 self.writeRecoveryManifest(file: file, source: source, summaryMode: summaryMode)
+                // DET1: apply the tag decision captured synchronously before the await, so
+                // `handleMicBusyBundle` stops this recording when its app releases the mic. Reading
+                // it here would race a concurrent handleMeetingStarted during the start.
+                self.micTierRecordingBundle = isMicTierRecording ? source?.bundleID : nil
                 self.coordinator.stateMachine.setRecording(file: file, source: source, summaryMode: summaryMode)
                 self.coordinator.statusUI.setRecording(file: file, source: source, summaryMode: summaryMode, workflow: resolvedWorkflow)
                 self.coordinator.hud.present(
@@ -434,6 +460,7 @@ final class MeetingSessionController {
     }
 
     func stopRecording(file: URL, source: AppSource?, summaryMode: SummaryMode) {
+        micTierRecordingBundle = nil // DET1: this recording is ending; drop its mic-release tag
         coordinator.stateMachine.setStopping(file: file, source: source, summaryMode: summaryMode)
         coordinator.statusUI.setStopping()
         coordinator.hud.dismiss()
@@ -644,7 +671,44 @@ final class MeetingSessionController {
 
     // MARK: - Detection-to-record handlers (lifecycle verdict consumers)
 
+    /// DET1: a sustained mic-busy dwell with no whitelist winner. Route the synthesized generic
+    /// source through the same prompt path as a lifecycle `.starting`, so the skip-latch, reprompt
+    /// cooldown, and auto-consent all apply (the quiet-register guardrail: one prompt per cooldown,
+    /// never a popup storm). The lifecycle is deliberately NOT engaged: this tier is permission-
+    /// light (no AX / Screen Recording), so a recording it starts ends via the idle-stop backstop.
+    func handleMicInUseDwell(_ source: AppSource) {
+        Log.writeLine("daemon", "mic-in-use dwell -> prompting (\(source.bundleID))")
+        // Mark the next prompt as mic-in-use-originated; handleMeetingStarted consumes this into
+        // micTierPromptBundle so a recording started off it (auto-consent now or the prompt answered
+        // later) is tagged DET1 and stopped on mic release.
+        micTierPromptSource = true
+        handleMeetingStarted(source: source)
+    }
+
+    /// DET1: the currently-held mic bundle updated (nil = idle). If a DET1-tagged recording's app is
+    /// no longer the one holding the mic (the call ended), stop it - the reliable, permission-light
+    /// end for a recording that engages no lifecycle. A LEVEL check (re-run every poll), so a
+    /// recording that started AFTER its mic-busy span closed (a late prompt answer, a slow recorder
+    /// bring-up) is still stopped, not left running forever. A no-op for whitelist / manual
+    /// recordings (not tagged); the tracker debounces the release, so a brief flap keeps the bundle
+    /// held and never triggers a false stop.
+    func handleMicBusyBundle(_ currentBusyBundle: String?) {
+        guard let recBundle = micTierRecordingBundle, currentBusyBundle != recBundle,
+              case .recording(let file, let src, let mode) = coordinator.stateMachine.current,
+              src?.bundleID == recBundle else { return }
+        Log.event(category: "coordinator", action: "mic_in_use_stop", attributes: ["bundle_id": recBundle])
+        Log.writeLine("daemon", "mic-in-use recording stopped: mic released (\(recBundle))")
+        stopRecording(file: file, source: src, summaryMode: mode)
+    }
+
     func handleMeetingStarted(source: AppSource) {
+        // DET1: consume the one-shot mic-in-use flag now (so it never leaks to the next call), but
+        // arm the per-prompt tag only once we COMMIT to showing/recording this prompt (after the
+        // suppression guards below). Arming it here, before the guards, would let a DET1
+        // `handleMeetingStarted` that early-returns while a whitelist prompt for the same bundle is
+        // up leave a stale tag that mis-tags the later whitelist recording.
+        let isMicTier = micTierPromptSource
+        micTierPromptSource = false
         guard coordinator.stateMachine.isAcceptingPrompts else { return }
 
         // A meeting the user already dismissed stays dismissed for its whole lifetime:
@@ -666,6 +730,11 @@ final class MeetingSessionController {
         ) {
             return
         }
+
+        // Committed to this prompt: arm the DET1 tag (the bundle when mic-in-use-originated, else
+        // clear any prior prompt's value so a whitelist prompt is never tagged). beginRecording
+        // captures this synchronously before its async start.
+        micTierPromptBundle = isMicTier ? source.bundleID : nil
 
         // Auto-consent (config or persisted "Always").
         if coordinator.liveAutoConsentApps.contains(source.bundleID) ||

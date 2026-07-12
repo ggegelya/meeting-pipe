@@ -267,6 +267,48 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         XCTAssertEqual(host.stateMachine.current, .idle)
     }
 
+    // MARK: - DET1: mic-in-use tier tag + mic-release stop
+
+    func test_micInUse_recordingIsStoppedWhenItsMicIsReleased() async {
+        let (controller, host) = makeController()
+        let faceTime = AppSource(bundleID: "com.apple.FaceTime", displayName: "FaceTime")
+        // A DET1 dwell prompts; recording that prompt tags it as a DET1 recording.
+        controller.handleMicInUseDwell(faceTime)
+        controller.beginRecording(source: faceTime, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current.isRecording }, "the DET1 recording to start")
+
+        // The mic is no longer held by FaceTime (the call ended). The level check stops the
+        // recording - a DET1 recording engages no lifecycle, so this is its reliable end.
+        controller.handleMicBusyBundle(nil)
+        await waitUntil({ !host.stateMachine.current.isRecording }, "the DET1 recording to stop on mic release")
+    }
+
+    func test_micInUse_staleTagDoesNotStopALaterWhitelistRecording() async {
+        // Regression guard (found in re-review): a skipped DET1 prompt must not leave a stale tag
+        // that mis-tags a later WHITELIST recording of the same bundle as DET1, which the
+        // mic-release level check would then false-stop mid-call.
+        let (controller, host) = makeController()
+        let chrome = AppSource(bundleID: "com.google.Chrome", displayName: "Google Chrome")
+
+        // 1) DET1 prompts for Chrome; the user skips (abandon, no recording).
+        controller.handleMicInUseDwell(chrome)
+        XCTAssertTrue(host.stateMachine.current.isPrompting)
+        host.stateMachine.abandonPrompt(source: chrome)
+        host.stateMachine.clearSuppression(bundleID: chrome.bundleID) // the 15s/60s suppression lapses
+
+        // 2) A whitelist Google-Meet-in-Chrome is detected and recorded (same bundle). The whitelist
+        //    handleMeetingStarted resets the one-shot tag, so this recording is NOT tagged DET1.
+        controller.handleMeetingStarted(source: chrome)
+        controller.beginRecording(source: chrome, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current.isRecording }, "the whitelist recording to start")
+
+        // 3) The mic releases: a whitelist recording must survive (its own end path governs it).
+        controller.handleMicBusyBundle(nil)
+        await settle()
+        XCTAssertTrue(host.stateMachine.current.isRecording,
+                      "a whitelist recording must not be mis-tagged as DET1 and mic-release-stopped")
+    }
+
     // MARK: - The invariant ARCHITECTURE.md declares
 
     func test_neverTwoRecordings_aSecondBeginWhileRecordingIsIgnored() async {

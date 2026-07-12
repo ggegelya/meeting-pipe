@@ -9,7 +9,34 @@ final class MeetingDiscoveryWatcher {
     /// Called on main queue when a scan finds a winner. Owner gates on its own state; nil keeps the watcher silent.
     var onDiscovered: ((AppSource) -> Void)?
 
+    /// DET1: called on main when a sustained mic-busy dwell with no whitelist winner should raise a
+    /// quiet generic prompt. The owner routes it through the normal prompt path so the skip-latch,
+    /// reprompt cooldown, and auto-consent all apply.
+    var onMicInUseDwell: ((AppSource) -> Void)?
+
+    /// DET1: reports, on main every scan/poll, the bundle whose mic is currently held (the open,
+    /// debounced mic-busy span), or nil when the mic is idle. The owner stops a DET1-initiated
+    /// recording once its bundle is no longer the held one - a LEVEL check, not a one-shot edge, so
+    /// it also catches a recording that started AFTER its span already closed (a late prompt answer,
+    /// a slow recorder bring-up). This is the reliable end for a permission-light DET1 recording,
+    /// which engages no lifecycle and can starve the idle backstop of a mic-gate verdict. The
+    /// release debounce means a brief flap keeps the span open, so this never false-stops.
+    var onMicBusyBundle: ((String?) -> Void)?
+
     private let scanner = MeetingSourceScanner()
+
+    /// DET1: the mic-busy span start for which the tier has already prompted, so it fires at most
+    /// once per span (the session's cooldown / skip-latch then govern any repeat). Main-queue only.
+    private var micTierFiredForSpanSince: Date?
+    /// DET1: the "catch-all" set - browsers (an unlisted-domain call has no whitelist title match)
+    /// and the adapterless mic-plausible apps (FaceTime/Discord/WhatsApp/Telegram). Native whitelist
+    /// apps are DELIBERATELY excluded: discovery owns them, and a native pre-join holds the mic
+    /// before its meeting window appears, so letting DET1 prompt there would pre-empt the real
+    /// detection (blocking its lifecycle end-detection) and could name the wrong frontmost app. DET1
+    /// catches only what the whitelist structurally cannot see.
+    private lazy var plausibleBundles: Set<String> =
+        scanner.browserBundles
+            .union(MeetingAppRegistry.shared.micPlausibleBundles)
 
     private var nsObservers: [NSObjectProtocol] = []
     private var avObservation: NSKeyValueObservation?
@@ -70,8 +97,10 @@ final class MeetingDiscoveryWatcher {
         pollTimer = nil
         coalesceWork?.cancel()
         coalesceWork = nil
-        // DET3: close any open mic-busy span so its duration is recorded, not lost at shutdown.
-        emitMicBusy(micBusyTracker.update(busy: false, at: Date(), frontmostBundle: nil, frontmostName: nil))
+        // DET3: force-close any open mic-busy span so its duration is recorded, not lost at
+        // shutdown. Force (bypasses the debounce) and does NOT fire onMicBusyBundle: a shutdown is
+        // not a call ending, so it must not stop a recording.
+        emitMicBusy(micBusyTracker.forceClose(at: Date()))
         micDevice = nil
     }
 
@@ -129,6 +158,11 @@ final class MeetingDiscoveryWatcher {
             frontmostName: front?.localizedName
         )
         emitMicBusy(transition)
+        // DET1: report the currently-held bundle (nil when released) so the owner can stop a DET1
+        // recording whose app is no longer holding the mic. A level check, so it also catches a
+        // recording that started after its span closed. `open` is the debounced span, so a flap
+        // (still open) reports the same bundle and never false-stops.
+        onMicBusyBundle?(micBusyTracker.open?.bundleID)
     }
 
     private func emitMicBusy(_ transition: MicBusySpanTracker.Transition?) {
@@ -174,8 +208,7 @@ final class MeetingDiscoveryWatcher {
             // DET5: log candidates that were running with evidence but did not win, before the
             // winner short-circuit, so a no-winner scan (the DET3 miss case) still records why.
             self.emitDroppedCandidates(result.droppedCandidates, hadWinner: result.winner != nil)
-            guard let winner = result.winner else { return }
-            if result.winnerChanged {
+            if let winner = result.winner, result.winnerChanged {
                 Log.event(category: "detector", action: "discovery_shadow_pick", attributes: [
                     "winner_bundle_id": winner.source.bundleID,
                     "winner_kind": winner.source.kind == .browser ? "browser" : "native",
@@ -188,12 +221,46 @@ final class MeetingDiscoveryWatcher {
                     "process_audio_active": winner.signals.processAudioActive,
                 ])
             }
-            // Report every winner, not just changes; keeps re-discovery working when the same app is rejoined.
-            let source = winner.source
+            // Report every winner, not just changes; keeps re-discovery working when the same app is
+            // rejoined. Hop to main even on a no-winner scan, because that is exactly when DET1's
+            // mic-in-use tier fires.
+            let winnerSource = result.winner?.source
             DispatchQueue.main.async { [weak self] in
-                self?.onDiscovered?(source)
+                guard let self = self else { return }
+                if let winnerSource { self.onDiscovered?(winnerSource) }
+                self.evaluateMicInUseTier(hasWinner: winnerSource != nil)
             }
         }
+    }
+
+    /// DET1: after a scan, check whether the current mic-busy dwell (with no whitelist winner)
+    /// warrants a quiet generic prompt for the plausible holder. Fires at most once per span; the
+    /// session's cooldown / skip-latch then govern any repeat. Main-queue only.
+    private func evaluateMicInUseTier(hasWinner: Bool) {
+        guard let span = micBusyTracker.open else {
+            micTierFiredForSpanSince = nil // mic idle: reset the per-span latch
+            return
+        }
+        guard micTierFiredForSpanSince != span.since else { return } // already prompted this span
+        let now = Date()
+        let kind: AppSourceKind = scanner.browserBundles.contains(span.bundleID ?? "") ? .browser : .native
+        guard let source = MicInUseTier.decide(
+            dwellSec: max(0, now.timeIntervalSince(span.since)),
+            threshold: MicInUseTier.defaultDwellSec,
+            hasScannerWinner: hasWinner,
+            bundleID: span.bundleID,
+            displayName: span.displayName,
+            kind: kind,
+            plausibleBundles: plausibleBundles
+        ) else { return }
+        micTierFiredForSpanSince = span.since
+        Log.event(category: "detector", action: "mic_in_use_prompt", attributes: [
+            "bundle_id": source.bundleID,
+            "display_name": source.displayName,
+            "kind": source.kind == .browser ? "browser" : "native",
+            "dwell_sec": now.timeIntervalSince(span.since),
+        ])
+        onMicInUseDwell?(source)
     }
 
     /// Signature of the last `candidate_dropped` batch, so a dropped candidate that persists

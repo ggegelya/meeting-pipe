@@ -383,6 +383,16 @@ final class Coordinator: NSObject {
         discoveryWatcher.onDiscovered = { [weak self] source in
             self?.session.handleDiscovery(source)
         }
+        // DET1: a sustained mic-busy dwell with no whitelist winner routes through the same prompt
+        // path as a discovered meeting (skip-latch / cooldown / auto-consent all apply).
+        discoveryWatcher.onMicInUseDwell = { [weak self] source in
+            self?.session.handleMicInUseDwell(source)
+        }
+        // DET1: the mic no longer being held by the DET1 recording's app ends it (its
+        // permission-light end path; a level check, so a late-started recording still stops).
+        discoveryWatcher.onMicBusyBundle = { [weak self] bundle in
+            self?.session.handleMicBusyBundle(bundle)
+        }
         discoveryWatcher.start()
 
         if let parsed = HotkeyManager.parse(liveManualHotkey) {
