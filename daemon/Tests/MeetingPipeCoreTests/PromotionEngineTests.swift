@@ -163,6 +163,76 @@ final class PromotionEngineTests: XCTestCase {
         XCTAssertNil(post, "Debounce must not fire after a revert")
     }
 
+    // MARK: - END5: browser tab-title end debounce floor
+
+    func test_browser_tab_title_end_holds_past_the_configured_debounce_END5() {
+        // A browser exposes no end signal but the active tab title. A mid-call tab switch flips it
+        // to `.ended`; with only the short configured end-debounce this promoted in seconds and
+        // chopped the recording. The minutes-long floor holds it instead.
+        let engine = PromotionEngine(debounce: 5.0)
+        _ = engine.ingest(browserEvent(.browserTabTitle, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(browserEvent(.browserTabTitle, .ended, at: 10))
+        // Well past the 5 s configured debounce, still inside the 120 s floor: no end.
+        XCTAssertNil(
+            engine.tick(at: Date(timeIntervalSince1970: 90)),
+            "A tab-title-led browser end must not promote on the short configured debounce"
+        )
+    }
+
+    func test_browser_tab_title_end_promotes_after_the_minutes_long_floor_END5() {
+        let engine = PromotionEngine(debounce: 5.0)
+        _ = engine.ingest(browserEvent(.browserTabTitle, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(browserEvent(.browserTabTitle, .ended, at: 10))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 120)), "Still inside the 120 s floor")
+        let post = engine.tick(at: Date(timeIntervalSince1970: 131))
+        XCTAssertEqual(
+            post?.verdict,
+            .ended(
+                context: browserContext,
+                reason: EndingReason(leadingSignal: "browser_tab_title_left_meet_pattern", confirmedBy: [])
+            ),
+            "A sustained tab-title end promotes once the floor elapses"
+        )
+    }
+
+    func test_browser_tab_switch_returning_within_the_floor_reverts_END5() {
+        // The point of the floor: a tab switch that returns before it elapses reverts to
+        // `.inMeeting`, so the recording is never chopped.
+        let engine = PromotionEngine(debounce: 5.0)
+        _ = engine.ingest(browserEvent(.browserTabTitle, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(browserEvent(.browserTabTitle, .ended, at: 10))
+        let revert = engine.ingest(browserEvent(.browserTabTitle, .live, at: 40))
+        XCTAssertEqual(revert?.verdict, .inMeeting(context: browserContext))
+        XCTAssertNil(
+            engine.tick(at: Date(timeIntervalSince1970: 200)),
+            "After the tab returns, the floor must not fire a late end"
+        )
+    }
+
+    func test_browser_quit_ends_promptly_during_the_floor_hold_END5() {
+        // A full browser quit (`workspaceAppTerminated`) is a cross-class corroborator, so it
+        // confirms the end immediately on the fast path without waiting out the tab-title floor.
+        let engine = PromotionEngine(debounce: 5.0)
+        _ = engine.ingest(browserEvent(.browserTabTitle, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(browserEvent(.browserTabTitle, .ended, at: 10))
+        let post = engine.ingest(browserEvent(.workspaceAppTerminated, .ended, at: 12))
+        XCTAssertEqual(
+            post?.verdict,
+            .ended(
+                context: browserContext,
+                reason: EndingReason(
+                    leadingSignal: "browser_tab_title_left_meet_pattern",
+                    confirmedBy: ["workspace_app_terminated"]
+                )
+            ),
+            "A cross-class browser quit ends immediately, not after the 120 s floor"
+        )
+    }
+
     func test_event_for_different_context_is_ignored() {
         let engine = PromotionEngine()
         let other = MeetingLifecycleContext(bundleID: "us.zoom.xos", kind: .native, pid: 9999)

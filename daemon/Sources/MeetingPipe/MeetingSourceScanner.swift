@@ -119,9 +119,10 @@ final class MeetingSourceScanner {
                 // plain-tab Meet/Teams-web meeting is matched against the same page-title patterns the
                 // browser lifecycle adapter owns (as the PWA branch below already does), keeping the URL
                 // fragment as a bonus signal for any browser that does surface the URL in the title.
-                guard axTrusted,
-                      anyWindowMatchesMeetingTitle(pid: pid)
-                        || anyWindowMatchesMeetingFragment(pid: pid) else { continue }
+                guard axTrusted else { continue }
+                let fragmentMatch = anyWindowMatchesMeetingFragment(pid: pid)
+                let titleMatched = anyWindowMatchesMeetingTitle(pid: pid)
+                guard titleMatched || fragmentMatch else { continue }
                 let source = AppSource(
                     bundleID: bid,
                     displayName: app.localizedName ?? "Browser",
@@ -136,6 +137,15 @@ final class MeetingSourceScanner {
                     isFrontmost: bid == frontmostBundle,
                     isLoneNative: false
                 )
+                // END5: a strong meeting title / URL (a Google Meet code, `meet.google.com`) stands
+                // alone; a bare brand-token title (a page whose title merely contains "webex" /
+                // "microsoft teams" / "huddle") can't be told from a doc *about* those products, so
+                // it must be corroborated by live process audio (a real browser call holds the mic)
+                // before it becomes a candidate. Kills the doc-title false start without gating a
+                // real, mic-holding browser call.
+                let strongMatch = fragmentMatch
+                    || (titleMatched && anyWindowMatchesStrongMeetingTitle(pid: pid))
+                guard strongMatch || signals.processAudioActive else { continue }
                 candidates.append(MeetingSourceCandidate(source: source, signals: signals))
                 continue
             }
@@ -309,6 +319,17 @@ final class MeetingSourceScanner {
         return titles.contains { MeetingSourceScanner.browserWindowIndicatesMeeting(title: $0) }
     }
 
+    /// True when any AX window of `pid` matches a *strong* browser meeting-title pattern (END5): a
+    /// Google Meet code / host, which stands alone at START. A bare brand-token title
+    /// (webex/teams/huddle) is not strong and returns false here, so the caller demands a live-audio
+    /// corroborator before it admits the tab as a candidate.
+    private func anyWindowMatchesStrongMeetingTitle(pid: pid_t) -> Bool {
+        guard let titles = MeetingSourceScanner.collectAXWindowTitles(pid: pid) else {
+            return false
+        }
+        return titles.contains { MeetingSourceScanner.browserWindowIndicatesStrongMeeting(title: $0) }
+    }
+
     /// True when a browser/PWA window `title` looks like an active meeting. Pure (no AX), so the
     /// browser-discovery contract is unit-testable. START2/AUD-3: browsers put the page title, never
     /// the URL, in the window title, so a plain-tab Meet/Teams-web meeting is admitted by these
@@ -316,6 +337,13 @@ final class MeetingSourceScanner {
     /// discovery and end-detection agree on what a meeting window looks like.
     static func browserWindowIndicatesMeeting(title: String) -> Bool {
         BrowserMeetingLifecycleAdapter.defaultTitleMatchers.contains { $0(title) }
+    }
+
+    /// True when a browser/PWA window `title` matches a *strong* meeting pattern (END5): one that
+    /// carries live-call structure (a Google Meet code / host) and so is trustworthy on its own at
+    /// START, versus a bare brand-token match that also fires on pages about those products.
+    static func browserWindowIndicatesStrongMeeting(title: String) -> Bool {
+        BrowserMeetingLifecycleAdapter.strongTitleMatchers.contains { $0(title) }
     }
 
     // MARK: Window-title recognizer

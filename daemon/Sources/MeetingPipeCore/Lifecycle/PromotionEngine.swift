@@ -60,6 +60,28 @@ public extension PrimarySignalKind {
             return .windowTitle
         }
     }
+
+    /// END5: the minimum time a `.endingProvisional` led by this signal must hold before the
+    /// debounce alone promotes it to `.ended`. A plain browser meeting exposes no end signal but
+    /// the active tab title (`browserTabTitle`), which flips to `.ended` on any tab switch, not
+    /// just a real leave. With the short configured end-debounce a >5 s mid-call tab switch
+    /// promoted straight to `.ended` and chopped the recording. No cross-class corroborator exists
+    /// for a plain browser (only a full browser quit fires the cross-class `workspaceAppTerminated`),
+    /// so a genuine tab-switch end can be told from a transient excursion only by waiting: hold a
+    /// tab-title-led end for minutes so a returning tab reverts to `.inMeeting` (recording never
+    /// stops), while a real end still promotes once the title stays gone past the floor. A browser
+    /// quit (`workspaceAppTerminated`) still ends promptly on the cross-class fast path, and the
+    /// idle-silence backstop remains the ceiling. Zero for every other signal, so native ends keep
+    /// the configured debounce unchanged.
+    var endDebounceFloor: TimeInterval {
+        switch self {
+        case .browserTabTitle:
+            return 120
+        case .shareableContentWindow, .processAudioIsRunningInput, .axLeaveButton,
+             .workspaceAppTerminated, .windowTitleLeftPattern:
+            return 0
+        }
+    }
 }
 
 /// Per-signal state fed to `PromotionEngine`.
@@ -162,7 +184,12 @@ public final class PromotionEngine {
         guard case .endingProvisional(let context, let leading, let startedAt, let observed) = phase else {
             return nil
         }
-        guard now.timeIntervalSince(startedAt) >= debounce else { return nil }
+        // END5: a tab-title-led browser end holds for a minutes-long floor, not the short
+        // configured end-debounce, so a mid-call tab switch no longer chops the recording. Every
+        // other lead uses the configured debounce (floor 0). A cross-class corroborator still
+        // promotes immediately via `handleEndingProvisional`, unaffected by this floor.
+        let effectiveDebounce = max(debounce, leading.endDebounceFloor)
+        guard now.timeIntervalSince(startedAt) >= effectiveDebounce else { return nil }
         let confirmedBy = Array(observed.subtracting([leading]).map { $0.rawValue }).sorted()
         // TECH-END2 + END6/AUD-10: a staleness-prone leading signal (ax-leave) must not confirm
         // an end on the debounce alone, and a SAME-class signal (window-gone for an ax-leave

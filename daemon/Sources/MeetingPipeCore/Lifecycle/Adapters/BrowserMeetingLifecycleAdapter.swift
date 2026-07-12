@@ -87,6 +87,17 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
         MeetingTitlePatterns.slackHuddle
     ]
 
+    /// The subset of `defaultTitleMatchers` that carry enough live-call structure to stand alone as
+    /// START evidence (END5). A Google Meet code / `meet.google.com` host is unambiguous. The
+    /// brand-token matchers (`browserTeams`, `browserWebex`, `slackHuddle`) also fire on pages
+    /// *about* those products ("...webex...", "...microsoft teams...", a "huddle" doc), so a start
+    /// admission on one of those alone must be corroborated by live process audio (the scanner
+    /// gates it). END detection still uses every matcher: a late end is only ever caught by the
+    /// idle backstop, so looseness there is safe, but a false START raises an unwanted prompt.
+    public static let strongTitleMatchers: [(String?) -> Bool] = [
+        MeetingTitlePatterns.googleMeet
+    ]
+
     private let shareableContent: ShareableContentSignal
     private let workspace: WorkspaceSignal
     private let windowTitle: WindowTitleSignal

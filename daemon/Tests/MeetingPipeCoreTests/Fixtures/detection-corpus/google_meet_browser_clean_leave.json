@@ -1,6 +1,6 @@
 {
   "scenario": "google_meet_browser_clean_leave",
-  "description": "Google Meet in Chrome; the leading signal is the browser tab title leaving the Meet pattern. Single PRIMARY signal so ended fires via debounce timeout.",
+  "description": "Google Meet in Chrome; the only end signal is the browser tab title leaving the Meet pattern. A tab title flips on any tab switch, not just a real leave, so END5 holds a tab-title-led end for a minutes-long floor (120 s) before the debounce promotes it: a mid-call tab switch that returns reverts instead of chopping the recording, while this genuine sustained leave promotes once the title stays gone past the floor. A browser quit would end promptly via its cross-class workspace signal instead.",
   "engine": "promotion",
   "debounce_seconds": 2.0,
   "context": {
@@ -11,7 +11,7 @@
   "events": [
     {"t": 0.0, "kind": "browser_tab_title", "state": "live"},
     {"t": 25.0, "kind": "browser_tab_title", "state": "ended"},
-    {"t": 27.5, "kind": "tick"}
+    {"t": 146.0, "kind": "tick"}
   ],
   "expected_verdicts": [
     {"after": "events[0]", "verdict": "starting"},

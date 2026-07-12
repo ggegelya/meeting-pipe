@@ -97,6 +97,12 @@ public enum MeetingTitlePatterns {
     public static let googleMeet: (String?) -> Bool = { title in
         guard let lowered = title?.lowercased() else { return false }
         if lowered.contains("meet.google.com") { return true }
+        // END5: the bare 3-4-3 code alone over-admitted unrelated slugs ("one-more-day" is a
+        // valid 3-4-3), so require the Meet brand alongside it. A real in-call tab title always
+        // carries "Meet" ("Meet - abc-defg-hij", "abc-defg-hij - Google Meet"); a random hyphenated
+        // slug does not. This makes `googleMeet` a strong, stands-alone start matcher (the
+        // brand-token matchers below still need a live-audio corroborator at start).
+        guard lowered.contains("meet") else { return false }
         return lowered.range(
             of: #"(?<![a-z])[a-z]{3}-[a-z]{4}-[a-z]{3}(?![a-z])"#,
             options: .regularExpression

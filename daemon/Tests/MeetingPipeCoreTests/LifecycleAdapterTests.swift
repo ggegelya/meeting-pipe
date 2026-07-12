@@ -145,8 +145,29 @@ final class LifecycleAdapterTests: XCTestCase {
         // heuristic over-admitted ordinary titles such as "Level 10 Meeting - Jira" (2026-06-30 false prompt).
         XCTAssertTrue(MeetingTitlePatterns.googleMeet("Meet - abc-defg-hij"))
         XCTAssertTrue(MeetingTitlePatterns.googleMeet("In call - meet.google.com/abc-defg-hij"))
+        XCTAssertTrue(MeetingTitlePatterns.googleMeet("abc-defg-hij - Google Meet"))
         XCTAssertFalse(MeetingTitlePatterns.googleMeet("Acme Inc - Mail"))
         XCTAssertFalse(MeetingTitlePatterns.googleMeet("Level 10 Meeting - Jira"))
+    }
+
+    func test_google_meet_pattern_rejects_bare_three_four_three_slug_without_brand_END5() {
+        // END5: the 3-4-3 code alone matched unrelated hyphenated slugs ("one-more-day" is a valid
+        // 3-4-3). A real in-call tab title always carries the "Meet" brand alongside the code, so
+        // the bare slug no longer raises a browser prompt.
+        XCTAssertFalse(MeetingTitlePatterns.googleMeet("one-more-day - My Blog"))
+        XCTAssertFalse(MeetingTitlePatterns.googleMeet("the-best-day of my life"))
+        // Still matches when the Meet brand is present.
+        XCTAssertTrue(MeetingTitlePatterns.googleMeet("Google Meet - one-more-day"))
+    }
+
+    func test_strong_title_matchers_are_meet_only_END5() {
+        // END5: only the Meet code / host stands alone at START; the brand-token matchers
+        // (Teams/Webex/Slack) need a live-audio corroborator, so they are excluded from the strong set.
+        let strong = BrowserMeetingLifecycleAdapter.strongTitleMatchers
+        XCTAssertTrue(strong.contains { $0("Meet - abc-defg-hij") })
+        XCTAssertFalse(strong.contains { $0("Weekly sync | Microsoft Teams") })
+        XCTAssertFalse(strong.contains { $0("Webex Meeting - Acme") })
+        XCTAssertFalse(strong.contains { $0("Huddle - #engineering") })
     }
 
     func test_browser_teams_and_webex_matchers_require_brand_not_bare_meeting_word() {
