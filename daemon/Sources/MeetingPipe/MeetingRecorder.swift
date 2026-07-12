@@ -1,6 +1,8 @@
 import Accelerate
+import AppKit
 import AVFoundation
 import Foundation
+import IOKit.pwr_mgt
 import MeetingPipeCore
 import os
 
@@ -126,6 +128,28 @@ final class MeetingRecorder {
     /// A longer window than the mic tap because the SCStream spin-up can be a beat slower.
     private let systemLivenessMonitor = MicTapLivenessMonitor(stallAfterSeconds: 3.0)
     private var systemLivenessTimer: DispatchSourceTimer?
+
+    /// REC8: one automatic bounded retry after a mid-meeting system-audio loss, then
+    /// fall back to the manual banner (preserving REC4's partial-recording choice).
+    /// `handleSystemAudioLost` fires at most once per loss (guarded on a live capture),
+    /// so scheduling one retry per call is naturally one-auto-retry-per-loss. Cancelled
+    /// in `stop()`, the termination flush, and whenever a retry actually runs.
+    private var systemAudioAutoRetryTimer: DispatchSourceTimer?
+    private static let systemAudioAutoRetryDelaySeconds = 7.0
+
+    /// REC8: prevents system idle sleep for the whole recording, so an in-person
+    /// manual recording with no meeting client holding the Mac awake cannot idle-sleep
+    /// mid-capture. `PreventUserIdleSystemSleep` still lets the display sleep (audio
+    /// needs no screen). Held from `start()`, released in `stop()` and the termination
+    /// flush; best-effort (a failed create logs and is a no-op, never a thrown start).
+    private var idleSleepAssertionID: IOPMAssertionID = IOPMAssertionID(0)
+    private var holdsIdleSleepAssertion = false
+
+    /// REC8: observes `NSWorkspace.didWakeNotification` so a recording that survived
+    /// (or whose engine died over) a sleep/wake re-arms its capture promptly instead
+    /// of waiting for the ~1 Hz watchdog. Registered in `start()`, removed in `stop()`
+    /// and the termination flush.
+    private var wakeObserver: NSObjectProtocol?
 
     /// Outcome of reacting to a mid-recording input device change.
     enum CaptureRecoveryOutcome {
@@ -429,6 +453,8 @@ final class MeetingRecorder {
         Log.writeLine("recorder", "recorder started → \(finalURL.path)")
         startTapLivenessWatchdog()
         startSystemLivenessWatchdog()
+        acquireIdleSleepAssertion()  // REC8: keep the Mac awake for the whole recording
+        registerWakeObserver()       // REC8: re-arm capture on sleep/wake
         return finalURL
     }
 
@@ -560,8 +586,87 @@ final class MeetingRecorder {
     /// down.
     func retrySystemAudio() {
         guard isRecording, systemCapture == nil, let systemURL = systemURL else { return }
+        // REC8: a retry (manual or automatic) supersedes any pending auto-retry.
+        systemAudioAutoRetryTimer?.cancel()
+        systemAudioAutoRetryTimer = nil
         Log.writeLine("recorder", "retrying system audio capture")
         startSystemCapture(systemURL: systemURL, isRetry: true)
+    }
+
+    /// REC8: schedule one automatic retry ~7 s after a system-audio loss, then fall
+    /// back to the manual banner (REC4). One per loss: `handleSystemAudioLost` only
+    /// fires while a capture is live, so it cannot re-schedule until a retry re-arms
+    /// the stream. The handler re-checks it is still recording and still down, so a
+    /// stop() or a manual retry in the interim makes it a no-op.
+    private func scheduleSystemAudioAutoRetry() {
+        systemAudioAutoRetryTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + Self.systemAudioAutoRetryDelaySeconds)
+        timer.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            self.systemAudioAutoRetryTimer = nil
+            guard self.isRecording, self.systemCapture == nil else { return }
+            Log.event(category: "recorder", action: "system_capture_auto_retry", attributes: [:])
+            Log.writeLine("recorder", "automatic system-audio retry")
+            self.retrySystemAudio()
+        }
+        systemAudioAutoRetryTimer = timer
+        timer.resume()
+    }
+
+    // MARK: - Idle-sleep power assertion + wake re-arm (REC8)
+
+    private func acquireIdleSleepAssertion() {
+        guard !holdsIdleSleepAssertion else { return }
+        var assertionID = IOPMAssertionID(0)
+        let result = IOPMAssertionCreateWithName(
+            kIOPMAssertPreventUserIdleSystemSleep as CFString,
+            IOPMAssertionLevel(kIOPMAssertionLevelOn),
+            "MeetingPipe is recording" as CFString,
+            &assertionID
+        )
+        if result == kIOReturnSuccess {
+            idleSleepAssertionID = assertionID
+            holdsIdleSleepAssertion = true
+            Log.event(category: "recorder", action: "idle_sleep_assertion_held", attributes: [:])
+        } else {
+            Log.writeLine("recorder", "WARN: could not create idle-sleep power assertion (IOReturn \(result))")
+        }
+    }
+
+    private func releaseIdleSleepAssertion() {
+        guard holdsIdleSleepAssertion else { return }
+        IOPMAssertionRelease(idleSleepAssertionID)
+        idleSleepAssertionID = IOPMAssertionID(0)
+        holdsIdleSleepAssertion = false
+        Log.event(category: "recorder", action: "idle_sleep_assertion_released", attributes: [:])
+    }
+
+    private func registerWakeObserver() {
+        guard wakeObserver == nil else { return }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.handleDidWake()
+        }
+    }
+
+    private func removeWakeObserver() {
+        guard let observer = wakeObserver else { return }
+        NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        wakeObserver = nil
+    }
+
+    /// REC8: on wake, re-arm the mic tap if the engine died over sleep and re-attempt
+    /// system audio if its stream dropped (`retrySystemAudio` no-ops if it is live).
+    private func handleDidWake() {
+        guard isRecording else { return }
+        Log.event(category: "recorder", action: "did_wake_while_recording", attributes: [
+            "engine_running": engine.isRunning,
+        ])
+        Log.writeLine("recorder", "woke while recording - re-checking capture liveness")
+        if !engine.isRunning { recoverFromTapStall() }
+        retrySystemAudio()
     }
 
     /// React to a mid-recording loss of the system-audio stream - a delivered
@@ -585,6 +690,8 @@ final class MeetingRecorder {
         Task { await dying.stop() }
         systemDegraded = true
         onSystemAudioDegraded?(reason)
+        // REC8: one hands-off retry before the user has to click the banner.
+        scheduleSystemAudioAutoRetry()
     }
 
     // MARK: - System audio liveness watchdog (REC4)
@@ -936,17 +1043,27 @@ final class MeetingRecorder {
         timer.resume()
     }
 
-    /// One watchdog tick: if the engine still claims to be running but no mic
-    /// buffers have arrived for the stall window, re-arm capture. On the main
-    /// queue, the same thread the device-change recovery it reuses runs on.
+    /// One watchdog tick: re-arm capture when the tap has silently died. REC8: a
+    /// STOPPED engine re-arms regardless of the buffer counter (the old
+    /// `engine.isRunning` gate disabled the very check meant to catch a silently
+    /// stopped engine, e.g. across a sleep/wake); a running engine re-arms on the
+    /// tap-liveness stall. On the main queue, the same thread the device-change
+    /// recovery it reuses runs on.
     private func checkTapLiveness() {
-        guard isRecording, engine.isRunning else { return }
-        guard tapLivenessMonitor.sample(count: micFires) else { return }
+        guard isRecording else { return }
+        let engineRunning = engine.isRunning
+        // Sample only while the engine runs: a stopped engine delivers no buffers,
+        // so its counter is meaningless and must not advance the stall clock.
+        let stalled = engineRunning ? tapLivenessMonitor.sample(count: micFires) : false
+        guard TapWatchdogPolicy.decide(isRecording: true, engineRunning: engineRunning, stalled: stalled) == .rearm else {
+            return
+        }
         Log.event(category: "recorder", action: "mic_tap_stall_detected", attributes: [
             "mic_fires": Int(micFires),
+            "engine_running": engineRunning,
             "stall_after_s": tapLivenessMonitor.stallAfter,
         ])
-        Log.writeLine("recorder", "mic tap stalled with no device-change notification - re-arming capture")
+        Log.writeLine("recorder", "mic tap re-arm (engine_running=\(engineRunning) stalled=\(stalled)) - re-arming capture")
         recoverFromTapStall()
         tapLivenessMonitor.reset(count: micFires)
     }
@@ -1095,6 +1212,13 @@ final class MeetingRecorder {
         tapLivenessTimer = nil
         systemLivenessTimer?.cancel()
         systemLivenessTimer = nil
+        // REC8: stop the auto-retry, drop the wake hook, and release the power
+        // assertion so a shutting-down recorder holds no timers, observers, or
+        // sleep locks.
+        systemAudioAutoRetryTimer?.cancel()
+        systemAudioAutoRetryTimer = nil
+        removeWakeObserver()
+        releaseIdleSleepAssertion()
 
         // Await the SCStream start before teardown, else we stop() a stream
         // that hasn't fully started and orphan it. Bounded so a stuck start
@@ -1302,6 +1426,13 @@ final class MeetingRecorder {
         tapLivenessTimer = nil
         systemLivenessTimer?.cancel()
         systemLivenessTimer = nil
+        // REC8: release the timers, wake hook, and power assertion on the terminate
+        // path too, so a lingering process (a SIGTERM the user later cancels) holds
+        // no sleep lock.
+        systemAudioAutoRetryTimer?.cancel()
+        systemAudioAutoRetryTimer = nil
+        removeWakeObserver()
+        releaseIdleSleepAssertion()
         if let observer = configChangeObserver {
             NotificationCenter.default.removeObserver(observer)
             configChangeObserver = nil
