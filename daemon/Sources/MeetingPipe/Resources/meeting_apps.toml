@@ -1,5 +1,10 @@
 # Native macOS apps that count as "in a meeting" when running.
 # Source: detection logic in ARCHITECTURE.md and ADR 0008 (verdict fusion).
+#
+# DET4 coverage fence: every bundle id here must have a `NativeLifecycleConfig`
+# (see NativeLifecycleConfig.all) AND a MeetingAXHandleBuilder recognizer branch.
+# `MeetingAppRegistryFenceTests` goes red on drift, so a dead row (Skype, the
+# never-real `com.google.meet`) or an adapterless addition can't sit here silently.
 [native]
 bundle_ids = [
     "us.zoom.xos",
@@ -7,8 +12,7 @@ bundle_ids = [
     "com.microsoft.teams",
     "com.tinyspeck.slackmacgap",
     "com.cisco.webexmeetingsapp",
-    "com.skype.skype",
-    "com.google.meet",
+    "com.cisco.spark",
 ]
 
 # Browser tab title fragments that indicate a meeting is open.
@@ -25,6 +29,9 @@ url_fragments = [
 ]
 
 # Browser bundle IDs whose frontmost window we inspect via Accessibility.
+# DET4 coverage fence: this set must equal
+# `BrowserMeetingLifecycleAdapter.defaultBrowserBundleIDs`, so a browser listed
+# here can never be discovered-but-adapterless (the Brave/Vivaldi/Opera/Kagi drift).
 [browser.bundles]
 ids = [
     "com.apple.Safari",
@@ -37,4 +44,18 @@ ids = [
     "com.vivaldi.Vivaldi",
     "com.operasoftware.Opera",
     "com.kagi.kagimacOS",
+]
+
+# Audio/meeting-capable native apps with NO lifecycle adapter and no title
+# recognizer (no Teams/Zoom-style AX call controls, no clean meeting-title
+# pattern). DET1's mic-in-use catch-all tier names these when the mic is held
+# and no whitelist candidate wins. Adapterless by design, so the DET4 coverage
+# fence deliberately exempts this list (unlike [native] above).
+[mic_plausible]
+bundle_ids = [
+    "com.apple.FaceTime",
+    "com.hnc.Discord",
+    "net.whatsapp.WhatsApp",
+    "ru.keepcoder.Telegram",
+    "org.telegram.desktop",
 ]

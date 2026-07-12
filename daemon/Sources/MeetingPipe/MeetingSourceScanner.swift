@@ -2,7 +2,6 @@ import AppKit
 import ApplicationServices
 import Foundation
 import MeetingPipeCore
-import TOMLKit
 
 /// Cold-start discovery scan: enumerate every concurrent meeting-app contender, score them, return the winner (TECH-C13 step 5). Lifted out of `Detector` so `Detector` and `MeetingDiscoveryWatcher` share one scan path. Carries no timing or state; owner provides the queue. Only retained state is the sticky-winner pin for the scorer's recency tie-break.
 final class MeetingSourceScanner {
@@ -35,11 +34,12 @@ final class MeetingSourceScanner {
     /// Last scan's winner for the scorer's sticky-bonus tie-break (TECH-C15).
     private var lastScorerWinner: AppSource?
 
-    init() {
-        let apps = MeetingSourceScanner.loadMeetingApps()
-        self.nativeBundles = apps.native
-        self.browserBundles = apps.browsers
-        self.browserURLFragments = apps.urlFragments
+    /// - Parameter registry: bundle lists (bundled defaults + user overlay). Injectable so tests
+    ///   can drive a synthetic registry; production reads `MeetingAppRegistry.shared` (DET4).
+    init(registry: MeetingAppRegistry = .shared) {
+        self.nativeBundles = registry.nativeBundles
+        self.browserBundles = registry.browserBundles
+        self.browserURLFragments = registry.browserURLFragments
     }
 
     /// Run one discovery pass and return the winner.
@@ -314,19 +314,17 @@ final class MeetingSourceScanner {
             // No suffix - Teams sometimes spawns the meeting window with just the topic. Can't distinguish from chrome by title alone; blacklist above filters known chrome; empty title is inconclusive (upstream ORs across windows so it contributes nothing).
             return !lowered.isEmpty
 
-        case ("com.cisco.webexmeetingsapp", _):
-            // Active meeting contains "webex meeting"; idle is "Webex" or "Cisco Webex".
-            return lowered.contains("webex meeting")
+        case ("com.cisco.webexmeetingsapp", _), ("com.cisco.spark", _):
+            // Classic Webex Meetings ("webex meeting"), plus the unified Webex App
+            // (com.cisco.spark) which shares the Teams-style "Meeting" stem. Routes through the
+            // shared vendor matcher so the scanner recognizer can't drift from the lifecycle
+            // adapter, and so spark (added to meeting_apps.toml in DET4) has a recognizer branch
+            // rather than falling through to `default` (DET5 unifies the rest of the table).
+            return MeetingTitlePatterns.webex(title)
 
         case ("com.tinyspeck.slackmacgap", _):
             // Word-boundary match so "team-huddles" (plural channel name) doesn't match: trailing `s` is alphanumeric and fails the boundary.
             return title.range(of: #"\bhuddle\b"#, options: [.regularExpression, .caseInsensitive]) != nil
-
-        case ("com.skype.skype", _):
-            return lowered.contains("call with") || lowered.contains("group call")
-
-        case ("com.google.meet", _):
-            return lowered.contains("google meet")
 
         default:
             // Unknown native bundle; probe upstream short-circuits before reaching here under normal operation.
@@ -350,33 +348,5 @@ final class MeetingSourceScanner {
             titles.append(title)
         }
         return titles
-    }
-
-    // MARK: Resource loading
-
-    private struct MeetingApps {
-        let native: Set<String>
-        let browsers: Set<String>
-        let urlFragments: [String]
-    }
-
-    private static func loadMeetingApps() -> MeetingApps {
-        let bundle = Bundle.module
-        guard let url = bundle.url(forResource: "meeting_apps", withExtension: "toml"),
-              let data = try? String(contentsOf: url, encoding: .utf8),
-              let toml = try? TOMLTable(string: data) else {
-            Log.detector.warning("meeting_apps.toml not found; using empty lists")
-            return MeetingApps(native: [], browsers: [], urlFragments: [])
-        }
-
-        let nativeArr = toml["native"]?.table?["bundle_ids"]?.array?.compactMap { $0.string } ?? []
-        let urlArr = toml["browser"]?.table?["url_fragments"]?.array?.compactMap { $0.string } ?? []
-        let browserArr = toml["browser"]?.table?["bundles"]?.table?["ids"]?.array?.compactMap { $0.string } ?? []
-
-        return MeetingApps(
-            native: Set(nativeArr),
-            browsers: Set(browserArr),
-            urlFragments: urlArr.map { $0.lowercased() }
-        )
     }
 }

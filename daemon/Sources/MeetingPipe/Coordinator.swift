@@ -185,7 +185,15 @@ final class Coordinator: NSObject {
                 NativeLifecycleAdapter(config: .zoom, halBus: halBus, axBus: axBus, eventLog: logAdapter),
                 NativeLifecycleAdapter(config: .webex, axBus: axBus, eventLog: logAdapter),
                 NativeLifecycleAdapter(config: .slack, axBus: axBus, eventLog: logAdapter),
-                BrowserMeetingLifecycleAdapter(axBus: axBus, eventLog: logAdapter),
+                // Handle exactly the browsers discovery enumerates (registry = bundled
+                // meeting_apps.toml + user overlay), so a listed browser is never
+                // discovered-but-adapterless and an overlay browser gets full coverage
+                // on relaunch (DET4).
+                BrowserMeetingLifecycleAdapter(
+                    axBus: axBus,
+                    eventLog: logAdapter,
+                    bundleIDs: MeetingAppRegistry.shared.browserBundles
+                ),
             ],
             engine: PromotionEngine(debounce: debounceEndSec)
         )

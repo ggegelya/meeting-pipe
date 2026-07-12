@@ -55,6 +55,13 @@ public extension NativeLifecycleConfig {
         titleMatch: MeetingTitlePatterns.slackHuddle,
         usesProcessAudio: false
     )
+
+    /// Every shipped native config. The DET4 coverage fence
+    /// (`MeetingAppRegistryFenceTests`) asserts these bundle IDs cover every `[native]`
+    /// entry in `meeting_apps.toml`, so a native row can never sit adapterless (the
+    /// pre-DET4 dead `com.skype.skype` / `com.google.meet` rows). The daemon builds one
+    /// `NativeLifecycleAdapter` per entry (see `Coordinator`).
+    static let all: [NativeLifecycleConfig] = [.teams, .zoom, .webex, .slack]
 }
 
 /// Single parameterized adapter for native meeting clients (Teams, Zoom, Webex, Slack). Per-app differences live in `NativeLifecycleConfig`.

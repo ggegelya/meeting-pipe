@@ -34,7 +34,7 @@ swift test                # full Xcode required locally (CI on macos-14 has it)
 | Subsystem | Entry file |
 |---|---|
 | State machine + dispatch | `Coordinator.swift` (+ its `Coordinator+*.swift` extensions), `MeetingSessionController.swift` (one meeting's lifetime), `SessionHost.swift` (the seam it sees instead of Coordinator), `Coordination/` (`DetectionStateMachine`, `SinkDispatcher`, `PipelineJobDispatcher`, `ConfigRefreshCoordinator`) |
-| Meeting detection (start + end) | `MeetingPipeCore/Lifecycle/` (`MeetingLifecycleCoordinator` + signals + per-app adapters), `MeetingDiscoveryWatcher.swift`, `MeetingSourceScanner.swift`, `MeetingSourceScorer.swift`, `Resources/meeting_apps.toml` |
+| Meeting detection (start + end) | `MeetingPipeCore/Lifecycle/` (`MeetingLifecycleCoordinator` + signals + per-app adapters), `MeetingDiscoveryWatcher.swift`, `MeetingSourceScanner.swift`, `MeetingSourceScorer.swift`, `MeetingAppRegistry.swift` (DET4 bundle-list registry + `~/.config/meeting-pipe/meeting_apps.toml` overlay; fenced by `MeetingAppRegistryFenceTests`), `Resources/meeting_apps.toml` |
 | Mute gating | `MeetingPipeCore/MicGate/` (`MicGate` + probes + per-app adapters), `MicGateWriter` |
 | Recording | `MeetingRecorder.swift`, `SystemAudioCapture.swift`, `MuteRedactor.swift` (offline redaction), `AudioRetention.swift` |
 | Transcription (ASR + diarization) | `Transcription/` (`FluidAudioRunner`, `TranscriptionRunner`, `SegmentBuilder`, `TranscriptionService`) |

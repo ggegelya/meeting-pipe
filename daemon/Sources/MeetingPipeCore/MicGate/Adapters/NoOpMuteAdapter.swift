@@ -18,14 +18,9 @@ public struct NoOpMuteConfig {
 
 public extension NoOpMuteConfig {
     /// Browser bundle IDs are deliberately broad: a meeting runs in any
-    /// Chromium / WebKit / Gecko browser the user prefers.
-    static let browserBundleIDs: Set<String> = [
-        "com.google.Chrome",
-        "com.microsoft.edgemac",
-        "company.thebrowser.Browser",
-        "com.apple.Safari",
-        "org.mozilla.firefox"
-    ]
+    /// Chromium / WebKit / Gecko browser the user prefers. Shares the canonical
+    /// DET4 set with the lifecycle adapter so the two can't drift.
+    static let browserBundleIDs: Set<String> = BrowserMeetingLifecycleAdapter.defaultBrowserBundleIDs
 
     /// Google Meet: browser-hosted, no per-tab mic API on macOS 14-15.
     static let meet = NoOpMuteConfig(

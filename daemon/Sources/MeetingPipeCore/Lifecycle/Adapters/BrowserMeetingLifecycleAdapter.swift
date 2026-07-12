@@ -7,13 +7,30 @@ import Foundation
 /// "Teams in Chrome/Edge/Arc" is handled here through the same title patterns as the native adapter.
 public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
 
-    public let bundleIDs: Set<String> = [
-        "com.google.Chrome",
-        "com.microsoft.edgemac",
-        "company.thebrowser.Browser",
+    /// Canonical browser bundle set and the DET4 single source of truth. The bundled
+    /// `meeting_apps.toml` `[browser.bundles]` list must equal this (fenced by
+    /// `MeetingAppRegistryFenceTests`), so a browser that discovery enumerates can never
+    /// lack a lifecycle adapter (the pre-DET4 Brave/Vivaldi/Opera/Kagi/Canary drift, where
+    /// they were discovered then dropped into a `no_adapter_for_context` no-op). Chromium
+    /// (Chrome/Edge/Brave/Vivaldi/Opera/Canary), WebKit (Safari/Arc/Kagi), and Gecko
+    /// (Firefox) all surface the page title the same way, so one adapter serves them all.
+    public static let defaultBrowserBundleIDs: Set<String> = [
         "com.apple.Safari",
-        "org.mozilla.firefox"
+        "com.google.Chrome",
+        "com.google.Chrome.canary",
+        "com.brave.Browser",
+        "company.thebrowser.Browser",
+        "com.microsoft.edgemac",
+        "org.mozilla.firefox",
+        "com.vivaldi.Vivaldi",
+        "com.operasoftware.Opera",
+        "com.kagi.kagimacOS",
     ]
+
+    /// The browsers this instance handles. Defaults to `defaultBrowserBundleIDs`; the daemon
+    /// constructs it over `MeetingAppRegistry.shared.browserBundles` so a user-overlay browser
+    /// gets full lifecycle coverage on relaunch (DET4).
+    public let bundleIDs: Set<String>
     public let kind: MeetingLifecycleContext.Kind = .browser
 
     /// Prefixes for Chromium PWA bundle IDs. A PWA runs as `<browser-bundle>.app.<hash>` where the hash is
@@ -79,12 +96,14 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
     public convenience init(
         axBus: AXObserverBus = AXObserverBus(),
         eventLog: EventLog = NoopEventLog(),
+        bundleIDs: Set<String> = BrowserMeetingLifecycleAdapter.defaultBrowserBundleIDs,
         titleMatchers: [(String?) -> Bool] = BrowserMeetingLifecycleAdapter.defaultTitleMatchers
     ) {
         self.init(
             shareableContent: ShareableContentSignal(eventLog: eventLog),
             workspace: WorkspaceSignal(eventLog: eventLog),
             windowTitle: WindowTitleSignal(axBus: axBus, eventLog: eventLog),
+            bundleIDs: bundleIDs,
             titleMatchers: titleMatchers,
             eventLog: eventLog
         )
@@ -95,12 +114,14 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
         shareableContent: ShareableContentSignal,
         workspace: WorkspaceSignal,
         windowTitle: WindowTitleSignal,
+        bundleIDs: Set<String> = BrowserMeetingLifecycleAdapter.defaultBrowserBundleIDs,
         titleMatchers: [(String?) -> Bool],
         eventLog: EventLog
     ) {
         self.shareableContent = shareableContent
         self.workspace = workspace
         self.windowTitle = windowTitle
+        self.bundleIDs = bundleIDs
         self.titleMatchers = titleMatchers
         self.eventLog = eventLog
     }

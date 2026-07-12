@@ -244,7 +244,8 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 - `MeetingPipeCore/Lifecycle/Signals/` - the signal sources: per-process audio activity, ScreenCaptureKit shareable-content windows, the AX Leave button, plus corroborating window-title / workspace / input-device signals.
 - `MeetingPipeCore/Lifecycle/Adapters/` - one adapter per meeting client (Teams, Zoom, Webex, Slack, browser), wiring the right signals with locale-tolerant title patterns.
 - `MeetingDiscoveryWatcher.swift` / `MeetingSourceScanner.swift` / `MeetingSourceScorer.swift` - start-side discovery: enumerate every concurrent candidate app, score each on "I am in a meeting" evidence, pick the strongest.
-- `Resources/meeting_apps.toml` - per-bundle-id table of known meeting apps and their window-title regex hints.
+- `Resources/meeting_apps.toml` - per-bundle-id table of known meeting apps and their window-title regex hints. Native (adapter-backed), browser, and a `mic_plausible` tier of adapterless audio apps (FaceTime/Discord/WhatsApp/Telegram, named by DET1's mic-in-use tier).
+- `MeetingAppRegistry.swift` - the single source of truth for those bundle lists (DET4): bundled `meeting_apps.toml` unioned with an optional `~/.config/meeting-pipe/meeting_apps.toml` user overlay (add an app without a rebuild). The scanner reads its sets here; the Coordinator builds the browser lifecycle adapter over the same set. `MeetingAppRegistryFenceTests` fails on TOML/adapter drift (every native has an adapter + recognizer; the browser set equals `BrowserMeetingLifecycleAdapter.defaultBrowserBundleIDs`).
 - `MeetingPipeCore/MicGate/IdleStopBackstop.swift` - meeting-idle backstop (TECH-END3): the "Still meeting?" nudge (default 480s) and the forgotten-recording auto-stop (default 900s). Detailed under Mute gating below.
 - `RepromptCooldown.swift` - per-bundle, fixed-duration suppression window after a recording / skip so a post-call mic flicker can't spawn a fresh prompt.
 - `SkippedMeetingLatch.swift` - per-bundle suppression anchored to discovery liveness (not a fixed clock): once you dismiss a prompt, every discovery sighting of that app refreshes the latch, so the meeting stays skipped for its whole lifetime and lapses ~15 s after it ends. Paired with `RepromptCooldown` in `abandonPrompt`.
@@ -444,6 +445,7 @@ lifecycle verdict .ended (or hotkey, or silence backstop)
 | `~/.config/meeting-pipe/config.toml` | both | shared config |
 | macOS login Keychain (service `com.meetingpipe.daemon`) | both | API tokens (Anthropic / Notion / HF), read + written via `/usr/bin/security` (SEC8) |
 | `~/.config/meeting-pipe/workflows/*.toml` | daemon writes, pipeline reads | per-workflow definitions |
+| `~/.config/meeting-pipe/meeting_apps.toml` | user writes (optional), daemon reads | DET4 overlay: extra `[native]` / `[browser.bundles]` / `[mic_plausible]` / `[browser].url_fragments` unioned over the bundled defaults, so a new meeting app is detectable without a rebuild (read at launch). `MeetingAppRegistry` loads it |
 | `~/Documents/Meetings/raw/<stem>.wav` | daemon writes | recording |
 | `~/Documents/Meetings/raw/<stem>.meta.json` | daemon writes, pipeline reads | per-meeting workflow + source |
 | `~/Documents/Meetings/raw/<stem>.recordfail.json` | daemon writes | breadcrumb left only when an ffmpeg merge failed; the `.mic.wav`/`.system.wav` intermediates are kept and the orphan sweep retries on the next launch (REC1) |
