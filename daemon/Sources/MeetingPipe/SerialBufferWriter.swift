@@ -27,4 +27,19 @@ final class SerialBufferWriter<Item> {
     func finish() {
         queue.sync {}
     }
+
+    /// Block until all previously enqueued items are handled, but give up after
+    /// `timeout` seconds. Returns true if the drain finished in time, false if it
+    /// timed out. A sentinel is enqueued at the tail (so it runs only after every
+    /// prior item) and waited on with a bounded semaphore; on timeout the drain is
+    /// ABANDONED (it keeps running on the queue, which strong-captures the file it
+    /// writes, so the file stays valid until the drain finishes) and the caller
+    /// proceeds. Do not call from the writer queue itself. (REC7: a wedged disk
+    /// write must not make `stop()` / `.stopping` inescapable.)
+    @discardableResult
+    func finish(timeout: TimeInterval) -> Bool {
+        let sentinel = DispatchSemaphore(value: 0)
+        queue.async { sentinel.signal() }
+        return sentinel.wait(timeout: .now() + timeout) == .success
+    }
 }

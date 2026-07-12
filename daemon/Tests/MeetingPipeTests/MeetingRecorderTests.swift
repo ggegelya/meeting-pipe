@@ -338,6 +338,8 @@ final class MeetingRecorderTests: XCTestCase {
         let final = dir.appendingPathComponent("\(stem).wav")
         XCTAssertTrue(FileManager.default.fileExists(atPath: MeetingRecorder.recordFailURL(forFinal: final).path),
                       "a failure breadcrumb explains the retained intermediates")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: MeetingRecorder.mergingTempURL(forFinal: final).path),
+                       "REC7: the <stem>.merging.wav temp is cleaned up after a failed merge")
     }
 
     /// The happy path is unchanged: a verified merge produces the final and
@@ -366,6 +368,19 @@ final class MeetingRecorderTests: XCTestCase {
                        "system.wav is cleared only after a verified merge")
         XCTAssertFalse(FileManager.default.fileExists(atPath: MeetingRecorder.recordFailURL(forFinal: final).path),
                        "no failure breadcrumb on success")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: MeetingRecorder.mergingTempURL(forFinal: final).path),
+                       "REC7: the temp is promoted (moved) onto the final, not left beside it")
+    }
+
+    /// REC7: the merge temp is `<stem>.merging.wav`, so a truncated ffmpeg write
+    /// never lands at the canonical `<stem>.wav` (which orphan recovery refuses to
+    /// touch once it exists).
+    func test_merging_temp_url_is_stem_merging_wav() {
+        let final = URL(fileURLWithPath: "/tmp/meetings/20260627-101500.wav")
+        XCTAssertEqual(
+            MeetingRecorder.mergingTempURL(forFinal: final).lastPathComponent,
+            "20260627-101500.merging.wav"
+        )
     }
 
     // MARK: - helpers

@@ -40,7 +40,7 @@ struct MarkerFile: Codable {
         let file = MarkerFile(markers: seconds.map { Marker(tSeconds: $0) })
         do {
             let data = try JSONEncoder().encode(file)
-            try data.write(to: url(forFinal: final))
+            try data.write(to: url(forFinal: final), options: .atomic)
         } catch {
             Log.writeLine("recorder", "WARN: could not write markers for \(final.lastPathComponent): \(error.localizedDescription)")
         }

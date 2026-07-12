@@ -54,4 +54,36 @@ final class SerialBufferWriterTests: XCTestCase {
 
         XCTAssertTrue(done)
     }
+
+    /// REC7: `finish(timeout:)` returns true when the drain completes in time.
+    func test_finish_with_timeout_returns_true_when_drain_completes() {
+        var received: [Int] = []
+        let writer = SerialBufferWriter<Int>(label: "test.timeout.ok") { received.append($0) }
+
+        for i in 0..<100 { writer.enqueue(i) }
+        XCTAssertTrue(writer.finish(timeout: 5))
+
+        XCTAssertEqual(received, Array(0..<100))
+    }
+
+    /// REC7: a permanently-wedged handler (a stuck disk write) must not hang the
+    /// caller. `finish(timeout:)` returns false near its budget; the drain is
+    /// ABANDONED, not cancelled, so the test releases it afterwards to avoid leaking
+    /// the queue thread. This is the exact case that used to make `.stopping`
+    /// inescapable.
+    func test_finish_with_timeout_returns_false_when_handler_wedges() {
+        let gate = DispatchSemaphore(value: 0)
+        let writer = SerialBufferWriter<Int>(label: "test.timeout.wedged") { _ in
+            gate.wait()  // blocks until the test releases it
+        }
+        writer.enqueue(1)
+
+        let start = Date()
+        let drained = writer.finish(timeout: 0.2)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertFalse(drained, "a wedged handler times out")
+        XCTAssertLessThan(elapsed, 2.0, "finish(timeout:) returns near its budget, not after the wedge clears")
+        gate.signal()  // let the abandoned handler finish so its queue thread exits
+    }
 }

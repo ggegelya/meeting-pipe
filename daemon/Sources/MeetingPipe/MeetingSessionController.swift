@@ -45,6 +45,14 @@ final class MeetingSessionController {
     /// `recorder.start()` (five stacked starts were seen in the 2026-06-12 freeze).
     private var recordingStartInFlight = false
 
+    /// REC7: latched when a confirmed lifecycle `.ended` lands during the async
+    /// `recorder.start()` window (the meeting ended as the user answered the
+    /// prompt). Consumed once the start commits, so the fresh recording is stopped
+    /// immediately instead of running against a dead meeting until the idle
+    /// backstop. Main-queue only; the start Task and the verdict consumer both run
+    /// on MainActor, so the set-then-read is serialized, not raced.
+    private var endObservedDuringStart: EndingReason?
+
     /// Offsets (seconds from recording start) the user flagged mid-recording via
     /// the flag hotkey (FEAT8). Reset at start, flushed to `<stem>.markers.json`
     /// at stop. Main-queue only, like every field here.
@@ -341,6 +349,7 @@ final class MeetingSessionController {
         // recorder bounds the engine bring-up off the main thread, so the await
         // below never blocks the UI; the post-start wiring runs back on main.
         recordingStartInFlight = true
+        endObservedDuringStart = nil  // REC7: a fresh latch per start (never a stale end from a prior failed start)
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             defer { self.recordingStartInFlight = false }
@@ -392,6 +401,20 @@ final class MeetingSessionController {
                 // Recorder armed: promote `.starting` to `.inMeeting` (no-op for
                 // manual recordings and the prompt-answered-late race).
                 self.coordinator.lifecycleCoord.confirmRecording()
+                // REC7: a confirmed `.ended` that landed during the async start above
+                // was latched (it could not act while the state was still `.prompting`).
+                // Honor it now, on the same MainActor run as `setRecording` (no await
+                // between, so no verdict can interleave): stop the fresh recording so
+                // its short capture is finalized and enqueued via the normal path,
+                // instead of running against a dead meeting until the idle backstop.
+                if let endReason = self.endObservedDuringStart {
+                    self.endObservedDuringStart = nil
+                    Log.event(category: "coordinator", action: "recording_ended_during_start", attributes: [
+                        "file": file.lastPathComponent,
+                        "leading_signal": endReason.leadingSignal,
+                    ])
+                    self.stopRecording(file: file, source: source, summaryMode: summaryMode)
+                }
             } catch {
                 // MIC11 / AUD: a failed start must fail *bounded*, not silently churn
                 // the audio stack. The 2026-06-09 storm was an engine-start that
@@ -485,6 +508,10 @@ final class MeetingSessionController {
                 "system_audio_frames": recorder.lastSystemFires,
                 "produced_final": producedUsableFinal,
             ])
+            // FEAT8/REC7: flush the flagged moments before the merge-outcome branch,
+            // so a failed merge (intermediates kept for the orphan sweep) does not
+            // discard them; the sidecar sits beside where the final will land.
+            MarkerFile.write(seconds: self.markerSeconds, forFinal: file)
             if producedUsableFinal {
                 // Surface a missing-remote-side recording. Zero frames = the whole call was
                 // mic-only (Screen Recording denied; the notifier shows "Open Settings" only
@@ -533,9 +560,6 @@ final class MeetingSessionController {
                     micDeviceName: recorder.lastInputDevice?.displayName,
                     micSilent: micWarning == .micRecordedNothing
                 )
-                // FEAT8: flush the flagged moments next to the final wav so the
-                // pipeline and the Library transcript tab can read them.
-                MarkerFile.write(seconds: self.markerSeconds, forFinal: file)
                 self.coordinator.notifications.notifyProcessing(file: file)
                 self.coordinator.jobs.enqueue(file: file, summaryMode: summaryMode)
                 // Clean finish: the meta sidecar is now on disk and the job is
@@ -777,6 +801,18 @@ final class MeetingSessionController {
             // stop. This path is deliberately unchanged.
             stopRecording(file: file, source: src, summaryMode: mode)
         case .prompting, .suppressed:
+            // REC7: if a start is in flight (the user just answered Record and the
+            // recorder is coming up), the state machine is still `.prompting` until
+            // the start commits `.recording`. A confirmed end here would be swallowed
+            // by that commit, so latch it (only when PromptEndPolicy agrees it is a
+            // real end, not a Teams compact-swap flicker) and let the start path stop
+            // the fresh recording at once.
+            if recordingStartInFlight {
+                if PromptEndPolicy.clearsPromptState(reason: reason) {
+                    endObservedDuringStart = reason
+                }
+                return
+            }
             // A bare leave-button invalidation with zero corroboration is the
             // Teams compact/mini-window swap, not a real end (PromptEndPolicy).
             // Acting on it here used to tear down an explicit Skip and re-open the
