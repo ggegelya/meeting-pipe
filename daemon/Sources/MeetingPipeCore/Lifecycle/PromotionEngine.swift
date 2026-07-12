@@ -332,7 +332,12 @@ public final class PromotionEngine {
                 startedAt: startedAt, observed: observed
             )
             return nil
-        case .live where event.kind == leading:
+        case .live where event.kind.evidenceClass == leading.evidenceClass:
+            // END8: a returning signal reverts the provisional when it shares the leading
+            // signal's evidence class, not only when it is the same kind. A window-gone lead
+            // (an off-screen native window, `onScreenWindowsOnly`) is reverted by the AX
+            // rescue's healthy Leave button (both `.callWindowOrControl`), so minimizing a
+            // meeting no longer chops the recording. A cross-class `.live` still cannot revert.
             phase = .inMeeting(context: context, observed: observed.subtracting([leading]))
             return Decision(verdict: .inMeeting(context: context))
         case .live:

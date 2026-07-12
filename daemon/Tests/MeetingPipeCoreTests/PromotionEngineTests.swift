@@ -407,6 +407,44 @@ final class PromotionEngineTests: XCTestCase {
         XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 4)), "No end after the control returns")
     }
 
+    func test_window_gone_provisional_reverts_when_ax_leave_returns_healthy() {
+        // END8: a minimized / other-Space native window makes ShareableContent report the
+        // window gone (the leading signal, `onScreenWindowsOnly`), but the AX rescue re-walk
+        // finds the still-healthy Leave button and emits .live. It is a different KIND but the
+        // SAME evidence class (`.callWindowOrControl`), so the provisional reverts instead of
+        // promoting a false end after the debounce.
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
+        let revert = engine.ingest(event(.axLeaveButton, .live, at: 1.5))
+        XCTAssertEqual(revert?.verdict, .inMeeting(context: teamsContext))
+        XCTAssertNil(
+            engine.tick(at: Date(timeIntervalSince1970: 4)),
+            "No false end after the window-gone lead is reverted by the healthy Leave button"
+        )
+    }
+
+    func test_window_gone_provisional_not_reverted_by_cross_class_live() {
+        // END8 conservatism: only a SAME-class return reverts. A process-audio .live (a
+        // different evidence class) does not revert a window-gone lead, and the lone
+        // window-gone still promotes on the debounce exactly as before.
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
+        let notReverted = engine.ingest(event(.processAudioIsRunningInput, .live, at: 1.5))
+        XCTAssertNil(notReverted, "A cross-class .live does not revert a window-gone provisional")
+        let post = engine.tick(at: Date(timeIntervalSince1970: 4))
+        XCTAssertEqual(
+            post?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "shareable_content_window_gone", confirmedBy: [])
+            )
+        )
+    }
+
     func test_requiresCorroboration_is_scoped_to_ax_leave() {
         XCTAssertTrue(PrimarySignalKind.axLeaveButton.requiresCorroboration)
         XCTAssertFalse(PrimarySignalKind.shareableContentWindow.requiresCorroboration)
