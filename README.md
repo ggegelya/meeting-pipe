@@ -201,8 +201,10 @@ mp doctor
 # Filter the JSONL event streams (see Logs section)
 mp logs --since 1h --category detector
 
-# Audit meeting-end detection reliability: pairs each recording with its
-# preceding lifecycle.ended event and surfaces sessions you stopped manually
+# Audit detection from both ends: meeting-end reliability (recordings you had to
+# stop manually), and start-detection false negatives (the mic was held but nothing
+# recorded, e.g. an unlisted-domain call), with a reason per miss. --min-miss-sec
+# (default 30) filters out brief dictation / voice-memo blips.
 mp analyze-detection --since 7d
 
 # Compare Anthropic vs the local backend on one transcript; writes a

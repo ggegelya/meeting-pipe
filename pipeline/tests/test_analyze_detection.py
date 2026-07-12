@@ -14,9 +14,12 @@ from pathlib import Path
 from mp.analyze_detection import (
     Session,
     aggregate,
+    classify_mic_spans,
     classify_session,
+    collect_correlation_markers,
     iter_events,
     main,
+    pair_mic_spans,
     pair_sessions,
     render_report,
 )
@@ -312,3 +315,132 @@ def test_main_missing_source_is_not_an_error(tmp_path: Path, capsys) -> None:
     assert rc == 0
     out = capsys.readouterr().out
     assert "No recording sessions" in out
+
+
+# --- DET3: mic-busy miss correlation -------------------------------------------------
+
+
+def _mic(bundle: str, start: str, end: str, name: str = "App") -> list[dict]:
+    return [
+        _event(start, "detector", "mic_busy_started", bundle_id=bundle, display_name=name),
+        _event(end, "detector", "mic_busy_ended", bundle_id=bundle, display_name=name),
+    ]
+
+
+def _classify_spans(events: list[dict]) -> list:
+    sessions = [classify_session(s) for s in pair_sessions(events)]
+    prompts, dropped, picks = collect_correlation_markers(events)
+    return classify_mic_spans(
+        pair_mic_spans(events), sessions, prompts=prompts, dropped=dropped, picks=picks
+    )
+
+
+def test_pair_mic_spans_pairs_and_drops_unclosed_tail() -> None:
+    events = [
+        *_mic("com.hnc.Discord", "2026-05-01T10:00:00Z", "2026-05-01T10:45:00Z", "Discord"),
+        # A still-open span (analysis ran mid-call): no `mic_busy_ended`, so it is dropped.
+        _event("2026-05-01T11:00:00Z", "detector", "mic_busy_started", bundle_id="b"),
+    ]
+    spans = pair_mic_spans(events)
+    assert len(spans) == 1
+    assert spans[0].bundle_id == "com.hnc.Discord"
+    assert spans[0].duration_sec == 2700.0
+
+
+def test_mic_span_overlapping_a_recording_is_handled() -> None:
+    events = [
+        *_mic("us.zoom.xos", "2026-05-01T11:00:00Z", "2026-05-01T11:30:05Z", "Zoom"),
+        _event("2026-05-01T11:00:05Z", "coordinator", "recording_started",
+               file="m.wav", bundle_id="us.zoom.xos"),
+        _event("2026-05-01T11:30:00Z", "coordinator", "recording_stopped",
+               file="m.wav", bundle_id="us.zoom.xos"),
+    ]
+    assert _classify_spans(events)[0].handled is True
+
+
+def test_mic_span_with_a_prompt_is_handled() -> None:
+    events = [
+        *_mic("us.zoom.xos", "2026-05-01T11:00:00Z", "2026-05-01T11:05:00Z", "Zoom"),
+        _event("2026-05-01T11:00:10Z", "coordinator", "prompt_shown", bundle_id="us.zoom.xos"),
+    ]
+    assert _classify_spans(events)[0].handled is True
+
+
+def test_unlisted_call_is_a_miss_with_no_candidate_reason() -> None:
+    # Acceptance: a deliberately missed call on an app absent from meeting_apps.toml appears with
+    # attribution and a reason.
+    events = _mic("chat.unknown.app", "2026-05-01T10:00:00Z", "2026-05-01T10:45:00Z", "Unknown Chat")
+    span = _classify_spans(events)[0]
+    assert span.handled is False
+    assert span.display_name == "Unknown Chat"
+    assert "no candidate" in span.miss_reason
+
+
+def test_candidate_dropped_in_window_reads_as_recognizer_rot() -> None:
+    events = [
+        *_mic("com.microsoft.teams2", "2026-05-01T12:00:00Z", "2026-05-01T12:40:00Z", "Teams"),
+        _event("2026-05-01T12:00:10Z", "detector", "candidate_dropped",
+               bundle_id="com.microsoft.teams2", reason="no_confident_winner", score=2),
+    ]
+    span = _classify_spans(events)[0]
+    assert span.handled is False
+    assert span.miss_reason == "candidate dropped (no_confident_winner)"
+
+
+def test_shadow_pick_without_prompt_reads_as_suppressed() -> None:
+    events = [
+        *_mic("us.zoom.xos", "2026-05-01T13:00:00Z", "2026-05-01T13:40:00Z", "Zoom"),
+        _event("2026-05-01T13:00:05Z", "detector", "discovery_shadow_pick",
+               winner_bundle_id="us.zoom.xos"),
+    ]
+    span = _classify_spans(events)[0]
+    assert span.handled is False
+    assert "discovered but not prompted" in span.miss_reason
+
+
+def test_clean_week_reports_zero_mic_misses() -> None:
+    # A recorded meeting plus a short dictation blip: the meeting is handled and the blip is below
+    # --min-miss-sec, so the report shows zero mic-busy misses.
+    events = [
+        *_mic("us.zoom.xos", "2026-05-01T11:00:00Z", "2026-05-01T11:30:05Z", "Zoom"),
+        _event("2026-05-01T11:00:05Z", "coordinator", "recording_started",
+               file="m.wav", bundle_id="us.zoom.xos"),
+        _event("2026-05-01T11:30:00Z", "coordinator", "recording_stopped",
+               file="m.wav", bundle_id="us.zoom.xos"),
+        *_mic("com.apple.Dictation", "2026-05-01T14:00:00Z", "2026-05-01T14:00:08Z", "Dictation"),
+    ]
+    sessions = [classify_session(s) for s in pair_sessions(events)]
+    report = render_report(sessions, aggregate(sessions), mic_spans=_classify_spans(events))
+    assert "## Mic-busy misses (0)" in report
+
+
+def test_main_reports_mic_miss_in_markdown_and_json(tmp_path: Path, capsys) -> None:
+    events = _mic("chat.unknown.app", "2026-05-01T10:00:00Z", "2026-05-01T10:45:00Z", "Unknown Chat")
+    source = _write_events(tmp_path / "events.jsonl", events)
+
+    rc = main(["--source", str(source)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "## Mic-busy misses (1)" in out
+    assert "Unknown Chat" in out
+    assert "no candidate" in out
+
+    rc = main(["--source", str(source), "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mic_busy"]["spans_observed"] == 1
+    assert payload["mic_busy"]["misses"][0]["bundle_id"] == "chat.unknown.app"
+    assert "no candidate" in payload["mic_busy"]["misses"][0]["reason"]
+
+
+def test_min_miss_sec_excludes_short_spans(tmp_path: Path, capsys) -> None:
+    events = _mic("com.apple.Dictation", "2026-05-01T14:00:00Z", "2026-05-01T14:00:15Z", "Dictation")
+    source = _write_events(tmp_path / "events.jsonl", events)
+    # 15 s span, default threshold 30 s -> not a miss.
+    rc = main(["--source", str(source), "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["mic_busy"]["misses"] == []
+    # Lower the threshold and it surfaces.
+    rc = main(["--source", str(source), "--json", "--min-miss-sec", "5"])
+    assert rc == 0
+    assert len(json.loads(capsys.readouterr().out)["mic_busy"]["misses"]) == 1

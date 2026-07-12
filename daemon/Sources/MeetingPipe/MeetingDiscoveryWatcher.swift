@@ -15,6 +15,13 @@ final class MeetingDiscoveryWatcher {
     private var avObservation: NSKeyValueObservation?
     private var pollTimer: Timer?
 
+    /// The default audio input, retained so both the KVO and the backstop poll can sample its
+    /// busy state (DET3). Resolved once in `wireMicObserver`.
+    private var micDevice: AVCaptureDevice?
+    /// DET3: mic-busy span state machine. Fed on every mic KVO fire and every poll; emits
+    /// `mic_busy_started` / `mic_busy_ended`. Main-queue only.
+    private var micBusyTracker = MicBusySpanTracker()
+
     /// PERF6: the backstop poll runs `active` (3 s) while workspace/mic activity is arriving and backs
     /// off to `idle` (12 s) once a poll passes quiet, so an idle meeting app (e.g. Teams in the
     /// background) is no longer AX-walked every 3 s all day. Driven on main only (see the type's note).
@@ -48,6 +55,7 @@ final class MeetingDiscoveryWatcher {
         let interval = cadence.intervalAfterPoll()
         pollTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             guard let self = self else { return }
+            self.sampleMicBusy() // DET3: poll-driven backstop for a missed mic KVO edge
             self.scheduleScan(triggerBundle: nil)
             self.armPollTimer()
         }
@@ -62,6 +70,9 @@ final class MeetingDiscoveryWatcher {
         pollTimer = nil
         coalesceWork?.cancel()
         coalesceWork = nil
+        // DET3: close any open mic-busy span so its duration is recorded, not lost at shutdown.
+        emitMicBusy(micBusyTracker.update(busy: false, at: Date(), frontmostBundle: nil, frontmostName: nil))
+        micDevice = nil
     }
 
     /// Immediate scan, bypassing the poll interval. Called by Coordinator on permission grant so an in-progress meeting is picked up the moment Accessibility/Mic flips on.
@@ -92,14 +103,49 @@ final class MeetingDiscoveryWatcher {
     }
 
     private func wireMicObserver() {
-        if let mic = AVCaptureDevice.default(for: .audio) {
-            avObservation = mic.observe(\.isInUseByAnotherApplication, options: [.new, .initial]) { [weak self] _, _ in
-                DispatchQueue.main.async {
-                    guard let self = self else { return }
-                    self.cadence.noteActivity() // mic grabbed/released: a meeting may be starting
-                    self.scheduleScan(triggerBundle: nil) // nil bypasses the fast-exit so the scan always runs
-                }
+        guard let mic = AVCaptureDevice.default(for: .audio) else { return }
+        micDevice = mic
+        avObservation = mic.observe(\.isInUseByAnotherApplication, options: [.new, .initial]) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.sampleMicBusy() // DET3: record the mic-busy span
+                self.cadence.noteActivity() // mic grabbed/released: a meeting may be starting
+                self.scheduleScan(triggerBundle: nil) // nil bypasses the fast-exit so the scan always runs
             }
+        }
+    }
+
+    /// DET3: sample the mic-busy state and log a `mic_busy_started` / `mic_busy_ended` span
+    /// transition. Driven by the mic KVO and the backstop poll (the KVO has been flaky across
+    /// macOS versions, so the poll is the reliability backstop, and the tracker is idempotent so a
+    /// double-sample is a no-op). Main-queue only.
+    private func sampleMicBusy() {
+        guard let mic = micDevice else { return }
+        let front = NSWorkspace.shared.frontmostApplication
+        let transition = micBusyTracker.update(
+            busy: mic.isInUseByAnotherApplication,
+            at: Date(),
+            frontmostBundle: front?.bundleIdentifier,
+            frontmostName: front?.localizedName
+        )
+        emitMicBusy(transition)
+    }
+
+    private func emitMicBusy(_ transition: MicBusySpanTracker.Transition?) {
+        switch transition {
+        case .started(let bundle, let name):
+            Log.event(category: "detector", action: "mic_busy_started", attributes: [
+                "bundle_id": bundle ?? "unknown",
+                "display_name": name ?? "",
+            ])
+        case .ended(let bundle, let name, let dur):
+            Log.event(category: "detector", action: "mic_busy_ended", attributes: [
+                "bundle_id": bundle ?? "unknown",
+                "display_name": name ?? "",
+                "duration_sec": dur,
+            ])
+        case nil:
+            break
         }
     }
 
