@@ -109,7 +109,7 @@ enum MeetingSourceScorer {
                 // not a single stale/lingering control that the widened walk-gate now surfaces on
                 // an idle frontmost/lone app. The audio-excluded set (Webex/spark) always walked
                 // and cannot reach two signals as reliably (no audio leg, and its toolbar label is
-                // an unreliable English guess), so it keeps DET4's single-corroborator bar — DET5
+                // an unreliable English guess), so it keeps DET4's single-corroborator bar - DET5
                 // must not regress its single-control detection (a missed recording).
                 let confident = best.hasAudioLeg
                     ? isConfidentNativeMeeting(best.signals)

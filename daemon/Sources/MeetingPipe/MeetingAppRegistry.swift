@@ -31,7 +31,7 @@ struct MeetingAppRegistry {
     /// asserted consistent regardless of any overlay present on the machine running the tests.
     static let bundled = MeetingAppRegistry.load(overlayURL: nil)
 
-    /// `~/.config/meeting-pipe/meeting_apps.toml` — the same config root as `config.toml`.
+    /// `~/.config/meeting-pipe/meeting_apps.toml`, the same config root as `config.toml`.
     static var defaultOverlayURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/meeting-pipe/meeting_apps.toml")

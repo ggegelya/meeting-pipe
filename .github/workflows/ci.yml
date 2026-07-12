@@ -23,21 +23,30 @@ jobs:
           BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -e
+          # Match the raw UTF-8 bytes for U+2014 (ANSI-C escape + LC_ALL=C
+          # grep -F): byte-exact and locale-independent, and it keeps this
+          # workflow file free of the literal character. The previous raw-char
+          # `grep -P` form went silently dead (found 2026-07-13: it reported
+          # no matches on a push whose range added 11 em-dash lines), so the
+          # self-test below makes any future dead matcher fail loudly.
+          EMDASH=$'\xe2\x80\x94'
+          if ! printf 'probe %s probe\n' "$EMDASH" | LC_ALL=C grep -qF "$EMDASH"; then
+            echo "::error::em-dash matcher self-test failed; this lint would be silently dead."
+            exit 1
+          fi
           if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
             echo "No base SHA (first push / shallow clone) - skipping diff check."
             exit 0
           fi
           # `git diff --unified=0` plus added-line filter (`^+` but not
-          # `^+++`) gives just the lines this PR introduces.
+          # `^+++`) gives just the lines this PR / push introduces.
           added=$(git diff --unified=0 "$BEFORE"...HEAD -- \
             ':!**/Package.resolved' \
             ':!**/uv.lock' \
-            ':!CONVENTIONS.md' \
-            ':!.github/workflows/ci.yml' \
-            | grep -E '^\+' | grep -v '^\+\+\+' || true)
-          if echo "$added" | grep -P '—' >/dev/null; then
+            | grep '^+' | grep -v '^+++' || true)
+          if printf '%s\n' "$added" | LC_ALL=C grep -qF "$EMDASH"; then
             echo "::error::CONVENTIONS.md em-dash rule violated in this change. Use hyphen, comma, or rewrite."
-            echo "$added" | grep -nP '—'
+            printf '%s\n' "$added" | LC_ALL=C grep -nF "$EMDASH"
             exit 1
           fi
           echo "No newly-introduced em-dashes."
@@ -48,10 +57,11 @@ jobs:
           # resources that surface UI strings must stay free of U+2014
           # entirely, so a backslide is caught even on an untouched line.
           set -e
-          matches=$(git grep -l $'—' -- daemon/Sources daemon/Resources || true)
+          EMDASH=$'\xe2\x80\x94'
+          matches=$(git grep -lF "$EMDASH" -- daemon/Sources daemon/Resources || true)
           if [ -n "$matches" ]; then
             echo "::error::TECH-UI-2: U+2014 (em-dash) found under daemon/Sources or daemon/Resources. Use a hyphen, comma, or rewrite."
-            git grep -n $'—' -- daemon/Sources daemon/Resources || true
+            git grep -nF "$EMDASH" -- daemon/Sources daemon/Resources || true
             exit 1
           fi
           echo "No em-dashes under daemon/Sources or daemon/Resources."

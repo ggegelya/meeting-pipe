@@ -19,10 +19,10 @@ Don't write what the code does (the names already do that). Don't reference the 
 
 Use hyphens, commas, or rewrite. Applies to code, commit messages, docs, PR bodies, anything you produce here.
 
-Two enforcement points, both diff-based (existing em-dashes in untouched lines aren't flagged, only newly added ones):
+Two enforcement points, each with two layers:
 
-- CI: the `conventions` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) fails the build on any em-dash introduced in a PR or push.
-- Pre-commit (optional, local): [`scripts/pre-commit`](scripts/pre-commit) fires the same check on `git commit`. Install once with `ln -sf ../../scripts/pre-commit .git/hooks/pre-commit`.
+- CI: the `conventions` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) fails the build on any em-dash in an added line (diff-based, so untouched legacy lines aren't flagged) AND on any em-dash present at all under `daemon/Sources` / `daemon/Resources` (whole-file, TECH-UI-2). Both match the raw U+2014 bytes via `LC_ALL=C grep -F` on an ANSI-C escape, with a matcher self-test; the old raw-character `grep -P` form went silently dead and let em-dashes through (repaired 2026-07-13).
+- Pre-commit (local): [`scripts/pre-commit`](scripts/pre-commit) fires the same two checks at commit time. Install once with `ln -sf ../../scripts/pre-commit .git/hooks/pre-commit`. Without it, a violation only surfaces as a late CI red after the push, so install it.
 
 ### Commits
 

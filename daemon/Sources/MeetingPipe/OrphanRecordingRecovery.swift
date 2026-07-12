@@ -185,7 +185,7 @@ enum OrphanRecordingRecovery {
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(stem).capturemode"))
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(stem).offrecord"))
         // REC6: this runs only after a successful re-merge, so a `.recordfail.json`
-        // breadcrumb from the failed stop-time merge is now stale — clear it so it
+        // breadcrumb from the failed stop-time merge is now stale - clear it so it
         // stops counting toward the doctor's orphan finding.
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(stem).recordfail.json"))
         RecordingManifest.remove(forStem: stem, in: directory)

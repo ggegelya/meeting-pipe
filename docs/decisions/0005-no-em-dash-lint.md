@@ -70,3 +70,17 @@ only newly added lines are scanned.
 - LLM-generated prose (including this document) is run through the
   same check; the convention applies to assistant output without
   exception.
+
+## Amendment (2026-07-13)
+
+The diff-based CI step went silently dead: its raw-character `grep -P`
+matcher reported "No newly-introduced em-dashes" on a push whose range
+added 11 (the whole-file daemon guard, TECH-UI-2, was the only layer
+that fired, late and post-push). Repaired: both CI steps and the
+pre-commit hook now match the raw byte sequence (`EMDASH=$'\xe2\x80\x94'`,
+`LC_ALL=C grep -F`), the diff step self-tests its matcher against a
+known em-dash so a dead matcher fails the job instead of lying, and
+`ci.yml` no longer contains the literal character, so its self-exclusion
+(and `CONVENTIONS.md`'s) is removed from both check's pathspecs. The
+recurrence driver was the uninstalled local hook; the install command in
+CONVENTIONS.md is the fix that moves failures from CI-red to commit time.

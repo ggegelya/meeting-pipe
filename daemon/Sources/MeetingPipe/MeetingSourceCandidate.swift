@@ -16,7 +16,7 @@ struct MeetingSourceCandidate: Equatable {
     /// signals in a real call (toolbar + Leave + Mute), so it is held to `isConfidentNativeMeeting`;
     /// an audio-excluded native structurally cannot, and its toolbar label is an unreliable English
     /// guess, so it keeps the single-corroborator bar (its DET4 behaviour, since DET5's walk-gate
-    /// change never applied to it — it always walked). Browsers set true; the browser path ignores it.
+    /// change never applied to it - it always walked). Browsers set true; the browser path ignores it.
     var hasAudioLeg: Bool = true
 
     /// Assigned by `MeetingSourceScorer.pickBest`; defaults to 0 pre-scoring.

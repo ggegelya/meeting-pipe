@@ -15,12 +15,12 @@ set -e
 
 EMDASH=$'\xe2\x80\x94'
 
+# The exclusion list mirrors ci.yml's diff step exactly ("change one, change
+# the other"): since 2026-07-13 neither ci.yml nor this script contains the
+# raw character (both use the byte escape), so only the lockfiles stay excluded.
 added=$(git diff --cached --unified=0 \
   ':!**/Package.resolved' \
   ':!**/uv.lock' \
-  ':!CONVENTIONS.md' \
-  ':!.github/workflows/ci.yml' \
-  ':!scripts/pre-commit' \
   | grep '^+' | grep -v '^+++' || true)
 
 if printf '%s' "$added" | grep -qF "$EMDASH"; then

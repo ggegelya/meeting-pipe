@@ -200,7 +200,7 @@ def pair_sessions(events: Iterable[dict], *, since: datetime | None = None) -> l
             open_session.force_stop_reason = str(ev.get("reason") or "")
         elif cat == "coordinator" and action == "recording_stopped":
             open_session.stopped_ts = ts
-            # File attribute on `recording_stopped` is authoritative —
+            # File attribute on `recording_stopped` is authoritative;
             # `recording_started` may have logged a placeholder if the
             # source was nil at start.
             file_attr = ev.get("file")
@@ -483,7 +483,7 @@ def render_report(
                     lines.append(f"- `{ts}` · {dur} · `{file_label}`")
                 lines.append("")
 
-    # DET3: mic-busy misses — the mic was held by another process but nothing recorded and no
+    # DET3: mic-busy misses - the mic was held by another process but nothing recorded and no
     # prompt fired. This is the false-negative class the whitelist can't see on its own.
     if spans:
         handled_n = sum(1 for s in spans if s.handled)

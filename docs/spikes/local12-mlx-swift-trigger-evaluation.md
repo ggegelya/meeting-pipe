@@ -35,9 +35,9 @@ So the baseline half (`mlx_lm`) is runnable today (3B immediately; 7B after the 
 
 ## The I7 trigger, operationalized
 
-The trigger fires — i.e. reconsider dropping Python for an MLX-Swift summarizer — only when an MLX-Swift server, driven through the **same OpenAI-compatible HTTP seam** `mlx_lm.server` exposes, clears all of:
+The trigger fires (i.e. reconsider dropping Python for an MLX-Swift summarizer) only when an MLX-Swift server, driven through the **same OpenAI-compatible HTTP seam** `mlx_lm.server` exposes, clears all of:
 
-1. **Quality:** meets the dogfood SHIP_GATE against the same transcripts the `mlx_lm` 7B does — actions_capture >= 0.80, decisions_capture >= 0.80, hallucination_rate <= 0.05 — owner-graded, no regression versus the baseline label.
+1. **Quality:** meets the dogfood SHIP_GATE against the same transcripts the `mlx_lm` 7B does (actions_capture >= 0.80, decisions_capture >= 0.80, hallucination_rate <= 0.05); owner-graded, no regression versus the baseline label.
 2. **Latency:** within a small margin of the `mlx_lm` 7B p50 on the same transcripts (harness `latency p50`), including a long transcript that exercises the LOCAL3 map-reduce.
 3. **Memory:** peak resident set not materially worse than the `mlx_lm` 7B (harness `peak RSS`; the 7B-4bit sits around ~4.3 GB).
 4. **Contract:** holds the `MeetingSummary` JSON schema across the corpus without a higher repair-loop rate than the baseline (the constrained-decoding maturity DIST2 flagged).
@@ -62,4 +62,4 @@ The trigger fires — i.e. reconsider dropping Python for an MLX-Swift summarize
 
 ## Reconciliation
 
-DEP1 measured a system-framework alternative fully in-harness; MIC7 shipped an owner-run probe because the measurement needed live state; LOCAL12 is DIST1-shaped — instrument shipped and reasoning pinned, measured artifact owner-owed — because the candidate must be built before it can be measured, and that build is the decision. This verdict is the concrete evaluation I7's 2026-07-10 amendment asked for, so the decision stops drifting: the answer is NO-GO now, keep the embedded-Python runtime, and let `local12_bench.py` (not a maturity guess) be what reopens it.
+DEP1 measured a system-framework alternative fully in-harness; MIC7 shipped an owner-run probe because the measurement needed live state; LOCAL12 is DIST1-shaped (instrument shipped and reasoning pinned, measured artifact owner-owed) because the candidate must be built before it can be measured, and that build is the decision. This verdict is the concrete evaluation I7's 2026-07-10 amendment asked for, so the decision stops drifting: the answer is NO-GO now, keep the embedded-Python runtime, and let `local12_bench.py` (not a maturity guess) be what reopens it.

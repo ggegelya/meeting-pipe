@@ -32,7 +32,7 @@ enum MicInUseTier {
     ///     with, or double-prompt over, a whitelist detection).
     ///   - bundleID / displayName: the plausible mic holder (the app frontmost when the mic was
     ///     grabbed, the same attribution DET3 records).
-    ///   - kind: `.browser` for a browser bundle, else `.native` — sets the synthesized source kind.
+    ///   - kind: `.browser` for a browser bundle, else `.native` - sets the synthesized source kind.
     ///   - plausibleBundles: browser + mic-plausible bundles (native whitelist apps are excluded -
     ///     discovery owns them; see the watcher). Only a plausibly meeting-capable app is named; a
     ///     random app holding the mic (or dictation into a non-meeting app, whose frontmost is that
