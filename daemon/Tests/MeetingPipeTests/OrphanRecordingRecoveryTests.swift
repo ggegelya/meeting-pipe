@@ -120,6 +120,47 @@ final class OrphanRecordingRecoveryTests: XCTestCase {
         XCTAssertEqual(stems, ["recent"])
     }
 
+    // MARK: - REC6: recurring sweep guards
+
+    func test_scanOrphanStems_excludes_the_live_recording_stem_REC6() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        // REC6 runs the sweep after every job completion, so a recording may be in
+        // flight. Its intermediates must never be treated as an orphan and merged.
+        try writeIntermediatePair(stem: "live", in: dir, modified: now.addingTimeInterval(-30))
+        try writeIntermediatePair(stem: "past", in: dir, modified: now.addingTimeInterval(-600))
+
+        let stems = OrphanRecordingRecovery.scanOrphanStems(in: dir, now: now, excludingStem: "live")
+        XCTAssertEqual(stems, ["past"], "the live recording's in-flight intermediates must be excluded")
+    }
+
+    func test_scanOrphanStems_recovery_marker_exempts_a_stale_orphan_REC6() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        // A genuinely interrupted recording can sit for days on a launchd daemon; its
+        // start-time .recovery.json marker exempts it from the staleness cutoff (REC6).
+        try writeIntermediatePair(stem: "old_marked", in: dir, modified: now.addingTimeInterval(-72 * 3600))
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("old_marked.recovery.json"))
+        // A stale orphan with no marker is still skipped as test debris.
+        try writeIntermediatePair(stem: "old_bare", in: dir, modified: now.addingTimeInterval(-72 * 3600))
+
+        let stems = OrphanRecordingRecovery.scanOrphanStems(in: dir, now: now)
+        XCTAssertEqual(stems, ["old_marked"], "a recovery-marked orphan survives the cutoff; a bare stale one does not")
+    }
+
+    func test_scanOrphanStems_recordfail_marker_exempts_a_stale_orphan_REC6() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        try writeIntermediatePair(stem: "failed_merge", in: dir, modified: now.addingTimeInterval(-72 * 3600))
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("failed_merge.recordfail.json"))
+
+        let stems = OrphanRecordingRecovery.scanOrphanStems(in: dir, now: now)
+        XCTAssertEqual(stems, ["failed_merge"], "a stop-time merge-failure breadcrumb exempts the orphan from the cutoff")
+    }
+
     // MARK: - Capture-first orphan quarantine (TECH-MIC5 review)
 
     private func writeMarker(_ mode: CaptureMode, stem: String, in dir: URL) throws {

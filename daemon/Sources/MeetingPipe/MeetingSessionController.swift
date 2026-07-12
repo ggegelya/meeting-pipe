@@ -553,12 +553,13 @@ final class MeetingSessionController {
             } else {
                 // The merge/convert could not produce a usable final. stop() kept
                 // any capture intermediates and wrote a failure breadcrumb, so the
-                // orphan sweep recovers them on the next launch. Preserve the
-                // meeting title / workflow for that run, and surface the failure
+                // orphan sweep recovers them automatically (REC6: the sweep runs
+                // after every job completion, not only at the next launch). Preserve
+                // the meeting title / workflow for that run, and surface the failure
                 // now rather than enqueueing a missing file (REC1 / AUD-5).
                 self.writeMetaSidecar(file: file, source: source)
                 self.coordinator.notifications.notifyError(
-                    "Could not finalize \(file.lastPathComponent). The raw recording was kept and will be recovered on the next launch."
+                    "Could not finalize \(file.lastPathComponent). The raw recording was kept and will be recovered automatically."
                 )
             }
             // Drop the workflow + markers so they can't bleed into the next meeting.

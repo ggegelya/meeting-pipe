@@ -30,10 +30,25 @@ enum OrphanRecordingRecovery {
         return intermediateStems.subtracting(finalStems).sorted()
     }
 
-    /// Enumerate directory and return orphan stems within maxOrphanAge (one
-    /// contentsOfDirectory call). Must be called before any new recording starts
-    /// so live in-flight intermediates are never mistaken for orphans. Returns [] on error.
-    static func scanOrphanStems(in directory: URL, now: Date = Date()) -> [String] {
+    /// Enumerate directory and return orphan stems eligible for recovery (one
+    /// contentsOfDirectory call). Returns [] on error.
+    ///
+    /// `excludingStem` is the currently-recording stem: REC6 runs this sweep after
+    /// every job completion, not only at launch, so a live recording's in-flight
+    /// intermediates would otherwise be mistaken for an orphan and merged mid-write.
+    /// Pass `libraryModel.liveRecordingStem` (nil at launch, when nothing records).
+    ///
+    /// The `maxOrphanAge` staleness cutoff drops intermediates with no deliberate
+    /// marker (stale test debris that must not auto-publish weeks later), but a stem
+    /// carrying a start-time `.recovery.json` manifest or a `.recordfail.json`
+    /// post-process-failure breadcrumb is a real interrupted recording and is exempt
+    /// (REC6): a launchd daemon can run for days before the next sweep, so the old
+    /// 24 h cutoff silently abandoned genuine orphans.
+    static func scanOrphanStems(
+        in directory: URL,
+        now: Date = Date(),
+        excludingStem: String? = nil
+    ) -> [String] {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
             at: directory,
@@ -43,7 +58,11 @@ enum OrphanRecordingRecovery {
             return []
         }
         let candidates = detectOrphanStems(fileNames: entries.map { $0.lastPathComponent })
+            .filter { $0 != excludingStem }
         return candidates.filter { stem in
+            if hasRecoveryMarker(stem: stem, in: directory) {
+                return true
+            }
             guard let modified = newestIntermediateDate(stem: stem, in: directory) else {
                 return false
             }
@@ -52,10 +71,19 @@ enum OrphanRecordingRecovery {
             }
             Log.writeLine(
                 "daemon",
-                "skipping stale orphaned recording \(stem) (intermediates older than \(Int(maxOrphanAge / 3600))h)"
+                "skipping stale orphaned recording \(stem) (no recovery marker, intermediates older than \(Int(maxOrphanAge / 3600))h)"
             )
             return false
         }
+    }
+
+    /// Whether a stem carries a deliberate recovery marker that exempts it from the
+    /// staleness cutoff: the start-time `.recovery.json` manifest, or a
+    /// `.recordfail.json` breadcrumb written when a stop-time merge failed (REC6).
+    private static func hasRecoveryMarker(stem: String, in directory: URL) -> Bool {
+        let fm = FileManager.default
+        return fm.fileExists(atPath: directory.appendingPathComponent("\(stem).recovery.json").path)
+            || fm.fileExists(atPath: directory.appendingPathComponent("\(stem).recordfail.json").path)
     }
 
     /// Newest mtime across a stem's .mic.wav / .system.wav, or nil if neither can be stat'd.
@@ -156,6 +184,10 @@ enum OrphanRecordingRecovery {
     private static func cleanupStartMarkers(stem: String, in directory: URL) {
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(stem).capturemode"))
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(stem).offrecord"))
+        // REC6: this runs only after a successful re-merge, so a `.recordfail.json`
+        // breadcrumb from the failed stop-time merge is now stale — clear it so it
+        // stops counting toward the doctor's orphan finding.
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(stem).recordfail.json"))
         RecordingManifest.remove(forStem: stem, in: directory)
     }
 

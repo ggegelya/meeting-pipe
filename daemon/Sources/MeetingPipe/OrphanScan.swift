@@ -39,7 +39,16 @@ enum OrphanScan {
 
         for (stem, files) in stems {
             if stem.isEmpty { continue }
-            let wav = files.first { $0.pathExtension == "wav" }
+            // REC6: `.mic.wav` / `.system.wav` also end in `.wav`, so the old
+            // `pathExtension == "wav"` check counted an unmerged orphan (capture
+            // intermediates, no merged final) as "a wav exists" and hid it from the
+            // scan. Exclude the intermediates so such a stem reads as no-wav and, with
+            // its `.recovery.json` / `.recordfail.json` sidecar, surfaces as a finding.
+            let wav = files.first {
+                $0.pathExtension == "wav"
+                    && !$0.lastPathComponent.hasSuffix(".mic.wav")
+                    && !$0.lastPathComponent.hasSuffix(".system.wav")
+            }
             let sidecars = files
                 .filter { $0.pathExtension != "wav" }
                 .sorted { $0.lastPathComponent < $1.lastPathComponent }

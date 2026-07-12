@@ -466,17 +466,17 @@ final class Coordinator: NSObject {
                 self.statusBar.refreshMenuForPermissionChange()
             }
 
-        // Re-enqueue recordings orphaned by a mid-recording termination
-        // (crash, kill, rebuild, reinstall restart).
-        recoverOrphanedRecordings()
         // Surface jobs stranded by a restart mid-pipeline (final WAV, no terminal
-        // sidecar). Runs synchronously right after the orphan scan so it observes
-        // the directory before that scan's async merges create any new final WAVs.
+        // sidecar). Runs synchronously before the orphan recovery folded into
+        // reapStorage below, so it observes the directory before that recovery's
+        // async merges create any new final WAVs (else a just-recovered WAV would
+        // look stranded and re-enqueue).
         reconcileStrandedJobs()
-        // Reclaim kept full recordings past their retention window (ADR 0016 /
-        // MIC13) and apply per-workflow audio retention to raw/ (STOR1). Both run
-        // after the orphan/stranded sweeps above, which is what keeps retention
-        // from ever seeing a recording those sweeps are about to re-enqueue.
+        // Re-enqueue recordings orphaned by a mid-recording termination (REC6 runs
+        // the orphan sweep from here now, launch + after every job), reclaim kept
+        // full recordings past their retention window (ADR 0016 / MIC13), and apply
+        // per-workflow audio retention to raw/ (STOR1). The orphan sweep runs before
+        // the reapers, so retention never sees a recording it is about to re-enqueue.
         reapStorage()
         // SEC14: one-time self-heal of any pre-existing 0644 transcript/summary
         // artifacts to 0600 (new writes are already 0600). Mirrors the SEC11 log sweep.
@@ -568,6 +568,13 @@ final class Coordinator: NSObject {
             uniqueKeysWithValues: workflowStore.workflows.map { ($0.id, $0.retention) }
         )
         let liveStem = libraryModel.liveRecordingStem
+        // REC6: recover any recording orphaned by a mid-recording termination now,
+        // not only at launch. This slot runs at launch and after every job
+        // completion, so a stop-time merge failure recovers on the next job instead
+        // of waiting for a relaunch (a launchd daemon can run for days). The live
+        // recording's stem is excluded so its in-flight intermediates are untouched;
+        // a re-merge that fails again keeps its `.recordfail.json` for the doctor.
+        recoverOrphanedRecordings(liveStem: liveStem)
         Task.detached(priority: .background) {
             OriginalsReaper.sweep()
             AudioRetentionSweep.sweep(in: dir, policies: policies, liveStem: liveStem)
@@ -577,12 +584,15 @@ final class Coordinator: NSObject {
 
     /// Re-enqueue recordings orphaned by a mid-recording termination
     /// (crash, kill, rebuild, reinstall restart) that left unmerged
-    /// `.mic.wav`/`.system.wav` intermediates. Snapshot synchronously
-    /// before discovery so a live recording's intermediates aren't seen as
-    /// orphans; the ffmpeg merges run off-main so the menu bar isn't stalled.
-    private func recoverOrphanedRecordings() {
+    /// `.mic.wav`/`.system.wav` intermediates. REC6 runs this from `reapStorage`
+    /// (launch + after every job completion), not only at launch, so a merge that
+    /// failed while the daemon keeps running recovers on the next job instead of
+    /// waiting for a relaunch. `liveStem` excludes the currently-recording stem so
+    /// its in-flight intermediates are never merged; the ffmpeg merges run off-main
+    /// so the menu bar isn't stalled.
+    private func recoverOrphanedRecordings(liveStem: String?) {
         let dir = liveOutputDir
-        let stems = OrphanRecordingRecovery.scanOrphanStems(in: dir)
+        let stems = OrphanRecordingRecovery.scanOrphanStems(in: dir, excludingStem: liveStem)
         guard !stems.isEmpty else { return }
         Task { @MainActor [weak self] in
             let result = await OrphanRecordingRecovery.recover(stems: stems, in: dir)

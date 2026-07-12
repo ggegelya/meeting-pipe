@@ -57,6 +57,28 @@ final class OrphanScanTests: XCTestCase {
         XCTAssertTrue(report.wavsWithoutRow.isEmpty)
     }
 
+    func test_unmerged_intermediates_are_not_counted_as_a_wav_REC6() {
+        // `.mic.wav` / `.system.wav` end in `.wav` but are not a finished recording;
+        // the old predicate counted them as "a wav exists" and hid the orphan. A stem
+        // with only intermediates plus a recovery breadcrumb must surface as a no-wav
+        // finding (REC6).
+        let stems: [String: [URL]] = [
+            "20260712-140000": [
+                u("20260712-140000.mic.wav"),
+                u("20260712-140000.system.wav"),
+                u("20260712-140000.recordfail.json"),
+                u("20260712-140000.recovery.json"),
+            ]
+        ]
+        let report = OrphanScan.detect(stems: stems)
+        XCTAssertTrue(report.wavsWithoutRow.isEmpty, "intermediates are not a library-indexable wav")
+        XCTAssertEqual(report.rowsWithoutWav.count, 1)
+        let row = report.rowsWithoutWav.first!
+        XCTAssertEqual(row.stem, "20260712-140000")
+        XCTAssertEqual(row.sidecars.map { $0.lastPathComponent },
+                       ["20260712-140000.recordfail.json", "20260712-140000.recovery.json"])
+    }
+
     func test_stem_with_neither_wav_nor_sidecars_is_ignored() {
         let stems: [String: [URL]] = [
             "20260308-090000": [],
