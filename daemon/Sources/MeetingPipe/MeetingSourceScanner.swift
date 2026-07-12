@@ -13,6 +13,11 @@ final class MeetingSourceScanner {
         let candidateCount: Int
         /// True when `winner` differs from the previous pass, so callers can log a winner-change without re-deriving it.
         let winnerChanged: Bool
+        /// DET5: running candidates that carried at least one meeting signal but were not the
+        /// confident winner (below threshold, uncorroborated, or outscored). Feeds
+        /// `candidate_dropped` so DET3's auditor sees "an app was running with evidence and
+        /// nothing fired" (a whitelist gap or recognizer rot), not just clean misses.
+        let droppedCandidates: [MeetingSourceCandidate]
     }
 
     /// Known native meeting-app bundle IDs from `meeting_apps.toml`.
@@ -48,15 +53,21 @@ final class MeetingSourceScanner {
         var candidates = enumerateCandidates()
         let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: lastScorerWinner)
         let count = candidates.count
+        // `pickBest` scored `candidates` in place; a dropped candidate is a running app that
+        // carried a signal but is not the winner (DET5, for DET3's auditor).
+        let dropped = candidates.filter {
+            MeetingSourceScorer.distinctSignalCount($0.signals) > 0
+                && $0.source.bundleID != winner?.source.bundleID
+        }
         guard let winner = winner else {
             if !keepStickyOnEmpty {
                 lastScorerWinner = nil
             }
-            return Result(winner: nil, candidateCount: count, winnerChanged: false)
+            return Result(winner: nil, candidateCount: count, winnerChanged: false, droppedCandidates: dropped)
         }
         let changed = lastScorerWinner?.bundleID != winner.source.bundleID
         lastScorerWinner = winner.source
-        return Result(winner: winner, candidateCount: count, winnerChanged: changed)
+        return Result(winner: winner, candidateCount: count, winnerChanged: changed, droppedCandidates: dropped)
     }
 
     // MARK: Candidate enumeration
@@ -64,9 +75,17 @@ final class MeetingSourceScanner {
     /// Produce one candidate per concurrent meeting-app contender. Native bundles are always included (scorer rejects those with zero signals). Browsers only qualify when at least one window matches a meeting-pattern title.
     private func enumerateCandidates() -> [MeetingSourceCandidate] {
         let axTrusted = AXIsProcessTrusted()
+        let apps = NSWorkspace.shared.runningApplications
+        // DET5 walk-gate inputs (see `shouldWalkControlAX`): the frontmost app, and whether
+        // exactly one native meeting app is running (so a lone native's control walk is cheap
+        // and worth running even when its window title was renamed out of the recognizer).
+        let frontmostBundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let loneNative = apps.reduce(into: 0) { count, a in
+            if let b = a.bundleIdentifier, nativeBundles.contains(b) { count += 1 }
+        } == 1
         var candidates: [MeetingSourceCandidate] = []
 
-        for app in NSWorkspace.shared.runningApplications {
+        for app in apps {
             guard let bid = app.bundleIdentifier else { continue }
             let pid = app.processIdentifier
 
@@ -81,9 +100,15 @@ final class MeetingSourceScanner {
                     kind: .native,
                     pid: pid,
                     axTrusted: axTrusted,
-                    preTitleMatch: nil
+                    preTitleMatch: nil,
+                    isFrontmost: bid == frontmostBundle,
+                    isLoneNative: loneNative
                 )
-                candidates.append(MeetingSourceCandidate(source: source, signals: signals))
+                candidates.append(MeetingSourceCandidate(
+                    source: source,
+                    signals: signals,
+                    hasAudioLeg: !MeetingSourceScanner.webexBundleIDs.contains(bid)
+                ))
                 continue
             }
 
@@ -107,7 +132,9 @@ final class MeetingSourceScanner {
                     kind: .browser,
                     pid: pid,
                     axTrusted: axTrusted,
-                    preTitleMatch: true
+                    preTitleMatch: true,
+                    isFrontmost: bid == frontmostBundle,
+                    isLoneNative: false
                 )
                 candidates.append(MeetingSourceCandidate(source: source, signals: signals))
                 continue
@@ -137,7 +164,9 @@ final class MeetingSourceScanner {
                     kind: .browser,
                     pid: pid,
                     axTrusted: axTrusted,
-                    preTitleMatch: titleMatched
+                    preTitleMatch: titleMatched,
+                    isFrontmost: bid == frontmostBundle,
+                    isLoneNative: false
                 )
                 candidates.append(MeetingSourceCandidate(source: source, signals: signals))
             }
@@ -150,15 +179,28 @@ final class MeetingSourceScanner {
     /// process-audio signal cannot distinguish an active call from an idle post-call state.
     private static let webexBundleIDs: Set<String> = ["com.cisco.webexmeetingsapp", "com.cisco.spark"]
 
-    /// PERF6: whether the three control-button AX walks (toolbar / leave / mute) are worth
+    /// PERF6 + DET5: whether the three control-button AX walks (toolbar / leave / mute) are worth
     /// running for a candidate. They are recursive AX-tree IPC and dominate idle discovery CPU,
-    /// so skip them for a backgrounded app that shows no cheap sign of a live meeting: no
-    /// meeting-titled window and no active process audio. Webex is exempt because it is excluded
-    /// from the audio probe (see `webexBundleIDs`), so it has no audio leg and must keep walking
-    /// rather than gate on title alone.
-    static func shouldWalkControlAX(titleMatch: Bool, processAudioActive: Bool, bundleID: String) -> Bool {
+    /// so PERF6 skips them for a backgrounded app that shows no cheap sign of a live meeting: no
+    /// meeting-titled window and no active process audio.
+    ///
+    /// DET5 adds two "this app deserves a walk even without a title match" cases, because start
+    /// detection was single-gated on the exact window title and the audio leg is dead, so one
+    /// vendor rename (a Zoom build that drops "Zoom Meeting" from the title) silently killed that
+    /// app's start detection. `isFrontmost` (the user is actively looking at the window) and
+    /// `isLoneNative` (it is the only native meeting app running, so the walk is cheap and there
+    /// is nothing to disambiguate) both admit the walk. PERF6's cost gate still bites for an idle
+    /// backgrounded app in a multi-native scan. Webex is exempt (excluded from the audio probe,
+    /// so it has no audio leg and must always walk).
+    static func shouldWalkControlAX(
+        titleMatch: Bool,
+        processAudioActive: Bool,
+        isFrontmost: Bool,
+        isLoneNative: Bool,
+        bundleID: String
+    ) -> Bool {
         if webexBundleIDs.contains(bundleID) { return true }
-        return titleMatch || processAudioActive
+        return titleMatch || processAudioActive || isFrontmost || isLoneNative
     }
 
     /// Populate the signal tuple. Each signal degrades to false on AX denied / read failure.
@@ -170,7 +212,9 @@ final class MeetingSourceScanner {
         kind: AppSourceKind,
         pid: pid_t,
         axTrusted: Bool,
-        preTitleMatch: Bool?
+        preTitleMatch: Bool?,
+        isFrontmost: Bool,
+        isLoneNative: Bool
     ) -> MeetingSourceCandidate.Signals {
         var signals = MeetingSourceCandidate.Signals()
 
@@ -212,6 +256,8 @@ final class MeetingSourceScanner {
             if MeetingSourceScanner.shouldWalkControlAX(
                 titleMatch: signals.titleMatch,
                 processAudioActive: signals.processAudioActive,
+                isFrontmost: isFrontmost,
+                isLoneNative: isLoneNative,
                 bundleID: bundleID
             ) {
                 signals.callingControlsToolbar = MeetingAXHandleBuilder
@@ -315,16 +361,20 @@ final class MeetingSourceScanner {
             return !lowered.isEmpty
 
         case ("com.cisco.webexmeetingsapp", _), ("com.cisco.spark", _):
-            // Classic Webex Meetings ("webex meeting"), plus the unified Webex App
-            // (com.cisco.spark) which shares the Teams-style "Meeting" stem. Routes through the
-            // shared vendor matcher so the scanner recognizer can't drift from the lifecycle
-            // adapter, and so spark (added to meeting_apps.toml in DET4) has a recognizer branch
-            // rather than falling through to `default` (DET5 unifies the rest of the table).
+            // Reject the idle launcher ("Webex" / "Cisco Webex") first: the scanner (start-side)
+            // must be stricter about idle windows than the lifecycle adapter (end-side), which
+            // tolerates a bare "Webex" reading live because a late end is only caught by the
+            // backstop. The active meeting title and spark's shared Teams-style "Meeting" stem
+            // then route through the shared vendor matcher, so the scanner recognizer and the
+            // adapter cannot drift, and spark (added to meeting_apps.toml in DET4) gets a
+            // recognizer branch instead of falling through to `default`.
+            if lowered == "webex" || lowered == "cisco webex" { return false }
             return MeetingTitlePatterns.webex(title)
 
         case ("com.tinyspeck.slackmacgap", _):
-            // Word-boundary match so "team-huddles" (plural channel name) doesn't match: trailing `s` is alphanumeric and fails the boundary.
-            return title.range(of: #"\bhuddle\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+            // Shared word-boundary huddle matcher (DET5), so discovery and the lifecycle adapter
+            // cannot diverge. "team-huddles" (plural channel name) fails the boundary.
+            return MeetingTitlePatterns.slackHuddle(title)
 
         default:
             // Unknown native bundle; probe upstream short-circuits before reaching here under normal operation.

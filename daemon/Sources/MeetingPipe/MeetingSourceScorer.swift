@@ -53,6 +53,18 @@ enum MeetingSourceScorer {
             || signals.shareableContentActive
     }
 
+    /// True when a NATIVE candidate's signals confidently indicate a live call, not a stale or
+    /// idle window. DET5 raised this bar: its walk-gate now runs the control-AX walk on an idle
+    /// frontmost/lone app, so a single lingering control (a post-call Leave button, a hub mic
+    /// toggle) would otherwise read as a meeting. A real call renders the calling-controls toolbar
+    /// (which non-meeting shell windows never carry, so it alone is trustworthy) together with its
+    /// Leave + Mute buttons; a single stale-prone control is not enough, so any signal other than
+    /// the toolbar needs a second one. Used for the lone-native prompt gate and as the bar a
+    /// native must clear to block the trustworthy-browser exemption in a contested scan.
+    static func isConfidentNativeMeeting(_ signals: MeetingSourceCandidate.Signals) -> Bool {
+        signals.callingControlsToolbar || distinctSignalCount(signals) >= 2
+    }
+
     /// Score every candidate in-place and return the winner.
     ///
     /// The threshold + distinct-signal floor is a disambiguation bar that applies only when two or more contenders compete. With a single contender there is nothing to disambiguate, so it is returned unconditionally and `Detector`'s `micActive` AND-gate remains the real "is this a meeting" check. Applying the threshold to a lone candidate broke auto-detection when both the AX button walk and HAL audio probe returned empty on a real call.
@@ -85,14 +97,58 @@ enum MeetingSourceScorer {
         // native, must show an in-call corroborator. Before TECH-C13 `Detector`'s `micActive` AND-check
         // supplied this gate; the discovery path now stands alone.
         if contenders.count == 1 {
-            let trustworthyTitleAlone = best.source.kind == .browser && best.signals.titleMatch
-            if !trustworthyTitleAlone, !hasCorroboratingSignal(best.signals) {
-                return nil
+            switch best.source.kind {
+            case .browser:
+                // A browser stands on a genuine meeting-pattern title alone (START2; no per-tab
+                // Leave/mute to corroborate). A name-only PWA admission carries titleMatch==false
+                // (START3/AUD-4) and must show an in-call corroborator.
+                if best.signals.titleMatch { return best }
+                return hasCorroboratingSignal(best.signals) ? best : nil
+            case .native:
+                // DET5: an audio-probed native (Zoom/Teams/Slack) must be a CONFIDENT live call,
+                // not a single stale/lingering control that the widened walk-gate now surfaces on
+                // an idle frontmost/lone app. The audio-excluded set (Webex/spark) always walked
+                // and cannot reach two signals as reliably (no audio leg, and its toolbar label is
+                // an unreliable English guess), so it keeps DET4's single-corroborator bar — DET5
+                // must not regress its single-control detection (a missed recording).
+                let confident = best.hasAudioLeg
+                    ? isConfidentNativeMeeting(best.signals)
+                    : hasCorroboratingSignal(best.signals)
+                return confident ? best : nil
             }
-            return best
         }
 
-        // Two or more contenders: must disambiguate confidently. If nothing clears the threshold, return nil rather than guess ("first" was the pre-scorer bug).
+        // Two or more contenders: must disambiguate confidently.
+        //
+        // DET5: carry the trustworthy-browser-title exemption into the contested branch. A
+        // browser admitted by a genuine meeting-pattern title (START2) has no per-tab Leave/mute
+        // to corroborate with, so it stands on that title alone here just as a lone candidate
+        // does. It wins unless a native with a REAL in-call corroborator outscores it. A native's
+        // titleMatch is not a corroborator (chat / calendar windows match the permissive native
+        // recognizer), so an idle Teams window with a popped-out chat can no longer suppress a
+        // real Meet call in Chrome (the filed regression). If a corroborated native does outscore
+        // the browser, fall through to the generic threshold below, which picks the native.
+        if let bestBrowser = contenders
+            .filter({ $0.source.kind == .browser && $0.signals.titleMatch })
+            .max(by: { $0.score < $1.score }) {
+            // A native blocks the exemption only if it is a CONFIDENT live call (calling-controls
+            // toolbar, or >= 2 distinct signals) that at least ties the browser's score. A single
+            // stale-prone control (a lingering Leave button, a hub mute toggle) is NOT enough:
+            // trusting it here would let a stale native signal SUPPRESS a real title-only browser
+            // meeting (a silent missed recording, the review's finding). A title-only native never
+            // blocks it either, which is the filed regression (idle Teams chat vs real Meet).
+            let confidentNativeRivalsIt = contenders.contains {
+                $0.source.kind != .browser
+                    && isConfidentNativeMeeting($0.signals)
+                    && $0.score >= bestBrowser.score
+            }
+            if !confidentNativeRivalsIt {
+                return bestBrowser
+            }
+        }
+
+        // Otherwise disambiguate on the score + distinct-signal floor. If nothing clears it,
+        // return nil rather than guess ("first" was the pre-scorer bug).
         guard best.score >= threshold,
               distinctSignalCount(best.signals) >= minDistinctSignals else {
             return nil

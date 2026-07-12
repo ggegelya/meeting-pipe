@@ -9,6 +9,16 @@ struct MeetingSourceCandidate: Equatable {
 
     var signals: Signals
 
+    /// Whether this native has a live process-audio leg. False for the audio-excluded bundles
+    /// (Webex/spark, which keep the mic open post-call for ultrasound device discovery, so a
+    /// positive audio read cannot distinguish a live call from an idle post-call state). DET5 uses
+    /// it to pick the lone-native confidence bar: an audio-probed native can reach two distinct
+    /// signals in a real call (toolbar + Leave + Mute), so it is held to `isConfidentNativeMeeting`;
+    /// an audio-excluded native structurally cannot, and its toolbar label is an unreliable English
+    /// guess, so it keeps the single-corroborator bar (its DET4 behaviour, since DET5's walk-gate
+    /// change never applied to it — it always walked). Browsers set true; the browser path ignores it.
+    var hasAudioLeg: Bool = true
+
     /// Assigned by `MeetingSourceScorer.pickBest`; defaults to 0 pre-scoring.
     var score: Int = 0
 
@@ -48,9 +58,10 @@ struct MeetingSourceCandidate: Equatable {
         }
     }
 
-    init(source: AppSource, signals: Signals = Signals(), score: Int = 0) {
+    init(source: AppSource, signals: Signals = Signals(), hasAudioLeg: Bool = true, score: Int = 0) {
         self.source = source
         self.signals = signals
+        self.hasAudioLeg = hasAudioLeg
         self.score = score
     }
 }

@@ -125,6 +125,9 @@ final class MeetingDiscoveryWatcher {
         scanQueue.async { [weak self] in
             guard let self = self else { return }
             let result = self.scanner.scan(keepStickyOnEmpty: false)
+            // DET5: log candidates that were running with evidence but did not win, before the
+            // winner short-circuit, so a no-winner scan (the DET3 miss case) still records why.
+            self.emitDroppedCandidates(result.droppedCandidates, hadWinner: result.winner != nil)
             guard let winner = result.winner else { return }
             if result.winnerChanged {
                 Log.event(category: "detector", action: "discovery_shadow_pick", attributes: [
@@ -144,6 +147,43 @@ final class MeetingDiscoveryWatcher {
             DispatchQueue.main.async { [weak self] in
                 self?.onDiscovered?(source)
             }
+        }
+    }
+
+    /// Signature of the last `candidate_dropped` batch, so a dropped candidate that persists
+    /// across polls is logged once, not every 3-12 s. Touched only on `scanQueue`.
+    private var lastDroppedSignature: String?
+
+    /// DET5: emit `candidate_dropped` for each running candidate that carried a meeting signal
+    /// but did not win, so DET3's `mp analyze-detection` can correlate a mic-busy span with
+    /// "an app was running with evidence and nothing fired" (a whitelist gap or recognizer rot).
+    /// Throttled by a batch signature: a stable set of drops logs once, and the signature clears
+    /// when the drops go away so a later recurrence re-logs. Runs on `scanQueue` (serial), so the
+    /// signature field needs no further synchronisation. Mirrors `discovery_shadow_pick`'s attrs.
+    private func emitDroppedCandidates(_ dropped: [MeetingSourceCandidate], hadWinner: Bool) {
+        guard !dropped.isEmpty else { lastDroppedSignature = nil; return }
+        let reason = hadWinner ? "outscored_by_winner" : "no_confident_winner"
+        // Include the reason in the signature: the same dropped set with the winner-presence
+        // flipped is a different fact for DET3's auditor (a candidate that went from losing to a
+        // winner to being dropped with nothing firing), so it must re-log, not be throttled.
+        let signature = reason + "|" + dropped
+            .map { "\($0.source.bundleID):\($0.score)" }
+            .sorted()
+            .joined(separator: ",")
+        guard signature != lastDroppedSignature else { return }
+        lastDroppedSignature = signature
+        for c in dropped {
+            Log.event(category: "detector", action: "candidate_dropped", attributes: [
+                "bundle_id": c.source.bundleID,
+                "kind": c.source.kind == .browser ? "browser" : "native",
+                "score": c.score,
+                "reason": reason,
+                "calling_controls_toolbar": c.signals.callingControlsToolbar,
+                "leave_button": c.signals.leaveButton,
+                "mute_button": c.signals.muteButton,
+                "title_match": c.signals.titleMatch,
+                "process_audio_active": c.signals.processAudioActive,
+            ])
         }
     }
 }

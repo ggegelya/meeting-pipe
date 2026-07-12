@@ -99,6 +99,31 @@ final class MeetingAppRegistryFenceTests: XCTestCase {
                        "Dead google.meet row (Meet is browser-only).")
     }
 
+    // MARK: - DET5: scanner recognizer and adapter matcher cannot diverge
+
+    func test_scanner_recognizer_and_adapter_matcher_agree_on_live_titles() {
+        // The scanner's start-side recognizer (`isActiveMeetingWindow`) and the lifecycle
+        // adapter's title matcher (`MeetingTitlePatterns.*`) were separate code paths; a vendor
+        // rename that updated only one silently killed one side. DET5 routes slack + webex through
+        // the shared matcher, and zoom/teams keep their stricter recognizer but must still accept
+        // any live title the adapter accepts. This pins that agreement.
+        let cases: [(bundle: String, title: String, adapter: (String?) -> Bool)] = [
+            ("us.zoom.xos", "Zoom Meeting", MeetingTitlePatterns.zoom),
+            ("com.microsoft.teams2", "Standup | Microsoft Teams", MeetingTitlePatterns.teams),
+            ("com.cisco.webexmeetingsapp", "Webex Meeting", MeetingTitlePatterns.webex),
+            ("com.cisco.spark", "Webex Meeting", MeetingTitlePatterns.webex),
+            ("com.tinyspeck.slackmacgap", "Huddle - #engineering", MeetingTitlePatterns.slackHuddle),
+        ]
+        for c in cases {
+            XCTAssertTrue(
+                MeetingSourceScanner.isActiveMeetingWindow(bundleID: c.bundle, kind: .native, title: c.title),
+                "scanner recognizer rejects live title '\(c.title)' for \(c.bundle)")
+            XCTAssertTrue(
+                c.adapter(c.title),
+                "adapter matcher rejects live title '\(c.title)' for \(c.bundle)")
+        }
+    }
+
     // MARK: - Overlay: a user can add a bundle without a rebuild
 
     func test_user_overlay_unions_over_the_bundled_defaults() throws {

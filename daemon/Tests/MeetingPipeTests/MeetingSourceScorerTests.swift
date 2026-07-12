@@ -41,6 +41,18 @@ final class MeetingSourceScorerTests: XCTestCase {
         )
     }
 
+    private let webexBundle = "com.cisco.webexmeetingsapp"
+
+    /// Webex is excluded from the process-audio probe (`hasAudioLeg: false`), so it structurally
+    /// cannot reach a second distinct signal from audio and keeps DET4's single-corroborator bar.
+    private func webex(signals: MeetingSourceCandidate.Signals = .init()) -> MeetingSourceCandidate {
+        MeetingSourceCandidate(
+            source: AppSource(bundleID: webexBundle, displayName: "Webex", kind: .native),
+            signals: signals,
+            hasAudioLeg: false
+        )
+    }
+
     /// A Chromium "installed PWA" admitted as a `.browser`. Its per-install bundle ID is in no fixed
     /// list, so the scanner enumerates it by `localizedName`; a name-only admission carries
     /// `titleMatch == false` (START3/AUD-4), distinct from a plain browser tab vetted by its title/URL.
@@ -199,11 +211,15 @@ final class MeetingSourceScorerTests: XCTestCase {
         XCTAssertEqual(winner?.source.kind, .browser)
     }
 
-    func test_no_candidate_above_threshold_returns_nil_even_with_three_competitors() {
+    func test_multiple_weak_natives_with_no_confident_signal_returns_nil() {
+        // Contested scan, no trustworthy browser and no confident native: a title-only native and a
+        // single-stale-control native both fall short (a title alone and a lone mute are not
+        // confident live-call evidence, DET5), so the scorer returns nil rather than guess.
+        // (Pre-DET5 this was three competitors incl. a title-matched browser; that now resolves to
+        // the browser via the trustworthy-title exemption, covered separately.)
         var candidates = [
-            teams(signals: .init(titleMatch: true)),     // 2
-            chrome(signals: .init(titleMatch: true)),    // 2
-            zoom(signals: .init(muteButton: true)),      // 2
+            teams(signals: .init(titleMatch: true)),     // 2, title only
+            zoom(signals: .init(muteButton: true)),      // 2, single stale-prone control
         ]
         XCTAssertNil(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil))
     }
@@ -342,13 +358,108 @@ final class MeetingSourceScorerTests: XCTestCase {
         XCTAssertEqual(winner?.source.displayName, "Google Meet")
     }
 
-    func test_multi_contender_all_below_threshold_returns_nil() {
-        // Two genuine contenders, neither clearing the threshold: a
-        // real ambiguity the scorer cannot resolve. Return nil rather
-        // than guess - guessing "first" was the pre-scorer bug.
+    // MARK: - DET5: trustworthy-browser exemption carried into contested scans
+
+    func test_contested_title_matched_browser_beats_a_title_only_native() {
+        // The filed regression: an idle Teams window with a popped-out chat (titleMatch on the
+        // chat, no in-call corroborator) must not suppress a real Meet call in Chrome. Both score
+        // 2, so it is a contested scan; the browser's title is trustworthy, the native's is not,
+        // so the browser wins instead of the scan going nil. (Pre-DET5 this returned nil.)
         var candidates = [
-            teams(signals: .init(titleMatch: true)),     // 2
-            chrome(signals: .init(titleMatch: true)),    // 2
+            teams(signals: .init(titleMatch: true)),     // native, chat-window title only
+            chrome(signals: .init(titleMatch: true)),    // browser, genuine meeting title
+        ]
+        let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
+        XCTAssertEqual(winner?.source.bundleID, chromeBundle)
+    }
+
+    func test_contested_corroborated_native_still_beats_the_browser() {
+        // A native with a REAL in-call corroborator (Leave button) at an equal-or-higher score is
+        // a genuine rival, so the exemption yields and the native wins on the normal threshold.
+        var candidates = [
+            teams(signals: .init(leaveButton: true, titleMatch: true)),  // 5, corroborated
+            chrome(signals: .init(titleMatch: true)),                    // 2, title only
+        ]
+        let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
+        XCTAssertEqual(winner?.source.bundleID, teamsBundle)
+    }
+
+    func test_contested_single_stale_control_does_not_block_the_browser() {
+        // Review finding: a single control on a native (a stale hub mute toggle, a lingering
+        // post-call Leave button) is NOT confident evidence of a live call, so it must not suppress
+        // a real title-only browser meeting (a silent missed recording). Only the calling-controls
+        // toolbar or >= 2 distinct signals make a native a genuine rival, so the browser wins here.
+        var candidates = [
+            chrome(signals: .init(titleMatch: true)),    // 2, genuine meeting title
+            zoom(signals: .init(muteButton: true)),      // 2, single stale-prone control
+        ]
+        let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
+        XCTAssertEqual(winner?.source.bundleID, chromeBundle)
+    }
+
+    func test_contested_confident_native_still_blocks_the_exemption() {
+        // But a native with the calling-controls toolbar (which non-meeting shells never carry) is
+        // a confident rival at an equal-or-higher score, so it blocks the exemption; nothing then
+        // clears the threshold floor, so the scan is inconclusive (nil) rather than handed to the
+        // browser.
+        var candidates = [
+            chrome(signals: .init(titleMatch: true)),           // 2, title only
+            zoom(signals: .init(callingControlsToolbar: true)), // 4, confident (toolbar)
+        ]
+        XCTAssertNil(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil))
+    }
+
+    // MARK: - DET5: a lone native needs confident evidence, not a single stale control
+
+    func test_lone_native_single_stale_control_raises_no_prompt() {
+        // DET5's walk-gate now runs the control walk on an idle frontmost/lone app, so a single
+        // lingering control must not prompt. A lone Zoom showing only a stale Leave button (no
+        // toolbar, no second signal) is not a confident live call.
+        var candidates = [zoom(signals: .init(leaveButton: true))]
+        XCTAssertNil(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil))
+    }
+
+    func test_lone_native_toolbar_alone_still_wins() {
+        // The calling-controls toolbar is the exception: non-meeting shell windows never carry it,
+        // so it alone confirms a live call even without a second signal (preserves the pre-DET5
+        // single-toolbar contract).
+        var candidates = [zoom(signals: .init(callingControlsToolbar: true))]
+        let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
+        XCTAssertEqual(winner?.source.bundleID, zoomBundle)
+    }
+
+    func test_lone_webex_single_control_still_records() {
+        // Regression guard (found in re-review): Webex has no audio leg and an unreliable toolbar
+        // label, so a real Webex call may expose only the Leave button. The raised confident-native
+        // bar must NOT apply to it, or a real Webex meeting is silently dropped. Both a lone Leave
+        // and a lone Mute keep DET4's single-corroborator detection.
+        for signals in [MeetingSourceCandidate.Signals(leaveButton: true),
+                        MeetingSourceCandidate.Signals(muteButton: true)] {
+            var candidates = [webex(signals: signals)]
+            let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
+            XCTAssertEqual(winner?.source.bundleID, webexBundle,
+                           "lone Webex with a single control must still record")
+        }
+    }
+
+    func test_contested_webex_single_control_does_not_block_a_real_browser() {
+        // The lenient bar is lone-only: in a contested scan the rival check stays strict for every
+        // native, so a single Webex Leave button does not suppress a real title-only browser
+        // meeting (it would in DET4). The browser wins.
+        var candidates = [
+            chrome(signals: .init(titleMatch: true)),   // 2, genuine meeting title
+            webex(signals: .init(leaveButton: true)),   // 3, single control, no audio leg
+        ]
+        let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
+        XCTAssertEqual(winner?.source.bundleID, chromeBundle)
+    }
+
+    func test_contested_exemption_is_title_gated() {
+        // A browser with no real title match (a name-only PWA admission carries titleMatch==false,
+        // START3) gets no exemption, so a weak contest against a title-only native stays nil.
+        var candidates = [
+            teams(signals: .init(titleMatch: true)),             // 2
+            chrome(signals: .init(shareableContentActive: true)), // 2, NOT title-matched
         ]
         XCTAssertNil(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil))
     }

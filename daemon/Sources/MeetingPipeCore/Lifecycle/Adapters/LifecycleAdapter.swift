@@ -103,10 +103,13 @@ public enum MeetingTitlePatterns {
         ) != nil
     }
 
-    /// Slack huddles: title contains "huddle".
+    /// Slack huddles: title contains "huddle" as a whole word, so a "team-huddles" channel name
+    /// does not match (the trailing `s` is alphanumeric and fails the boundary). DET5 made this
+    /// word-boundary to match the scanner's start-side recognizer, which now routes through this
+    /// matcher, so discovery and end-detection cannot diverge.
     public static let slackHuddle: (String?) -> Bool = { title in
-        guard let lowered = title?.lowercased() else { return false }
-        return lowered.contains("huddle")
+        guard let title, !title.isEmpty else { return false }
+        return title.range(of: #"\bhuddle\b"#, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     /// Browser-tab Teams: keys off the "Microsoft Teams" brand suffix ("<subject> | Microsoft Teams").
