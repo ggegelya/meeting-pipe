@@ -969,7 +969,11 @@ final class MeetingSessionController {
                 if self.activeCaptureMode?.capturesLosslessly ?? false {
                     self.coordinator.micGate.clearAxMute()
                 }
-            }
+            },
+            // MIC16: run the 1 Hz mute-state AX walk on the shared serial queue (off main),
+            // so a wedged meeting client can never stall the run loop and delay the
+            // force-stop hotkey while a recording is live. Only the fused readings hop back.
+            walkQueue: Self.axWalkQueue
         )
         watcher.start()
         axWindowWatcher = watcher

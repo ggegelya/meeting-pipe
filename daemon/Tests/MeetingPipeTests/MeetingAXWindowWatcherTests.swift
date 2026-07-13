@@ -84,7 +84,8 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         blindClearThreshold: Int = 3,
         vadActive: @escaping () -> Bool = { false },
         staleContradictions: ContradictionCounter? = nil,
-        contradictionDwellSeconds: Double = VADContradictionTracker.defaultDwellSeconds
+        contradictionDwellSeconds: Double = VADContradictionTracker.defaultDwellSeconds,
+        walkQueue: DispatchQueue? = nil
     ) -> MeetingAXWindowWatcher {
         MeetingAXWindowWatcher(
             pid: 4242,
@@ -96,6 +97,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
             vadActiveProvider: vadActive,
             onStaleMuteContradiction: { staleContradictions?.count += 1 },
             scheduler: scheduler,
+            walkQueue: walkQueue,
             stateResolver: resolver,
             localeResolver: { "en" },
             pollInterval: 1.0,
@@ -400,5 +402,82 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         scheduler.fire()                      // poll 2: contradiction clears -> .muted re-latches
         XCTAssertEqual(sink.events.map(\.state), [.muted], "the genuine mute is honoured again")
         XCTAssertEqual(stale.count, 1, "no new discredit")
+    }
+
+    // MARK: - MIC16: the AX walk runs off the main thread
+
+    func test_slow_walk_runs_off_the_caller_and_does_not_block() {
+        // Production wires a real `walkQueue`. A deliberately slow resolver (a wedged
+        // meeting client) must run on that queue, not the caller: poll() returns while the
+        // walk is still parked, so a force-stop hotkey on the main thread is never delayed.
+        let entered = DispatchSemaphore(value: 0)   // signalled once the walk begins
+        let release = DispatchSemaphore(value: 0)   // held until the test lets the walk finish
+        let resolver: MeetingAXWindowWatcher.StateResolver = {
+            entered.signal()
+            release.wait()
+            return [.unmuted]
+        }
+        let walkQueue = DispatchQueue(label: "test.mic16.ax-walk")
+        let scheduler = ManualScheduler()
+        let sink = EventSink()
+        let watcher = makeWatcher(
+            resolver: resolver, scheduler: scheduler.make(), sink: sink, walkQueue: walkQueue
+        )
+
+        watcher.start()  // dispatches the walk to walkQueue; must return without blocking
+
+        // The walk is now parked in release.wait() on its own queue; the caller got control
+        // back and nothing has been consumed or re-armed yet.
+        XCTAssertEqual(entered.wait(timeout: .now() + 2), .success, "the walk ran on the queue")
+        XCTAssertTrue(sink.events.isEmpty, "poll() returned before the walk finished; caller not blocked")
+        XCTAssertNil(scheduler.pending, "no re-arm until the reading is delivered on main")
+
+        // Let the walk finish; it hops the reading back to main. Pump main until it lands.
+        release.signal()
+        let delivered = expectation(description: "reading delivered on main")
+        func pump() {
+            if sink.events.isEmpty {
+                DispatchQueue.main.async(execute: pump)
+            } else {
+                delivered.fulfill()
+            }
+        }
+        DispatchQueue.main.async(execute: pump)
+        wait(for: [delivered], timeout: 2)
+
+        XCTAssertEqual(sink.events.map(\.state), [.unmuted], "the unmute was consumed on main")
+        XCTAssertNotNil(scheduler.pending, "the next tick re-armed after delivery")
+    }
+
+    func test_stop_during_an_in_flight_walk_drops_the_late_delivery() {
+        // If the recording stops while an AX walk is still parked on the queue, its delivery
+        // must be dropped (the generation guard) rather than re-arming a stopped poll.
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let resolver: MeetingAXWindowWatcher.StateResolver = {
+            entered.signal()
+            release.wait()
+            return [.muted]
+        }
+        let walkQueue = DispatchQueue(label: "test.mic16.ax-walk.stop")
+        let scheduler = ManualScheduler()
+        let sink = EventSink()
+        let watcher = makeWatcher(
+            resolver: resolver, scheduler: scheduler.make(), sink: sink, walkQueue: walkQueue
+        )
+
+        watcher.start()
+        XCTAssertEqual(entered.wait(timeout: .now() + 2), .success)
+
+        watcher.stop()      // bumps the generation; the in-flight walk is now stale
+        release.signal()    // let the walk finish and try to deliver on main
+        walkQueue.sync {}   // barrier: the walk closure (and its main-queue hop) is enqueued
+
+        let settled = expectation(description: "main drained past the dropped delivery")
+        DispatchQueue.main.async { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+
+        XCTAssertTrue(sink.events.isEmpty, "a walk delivered after stop() must not emit")
+        XCTAssertNil(scheduler.pending, "a stopped watcher must not re-arm")
     }
 }

@@ -44,7 +44,13 @@ import MeetingPipeCore
 /// so MicGate drops the stale `.muted` and lets live voice through, instead of zeroing the
 /// mic for the rest of the call (observed 2026-06-03, an unmute in the mini window ignored).
 ///
-/// Threading: main-queue only; not thread-safe. `start`/`stop` on `beginRecording`/`stopRecording`.
+/// Threading: the watcher's own state is main-queue only and not thread-safe;
+/// `start`/`stop` on `beginRecording`/`stopRecording`. The one exception is the
+/// per-poll cross-process AX-tree walk (the `stateResolver`): in production it runs
+/// on an injected `walkQueue` and only the resulting readings hop back to main, so a
+/// wedged meeting client can never stall the run loop (and the force-stop hotkey)
+/// mid-recording (MIC16). Tests leave `walkQueue` nil, so the poll runs synchronously
+/// on the caller and the manual scheduler can step it without a run loop.
 final class MeetingAXWindowWatcher {
 
     /// Returns a cancel closure. Default uses `Timer.scheduledTimer`; tests inject a manual driver to step the poll without sleeping.
@@ -69,6 +75,11 @@ final class MeetingAXWindowWatcher {
     /// read is stale and should be discredited (the host mode-gates the actual clear).
     private let onStaleMuteContradiction: () -> Void
     private let scheduler: Scheduler
+    /// Serial queue the cross-process AX walk runs on so it never blocks the main run
+    /// loop during a recording (MIC16). Production passes the shared
+    /// `MeetingSessionController.axWalkQueue`; nil (tests) runs the walk synchronously
+    /// on the caller so the manual scheduler can step the poll deterministically.
+    private let walkQueue: DispatchQueue?
     private let stateResolver: StateResolver
     private let pollInterval: TimeInterval
     private let localeResolver: AXMuteButtonProbe.LocaleResolver
@@ -87,6 +98,10 @@ final class MeetingAXWindowWatcher {
     /// does not re-inject it; cleared the instant the contradiction ends, so a genuine mute latches
     /// again (MIC10 part 2).
     private var suppressingStaleMute: Bool = false
+    /// Bumped on every `stop()` (and the `stop()` inside `start()`), so an AX walk still
+    /// in flight on `walkQueue` when the watcher is torn down is dropped on delivery
+    /// instead of re-arming a stopped poll (MIC16).
+    private var generation: Int = 0
 
     static let defaultScheduler: Scheduler = { delay, action in
         let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in
@@ -105,6 +120,7 @@ final class MeetingAXWindowWatcher {
         vadActiveProvider: @escaping () -> Bool = { false },
         onStaleMuteContradiction: @escaping () -> Void = {},
         scheduler: @escaping Scheduler = MeetingAXWindowWatcher.defaultScheduler,
+        walkQueue: DispatchQueue? = nil,
         stateResolver: StateResolver? = nil,
         localeResolver: @escaping AXMuteButtonProbe.LocaleResolver = AXMuteButtonProbe.defaultLocaleResolver,
         pollInterval: TimeInterval = MeetingAXWindowWatcher.defaultPollInterval,
@@ -119,6 +135,7 @@ final class MeetingAXWindowWatcher {
         self.vadActiveProvider = vadActiveProvider
         self.onStaleMuteContradiction = onStaleMuteContradiction
         self.scheduler = scheduler
+        self.walkQueue = walkQueue
         self.localeResolver = localeResolver
         self.pollInterval = pollInterval
         self.blindClearThreshold = blindClearThreshold
@@ -142,6 +159,9 @@ final class MeetingAXWindowWatcher {
     }
 
     func stop() {
+        // Invalidate any AX walk still in flight on `walkQueue`: its delivery checks
+        // this generation and drops if it changed, so a stopped watcher never re-arms.
+        generation &+= 1
         cancelPoll?()
         cancelPoll = nil
         lastEmitted = nil
@@ -155,8 +175,31 @@ final class MeetingAXWindowWatcher {
     // MARK: - Poll loop
 
     private func poll() {
+        // Run the cross-process AX walk off main (production) so a wedged meeting client
+        // can't stall the run loop, then hop only the readings back to main for the state
+        // machine in `consume`. With no `walkQueue` (tests) the resolve + consume run
+        // synchronously on the caller, so the manual scheduler steps the poll without a
+        // run loop and the existing assertions stay immediate (MIC16).
+        guard let walkQueue = walkQueue else {
+            consume(stateResolver())
+            return
+        }
+        let gen = generation
+        let resolver = stateResolver
+        walkQueue.async { [weak self] in
+            let states = resolver()
+            DispatchQueue.main.async {
+                guard let self = self, gen == self.generation else { return }
+                self.consume(states)
+            }
+        }
+    }
+
+    /// Main-thread continuation of one poll: fuse the readings, drive the mute state
+    /// machine (contradiction / emit / blind-clear), and re-arm the next tick. Runs on
+    /// main in production (hopped from `walkQueue`), synchronously on the caller in tests.
+    private func consume(_ states: [MuteLabels.State]) {
         pollCount += 1
-        let states = stateResolver()
         let fused = MeetingAXWindowWatcher.fuse(states)
 
         // MIC10 part 2: a confident `.muted` read contradicted by sustained OS voice-activity means
