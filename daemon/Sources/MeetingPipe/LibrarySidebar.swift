@@ -80,6 +80,9 @@ struct LibrarySidebar: View {
             }
         }
         .listStyle(.sidebar)
+        // No-System-Blue (DSN10): drop the native source-list highlight so only the
+        // teal wash reads; without this the prominent blue selection stacks under it.
+        .noNativeListSelection()
         .navigationSplitViewColumnWidth(
             min: LibraryLayout.sidebarMinWidth,
             ideal: LibraryLayout.sidebarIdealWidth,

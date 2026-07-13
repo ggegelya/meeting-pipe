@@ -199,6 +199,9 @@ struct LibraryListView: View {
             }
         }
         .listStyle(.inset)
+        // No-System-Blue (DSN10): drop the native selection paint so only MeetingRow's
+        // teal wash reads; .listRowBackground alone does not suppress it.
+        .noNativeListSelection()
         // TECH-DSN5: settle the selection rather than snapping it. One of the
         // three sanctioned animation moments (with the HUD degraded grow/shrink
         // and the prompt fade-in); restraint elsewhere is deliberate.

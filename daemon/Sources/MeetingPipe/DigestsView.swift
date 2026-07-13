@@ -96,6 +96,9 @@ struct DigestsView: View {
                 ForEach(model.digests) { d in
                     DigestRow(digest: d)
                         .tag(d.stem)
+                        // Teal selection wash (No-System-Blue, DSN10), matching the
+                        // sidebar; the native highlight is suppressed below.
+                        .listRowBackground(d.stem == model.selectedStem ? Color.mpSelectionWash : Color.clear)
                         .contextMenu {
                             Button("Reveal in Finder") { reveal(d) }
                             Button("Move to Trash…", role: .destructive) { trash(d) }
@@ -103,6 +106,9 @@ struct DigestsView: View {
                 }
             }
             .listStyle(.inset)
+            // No-System-Blue (DSN10): drop the native selection highlight; the row's
+            // own selection styling is the single cue.
+            .noNativeListSelection()
         }
     }
 
