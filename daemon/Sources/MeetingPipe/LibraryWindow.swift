@@ -371,6 +371,9 @@ struct LibraryRootView: View {
     @ObservedObject var meetingStore: MeetingStore
     @State private var scope: LibraryScope = .allMeetings
     @State private var meetingSelection: Set<Meeting.ID> = []
+    /// Digest list + selection, shared by the center list (`DigestsView`) and the detail reader
+    /// (`DigestReaderView`) so both see the same selected digest across the split.
+    @StateObject private var digestList = DigestListModel()
     /// Drives the workflow editor sheet. Set non-nil to edit.
     @State private var editingWorkflow: Workflow? = nil
     /// Drives the "+ New workflow" sheet. Separate from `editingWorkflow` so the sheet can initialise a stub lazily, keeping the rail's button stateless.
@@ -482,10 +485,10 @@ struct LibraryRootView: View {
                             meetingSelection = [stem]
                         }
                     } else if case .digests = scope {
-                        // Digests (AI4): a read-only list of the weekly review digests,
-                        // each rendered inline. Self-contained, since a digest is not a
-                        // meeting and has no detail-pane row.
-                        DigestsView(model: model)
+                        // Digests (AI4): the center column lists the weekly digests; the
+                        // selected one renders in the detail pane (DigestReaderView), the
+                        // same split a meeting uses, so a large digest reads at full width.
+                        DigestsView(model: digestList, libraryModel: model)
                     } else {
                         LibraryListView(
                             store: meetingStore,
@@ -570,17 +573,9 @@ struct LibraryRootView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if case .digests = scope {
-            // Digests owns the center column (like Facts / Ask); the detail stays a hint.
-            VStack(spacing: 8) {
-                Image(systemName: "calendar.badge.clock")
-                    .font(.system(size: 36))
-                    .foregroundStyle(Color(MPColors.fgSubtle))
-                Text("Weekly review digests of your open actions and recent decisions.")
-                    .foregroundStyle(Color(MPColors.fgMuted))
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 260)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Digests: the center column lists them; the detail reads the selected one at
+            // full width (the reader moved here from the narrow, split center column).
+            DigestReaderView(model: digestList)
         } else if selected.count > 1 {
             BatchActionsPane(meetings: selected, libraryModel: model)
         } else if let only = selected.first {

@@ -27,7 +27,11 @@ struct SummaryRenderedView: View {
             }
             if !actions.isEmpty {
                 section(title: "Action items", systemImage: "checklist") {
-                    VStack(alignment: .leading, spacing: MPSpace.s2) {
+                    // A whole-library digest can carry hundreds of actions. LazyVStack
+                    // (inside the enclosing ScrollView) realizes and markdown-parses only
+                    // the visible rows, instead of building and laying out all of them up
+                    // front, which froze scrolling on a large digest.
+                    LazyVStack(alignment: .leading, spacing: MPSpace.s2) {
                         ForEach(Array(actions.enumerated()), id: \.offset) { _, a in
                             ActionItemRow(action: a)
                         }

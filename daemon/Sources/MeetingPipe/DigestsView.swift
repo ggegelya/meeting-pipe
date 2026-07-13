@@ -3,21 +3,56 @@ import SwiftUI
 
 /// AI4: the weekly review digests, read-only. `mp digest` writes
 /// `digest-<date>.summary.json/.md` into a `digests` sibling of the library (outside the
-/// scanned `raw/` tree, so they never show in the meeting list). This lists them, renders
-/// the selected one with the standard summary view, and offers Generate now + reveal +
-/// delete. A derived view over files (ADR 0003), not a database of record. Rendered in the
-/// Library's center column when the `.digests` rail scope is active.
-struct DigestsView: View {
-    @ObservedObject var model: LibraryWindowModel
+/// scanned `raw/` tree, so they never show in the meeting list).
+///
+/// The list of digests lives in the Library's center column (`DigestsView`); the selected
+/// digest reads in the wide detail pane (`DigestReaderView`), the same split a meeting uses.
+/// A whole-library digest can carry hundreds of actions, so it needs the full reading width,
+/// not the narrow list column it used to be crammed into. A derived view over files (ADR 0003),
+/// not a database of record. Offers Generate now + reveal + delete.
 
-    @State private var digests: [DigestFile] = []
-    @State private var selectedStem: String?
-    @State private var loading = true
-    @State private var generating = false
+/// Shared state for the two digest columns: the scanned files, the selection, and the
+/// generate/reload lifecycle. Held as a `@StateObject` by the Library root so the center list
+/// and the detail reader observe the same selection (a `NavigationSplitView` composes them as
+/// siblings, so the state has to live in their common parent).
+@MainActor
+final class DigestListModel: ObservableObject {
+    @Published fileprivate var digests: [DigestFile] = []
+    @Published fileprivate var selectedStem: String?
+    @Published fileprivate var loading = true
+    @Published fileprivate var generating = false
 
-    private var selected: DigestFile? {
+    fileprivate var selected: DigestFile? {
         digests.first { $0.stem == selectedStem }
     }
+
+    /// Rescan the digests directory off-main, then adopt the result. Keeps the current
+    /// selection if it still exists, otherwise selects the newest.
+    fileprivate func reload(directory: URL?) {
+        guard let dir = directory else {
+            digests = []
+            loading = false
+            return
+        }
+        loading = true
+        Task.detached(priority: .userInitiated) {
+            let files = DigestFile.scan(dir)
+            await MainActor.run {
+                self.digests = files
+                if self.selectedStem == nil || !files.contains(where: { $0.stem == self.selectedStem }) {
+                    self.selectedStem = files.first?.stem
+                }
+                self.loading = false
+            }
+        }
+    }
+}
+
+/// Center column: the list of weekly digests + Generate now. Selecting a row renders it in the
+/// detail pane (`DigestReaderView`), the way selecting a meeting renders its detail.
+struct DigestsView: View {
+    @ObservedObject var model: DigestListModel
+    let libraryModel: LibraryWindowModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -25,7 +60,7 @@ struct DigestsView: View {
             Divider()
             content
         }
-        .onAppear(perform: reload)
+        .onAppear { model.reload(directory: libraryModel.digestsDirectory) }
     }
 
     private var header: some View {
@@ -37,13 +72,13 @@ struct DigestsView: View {
                 .foregroundStyle(Color(MPColors.fgMuted))
             Spacer()
             Button(action: generate) {
-                if generating {
+                if model.generating {
                     ProgressView().controlSize(.small)
                 } else {
                     Label("Generate now", systemImage: "arrow.clockwise")
                 }
             }
-            .disabled(generating)
+            .disabled(model.generating)
             .help("Run mp digest over your whole library now")
         }
         .padding(.horizontal, 14)
@@ -52,44 +87,29 @@ struct DigestsView: View {
 
     @ViewBuilder
     private var content: some View {
-        if loading {
+        if model.loading {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if digests.isEmpty {
+        } else if model.digests.isEmpty {
             emptyState
         } else {
-            VSplitView {
-                List(selection: $selectedStem) {
-                    ForEach(digests) { d in
-                        DigestRow(digest: d)
-                            .tag(d.stem)
-                            .contextMenu {
-                                Button("Reveal in Finder") { reveal(d) }
-                                Button("Move to Trash…", role: .destructive) { trash(d) }
-                            }
-                    }
-                }
-                .listStyle(.inset)
-                .frame(minHeight: 120, idealHeight: 180)
-
-                if let sel = selected {
-                    ScrollView {
-                        SummaryRenderedView(summary: sel.summary)
-                            .padding(16)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                } else {
-                    Text("Select a digest to read it.")
-                        .foregroundStyle(Color(MPColors.fgMuted))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+            List(selection: $model.selectedStem) {
+                ForEach(model.digests) { d in
+                    DigestRow(digest: d)
+                        .tag(d.stem)
+                        .contextMenu {
+                            Button("Reveal in Finder") { reveal(d) }
+                            Button("Move to Trash…", role: .destructive) { trash(d) }
+                        }
                 }
             }
+            .listStyle(.inset)
         }
     }
 
     private var emptyState: some View {
         VStack(spacing: 8) {
             Image(systemName: "calendar.badge.clock")
-                .font(.system(size: 32))
+                .font(.mpText2XL)
                 .foregroundStyle(Color(MPColors.fgSubtle))
             Text("No digests yet.")
                 .foregroundStyle(Color(MPColors.fgMuted))
@@ -105,11 +125,11 @@ struct DigestsView: View {
     // MARK: - Actions
 
     private func generate() {
-        generating = true
+        model.generating = true
         Task { @MainActor in
-            _ = await model.generateDigest()
-            generating = false
-            reload()
+            _ = await libraryModel.generateDigest()
+            model.generating = false
+            model.reload(directory: libraryModel.digestsDirectory)
         }
     }
 
@@ -121,26 +141,28 @@ struct DigestsView: View {
         for url in [d.jsonURL, d.mdURL] {
             try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
         }
-        if selectedStem == d.stem { selectedStem = nil }
-        reload()
+        if model.selectedStem == d.stem { model.selectedStem = nil }
+        model.reload(directory: libraryModel.digestsDirectory)
     }
+}
 
-    private func reload() {
-        guard let dir = model.digestsDirectory else {
-            digests = []
-            loading = false
-            return
-        }
-        loading = true
-        Task.detached(priority: .userInitiated) {
-            let files = DigestFile.scan(dir)
-            await MainActor.run {
-                self.digests = files
-                if self.selectedStem == nil || !files.contains(where: { $0.stem == self.selectedStem }) {
-                    self.selectedStem = files.first?.stem
-                }
-                self.loading = false
+/// Detail pane: the selected digest, rendered with the standard summary view in the wide reading
+/// column. Gets the full detail width (and full height) instead of the narrow, vertically-split
+/// center column the reader used to share with the list.
+struct DigestReaderView: View {
+    @ObservedObject var model: DigestListModel
+
+    var body: some View {
+        if let sel = model.selected {
+            ScrollView {
+                SummaryRenderedView(summary: sel.summary)
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+        } else {
+            Text("Select a digest to read it.")
+                .foregroundStyle(Color(MPColors.fgMuted))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }
