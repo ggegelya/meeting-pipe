@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Detection regression corpus (TECH-C6). Each trace replays a recorded scenario through PromotionEngine + MicGate.decide and asserts the produced verdict sequence matches the captured expectation. Real user-dogfood traces land in Phase 2; the synthetic entries below lock in the format and the most-load-bearing scenarios so a regression in PromotionEngine / MicGate is caught by CI.",
+  "description": "Detection regression corpus (TECH-C6). Each trace replays a recorded scenario through PromotionEngine + MicGate.decide and asserts the produced verdict sequence matches the captured expectation, so a regression in PromotionEngine / MicGate is caught by CI. The first nine entries are synthetic seeds that lock in the format and cross-app scenarios; the teams_native_{rewalk,debounce,flicker}_end entries are real dogfood sessions derived from the daemon event log via scripts/extract_detection_trace.py (verdict sequence, leading signal, confirmed_by, flicker count and timing preserved; titles and pids redacted).",
   "scenarios": [
     "teams_native_clean_leave_en.json",
     "teams_native_post_call_chat_grab_en.json",
@@ -10,6 +10,26 @@
     "google_meet_pwa_clean_leave.json",
     "micgate_teams_mute_unmute_de.json",
     "micgate_hardware_mute_wins.json",
-    "micgate_silent_by_rms_default.json"
+    "micgate_silent_by_rms_default.json",
+    "teams_native_debounce_end_01.json",
+    "teams_native_debounce_end_02.json",
+    "teams_native_debounce_end_03.json",
+    "teams_native_debounce_end_04.json",
+    "teams_native_flicker_rewalk_end_01.json",
+    "teams_native_flicker_rewalk_end_02.json",
+    "teams_native_flicker_rewalk_end_03.json",
+    "teams_native_rewalk_end_01.json",
+    "teams_native_rewalk_end_02.json",
+    "teams_native_rewalk_end_03.json",
+    "teams_native_rewalk_end_04.json",
+    "teams_native_rewalk_end_05.json",
+    "teams_native_rewalk_end_06.json",
+    "teams_native_rewalk_end_07.json",
+    "teams_native_rewalk_end_08.json",
+    "teams_native_rewalk_end_09.json",
+    "teams_native_rewalk_end_10.json",
+    "teams_native_rewalk_end_11.json",
+    "teams_native_rewalk_end_12.json",
+    "teams_native_rewalk_end_13.json"
   ]
 }

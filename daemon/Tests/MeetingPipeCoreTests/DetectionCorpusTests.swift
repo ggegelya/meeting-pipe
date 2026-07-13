@@ -75,6 +75,20 @@ final class DetectionCorpusTests: XCTestCase {
                 }
                 continue
             }
+            if kind == "confirm_provisional_end" {
+                // The daemon's AX re-walk (MeetingSessionController.rescueProvisionalEnd) verified the
+                // leading control is genuinely gone and promotes via PromotionEngine.confirmProvisionalEnd().
+                // This is the production end path for a native ax-leave-led end: the debounce tick
+                // deliberately refuses to promote a lone, staleness-prone ax-leave (requiresCorroboration),
+                // so a real dogfood trace of that ending (the dominant one for a native-Teams user) can only
+                // replay through this pseudo-event. `rewalk_signal` defaults to "ax_leave_rewalk", matching
+                // the confirmed_by the daemon records live.
+                let rewalk = (event["rewalk_signal"] as? String) ?? "ax_leave_rewalk"
+                if let decision = engine.confirmProvisionalEnd(rewalkSignal: rewalk) {
+                    observed.append((index, decision.verdict))
+                }
+                continue
+            }
             let signalKind = try mapSignalKind(kind)
             let stateString = (event["state"] as? String) ?? "live"
             let state: PrimarySignalState = stateString == "ended" ? .ended : .live

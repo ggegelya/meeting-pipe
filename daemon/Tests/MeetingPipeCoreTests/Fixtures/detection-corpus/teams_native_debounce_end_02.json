@@ -1,0 +1,48 @@
+{
+  "scenario": "teams_native_debounce_end_02",
+  "description": "Real dogfood session (redacted). native com.microsoft.teams2; shareable_content_window-led end promoted on the 2s debounce; clean single end. Verdict sequence, leading signal, confirmed_by and relative timing preserved from the event log; signal timeline minimally reconstructed to reproduce that sequence through the pure engine; titles dropped and pid set to 1234.",
+  "engine": "promotion",
+  "debounce_seconds": 2.0,
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "events": [
+    {
+      "t": 0.0,
+      "kind": "shareable_content_window",
+      "state": "live"
+    },
+    {
+      "t": 2829.95,
+      "kind": "shareable_content_window",
+      "state": "ended"
+    },
+    {
+      "t": 2832.45,
+      "kind": "tick"
+    }
+  ],
+  "expected_verdicts": [
+    {
+      "after": "events[0]",
+      "verdict": "starting"
+    },
+    {
+      "after": "events[0]",
+      "verdict": "in_meeting"
+    },
+    {
+      "after": "events[1]",
+      "verdict": "ending_provisional",
+      "leading": "shareable_content_window_gone"
+    },
+    {
+      "after": "events[2]",
+      "verdict": "ended",
+      "leading": "shareable_content_window_gone",
+      "confirmed_by": []
+    }
+  ]
+}

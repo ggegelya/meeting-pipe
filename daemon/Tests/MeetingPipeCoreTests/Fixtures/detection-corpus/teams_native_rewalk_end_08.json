@@ -1,0 +1,51 @@
+{
+  "scenario": "teams_native_rewalk_end_08",
+  "description": "Real dogfood session (redacted). native com.microsoft.teams2; ax-leave-led end confirmed by the AX re-walk (confirmProvisionalEnd); clean single end. Verdict sequence, leading signal, confirmed_by and relative timing preserved from the event log; signal timeline minimally reconstructed to reproduce that sequence through the pure engine; titles dropped and pid set to 1234.",
+  "engine": "promotion",
+  "debounce_seconds": 2.0,
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "events": [
+    {
+      "t": 0.0,
+      "kind": "ax_leave_button",
+      "state": "live"
+    },
+    {
+      "t": 909.62,
+      "kind": "ax_leave_button",
+      "state": "ended"
+    },
+    {
+      "t": 909.88,
+      "kind": "confirm_provisional_end",
+      "rewalk_signal": "ax_leave_rewalk"
+    }
+  ],
+  "expected_verdicts": [
+    {
+      "after": "events[0]",
+      "verdict": "starting"
+    },
+    {
+      "after": "events[0]",
+      "verdict": "in_meeting"
+    },
+    {
+      "after": "events[1]",
+      "verdict": "ending_provisional",
+      "leading": "ax_leave_button_invalid"
+    },
+    {
+      "after": "events[2]",
+      "verdict": "ended",
+      "leading": "ax_leave_button_invalid",
+      "confirmed_by": [
+        "ax_leave_rewalk"
+      ]
+    }
+  ]
+}

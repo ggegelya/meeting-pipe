@@ -50,6 +50,12 @@ SIGNAL_KINDS = {
     "window_title",
 }
 
+# Control pseudo-events the corpus loader (DetectionCorpusTests) understands in a
+# promotion timeline alongside the signal kinds: `tick` advances the debounce clock;
+# `confirm_provisional_end` fires the AX re-walk promotion (PromotionEngine.confirmProvisionalEnd).
+# They carry no meeting content, so they are valid but are not signal kinds.
+CONTROL_KINDS = {"tick", "confirm_provisional_end"}
+
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 URL = re.compile(r"https?://", re.IGNORECASE)
 MENTION = re.compile(r"(?:^|[\s(])@\w+")
@@ -79,8 +85,8 @@ def validate(trace: dict) -> list[str]:
     if engine == "promotion":
         for i, event in enumerate(trace.get("events", [])):
             kind = event.get("kind") if isinstance(event, dict) else None
-            if kind not in SIGNAL_KINDS:
-                errors.append(f"events[{i}].kind {kind!r} is not in the closed signal vocabulary")
+            if kind not in SIGNAL_KINDS and kind not in CONTROL_KINDS:
+                errors.append(f"events[{i}].kind {kind!r} is not in the closed signal or control vocabulary")
     return errors
 
 
