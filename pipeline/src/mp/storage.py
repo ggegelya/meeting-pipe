@@ -7,8 +7,29 @@ matching the injectable-path convention the roster and voiceprint stores use.
 """
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
+
+
+def atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
+    """Write `text` to `path` atomically: a sibling temp file, chmod, then
+    `os.replace` (an atomic same-directory rename).
+
+    A crash mid-write leaves the previous file intact rather than a truncated
+    one, so a reader (or a retry) never parses a half-written transcript/summary.
+    Mirrors the Swift stores and the embeddings sidecar, which all rename into
+    place. `mode` defaults to 0600 because the files this guards (transcripts,
+    summaries) carry meeting content and stay user-private (SEC14)."""
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def config_dir(home: Path | None = None) -> Path:

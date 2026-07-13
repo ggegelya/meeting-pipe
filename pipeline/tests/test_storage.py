@@ -5,9 +5,38 @@ Every root takes an injectable `home` so the whole tree can be pointed at a
 """
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 
+import pytest
+
 from mp import storage
+
+
+def test_atomic_write_text_writes_private_content(tmp_path: Path) -> None:
+    target = tmp_path / "t.json"
+    storage.atomic_write_text(target, '{"ok": true}')
+    assert target.read_text(encoding="utf-8") == '{"ok": true}'
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600  # SEC14: user-private
+    # No temp file left behind after the rename.
+    assert not [p for p in tmp_path.iterdir() if ".tmp-" in p.name]
+
+
+def test_atomic_write_text_leaves_prior_file_intact_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "t.json"
+    target.write_text("ORIGINAL", encoding="utf-8")
+
+    def _boom(src, dst):
+        raise OSError("simulated crash during rename")
+
+    monkeypatch.setattr(storage.os, "replace", _boom)
+    with pytest.raises(OSError):
+        storage.atomic_write_text(target, "NEW")
+    # The previous file survives untouched; no partial write, no temp orphan.
+    assert target.read_text(encoding="utf-8") == "ORIGINAL"
+    assert not [p for p in tmp_path.iterdir() if ".tmp-" in p.name]
 
 
 def test_roots_are_derived_from_the_injected_home(tmp_path: Path) -> None:

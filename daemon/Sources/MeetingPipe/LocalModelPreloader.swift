@@ -45,7 +45,11 @@ final class LocalModelPreloader {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: mp.shell)
         p.arguments = mp.args + ["serve-local"]
-        p.environment = PipelineLauncher.freshEnvironment()
+        // SEC13/SEC5: the warm server is a local model server; it never speaks to a
+        // cloud sink, so withhold both managed tokens rather than leak them into a
+        // process that has no use for them (`mp serve-local` also declines to reload
+        // them, and arms the egress guard under a regulated run).
+        p.environment = PipelineLauncher.freshEnvironment(stripAnthropicKey: true, stripNotionToken: true)
         // The warm server runs for the daemon's lifetime; its own logs are not
         // useful in the daemon log, and a readabilityHandler on a long-lived
         // process would outlive the spawn. Discard both streams.

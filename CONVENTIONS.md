@@ -169,6 +169,8 @@ cfg = entry.prepare(secrets=False)        # local-only (mp backup, mp restore)
 
 Don't hand-roll the three calls. Arming before the overlay misses `workflow_nda_mode` for every per-meeting NDA workflow; loading secrets before arming leaves the cloud tokens in `os.environ` for the `mlx_lm.server` child to inherit. Both failures are silent.
 
+A tripwire pins this (PIPE8, `test_entry_contract.py`): it walks every dispatch target in `__main__.py` and asserts each module calls `entry.prepare` or sits on a named read-only/diagnostic allowlist, so a new sink-reaching subcommand that forgets to arm is a red build, not a silent leak.
+
 `config.zero_egress(cfg)` is the single predicate behind every clamp (`effective_backend`, `effective_sinks`, `arm_for_config`, `workflow.apply_overrides`, `publish_notion.publish`). Write new clamps against it, never against `regulated_mode or workflow_nda_mode` directly.
 
 `mp prefetch-model` is the one command that deliberately never arms: fetching a model is its purpose, and a cached model is what lets a later zero-egress run stay offline.

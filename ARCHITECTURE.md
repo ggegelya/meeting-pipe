@@ -379,7 +379,7 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 - `egress_guard.py` - the security spine (TECH-SEC3). When armed it patches httpx's transports to raise on any non-loopback request, pops the cloud tokens out of `os.environ`, and forces `HF_HUB_OFFLINE` so the huggingface_hub `requests` stack (which httpx never sees) refuses to fetch. `child_env()` carries the same posture across a subprocess boundary.
 - `events.py` — Python mirror of Swift's `Log.event`. Appends to `~/Library/Logs/MeetingPipe/pipeline_events.jsonl`.
 - `endpoints.py` - the external-service URLs and API versions, in one place so nothing hardcodes a host.
-- `storage.py` - where state lives on disk and how big it is (backs `doctor`'s disk numbers and STOR1's reaper).
+- `storage.py` - where state lives on disk and how big it is (backs `doctor`'s disk numbers and STOR1's reaper); also owns `atomic_write_text`, the shared tmp-then-`os.replace` helper for rewriting transcript/summary content (PIPE8).
 - `cloudsync.py` - is the library sitting inside an iCloud / Dropbox folder? (SEC12; the zero-egress promise the filesystem can undo.)
 - `local_server.py` - the ownership marker for the detached `mlx_lm.server` (LOCAL10). `_spawn` registers it, a clean `close()` clears it, and a live server with a dead owner is an orphan `mp doctor` reports and `LocalServerReaper` (Swift) kills.
 

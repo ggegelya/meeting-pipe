@@ -190,6 +190,23 @@ def test_main_publish_calls_fanout(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert calls[0].name.endswith(".summary.json")
 
 
+def test_main_publish_exits_3_when_all_sinks_fail(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """PIPE8: a digest whose every configured sink failed exits 3, like every other
+    fanout caller, rather than reporting success."""
+    root = tmp_path / "raw"
+    _meeting(root, _stem(date.today()), title="M", decisions=["d"], actions=[])
+    monkeypatch.setattr(digest.Config, "load", classmethod(lambda cls: _cfg()))
+    monkeypatch.setattr(digest.engine, "complete_text", _engine_ok("- b"))
+
+    from mp import publish_router
+    monkeypatch.setattr(
+        publish_router, "fanout",
+        lambda *, summary_json, cfg, transcript_md: {"sinks": {"notion": {"error": "boom"}}},
+    )
+    rc = digest.main(["--dir", str(root), "--out-dir", str(tmp_path / "digests"), "--publish", "--json"])
+    assert rc == publish_router.EXIT_PUBLISH_FAILED
+
+
 def test_main_without_publish_does_not_fanout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     root = tmp_path / "raw"
     _meeting(root, _stem(date.today()), title="M", decisions=["d"], actions=[])

@@ -208,6 +208,54 @@ def test_merge_meetings_is_idempotent_after_publish_failure(monkeypatch, tmp_pat
     assert "publish_failed" not in result
 
 
+def test_merge_meetings_retry_after_crash_between_commits_does_not_double_concat(
+    monkeypatch, tmp_path: Path
+):
+    """PIPE8: the transcript carrying `merged_from` is committed BEFORE the audio
+    swap. A crash in that window (the audio `os.replace` fails) still records the
+    merge, so a retry takes the re-publish-only branch instead of concatenating
+    the fragments a second time onto already-merged audio."""
+    import mp.merge_meetings as mm
+
+    concat_calls = {"n": 0}
+
+    def _counting_concat(inputs, out_path):
+        concat_calls["n"] += 1
+        return _fake_concat(inputs, out_path)
+
+    monkeypatch.setattr("mp.merge_meetings.concat_audio", _counting_concat)
+    monkeypatch.setattr("mp.merge_meetings._verify_concat", lambda *a, **k: None)
+
+    primary = _write_meeting(tmp_path, "20260101-0900", _seg(0.0, 2.0, "start", "Me"))
+    frag = _write_meeting(tmp_path, "20260101-0930", _seg(0.0, 2.0, "back", "Me"))
+
+    # Fail only the audio swap (dst ends in .wav), and only once, so the atomic
+    # transcript writes (.json/.md) still land before the simulated crash.
+    real_replace = mm.os.replace
+    crashed = {"done": False}
+
+    def _flaky_replace(src, dst):
+        if str(dst).endswith(".wav") and not crashed["done"]:
+            crashed["done"] = True
+            raise OSError("simulated crash during the audio swap")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(mm.os, "replace", _flaky_replace)
+
+    with pytest.raises(OSError):
+        merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+
+    # The transcript recorded the merge despite the crash on the audio swap.
+    merged = json.loads(primary.with_suffix(".json").read_text(encoding="utf-8"))
+    assert merged["merged_from"] == ["20260101-0930"]
+    assert concat_calls["n"] == 1
+
+    # Retry: the guard sees merged_from and re-publishes only; no second concat.
+    result = merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    assert concat_calls["n"] == 1
+    assert "publish_failed" not in result
+
+
 def test_merge_meetings_requires_a_fragment(tmp_path: Path):
     primary = _write_meeting(tmp_path, "20260101-0900", _seg(0.0, 1.0, "x", "Me"))
     with pytest.raises(MergeError):

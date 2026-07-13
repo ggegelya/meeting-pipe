@@ -796,22 +796,42 @@ def main(argv: list[str]) -> int:
         print("Start mlx_lm.server for the configured local model and block.")
         return 0
 
-    from .config import Config, parse_local_endpoint
+    from . import entry
+    from .config import parse_local_endpoint
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    cfg = Config.load()
+    # SEC13 entry contract: arm the egress guard before we exec. No meeting anchor
+    # (a library-wide warm server), and `secrets=False` because a local model
+    # server never touches a cloud token. Under a regulated / NDA run this scrubs
+    # the tokens from the environment and pins huggingface_hub offline, so the
+    # exec'd child inherits neither, matching the lazy per-call spawn (`_spawn`).
+    cfg = entry.prepare(secrets=False)
     host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
     host = _loopback_only(host)
     model = cfg.summarization.local_model
+    # SEC13: an armed run cannot download a model, so an uncached one would strand
+    # mlx_lm.server's load inside a child whose stdout we discard. Fail closed with
+    # the same guidance `_spawn` gives, pointing at the prefetch escape hatch.
+    if egress_guard.is_armed() and not model_is_cached(model):
+        log.error(
+            "serve-local: model %r is not in the local HuggingFace cache, and this "
+            "is a regulated/NDA run, so it cannot be downloaded now. Fetch it "
+            "outside a zero-egress meeting first:\n    mp prefetch-model %s",
+            model, model,
+        )
+        return 1
     # LOCAL9: the warm server serves the configured adapter too, so it matches the
     # lazy per-call spawn (LocalSummaryClient) and the daemon reuses one server.
     cmd = build_server_command(model, host, port, cfg.summarization.local_adapter_path or None)
     log.info("serve-local: exec %s", " ".join(cmd))
     try:
-        os.execvp(cmd[0], cmd)
+        # execvpe (not execvp): hand the child a token-stripped, offline-pinned
+        # environment under a zero-egress run so it cannot egress even though it
+        # speaks its own (non-httpx) stack. child_env() is a no-op copy otherwise.
+        os.execvpe(cmd[0], cmd, egress_guard.child_env())
     except OSError as e:
         log.error(
             "serve-local could not exec %s: %s. Install mlx-lm "
@@ -819,7 +839,7 @@ def main(argv: list[str]) -> int:
             cmd[0], e,
         )
         return 1
-    return 0  # unreachable after a successful execvp
+    return 0  # unreachable after a successful execvpe
 
 
 if __name__ == "__main__":  # pragma: no cover

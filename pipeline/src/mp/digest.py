@@ -258,24 +258,37 @@ def main(argv: list[str]) -> int:
     md_path.write_text(render_summary_md(summary), encoding="utf-8")
 
     published = False
+    publish_failed = False
     if args.publish:
-        from .publish_router import fanout
-        fanout(summary_json=json_path, cfg=cfg, transcript_md=None)
+        from .publish_router import all_sinks_failed, fanout
+        pub = fanout(summary_json=json_path, cfg=cfg, transcript_md=None)
         published = True
+        # PIPE8: honour the exit-3 contract every other fanout caller respects
+        # (run-all / publish / publish-from-paste / merge), so a digest that
+        # landed nowhere fails the run rather than reporting success. Zero sinks
+        # configured is not a failure (`all_sinks_failed` is False there).
+        publish_failed = all_sinks_failed(pub)
 
     events.emit("pipeline", "digest_generated", actions=len(summary.actions),
-                decisions=len(summary.decisions), backend=backend, published=published)
+                decisions=len(summary.decisions), backend=backend, published=published,
+                publish_failed=publish_failed)
 
     if args.as_json:
         print(json.dumps({
             "stem": stem, "json": str(json_path), "md": str(md_path),
             "actions": len(summary.actions), "decisions": len(summary.decisions),
-            "backend": backend, "published": published,
+            "backend": backend, "published": published, "publish_failed": publish_failed,
         }, indent=2))
     else:
         print(f"Wrote {md_path}")
         print(f"  {len(summary.actions)} open action(s), {len(summary.decisions)} recent decision(s); "
               f"narrative via {backend}" + ("; published" if published else ""))
+        if publish_failed:
+            print("  publish failed: every configured sink errored", file=sys.stderr)
+
+    if publish_failed:
+        from .publish_router import EXIT_PUBLISH_FAILED
+        return EXIT_PUBLISH_FAILED
     return 0
 
 

@@ -25,7 +25,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import entry, events
+from . import entry, events, storage
 from .config import Config
 from .markdown import render_markdown
 from .publish_router import (
@@ -215,14 +215,19 @@ def merge_meetings(
         merged["audio_path"] = str(primary_audio)
         merged["merged_from"] = sorted(already | set(frag_stems))
 
-        # Commit the verified audio, then the transcript it aligns with. Only
-        # after this point is the primary the merged meeting.
+        # PIPE8 (FEAT9 follow-up): commit the transcript that carries `merged_from`
+        # BEFORE swapping in the merged audio. `merged_from` is the retry guard's
+        # only key (the `already.issuperset` check above), so recording it first
+        # means a crash between the two commits leaves a transcript that already
+        # reflects the merge: a retry then takes the "re-publish only" branch
+        # rather than re-concatenating the fragments onto already-merged audio
+        # (the old ordering's corrupting double-concat). The reverse residual
+        # (transcript merged, audio not yet swapped) is a retry that re-publishes
+        # over the correct transcript, with the fragment audio recoverable from
+        # the kept originals. Atomic writes so neither file is ever half-written.
+        storage.atomic_write_text(json_path, json.dumps(merged, ensure_ascii=False, indent=2))
+        storage.atomic_write_text(md_path, render_markdown(merged))
         os.replace(str(tmp), str(primary_audio))
-        json_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2),
-                             encoding="utf-8")
-        md_path.write_text(render_markdown(merged), encoding="utf-8")
-        os.chmod(json_path, 0o600)
-        os.chmod(md_path, 0o600)
         events.emit("pipeline", "meetings_merged", primary=primary_audio.stem,
                     fragments=frag_stems, segments=len(merged["segments"]))
         log.info("merged %d fragment(s) into %s (%d segments)",

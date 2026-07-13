@@ -25,7 +25,7 @@ import time
 from importlib import resources
 from pathlib import Path
 
-from . import entry
+from . import entry, storage
 from .config import Config, effective_backend, extract_backend_flag, with_backend_override
 from .corrections import set_publish_state, write_empty_marker, write_run_sidecar
 from .transcript_quality import transcript_issues
@@ -219,11 +219,10 @@ def _apply_glossary(wav: Path, t: dict[str, Path]) -> None:
             changed = True
     if not changed:
         return
-    t["json"].write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
-    t["md"].write_text(render_markdown(structured), encoding="utf-8")
-    # SEC14: transcripts carry meeting content, so keep them user-private (0600), like the logs.
-    os.chmod(t["json"], 0o600)
-    os.chmod(t["md"], 0o600)
+    # Atomic (PIPE8) + 0600 (SEC14): a crash mid-rewrite leaves the prior
+    # transcript intact rather than a truncated one; transcripts carry meeting content.
+    storage.atomic_write_text(t["json"], json.dumps(structured, ensure_ascii=False, indent=2))
+    storage.atomic_write_text(t["md"], render_markdown(structured))
     events.emit("pipeline", "glossary_applied", exact=exact, fuzzy=fuzzy, segments=len(segments))
     log.info("glossary: %d exact + %d fuzzy substitutions across %d segments",
              exact, fuzzy, len(segments))
@@ -680,11 +679,10 @@ def _finalize_streamed_transcript(
         segments = apply_speaker_labels(segs, mapping)
         _write_embeddings_sidecar(wav, speaker_embeddings, mapping)
         structured = {**streamed, "segments": segments, "finalized": True}
-        json_path.write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
-        md_path.write_text(render_markdown(structured), encoding="utf-8")
-        # SEC14: transcripts carry meeting content, so keep them user-private (0600), like the logs.
-        os.chmod(json_path, 0o600)
-        os.chmod(md_path, 0o600)
+        # Atomic (PIPE8) + 0600 (SEC14): a crash mid-finalize leaves the prior
+        # transcript intact, not a truncated one; transcripts carry meeting content.
+        storage.atomic_write_text(json_path, json.dumps(structured, ensure_ascii=False, indent=2))
+        storage.atomic_write_text(md_path, render_markdown(structured))
         return {"json": json_path, "md": md_path}
 
     diarization_failed = False

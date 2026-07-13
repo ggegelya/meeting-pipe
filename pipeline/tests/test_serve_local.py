@@ -36,29 +36,36 @@ def test_loopback_clamp_keeps_loopback_and_rewrites_public():
 
 
 class _ExecCalled(Exception):
-    """Sentinel so the test can intercept execvp without replacing the process."""
+    """Sentinel so the test can intercept execvpe without replacing the process."""
+
+
+def _fake_cfg(*, regulated: bool = False, model: str = "mlx-community/Custom-7B-4bit",
+              endpoint: str = "http://0.0.0.0:9999") -> types.SimpleNamespace:
+    return types.SimpleNamespace(
+        # entry.prepare arms the egress guard off `modes` (zero_egress).
+        modes=types.SimpleNamespace(regulated_mode=regulated, workflow_nda_mode=False),
+        summarization=types.SimpleNamespace(
+            local_model=model,
+            local_endpoint=endpoint,
+            local_adapter_path="",  # LOCAL9: no adapter -> base model served
+        ),
+    )
 
 
 def test_serve_local_execs_server_for_configured_model(monkeypatch):
     captured: dict[str, object] = {}
 
-    def fake_execvp(file, args):
+    def fake_execvpe(file, args, env):
         captured["file"] = file
         captured["args"] = list(args)
+        captured["env"] = dict(env)
         raise _ExecCalled()
 
-    fake_cfg = types.SimpleNamespace(
-        summarization=types.SimpleNamespace(
-            local_model="mlx-community/Custom-7B-4bit",
-            # A non-loopback host must be clamped before it reaches execvp.
-            local_endpoint="http://0.0.0.0:9999",
-            local_adapter_path="",  # LOCAL9: no adapter -> base model served
-        )
-    )
-    monkeypatch.setattr(config_mod.Config, "load", classmethod(lambda cls: fake_cfg))
+    # A non-loopback host must be clamped before it reaches exec.
+    monkeypatch.setattr(config_mod.Config, "load", classmethod(lambda cls: _fake_cfg()))
 
     import mp.summarize_local as sl
-    monkeypatch.setattr(sl.os, "execvp", fake_execvp)
+    monkeypatch.setattr(sl.os, "execvpe", fake_execvpe)
 
     with pytest.raises(_ExecCalled):
         serve_local_main([])
@@ -69,6 +76,53 @@ def test_serve_local_execs_server_for_configured_model(monkeypatch):
         "--host", DEFAULT_HOST,   # clamped from 0.0.0.0
         "--port", "9999",
     ]
+    # SEC13: exec must go through execvpe with an explicit env (child_env()).
+    assert isinstance(captured["env"], dict)
+
+
+def test_serve_local_refuses_uncached_model_under_regulated(monkeypatch):
+    """SEC13: a regulated run cannot download, so serve-local fails closed on an
+    uncached model instead of stranding mlx_lm.server's load. Exec never runs."""
+    monkeypatch.setattr(
+        config_mod.Config, "load",
+        classmethod(lambda cls: _fake_cfg(regulated=True, model="mlx-community/Uncached-7B-4bit")),
+    )
+    import mp.summarize_local as sl
+    monkeypatch.setattr(sl, "model_is_cached", lambda model: False)
+
+    def _boom(*a, **k):
+        raise AssertionError("execvpe must not run for an uncached model under a regulated run")
+
+    monkeypatch.setattr(sl.os, "execvpe", _boom)
+    assert serve_local_main([]) == 1
+
+
+def test_serve_local_strips_cloud_tokens_from_child_under_regulated(monkeypatch):
+    """SEC13: under a zero-egress run the exec'd child inherits no cloud tokens and
+    is pinned offline, even for a cached model that does exec."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-be-stripped")
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-should-be-stripped")
+    monkeypatch.setattr(
+        config_mod.Config, "load",
+        classmethod(lambda cls: _fake_cfg(regulated=True, endpoint="http://127.0.0.1:8765")),
+    )
+    import mp.summarize_local as sl
+    monkeypatch.setattr(sl, "model_is_cached", lambda model: True)
+
+    captured: dict[str, object] = {}
+
+    def fake_execvpe(file, args, env):
+        captured["env"] = dict(env)
+        raise _ExecCalled()
+
+    monkeypatch.setattr(sl.os, "execvpe", fake_execvpe)
+    with pytest.raises(_ExecCalled):
+        serve_local_main([])
+
+    env = captured["env"]
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "NOTION_TOKEN" not in env
+    assert env.get("HF_HUB_OFFLINE") == "1"
 
 
 def test_serve_local_help_returns_zero(capsys):

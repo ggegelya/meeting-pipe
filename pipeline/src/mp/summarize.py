@@ -33,7 +33,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from . import entry, speaker_overlay
+from . import entry, speaker_overlay, storage
 from .backend_fallback import run_with_local_fallback
 from .config import (
     Config,
@@ -440,14 +440,10 @@ def summarize(
     json_path = out_dir / f"{stem}.summary{infix}.json"
     md_path = out_dir / f"{stem}.summary{infix}.md"
 
-    json_path.write_text(
-        summary.model_dump_json(indent=2, exclude_none=False),
-        encoding="utf-8",
-    )
-    md_path.write_text(render_summary_md(summary), encoding="utf-8")
-    # SEC14: summaries carry meeting content, so keep them user-private (0600), like the logs.
-    os.chmod(json_path, 0o600)
-    os.chmod(md_path, 0o600)
+    # Atomic (PIPE8) + 0600 (SEC14): a crash mid-rewrite leaves the prior summary
+    # intact rather than a truncated one; summaries carry meeting content.
+    storage.atomic_write_text(json_path, summary.model_dump_json(indent=2, exclude_none=False))
+    storage.atomic_write_text(md_path, render_summary_md(summary))
 
     backend, model_used = _identify_backend(client, cfg)
     log.info("Wrote %s and %s", json_path, md_path)
