@@ -169,6 +169,13 @@ enum MPColors {
     static let warningAccent = NSColor(name: "mp.warning.accent") { appearance in
         appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil ? warning600 : warning700
     }
+    /// Pulse-coral accent text (recording / failed pill labels). Same appearance
+    /// split as the others: the deep `700` step on paper, the brighter `600` step
+    /// in dark, so the label clears its floor in both modes (the raw `pulse700` was
+    /// paper-only and went unreadable on the dark pill).
+    static let pulseAccent = NSColor(name: "mp.pulse.accent") { appearance in
+        appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil ? pulse600 : pulse700
+    }
 
     static let bg = NSColor(name: "mp.bg") { appearance in
         appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil

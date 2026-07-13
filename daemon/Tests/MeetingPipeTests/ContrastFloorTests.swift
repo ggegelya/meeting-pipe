@@ -106,6 +106,8 @@ final class ContrastFloorTests: XCTestCase {
         assertPair(MPColors.warningAccent, "warningAccent", on: MPColors.bgRaised, "bgRaised", dark: false, floor: 4.5, pin: 5.93)
         assertPair(MPColors.danger600, "danger600", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 5.05)
         assertPair(MPColors.danger600, "danger600", on: MPColors.bgRaised, "bgRaised", dark: false, floor: 4.5, pin: 5.46)
+        assertPair(MPColors.pulseAccent, "pulseAccent", on: MPColors.bg, "bg", dark: false, floor: 4.5, pin: 5.17)
+        assertPair(MPColors.pulseAccent, "pulseAccent", on: MPColors.bgRaised, "bgRaised", dark: false, floor: 4.5, pin: 5.59)
         // Dark: signalAccent now resolves to the bright display teal (#36C6B8, DSN23)
         // and clears the 4.5 body floor; success/warning/danger keep the 3:1
         // icon-paired UI floor (semantic state is never colour-only). danger600 on a
@@ -117,6 +119,10 @@ final class ContrastFloorTests: XCTestCase {
         assertPair(MPColors.warningAccent, "warningAccent", on: MPColors.bg, "bg", dark: true, floor: 3.0, pin: 4.30)
         assertPair(MPColors.warningAccent, "warningAccent", on: MPColors.bgRaised, "bgRaised", dark: true, floor: 3.0, pin: 3.71)
         assertPair(MPColors.danger600, "danger600", on: MPColors.bg, "bg", dark: true, floor: 3.0, pin: 3.09)
+        // pulseAccent (recording / failed pill text) resolves to the brighter pulse600
+        // in dark; icon-paired UI status floor 3:1 like the other semantic accents.
+        assertPair(MPColors.pulseAccent, "pulseAccent", on: MPColors.bg, "bg", dark: true, floor: 3.0, pin: 4.31)
+        assertPair(MPColors.pulseAccent, "pulseAccent", on: MPColors.bgRaised, "bgRaised", dark: true, floor: 3.0, pin: 3.73)
     }
 
     /// White button labels on the deep light-mode fills (UX14 darkened these off

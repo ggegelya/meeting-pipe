@@ -127,18 +127,20 @@ struct MPStatusPill: View {
     }
 
     /// Label colour, kept separate from the dot: the dot stays the lighter colour
-    /// cue while the text steps down to a deep, WCAG-legible tone so it clears
-    /// 4.5:1 on paper / the pill's own tint (UX14). Neutral steps to fgMuted
-    /// because fgSubtle is only ~4.2:1 over bgSunk.
+    /// cue while the text uses the appearance-aware accent (UX14): the deep `700`
+    /// step on paper, the brighter `600` step in dark, so it clears its floor over
+    /// the pill's own tint in BOTH modes. The raw `700` steps were paper-only and
+    /// went unreadable on the dark pill (the reported "Processing"/"Ready" bug).
+    /// Neutral steps to fgMuted because fgSubtle is only ~4.2:1 over bgSunk.
     private var textColor: Color {
         switch kind {
-        case .ready:      return Color(MPColors.success700)
-        case .recording:  return Color(MPColors.pulse700)
-        case .processing: return Color(MPColors.signal700)
-        case .failed:     return Color(MPColors.pulse700)
+        case .ready:      return Color(MPColors.successAccent)
+        case .recording:  return Color(MPColors.pulseAccent)
+        case .processing: return Color(MPColors.signalAccent)
+        case .failed:     return Color(MPColors.pulseAccent)
         case .nda:        return Color(MPColors.fgMuted)
         case .neutral:    return Color(MPColors.fgMuted)
-        case .warning:    return Color(MPColors.warning700)
+        case .warning:    return Color(MPColors.warningAccent)
         }
     }
 

@@ -18,13 +18,14 @@ Refreshed 2026-07-06 for the DSN23 token port (cool porcelain neutrals, deeper d
 
 ## Accent / semantic text tokens
 
-Inline status tones, always icon-paired (PRODUCT: semantic state is never color-only). Floor 4.5 in light (UX14 tuned the deep `700` step to clear it, the original "ugly white theme" complaint). In dark: `signalAccent` now resolves to the bright display teal (`#36C6B8`, DSN23) and clears the full 4.5 body floor; `successAccent` / `warningAccent` / `danger600` keep the 3:1 icon-paired UI floor (the CSS brightened only the signal hue in dark, not the semantic hues).
+Inline status tones, always icon-paired (PRODUCT: semantic state is never color-only). Floor 4.5 in light (UX14 tuned the deep `700` step to clear it, the original "ugly white theme" complaint). In dark: `signalAccent` now resolves to the bright display teal (`#36C6B8`, DSN23) and clears the full 4.5 body floor; `successAccent` / `warningAccent` / `pulseAccent` / `danger600` keep the 3:1 icon-paired UI floor (the CSS brightened only the signal hue in dark, not the semantic hues). `pulseAccent` (recording / failed pill text) was added when `MPStatusPill` moved off the raw `700` steps, which were paper-only and unreadable on the dark pill.
 
 | Token | light bg | light raised | dark bg | dark raised |
 |---|---|---|---|---|
 | `signalAccent` (700 light / bright 600 dark) | 5.67 | 6.13 | 7.98 | 6.90 |
 | `successAccent` (700 / 600) | 5.61 | 6.06 | 4.10 | 3.54 |
 | `warningAccent` (700 / 600) | 5.48 | 5.93 | 4.30 | 3.71 |
+| `pulseAccent` (700 / 600) | 5.17 | 5.59 | 4.31 | 3.73 |
 | `danger600` (fixed) | 5.05 | 5.46 | 3.09 | ~2.7** |
 
 `**` `danger600` on a raised card in dark is ~2.7, below even the 3:1 UI floor. It is the single sub-3:1 pair and is not asserted by the gate.
