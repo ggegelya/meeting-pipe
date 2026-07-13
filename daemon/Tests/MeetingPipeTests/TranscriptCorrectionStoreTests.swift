@@ -173,6 +173,49 @@ final class TranscriptCorrectionStoreTests: XCTestCase {
         XCTAssertEqual(displayed[1].text, "let's start with the agenda.")
     }
 
+    // MARK: - Schema version (PIPE9)
+
+    func test_write_stamps_schema_version() throws {
+        _ = try TranscriptCorrectionStore.upsert(
+            segmentIndex: 0, pipelineOriginal: "a", edited: "A", stem: stem, in: dir)
+        let url = TranscriptCorrectionStore.path(stem: stem, in: dir)
+        let obj = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        XCTAssertEqual(obj?["schema_version"] as? Int, TranscriptCorrectionStore.schemaVersion)
+    }
+
+    // MARK: - Cross-language parity (PIPE9)
+
+    /// The Swift-to-Python contract: the same golden fixture Python's
+    /// `test_transcript_corrections.py` reads is applied here, so a change to
+    /// either resolver breaks the other tree's test.
+    func test_golden_parity_with_python() throws {
+        let fixture = try XCTUnwrap(
+            Bundle.module.url(forResource: "transcript-corrections-golden", withExtension: "json"),
+            "missing transcript-corrections golden fixture")
+        let root = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any]
+        let cases = try XCTUnwrap(root?["cases"] as? [[String: Any]])
+        XCTAssertFalse(cases.isEmpty, "golden fixture has no cases")
+
+        for c in cases {
+            let name = (c["name"] as? String) ?? "?"
+            let rawSegments = try XCTUnwrap(c["segments"] as? [[String: Any]], "\(name): segments")
+            let corrections = try XCTUnwrap(c["corrections"] as? [String: Any], "\(name): corrections")
+            let expected = try XCTUnwrap(c["expected"] as? [String], "\(name): expected")
+
+            // Write the correction payload exactly as the daemon would, read it back.
+            let caseStem = "golden-\(name)"
+            let sidecar = TranscriptCorrectionStore.path(stem: caseStem, in: dir)
+            try JSONSerialization.data(withJSONObject: corrections).write(to: sidecar)
+            let dict = TranscriptCorrectionStore.read(stem: caseStem, in: dir)
+
+            let segs = rawSegments.enumerated().map { i, raw in
+                segment(i, (raw["text"] as? String) ?? "")
+            }
+            let out = TranscriptCorrectionStore.apply(corrections: dict, to: segs)
+            XCTAssertEqual(out.map { $0.text }, expected, "golden case \(name)")
+        }
+    }
+
     // MARK: helpers
 
     private func segment(_ index: Int, _ text: String) -> TranscriptSegment {

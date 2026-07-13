@@ -1,0 +1,61 @@
+{
+  "_comment": "PIPE9 golden parity fixture for the transcript text-correction overlay. Both the Swift TranscriptCorrectionStoreTests and the Python test_transcript_corrections.py write each case's `corrections` payload to a `<stem>.transcript_corrections.json`, read it back through their store, apply it to the `segments`, and assert the resulting per-segment text equals `expected`. A deliberate change to either resolver breaks the other tree's test, so the Swift-to-Python contract cannot silently diverge. `index` is the position in the <stem>.json segments array (TranscriptSegment.index / Python enumerate). Hand-authored; keep both sides in sync.",
+  "cases": [
+    {
+      "name": "single_edit",
+      "segments": [
+        { "text": "helo wrld" },
+        { "text": "second line" }
+      ],
+      "corrections": {
+        "schema_version": 1,
+        "segments": [
+          { "index": 0, "original_text": "helo wrld", "edited_text": "hello world" }
+        ]
+      },
+      "expected": ["hello world", "second line"]
+    },
+    {
+      "name": "multiple_sparse_edits",
+      "segments": [
+        { "text": "a" },
+        { "text": "b" },
+        { "text": "c" },
+        { "text": "d" }
+      ],
+      "corrections": {
+        "schema_version": 1,
+        "segments": [
+          { "index": 1, "original_text": "b", "edited_text": "BEE" },
+          { "index": 3, "original_text": "d", "edited_text": "DEE" }
+        ]
+      },
+      "expected": ["a", "BEE", "c", "DEE"]
+    },
+    {
+      "name": "no_corrections",
+      "segments": [
+        { "text": "x" },
+        { "text": "y" }
+      ],
+      "corrections": {
+        "schema_version": 1,
+        "segments": []
+      },
+      "expected": ["x", "y"]
+    },
+    {
+      "name": "out_of_range_index_ignored",
+      "segments": [
+        { "text": "only" }
+      ],
+      "corrections": {
+        "schema_version": 1,
+        "segments": [
+          { "index": 9, "original_text": "gone", "edited_text": "ghost" }
+        ]
+      },
+      "expected": ["only"]
+    }
+  ]
+}

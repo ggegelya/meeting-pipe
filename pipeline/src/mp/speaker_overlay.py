@@ -50,7 +50,12 @@ def apply_overlay(segments: list[dict], overlay: dict) -> bool:
     per-segment override (by array index) if present, else the raw speaker; the base is
     then mapped through the cluster-name table (so a reassignment to a named cluster
     resolves to the name). Returns True if any label changed. Pure over the list; the
-    caller owns re-render."""
+    caller owns re-render.
+
+    The composed transcript view (this overlay plus the text-correction overlay,
+    re-rendered to markdown) lives in ``transcript_corrections.overlaid_markdown``,
+    since corrections are the outer layer; callers regenerating a summary or the
+    index use that, not this primitive."""
     labels: dict = overlay.get("labels") or {}
     seg_overrides: dict = overlay.get("segments") or {}
     if not labels and not seg_overrides:
@@ -65,24 +70,3 @@ def apply_overlay(segments: list[dict], overlay: dict) -> bool:
             seg["speaker"] = resolved
             changed = True
     return changed
-
-
-def overlaid_markdown(transcript_md: Path) -> str | None:
-    """The transcript markdown re-rendered with the overlay applied, or None when there
-    is no overlay (the caller then uses ``<stem>.md`` as-is). Reads the structured
-    ``<stem>.json`` so the labels can be re-mapped and re-rendered with the same
-    renderer that produced ``<stem>.md``."""
-    overlay = read_overlay(transcript_md)
-    if is_empty(overlay):
-        return None
-    json_path = transcript_md.with_suffix(".json")
-    try:
-        data = json.loads(json_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    segments = data.get("segments") or []
-    if not apply_overlay(segments, overlay):
-        return None
-    from .markdown import render_markdown
-
-    return render_markdown(data)

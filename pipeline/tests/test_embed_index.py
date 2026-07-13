@@ -66,6 +66,40 @@ def test_chunk_library_skips_meetings_with_no_text(tmp_path: Path) -> None:
     assert chunk_library(tmp_path) == []
 
 
+def test_chunk_library_embeds_corrected_transcript_text(tmp_path: Path) -> None:
+    """PIPE9: the index embeds the transcript the Library shows (corrections
+    applied), so `mp ask` cites corrected text, not the raw pipeline transcript."""
+    stem = "20260506-1700"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / f"{stem}.json").write_text(
+        json.dumps({"language": "en", "segments": [
+            {"start": 0.0, "end": 1.0, "text": "helo wrld", "speaker": "Me"},
+        ]}), encoding="utf-8")
+    (tmp_path / f"{stem}.md").write_text("**Me**: helo wrld\n", encoding="utf-8")
+    (tmp_path / f"{stem}.summary.json").write_text(json.dumps({"title": "T"}), encoding="utf-8")
+    (tmp_path / f"{stem}.transcript_corrections.json").write_text(
+        json.dumps({"schema_version": 1, "segments": [
+            {"index": 0, "original_text": "helo wrld", "edited_text": "hello world"},
+        ]}), encoding="utf-8")
+
+    text = "\n".join(c.text for c in chunk_library(tmp_path))
+    assert "hello world" in text
+    assert "helo wrld" not in text
+
+
+def test_library_fingerprint_changes_when_a_correction_is_added(tmp_path: Path) -> None:
+    """PIPE9: a correction rewrites only the sidecar, not `<stem>.md`, so the
+    fingerprint must fold the sidecar in or `mp ask` keeps a stale cached index."""
+    stem = "20260506-1700"
+    _meeting(tmp_path, stem, title="T", transcript="**Me**: helo wrld\n")
+    before = embed_index.library_fingerprint(tmp_path)
+    (tmp_path / f"{stem}.transcript_corrections.json").write_text(
+        json.dumps({"schema_version": 1, "segments": [
+            {"index": 0, "original_text": "helo wrld", "edited_text": "hello world"},
+        ]}), encoding="utf-8")
+    assert embed_index.library_fingerprint(tmp_path) != before
+
+
 def test_chunk_library_windows_long_text(tmp_path: Path) -> None:
     long_transcript = "word " * 2000  # ~10k chars -> several windows
     _meeting(tmp_path, "m1", title="Long", transcript=long_transcript)

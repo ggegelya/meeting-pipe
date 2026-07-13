@@ -30,6 +30,7 @@ from typing import Any, Literal, Protocol
 
 import numpy as np
 
+from . import transcript_corrections
 from .chunking import chunked_windows
 
 log = logging.getLogger("mp.embed_index")
@@ -221,10 +222,19 @@ def chunk_library(root: Path, *, chunk_chars: int = CHUNK_CHARS, overlap: int = 
     chunks: list[Chunk] = []
     for stem in _library_stems(root):
         parts: list[str] = []
-        for name in (f"{stem}.summary.md", f"{stem}.md"):
-            f = root / name
-            if f.exists():
-                parts.append(f.read_text(encoding="utf-8", errors="ignore"))
+        summary_md = root / f"{stem}.summary.md"
+        if summary_md.exists():
+            parts.append(summary_md.read_text(encoding="utf-8", errors="ignore"))
+        transcript_md = root / f"{stem}.md"
+        if transcript_md.exists():
+            # PIPE9 / FEAT3: embed the transcript the Library actually shows,
+            # i.e. with the speaker-label and text-correction overlays applied, so
+            # `mp ask` cites corrected lines. Raw file when no overlay (the common path).
+            overlaid = transcript_corrections.overlaid_markdown(transcript_md)
+            parts.append(
+                overlaid if overlaid is not None
+                else transcript_md.read_text(encoding="utf-8", errors="ignore")
+            )
         if not parts:
             continue
         title = _read_title(root, stem)
@@ -333,7 +343,10 @@ def library_fingerprint(root: Path) -> str:
     if not root.is_dir():
         return "empty"
     parts: list[str] = []
-    for pattern in ("*.md", "*.summary.json"):
+    # PIPE9 / FEAT3: the overlay sidecars feed the chunk text too, so a correction
+    # or speaker rename (which rewrites only the sidecar, not `<stem>.md`) must
+    # invalidate the cached index, else `mp ask` keeps quoting stale text.
+    for pattern in ("*.md", "*.summary.json", "*.transcript_corrections.json", "*.speaker_labels.json"):
         for p in root.glob(pattern):
             try:
                 st = p.stat()

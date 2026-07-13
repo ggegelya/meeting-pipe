@@ -52,6 +52,8 @@ CI also runs pyright (TYPE1), configured in `pyproject.toml`'s `[tool.pyright]`.
 
 A second Swift-to-Python surface: `mp.speaker_overlay` reads `<stem>.speaker_labels.json` (the daemon's reversible speaker-label overlay, FEAT3-UNDO / FEAT3-SEGMENT) and applies it when re-summarizing, so a regenerate reflects in-app namings + reassignments. Its resolution (per-segment override, else raw speaker, then mapped through the cluster-name table) must stay byte-identical to Swift's `SpeakerLabelStore`; change one side and change the other.
 
+A third: `mp.transcript_corrections` reads `<stem>.transcript_corrections.json` (the reversible text-correction overlay, written by Swift's `TranscriptCorrectionStore` when the user edits a transcript line, PIPE9) and applies edited text by segment array index. `transcript_corrections.overlaid_markdown` is the composed transcript view (speaker labels THEN text corrections), used by `summarize` and `embed_index.chunk_library`, so any re-read applies both overlays; `library_fingerprint` folds both sidecars in so a correction rebuilds the `mp ask` index. Both resolutions are pinned against Swift by `Fixtures/transcript-corrections-golden.json` (both suites read it); change one side and change the other.
+
 ## Don't
 
 - Don't add a new top-level import for a heavy dep. Move it inside the function body.

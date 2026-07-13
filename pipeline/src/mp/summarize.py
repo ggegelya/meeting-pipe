@@ -33,7 +33,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from . import entry, speaker_overlay, storage
+from . import entry, storage, transcript_corrections
 from .backend_fallback import run_with_local_fallback
 from .config import (
     Config,
@@ -369,10 +369,10 @@ def summarize(
         cfg = with_backend_override(cfg, backend)
         log.info("summarize: one-shot backend override -> %s", backend)
 
-    # FEAT3-UNDO / FEAT3-SEGMENT: if the user named or reassigned speakers in the
-    # Library, apply that reversible overlay so the regenerated summary + attendees
-    # reflect it. No overlay -> use <stem>.md as-is (the common path).
-    overlaid = speaker_overlay.overlaid_markdown(transcript_md)
+    # FEAT3-UNDO / FEAT3-SEGMENT + PIPE9: if the user renamed/reassigned speakers or
+    # edited transcript lines in the Library, apply both reversible overlays so the
+    # regenerated summary + attendees reflect them. No overlay -> use <stem>.md as-is.
+    overlaid = transcript_corrections.overlaid_markdown(transcript_md)
     transcript = overlaid if overlaid is not None else transcript_md.read_text(encoding="utf-8")
     if not transcript.strip():
         raise ValueError(f"Empty transcript: {transcript_md}")

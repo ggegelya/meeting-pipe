@@ -2,8 +2,13 @@ import Foundation
 
 /// Per-line transcript corrections in `<stem>.transcript_corrections.json`. Keeps user edits separate from the pipeline's `<stem>.json` so re-transcription doesn't trample them; the sidecar overlays pipeline output at load time.
 ///
-/// Schema: `{ "segments": [{ "index": 3, "original_text": "...", "edited_text": "..." }, ...] }`. `index` is zero-based, matching `TranscriptSegment.index`. `original_text` is the pipeline snapshot at edit time so downstream tools can detect drift if the pipeline later rewrites the file.
+/// Schema: `{ "schema_version": 1, "segments": [{ "index": 3, "original_text": "...", "edited_text": "..." }, ...] }`. `index` is zero-based, matching `TranscriptSegment.index`. `original_text` is the pipeline snapshot at edit time so downstream tools can detect drift if the pipeline later rewrites the file.
+///
+/// This is a Swift-to-Python contract (PIPE9): the pipeline's `mp.transcript_corrections` reads the same sidecar so a regenerate / re-index reflects these edits. Both sides resolve by segment index and are pinned by a golden parity fixture (`Fixtures/transcript-corrections-golden.json`); a reader is fail-open, so `schema_version` is stamped but unknown values are ignored, not rejected.
 enum TranscriptCorrectionStore {
+
+    /// Sidecar shape version (PIPE9). Stamped on every write; bump when the key set or a key's meaning changes.
+    static let schemaVersion = 1
 
     struct Correction: Equatable {
         let segmentIndex: Int
@@ -133,7 +138,10 @@ enum TranscriptCorrectionStore {
                     "edited_text": c.editedText,
                 ]
             }
-        let payload: [String: Any] = ["segments": sortedItems]
+        let payload: [String: Any] = [
+            "schema_version": Self.schemaVersion,
+            "segments": sortedItems,
+        ]
         guard JSONSerialization.isValidJSONObject(payload) else {
             throw WriteError.serializationFailed("payload not JSON-serializable")
         }

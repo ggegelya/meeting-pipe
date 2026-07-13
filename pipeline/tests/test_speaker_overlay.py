@@ -5,9 +5,7 @@ namings and reassignments in the summary. Pure functions, no I/O except the file
 """
 from __future__ import annotations
 
-import json
-
-from mp.speaker_overlay import apply_overlay, overlaid_markdown, read_overlay
+from mp.speaker_overlay import apply_overlay, read_overlay
 
 
 def _segs() -> list[dict]:
@@ -54,25 +52,5 @@ def test_read_overlay_missing_or_malformed_is_empty(tmp_path):
     assert read_overlay(md) == {"labels": {}, "segments": {}}
 
 
-def test_overlaid_markdown_reflects_names(tmp_path):
-    stem = "20260101-0900"
-    (tmp_path / f"{stem}.json").write_text(
-        json.dumps({"language": "en", "segments": _segs()}), encoding="utf-8"
-    )
-    md = tmp_path / f"{stem}.md"
-    md.write_text("raw", encoding="utf-8")
-    (tmp_path / f"{stem}.speaker_labels.json").write_text(
-        json.dumps({"labels": {"THEM-A": "Alice"}, "segments": {}}), encoding="utf-8"
-    )
-    out = overlaid_markdown(md)
-    assert out is not None
-    assert "Alice" in out
-    assert "THEM-A" not in out
-
-
-def test_overlaid_markdown_is_none_without_an_overlay(tmp_path):
-    stem = "20260101-0900"
-    (tmp_path / f"{stem}.json").write_text(json.dumps({"segments": _segs()}), encoding="utf-8")
-    md = tmp_path / f"{stem}.md"
-    md.write_text("raw", encoding="utf-8")
-    assert overlaid_markdown(md) is None
+# The composed transcript view (`overlaid_markdown`, speaker labels + text
+# corrections) moved to `transcript_corrections`; see test_transcript_corrections.py.
