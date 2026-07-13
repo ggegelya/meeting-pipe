@@ -133,6 +133,15 @@ final class FluidAudioRunner: TranscriptionRunner {
         samples: [Float]
     ) async throws -> (spans: [SpeakerSpan], embeddings: [String: [Float]]) {
         let diarizer = try await ensureDiarizer()
+        // ASR2: the DiarizerManager is cached for the daemon session to avoid CoreML
+        // recompilation, but its SpeakerManager also accumulates a speaker-clustering
+        // database across meetings. Clear it at the start of each job so label assignment
+        // restarts from speaker_1 per meeting (identical to a fresh launch) and cannot
+        // drift with daemon uptime. `reset()` only empties the in-memory database and
+        // resets the id counter; the models + EmbeddingExtractor stay resident, so there
+        // is no per-job recompilation. Jobs are serialized (`SinkDispatcher`), so this
+        // never races a concurrent diarization.
+        diarizer.speakerManager.reset()
         let result = try diarizer.performCompleteDiarization(samples)
         let spans = result.segments.map {
             SpeakerSpan(
@@ -143,8 +152,9 @@ final class FluidAudioRunner: TranscriptionRunner {
         }
         // Duration-weighted mean of each speaker's per-segment embeddings, so the
         // persisted voiceprint reflects voiced speech. The per-segment embedding is
-        // this recording's own audio, so it is unaffected by the diarizer's
-        // speaker database accumulating across meetings in one daemon session.
+        // this recording's own audio; combined with the ASR2 per-job
+        // `speakerManager.reset()` above, the clustering state is per-meeting, so the
+        // ids and embeddings do not drift with daemon uptime.
         let items = result.segments.map {
             (speaker: $0.speakerId,
              embedding: $0.embedding,
