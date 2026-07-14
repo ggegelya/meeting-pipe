@@ -85,6 +85,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         vadActive: @escaping () -> Bool = { false },
         staleContradictions: ContradictionCounter? = nil,
         contradictionDwellSeconds: Double = VADContradictionTracker.defaultDwellSeconds,
+        blindOnWindowDisagreement: @escaping () -> Bool = { false },
         walkQueue: DispatchQueue? = nil
     ) -> MeetingAXWindowWatcher {
         MeetingAXWindowWatcher(
@@ -96,6 +97,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
             onMuteCleared: { clears?.count += 1 },
             vadActiveProvider: vadActive,
             onStaleMuteContradiction: { staleContradictions?.count += 1 },
+            blindOnWindowDisagreement: blindOnWindowDisagreement,
             scheduler: scheduler,
             walkQueue: walkQueue,
             stateResolver: resolver,
@@ -106,32 +108,71 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         )
     }
 
-    // MARK: - Fusion (MUTED bias)
+    // MARK: - Fusion (unanimity; MIC10 part 1)
 
     func test_fuse_single_button_uses_its_state() {
-        XCTAssertEqual(MeetingAXWindowWatcher.fuse([.unmuted]), .unmuted)
-        XCTAssertEqual(MeetingAXWindowWatcher.fuse([.muted]), .muted)
+        // One button cannot disagree with itself, so the policy is irrelevant here.
+        for policy in [MeetingAXWindowWatcher.DisagreementPolicy.blind, .mutedWins] {
+            XCTAssertEqual(MeetingAXWindowWatcher.fuse([.unmuted], onDisagreement: policy), .unmuted)
+            XCTAssertEqual(MeetingAXWindowWatcher.fuse([.muted], onDisagreement: policy), .muted)
+        }
     }
 
-    func test_fuse_disagreement_biases_to_muted() {
+    func test_fuse_disagreement_is_blind_under_capture_first() {
+        // MIC10 part 1: the walk returns at most one button per window, so a disagreement is always
+        // "two windows, one of them stale, and we can't tell which". Capture-first refuses to guess:
+        // blind, so the blind-clear drops any stale latch and MicGate falls through to live voice.
+        // The old rule fused these to `.muted` and zeroed the owner's mic for a whole call (06-08).
+        XCTAssertNil(MeetingAXWindowWatcher.fuse([.muted, .unmuted], onDisagreement: .blind))
+        XCTAssertNil(MeetingAXWindowWatcher.fuse([.unmuted, .muted], onDisagreement: .blind))
+    }
+
+    func test_fuse_disagreement_still_biases_to_muted_under_the_regulated_gate() {
+        // The scope guard: under the regulated/NDA gate a wrong un-mute writes at-rest-free audio
+        // for a genuine muted side-conversation, which is unrecoverable. Privacy keeps winning
+        // there, unchanged from the pre-MIC10 behaviour.
+        XCTAssertEqual(MeetingAXWindowWatcher.fuse([.muted, .unmuted], onDisagreement: .mutedWins), .muted)
+        XCTAssertEqual(MeetingAXWindowWatcher.fuse([.unmuted, .muted], onDisagreement: .mutedWins), .muted)
+    }
+
+    func test_fuse_defaults_to_muted_wins() {
+        // A caller with no capture mode to consult must not silently widen the gate.
         XCTAssertEqual(MeetingAXWindowWatcher.fuse([.muted, .unmuted]), .muted)
-        XCTAssertEqual(MeetingAXWindowWatcher.fuse([.unmuted, .muted]), .muted)
     }
 
-    func test_fuse_all_unmuted_is_unmuted() {
-        XCTAssertEqual(MeetingAXWindowWatcher.fuse([.unmuted, .unmuted]), .unmuted)
+    func test_fuse_unanimous_agreement_is_trusted_under_both_policies() {
+        // Agreement is not a disagreement: two windows both reading muted still mutes, so a genuine
+        // mute keeps working in capture-first (this is what keeps `.blind` from being a blanket unmute).
+        for policy in [MeetingAXWindowWatcher.DisagreementPolicy.blind, .mutedWins] {
+            XCTAssertEqual(MeetingAXWindowWatcher.fuse([.unmuted, .unmuted], onDisagreement: policy), .unmuted)
+            XCTAssertEqual(MeetingAXWindowWatcher.fuse([.muted, .muted], onDisagreement: policy), .muted)
+        }
     }
 
     func test_fuse_ignores_unknown_buttons() {
-        // Unknown readings don't count against agreement.
-        XCTAssertEqual(MeetingAXWindowWatcher.fuse([.unknown, .unmuted]), .unmuted)
-        XCTAssertEqual(MeetingAXWindowWatcher.fuse([.unknown, .muted]), .muted)
+        // Unknown readings don't count against agreement, and an unknown beside a known reading is
+        // not a disagreement (it's the blind case, not a conflicting claim).
+        for policy in [MeetingAXWindowWatcher.DisagreementPolicy.blind, .mutedWins] {
+            XCTAssertEqual(MeetingAXWindowWatcher.fuse([.unknown, .unmuted], onDisagreement: policy), .unmuted)
+            XCTAssertEqual(MeetingAXWindowWatcher.fuse([.unknown, .muted], onDisagreement: policy), .muted)
+        }
     }
 
     func test_fuse_no_confident_signal_is_nil() {
         XCTAssertNil(MeetingAXWindowWatcher.fuse([]))
         XCTAssertNil(MeetingAXWindowWatcher.fuse([.unknown]))
         XCTAssertNil(MeetingAXWindowWatcher.fuse([.unknown, .unknown]))
+    }
+
+    func test_is_cross_window_disagreement() {
+        XCTAssertTrue(MeetingAXWindowWatcher.isCrossWindowDisagreement([.muted, .unmuted]))
+        XCTAssertTrue(MeetingAXWindowWatcher.isCrossWindowDisagreement([.unmuted, .muted, .unmuted]))
+        XCTAssertFalse(MeetingAXWindowWatcher.isCrossWindowDisagreement([.muted]))
+        XCTAssertFalse(MeetingAXWindowWatcher.isCrossWindowDisagreement([.muted, .muted]))
+        XCTAssertFalse(MeetingAXWindowWatcher.isCrossWindowDisagreement([.unmuted, .unmuted]))
+        XCTAssertFalse(MeetingAXWindowWatcher.isCrossWindowDisagreement([]))
+        // An unknown alongside one confident reading is blindness, not conflict.
+        XCTAssertFalse(MeetingAXWindowWatcher.isCrossWindowDisagreement([.unknown, .muted]))
     }
 
     // MARK: - Poll loop
@@ -221,15 +262,126 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         XCTAssertNil(scheduler.pending)
     }
 
-    func test_disagreeing_buttons_emit_muted() {
-        // Backgrounded-stale (muted) + live (unmuted) found together -> MUTED wins.
+    func test_disagreeing_buttons_emit_muted_under_the_regulated_gate() {
+        // Backgrounded-stale (muted) + live (unmuted) with the mode gate off (the regulated gate):
+        // MUTED still wins, unchanged from pre-MIC10.
         let resolver = ScriptedResolver([[.muted, .unmuted]])
         let scheduler = ManualScheduler()
         let sink = EventSink()
-        let watcher = makeWatcher(resolver: resolver.make(), scheduler: scheduler.make(), sink: sink)
+        let watcher = makeWatcher(
+            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink,
+            blindOnWindowDisagreement: { false }
+        )
 
         watcher.start()
         XCTAssertEqual(sink.events.map(\.state), [.muted])
+    }
+
+    // MARK: - MIC10 part 1: a stale window can no longer out-vote the live one
+
+    func test_disagreeing_buttons_never_latch_muted_under_capture_first() {
+        // The 2026-06-08 data loss, replayed from its real trace: poll 1 of that session read two
+        // buttons, `["unmuted", "muted"]` (live call + stale hub), the MUTED bias fused them to
+        // `.muted`, and MicGate zeroed the mic for the whole ~800 s call - the owner's entire spoken
+        // turn never reached the transcript. Under capture-first that disagreement is now blind, so
+        // no `.muted` is ever injected and the live voice survives.
+        let resolver = ScriptedResolver([[.unmuted, .muted]])
+        let scheduler = ManualScheduler()
+        let sink = EventSink()
+        let log = RecordingEventLog()
+        let watcher = makeWatcher(
+            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink, log: log,
+            blindOnWindowDisagreement: { true }
+        )
+
+        watcher.start()
+        for _ in 0..<5 { scheduler.fire() }
+
+        XCTAssertTrue(sink.events.isEmpty, "a stale window must never latch .muted over a live one")
+        XCTAssertTrue(log.entries.contains { $0.action == "mute_state_window_disagreement" })
+    }
+
+    func test_a_stale_window_appearing_mid_call_does_not_flip_a_live_unmuted_call() {
+        // The 2026-06-17 signature (4 flips in one call): the call is correctly `.unmuted`, then a
+        // second window's stale mute button shows up and the old bias flipped the gate to `.muted`
+        // mid-sentence (every one of the 25 real occurrences had `previous: unmuted`). Now the
+        // disagreement reads blind, and the blind-clear drops the latch instead of muting.
+        let resolver = ScriptedResolver([[.unmuted], [.unmuted, .muted]])
+        let scheduler = ManualScheduler()
+        let sink = EventSink()
+        let clears = ClearCounter()
+        let watcher = makeWatcher(
+            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink, clears: clears,
+            blindClearThreshold: 3, blindOnWindowDisagreement: { true }
+        )
+
+        watcher.start()       // poll 1: live call, unmuted
+        XCTAssertEqual(sink.events.map(\.state), [.unmuted])
+
+        scheduler.fire()      // poll 2: stale hub button appears -> disagreement -> blind
+        scheduler.fire()      // poll 3: blind
+        scheduler.fire()      // poll 4: blind -> clear the latch
+
+        XCTAssertEqual(sink.events.map(\.state), [.unmuted], "no .muted was ever injected")
+        XCTAssertEqual(clears.count, 1, "the blind-clear drops the stale latch")
+    }
+
+    func test_a_genuine_mute_still_latches_when_both_windows_agree() {
+        // The counterweight: `.blind` is not a blanket unmute. When the windows agree the read is
+        // trusted, so a real mute still mutes under capture-first.
+        let resolver = ScriptedResolver([[.muted, .muted]])
+        let scheduler = ManualScheduler()
+        let sink = EventSink()
+        let clears = ClearCounter()
+        let watcher = makeWatcher(
+            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink, clears: clears,
+            blindOnWindowDisagreement: { true }
+        )
+
+        watcher.start()
+        for _ in 0..<4 { scheduler.fire() }
+
+        XCTAssertEqual(sink.events.map(\.state), [.muted], "a unanimous mute is a real mute")
+        XCTAssertEqual(clears.count, 0, "never blind, so never cleared")
+    }
+
+    func test_window_disagreement_is_logged_once_per_streak_not_at_1hz() {
+        // The poll runs at 1 Hz for the length of a call; a call held next to an open hub window
+        // would otherwise write a disagreement line every second for an hour.
+        let resolver = ScriptedResolver([[.muted, .unmuted]])
+        let scheduler = ManualScheduler()
+        let sink = EventSink()
+        let log = RecordingEventLog()
+        let watcher = makeWatcher(
+            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink, log: log,
+            blindOnWindowDisagreement: { true }
+        )
+
+        watcher.start()
+        for _ in 0..<9 { scheduler.fire() }
+
+        let disagreements = log.entries.filter { $0.action == "mute_state_window_disagreement" }
+        XCTAssertEqual(disagreements.count, 1, "logged on entry into the streak, not every poll")
+    }
+
+    func test_a_resolved_disagreement_re_arms_the_log() {
+        // Streak ends (the stale window closes), then a new one starts: the second is a genuinely
+        // new event and must be logged, so the owner sees a flapping call as flapping.
+        let resolver = ScriptedResolver([[.muted, .unmuted], [.unmuted], [.muted, .unmuted]])
+        let scheduler = ManualScheduler()
+        let sink = EventSink()
+        let log = RecordingEventLog()
+        let watcher = makeWatcher(
+            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink, log: log,
+            blindOnWindowDisagreement: { true }
+        )
+
+        watcher.start()       // disagreement #1
+        scheduler.fire()      // resolved: a single live unmuted button
+        scheduler.fire()      // disagreement #2
+
+        let disagreements = log.entries.filter { $0.action == "mute_state_window_disagreement" }
+        XCTAssertEqual(disagreements.count, 2)
     }
 
     // MARK: - Blind recovery (S1: Teams compact/mini window)

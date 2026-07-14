@@ -970,6 +970,13 @@ final class MeetingSessionController {
                     self.coordinator.micGate.clearAxMute()
                 }
             },
+            // MIC10 part 1: same mode gate, applied one step earlier. When the walk hands back two
+            // windows' mute buttons that disagree, capture-first treats the read as blind (the
+            // stale window can no longer out-vote the live one and zero the mic mid-sentence);
+            // the regulated gate keeps the old MUTED bias, where a wrong un-mute is unrecoverable.
+            blindOnWindowDisagreement: { [weak self] in
+                self?.activeCaptureMode?.capturesLosslessly ?? false
+            },
             // MIC16: run the 1 Hz mute-state AX walk on the shared serial queue (off main),
             // so a wedged meeting client can never stall the run loop and delay the
             // force-stop hotkey while a recording is live. Only the fused readings hop back.
