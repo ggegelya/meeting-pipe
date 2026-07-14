@@ -83,34 +83,34 @@ enum MeetingAXHandleBuilder {
         let axApp = AXUIElementCreateApplication(pid)
         let allWindows = listWindows(axApp: axApp)
         let meetingWindow = pickMeetingWindow(windows: allWindows)
-        let app = appNameByBundle[source.bundleID]
 
-        // Search every window for leave + mute (first match per category
-        // wins), decoupled from the picked meetingWindow: Teams' window order
-        // isn't always [meeting, chat], so the title-first picker can grab
-        // the chat window while the buttons live elsewhere.
+        // Leave: first match across every window, decoupled from the picked meetingWindow (Teams'
+        // window order isn't always [meeting, chat], so the title-first picker can grab the chat
+        // window while the buttons live elsewhere).
         var leave: AXUIElement?
-        var mute: AXUIElement?
         for w in allWindows {
-            if leave == nil {
-                leave = findButton(in: w, depth: 0) { el in
-                    matchesLeave(bundleID: source.bundleID, element: el)
-                }
+            leave = findButton(in: w, depth: 0) { el in
+                matchesLeave(bundleID: source.bundleID, element: el)
             }
-            if mute == nil, let app = app {
-                mute = findButton(in: w, depth: 0) { el in
-                    matchesMute(app: app, catalogue: catalogue, element: el)
-                }
-            }
-            if leave != nil && mute != nil { break }
+            if leave != nil { break }
         }
+
+        // Mute: the SCOPED walk, not a first-match-across-windows scan (MIC10 part 1). The primary
+        // `AXMuteButtonProbe` caches this element and subscribes to it for the whole meeting, so
+        // handing it the frozen button from the backgrounded full window latches `muted` for the
+        // rest of the call and no later poll can undo it. Window order is not guaranteed, so the
+        // old scan was choosing the live control by luck.
+        let mute = MeetingAXHandleBuilder.findMeetingWindowMuteButtons(
+            in: axApp, bundleID: source.bundleID, catalogue: catalogue
+        ).first
 
         emitDiagnostic(
             source: source,
             axTrusted: true,
             windowCount: allWindows.count,
             foundLeave: leave != nil,
-            foundMute: mute != nil
+            foundMute: mute != nil,
+            foundCallPanel: allWindows.contains(where: isCallPanel)
         )
 
         // Re-arm resolver for the primary probe (TECH-MIC6): the same
@@ -188,24 +188,36 @@ enum MeetingAXHandleBuilder {
         return result
     }
 
-    /// Mute button(s) scoped to the live in-call window(s): every window that
-    /// exposes a mute button AND a Leave/hang-up control. Teams 2 keeps a
-    /// second window (the main hub / pre-join) whose mic toggle goes stale and
-    /// reads `muted` while the in-call control reads `unmuted`; fed to
-    /// `MeetingAXWindowWatcher`'s MUTED-biased fusion, that stale button zeroed
-    /// a live mic mid-sentence (2026-06-03). Mute and Leave share the
-    /// meeting-controls toolbar and travel together into compact / popped-out
-    /// views, so the Leave button marks the real call window. Falls back to
-    /// every window's mute button when no window exposes a Leave control, so a
-    /// missed Leave walk degrades to the old all-windows read instead of
-    /// blinding the gate.
+    /// Mute button(s) scoped to the live in-call control (MIC10 part 1, re-anchored 2026-07-14
+    /// off a live AX dump of a real Teams call).
+    ///
+    /// What the dump showed, and why the old Leave anchor could never work. During a call with
+    /// the Teams window backgrounded, THREE windows exist, and TWO of them expose a mute button
+    /// AND a `Leave` button, so the Leave anchor keeps both:
+    ///
+    ///   win[0] "Meeting compact view | ..."  subrole=AXSystemDialog    desc="Unmute mic" -> "Mute mic"
+    ///   win[1] "Calendar | ..."              subrole=AXStandardWindow  (no mute button)
+    ///   win[2] "Meeting with ... | ..."      subrole=AXStandardWindow  desc="Unmute mic" (frozen)
+    ///
+    /// Toggling the real mic flips only win[0]. win[2], the full meeting window the call popped
+    /// out of, FREEZES its mute description at whatever it last rendered and reads `muted`
+    /// (`desc="Unmute mic"` means "click to unmute", i.e. currently muted) for the rest of the
+    /// call. So the stale control is not the hub / pre-join window that MIC9 and MIC10 both
+    /// blamed: it is the backgrounded full window of the very same call, which is why every
+    /// Leave-based scoping attempt kept it (it carries a Leave button too) and why the
+    /// MUTED-biased fusion then zeroed a live mic for a whole meeting (the 2026-06-08 loss).
+    ///
+    /// The anchor: the floating compact call panel is the only `AXSystemDialog` window; the rest
+    /// are `AXStandardWindow`. That is a locale-independent AX constant, not a localized string,
+    /// so it satisfies the MIC6 bar (Teams exposes no AXValue and no AXIdentifier anywhere in its
+    /// tree, so a subrole is the durable structural signal actually on offer).
     static func findMeetingWindowMuteButtons(
         in axApp: AXUIElement,
         bundleID: String,
         catalogue: MuteLabels
     ) -> [AXUIElement] {
         guard let app = appNameByBundle[bundleID] else { return [] }
-        var entries: [(value: AXUIElement, hasLeave: Bool)] = []
+        var entries: [(value: AXUIElement, isCallPanel: Bool, hasLeave: Bool)] = []
         for window in listWindows(axApp: axApp) {
             guard let mute = findButton(in: window, depth: 0, predicate: { el in
                 matchesMute(app: app, catalogue: catalogue, element: el)
@@ -213,9 +225,35 @@ enum MeetingAXHandleBuilder {
             let hasLeave = findButton(in: window, depth: 0, predicate: { el in
                 matchesLeave(bundleID: bundleID, element: el)
             }) != nil
-            entries.append((mute, hasLeave))
+            entries.append((mute, isCallPanel(window), hasLeave))
         }
-        return preferWindowsWithLeave(entries)
+        return scopeToLiveControl(entries)
+    }
+
+    /// True when a window is the floating call panel (Teams' "Meeting compact view"), which the
+    /// live AX dump proves is the only mute control that tracks the real mic. `AXSystemDialog` is
+    /// a standard AX subrole constant, so this survives a locale change and a re-labelled button.
+    private static func isCallPanel(_ window: AXUIElement) -> Bool {
+        copyString(window, kAXSubroleAttribute) == (kAXSystemDialogSubrole as String)
+    }
+
+    /// Pick the live mute control out of the candidate windows. Pure, so the scoping rule is
+    /// unit-tested without a live AX tree. Precedence, each layer evidenced rather than guessed:
+    ///
+    /// 1. The floating call panel wins outright when it is present. The dump proves it is the live
+    ///    control and that the full meeting window freezes behind it, so reading both (which is
+    ///    what every earlier version did) is what let a frozen button out-vote a live one.
+    /// 2. Otherwise keep the windows that also expose a Leave control (the pre-MIC10 rule). With no
+    ///    panel around, a call rendered in the main window is the live one and it carries Leave.
+    /// 3. Otherwise keep everything, so a missed Leave walk degrades to the old all-windows read
+    ///    rather than returning an empty set and silencing the poller. `MeetingAXWindowWatcher`'s
+    ///    cross-window disagreement rule is the backstop for whatever still slips through here.
+    static func scopeToLiveControl<T>(
+        _ entries: [(value: T, isCallPanel: Bool, hasLeave: Bool)]
+    ) -> [T] {
+        let panel = entries.filter { $0.isCallPanel }.map { $0.value }
+        if !panel.isEmpty { return panel }
+        return preferWindowsWithLeave(entries.map { (value: $0.value, hasLeave: $0.hasLeave) })
     }
 
     /// Keep only entries whose window also exposes a Leave control; if none
@@ -309,13 +347,17 @@ enum MeetingAXHandleBuilder {
 
     /// One `ax_handles_built` event per `build`. `found_mute=false` on a
     /// native bundle with AX trusted is the signature "AX walk missed the
-    /// button" symptom (the gate then runs HAL + RMS only).
+    /// button" symptom (the gate then runs HAL + RMS only). `found_call_panel`
+    /// says whether the floating compact call panel (the live mute control per
+    /// MIC10 part 1) was on screen, so the log can show the re-anchor working:
+    /// a panel present with `buttons_found: 1` in the poll is the fixed shape.
     private static func emitDiagnostic(
         source: AppSource,
         axTrusted: Bool?,
         windowCount: Int,
         foundLeave: Bool,
-        foundMute: Bool
+        foundMute: Bool,
+        foundCallPanel: Bool = false
     ) {
         var attrs: [String: Any] = [
             "bundle_id": source.bundleID,
@@ -323,6 +365,7 @@ enum MeetingAXHandleBuilder {
             "window_count": windowCount,
             "found_leave": foundLeave,
             "found_mute": foundMute,
+            "found_call_panel": foundCallPanel,
         ]
         if let axTrusted = axTrusted {
             attrs["ax_trusted"] = axTrusted

@@ -188,4 +188,61 @@ final class MeetingAXHandleBuilderTests: XCTestCase {
         let scoped: [MuteLabels.State] = MeetingAXHandleBuilder.preferWindowsWithLeave([])
         XCTAssertEqual(scoped, [])
     }
+
+    // MARK: Live-control scoping (scopeToLiveControl, MIC10 part 1)
+
+    func test_live_scope_prefers_the_floating_call_panel_over_the_frozen_full_window() {
+        // The real topology, from a live AX dump of a Teams call (2026-07-14). Three windows; two
+        // of them carry BOTH a mute button and a Leave button, so the Leave anchor keeps both:
+        //   win[0] "Meeting compact view"  AXSystemDialog    unmuted (tracks the real mic)
+        //   win[2] "Meeting with ..."      AXStandardWindow  muted   (frozen when the call popped out)
+        // Toggling the mic flips only win[0]. Reading both is what let the frozen `.muted` out-vote
+        // the live `.unmuted` and zero the mic for a whole call (2026-06-08). The panel wins.
+        let scoped = MeetingAXHandleBuilder.scopeToLiveControl([
+            (value: MuteLabels.State.unmuted, isCallPanel: true, hasLeave: true),
+            (value: MuteLabels.State.muted, isCallPanel: false, hasLeave: true),
+        ])
+        XCTAssertEqual(scoped, [.unmuted], "the frozen full window must not be read at all")
+    }
+
+    func test_live_scope_panel_wins_even_when_it_carries_no_leave_button() {
+        // The panel is the live control whether or not the Leave matcher fires on it, which is what
+        // makes this independent of the Leave anchor that could never discriminate here.
+        let scoped = MeetingAXHandleBuilder.scopeToLiveControl([
+            (value: MuteLabels.State.muted, isCallPanel: false, hasLeave: true),
+            (value: MuteLabels.State.unmuted, isCallPanel: true, hasLeave: false),
+        ])
+        XCTAssertEqual(scoped, [.unmuted])
+    }
+
+    func test_live_scope_without_a_panel_falls_back_to_the_leave_anchor() {
+        // Call rendered in the main window, no floating panel: the pre-MIC10 rule still applies.
+        let scoped = MeetingAXHandleBuilder.scopeToLiveControl([
+            (value: MuteLabels.State.muted, isCallPanel: false, hasLeave: false),
+            (value: MuteLabels.State.unmuted, isCallPanel: false, hasLeave: true),
+        ])
+        XCTAssertEqual(scoped, [.unmuted])
+    }
+
+    func test_live_scope_without_panel_or_leave_keeps_everything() {
+        // Degrade to the all-windows read rather than returning nothing and silencing the poller.
+        // The watcher's cross-window disagreement rule is the backstop for this shape.
+        let scoped = MeetingAXHandleBuilder.scopeToLiveControl([
+            (value: MuteLabels.State.muted, isCallPanel: false, hasLeave: false),
+            (value: MuteLabels.State.unmuted, isCallPanel: false, hasLeave: false),
+        ])
+        XCTAssertEqual(scoped, [.muted, .unmuted])
+    }
+
+    func test_live_scope_single_panel_passes_through() {
+        let scoped = MeetingAXHandleBuilder.scopeToLiveControl([
+            (value: MuteLabels.State.muted, isCallPanel: true, hasLeave: true),
+        ])
+        XCTAssertEqual(scoped, [.muted], "a genuine mute on the live control still mutes")
+    }
+
+    func test_live_scope_empty_input_is_empty() {
+        let scoped: [MuteLabels.State] = MeetingAXHandleBuilder.scopeToLiveControl([])
+        XCTAssertEqual(scoped, [])
+    }
 }
