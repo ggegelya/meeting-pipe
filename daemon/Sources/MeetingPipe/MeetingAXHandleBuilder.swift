@@ -207,6 +207,19 @@ enum MeetingAXHandleBuilder {
     /// Leave-based scoping attempt kept it (it carries a Leave button too) and why the
     /// MUTED-biased fusion then zeroed a live mic for a whole meeting (the 2026-06-08 loss).
     ///
+    /// The mechanism, confirmed by a second dump pair taken with Teams FOCUSED: Teams freezes the
+    /// mute button of whichever call window it is not currently rendering, at whatever state that
+    /// window last painted (so the frozen value is arbitrary, which is why the two windows agree
+    /// about half the time and contradict each other the rest). Focused, the tree is:
+    ///
+    ///   win[0] "Meeting with ... | ..."  subrole=AXStandardWindow  desc="Unmute mic" -> "Mute mic"
+    ///   win[1] "Calendar | ..."          subrole=AXStandardWindow  (no mute button)
+    ///
+    /// The panel is GONE, not stale: Teams destroys it when the meeting window becomes visible, and
+    /// the full window resumes tracking. That is what makes the rule below safe in both directions.
+    /// A panel that is not the live control does not exist, so preferring the panel can never pick
+    /// a frozen button over a live one.
+    ///
     /// The anchor: the floating compact call panel is the only `AXSystemDialog` window; the rest
     /// are `AXStandardWindow`. That is a locale-independent AX constant, not a localized string,
     /// so it satisfies the MIC6 bar (Teams exposes no AXValue and no AXIdentifier anywhere in its
@@ -240,11 +253,14 @@ enum MeetingAXHandleBuilder {
     /// Pick the live mute control out of the candidate windows. Pure, so the scoping rule is
     /// unit-tested without a live AX tree. Precedence, each layer evidenced rather than guessed:
     ///
-    /// 1. The floating call panel wins outright when it is present. The dump proves it is the live
-    ///    control and that the full meeting window freezes behind it, so reading both (which is
-    ///    what every earlier version did) is what let a frozen button out-vote a live one.
+    /// 1. The floating call panel wins outright when it is present. The dumps prove it is the live
+    ///    control, that the full meeting window freezes behind it, and that the panel is destroyed
+    ///    (never left stale) once the meeting window is visible again, so "present" implies "live".
+    ///    Reading both windows, which is what every earlier version did, is what let a frozen button
+    ///    out-vote a live one.
     /// 2. Otherwise keep the windows that also expose a Leave control (the pre-MIC10 rule). With no
-    ///    panel around, a call rendered in the main window is the live one and it carries Leave.
+    ///    panel around, the call is rendered in the main window, which is then tracking again and
+    ///    still carries Leave (confirmed in the focused dump).
     /// 3. Otherwise keep everything, so a missed Leave walk degrades to the old all-windows read
     ///    rather than returning an empty set and silencing the poller. `MeetingAXWindowWatcher`'s
     ///    cross-window disagreement rule is the backstop for whatever still slips through here.
