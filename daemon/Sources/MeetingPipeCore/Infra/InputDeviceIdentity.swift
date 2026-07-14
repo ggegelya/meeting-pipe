@@ -115,9 +115,17 @@ public enum InputDeviceResolver {
 
     /// Pure: warn when the device we are about to record is idle while some OTHER input device
     /// is active. That is the wrong-mic signature: the meeting client opened a different input
-    /// (which reads running-somewhere) while our default input sits idle. Taken at start, before
-    /// our own engine holds the device, so the "we hold it, so it always reads true" confound
-    /// that sank END6's end-side read (q4-final END2) does not apply here.
+    /// (which reads running-somewhere) while our default input sits idle.
+    ///
+    /// START-TIME ONLY, and that is the whole reason this read is usable at all. Once our engine
+    /// arms, it holds an IOProc on the default input, so the device reads RUNNING for the entire
+    /// recording no matter what the meeting client does. That confound is what refuted END6's
+    /// end-side device-idle corroborator, and it reaches further than the input device:
+    /// `AVAudioEngine.inputNode` builds a `CADefaultDeviceAggregate` spanning both directions, so
+    /// our mic capture pins the default OUTPUT device RUNNING too. Never reuse this property as
+    /// an end signal. Measured: `daemon/scripts/end6-device-idle-probe.swift`, written up in
+    /// `docs/spikes/end6-device-idle-corroborator.md`. The unconfounded read is the per-process
+    /// one (`ProcessAudioSignal` / DET2), which asks about the client's process, not the device.
     public static func shouldWarnMismatch(defaultInputRunning: Bool, anotherInputRunning: Bool) -> Bool {
         !defaultInputRunning && anotherInputRunning
     }
