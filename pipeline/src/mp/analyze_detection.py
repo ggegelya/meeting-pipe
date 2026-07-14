@@ -564,6 +564,13 @@ def main(argv: list[str]) -> int:
     # PERF7: read the base log plus its rotated generations. pair_sessions sorts
     # by ts, so concatenation order does not matter, only that no session in the
     # recent window is lost across a rotation boundary.
+    #
+    # No mp.events.drop_test_residue call here, deliberately. The rotated generations do
+    # carry test residue (see CONVENTIONS.md "Event log schema"), but none of it lands on
+    # the actions this report pairs on: the residue is pipeline_*/engine_*/republish_*,
+    # and there is not one residue `recording_started`, `recording_stopped`, `force_stop`
+    # or `mic_busy_*` row in the log. Filtering here would buy nothing and would strip the
+    # synthetic sessions this module's own tests feed through main().
     raw = [ev for p in events.log_generations(source) for ev in iter_events(p)]
     sessions = [classify_session(s) for s in pair_sessions(raw, since=since)]
     stats = aggregate(sessions)

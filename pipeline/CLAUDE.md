@@ -46,6 +46,8 @@ CI also runs pyright (TYPE1), configured in `pyproject.toml`'s `[tool.pyright]`.
 
 `mp.events.emit(category, action, **attrs)` from `events.py` appends to `~/Library/Logs/MeetingPipe/pipeline_events.jsonl`. Categories the pipeline writes: `pipeline` and `publisher`. Schema details in [`../CONVENTIONS.md#event-log-schema`](../CONVENTIONS.md#event-log-schema).
 
+Under pytest it appends somewhere else, and that is load-bearing. `mp.events.logs_dir` honours `MEETINGPIPE_LOGS_DIR` and otherwise redirects to a temp dir when it sees a test runner, so the suite cannot write fixture rows into the log every analysis reads back. Without it pytest owned 21% of that file. Don't remove the guard, and don't reintroduce a hard-coded path in a new writer. Reading the log has its own trap (historical residue that no filter can fully remove); `is_test_residue` and the "Event log schema" section of `../CONVENTIONS.md` cover it.
+
 ## Sidecar — the Swift↔Python contract
 
 `mp.workflow.apply_overrides` reads `<stem>.meta.json` and overlays workflow-resolved values on top of the global config. The schema is mirrored by Swift's `MeetingMetaSidecar.build`. Adding or renaming a key requires touching both sides + `test_workflow_overlay.py`. See [`../CONVENTIONS.md#sidecar-schema-stem-metajson`](../CONVENTIONS.md#sidecar-schema-stemmetajson).

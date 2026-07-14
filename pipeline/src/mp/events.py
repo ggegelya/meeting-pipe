@@ -16,8 +16,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import sys
+import tempfile
+from collections.abc import Iterable
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 _log = logging.getLogger("mp.events")
@@ -71,8 +75,88 @@ def log_generations(path: Path) -> list[Path]:
     return out
 
 
+#: The engine that actually transcribes. Anything else in a ``transcription`` row is a
+#: test double (the ``fake`` / ``pass`` runners in the Swift suite).
+REAL_ENGINE = "fluidaudio"
+
+#: Real recordings are stemmed ``YYYYMMDD-HHMMSS``. Every fixture stem the suites emit
+#: (``clip.wav``, ``a.wav``, ``x``, ``m``, the 4-digit-time ``20260710-1200``) fails this,
+#: which is the only reason historical residue is identifiable at all.
+_REAL_STEM = re.compile(r"^\d{8}-\d{6}$")
+
+#: Keys naming the meeting a row belongs to. Deliberately excludes ``path``: on a
+#: ``prefetch`` row that is a model-cache path, and treating it as a stem would drop a
+#: real event.
+_MEETING_KEYS = ("file", "stem", "wav", "meeting")
+
+
+def is_test_residue(event: dict[str, Any]) -> bool:
+    """True when a row in the real log was written by a test suite, not by the app.
+
+    Both suites wrote here: Swift until TECH-END4 isolated it, Python until the
+    ``logs_dir`` guard above. The rows they already left behind are permanent, because
+    they sit in rotated generations that nothing rewrites, and every reader concatenates
+    those generations. So a reader that does not drop them reports work that never
+    happened: on the dogfood Mac the residue faked 250 ``pipeline_failed`` rows against
+    0 real ones, and 243 ``engine_failed`` against 0.
+
+    Identified by content, two ways:
+
+    * a ``transcription`` row whose ``engine`` is not :data:`REAL_ENGINE` (the ``fake`` /
+      ``pass`` runners, including the ``FakeRunner.Boom`` deliberate failures);
+    * any row naming a meeting whose stem is not a real ``YYYYMMDD-HHMMSS`` recording.
+
+    Deliberately not exhaustive, and it cannot be. Test rows that name no meeting
+    (``coordinator.state_change``, ``workflow.migrator_seeded``, ``daemon.
+    notion_fetch_blocked``) are byte-identical to real ones and interleave with them in
+    the same time window, so no content or time discriminator separates them. Those
+    inflate benign counters; they fabricate no failures. Do not read a pass through this
+    filter as "the log is clean".
+    """
+    if event.get("category") == "transcription":
+        engine = event.get("engine")
+        if isinstance(engine, str) and engine != REAL_ENGINE:
+            return True
+    for key in _MEETING_KEYS:
+        value = event.get(key)
+        if isinstance(value, str) and value:
+            if not _REAL_STEM.match(PurePosixPath(value).name.split(".")[0]):
+                return True
+    return False
+
+
+def drop_test_residue(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """:func:`is_test_residue` over a stream. The call every log reader owes the user."""
+    return [row for row in rows if not is_test_residue(row)]
+
+
+def _running_under_tests() -> bool:
+    """True when this process is hosting a pytest run. The env var is only set once
+    a test is executing, so fall back to the imported module and the guard also holds
+    at collection/import time. The installed CLI never imports pytest."""
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+
+
+def logs_dir() -> Path:
+    """Resolve the logs directory. An explicit ``MEETINGPIPE_LOGS_DIR`` wins (sandboxed
+    runs, targeted tests); otherwise, under pytest we redirect to a temp dir so the suite
+    never appends fixture rows (stems ``x``, ``m``, ``20260506-1500``) into the user's
+    production ``pipeline_events.jsonl``.
+
+    Without this the suite corrupts the very log every analysis reads: on the dogfood Mac
+    21% of that file (1491 of 7020 rows) was pytest output. Mirrors Swift's
+    ``Log.resolveLogsDir`` (TECH-END4), env var and all, so both writers isolate the
+    same way."""
+    override = os.environ.get("MEETINGPIPE_LOGS_DIR")
+    if override:
+        return Path(override)
+    if _running_under_tests():
+        return Path(tempfile.gettempdir()) / "MeetingPipe-test-logs"
+    return Path(os.path.expanduser("~/Library/Logs/MeetingPipe"))
+
+
 def _events_path() -> Path:
-    base = Path(os.path.expanduser("~/Library/Logs/MeetingPipe"))
+    base = logs_dir()
     base.mkdir(parents=True, exist_ok=True)
     return base / "pipeline_events.jsonl"
 

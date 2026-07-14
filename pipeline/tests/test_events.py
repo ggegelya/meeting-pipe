@@ -8,8 +8,11 @@ reading the base log plus its generations.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from mp import events
+
+PRODUCTION_LOGS = Path("~/Library/Logs/MeetingPipe").expanduser()
 
 
 def test_generation_path_inserts_index_before_extension(tmp_path):
@@ -86,6 +89,70 @@ def test_logs_cmd_reads_across_generations(tmp_path, monkeypatch):
     actions = [e["action"] for e in logs_cmd._iter_events()]
     assert "new" in actions
     assert "old" in actions
+
+
+# ------------------------------------------------- test isolation (the writer guard)
+
+
+def test_logs_dir_honors_explicit_env_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(tmp_path))
+    assert events.logs_dir() == tmp_path
+
+
+def test_logs_dir_under_pytest_never_touches_production(monkeypatch):
+    """`pytest` must not append fixture rows to the user's real pipeline_events.jsonl.
+
+    Before this guard the suite owned 21% of that file (1491 of 7020 rows), and every
+    consumer read them back as meetings that never happened. Twin of Swift's
+    LoggerTests.test_logsDir_under_test_never_touches_production.
+    """
+    monkeypatch.delenv("MEETINGPIPE_LOGS_DIR", raising=False)
+    assert events.logs_dir() != PRODUCTION_LOGS
+
+
+def test_emit_under_pytest_writes_outside_production(monkeypatch):
+    monkeypatch.delenv("MEETINGPIPE_LOGS_DIR", raising=False)
+    events.emit("test", "tick", stem="x")
+    assert events._events_path().parent != PRODUCTION_LOGS
+
+
+# ------------------------------------------------- test residue (the reader guard)
+
+
+def test_is_test_residue_flags_fake_engines_and_fixture_stems():
+    assert events.is_test_residue({"category": "transcription", "engine": "fake"})
+    assert events.is_test_residue({"category": "transcription", "engine": "pass"})
+    assert events.is_test_residue(
+        {"category": "coordinator", "action": "pipeline_failed", "file": "clip.wav"}
+    )
+    assert events.is_test_residue({"category": "pipeline", "stem": "x"})
+    # A real recording stamps seconds; the 4-digit-time stems are fixtures.
+    assert events.is_test_residue({"category": "pipeline", "wav": "/raw/20260506-1500.wav"})
+
+
+def test_is_test_residue_keeps_real_rows():
+    assert not events.is_test_residue(
+        {"category": "transcription", "engine": "fluidaudio", "file": "20260714-193655.wav"}
+    )
+    # The .mic/.system intermediates keep the real stem.
+    assert not events.is_test_residue({"category": "recorder", "file": "20260605-163026.mic.wav"})
+    # `path` on a prefetch row is a model cache dir, not a meeting: keying on it would
+    # drop a real event.
+    assert not events.is_test_residue(
+        {"category": "prefetch", "action": "complete", "path": "/hub/models--x/snapshots/abc"}
+    )
+    # Rows that name no meeting are byte-identical to real ones. They must survive.
+    assert not events.is_test_residue({"category": "coordinator", "action": "state_change"})
+
+
+def test_drop_test_residue_removes_only_residue():
+    kept = events.drop_test_residue(
+        [
+            {"action": "pipeline_failed", "file": "clip.wav"},
+            {"action": "pipeline_succeeded", "file": "20260714-193655.wav"},
+        ]
+    )
+    assert [r["action"] for r in kept] == ["pipeline_succeeded"]
 
 
 def test_analyze_detection_pairs_session_across_rotation(tmp_path):

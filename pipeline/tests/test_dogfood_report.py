@@ -68,6 +68,36 @@ def test_load_filters_by_since(tmp_path):
     assert len(events) == 1  # May filtered out, junk line skipped
 
 
+def test_load_drops_test_residue(tmp_path):
+    """The bug this filter exists for: both suites used to write into the user's real log,
+    and the rows they left in the rotated generations are permanent. Unfiltered, the report
+    counted 250 `pipeline_failed` on the dogfood Mac against 0 real ones.
+    """
+    log = tmp_path / "events.jsonl"
+    log.write_text(
+        '{"category":"coordinator","action":"pipeline_failed","file":"clip.wav",'
+        '"ts":"2026-06-01T10:00:00Z"}\n'
+        '{"category":"transcription","action":"engine_failed","engine":"fake",'
+        '"file":"clip.wav","ts":"2026-06-01T10:00:00Z"}\n'
+        '{"category":"coordinator","action":"pipeline_succeeded","file":"20260601-100000.wav",'
+        '"ts":"2026-06-01T10:00:00Z"}\n'
+    )
+    report = dogfood_report.build_report(dogfood_report._load(log, None), [])
+    assert report["detection"]["coordinator"] == {"pipeline_succeeded": 1}
+
+
+def test_load_keeps_rows_that_name_no_meeting(tmp_path):
+    """The filter keys on the meeting stem, so a row without one (state_change, and every
+    lifecycle/micgate row) must survive it. Getting this wrong empties the report."""
+    log = tmp_path / "events.jsonl"
+    log.write_text(
+        '{"category":"lifecycle","action":"ended","leading_signal":"ax","ts":"2026-06-01T10:00:00Z"}\n'
+        '{"category":"coordinator","action":"state_change","ts":"2026-06-01T10:00:00Z"}\n'
+    )
+    events = dogfood_report._load(log, None)
+    assert len(events) == 2
+
+
 def test_render_empty_does_not_crash():
     out = dogfood_report.render_markdown(dogfood_report.build_report([], []))
     assert "MeetingPipe dogfood report" in out

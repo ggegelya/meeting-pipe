@@ -183,11 +183,13 @@ def build_diar_report(daemon_events: list[dict], engine: str = REAL_ENGINE) -> d
     carries `audio_seconds` and `segments`, so the real-time factor (audio
     processed per wall-clock second) falls straight out.
 
-    Filtered to `engine` on purpose. The Swift test suite runs against this same
-    machine and its fake engines (`fake`, `pass`) emit `transcription.*` into the
-    real `events.jsonl`, so an unfiltered read reports hundreds of "failures"
-    that are `FakeRunner.Boom` from SinkDispatcherTests. Those are counted and
-    surfaced as `other_engines`, never silently folded into the result.
+    Filtered to `engine` on purpose, and the filter stays even though both test
+    harnesses are now isolated (Swift at TECH-END4, Python at the `mp.events.logs_dir`
+    guard). The rows they already wrote are permanent: they sit in rotated generations
+    that nothing rewrites, and `_log_files` reads every generation. An unfiltered read
+    still reports hundreds of "failures" that are `FakeRunner.Boom` from
+    SinkDispatcherTests. This is the transparent form of `mp.events.is_test_residue`:
+    skipped engines are counted and surfaced as `other_engines`, never silently dropped.
     """
     started: dict[str, datetime] = {}
     runs: list[dict] = []

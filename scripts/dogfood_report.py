@@ -24,11 +24,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 DEFAULT_DIR = Path("~/Library/Logs/MeetingPipe").expanduser()
 
@@ -60,6 +61,36 @@ def _log_files(path: Path) -> list[Path]:
     return files
 
 
+REAL_ENGINE = "fluidaudio"
+_REAL_STEM = re.compile(r"^\d{8}-\d{6}$")
+_MEETING_KEYS = ("file", "stem", "wav", "meeting")
+
+
+def _is_test_residue(event: dict) -> bool:
+    """True when a row in the real log was written by a test suite, not by the app.
+
+    Stdlib-only mirror of mp.events.is_test_residue (this script imports no mp); keep the
+    two in step. Both suites wrote into the user's real log before their harnesses were
+    isolated, and those rows are permanent: they sit in rotated generations nothing
+    rewrites, and _log_files reads every generation. Without this filter the report counts
+    meetings that never happened. It read 250 `pipeline_failed` against 0 real ones.
+
+    Not exhaustive, and cannot be: test rows naming no meeting (`coordinator.state_change`)
+    are byte-identical to real ones. Those inflate benign counters but fabricate no
+    failures. See CONVENTIONS.md "Event log schema".
+    """
+    if event.get("category") == "transcription":
+        engine = event.get("engine")
+        if isinstance(engine, str) and engine != REAL_ENGINE:
+            return True
+    for key in _MEETING_KEYS:
+        value = event.get(key)
+        if isinstance(value, str) and value:
+            if not _REAL_STEM.match(PurePosixPath(value).name.split(".")[0]):
+                return True
+    return False
+
+
 def _load(path: Path, since: datetime | None) -> list[dict]:
     events: list[dict] = []
     for source in _log_files(path):
@@ -72,6 +103,8 @@ def _load(path: Path, since: datetime | None) -> list[dict]:
             except json.JSONDecodeError:
                 continue
             if not isinstance(event, dict):
+                continue
+            if _is_test_residue(event):
                 continue
             if since is not None:
                 ts = _parse_ts(event.get("ts"))
