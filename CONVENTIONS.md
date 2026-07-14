@@ -228,8 +228,12 @@ Every line is one JSON object with at least three fields:
 
 | Source | Categories |
 |---|---|
-| Daemon (`Log.event` / `EventLog.emit`) | `automation`, `axbus`, `coordinator`, `correction`, `detector`, `doctor`, `halbus`, `library`, `lifecycle`, `main`, `micgate`, `recorder`, `signal`, `transcription`, `workflow` |
+| Daemon (`Log.event` / `EventLog.emit`) | `automation`, `axbus`, `coordinator`, `correction`, `detector`, `doctor`, `halbus`, `library`, `lifecycle`, `main`, `micgate`, `recorder`, `recording`, `signal`, `transcription`, `workflow` |
 | Pipeline (`mp.events.emit`) | `pipeline`, `publisher` |
+
+`recorder` and `recording` are both real and are not the same thing: `recorder` is the capture machinery's own narration, while `recording` carries exactly the two mid-recording capture-health transitions the HUD banner rides on (`recording.degraded` / `recording.recovered`, emitted from `Coordinator.onSystemAudioDegraded`). VALID1's UX4 bar asserts on `recording.degraded`, so do not fold it into `recorder`.
+
+**Reading the log back is not as simple as it looks: the Swift test suite writes into the real `events.jsonl`.** Its fake transcription engines (`fake`, `pass`) emit `transcription.engine_started` / `engine_succeeded` / `engine_failed` against the developer's own log, including deliberate failures like `FakeRunner.Boom` from `SinkDispatcherTests`. Read that log unfiltered and you get hundreds of transcription "failures" that never happened: on this machine it was 243 fake failures against 132 real runs. Any analysis over `transcription.*` must filter on `engine` (`scripts/valid1_check.py --diar` filters to `fluidaudio` and prints what it skipped). The same caution applies to anything else a test emits.
 
 ### Adding a new action
 

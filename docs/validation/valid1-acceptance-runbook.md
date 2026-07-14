@@ -1,100 +1,114 @@
 # VALID1: on-device acceptance runbook
 
-These five bars (A15, A16, DIAR1, SUM1-APPLE, UX4) shipped code in Q3 but were never validated on a real machine. They are **runtime acceptance, not code**: each has to be run on a real Apple-Silicon Mac with real meeting audio. This runbook is the checklist, the exact command per bar, the pass threshold, and where to read the result.
+Five bars (A15, A16, DIAR1, SUM1-APPLE, UX4) shipped code in Q3 and were never validated on a real machine. This runbook is the checklist: the exact command per bar, the pass threshold, and where to read the result.
 
-A helper, `scripts/valid1_check.py`, turns the event logs the daemon and pipeline already write into a readable report and makes the one event-shaped bar (UX4) a hard pass/fail. It does not measure quality or egress; those stay manual.
+**The split that matters.** Three of the five are machine-checkable and are now measured (see Results). Two are not, and no amount of scripting will change that: one needs a physically forced hardware failure, the other needs a human to say who was speaking. Those two are called out as owner-owed with a bounded procedure each, rather than left as a vague "go measure it".
+
+`scripts/valid1_check.py` is the harness. Stdlib-only, so it runs on a clean Mac without `uv`.
 
 ```bash
-scripts/valid1_check.py            # UX4 check + the latest runs' stage timings
-scripts/valid1_check.py --ux4      # only the UX4 assertion (exit 1 on fail)
-scripts/valid1_check.py --timings  # only the run/stage timing table
-scripts/valid1_check.py --since 2026-06-03T00:00:00Z
+scripts/valid1_check.py                 # every read-only bar at once
+scripts/valid1_check.py --ux4           # UX4 assertion (exit 1 on fail)
+scripts/valid1_check.py --diar          # DIAR1 latency (exit 1 on fail)
+scripts/valid1_check.py --attribution   # speaker-attribution coverage
+scripts/valid1_check.py --attribution --since 2026-06-01T00:00:00Z
+scripts/valid1_check.py --coldstart     # A15: cold vs warm local summarize (runs the model)
 ```
 
-Event logs read by the helper:
+What it reads:
 
-- `~/Library/Logs/MeetingPipe/events.jsonl` (daemon: `recording.degraded` / `recording.recovered`, mic-gate, lifecycle)
+- `~/Library/Logs/MeetingPipe/events.jsonl` (daemon: `recording.degraded` / `recording.recovered`, `transcription.engine_*`)
 - `~/Library/Logs/MeetingPipe/pipeline_events.jsonl` (pipeline: `run_*` / `stage_*`)
+- `~/Documents/Meetings/raw/<stem>.json` (transcripts, for `--attribution`)
 
-Record the outcome of each bar in the table at the bottom.
+> **Two traps this runbook used to walk into.** Both cost a quarter each; they are fixed here, and named so nobody re-walks them.
+>
+> 1. **ASR and diarization are not pipeline stages.** They moved to Swift (FluidAudio), so their timing lands in `events.jsonl` under `transcription.*`, not in the `pipeline.stage_*` table. The old DIAR1 and A15 recipes said to read the stage table, which structurally could not show them. The data was in the log the whole time.
+> 2. **`mp summarize` emits no stage events at all.** Only `mp run-all` does (`orchestrate.py`). So "run `mp summarize` and read `stage summarize`" was never going to print anything. `--coldstart` wall-clocks the subprocess itself instead.
+>
+> A third, smaller one: the **Swift test suite writes into the real `events.jsonl`**. Its `fake` and `pass` engines emit `transcription.engine_failed`, so an unfiltered read of this log reports hundreds of transcription "failures" that are `FakeRunner.Boom` from `SinkDispatcherTests`. `--diar` filters to the real engine and prints what it skipped.
 
 ---
 
-## A15: local cold-start within 10%
+## A15: local summarize cold-start
 
-**What:** measure the time for the first local (MLX) summary after a fresh launch, the cold path that pays the model load. Compare against the prior baseline (the warm second run, or a recorded earlier number).
+**What:** the wall-clock cost of the first local (MLX) summary after a fresh start, which pays the model load, against a warm one that does not. The delta is the load cost.
 
-**How:**
-1. Quit MeetingPipe fully. Set `summarization.backend = "local"` and turn Preferences > Pipeline > Configure local model > Preload at launch **off** (so the first run is genuinely cold).
-2. Launch, record a short meeting, Stop.
-3. `scripts/valid1_check.py --timings` and read the `stage summarize` duration of that run (the first since launch). That is the cold-start.
-4. Run a second meeting without relaunching and read its `stage summarize` (warm baseline).
+**How:** `scripts/valid1_check.py --coldstart`
 
-**Threshold:** cold-start summarize within 10% of the prior recorded cold-start baseline. (Cold is expected to exceed warm; the bar is regression against the previous cold number, not warm.)
+It refuses to run if something is already serving on the endpoint (a cold measurement against a warm server is a lie), picks a median-length transcript, and summarizes it twice: once with nothing running (a one-shot `mp summarize` spawns its own `mlx_lm.server` and tears it down on exit, so it reloads the model every time), then once against a `mp serve-local` it holds up alongside. It writes `<stem>.summary.candidate.*` and never touches a real summary. The run is wrapped in `caffeinate` and aborts if free memory drops under 10 percent, because the 14B at long context has OOM-hung this Mac before.
 
-**Where:** the `stage summarize` rows in the helper's timing table.
+**Threshold:** a regression check against the previously recorded cold-start. **There was never a prior number to regress against**, which is the real reason this bar sat open; the Results table below now records one. Treat a later cold-start more than 10 percent above it as a regression.
 
-## A16: re-run quality and latency
+**Caveat, stated rather than hidden:** the OS page cache means the second cold start of a model reads its safetensors from cache. This measures a warm-disk cold start, not a first-ever load.
 
-**What:** confirm the on-device summary quality and latency have not regressed since A16 first shipped.
+## A16: quality and latency
 
-**How:**
-1. With `backend = "local"`, summarize a representative meeting.
-2. Use the detail pane's "Re-run locally (preview)" to produce a second summary and eyeball it against the first for quality (coverage, no hallucinated actions/owners).
-3. Read the `stage summarize` time from `--timings`.
+**Closed in Q5, no action.** The engine-comparison run over 26 real meetings produced the quality read: see [`docs/local-llm-quality.md`](../local-llm-quality.md) and [`docs/engine-comparison.md`](../engine-comparison.md). Its actionable outcome (standardize the local backend on the 7B) shipped as LOCAL6. Summary quality is a human read by nature and does not become machine-checkable by wanting it to.
 
-**Threshold:** quality at least at parity with the last accepted A16 summary (manual read); latency in line with A15's warm number.
+## DIAR1: diarization latency and error rate
 
-**Where:** preview side-by-side in the Summary tab; latency from the helper.
+Two legs, and they have very different fates.
 
-## DIAR1: diarization error rate and per-segment latency
+### Latency: measured, passing
 
-**What:** diarization quality (DER) on a known multi-speaker recording, plus per-segment processing under 10 s.
+**How:** `scripts/valid1_check.py --diar`
 
-**How:**
-1. Record (or replay) a two-plus-speaker meeting where you know who spoke when.
-2. After Stop, inspect the speaker labels in the Transcript tab against ground truth and compute DER (mislabelled speech time / total speech time).
-3. For latency, read the diarization stage from the timing table; per-segment must stay under 10 s.
+Pairs `transcription.engine_started` / `engine_succeeded` on `file`. `engine_succeeded` carries `audio_seconds` and `segments`, so the real-time factor falls straight out.
 
-**Threshold:** DER within the DIAR1 target; no segment over 10 s.
+**Threshold:** every run faster than real time. The original "no segment over 10 s" phrasing predates FluidAudio, which diarizes the whole file in one `performCompleteDiarization` call rather than streaming per segment, so there is no per-segment stage to time. Keeping up with real time is the meaningful restatement.
 
-**Where:** Transcript tab for labels; helper timings for latency. (Diarization runs in the Swift daemon via FluidAudio; if a stereo channel-aware fallback ran instead, note it.)
+### Error rate: owner-owed, and here is exactly why
+
+A true DER needs ground truth for who spoke when. **The tempting shortcut does not work, and it is worth knowing why before reaching for it again.**
+
+Recordings are stereo (mic-left, system-right), and FluidAudio provably diarizes a mono `(L+R)/2` downmix (`FluidAudioRunner.readMonoFloat32`), so the channel *looks* like an independent oracle for "me vs them". It is not: `diarize.label_me_speaker` already picks the "me" speaker **from the channel** (`_resolve_me_id` takes the channel-assigned mic speaker as its first precedence, and `identify_user_speaker` cross-tabulates against the channel verdict). Grading that label against the channel measures the channel against itself and returns a meaningless near-zero. The channel is also blind to the split that actually matters, since every remote speaker shares the system channel.
+
+**The bounded path to a real DER**, if the number is ever wanted: pick 3 meetings, listen through them, and hand-label who spoke when among the remote speakers (`THEM-A` vs `THEM-B` vs ...). Grade the transcript's labels against that. It is roughly an hour of listening, and it is the only honest way there.
+
+**The step-ratio question (FluidAudio step 0.1 vs 0.2) is answered without DER.** The published case for 0.2 was "~2x faster" (AMI SDM: DER 13.89 percent at 0.1 vs 15.07 percent at 0.2). At a **median 91x real time** there is no speed pressure whatsoever, so the accuracy-favouring 0.1 is free. Note the knob is not currently plumbed: `FluidAudioRunner.ensureDiarizer` constructs a bare `DiarizerManager()` with defaults. Plumbing it is a tuning task, not a validation one.
+
+### Attribution coverage: the part that needs no ground truth
+
+**How:** `scripts/valid1_check.py --attribution [--since <ISO8601>]`
+
+How much speech the diarizer credited to **nobody** (`speaker_unknown`, or a raw `speaker_N` that never resolved) is true without any labels at all. It is not a DER and is not reported as one. There is no threshold; it is a baseline to watch.
+
+Always pass `--since`. Attribution quality is not stationary: the pre-roster era drags the lifetime number up badly, so a lifetime read understates how well the current diarizer does.
 
 ## SUM1-APPLE: Apple Intelligence quality, latency, zero egress
 
-**What:** the macOS 26 Foundation Model summarizer at parity with local, within 2x latency, and provably zero-egress.
+**Quality and latency: closed in Q5** by the same engine-comparison run as A16 ([`docs/engine-comparison.md`](../engine-comparison.md)).
 
-**How:**
-1. On an Apple-Intelligence-capable Mac (macOS 26+), set the global backend to Apple (Preferences > Pipeline) or pin a workflow to Apple Intelligence (now selectable per TECH-WF1).
-2. **Install and arm Little Snitch.** Summarize a meeting and confirm Little Snitch shows **no** outbound connection for the summary (the model runs on-device; the daemon produces the summary and the pipeline only publishes if a sink is configured).
-3. Compare the summary against a local-backend summary of the same transcript for quality, and read the latency.
+**Zero egress: owner-owed.** Install and arm Little Snitch, summarize a meeting with the backend set to Apple Intelligence (Preferences > Pipeline, or pin a workflow to it), and confirm no outbound connection during summarization. The model runs on-device; the pipeline only egresses if a sink is configured.
 
-**Threshold:** quality at least at local parity; latency within 2x of local; **zero non-loopback connection** during summarization per Little Snitch.
-
-**Where:** Little Snitch network monitor (manual, authoritative for egress); Summary tab for quality; helper timings for latency.
+**Threshold:** zero non-loopback connection during summarization.
 
 ## UX4: live degraded banner on a real failed SCStream
 
-**What:** when system-audio capture genuinely fails mid-recording, the HUD shows the degraded banner and a `recording.degraded` event is written (and `recording.recovered` when it comes back).
+**Owner-owed.** `recording.degraded` has never fired in the entire event history, which is a genuine "the SCStream has never failed in real use", not a measurement gap: the daemon emits it correctly from `Coordinator.onSystemAudioDegraded`. So the failure has to be forced, and forcing it means revoking a TCC permission and then watching a menu-bar HUD with human eyes. Neither is scriptable here.
 
 **How:**
 1. Start a recording.
-2. Force a real SCStream failure: revoke Screen Recording permission mid-call (System Settings > Privacy & Security > Screen Recording), or stop the captured target.
-3. Watch the HUD for the degraded banner. Restore the condition and watch for recovery.
+2. Force a real SCStream failure: revoke Screen Recording (System Settings > Privacy & Security > Screen Recording), or stop the captured target.
+3. Watch the HUD for the degraded banner. Restore the permission (the app needs a relaunch to pick it back up) and watch for recovery.
 4. `scripts/valid1_check.py --ux4`.
 
-**Threshold:** the banner appears within a second or two of the failure; `--ux4` exits 0 with at least one `recording.degraded` event (and a `recording.recovered` after restore).
-
-**Where:** the HUD live; `scripts/valid1_check.py --ux4` for the event assertion.
+**Threshold:** the banner appears within a second or two; `--ux4` exits 0 with at least one `recording.degraded` (and a `recording.recovered` after restore).
 
 ---
 
 ## Results
 
+Measured 2026-07-14 on the owner's Mac (arm64, 32 GB, macOS 26.5.2).
+
 | Bar | Date | Result | Measured | Notes |
 |---|---|---|---|---|
-| A15 cold-start within 10% | | | | |
-| A16 quality + latency | | | | |
-| DIAR1 DER + under-10s | | | | |
-| SUM1-APPLE quality / 2x / zero-egress | | | | |
-| UX4 degraded banner + event | | | | |
+| A15 cold-start | 2026-07-14 | **baseline set** | cold **39.8 s**, warm **31.4 s**, model load **8.4 s** | Qwen2.5-7B-Instruct-4bit, median-length transcript. No prior number existed to regress against; this is the baseline. Warm-disk cold start (see caveat). |
+| A16 quality + latency | Q5 | **closed** | see [`engine-comparison.md`](../engine-comparison.md) | Closed by the 26-meeting engine-comparison run; outcome shipped as LOCAL6. |
+| DIAR1 latency | 2026-07-14 | **PASS** | 132 runs, 47.7 h of audio, **0 failures**. Real-time factor min **5x**, median **91x**, max 130x. Longest run 82.8 s for 28.7 min of audio. | Every run faster than real time. Worst case 5.3x. |
+| DIAR1 DER | - | **owner-owed** | - | Needs hand-labelled ground truth; the channel shortcut is circular (see above). ~1 h of listening over 3 meetings. |
+| DIAR1 attribution coverage | 2026-07-14 | **baseline set** | Post-roster (since 2026-06-01): **3.2 %** unattributed, 87.4 % named, 9.5 % unnamed remote cluster, over 79 meetings / 21.2 h. Lifetime: 14.0 % unattributed over 175 meetings / 40.4 h. | Not a DER. The lifetime number is dragged up by the pre-roster era (Apr-May: 25.9 %); the current diarizer is ~8x better than that. |
+| SUM1-APPLE quality / 2x latency | Q5 | **closed** | see [`engine-comparison.md`](../engine-comparison.md) | |
+| SUM1-APPLE zero-egress | - | **owner-owed** | - | Needs Little Snitch armed during an Apple Intelligence summarize. |
+| UX4 degraded banner + event | - | **owner-owed** | 0 `recording.degraded` in the full event history | The SCStream has never failed in real use. Needs a forced failure (TCC revoke mid-call) plus a HUD eyeball. |
