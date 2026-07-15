@@ -2,7 +2,7 @@
 
 Five bars (A15, A16, DIAR1, SUM1-APPLE, UX4) shipped code in Q3 and were never validated on a real machine. This runbook is the checklist: the exact command per bar, the pass threshold, and where to read the result.
 
-**The split that matters.** Three of the five are machine-checkable and are now measured (see Results). Two are not, and no amount of scripting will change that: one needs a physically forced hardware failure, the other needs a human to say who was speaking. Those two are called out as owner-owed with a bounded procedure each, rather than left as a vague "go measure it".
+**The split that matters.** Three of the five are machine-checkable and are now measured (see Results). Two need a human: one a physically forced capture failure (UX4, done 2026-07-15), the other a person to say who was speaking (DIAR1 DER, still owed). Both are called out with a bounded procedure rather than a vague "go measure it".
 
 `scripts/valid1_check.py` is the harness. Stdlib-only, so it runs on a clean Mac without `uv`.
 
@@ -86,7 +86,7 @@ Always pass `--since`. Attribution quality is not stationary: the pre-roster era
 
 ## UX4: live degraded banner on a real failed SCStream
 
-**Owner-owed.** `recording.degraded` has never fired in the entire event history, which is a genuine "the SCStream has never failed in real use", not a measurement gap: the daemon emits it correctly from `Coordinator.onSystemAudioDegraded`. So the failure has to be forced, and forcing it means revoking a TCC permission and then watching a menu-bar HUD with human eyes. Neither is scriptable here.
+**PASS (2026-07-15).** The owner forced a real capture failure by declining the screen-capture TCC prompt mid-recording; `events.jsonl` recorded one `recording.degraded` (`reason: The user declined TCCs for application, window, display capture`) and `scripts/valid1_check.py --ux4` exited 0. This was the one bar that could not be scripted here: the daemon emits the event correctly from `Coordinator.onSystemAudioDegraded`, but the failure has to be physically forced (revoke a TCC permission) and the HUD banner watched with human eyes.
 
 **How:**
 1. Start a recording.
@@ -111,4 +111,4 @@ Measured 2026-07-14 on the owner's Mac (arm64, 32 GB, macOS 26.5.2).
 | DIAR1 attribution coverage | 2026-07-14 | **baseline set** | Post-roster (since 2026-06-01): **3.2 %** unattributed, 87.4 % named, 9.5 % unnamed remote cluster, over 79 meetings / 21.2 h. Lifetime: 14.0 % unattributed over 175 meetings / 40.4 h. | Not a DER. The lifetime number is dragged up by the pre-roster era (Apr-May: 25.9 %); the current diarizer is ~8x better than that. |
 | SUM1-APPLE quality / 2x latency | Q5 | **closed** | see [`engine-comparison.md`](../engine-comparison.md) | |
 | SUM1-APPLE zero-egress | - | **owner-owed** | - | Needs Little Snitch armed during an Apple Intelligence summarize. |
-| UX4 degraded banner + event | - | **owner-owed** | 0 `recording.degraded` in the full event history | The SCStream has never failed in real use. Needs a forced failure (TCC revoke mid-call) plus a HUD eyeball. |
+| UX4 degraded banner + event | 2026-07-15 | **PASS** | 1 `recording.degraded` (reason: user declined the capture TCC prompt) | Owner forced a real capture-permission failure mid-recording; `scripts/valid1_check.py --ux4` exited 0. |
