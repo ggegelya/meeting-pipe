@@ -448,6 +448,22 @@ final class MeetingStore: ObservableObject {
             ?? directory.appendingPathComponent("\(stem).wav")
     }
 
+    /// The diarization clusters that carry a voiceprint in `<stem>.embeddings.json`,
+    /// i.e. the labels `mp roster enroll` can actually enroll. Empty for a missing or
+    /// malformed sidecar. A label absent here (a `speaker_unknown` junk-drawer line, a
+    /// raw id that never clustered) has no voice to remember, so naming it must be a
+    /// per-line overlay label, not a roster enroll (enrolling one hard-failed with
+    /// "pipeline exited 2"). Read by the transcript menu and by `nameSpeaker`'s guard.
+    static func voiceprintLabels(stem: String, in directory: URL) -> Set<String> {
+        let url = directory.appendingPathComponent("\(stem).embeddings.json")
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let embeddings = obj["embeddings"] as? [String: Any] else {
+            return []
+        }
+        return Set(embeddings.keys)
+    }
+
     /// A `.mic.wav` capture intermediate modified within `liveCaptureFreshnessSec`,
     /// i.e. one an in-progress recording is actively writing. Returns nil for a
     /// stale intermediate so an orphaned/failed capture is not surfaced as a row.

@@ -136,12 +136,47 @@ final class TranscriptTabTests: XCTestCase {
         XCTAssertEqual(TranscriptDisplay.displayName(for: "THEM-AA"), "Unknown AA")
     }
 
-    func test_isNameable_covers_unnamed_speakers_only() {
-        XCTAssertTrue(TranscriptDisplay.isNameable("THEM-A"))
-        XCTAssertTrue(TranscriptDisplay.isNameable("speaker_2"))
-        XCTAssertFalse(TranscriptDisplay.isNameable("Alice"))  // already named
-        XCTAssertFalse(TranscriptDisplay.isNameable(nil))
-        XCTAssertFalse(TranscriptDisplay.isNameable(""))
+    func test_voiceprintLabels_reads_embedding_keys() throws {
+        // Only labels with a voiceprint can be enrolled; the transcript menu and
+        // nameSpeaker's guard both branch on this to keep a voiceprint-less
+        // `speaker_unknown` off the enroll path (which hard-failed "pipeline exited 2").
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceprintTests-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let stem = "20260501-101500"
+
+        // No sidecar yet -> no enrollable labels.
+        XCTAssertEqual(MeetingStore.voiceprintLabels(stem: stem, in: dir), [])
+
+        let payload: [String: Any] = ["embeddings": [
+            "THEM-A": [0.1, 0.2], "Heorhii": [0.3, 0.4],
+        ]]
+        try JSONSerialization.data(withJSONObject: payload)
+            .write(to: dir.appendingPathComponent("\(stem).embeddings.json"))
+        XCTAssertEqual(MeetingStore.voiceprintLabels(stem: stem, in: dir), ["THEM-A", "Heorhii"])
+        // The junk-drawer label is never a key, so it is correctly not enrollable.
+        XCTAssertFalse(MeetingStore.voiceprintLabels(stem: stem, in: dir).contains("speaker_unknown"))
+    }
+
+    func test_load_threads_voiceprint_labels_from_the_sidecar() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceprintLoadTests-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let stem = "20260501-101500"
+
+        let transcript: [String: Any] = ["segments": [
+            ["start": 0.0, "end": 1.0, "text": "hi", "speaker": "THEM-A"],
+            ["start": 1.0, "end": 2.0, "text": "yo", "speaker": "speaker_unknown"],
+        ]]
+        try JSONSerialization.data(withJSONObject: transcript)
+            .write(to: dir.appendingPathComponent("\(stem).json"))
+        try JSONSerialization.data(withJSONObject: ["embeddings": ["THEM-A": [0.1]]])
+            .write(to: dir.appendingPathComponent("\(stem).embeddings.json"))
+
+        let result = try XCTUnwrap(TranscriptLoader.load(stem: stem, in: dir))
+        XCTAssertEqual(result.voiceprintLabels, ["THEM-A"])
     }
 
     func test_timestamp_formats_short_and_long_durations() {

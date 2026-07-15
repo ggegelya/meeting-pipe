@@ -29,8 +29,6 @@ final class MeetingLibraryService {
         case emptyQuestion
         /// Speaker naming was invoked with a blank name.
         case emptyName
-        /// The meeting carries no per-speaker embeddings, so no cluster can be named.
-        case noVoiceprints
         /// "Save & publish" pressed with an empty paste box.
         case emptyPastedSummary
         /// A workflow reassignment (WF8) could not rewrite `<stem>.meta.json`.
@@ -52,8 +50,6 @@ final class MeetingLibraryService {
                 return "Type a question first."
             case .emptyName:
                 return "Type a name first."
-            case .noVoiceprints:
-                return "No voiceprints for this meeting - only diarized meetings can be named."
             case .emptyPastedSummary:
                 return "Paste a summary before saving."
             case .metaWriteFailed(let stem):
@@ -247,9 +243,23 @@ final class MeetingLibraryService {
             return
         }
         let dir = outputDir()
-        let embeddingsURL = dir.appendingPathComponent("\(stem).embeddings.json")
-        guard FileManager.default.fileExists(atPath: embeddingsURL.path) else {
-            completion(.failure(LibraryError.noVoiceprints))
+        // Belt-and-braces for the "pipeline exited 2" naming crash: a label with no
+        // voiceprint (a `speaker_unknown` junk-drawer line, a raw id that never
+        // clustered) cannot be enrolled, and `mp roster enroll` exits 2 when its
+        // embedding is missing. The transcript menu already routes these to per-line
+        // assignment, but if one reaches here we record the name in the overlay
+        // (display-only, this meeting) rather than failing.
+        guard MeetingStore.voiceprintLabels(stem: stem, in: dir).contains(label) else {
+            do {
+                _ = try SpeakerLabelStore.setLabel(label, to: trimmed, stem: stem, in: dir)
+                Log.event(category: "coordinator", action: "speaker_labeled_no_voiceprint", attributes: [
+                    "stem": stem, "label": label,
+                ])
+                completion(.success(()))
+            } catch {
+                self.notifyError("Couldn't record the name: \(error.localizedDescription)")
+                completion(.failure(error))
+            }
             return
         }
         Log.event(category: "coordinator", action: "roster_enroll_requested", attributes: [

@@ -163,6 +163,13 @@ final class MeetingLibraryServiceTests: XCTestCase {
         )
     }
 
+    /// Write a `<stem>.embeddings.json` so `MeetingStore.voiceprintLabels` sees the
+    /// given labels as enrollable (the input `nameSpeaker`'s guard reads).
+    private func writeEmbeddings(_ embeddings: [String: [Double]], stem: String) throws {
+        let data = try JSONSerialization.data(withJSONObject: ["embeddings": embeddings])
+        try data.write(to: dir.appendingPathComponent("\(stem).embeddings.json"))
+    }
+
     private func drainMain() {
         let e = expectation(description: "drain")
         DispatchQueue.main.async { e.fulfill() }
@@ -453,7 +460,8 @@ final class MeetingLibraryServiceTests: XCTestCase {
     // MARK: - FEAT3-UNDO: reversible speaker naming
 
     func test_nameSpeaker_enrolls_no_relabel_and_writes_overlay_on_success() throws {
-        try touch("m.embeddings.json")
+        // A label that carries a voiceprint takes the enroll path (cross-meeting).
+        try writeEmbeddings(["THEM-A": [0.1, 0.2]], stem: "m")
         var captured: Result<Void, Error>?
         service.nameSpeaker(stem: "m", label: "THEM-A", name: "Alice") { captured = $0 }
 
@@ -470,12 +478,27 @@ final class MeetingLibraryServiceTests: XCTestCase {
         guard case .success? = captured else { return XCTFail("expected success") }
     }
 
-    func test_nameSpeaker_missing_voiceprints_fails_without_overlay() {
+    func test_nameSpeaker_without_voiceprint_labels_overlay_only_and_never_enrolls() {
+        // The "pipeline exited 2" fix: a label with no voiceprint (speaker_unknown, an
+        // unclustered id, or a meeting with no embeddings sidecar at all) cannot be
+        // enrolled. Rather than failing on the enroll subprocess, it records the name in
+        // the display overlay and never touches the roster.
         var captured: Result<Void, Error>?
-        service.nameSpeaker(stem: "m", label: "THEM-A", name: "Alice") { captured = $0 }
-        guard case .failure? = captured else { return XCTFail("expected failure") }
+        service.nameSpeaker(stem: "m", label: "speaker_unknown", name: "Raza") { captured = $0 }
+        guard case .success? = captured else { return XCTFail("expected overlay-only success") }
+        XCTAssertTrue(driver.enrollInputs.isEmpty, "no voiceprint means no enroll subprocess")
+        XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels["speaker_unknown"], "Raza")
+    }
+
+    func test_nameSpeaker_labels_overlay_only_when_the_label_is_absent_from_embeddings() throws {
+        // The sidecar exists but this label is not one of its keys (the junk-drawer
+        // case): still overlay-only, still no enroll.
+        try writeEmbeddings(["THEM-A": [0.1]], stem: "m")
+        var captured: Result<Void, Error>?
+        service.nameSpeaker(stem: "m", label: "speaker_unknown", name: "Raza") { captured = $0 }
+        guard case .success? = captured else { return XCTFail("expected overlay-only success") }
         XCTAssertTrue(driver.enrollInputs.isEmpty)
-        XCTAssertTrue(SpeakerLabelStore.read(stem: "m", in: dir).labels.isEmpty)
+        XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels["speaker_unknown"], "Raza")
     }
 
     func test_undoSpeakerNaming_reverts_overlay_immediately_and_forgets() throws {

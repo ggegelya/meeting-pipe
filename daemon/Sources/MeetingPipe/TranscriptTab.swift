@@ -73,6 +73,12 @@ enum TranscriptLoader {
         /// at display time, not baked into `segments`, so the raw diarization label
         /// stays recoverable. `.empty` from `parse` (no sidecar in a raw payload).
         var speakerOverlay: SpeakerLabelStore.Overlay = .empty
+        /// Diarization clusters that carry a voiceprint in `<stem>.embeddings.json`,
+        /// i.e. the labels `mp roster enroll` can actually enroll. A label absent
+        /// here (a `speaker_unknown` junk-drawer line, a raw id that never clustered)
+        /// has no voice to remember, so the row offers per-line assignment instead of
+        /// cluster enrollment. Enrolling one used to hard-fail with "pipeline exited 2".
+        var voiceprintLabels: Set<String> = []
     }
 
     static func load(stem: String, in directory: URL) -> Result? {
@@ -91,7 +97,8 @@ enum TranscriptLoader {
             segments: overlaid,
             language: parsed.language,
             speakerOrder: parsed.speakerOrder,
-            speakerOverlay: SpeakerLabelStore.read(stem: stem, in: directory)
+            speakerOverlay: SpeakerLabelStore.read(stem: stem, in: directory),
+            voiceprintLabels: MeetingStore.voiceprintLabels(stem: stem, in: directory)
         )
     }
 
@@ -150,13 +157,6 @@ enum TranscriptDisplay {
         return id
     }
 
-    /// True for the unnamed speakers the roster naming affordance can enroll:
-    /// FEAT3-ROSTER unknown clusters (`THEM-A`) and raw diarization ids.
-    static func isNameable(_ speakerID: String?) -> Bool {
-        guard let id = speakerID, !id.isEmpty else { return false }
-        return id.hasPrefix("THEM-") || id.hasPrefix("speaker_")
-    }
-
     /// Stable tint per speaker so list reordering doesn't reshuffle colors.
     static func color(for speakerID: String?) -> Color {
         guard let id = speakerID, !id.isEmpty else { return Color(MPColors.fgMuted) }
@@ -192,6 +192,15 @@ struct NamingTarget: Identifiable {
     var id: String { label }
 }
 
+/// A batch of segments the "New person..." label-only sheet is open for
+/// (FEAT3-SEGMENT). Distinct from `NamingTarget`: this assigns a typed name to
+/// specific lines through the overlay and enrolls no voiceprint, so it works for
+/// `speaker_unknown` lines and people who were never diarized.
+struct AssignNewTarget: Identifiable {
+    let indices: [Int]
+    var id: String { indices.map(String.init).joined(separator: ",") }
+}
+
 /// A transcript-row click, classified by held modifiers (FEAT3-SEGMENT multi-select):
 /// plain seeks, Cmd toggles the segment in the selection, Shift extends the range.
 enum SegmentClick { case plain, command, shift }
@@ -209,12 +218,17 @@ struct TranscriptTab: View {
     /// Flagged-moment offsets (FEAT8) from `<stem>.markers.json`, rendered as
     /// anchor chips in the transcript.
     @State private var markers: [Double] = []
+    /// Diarization clusters with a voiceprint (FEAT3-ROSTER): the labels that can be
+    /// enrolled. A label absent here gets per-line assignment, not cluster naming.
+    @State private var voiceprintLabels: Set<String> = []
     @State private var loadedForStem: String? = nil
     @State private var loading: Bool = true
     /// Segment whose edit sheet is open; nil when no sheet is showing.
     @State private var editingSegment: TranscriptSegment? = nil
     /// Raw speaker label being named (FEAT3-ROSTER); nil when the sheet is closed.
     @State private var namingTarget: NamingTarget? = nil
+    /// Segments being assigned to a typed-in new person (FEAT3-SEGMENT); nil when closed.
+    @State private var assignNewTarget: AssignNewTarget? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -243,7 +257,7 @@ struct TranscriptTab: View {
         .sheet(item: $namingTarget) { target in
             SpeakerNamingSheet(
                 currentDisplay: target.currentName ?? TranscriptDisplay.displayName(for: target.label),
-                isRename: target.currentName != nil,
+                mode: target.currentName != nil ? .rename : .enroll,
                 initialName: target.currentName ?? "",
                 onSave: { name in
                     if let old = target.currentName {
@@ -254,6 +268,24 @@ struct TranscriptTab: View {
                 },
                 onCancel: { namingTarget = nil }
             )
+        }
+        .sheet(item: $assignNewTarget) { target in
+            SpeakerNamingSheet(
+                currentDisplay: target.indices.count == 1 ? "this line" : "these \(target.indices.count) lines",
+                mode: .assignNew,
+                initialName: "",
+                onSave: { name in
+                    reassign(indices: target.indices, toLabel: name)
+                    assignNewTarget = nil
+                },
+                onCancel: { assignNewTarget = nil }
+            )
+        }
+        // Hold the transcript still while a sheet is open (FEAT3): naming or editing
+        // a line while playback keeps scrolling the list out from under the cursor
+        // is the friction that forced a manual pause every time.
+        .onChange(of: editingSegment != nil || namingTarget != nil || assignNewTarget != nil) { _, open in
+            if open { playback.pause() }
         }
     }
 
@@ -306,6 +338,7 @@ struct TranscriptTab: View {
                 language: language,
                 markers: markers,
                 overlay: speakerOverlay,
+                voiceprintLabels: voiceprintLabels,
                 playback: playback,
                 onEdit: { seg in editingSegment = seg },
                 onName: { label in namingTarget = NamingTarget(label: label) },
@@ -314,6 +347,7 @@ struct TranscriptTab: View {
                 },
                 onUndoName: { label, current in undoNaming(label: label, name: current) },
                 onReassign: { indices, label in reassign(indices: indices, toLabel: label) },
+                onAssignNew: { indices in assignNewTarget = AssignNewTarget(indices: indices) },
                 onResetReassignment: { indices in resetReassignment(indices: indices) }
             )
         }
@@ -407,6 +441,7 @@ struct TranscriptTab: View {
         segments = result?.segments ?? []
         language = result?.language
         speakerOverlay = result?.speakerOverlay ?? .empty
+        voiceprintLabels = result?.voiceprintLabels ?? []
         // Small sidecar; a synchronous read on main is fine, like the corrections overlay.
         markers = MarkerFile.read(stem: stem, in: dir)?.markers.map(\.tSeconds) ?? []
         loadedForStem = stem
@@ -423,6 +458,9 @@ private struct TranscriptList: View {
     let markers: [Double]
     /// Reversible speaker-label overrides (FEAT3-UNDO), resolved per row for display.
     let overlay: SpeakerLabelStore.Overlay
+    /// Diarization clusters that carry a voiceprint (FEAT3-ROSTER): only these offer
+    /// cluster enrollment. Everything else gets per-line assignment.
+    let voiceprintLabels: Set<String>
     @ObservedObject var playback: AudioPlaybackController
     /// Called on "Edit text" context-menu action; the host owns sheet presentation.
     let onEdit: (TranscriptSegment) -> Void
@@ -432,8 +470,10 @@ private struct TranscriptList: View {
     let onRename: (String, String) -> Void
     /// Called on "Undo naming" (FEAT3-UNDO) with the raw label and its current name.
     let onUndoName: (String, String) -> Void
-    /// Called on "Reassign to…" (FEAT3-SEGMENT) with the target segment indices and the destination label.
+    /// Called on "Assign to <existing speaker>" (FEAT3-SEGMENT) with the target segment indices and the destination label.
     let onReassign: ([Int], String) -> Void
+    /// Called on "New person…" (FEAT3-SEGMENT) with the target segment indices; the host opens the label-only naming sheet.
+    let onAssignNew: ([Int]) -> Void
     /// Called on "Reset to original label" (FEAT3-SEGMENT) with the target segment indices.
     let onResetReassignment: ([Int]) -> Void
 
@@ -486,6 +526,7 @@ private struct TranscriptList: View {
                         TranscriptRow(
                             segment: seg,
                             overlay: overlay,
+                            hasVoiceprint: seg.speakerID.map { voiceprintLabels.contains($0) } ?? false,
                             isActive: seg.index == activeIndex,
                             isSelected: selection.contains(seg.index),
                             reassignTargets: speakerTargets.filter {
@@ -511,6 +552,10 @@ private struct TranscriptList: View {
                                 onReassign(selection.targets(for: seg.index), label)
                                 selection.clear()
                             },
+                            onAssignNew: {
+                                onAssignNew(selection.targets(for: seg.index))
+                                selection.clear()
+                            },
                             onResetSegment: {
                                 onResetReassignment(selection.targets(for: seg.index))
                                 selection.clear()
@@ -525,7 +570,10 @@ private struct TranscriptList: View {
                 let newIdx = TranscriptSegmentLookup.index(at: t, in: segments)
                 if newIdx != activeIndex {
                     activeIndex = newIdx
-                    if playback.isPlaying, let idx = newIdx {
+                    // Follow the play head, but not while a multi-select is being built
+                    // (FEAT3-SEGMENT): auto-scrolling the rows out from under the cursor
+                    // is what made reassigning a batch fight the user.
+                    if playback.isPlaying, selection.isEmpty, let idx = newIdx {
                         withAnimation(.easeInOut(duration: 0.25)) {
                             proxy.scrollTo(idx, anchor: .center)
                         }
@@ -579,10 +627,14 @@ private struct TranscriptRow: View {
     let segment: TranscriptSegment
     /// Reversible speaker-label overrides (FEAT3-UNDO); resolved for display + menu.
     let overlay: SpeakerLabelStore.Overlay
+    /// True when this segment's cluster has a voiceprint to enroll (FEAT3-ROSTER).
+    /// Only then is "Name this speaker..." offered; otherwise the row offers per-line
+    /// assignment, so a voiceprint-less `speaker_unknown` no longer hard-fails on enroll.
+    let hasVoiceprint: Bool
     let isActive: Bool
     /// Selected for a multi-segment reassignment (FEAT3-SEGMENT).
     let isSelected: Bool
-    /// Other speakers present in the meeting, for the "Reassign to..." menu.
+    /// Other speakers present in the meeting, for the "Assign to..." menu.
     let reassignTargets: [(label: String, display: String)]
     /// True when this segment carries a per-segment reassignment (offers "Reset").
     let isReassigned: Bool
@@ -592,8 +644,10 @@ private struct TranscriptRow: View {
     let onName: (String) -> Void
     let onRename: (String, String) -> Void
     let onUndoName: (String, String) -> Void
-    /// Reassign the current selection (or just this segment) to a label.
+    /// Reassign the current selection (or just this segment) to an existing label.
     let onReassignTo: (String) -> Void
+    /// Assign the current selection (or just this segment) to a typed-in new person.
+    let onAssignNew: () -> Void
     /// Reset the current selection's (or this segment's) per-segment reassignment.
     let onResetSegment: () -> Void
 
@@ -683,31 +737,36 @@ private struct TranscriptRow: View {
                     // FEAT3-UNDO: an in-app-named cluster is reversible.
                     Button("Rename…") { onRename(raw, name) }
                     Button("Undo naming", role: .destructive) { onUndoName(raw, name) }
-                } else if TranscriptDisplay.isNameable(raw) {
+                } else if hasVoiceprint {
+                    // FEAT3-ROSTER: only a cluster with a voiceprint can be enrolled.
+                    // A voiceprint-less line (speaker_unknown, an unclustered id) uses
+                    // the per-line assign menu below instead, which never touches the
+                    // roster and so cannot fail on a missing embedding.
                     Button("Name this speaker…") { onName(raw) }
                 }
             }
-            reassignMenu
+            assignMenu
         }
     }
 
-    /// FEAT3-SEGMENT: reassign this segment (or the whole multi-selection) to another
-    /// speaker present in the meeting, or reset a prior reassignment. Label-only: no
-    /// voiceprint is enrolled, so roster centroids are untouched.
+    /// FEAT3-SEGMENT: assign this segment (or the whole multi-selection) to a speaker
+    /// present in the meeting or to a typed-in new person, or reset a prior
+    /// assignment. Label-only: no voiceprint is enrolled, so roster centroids are
+    /// untouched, and a new name is written straight to the overlay. "New person..."
+    /// is the path for someone diarization missed (a mid-meeting joiner with a line
+    /// or two) or an unknown line that belongs to nobody already listed.
     @ViewBuilder
-    private var reassignMenu: some View {
-        if !reassignTargets.isEmpty || isReassigned {
-            Divider()
-            if !reassignTargets.isEmpty {
-                Menu("Reassign to\u{2026}") {
-                    ForEach(reassignTargets, id: \.label) { target in
-                        Button(target.display) { onReassignTo(target.label) }
-                    }
-                }
+    private var assignMenu: some View {
+        Divider()
+        Menu("Assign to\u{2026}") {
+            ForEach(reassignTargets, id: \.label) { target in
+                Button(target.display) { onReassignTo(target.label) }
             }
-            if isReassigned {
-                Button("Reset to original label") { onResetSegment() }
-            }
+            if !reassignTargets.isEmpty { Divider() }
+            Button("New person\u{2026}") { onAssignNew() }
+        }
+        if isReassigned {
+            Button("Reset to original label") { onResetSegment() }
         }
     }
 
@@ -721,11 +780,16 @@ private struct TranscriptRow: View {
     }
 }
 
-/// Name-entry sheet for enrolling a diarized speaker into the roster (FEAT3-ROSTER),
-/// reused for renaming an already-named speaker (FEAT3-UNDO).
+/// Name-entry sheet for the three speaker-naming flows: enrolling a diarized voice
+/// into the roster (FEAT3-ROSTER), renaming an already-named one (FEAT3-UNDO), and
+/// assigning specific lines to a typed-in new person (FEAT3-SEGMENT). The copy is
+/// mode-specific because the enroll flow persists a cross-meeting voiceprint and the
+/// line-assign flow deliberately does not.
+enum SpeakerNamingMode { case enroll, rename, assignNew }
+
 private struct SpeakerNamingSheet: View {
     let currentDisplay: String
-    let isRename: Bool
+    let mode: SpeakerNamingMode
     let onSave: (String) -> Void
     let onCancel: () -> Void
 
@@ -733,26 +797,51 @@ private struct SpeakerNamingSheet: View {
 
     init(
         currentDisplay: String,
-        isRename: Bool = false,
+        mode: SpeakerNamingMode = .enroll,
         initialName: String = "",
         onSave: @escaping (String) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.currentDisplay = currentDisplay
-        self.isRename = isRename
+        self.mode = mode
         self.onSave = onSave
         self.onCancel = onCancel
         _name = State(initialValue: initialName)
     }
 
+    private var title: String {
+        switch mode {
+        case .enroll:    return "Name \(currentDisplay)"
+        case .rename:    return "Rename \(currentDisplay)"
+        case .assignNew: return "Assign \(currentDisplay) to a new person"
+        }
+    }
+
+    private var explanation: String {
+        switch mode {
+        case .enroll, .rename:
+            // FEAT3-UNDO name-time honesty: state plainly that this enrolls a
+            // persistent voiceprint affecting future meetings, reversibly.
+            return "Enrolls this voice into your roster, so this person is named automatically in future meetings. You can undo the naming or remove them from your roster later from the speaker's right-click menu; the original diarization label is kept either way."
+        case .assignNew:
+            // FEAT3-SEGMENT: label-only, so be honest that it does NOT learn the voice.
+            return "Labels the selected lines in this meeting only. No voiceprint is learned, so this person is not recognised automatically in other meetings. Use it for someone diarization missed, or a line that belongs to nobody already listed. Reversible from the same menu."
+        }
+    }
+
+    private var saveTitle: String {
+        switch mode {
+        case .enroll:    return "Save"
+        case .rename:    return "Rename"
+        case .assignNew: return "Assign"
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(isRename ? "Rename \(currentDisplay)" : "Name \(currentDisplay)")
+            Text(title)
                 .font(.headline)
-            // FEAT3-UNDO name-time honesty: state plainly that this enrolls a
-            // persistent voiceprint affecting future meetings, and that it is now
-            // reversible from the same menu.
-            Text("Enrolls this voice into your roster, so this person is named automatically in future meetings. You can undo the naming or remove them from your roster later from the speaker's right-click menu; the original diarization label is kept either way.")
+            Text(explanation)
                 .font(.caption)
                 .foregroundStyle(Color(MPColors.fgMuted))
             TextField("Name", text: $name)
@@ -762,7 +851,7 @@ private struct SpeakerNamingSheet: View {
                 Spacer()
                 Button("Cancel", role: .cancel, action: onCancel)
                     .keyboardShortcut(.cancelAction)
-                Button(isRename ? "Rename" : "Save", action: submit)
+                Button(saveTitle, action: submit)
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
