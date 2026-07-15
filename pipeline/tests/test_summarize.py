@@ -485,6 +485,71 @@ def test_ai6_picks_the_latest_prior_meeting(tmp_path: Path):
     assert "Old decision." not in ctx
 
 
+def test_ai6_skips_prior_in_a_different_language(tmp_path: Path):
+    # LANG1: an English meeting following a Ukrainian one in the same workflow
+    # must not inherit the prior's language. The continuity block is dropped so
+    # the prior's Ukrainian prose can't pull the summary out of English (the
+    # 20260714-193655 incident, where it defeated even the language repair).
+    prior = MeetingSummary(
+        title="Уніфікація CI/CD workflow",
+        summary=["Обговорили уніфікацію пайплайнів."],
+        decisions=["THEM-A зробить запит до DevOps."],
+        actions=[ActionItem(task="Зробити інвентар GitHub Actions", owner="THEM-A",
+                            confidence="high", resolved=False)],
+        detected_language="uk",
+    )
+    _write_prior_meeting(tmp_path, "20260714-1620", workflow_id="wf-1", summary=prior)
+    md = _current_meeting(tmp_path, "20260714-1936", workflow_id="wf-1")  # English transcript
+
+    ctx = _prior_meeting_context(md, Config(recording=Recording(output_dir=tmp_path)))
+    assert ctx is None
+
+
+def test_ai6_keeps_prior_in_the_same_language(tmp_path: Path):
+    # The guard is symmetric, not English-only: a Ukrainian meeting after a
+    # Ukrainian one still carries continuity, so the fix does not nuke a
+    # legitimately same-language series.
+    prior = MeetingSummary(
+        title="Уніфікація CI/CD workflow",
+        summary=["s"],
+        decisions=["THEM-A зробить запит до DevOps."],
+        detected_language="uk",
+    )
+    _write_prior_meeting(tmp_path, "20260714-1000", workflow_id="wf-uk", summary=prior)
+    md = tmp_path / "20260714-1620.md"
+    md.write_text(
+        "# Transcript\n\n**A**: Привіт, почнемо нашу зустріч про пайплайни.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "20260714-1620.meta.json").write_text(
+        json.dumps({"workflow_id": "wf-uk", "workflow_name": "Weekly"}), encoding="utf-8"
+    )
+
+    ctx = _prior_meeting_context(md, Config(recording=Recording(output_dir=tmp_path)))
+    assert ctx is not None
+    assert "THEM-A зробить запит до DevOps." in ctx
+
+
+def test_summarize_omits_cross_language_prior_from_prompt(tmp_path: Path):
+    # End-to-end: the cross-language prior never reaches the system prompt, so the
+    # model is never nudged toward the wrong language in the first place.
+    prior = MeetingSummary(
+        title="Уніфікація CI/CD workflow",
+        summary=["s"],
+        decisions=["THEM-A зробить запит до DevOps."],
+        detected_language="uk",
+    )
+    _write_prior_meeting(tmp_path, "20260714-1620", workflow_id="wf-1", summary=prior)
+    md = _current_meeting(tmp_path, "20260714-1936", workflow_id="wf-1")
+
+    client = _CapturingClient()
+    summarize(md, cfg=Config(recording=Recording(output_dir=tmp_path)), client=client)
+
+    assert client.system_prompt is not None
+    assert "Previous meeting in this series" not in client.system_prompt
+    assert "зробить запит" not in client.system_prompt
+
+
 # --- FEAT8: flagged moments reach the summarizer -----------------------------
 
 def _write_transcript_with_markers(root: Path, stem: str, *, segments, marker_offsets) -> Path:

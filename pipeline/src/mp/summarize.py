@@ -209,8 +209,9 @@ def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
     sidecar); no fuzzy series inference. Assembled from local disk, so cloud and
     local backends receive it identically and the egress profile is unchanged
     (it routes to whichever backend already summarizes this transcript). The
-    first meeting in a workflow, or one with no prior decisions/open actions, is
-    a clean no-op.
+    first meeting in a workflow, one with no prior decisions/open actions, or one
+    whose language differs from this meeting's (LANG1: a foreign-language block
+    would pull the summary into the wrong language) is a clean no-op.
     """
     workflow_id = read_meta(transcript_md).get("workflow_id")
     if not workflow_id:
@@ -242,6 +243,26 @@ def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
     decisions = [d.strip() for d in prior.decisions if d.strip()][:_AI6_MAX_DECISIONS]
     open_actions = [a for a in prior.actions if not a.resolved][:_AI6_MAX_ACTIONS]
     if not decisions and not open_actions:
+        return None
+
+    # LANG1/AI6: this continuity block is trusted context placed before the
+    # (untrusted) transcript, so the model mirrors ITS language. When the prior
+    # meeting is in a different language than this one, that pulls the whole
+    # summary into the prior's language and even defeats the post-hoc language
+    # repair, which re-uses this same block (an all-English meeting following a
+    # Ukrainian one in the same workflow shipped a fully Ukrainian summary). Carry
+    # facts only within one language: drop the block when the prior's language is
+    # known and differs from this meeting's target output language.
+    target_lang = expected_summary_language(
+        cfg.summarization.summary_language, transcript_md.read_text(encoding="utf-8")
+    )
+    prior_lang = (prior.detected_language or "").strip().lower()
+    if target_lang is not None and prior_lang and prior_lang != target_lang:
+        log.info(
+            "AI6: dropping prior %s continuity (language %s); differs from this "
+            "meeting's target language %s",
+            prior_stem, prior_lang, target_lang,
+        )
         return None
 
     workflow_name = read_meta(transcript_md).get("workflow_name") or "this"
