@@ -2,7 +2,9 @@
 
 Five bars (A15, A16, DIAR1, SUM1-APPLE, UX4) shipped code in Q3 and were never validated on a real machine. This runbook is the checklist: the exact command per bar, the pass threshold, and where to read the result.
 
-**The split that matters.** Three of the five are machine-checkable and are now measured (see Results). Two need a human: one a physically forced capture failure (UX4, done 2026-07-15), the other a person to say who was speaking (DIAR1 DER, still owed). Both are called out with a bounded procedure rather than a vague "go measure it".
+**All five are now closed (2026-07-16); see Results.** Three were machine-checkable once the scaffolding was fixed. Two needed a human and got one: a physically forced capture failure (UX4, 2026-07-15) and a person to say who was actually speaking (DIAR1 DER, 8.99%, 2026-07-16). One leg was **waived rather than measured** and is labelled as such rather than dressed up as a pass: SUM1-APPLE's zero-egress (now EGRESS1, P4).
+
+This file stays as the reproduction recipe: every number below has the command that regenerates it, so a later regression is a re-run rather than an archaeology project.
 
 `scripts/valid1_check.py` is the harness. Stdlib-only, so it runs on a clean Mac without `uv`.
 
@@ -58,15 +60,38 @@ Pairs `transcription.engine_started` / `engine_succeeded` on `file`. `engine_suc
 
 **Threshold:** every run faster than real time. The original "no segment over 10 s" phrasing predates FluidAudio, which diarizes the whole file in one `performCompleteDiarization` call rather than streaming per segment, so there is no per-segment stage to time. Keeping up with real time is the meaningful restatement.
 
-### Error rate: measured as a lower bound from the user's own corrections
+### Error rate: measured, 8.99%
 
-**How:** `scripts/valid1_check.py --der`
+**How:**
 
-The speaker reassignments made in the Transcript tab are hand-made ground truth: reassigning a line means the diarizer put it on the wrong person. So corrected-speech / total-speech is a real measurement, and `<stem>.speaker_labels.json` accumulates it as a side effect of normal use rather than a labelling chore.
+```bash
+scripts/valid1_check.py --der                                  # lower bound, all corrected meetings
+scripts/valid1_check.py --der --reviewed <stem> [<stem> ...]   # a real DER over meetings reviewed line by line
+```
+
+The speaker reassignments made in the Transcript tab are hand-made ground truth: reassigning a line means the diarizer put it on the wrong person. So mislabelled-speech / total-speech is a real measurement, and `<stem>.speaker_labels.json` accumulates it as a side effect of normal use rather than a labelling chore.
 
 Two things deliberately do not count as errors, both filtered by comparing the **resolved person** rather than the raw label: a cluster rename (naming an unnamed voice is not fixing a wrong one), and a no-op override assigning a line to the person it already showed (the real data has these).
 
-**The number is a LOWER BOUND, not a DER**, and the caveat has to travel with it: a line nobody reassigned is either correct or never reviewed, and nothing on disk tells those apart. A meeting that was spot-checked scores near zero and drags the aggregate down, so the per-meeting rows carry the signal, not the aggregate. A true DER still needs one exhaustively-labelled meeting (below).
+**`--reviewed` is what makes it a DER rather than a bound.** Without it, an untouched line is either correct or never looked at, and nothing on disk tells those apart, so the number is only a lower bound. Naming the meetings that were reviewed line by line makes the denominator honest: in those, an untouched line is *known* correct. No file can infer this, so it is an explicit input.
+
+**Result (2026-07-16): DER = 8.99%** over 39.7 min across three meetings the owner reviewed end to end:
+
+```
+20260716-103024   49.0% misattributed  of   4.8 min
+20260715-163053   13.6% misattributed  of   8.4 min
+20260716-113206    0.3% misattributed  of  26.5 min
+```
+
+Reproduce with:
+
+```bash
+scripts/valid1_check.py --der --reviewed 20260715-163053 20260716-103024 20260716-113206
+```
+
+**This is the project's definition of DER** (mislabelled speech / total speech, i.e. speaker attribution over transcribed speech), the one the original bar asked for. It is *not* the academic NIST DER, which also charges missed speech and false alarms against a reference segmentation. Do not compare it to published DER numbers without that caveat.
+
+**Read the spread, not the mean.** 0.3% / 13.6% / 49.0% is bimodal: two meetings were fine and one was a catastrophe. The 8.99% aggregate flatters it, and averaging is what would hide the real defect. The only reference point available is FluidAudio's published AMI SDM DER (13.89% at step 0.1), a different corpus and a different metric; the aggregate sits under it, but the 49% meeting does not, and that outlier is the thing worth fixing. It is tracked as DIAR2, not as a VALID1 remainder: VALID1's job was to produce the number, and DIAR2's is to move it.
 
 ### The failure mode the corrections exposed
 
@@ -94,9 +119,13 @@ Always pass `--since`. Attribution quality is not stationary: the pre-roster era
 
 **Quality and latency: closed in Q5** by the same engine-comparison run as A16 ([`docs/engine-comparison.md`](../engine-comparison.md)).
 
-**Zero egress: owner-owed.** Install and arm Little Snitch, summarize a meeting with the backend set to Apple Intelligence (Preferences > Pipeline, or pin a workflow to it), and confirm no outbound connection during summarization. The model runs on-device; the pipeline only egresses if a sink is configured.
+**Zero egress: WAIVED 2026-07-16 by owner decision. Not measured.** Stated plainly so no later reader mistakes this for a pass: nobody has watched the wire during an Apple Intelligence summary, so the zero-egress claim rests on argument, not evidence.
 
-**Threshold:** zero non-loopback connection during summarization.
+The argument is reasonable, which is why the waiver is reasonable. The Foundation Model runs on-device by construction; the daemon makes no outbound HTTP at all (that is a standing rule, see `daemon/CLAUDE.md`, and outbound calls live in the pipeline); and under regulated / NDA the pipeline's `egress_guard` clamps the process anyway. But an argument is not a measurement, and the original bar asked for a measurement.
+
+Tracked as **EGRESS1 (P4)** in the backlog rather than kept as a VALID1 remainder. Promote it if the zero-egress claim ever becomes load-bearing (an NDA meeting whose confidentiality actually depends on it, or a claim made to someone else).
+
+**Threshold if it is ever run:** arm Little Snitch, summarize a meeting with the backend set to Apple Intelligence (Preferences > Pipeline, or pin a workflow to it), and confirm zero non-loopback connections during summarization.
 
 ## UX4: live degraded banner on a real failed SCStream
 
@@ -121,8 +150,8 @@ Measured 2026-07-14 on the owner's Mac (arm64, 32 GB, macOS 26.5.2).
 | A15 cold-start | 2026-07-14 | **baseline set** | cold **39.8 s**, warm **31.4 s**, model load **8.4 s** | Qwen2.5-7B-Instruct-4bit, median-length transcript. No prior number existed to regress against; this is the baseline. Warm-disk cold start (see caveat). |
 | A16 quality + latency | Q5 | **closed** | see [`engine-comparison.md`](../engine-comparison.md) | Closed by the 26-meeting engine-comparison run; outcome shipped as LOCAL6. |
 | DIAR1 latency | 2026-07-14 | **PASS** | 132 runs, 47.7 h of audio, **0 failures**. Real-time factor min **5x**, median **91x**, max 130x. Longest run 82.8 s for 28.7 min of audio. | Every run faster than real time. Worst case 5.3x. |
-| DIAR1 DER | 2026-07-16 | **lower bound measured** | **>= 2.9%** over 1.45 h of corrected speech. Per meeting: `20260716-103024` **49.0%**, `20260715-163053` 0.5%, `20260713-163009` 0.2%. | From the user's own in-app corrections (`--der`). A lower bound, not a DER: an untouched line is either correct or never reviewed. The 49% meeting is the real signal: `THEM-A` held **5 people** (see DIAR2). A true DER still needs one exhaustively-labelled meeting. |
+| DIAR1 DER | 2026-07-16 | **MEASURED: 8.99%** | **8.99%** over 39.7 min, 3 meetings reviewed end to end: `20260716-103024` **49.0%** (4.8 min), `20260715-163053` 13.6% (8.4 min), `20260716-113206` 0.3% (26.5 min). | From the owner's own in-app corrections (`--der --reviewed <stems>`). The project's DER (mislabelled / total speech), not the academic NIST DER. **Read the spread, not the mean**: bimodal, and the 49% meeting (`THEM-A` held **5 people**) is the real defect, owned by DIAR2. Clears the only reference available (FluidAudio's published 13.89% on AMI SDM, a different corpus + metric). |
 | DIAR1 attribution coverage | 2026-07-14 | **baseline set** | Post-roster (since 2026-06-01): **3.2 %** unattributed, 87.4 % named, 9.5 % unnamed remote cluster, over 79 meetings / 21.2 h. Lifetime: 14.0 % unattributed over 175 meetings / 40.4 h. | Not a DER. The lifetime number is dragged up by the pre-roster era (Apr-May: 25.9 %); the current diarizer is ~8x better than that. |
 | SUM1-APPLE quality / 2x latency | Q5 | **closed** | see [`engine-comparison.md`](../engine-comparison.md) | |
-| SUM1-APPLE zero-egress | - | **owner-owed** | - | Needs Little Snitch armed during an Apple Intelligence summarize. |
+| SUM1-APPLE zero-egress | 2026-07-16 | **WAIVED, not measured** | - | Owner decision: the on-device-by-construction argument was accepted in place of watching the wire. Not a pass, and recorded as such. Tracked as **EGRESS1 (P4)**; promote if the claim ever becomes load-bearing. |
 | UX4 degraded banner + event | 2026-07-15 | **PASS** | 1 `recording.degraded` (reason: user declined the capture TCC prompt) | Owner forced a real capture-permission failure mid-recording; `scripts/valid1_check.py --ux4` exited 0. |

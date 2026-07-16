@@ -19,7 +19,8 @@ Usage:
   scripts/valid1_check.py --ux4           # only the UX4 degraded/recovered assertion (exit 1 on fail)
   scripts/valid1_check.py --diar          # only DIAR1: ASR+diarization latency (exit 1 on fail)
   scripts/valid1_check.py --attribution   # only the speaker-attribution coverage read
-  scripts/valid1_check.py --der           # only DIAR1's DER lower bound, from in-app corrections
+  scripts/valid1_check.py --der           # DIAR1 DER lower bound, from in-app corrections
+  scripts/valid1_check.py --der --reviewed 20260716-113206 ...   # a real DER over meetings you reviewed fully
   scripts/valid1_check.py --coldstart     # A15: measure a cold vs warm local summarize (runs the model)
   scripts/valid1_check.py --timings       # only the run/stage timing table
   scripts/valid1_check.py --since 2026-06-03T00:00:00Z
@@ -527,26 +528,55 @@ def build_corrections_report(meetings: list[tuple[str, dict, dict]]) -> dict:
     return report
 
 
-def report_corrections(meetings_dir: Path, since: datetime | None = None) -> None:
+def report_corrections(
+    meetings_dir: Path,
+    since: datetime | None = None,
+    reviewed: list[str] | None = None,
+) -> None:
+    """`reviewed` names the meetings the owner confirms they went through line by
+    line. That is the only thing that turns the lower bound into a real DER: in an
+    exhaustively reviewed meeting an untouched line is *known* correct, so the
+    denominator is honest. Nothing on disk can infer this, so it is an explicit
+    input rather than a guess.
+    """
     meetings = [
         (stem, doc, read_overlay(meetings_dir, stem))
         for stem, doc in load_transcripts(meetings_dir, since)
     ]
-    meetings = [m for m in meetings if m[2].get("segments")]
+    if reviewed:
+        wanted = set(reviewed)
+        meetings = [m for m in meetings if m[0] in wanted]
+        missing = wanted - {m[0] for m in meetings}
+        if missing:
+            print(f"  warning: no transcript for {', '.join(sorted(missing))}")
+    else:
+        meetings = [m for m in meetings if m[2].get("segments")]
     r = build_corrections_report(meetings)
+    exhaustive = bool(reviewed)
     print("== DIAR1 DER, from in-app speaker corrections ==")
     if not r["meetings"]:
         print(f"  (no meetings with speaker corrections under {meetings_dir})")
         print("  Reassign some mislabelled lines in the Transcript tab first.")
         return
-    print(f"  {r['meetings']} corrected meetings, {r['speech_hours']} h of speech")
+    label = "reviewed end to end" if exhaustive else "corrected"
+    print(f"  {r['meetings']} meetings {label}, {r['speech_hours']} h of speech")
     for m in r["per_meeting"]:
-        print(f"    {m['stem']}  {m['corrected_share'] * 100:5.1f}% corrected  "
+        print(f"    {m['stem']}  {m['corrected_share'] * 100:5.1f}% misattributed  "
               f"of {m['speech_sec'] / 60:5.1f} min  ({m['overrides']} overrides)")
-    print(f"  DER LOWER BOUND: {r['der_lower_bound'] * 100:.2f}%")
-    print("    Lower bound only: an untouched line is either correct or never reviewed,")
-    print("    and nothing on disk tells them apart. A spot-checked meeting scores near")
-    print("    zero, so read the per-meeting rows above, not this aggregate.")
+    if exhaustive:
+        # Every line was looked at, so an untouched line is correct, not unreviewed.
+        print(f"  DER: {r['der_lower_bound'] * 100:.2f}%")
+        print("    A real rate over the reviewed set: mislabelled speech / total speech,")
+        print("    this project's definition (speaker attribution over transcribed")
+        print("    speech), not the academic NIST DER, which also charges missed speech")
+        print("    and false alarms. Read the spread above, not just the mean.")
+    else:
+        print(f"  DER LOWER BOUND: {r['der_lower_bound'] * 100:.2f}%")
+        print("    Lower bound only: an untouched line is either correct or never reviewed,")
+        print("    and nothing on disk tells them apart. A spot-checked meeting scores near")
+        print("    zero, so read the per-meeting rows above, not this aggregate.")
+        print("    Pass --reviewed <stem>... for meetings you went through line by line")
+        print("    to get a real DER over them.")
     if r["merged_clusters"]:
         print("  MERGED CLUSTERS (the diarizer put several people in one voice):")
         for m in r["merged_clusters"]:
@@ -740,7 +770,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--attribution", action="store_true",
                     help="only the speaker-attribution coverage read")
     ap.add_argument("--der", action="store_true",
-                    help="only DIAR1's DER lower bound, from in-app speaker corrections")
+                    help="only DIAR1's DER, from in-app speaker corrections")
+    ap.add_argument("--reviewed", type=str, nargs="+", default=None, metavar="STEM",
+                    help="meetings you reviewed line by line; scopes --der to them and "
+                         "reports a real DER instead of a lower bound")
     ap.add_argument("--timings", action="store_true", help="only the pipeline timing table")
     ap.add_argument("--coldstart", action="store_true",
                     help="A15: measure a cold vs warm local summarize (runs the model)")
@@ -785,7 +818,7 @@ def main(argv: list[str]) -> int:
     if run_attribution:
         sections.append(lambda: (report_attribution(args.meetings_dir, since), True)[1])
     if run_der:
-        sections.append(lambda: (report_corrections(args.meetings_dir, since), True)[1])
+        sections.append(lambda: (report_corrections(args.meetings_dir, since, args.reviewed), True)[1])
     if run_timings:
         sections.append(lambda: (report_timings(pipeline_events), True)[1])
 

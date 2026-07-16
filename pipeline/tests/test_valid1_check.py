@@ -191,6 +191,15 @@ def test_der_reports_a_cluster_the_diarizer_merged_several_people_into():
     assert merged["people"] == ["Anisha", "Heorhii", "Yash"]
 
 
+def test_der_weights_meetings_by_speech_time_not_by_meeting():
+    """A short catastrophic meeting must not outvote a long clean one: the rate is
+    over speech time. 45 s wrong out of 145 s total."""
+    short = _meeting("short", [_seg(0, 45, "THEM-A")], segments={"0": "Anisha"})
+    long = _meeting("long", [_seg(0, 100, "THEM-A")])
+    r = valid1_check.build_corrections_report([short, long])
+    assert r["der_lower_bound"] == round(45 / 145, 4)
+
+
 def test_der_empty_corpus_is_not_a_crash():
     assert valid1_check.build_corrections_report([]) == {"meetings": 0}
 
