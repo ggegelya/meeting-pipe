@@ -19,6 +19,7 @@ Usage:
   scripts/valid1_check.py --ux4           # only the UX4 degraded/recovered assertion (exit 1 on fail)
   scripts/valid1_check.py --diar          # only DIAR1: ASR+diarization latency (exit 1 on fail)
   scripts/valid1_check.py --attribution   # only the speaker-attribution coverage read
+  scripts/valid1_check.py --der           # only DIAR1's DER lower bound, from in-app corrections
   scripts/valid1_check.py --coldstart     # A15: measure a cold vs warm local summarize (runs the model)
   scripts/valid1_check.py --timings       # only the run/stage timing table
   scripts/valid1_check.py --since 2026-06-03T00:00:00Z
@@ -423,6 +424,136 @@ def report_attribution(meetings_dir: Path, since: datetime | None = None) -> Non
         f"{m['stem']} ({m['unattributed_share'] * 100:.0f}%)" for m in r["worst_meetings"]))
 
 
+# ------------------------------------- DIAR1 DER, from the user's own corrections
+
+def read_overlay(meetings_dir: Path, stem: str) -> dict:
+    """`<stem>.speaker_labels.json`: the in-app naming overlay. Empty when absent."""
+    try:
+        obj = json.loads((meetings_dir / f"{stem}.speaker_labels.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"labels": {}, "segments": {}}
+    if not isinstance(obj, dict):
+        return {"labels": {}, "segments": {}}
+    labels = obj.get("labels")
+    segments = obj.get("segments")
+    return {
+        "labels": labels if isinstance(labels, dict) else {},
+        "segments": segments if isinstance(segments, dict) else {},
+    }
+
+
+def build_corrections_report(meetings: list[tuple[str, dict, dict]]) -> dict:
+    """DIAR1's error rate, derived from the speaker corrections the user made in-app.
+
+    Their per-segment reassignments ARE hand-made ground truth: reassigning a line
+    means the diarizer put it on the wrong person. So corrected-speech / total-speech
+    is a real measurement, with one honest caveat that must travel with the number:
+
+      **It is a LOWER BOUND, not a DER.** A segment nobody reassigned is either
+      correct or never reviewed, and nothing on disk distinguishes those. A meeting
+      that was spot-checked scores near zero and drags the aggregate down. Only a
+      meeting labelled exhaustively yields a real DER, so per-meeting numbers matter
+      more than the aggregate here.
+
+    Two things deliberately do NOT count as errors:
+      - a cluster rename (`labels`), which is naming an unnamed voice, not fixing one;
+      - a no-op override assigning a line to the person it already showed.
+    Both are filtered by comparing the RESOLVED person, not the raw label.
+
+    Also reports the failure mode the corrections expose: a raw cluster that had to
+    be split across several real people (the diarizer merged them).
+    """
+    total = err = 0.0
+    per_meeting: list[dict] = []
+    merges: list[dict] = []
+    for stem, doc, overlay in meetings:
+        segments = doc.get("segments")
+        if not isinstance(segments, list) or not segments:
+            continue
+        labels: dict = overlay.get("labels") or {}
+        seg_overrides: dict = overlay.get("segments") or {}
+        m_total = m_err = 0.0
+        # raw cluster -> the distinct real people the user carved out of it
+        split: dict[str, set] = {}
+        for i, seg in enumerate(segments):
+            if not isinstance(seg, dict):
+                continue
+            try:
+                dur = float(seg.get("end", 0)) - float(seg.get("start", 0))
+            except (TypeError, ValueError):
+                continue
+            if dur <= 0:
+                continue
+            m_total += dur
+            override = seg_overrides.get(str(i))
+            if override is None:
+                continue
+            raw = seg.get("speaker")
+            was = labels.get(raw, raw)
+            now = labels.get(override, override)
+            if now != was:
+                m_err += dur
+                if isinstance(raw, str):
+                    split.setdefault(raw, set()).add(now)
+        if m_total <= 0:
+            continue
+        total += m_total
+        err += m_err
+        per_meeting.append({
+            "stem": stem,
+            "corrected_share": m_err / m_total,
+            "speech_sec": m_total,
+            "overrides": len(seg_overrides),
+        })
+        for raw, people in split.items():
+            # The cluster also keeps whatever was left un-corrected, so it held at
+            # least one more person than the user carved out of it.
+            if len(people) >= 2:
+                merges.append({
+                    "stem": stem, "cluster": raw,
+                    "people": sorted(people),
+                    "resolved_as": labels.get(raw, raw),
+                })
+
+    report: dict = {"meetings": len(per_meeting)}
+    if not per_meeting or total <= 0:
+        return report
+    report.update({
+        "speech_hours": round(total / 3600.0, 2),
+        "der_lower_bound": round(err / total, 4),
+        "per_meeting": sorted(per_meeting, key=lambda m: -m["corrected_share"]),
+        "merged_clusters": merges,
+    })
+    return report
+
+
+def report_corrections(meetings_dir: Path, since: datetime | None = None) -> None:
+    meetings = [
+        (stem, doc, read_overlay(meetings_dir, stem))
+        for stem, doc in load_transcripts(meetings_dir, since)
+    ]
+    meetings = [m for m in meetings if m[2].get("segments")]
+    r = build_corrections_report(meetings)
+    print("== DIAR1 DER, from in-app speaker corrections ==")
+    if not r["meetings"]:
+        print(f"  (no meetings with speaker corrections under {meetings_dir})")
+        print("  Reassign some mislabelled lines in the Transcript tab first.")
+        return
+    print(f"  {r['meetings']} corrected meetings, {r['speech_hours']} h of speech")
+    for m in r["per_meeting"]:
+        print(f"    {m['stem']}  {m['corrected_share'] * 100:5.1f}% corrected  "
+              f"of {m['speech_sec'] / 60:5.1f} min  ({m['overrides']} overrides)")
+    print(f"  DER LOWER BOUND: {r['der_lower_bound'] * 100:.2f}%")
+    print("    Lower bound only: an untouched line is either correct or never reviewed,")
+    print("    and nothing on disk tells them apart. A spot-checked meeting scores near")
+    print("    zero, so read the per-meeting rows above, not this aggregate.")
+    if r["merged_clusters"]:
+        print("  MERGED CLUSTERS (the diarizer put several people in one voice):")
+        for m in r["merged_clusters"]:
+            print(f"    {m['stem']}  {m['cluster']} (shown as {m['resolved_as']!r}) "
+                  f"actually held {len(m['people'])}+ people: {', '.join(m['people'])}")
+
+
 # ------------------------------------------------------------ A15 cold-start
 
 def free_memory_pct() -> float | None:
@@ -608,6 +739,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--diar", action="store_true", help="only the DIAR1 latency assertion")
     ap.add_argument("--attribution", action="store_true",
                     help="only the speaker-attribution coverage read")
+    ap.add_argument("--der", action="store_true",
+                    help="only DIAR1's DER lower bound, from in-app speaker corrections")
     ap.add_argument("--timings", action="store_true", help="only the pipeline timing table")
     ap.add_argument("--coldstart", action="store_true",
                     help="A15: measure a cold vs warm local summarize (runs the model)")
@@ -633,10 +766,11 @@ def main(argv: list[str]) -> int:
             return 2
         return 0 if run_coldstart(resolve_mp(), transcript, args.endpoint, args.out) else 1
 
-    selected = args.ux4 or args.diar or args.attribution or args.timings
+    selected = args.ux4 or args.diar or args.attribution or args.der or args.timings
     run_ux4 = args.ux4 or not selected
     run_diar = args.diar or not selected
     run_attribution = args.attribution or not selected
+    run_der = args.der or not selected
     run_timings = args.timings or not selected
 
     daemon_events = _load(args.events, since) if (run_ux4 or run_diar) else []
@@ -650,6 +784,8 @@ def main(argv: list[str]) -> int:
         sections.append(lambda: report_diar(daemon_events, args.engine))
     if run_attribution:
         sections.append(lambda: (report_attribution(args.meetings_dir, since), True)[1])
+    if run_der:
+        sections.append(lambda: (report_corrections(args.meetings_dir, since), True)[1])
     if run_timings:
         sections.append(lambda: (report_timings(pipeline_events), True)[1])
 

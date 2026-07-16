@@ -138,6 +138,63 @@ def test_attribution_ranks_the_worst_meetings_first():
     assert r["meetings"] == 2
 
 
+# -------------------------------------------------- DER from in-app corrections
+
+def _meeting(stem: str, segs: list[dict], labels=None, segments=None):
+    return (stem, {"segments": segs}, {"labels": labels or {}, "segments": segments or {}})
+
+
+def test_der_counts_a_reassignment_as_a_diarization_error():
+    m = _meeting("m1", [_seg(0, 90, "THEM-A"), _seg(90, 100, "THEM-A")],
+                 segments={"1": "Anisha"})
+    r = valid1_check.build_corrections_report([m])
+    # 10 s of 100 s was on the wrong person.
+    assert r["der_lower_bound"] == 0.1
+
+
+def test_der_ignores_a_cluster_rename_which_is_naming_not_a_correction():
+    """Naming THEM-A "Rana" resolves every THEM-A line to Rana, but the diarizer
+    was not wrong about who spoke; nothing was reassigned."""
+    m = _meeting("m1", [_seg(0, 100, "THEM-A")], labels={"THEM-A": "Rana"})
+    r = valid1_check.build_corrections_report([m])
+    assert r["der_lower_bound"] == 0.0
+
+
+def test_der_ignores_a_no_op_override_to_the_same_person():
+    # The real data had these: raw 'Heorhii' overridden to "Heorhii".
+    m = _meeting("m1", [_seg(0, 100, "Heorhii")], segments={"0": "Heorhii"})
+    r = valid1_check.build_corrections_report([m])
+    assert r["der_lower_bound"] == 0.0
+
+
+def test_der_ignores_an_override_that_only_renames_through_the_cluster():
+    # Assigning a line to THEM-A when it already showed as Rana (== labels[THEM-A])
+    # changes the label but not the person.
+    m = _meeting("m1", [_seg(0, 100, "THEM-A")],
+                 labels={"THEM-A": "Rana"}, segments={"0": "THEM-A"})
+    r = valid1_check.build_corrections_report([m])
+    assert r["der_lower_bound"] == 0.0
+
+
+def test_der_reports_a_cluster_the_diarizer_merged_several_people_into():
+    """The real 20260716-103024 failure: THEM-A held Sudip + 4 others, so half the
+    meeting was misattributed and the user split it by hand."""
+    segs = [_seg(0, 10, "THEM-A"), _seg(10, 20, "THEM-A"),
+            _seg(20, 30, "THEM-A"), _seg(30, 40, "THEM-A")]
+    m = _meeting("m1", segs, labels={"THEM-A": "Sudip"},
+                 segments={"1": "Anisha", "2": "Yash", "3": "Heorhii"})
+    r = valid1_check.build_corrections_report([m])
+    assert len(r["merged_clusters"]) == 1
+    merged = r["merged_clusters"][0]
+    assert merged["cluster"] == "THEM-A"
+    assert merged["resolved_as"] == "Sudip"
+    assert merged["people"] == ["Anisha", "Heorhii", "Yash"]
+
+
+def test_der_empty_corpus_is_not_a_crash():
+    assert valid1_check.build_corrections_report([]) == {"meetings": 0}
+
+
 def test_attribution_empty_corpus_is_not_a_crash():
     assert valid1_check.build_attribution_report([]) == {"meetings": 0}
     assert valid1_check.build_attribution_report([("m", {"segments": []})]) == {"meetings": 0}

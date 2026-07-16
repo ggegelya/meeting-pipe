@@ -58,9 +58,23 @@ Pairs `transcription.engine_started` / `engine_succeeded` on `file`. `engine_suc
 
 **Threshold:** every run faster than real time. The original "no segment over 10 s" phrasing predates FluidAudio, which diarizes the whole file in one `performCompleteDiarization` call rather than streaming per segment, so there is no per-segment stage to time. Keeping up with real time is the meaningful restatement.
 
-### Error rate: owner-owed, and here is exactly why
+### Error rate: measured as a lower bound from the user's own corrections
 
-A true DER needs ground truth for who spoke when. **The tempting shortcut does not work, and it is worth knowing why before reaching for it again.**
+**How:** `scripts/valid1_check.py --der`
+
+The speaker reassignments made in the Transcript tab are hand-made ground truth: reassigning a line means the diarizer put it on the wrong person. So corrected-speech / total-speech is a real measurement, and `<stem>.speaker_labels.json` accumulates it as a side effect of normal use rather than a labelling chore.
+
+Two things deliberately do not count as errors, both filtered by comparing the **resolved person** rather than the raw label: a cluster rename (naming an unnamed voice is not fixing a wrong one), and a no-op override assigning a line to the person it already showed (the real data has these).
+
+**The number is a LOWER BOUND, not a DER**, and the caveat has to travel with it: a line nobody reassigned is either correct or never reviewed, and nothing on disk tells those apart. A meeting that was spot-checked scores near zero and drags the aggregate down, so the per-meeting rows carry the signal, not the aggregate. A true DER still needs one exhaustively-labelled meeting (below).
+
+### The failure mode the corrections exposed
+
+`--der` also reports any raw cluster that had to be split across several real people. This found the thing that actually matters: in `20260716-103024`, `THEM-A` (named "Sudip") in fact held **five people** (Sudip, Anisha, Heorhii, Yash, Ayush). The diarizer merged the whole meeting into one voice and the user re-separated it by hand, which is why that meeting scores 49% while the spot-checked ones score under 1%. The user's own voice was inside the merge too: `label_me_speaker` pulled out only 3 segments and left 6 more buried in `THEM-A`. Tracked as DIAR2.
+
+### A true DER still needs one exhaustive sample
+
+The lower bound cannot become a real DER without a meeting labelled end to end. **The tempting shortcut does not work, and it is worth knowing why before reaching for it again.**
 
 Recordings are stereo (mic-left, system-right), and FluidAudio provably diarizes a mono `(L+R)/2` downmix (`FluidAudioRunner.readMonoFloat32`), so the channel *looks* like an independent oracle for "me vs them". It is not: `diarize.label_me_speaker` already picks the "me" speaker **from the channel** (`_resolve_me_id` takes the channel-assigned mic speaker as its first precedence, and `identify_user_speaker` cross-tabulates against the channel verdict). Grading that label against the channel measures the channel against itself and returns a meaningless near-zero. The channel is also blind to the split that actually matters, since every remote speaker shares the system channel.
 
@@ -107,7 +121,7 @@ Measured 2026-07-14 on the owner's Mac (arm64, 32 GB, macOS 26.5.2).
 | A15 cold-start | 2026-07-14 | **baseline set** | cold **39.8 s**, warm **31.4 s**, model load **8.4 s** | Qwen2.5-7B-Instruct-4bit, median-length transcript. No prior number existed to regress against; this is the baseline. Warm-disk cold start (see caveat). |
 | A16 quality + latency | Q5 | **closed** | see [`engine-comparison.md`](../engine-comparison.md) | Closed by the 26-meeting engine-comparison run; outcome shipped as LOCAL6. |
 | DIAR1 latency | 2026-07-14 | **PASS** | 132 runs, 47.7 h of audio, **0 failures**. Real-time factor min **5x**, median **91x**, max 130x. Longest run 82.8 s for 28.7 min of audio. | Every run faster than real time. Worst case 5.3x. |
-| DIAR1 DER | - | **owner-owed** | - | Needs hand-labelled ground truth; the channel shortcut is circular (see above). ~1 h of listening over 3 meetings. |
+| DIAR1 DER | 2026-07-16 | **lower bound measured** | **>= 2.9%** over 1.45 h of corrected speech. Per meeting: `20260716-103024` **49.0%**, `20260715-163053` 0.5%, `20260713-163009` 0.2%. | From the user's own in-app corrections (`--der`). A lower bound, not a DER: an untouched line is either correct or never reviewed. The 49% meeting is the real signal: `THEM-A` held **5 people** (see DIAR2). A true DER still needs one exhaustively-labelled meeting. |
 | DIAR1 attribution coverage | 2026-07-14 | **baseline set** | Post-roster (since 2026-06-01): **3.2 %** unattributed, 87.4 % named, 9.5 % unnamed remote cluster, over 79 meetings / 21.2 h. Lifetime: 14.0 % unattributed over 175 meetings / 40.4 h. | Not a DER. The lifetime number is dragged up by the pre-roster era (Apr-May: 25.9 %); the current diarizer is ~8x better than that. |
 | SUM1-APPLE quality / 2x latency | Q5 | **closed** | see [`engine-comparison.md`](../engine-comparison.md) | |
 | SUM1-APPLE zero-egress | - | **owner-owed** | - | Needs Little Snitch armed during an Apple Intelligence summarize. |
