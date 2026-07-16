@@ -61,17 +61,41 @@ say "Re-signing"
 ensure_dev_cert
 sign_app_with_resources "$APP"
 
-# `kickstart -k` sends SIGTERM and immediately respawns under the same
-# LaunchAgent label, bypassing the 10 s ThrottleInterval that would
-# otherwise add a fixed wall-clock cost to every iteration. Falls back
-# to a manual load when the agent isn't currently bootstrapped (e.g.
-# the user previously ran `launchctl unload`).
-say "Kickstarting daemon"
-if ! launchctl kickstart -k "gui/$UID/$LAUNCHD_LABEL" 2>/dev/null; then
-    PLIST="$HOME/Library/LaunchAgents/${LAUNCHD_LABEL}.plist"
-    [[ -f "$PLIST" ]] || die "LaunchAgent plist missing at $PLIST — run scripts/install.sh"
-    launchctl load -w "$PLIST"
-fi
+# Full bootout + bootstrap, NOT `kickstart -k`. A rebuild changes the binary's
+# cdhash, which staleifies launchd's cached launch constraint (the LWCR). The
+# cheaper `kickstart -k` reuses that stale constraint, so the respawn fails with
+# EX_CONFIG (78) — and kickstart still returns 0, so the failure is silent and the
+# daemon stays down while the script prints success (the "relaunch did nothing"
+# bug). A fresh bootout + bootstrap makes launchd recompute the constraint from
+# the new binary. RunAtLoad brings it straight back, so there is no 10 s
+# ThrottleInterval penalty (that throttles KeepAlive respawns, not a fresh load);
+# TCC grants are keyed on the signing identity, not the launchd registration, so
+# they survive this too.
+say "Relaunching daemon"
+PLIST="$HOME/Library/LaunchAgents/${LAUNCHD_LABEL}.plist"
+[[ -f "$PLIST" ]] || die "LaunchAgent plist missing at $PLIST — run scripts/install.sh"
+launchctl bootout "gui/$UID/$LAUNCHD_LABEL" 2>/dev/null || true
+# bootout returns before the old instance is fully reaped, so bootstrap can lose a
+# race with the teardown; retry briefly until launchd accepts the fresh job.
+bootstrapped=false
+for _ in 1 2 3 4 5; do
+    if launchctl bootstrap "gui/$UID" "$PLIST" 2>/dev/null; then
+        bootstrapped=true
+        break
+    fi
+    sleep 1
+done
+[[ "$bootstrapped" == true ]] || die "launchctl bootstrap failed for $PLIST — see 'launchctl print gui/$UID/$LAUNCHD_LABEL'"
+
+# Verify the daemon actually came up. Without this the script reports success
+# even when the spawn failed (the very bug this rewrite fixes), so a dead relaunch
+# must be loud.
+for _ in 1 2 3 4 5; do
+    pgrep -f "$APP/Contents/MacOS/MeetingPipe" >/dev/null && break
+    sleep 1
+done
+pgrep -f "$APP/Contents/MacOS/MeetingPipe" >/dev/null \
+    || die "daemon did not relaunch. Check ~/Library/Logs/MeetingPipe/launchd.err.log and 'launchctl print gui/$UID/$LAUNCHD_LABEL'"
 
 ELAPSED=$(($(date +%s) - START_TS))
 printf "\033[1;32m✓\033[0m Rebuilt + relaunched in %ds\n" "$ELAPSED"
