@@ -146,6 +146,10 @@ enum TranscriptDisplay {
     /// Maps `"speaker_0"` to `"Speaker 1"` (one-based for human readability).
     static func displayName(for speakerID: String?) -> String {
         guard let id = speakerID, !id.isEmpty else { return "Unknown" }
+        // The diarizer's catch-all bucket. Without this it fell through to the
+        // pass-through below and rendered the raw internal id, so the transcript
+        // showed literal "speaker_unknown" rows to the user.
+        if id == "speaker_unknown" { return "Unknown speaker" }
         if id.hasPrefix("speaker_"),
            let n = Int(id.dropFirst("speaker_".count)) {
             return "Speaker \(n + 1)"
@@ -221,6 +225,15 @@ struct TranscriptTab: View {
     /// Diarization clusters with a voiceprint (FEAT3-ROSTER): the labels that can be
     /// enrolled. A label absent here gets per-line assignment, not cluster naming.
     @State private var voiceprintLabels: Set<String> = []
+    /// The meeting's resolved people (FEAT3-SEGMENT), recomputed only when the
+    /// segments or the overlay change. Deliberately NOT derived inside the list's
+    /// `body`: that rebuilt it on every playback tick, which churned the context
+    /// menu's content and stopped the "Assign to..." submenu from opening at all
+    /// while audio was playing.
+    @State private var cast: [CastMember] = []
+    /// Pauses playback on a right-click so the context menu opens against a still
+    /// list (see `installRightClickPause`).
+    @State private var rightClickMonitor: Any? = nil
     @State private var loadedForStem: String? = nil
     @State private var loading: Bool = true
     /// Segment whose edit sheet is open; nil when no sheet is showing.
@@ -287,6 +300,33 @@ struct TranscriptTab: View {
         .onChange(of: editingSegment != nil || namingTarget != nil || assignNewTarget != nil) { _, open in
             if open { playback.pause() }
         }
+        .onAppear { installRightClickPause() }
+        .onDisappear { removeRightClickPause() }
+    }
+
+    /// Pause playback the moment a right-click lands, so the context menu opens
+    /// against a still list.
+    ///
+    /// The menu is built from live state, so every `playback.currentTime` tick
+    /// re-evaluated it and tore down the open "Assign to..." submenu: it simply would
+    /// not open while audio played. `rightMouseDown` is delivered before the menu is
+    /// built, so pausing here means no ticks arrive while it is up. It also matches
+    /// what the user was already doing by hand (stopping playback to name someone).
+    /// The monitor only observes; it returns the event untouched so the menu still
+    /// opens normally.
+    private func installRightClickPause() {
+        guard rightClickMonitor == nil else { return }
+        rightClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown]) { event in
+            if playback.isPlaying { playback.pause() }
+            return event
+        }
+    }
+
+    private func removeRightClickPause() {
+        if let monitor = rightClickMonitor {
+            NSEvent.removeMonitor(monitor)
+            rightClickMonitor = nil
+        }
     }
 
     /// Enroll a speaker into the roster under `name` (FEAT3-ROSTER). Enrolls the
@@ -339,6 +379,7 @@ struct TranscriptTab: View {
                 markers: markers,
                 overlay: speakerOverlay,
                 voiceprintLabels: voiceprintLabels,
+                cast: cast,
                 playback: playback,
                 onEdit: { seg in editingSegment = seg },
                 onName: { label in namingTarget = NamingTarget(label: label) },
@@ -442,6 +483,7 @@ struct TranscriptTab: View {
         language = result?.language
         speakerOverlay = result?.speakerOverlay ?? .empty
         voiceprintLabels = result?.voiceprintLabels ?? []
+        cast = MeetingCast.members(segments: segments, overlay: speakerOverlay)
         // Small sidecar; a synchronous read on main is fine, like the corrections overlay.
         markers = MarkerFile.read(stem: stem, in: dir)?.markers.map(\.tSeconds) ?? []
         loadedForStem = stem
@@ -461,6 +503,11 @@ private struct TranscriptList: View {
     /// Diarization clusters that carry a voiceprint (FEAT3-ROSTER): only these offer
     /// cluster enrollment. Everything else gets per-line assignment.
     let voiceprintLabels: Set<String>
+    /// The meeting's resolved people (FEAT3-SEGMENT). Passed in already computed and
+    /// held in the host's state, NOT derived in `body`: rebuilding it on every
+    /// `playback.currentTime` tick churned the context menu's content and tore down
+    /// the open "Assign to..." submenu mid-interaction.
+    let cast: [CastMember]
     @ObservedObject var playback: AudioPlaybackController
     /// Called on "Edit text" context-menu action; the host owns sheet presentation.
     let onEdit: (TranscriptSegment) -> Void
@@ -482,25 +529,9 @@ private struct TranscriptList: View {
     /// Multi-segment selection for reassignment (FEAT3-SEGMENT); layered on Cmd/Shift-click so a plain click still seeks.
     @State private var selection = SegmentSelection()
 
-    /// The distinct speakers present, each as (raw label, resolved display name), for
-    /// the "Reassign to..." menu. Pure so it is unit-testable.
-    static func speakerTargets(
-        segments: [TranscriptSegment], overlay: SpeakerLabelStore.Overlay
-    ) -> [(label: String, display: String)] {
-        var seen = Set<String>()
-        var out: [(label: String, display: String)] = []
-        for seg in segments {
-            guard let raw = seg.speakerID, !seen.contains(raw) else { continue }
-            seen.insert(raw)
-            out.append((raw, TranscriptDisplay.displayName(for: overlay.labels[raw] ?? raw)))
-        }
-        return out
-    }
-
     var body: some View {
         let markerMap = TranscriptMarkerLayout.assign(markers: markers, to: segments)
         let order = segments.map(\.index)
-        let speakerTargets = Self.speakerTargets(segments: segments, overlay: overlay)
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
@@ -526,12 +557,18 @@ private struct TranscriptList: View {
                         TranscriptRow(
                             segment: seg,
                             overlay: overlay,
-                            hasVoiceprint: seg.speakerID.map { voiceprintLabels.contains($0) } ?? false,
+                            // Enrollment is offered only for a voice that is both
+                            // still anonymous and has a voiceprint to enroll. A baked
+                            // name (Heorhii) or a roster match (Rana) is already a
+                            // person, so "Name this speaker" would be nonsense there.
+                            canEnroll: seg.speakerID.map {
+                                voiceprintLabels.contains($0) && MeetingCast.isUnnamedCluster($0)
+                            } ?? false,
                             isActive: seg.index == activeIndex,
                             isSelected: selection.contains(seg.index),
-                            reassignTargets: speakerTargets.filter {
-                                $0.label != (overlay.segments[seg.index] ?? seg.speakerID)
-                            },
+                            assignTargets: MeetingCast.assignTargets(
+                                for: seg, cast: cast, overlay: overlay
+                            ),
                             isReassigned: overlay.segments[seg.index] != nil,
                             onSelect: { kind in
                                 switch kind {
@@ -627,15 +664,17 @@ private struct TranscriptRow: View {
     let segment: TranscriptSegment
     /// Reversible speaker-label overrides (FEAT3-UNDO); resolved for display + menu.
     let overlay: SpeakerLabelStore.Overlay
-    /// True when this segment's cluster has a voiceprint to enroll (FEAT3-ROSTER).
-    /// Only then is "Name this speaker..." offered; otherwise the row offers per-line
-    /// assignment, so a voiceprint-less `speaker_unknown` no longer hard-fails on enroll.
-    let hasVoiceprint: Bool
+    /// True when this segment's voice is still anonymous AND has a voiceprint, i.e.
+    /// the roster can enroll it (FEAT3-ROSTER). Only then is "Name this speaker..."
+    /// offered; everything else uses per-line assignment, so a voiceprint-less
+    /// `speaker_unknown` no longer hard-fails on enroll and an already-named voice is
+    /// not offered up for enrollment.
+    let canEnroll: Bool
     let isActive: Bool
     /// Selected for a multi-segment reassignment (FEAT3-SEGMENT).
     let isSelected: Bool
-    /// Other speakers present in the meeting, for the "Assign to..." menu.
-    let reassignTargets: [(label: String, display: String)]
+    /// The other people in this meeting, for the "Assign to..." menu.
+    let assignTargets: [CastMember]
     /// True when this segment carries a per-segment reassignment (offers "Reset").
     let isReassigned: Bool
     /// A modifier-classified click: plain seeks, Cmd toggles, Shift range-selects.
@@ -737,11 +776,11 @@ private struct TranscriptRow: View {
                     // FEAT3-UNDO: an in-app-named cluster is reversible.
                     Button("Rename…") { onRename(raw, name) }
                     Button("Undo naming", role: .destructive) { onUndoName(raw, name) }
-                } else if hasVoiceprint {
-                    // FEAT3-ROSTER: only a cluster with a voiceprint can be enrolled.
-                    // A voiceprint-less line (speaker_unknown, an unclustered id) uses
-                    // the per-line assign menu below instead, which never touches the
-                    // roster and so cannot fail on a missing embedding.
+                } else if canEnroll {
+                    // FEAT3-ROSTER: only an anonymous voice with a voiceprint can be
+                    // enrolled. A voiceprint-less line (speaker_unknown, an unclustered
+                    // id) uses the per-line assign menu below instead, which never
+                    // touches the roster and so cannot fail on a missing embedding.
                     Button("Name this speaker…") { onName(raw) }
                 }
             }
@@ -749,20 +788,22 @@ private struct TranscriptRow: View {
         }
     }
 
-    /// FEAT3-SEGMENT: assign this segment (or the whole multi-selection) to a speaker
-    /// present in the meeting or to a typed-in new person, or reset a prior
-    /// assignment. Label-only: no voiceprint is enrolled, so roster centroids are
-    /// untouched, and a new name is written straight to the overlay. "New person..."
-    /// is the path for someone diarization missed (a mid-meeting joiner with a line
-    /// or two) or an unknown line that belongs to nobody already listed.
+    /// FEAT3-SEGMENT: assign this segment (or the whole multi-selection) to someone
+    /// else in the meeting or to a typed-in new person, or reset a prior assignment.
+    /// Label-only: no voiceprint is enrolled, so roster centroids are untouched, and a
+    /// new name is written straight to the overlay. "New person..." is the path for
+    /// someone diarization missed (a mid-meeting joiner with a line or two) or an
+    /// unknown line that belongs to nobody already listed. The targets come from the
+    /// resolved cast, so a person introduced by an earlier "New person" is selectable
+    /// here rather than having to be retyped every time.
     @ViewBuilder
     private var assignMenu: some View {
         Divider()
         Menu("Assign to\u{2026}") {
-            ForEach(reassignTargets, id: \.label) { target in
-                Button(target.display) { onReassignTo(target.label) }
+            ForEach(assignTargets) { target in
+                Button(target.displayName) { onReassignTo(target.assignKey) }
             }
-            if !reassignTargets.isEmpty { Divider() }
+            if !assignTargets.isEmpty { Divider() }
             Button("New person\u{2026}") { onAssignNew() }
         }
         if isReassigned {

@@ -501,7 +501,46 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels["speaker_unknown"], "Raza")
     }
 
+    func test_renameSpeaker_without_voiceprint_writes_overlay_and_never_enrolls() {
+        // The "rename silently does nothing" bug: renameSpeaker enrolled unconditionally,
+        // so renaming an overlay-only name (one given to a voiceprint-less line) failed
+        // on `mp roster enroll`'s exit 2 and left the old name on screen. Only "Undo
+        // naming" appeared to work, because dropping the overlay exposed the raw label.
+        _ = try? SpeakerLabelStore.setLabel("speaker_unknown", to: "Aditya", stem: "m", in: dir)
+        var captured: Result<Void, Error>?
+        service.renameSpeaker(stem: "m", label: "speaker_unknown", oldName: "Aditya", newName: "Heorhii") {
+            captured = $0
+        }
+        guard case .success? = captured else { return XCTFail("expected overlay-only success") }
+        XCTAssertTrue(driver.enrollInputs.isEmpty, "no voiceprint means no enroll subprocess")
+        XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels["speaker_unknown"], "Heorhii",
+                       "the rename must actually land in the overlay")
+    }
+
+    func test_renameSpeaker_with_a_voiceprint_still_re_enrolls() throws {
+        try writeEmbeddings(["THEM-A": [0.1]], stem: "m")
+        _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Aditya", stem: "m", in: dir)
+        service.renameSpeaker(stem: "m", label: "THEM-A", oldName: "Aditya", newName: "Rana") { _ in }
+        XCTAssertEqual(driver.enrollInputs.count, 1)
+        XCTAssertEqual(driver.enrollInputs.first?.name, "Rana")
+        driver.finishEnroll(.success(()))
+        drainMain()
+        XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels["THEM-A"], "Rana")
+    }
+
+    func test_undoSpeakerNaming_of_an_overlay_only_name_does_not_forget() throws {
+        // Nothing was ever enrolled for a voiceprint-less label, so forgetting it would
+        // fail and raise a misleading "couldn't remove them from your roster".
+        _ = try SpeakerLabelStore.setLabel("speaker_unknown", to: "Raza", stem: "m", in: dir)
+        var captured: Result<Void, Error>?
+        service.undoSpeakerNaming(stem: "m", label: "speaker_unknown", name: "Raza") { captured = $0 }
+        guard case .success? = captured else { return XCTFail("expected success") }
+        XCTAssertTrue(SpeakerLabelStore.read(stem: "m", in: dir).labels.isEmpty, "the label still reverts")
+        XCTAssertTrue(driver.forgetInputs.isEmpty, "a name the roster never held is not forgotten")
+    }
+
     func test_undoSpeakerNaming_reverts_overlay_immediately_and_forgets() throws {
+        try writeEmbeddings(["THEM-A": [0.1]], stem: "m")
         _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Alice", stem: "m", in: dir)
         var captured: Result<Void, Error>?
         service.undoSpeakerNaming(stem: "m", label: "THEM-A", name: "Alice") { captured = $0 }

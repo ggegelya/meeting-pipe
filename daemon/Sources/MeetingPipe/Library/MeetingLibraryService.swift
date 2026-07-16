@@ -311,6 +311,17 @@ final class MeetingLibraryService {
             completion(.failure(error))
             return
         }
+        // Only un-enroll a name that was actually enrolled. A voiceprint-less label is
+        // named overlay-only (no roster entry), so forgetting it would fail and raise a
+        // misleading "couldn't remove them from your roster" for a name the roster
+        // never held. Dropping the overlay above is the whole undo in that case.
+        guard MeetingStore.voiceprintLabels(stem: stem, in: dir).contains(label) else {
+            Log.event(category: "coordinator", action: "roster_undo_overlay_only", attributes: [
+                "stem": stem, "label": label,
+            ])
+            completion(.success(()))
+            return
+        }
         Log.event(category: "coordinator", action: "roster_undo_requested", attributes: [
             "stem": stem, "label": label,
         ])
@@ -343,6 +354,25 @@ final class MeetingLibraryService {
             return
         }
         let dir = outputDir()
+        // Same guard as `nameSpeaker`: a label with no voiceprint cannot be enrolled,
+        // and `mp roster enroll` exits 2 on a missing embedding. Without this, renaming
+        // an overlay-only name (one given to a `speaker_unknown` line) failed on the
+        // enroll and silently left the old name on screen, and only "Undo naming"
+        // appeared to do anything, because dropping the overlay exposed the raw label
+        // underneath.
+        guard MeetingStore.voiceprintLabels(stem: stem, in: dir).contains(label) else {
+            do {
+                _ = try SpeakerLabelStore.setLabel(label, to: trimmed, stem: stem, in: dir)
+                Log.event(category: "coordinator", action: "speaker_labeled_no_voiceprint", attributes: [
+                    "stem": stem, "label": label,
+                ])
+                completion(.success(()))
+            } catch {
+                self.notifyError("Couldn't record the new name: \(error.localizedDescription)")
+                completion(.failure(error))
+            }
+            return
+        }
         let anchor = MeetingStore.sidecarAnchorURL(stem: stem, in: dir)
         launcher.rosterEnroll(name: trimmed, label: label, wav: anchor, noRelabel: true) { [weak self] result in
             DispatchQueue.main.async {

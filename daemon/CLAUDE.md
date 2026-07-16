@@ -40,6 +40,7 @@ swift test                # full Xcode required locally (CI on macos-14 has it)
 | Transcription (ASR + diarization) | `Transcription/` (`FluidAudioRunner`, `TranscriptionRunner`, `SegmentBuilder`, `TranscriptionService`) |
 | Workflows | `Workflow.swift`, `WorkflowStore.swift`, `WorkflowMatcher.swift`, `WorkflowsView.swift` |
 | Library UI | `LibraryWindow.swift`, `LibraryListView.swift`, `MeetingDetailView.swift`, `MeetingStore.swift`; search: `SearchIndex.swift` (SQLite FTS5) + `SearchIndexer.swift` + `SearchQuery.swift` (UX16) |
+| Speaker naming | `TranscriptTab.swift` (rows + menus), `MeetingCast.swift` (pure: who the meeting's people are; a raw diarization label is NOT an identity, it is a mix of baked names, unnamed clusters, and the `speaker_unknown` bucket), `SpeakerLabelStore.swift` (the reversible overlay), `Library/MeetingLibraryService.swift` (enroll / rename / undo; all voiceprint-gated) |
 | Preferences | `PreferencesWindow.swift`, `Preferences/PreferencesView.swift`, `Preferences/PreferencesControls.swift`, `Preferences/UISettings.swift` |
 | Permissions | `PermissionsCenter.swift` |
 | Pipeline subprocess | `PipelineLauncher.swift`, `LocalServerReaper.swift` (kills an `mlx_lm.server` orphaned by a watchdog SIGKILL) |
