@@ -6,7 +6,7 @@
 | **Date**            | 2026-05-28             |
 | **Decision Makers** | Project owner          |
 | **Technical Area**  | Detection / lifecycle  |
-| **Related Tasks**   | TECH-C16, TECH-C13     |
+| **Related Tasks**   | TECH-C16, TECH-C13, CAL1 |
 
 ## Context
 
@@ -41,3 +41,4 @@ Remove `CalendarContextSignal.swift` and `CalendarContextSignalTests.swift`. Pro
 - No Calendar (EventKit) TCC prompt is added. The first-run permission set stays mic, screen recording, accessibility, plus notifications.
 - No `signal.calendar_context` events will appear in `events.jsonl`. Nothing read them.
 - The scheduled-end hysteresis idea is not foreclosed: if calendar-bounded end-detection is wanted later, rebuild from git history (`docs/decisions/0011` and the deleted file), implement the EventStore probe, and decide the Calendar-permission trade-off as a deliberate onboarding choice at that time.
+- **Revisited and measured by CAL1 (2026-07-17).** CAL1 re-evaluated this decision under a narrower scope (calendar as hints only, never a trigger: pre-title, expected-end horizon, preflight) and shipped an owner-run probe to test the assumption above. The probe found 0 of 55 recorded meetings covered by a calendar event, but with macOS Calendar (EventKit) effectively empty: the owner's Outlook / Teams calendar is not connected to macOS, so EventKit is structurally blind to their meetings. The owner chose to keep the calendar out of macOS, so this disposition holds, now on a measurement rather than an assumption. The operative reason for this user is refined: not that the meetings are unscheduled, but that their scheduling does not flow through EventKit. Revisit if that changes (see `docs/spikes/cal1-eventkit-calendar-context.md`).

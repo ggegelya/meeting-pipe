@@ -170,13 +170,29 @@ print("")
 print("SUMMARY: \(matched)/\(considered.count) recorded meetings had a covering calendar event (\(pct)%).")
 print("         \(titleMatched) of those also had a resembling title.")
 print("")
-if pct >= 60 {
+if events.isEmpty {
+    // Guard the false zero: an empty EventKit store makes the % meaningless. This
+    // is what CAL1 actually hit on 2026-07-17 (0/55, but Calendar.app was empty
+    // because the owner's Outlook/Teams calendar was never connected to macOS), and
+    // the original READ line below reported it as a spurious "close CAL1". Do not
+    // read a 0% here as evidence about calendar-boundness.
+    print("READ: FALSE ZERO, not a measurement. There are 0 calendar events in the")
+    print("      window, so EventKit had nothing to match against and the \(pct)% above is")
+    print("      meaningless. This almost always means your calendar is not connected to")
+    print("      macOS Calendar. Open Calendar.app: if your meetings are not there, add the")
+    print("      account (Outlook / Teams / Google) so EventKit can see them, then re-run.")
+    print("      Do NOT read this as \"meetings are not calendar-bound\" or close CAL1 on it.")
+    print("      If you deliberately keep your calendar out of macOS, CAL1 is a no-go for")
+    print("      that setup: an EventKit read is structurally blind to your meetings.")
+} else if pct >= 60 {
     print("READ: meetings look calendar-bound. CAL1's hints (pre-title, expected-end,")
     print("      preflight) would pay off. Worth a GO ADR that accepts the Calendar TCC cost.")
 } else if pct >= 30 {
     print("READ: partial coverage. Hints would help sometimes; weigh the Calendar TCC")
     print("      prompt against a hint that fires on only ~\(pct)% of meetings.")
 } else {
-    print("READ: meetings are NOT reliably calendar-bound (confirms ADR 0011's assumption).")
-    print("      Close CAL1: the hints would rarely fire, not worth a new TCC prompt.")
+    print("READ: meetings are NOT reliably calendar-bound (confirms ADR 0011's assumption),")
+    print("      PROVIDED the \(events.count) events in the window are your real calendar. If")
+    print("      Calendar.app looks empty, re-read the FALSE ZERO note (this is that case).")
+    print("      Otherwise close CAL1: the hints would rarely fire, not worth a new TCC prompt.")
 }

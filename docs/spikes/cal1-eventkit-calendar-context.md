@@ -51,10 +51,22 @@ The engineering is understood and the instrument is built; the decision is one n
 - **If ~30-60%:** marginal. Pre-title alone (the cheapest hint) might still be worth it; the horizon + preflight probably are not. Decide against the prompt cost.
 - **If < ~30%:** close CAL1, confirming ADR 0011 empirically rather than by assumption. Keep this doc + the probe so the decision is revisitable if the owner's meeting habits change.
 
-Provisional lean, pending the number: **pre-title is the one hint worth the permission even at moderate coverage**; the horizon and preflight need high coverage to justify themselves. But this is a lean, not the decision. Run the probe.
+Provisional lean, pending the number (superseded by the measurement below): pre-title looked like the one hint worth the permission even at moderate coverage; the horizon and preflight needed high coverage to justify themselves. That was a lean, not the decision. The probe has now run.
 
-## Follow-on
+## Measured (2026-07-17): NO-GO (false zero)
 
-- Owner: run `swift daemon/scripts/cal1-calendar-probe.swift` (optionally `--days 60`) and read the summary percentage.
-- On GO: a new ADR superseding 0011; CAL2 (the pre-meeting prep card) then gets calendar-aware timing + title/attendee seeding, which its spec already sequences behind this spike.
-- On NO-GO: close CAL1; ADR 0011 stands, now measured.
+The owner ran the probe. Result: **0 of 55** recorded meetings had a covering calendar event, and 0 had a resembling title. But the decisive header number, calendar events in the window, was **~0**, and a direct check of Calendar.app confirmed it is essentially empty.
+
+So this is a **false zero, not a coverage measurement.** EventKit had nothing to match against because the owner's work calendar (Outlook / Teams) is not connected to macOS Calendar.app. The 0% says nothing about whether the meetings are calendar-bound (they almost certainly are, being Teams invites); it says the owner's scheduling does not flow through EventKit, so an EventKit read is structurally blind to their meetings.
+
+**Disposition: close (owner-chosen).** The owner keeps scheduling in Outlook / Teams and leaves macOS Calendar.app empty by choice. Under that setup CAL1's hints (pre-title, expected-end horizon, preflight) would never fire, whatever the meetings' real calendar-boundness, so the EventKit approach is a no-go here. ADR 0011's disposition stands, now on a measurement, with its operative reason refined for this user: not "the meetings are unscheduled" but "the scheduling does not reach EventKit." The alternative (connect the calendar to macOS, then re-measure) was offered and declined.
+
+**Probe hardened.** The original READ line mapped 0% straight to "meetings are NOT calendar-bound, close CAL1", which would have closed the task on a void measurement. The probe now detects an empty event store and prints a distinct FALSE ZERO read that tells the owner to connect the calendar and re-run (or accept the no-go for an intentionally-empty macOS calendar), never a spurious close. That keeps the revisit promise honest: a future re-run cannot re-trip the same trap.
+
+**Synergy closed with it.** The attendee-seed for FEAT3-ROSTER / DV3 needs a covering event to read an attendee list from; with no covering events there is nothing to seed, so that path closes too (DV3 rides owner enrollment alone). CAL2's calendar-aware timing + title/attendee seeding, which sequenced behind this spike, is likewise closed; CAL2's workflow-keyed "Last time" affordance needs no calendar and is unaffected.
+
+## Follow-on (resolved 2026-07-17)
+
+- Owner ran `swift daemon/scripts/cal1-calendar-probe.swift`: false zero (see Measured, above). NO-GO.
+- ADR 0011 stands, now measured (a revisit note was added to it). No superseding ADR was written.
+- Revisit trigger: if the owner ever connects their Outlook / Teams calendar to macOS Calendar.app, re-run the (now false-zero-hardened) probe for a real coverage number; a high number would re-open pre-title as the first hint.
