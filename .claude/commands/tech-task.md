@@ -4,7 +4,7 @@ description: Implement a backlog task from the active backlog, one task per sess
 
 You're picking up a single backlog task: $ARGUMENTS
 
-1. Read the task definition from the active backlog: the highest-numbered `docs/backlog/meetingpipe-q<N>-backlog.md` (currently `docs/backlog/meetingpipe-q6-backlog.md`; earlier quarters are archived beside it, and the current quarter's shipped items live in `docs/backlog/q<N>-final.md`). The task ID format is `<letter><number>` (e.g. `E5`); ids no longer carry the `TECH-` prefix, so strip a legacy `TECH-` if the argument includes one. Find the task's `| <ID> |` row in the Table of contents for its Status and one-line Comment, then read its full spec: the line starting with `**<ID>` in the Task specs section below the table, or, for an item the Task specs mark as carried from Q4 unchanged, the `**<ID>` spec in `docs/backlog/q4-final.md` (search the id). If you can't find it, stop and tell me.
+1. Read the task definition from the active backlog: the highest-numbered `docs/backlog/meetingpipe-q<N>-backlog.md` (currently `docs/backlog/meetingpipe-q6-backlog.md`; earlier quarters are archived beside it, and the current quarter's shipped items live in `docs/backlog/q<N>-final.md`). The task ID format is `<letter><number>` (e.g. `E5`); ids no longer carry the `TECH-` prefix, so strip a legacy `TECH-` if the argument includes one. Find the task's `| <ID> |` row in the Table of contents for its Status and one-line Comment, then read its full spec: `docs/backlog/tasks/<ID>.md` (one file per task; its Band-origin line points at the shared context in the backlog's Task specs section), or, for an item carried from Q4 unchanged (no `tasks/` file), the `**<ID>` spec in `docs/backlog/q4-final.md` (search the id). If you can't find it, stop and tell me.
 2. Read the orientation docs the task touches:
    - [`CLAUDE.md`](CLAUDE.md) at the repo root for git workflow, verification, and conventions worth knowing.
    - [`ARCHITECTURE.md`](ARCHITECTURE.md) for the subsystem map.
@@ -25,7 +25,7 @@ You're picking up a single backlog task: $ARGUMENTS
    - `design/` docs when a UI surface changed.
    "No docs affected" is a legitimate outcome, but only after actually checking; name the docs you checked in the summary either way. Stale docs mislead every later session, so treat a needed-but-skipped doc update as a failed verification.
 8. Mark the outcome in the backlog:
-   - **Done-done:** move the task to the running quarter archive `docs/backlog/q<N>-final.md` in the same commit: its ToC row (Status `done`, a one-line ship note in the Comment) and its full Task-spec text (prefixed `[DONE]`) both move there, and both are removed from the active backlog. Create the archive file with its running-archive header if this quarter's doesn't exist yet.
+   - **Done-done:** move the task to the running quarter archive `docs/backlog/q<N>-final.md` in the same commit: its ToC row (Status `done`, a one-line ship note in the Comment) moves there from the active ToC, and the spec text from `docs/backlog/tasks/<ID>.md` moves there prefixed `[DONE]`; delete `docs/backlog/tasks/<ID>.md` (the `tasks/` dir is active-only). Create the archive file with its running-archive header if this quarter's doesn't exist yet.
    - **Partial or owner-owed:** keep the row in the active backlog with that Status and the remainder named in the Comment; do not move it.
 9. Commit on `main` (no branch) using the repository's configured git identity:
    ```bash

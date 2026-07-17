@@ -44,7 +44,7 @@ The Swift `↔` Python boundary is the meeting sidecar (`<stem>.meta.json`). If 
 - Work on a topic branch; one logical change per commit. Do not push to `main` without asking.
 - Commit with the repository's configured git identity (`git config user.name` / `user.email`). Do not hardcode a personal name or email.
 - Backlog-task commits use `<ID>: <short summary>`. Other commits follow `fix(scope): ...`, `feat(scope): ...`, or `chore(scope): ...`. Match the style for the kind of change.
-- The active backlog lives in [`docs/backlog/`](./docs/backlog/) (highest-numbered quarter file). Task IDs look like `E5` (no `TECH-` prefix; historical references keep the old form).
+- The active backlog lives in [`docs/backlog/`](./docs/backlog/) (highest-numbered quarter file is the index; one spec file per task under `docs/backlog/tasks/`). Task IDs look like `E5` (no `TECH-` prefix; historical references keep the old form).
 
 ## Scope
 

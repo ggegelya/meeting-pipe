@@ -1,0 +1,5 @@
+# AI7: Commitments loop
+
+Band origin: assessment review 2026-07-12. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+
+**AI7 (P2): commitments loop.** Open actions resurface only if the owner opens Facts or reads a digest, so commitments rot silently between digests; and recurring meetings restate the same commitments, so Facts and digests accumulate near-duplicates and resolving one leaves its clones open. Scope: an amber overdue count on the Facts rail row reusing the needsYou badge mechanics (AI1's aging already computes overdue from ISO due dates); embedding-cluster dedupe of action items across a workflow's meetings (the on-device embedding index already exists) with resolve-the-cluster semantics so marking one instance done resolves its restatements. Local-only per the AI/DV rule. Acceptance: an overdue action shows an amber count without opening Facts; a restated standup commitment groups with its prior instances and resolves once.

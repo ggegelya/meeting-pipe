@@ -1,0 +1,5 @@
+# DV3: People rail
+
+Band origin: assessment review 2026-07-12. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+
+**DV3 (P2): People rail.** The DV pivot's re-open condition is now structurally met: FEAT3-ROSTER and FEAT3-MANAGE shipped, so named, stable, cross-meeting speaker identities exist. Scope: a Facts-style INSIGHTS projection ("People"): one row per enrolled person showing their meetings, the open actions they own (the summaries already carry owners), and last-seen; rows link back to meetings (the Quick Find hook), rename flows through the existing roster rename. Read-only projection over existing sidecars, no schema change; local-only per the AI/DV rule. Gate: needs a minimally populated roster, which is owner-owed enrollment volume; build after real usage proves a handful of stable identities. Acceptance: selecting a person lists their meetings and open actions; a roster rename reflects everywhere; the empty-roster state points at how to enroll.

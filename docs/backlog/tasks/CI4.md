@@ -1,0 +1,5 @@
+# CI4: Pin the remaining cross-tree contracts
+
+Band origin: assessment review 2026-07-12. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+
+**CI4 (P2): pin the remaining cross-tree contracts.** Three must-agree Swift-Python surfaces have no shared fixture, unlike the CI2/CI3 set (meta, chunking, json-extract, summary-markdown): `<stem>.publish.json` (the PIPE1 outcome contract; Python tests pin Python-authored expectations, Swift tests pin Swift-authored string literals, so coordinated drift passes both suites), the `mp prefetch-model` JSONL progress stream (`ModelDownloadSupervisor` switches on event strings pinned by neither side), and the speaker-overlay resolution (documented "must stay byte-identical to Swift"); the speaker-labels sidecar is also the one cross-language sidecar with no `schema_version`. Scope: golden fixtures generated from the Python writers and parsed by Swift tests for all three, plus the version stamp (the reader is already fail-open). Acceptance: a deliberate writer change breaks the other tree's test; CI green otherwise.
