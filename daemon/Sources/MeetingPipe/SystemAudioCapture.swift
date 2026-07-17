@@ -8,7 +8,13 @@ import ScreenCaptureKit
 /// on macOS 26 and required ffmpeg. SCStream bypasses Core Audio aggregate devices;
 /// sample buffers arrive as CMSampleBuffer, converted to AVAudioPCMBuffer for the
 /// recorder. Gated by Screen Recording TCC; Info.plist includes NSScreenCaptureUsageDescription.
-final class SystemAudioCapture: NSObject {
+///
+/// `@unchecked Sendable`: this type is inherently cross-thread by design (buffers on
+/// `sampleQueue`, `didStopWithError` on the SCStream delegate queue, control on main),
+/// and `MeetingRecorder.stop()` already bounds `stop()` off-main via `runWithTimeout`.
+/// The compiler cannot verify SCStream's own thread-safety, so the conformance records
+/// the invariant the code already relies on (CONC4).
+final class SystemAudioCapture: NSObject, @unchecked Sendable {
     /// Called on a background queue with PCM samples (48 kHz stereo Float32).
     private let onBuffer: (AVAudioPCMBuffer) -> Void
     /// Called (on the SCStream delegate queue) when the stream dies mid-capture

@@ -149,16 +149,22 @@ enum CorrectionStore {
         return stems
     }
 
-    /// Reads the correction record for the given stem, or nil when absent/unreadable.
-    static func read(stem: String, directoryOverride: URL? = nil) -> [String: Any]? {
+    /// Raw bytes of the correction record for the given stem, or nil when absent/unreadable.
+    /// Sendable-returning sibling of `read`, so a caller can do the file I/O off the main
+    /// actor and parse the (non-Sendable) `[String: Any]` on it (CONC4).
+    static func readData(stem: String, directoryOverride: URL? = nil) -> Data? {
         let dir: URL
         do {
             dir = try directoryOverride ?? directory()
         } catch {
             return nil
         }
-        let url = dir.appendingPathComponent("\(stem).json")
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? Data(contentsOf: dir.appendingPathComponent("\(stem).json"))
+    }
+
+    /// Reads the correction record for the given stem, or nil when absent/unreadable.
+    static func read(stem: String, directoryOverride: URL? = nil) -> [String: Any]? {
+        guard let data = readData(stem: stem, directoryOverride: directoryOverride) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 

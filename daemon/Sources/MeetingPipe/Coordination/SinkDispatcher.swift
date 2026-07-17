@@ -1,7 +1,14 @@
 import Foundation
 
 /// Fans a finished recording to two sinks: (1) in-process transcription runner (Parakeet TDT + pyannote on the ANE), then (2) sequential pipeline-job queue (`mp run-all`, summarize + publish only). The runner always runs before the pipeline so `<stem>.json` exists when `mp run-all` reads it. Threading: main queue; per-job completion dispatched back onto main.
-final class SinkDispatcher {
+///
+/// `@unchecked Sendable` records the main-queue invariant so `runDaemonTranscription`
+/// (spawned in a `Task`) can hop back to main via `MainActor.run` capturing `self`. The
+/// queue state is only ever touched on main (the stall Timer fires on the main run loop),
+/// and the one off-main stretch reads only the immutable transcription runner, so there is
+/// no unsynchronized shared state (CONC4). See `MeetingSessionController` for why `@MainActor`
+/// is not used here.
+final class SinkDispatcher: @unchecked Sendable {
 
     /// Held as protocol for test injection (see `PipelineLauncherTests`).
     private let launcher: PipelineDriver

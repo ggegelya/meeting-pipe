@@ -11,8 +11,15 @@ import MeetingPipeCore
 /// owns the subsystems and the UI-delegate conformances, and forwards detection
 /// and delegate events here. Subsystems are reached through `coordinator`, which
 /// stays the central state owner; this type holds only the per-meeting state.
-/// All methods run on the main queue, like Coordinator's.
-final class MeetingSessionController {
+/// All methods run on the main queue, like Coordinator's. `@unchecked Sendable`
+/// records that invariant so the two daemon-lifetime verdict-consumer Tasks can
+/// capture `self` and hop back to the main actor; every stored property is touched
+/// only on the main queue, so there is no unsynchronized shared state (CONC4).
+/// `@MainActor` is the compiler-checked form, but propagating it here cascades into
+/// the surrounding GCD / Timer / delegate idioms (measured: it turned these 2
+/// warnings into 22), which is the `-strict-concurrency=complete` migration this
+/// task scopes out.
+final class MeetingSessionController: @unchecked Sendable {
     /// Back-reference to the state owner, narrowed to the `SessionHost` seam
     /// (ARCH4) so a test can drive this controller without a Coordinator and its
     /// ~18 AppKit / AVFoundation subsystems. `unowned` because the host owns this

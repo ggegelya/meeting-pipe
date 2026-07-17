@@ -57,7 +57,9 @@ final class DoctorRunner: ObservableObject {
         p.standardError = errPipe
 
         // Merge stdout and stderr into the same output so FAIL/WARN lines appear in context.
-        let appender = { [weak self] (data: Data) in
+        // `@Sendable` because the two `readabilityHandler` closures below are `@Sendable`
+        // and capture it; it only touches a `@MainActor` DoctorRunner via `weak self`.
+        let appender: @Sendable (Data) -> Void = { [weak self] data in
             guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
             Task { @MainActor [weak self] in
                 self?.output.append(chunk)

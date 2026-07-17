@@ -1,10 +1,21 @@
 import Accelerate
 import AppKit
-import AVFoundation
+// @preconcurrency: AVFAudio predates Sendable, so passing an AVAudioEngine into the
+// bounded off-main `engine.start()` closures (boundedEngineStart) trips strict-concurrency
+// capture warnings the module cannot yet resolve on its own (CONC4).
+@preconcurrency import AVFoundation
 import Foundation
 import IOKit.pwr_mgt
 import MeetingPipeCore
 import os
+
+/// Sendable holder for the main-confined recovery-task handle, so `stop()` (which
+/// runs off-main) can read+clear it through a `MainActor.run` hop without capturing
+/// the whole non-Sendable recorder. The `task` slot is only ever touched on the main
+/// actor, which is what makes the `@unchecked Sendable` honest (CONC4).
+private final class RecoveryTaskBox: @unchecked Sendable {
+    var task: Task<Void, Never>?
+}
 
 /// In-process recorder: captures mic and system audio as two independent
 /// WAV files, merged with a short ffmpeg `amix` at stop.
@@ -43,7 +54,7 @@ final class MeetingRecorder {
     /// In-flight async capture-recovery (it bounds an engine restart off the
     /// main thread). Held so `stop()` can drain it before engine teardown, and
     /// non-nil acts as a one-at-a-time guard against re-entrant recovery.
-    private var recoveryTask: Task<Void, Never>?
+    private let recoveryTaskBox = RecoveryTaskBox()
     private var systemFile: AVAudioFile?
     private var systemCapture: SystemAudioCapture?
     private var systemStartTask: Task<Void, Never>?
@@ -559,10 +570,10 @@ final class MeetingRecorder {
                 // Healthy (re)start: the system channel covers the recording from here.
                 self?.systemDegraded = false
                 if isRetry {
-                    // Capture the callback value (not self) so the main-queue
-                    // hop doesn't re-capture the non-Sendable recorder.
-                    let recovered = self?.onSystemAudioRecovered
-                    DispatchQueue.main.async { recovered?() }
+                    // Hop to main and fire the recovery callback through `self`,
+                    // reached on the main actor so no non-Sendable value crosses the
+                    // @Sendable closure boundary (matches Coordinator's backstop hops).
+                    Task { @MainActor in self?.onSystemAudioRecovered?() }
                 }
             } catch {
                 Log.writeLine("recorder", "WARN: SCStream start failed: \(error.localizedDescription), recording mic-only")
@@ -573,8 +584,7 @@ final class MeetingRecorder {
                 self?.systemDegraded = true
                 try? FileManager.default.removeItem(at: systemURL)
                 let reason = error.localizedDescription
-                let degraded = self?.onSystemAudioDegraded
-                DispatchQueue.main.async { degraded?(reason) }
+                Task { @MainActor in self?.onSystemAudioDegraded?(reason) }
             }
         }
     }
@@ -904,9 +914,9 @@ final class MeetingRecorder {
             // thread). Run one at a time: a re-entrant device change while a
             // restart is in flight is dropped; the watchdog or the next change
             // re-triggers. The task clears its own handle on completion.
-            guard recoveryTask == nil else { return }
-            recoveryTask = Task { @MainActor [weak self] in
-                defer { self?.recoveryTask = nil }
+            guard recoveryTaskBox.task == nil else { return }
+            recoveryTaskBox.task = Task { @MainActor [weak self] in
+                defer { self?.recoveryTaskBox.task = nil }
                 await self?.recoverCapture(
                     fileFormat: fileFormat,
                     liveFormat: liveFormat,
@@ -1078,10 +1088,10 @@ final class MeetingRecorder {
         // One recovery at a time (see evaluateConfigurationChange). Stamp the
         // gap start now, before the async hop, so the silence pad measures from
         // the stall, not from when the task happens to run.
-        guard recoveryTask == nil else { return }
+        guard recoveryTaskBox.task == nil else { return }
         let gapStart = Date()
-        recoveryTask = Task { @MainActor [weak self] in
-            defer { self?.recoveryTask = nil }
+        recoveryTaskBox.task = Task { @MainActor [weak self] in
+            defer { self?.recoveryTaskBox.task = nil }
             await self?.recoverCapture(
                 fileFormat: fileFormat,
                 liveFormat: liveFormat,
@@ -1252,11 +1262,12 @@ final class MeetingRecorder {
         // Drain an in-flight async recovery (it bounds an engine restart on a
         // background thread) before touching the engine, so teardown can't race
         // recoverCapture's restart. The observer is already removed and the
-        // watchdog cancelled, so no new recovery launches. recoveryTask is owned
-        // on the main thread, so read and clear it there.
-        let recovery = await MainActor.run { () -> Task<Void, Never>? in
-            let task = self.recoveryTask
-            self.recoveryTask = nil
+        // watchdog cancelled, so no new recovery launches. The handle is owned on
+        // the main thread, so read and clear it there (through the box, so this
+        // off-main stop() doesn't capture the whole non-Sendable recorder).
+        let recovery = await MainActor.run { [box = recoveryTaskBox] () -> Task<Void, Never>? in
+            let task = box.task
+            box.task = nil
             return task
         }
         recovery?.cancel()

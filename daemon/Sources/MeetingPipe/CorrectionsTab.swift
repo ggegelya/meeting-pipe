@@ -205,11 +205,13 @@ struct CorrectionsTab: View {
         let stem = meeting.stem
         loading = true
         revertError = nil
-        let payload = await Task.detached(priority: .userInitiated) {
-            CorrectionStore.read(stem: stem)
+        // Read the file off the main actor (Data is Sendable); parse the
+        // non-Sendable [String: Any] back on it (CONC4).
+        let data = await Task.detached(priority: .userInitiated) {
+            CorrectionStore.readData(stem: stem)
         }.value
         guard meeting.stem == stem else { return }
-        record = payload
+        record = data.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
         loadedForStem = stem
         loading = false
     }

@@ -51,7 +51,12 @@ let package = Package(
             path: "Sources/MeetingPipe",
             resources: [
                 .process("Resources")
-            ]
+            ],
+            // CONC4: the same targeted strict-concurrency checking the Core island
+            // has always used, now extended to the executable so a cross-thread
+            // Sendable finding in the app spine is a compiler warning rather than a
+            // comment. `complete` mode stays out of scope (a separate decision).
+            swiftSettings: [.unsafeFlags(["-strict-concurrency=targeted"])]
         ),
         .testTarget(
             name: "MeetingPipeTests",
