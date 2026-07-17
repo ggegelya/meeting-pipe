@@ -240,11 +240,11 @@ def _streamed_with_embeddings(wav: Path, segments: list[dict], embeddings: dict)
     }
 
 
-def test_finalize_voiceprint_match_beats_dominant_and_strips_embeddings(
+def test_finalize_voiceprint_match_names_me_and_strips_embeddings(
     tmp_path: Path, monkeypatch
 ):
     """FEAT3-VOICEPRINT: the voiceprint-matched speaker becomes "me" even when
-    another speaker is dominant, and the daemon's per-speaker embeddings are
+    another speaker talks far more, and the daemon's per-speaker embeddings are
     stripped from the final transcript the Library reads."""
     dim = 256
     e0 = [1.0] + [0.0] * (dim - 1)       # the user's direction
@@ -271,12 +271,54 @@ def test_finalize_voiceprint_match_beats_dominant_and_strips_embeddings(
 
     data = json.loads(out["json"].read_text(encoding="utf-8"))
     assert "speaker_embeddings" not in data
-    # speaker_1 is dominant, but the voiceprint matched the short speaker_0 as
-    # "Me"; speaker_1 has an embedding and no roster match, so it is THEM-A.
+    # speaker_1 talks 8x longer, but the voiceprint matched the short speaker_0
+    # as "Me"; speaker_1 has an embedding and no roster match, so it is THEM-A.
     assert [s["speaker"] for s in data["segments"]] == ["Me", "THEM-A"]
     # Embeddings are persisted keyed by final label for the Library naming UI.
     emb = json.loads((wav.parent / f"{wav.stem}.embeddings.json").read_text(encoding="utf-8"))
     assert set(emb["embeddings"]) == {"Me", "THEM-A"}
+
+
+def test_finalize_names_nobody_me_when_the_user_stayed_silent(tmp_path: Path, monkeypatch):
+    """The owner sat in a meeting and never spoke: no voice matches the
+    voiceprint and nothing lands on the mic channel. The user's name must go
+    to nobody, rather than to whoever talked most (measured on 20260717-103053,
+    where a 50 s speaker at 0.19 cosine was labelled with the owner's name)."""
+    dim = 256
+    mine = [1.0] + [0.0] * (dim - 1)         # enrolled, but absent from this meeting
+    talker = [0.0, 1.0] + [0.0] * (dim - 2)  # the person who did all the talking
+    quiet = [0.0, 0.0, 1.0] + [0.0] * (dim - 3)
+    store = VoiceprintStore(tmp_path / "vp.json")
+    store.update(mine)
+
+    wav = tmp_path / "20260501-1300.wav"
+    wav.write_bytes(b"")
+    streamed = _streamed_with_embeddings(
+        wav,
+        [
+            {"start": 0.0, "end": 50.0, "text": "long update", "speaker": "speaker_0"},
+            {"start": 50.0, "end": 52.0, "text": "ok", "speaker": "speaker_1"},
+        ],
+        {"speaker_0": talker, "speaker_1": quiet},
+    )
+    # Stereo, but nobody is mic-side: the owner's microphone carried no speech.
+    monkeypatch.setattr("mp.diarize.is_stereo_recording", lambda w: True)
+    monkeypatch.setattr(
+        "mp.diarize.assign_speakers_by_channel",
+        lambda segments, w: [{**s, "speaker": "speaker_other"} for s in segments],
+    )
+    out = _finalize_streamed_transcript(
+        wav, streamed, user_label="Heorhii",
+        voiceprint_store=store, roster_store=RosterStore(tmp_path / "roster.json"),
+    )
+
+    data = json.loads(out["json"].read_text(encoding="utf-8"))
+    speakers = [s["speaker"] for s in data["segments"]]
+    assert "Heorhii" not in speakers
+    assert speakers == ["THEM-A", "THEM-B"]
+    # An absent owner must not have their voiceprint updated from a stranger.
+    assert store.meetings() == 1
+    assert cosine_similarity(store.embedding(), mine) > 0.99
 
 
 def test_finalize_enrolls_voiceprint_from_stereo_mic_channel(tmp_path: Path, monkeypatch):
@@ -330,13 +372,15 @@ def test_finalize_roster_names_enrolled_person_and_clusters_unknown(
     e0, e1, e2 = axis(0), axis(1), axis(2)  # me, Alice, a stranger
     roster = RosterStore(tmp_path / "roster.json")
     roster.enroll("Alice", e1)
+    store = VoiceprintStore(tmp_path / "vp.json")
+    store.update(e0)  # the user is identified by voiceprint, not by talking most
 
     wav = tmp_path / "20260501-1200.wav"
     wav.write_bytes(b"")
     streamed = _streamed_with_embeddings(
         wav,
         [
-            {"start": 0.0, "end": 9.0, "text": "lots", "speaker": "speaker_0"},  # me (dominant)
+            {"start": 0.0, "end": 9.0, "text": "lots", "speaker": "speaker_0"},  # me
             {"start": 9.0, "end": 11.0, "text": "hi", "speaker": "speaker_1"},   # Alice
             {"start": 11.0, "end": 12.0, "text": "yo", "speaker": "speaker_2"},  # stranger
         ],
@@ -345,7 +389,7 @@ def test_finalize_roster_names_enrolled_person_and_clusters_unknown(
     monkeypatch.setattr("mp.diarize.is_stereo_recording", lambda w: False)
     out = _finalize_streamed_transcript(
         wav, streamed, user_label="Me",
-        voiceprint_store=VoiceprintStore(tmp_path / "vp.json"), roster_store=roster,
+        voiceprint_store=store, roster_store=roster,
     )
 
     data = json.loads(out["json"].read_text(encoding="utf-8"))

@@ -145,9 +145,11 @@ class Summarization(BaseModel):
     diarize_cleanup: bool = False
     # TECH-FEAT3 speaker enrollment (MVP): the display name to stamp on the
     # user's own speaker at finalization. The "me" speaker is the channel-
-    # assigned mic speaker (`speaker_user`) when present, else the dominant
-    # speaker by spoken time. Empty = no enrollment (labels stay
-    # speaker_user / speaker_other). Set once; reused on every meeting.
+    # assigned mic speaker (`speaker_user`) when present, else the speaker
+    # identified on the mic channel, else the self-voiceprint match; nobody when
+    # no signal finds the user, since they may simply not have spoken. Empty =
+    # no enrollment (labels stay speaker_user / speaker_other). Set once;
+    # reused on every meeting.
     user_label: str = ""
     # WF7: workflow-defined extra summary sections, overlaid per meeting by
     # `workflow.apply_overrides` from the meta sidecar. Empty for a workflow that

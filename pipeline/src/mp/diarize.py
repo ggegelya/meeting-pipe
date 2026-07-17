@@ -125,40 +125,31 @@ def assign_speakers_by_channel(
     return out
 
 
-def _dominant_speaker(segments: list[dict]) -> str | None:
-    """The speaker with the most total spoken time, or None when no segment
-    carries a usable label. Ties break by first appearance."""
-    durations: dict[str, float] = {}
-    order: list[str] = []
-    for seg in segments:
-        spk = seg.get("speaker")
-        if not spk or spk == "Speaker?":
-            continue
-        if spk not in durations:
-            durations[spk] = 0.0
-            order.append(spk)
-        durations[spk] += max(0.0, float(seg.get("end", 0)) - float(seg.get("start", 0)))
-    if not durations:
-        return None
-    # Highest total duration; on a tie, the earliest-appearing speaker.
-    return max(order, key=lambda spk: (durations[spk], -order.index(spk)))
-
-
 def _resolve_me_id(
     segments: list[dict],
     *,
     channel_me: str = USER_SPEAKER,
+    mic_me: str | None = None,
     voiceprint_me: str | None = None,
 ) -> str | None:
     """Pick which diarization speaker id is the user, by precedence: the
-    channel-assigned mic speaker, else the voiceprint match, else the dominant
-    speaker by spoken time. None when no speaker qualifies."""
+    channel-assigned mic speaker, else the mic-channel identification, else the
+    voiceprint match.
+
+    None when no signal places the user among these speakers, which is the
+    correct answer when the user sat silent. Naming "me" requires positive
+    evidence: every tier here is a measurement of the user's own voice, so a
+    meeting the user only listened to leaves the speakers unnamed rather than
+    lending the owner's name to whoever talked most.
+    """
     present = {s.get("speaker") for s in segments if s.get("speaker")}
     if channel_me in present:
         return channel_me
+    if mic_me and mic_me in present:
+        return mic_me
     if voiceprint_me and voiceprint_me in present:
         return voiceprint_me
-    return _dominant_speaker(segments)
+    return None
 
 
 def label_me_speaker(
@@ -166,6 +157,7 @@ def label_me_speaker(
     user_label: str,
     *,
     channel_me: str = USER_SPEAKER,
+    mic_me: str | None = None,
     voiceprint_me: str | None = None,
 ) -> list[dict]:
     """Stamp the user's enrolled display name on their own speaker, so
@@ -174,21 +166,26 @@ def label_me_speaker(
     Picks the "me" speaker by precedence:
       - the channel-assigned mic speaker (`speaker_user`) when present, the
         reliable stereo path since the mic channel is always the user; else
+      - `mic_me`, the diarized speaker whose speech is predominantly on the mic
+        channel (`identify_user_speaker`), physical evidence that the voice is
+        the user's; else
       - `voiceprint_me`, the speaker matched to the persisted self-voiceprint
-        (FEAT3-VOICEPRINT), which holds on mono / merged audio and when the
-        user is not the dominant speaker; else
-      - the dominant speaker by total spoken time, a best-effort fallback.
+        (FEAT3-VOICEPRINT), which still resolves on mono and when a merged
+        cluster leaves no clean mic winner.
 
     Returns a new segment list with the chosen speaker relabeled to
     `user_label`. No-op (segments copied unchanged) when `user_label` is empty
-    or no speaker qualifies. The name is enrolled once in config
+    or no signal identifies the user, the latter being what a meeting the user
+    stayed silent through looks like. The name is enrolled once in config
     (`summarization.user_label`) and reused on every meeting.
     """
     label = user_label.strip()
     if not label or not segments:
         return [dict(s) for s in segments]
 
-    me = _resolve_me_id(segments, channel_me=channel_me, voiceprint_me=voiceprint_me)
+    me = _resolve_me_id(
+        segments, channel_me=channel_me, mic_me=mic_me, voiceprint_me=voiceprint_me
+    )
     if me is None or me == label:
         return [dict(s) for s in segments]
     return [
@@ -210,10 +207,14 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
-# Minimum cosine similarity for a diarized speaker to be accepted as the
-# enrolled user. Conservative: bias to leaving "me" to the structural fallback
-# rather than misattributing. Same-speaker WeSpeaker pairs typically clear this.
+# Two-gate accept rule for the self-voiceprint, mirroring `roster.match`: the
+# top similarity must clear MATCH_MIN and the runner-up must trail it by
+# MATCH_MARGIN. Conservative on both counts, since an unresolved "me" costs one
+# in-app naming while a wrong one puts the owner's name on a stranger. The
+# margin is what stops two near-identical scores (0.506 vs 0.495 was seen in the
+# real library) from deciding the owner's identity on a coin flip.
 VOICEPRINT_MATCH_MIN = 0.5
+VOICEPRINT_MATCH_MARGIN = 0.07
 
 
 def match_voiceprint(
@@ -221,19 +222,29 @@ def match_voiceprint(
     voiceprint: list[float] | None,
     *,
     min_similarity: float = VOICEPRINT_MATCH_MIN,
+    margin: float = VOICEPRINT_MATCH_MARGIN,
 ) -> str | None:
-    """Return the diarized speaker id whose embedding is closest to the
-    persisted `voiceprint` and clears `min_similarity`, else None. Ties break to
-    the lowest speaker id for determinism."""
+    """Return the diarized speaker id whose embedding matches the persisted
+    `voiceprint` under the two-gate rule, else None. The top similarity must
+    clear `min_similarity`, and the gap to the runner-up speaker must clear
+    `margin`; a lone candidate only faces the first gate. Ties break to the
+    lowest speaker id for determinism."""
     if not voiceprint or not speaker_embeddings:
         return None
-    best_id: str | None = None
-    best_sim = -1.0
-    for spk, emb in sorted(speaker_embeddings.items()):
-        sim = cosine_similarity(emb, voiceprint)
-        if sim > best_sim:
-            best_id, best_sim = spk, sim
-    return best_id if best_id is not None and best_sim >= min_similarity else None
+    scored = sorted(
+        (
+            (cosine_similarity(emb, voiceprint), spk)
+            for spk, emb in speaker_embeddings.items()
+        ),
+        key=lambda t: (-t[0], t[1]),
+    )
+    top_sim, top_id = scored[0]
+    if top_sim < min_similarity:
+        return None
+    runner_up = scored[1][0] if len(scored) > 1 else -1.0
+    if top_sim - runner_up < margin:
+        return None
+    return top_id
 
 
 def identify_user_speaker(
@@ -300,15 +311,23 @@ def resolve_speaker_labels(
     *,
     user_label: str = "",
     channel_me: str = USER_SPEAKER,
+    mic_me: str | None = None,
     voiceprint_me: str | None = None,
 ) -> dict[str, str]:
     """Map each diarization speaker id present in `segments` to its final label:
     the user's name ("me"), a matched roster name (`roster.match`), or a stable
     THEM-A/B cluster for an unknown voice. A speaker with no embedding keeps its
     raw id (it cannot be roster-matched, e.g. channel-fallback labels). The "me"
-    speaker is never roster-matched. `roster` may be None (no roster)."""
+    speaker is never roster-matched. `roster` may be None (no roster).
+
+    When no signal identifies the user (`_resolve_me_id` returns None, the
+    silent-owner case), no speaker is given `user_label`; every voice falls
+    through to a roster match or a THEM-x cluster, which the user can name in
+    the app."""
     mapping: dict[str, str] = {}
-    me = _resolve_me_id(segments, channel_me=channel_me, voiceprint_me=voiceprint_me)
+    me = _resolve_me_id(
+        segments, channel_me=channel_me, mic_me=mic_me, voiceprint_me=voiceprint_me
+    )
     label = user_label.strip()
     if me is not None and label:
         mapping[me] = label

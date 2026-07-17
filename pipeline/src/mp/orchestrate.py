@@ -593,33 +593,45 @@ def _streamed_segments_have_speakers(streamed: dict) -> bool:
     return labelled >= max(1, len(segs) // 2)
 
 
-# Stop auto-enrolling once the running-average voiceprint is stable, so the
-# once-per-meeting channel RMS pass that enrollment needs is not paid forever.
+# Stop folding new samples in once the running-average voiceprint is stable.
+# The channel RMS pass itself is no longer capped: `_me_signals` needs it on
+# every meeting, since the mic channel is what identifies the user.
 _VOICEPRINT_ENROLL_CAP = 12
 
 
-def _apply_voiceprint(
+def _me_signals(
     segments: list[dict],
     speaker_embeddings: dict | None,
     wav: Path,
     store: VoiceprintStore,
-) -> str | None:
-    """Match the meeting's speakers to the persisted self-voiceprint (returning
-    the "me" speaker id, or None) and, on a stereo recording, fold the
-    mic-channel user's embedding back into the voiceprint (auto-enrollment).
+) -> tuple[str | None, str | None]:
+    """Identify which diarized speaker is the user, and auto-enroll them.
 
-    No-ops when the daemon wrote no per-speaker embeddings (diarization failed).
-    Matches before enrolling, so a meeting never just matches its own freshly
-    added sample.
+    Returns `(mic_me, voiceprint_me)`, either None when that signal cannot
+    decide:
+      - `mic_me`: the speaker whose speech is predominantly on the mic channel
+        of the stereo recording. Physical evidence, so it outranks the
+        voiceprint; None on mono, and None when a merged cluster leaves no
+        speaker clearly mic-side.
+      - `voiceprint_me`: the speaker matching the persisted self-voiceprint,
+        which still resolves those two cases.
+
+    Both None means no evidence the user spoke at all, and the caller names
+    nobody. No-ops when the daemon wrote no per-speaker embeddings (diarization
+    failed). Matches before enrolling, so a meeting never just matches its own
+    freshly added sample.
     """
     if not isinstance(speaker_embeddings, dict) or not speaker_embeddings:
-        return None
-    matched = match_voiceprint(speaker_embeddings, store.embedding())
-    if store.meetings() < _VOICEPRINT_ENROLL_CAP:
-        me = identify_user_speaker(segments, wav)
-        if me is not None and me in speaker_embeddings:
-            store.update(speaker_embeddings[me])
-    return matched
+        return None, None
+    voiceprint_me = match_voiceprint(speaker_embeddings, store.embedding())
+    mic_me = identify_user_speaker(segments, wav)
+    if (
+        store.meetings() < _VOICEPRINT_ENROLL_CAP
+        and mic_me is not None
+        and mic_me in speaker_embeddings
+    ):
+        store.update(speaker_embeddings[mic_me])
+    return mic_me, voiceprint_me
 
 
 def _write_embeddings_sidecar(
@@ -671,10 +683,10 @@ def _finalize_streamed_transcript(
     if _streamed_segments_have_speakers(streamed):
         log.info("FluidAudio sidecar already labelled segments; finalizing as-is")
         segs = streamed.get("segments") or []
-        voiceprint_me = _apply_voiceprint(segs, speaker_embeddings, wav, store)
+        mic_me, voiceprint_me = _me_signals(segs, speaker_embeddings, wav, store)
         mapping = resolve_speaker_labels(
             segs, speaker_embeddings, roster,
-            user_label=user_label, voiceprint_me=voiceprint_me,
+            user_label=user_label, mic_me=mic_me, voiceprint_me=voiceprint_me,
         )
         segments = apply_speaker_labels(segs, mapping)
         _write_embeddings_sidecar(wav, speaker_embeddings, mapping)

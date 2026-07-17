@@ -6,7 +6,6 @@ from pathlib import Path
 from mp.diarize import (
     OTHER_SPEAKER,
     USER_SPEAKER,
-    _dominant_speaker,
     apply_speaker_labels,
     cosine_similarity,
     identify_user_speaker,
@@ -40,27 +39,46 @@ def test_channel_user_speaker_gets_the_enrolled_name():
     assert [s["speaker"] for s in out] == ["Heorhii", OTHER_SPEAKER, "Heorhii"]
 
 
-def test_channel_user_wins_even_when_not_dominant():
+def test_channel_user_wins_even_when_talking_less():
     # speaker_other talks more, but the mic channel (speaker_user) is still "me":
-    # the channel label takes precedence over the dominant-time heuristic.
+    # the channel label is physical evidence, not a share-of-talk guess.
     segs = [_seg(USER_SPEAKER, 0, 1), _seg(OTHER_SPEAKER, 1, 10)]
     out = label_me_speaker(segs, "Me")
     assert [s["speaker"] for s in out] == ["Me", OTHER_SPEAKER]
 
 
-def test_dominant_speaker_fallback_when_no_channel_label():
-    # FluidAudio generic labels; speaker_0 speaks the most, so it is "me".
+def test_no_name_when_no_signal_identifies_the_user():
+    # The silent-owner case: generic FluidAudio labels, no channel label, no mic
+    # identification and no voiceprint match, i.e. nothing places the user in
+    # this meeting. Talking most is NOT evidence of being the owner, so nobody
+    # is given the user's name and every voice stays available for a THEM
+    # cluster the user can name in the app.
     segs = [_seg("speaker_0", 0, 6), _seg("speaker_1", 6, 7), _seg("speaker_0", 7, 9)]
     out = label_me_speaker(segs, "Me")
-    assert [s["speaker"] for s in out] == ["Me", "speaker_1", "Me"]
+    assert [s["speaker"] for s in out] == ["speaker_0", "speaker_1", "speaker_0"]
 
 
-def test_dominant_speaker_picks_most_spoken_time():
-    assert _dominant_speaker([_seg("a", 0, 1), _seg("b", 1, 10)]) == "b"
+def test_mic_me_identifies_the_user_when_no_channel_label():
+    # FluidAudio generic labels: the mic-channel cross-tab found speaker_1, who
+    # is "me" despite speaker_0 talking far more.
+    segs = [_seg("speaker_0", 0, 9), _seg("speaker_1", 9, 10)]
+    out = label_me_speaker(segs, "Me", mic_me="speaker_1")
+    assert [s["speaker"] for s in out] == ["speaker_0", "Me"]
 
 
-def test_dominant_ignores_unknown_and_empty_labels():
-    assert _dominant_speaker([_seg("Speaker?", 0, 10), _seg(None, 0, 9), _seg("a", 10, 11)]) == "a"
+def test_mic_me_beats_voiceprint():
+    # Both signals fired and disagree; the mic channel is a physical measurement
+    # of which voice reached the user's microphone, so it wins.
+    segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6)]
+    out = label_me_speaker(segs, "Me", mic_me="speaker_0", voiceprint_me="speaker_1")
+    assert [s["speaker"] for s in out] == ["Me", "speaker_1"]
+
+
+def test_mic_me_ignored_when_not_in_segments():
+    # A hint pointing at an absent speaker is not evidence; fall to voiceprint.
+    segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6)]
+    out = label_me_speaker(segs, "Me", mic_me="speaker_9", voiceprint_me="speaker_1")
+    assert [s["speaker"] for s in out] == ["speaker_0", "Me"]
 
 
 def test_noop_when_user_label_empty():
@@ -104,14 +122,24 @@ def test_match_voiceprint_none_when_below_threshold_or_unenrolled():
     assert match_voiceprint({}, [1.0, 0.0]) is None
 
 
-def test_match_voiceprint_tie_breaks_to_lowest_id():
-    emb = {"speaker_1": [1.0, 0.0], "speaker_0": [1.0, 0.0]}
+def test_match_voiceprint_none_when_runner_up_is_too_close():
+    # Two speakers of near-identical similarity fail the margin and leave "me"
+    # unresolved. Taken from the real library, where 0.506 vs 0.495 would
+    # otherwise have decided the owner's identity by 0.011.
+    emb = {"speaker_0": [1.0, 0.02], "speaker_1": [1.0, 0.0]}
+    assert match_voiceprint(emb, [1.0, 0.01]) is None
+
+
+def test_match_voiceprint_lone_candidate_only_faces_the_threshold():
+    # With nobody to be confused with, the margin gate has no runner-up to
+    # measure against and a clear match is still accepted.
+    emb = {"speaker_0": [1.0, 0.0]}
     assert match_voiceprint(emb, [1.0, 0.0]) == "speaker_0"
 
 
-def test_voiceprint_me_used_when_no_channel_label():
-    # Generic FluidAudio labels, user is NOT dominant (speaker_1 talks more),
-    # but the voiceprint matched speaker_0, so speaker_0 is "me".
+def test_voiceprint_me_used_when_no_channel_or_mic_label():
+    # Generic FluidAudio labels, user talks far less than speaker_1, but the
+    # voiceprint matched speaker_0, so speaker_0 is "me".
     segs = [_seg("speaker_0", 0, 1), _seg("speaker_1", 1, 10)]
     out = label_me_speaker(segs, "Me", voiceprint_me="speaker_0")
     assert [s["speaker"] for s in out] == ["Me", "speaker_1"]
@@ -125,10 +153,11 @@ def test_channel_label_still_beats_voiceprint():
 
 
 def test_voiceprint_me_ignored_when_not_in_segments():
-    # A stale hint pointing at an absent speaker falls through to dominant.
+    # A stale hint pointing at an absent speaker is not evidence the user spoke,
+    # so nobody is named rather than the name landing on whoever talked most.
     segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6)]
     out = label_me_speaker(segs, "Me", voiceprint_me="speaker_9")
-    assert [s["speaker"] for s in out] == ["Me", "speaker_1"]
+    assert [s["speaker"] for s in out] == ["speaker_0", "speaker_1"]
 
 
 def test_identify_user_speaker_mono_returns_none(monkeypatch):
@@ -173,27 +202,38 @@ def test_them_label_sequence():
 def test_resolve_labels_me_and_unknown_them():
     segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6), _seg("speaker_2", 6, 7)]
     emb = {"speaker_0": [1.0], "speaker_1": [2.0], "speaker_2": [3.0]}
-    # speaker_0 is dominant -> "Me"; the other two carry embeddings but no roster
-    # match -> stable THEM-A / THEM-B in first-appearance order.
-    mapping = resolve_speaker_labels(segs, emb, None, user_label="Me")
+    # The mic channel identified speaker_0 -> "Me"; the other two carry
+    # embeddings but no roster match -> stable THEM-A / THEM-B in
+    # first-appearance order.
+    mapping = resolve_speaker_labels(segs, emb, None, user_label="Me", mic_me="speaker_0")
     assert mapping == {"speaker_0": "Me", "speaker_1": "THEM-A", "speaker_2": "THEM-B"}
+
+
+def test_resolve_labels_no_me_when_user_did_not_speak():
+    # The silent-owner case at the mapping seam: no signal identifies the user,
+    # so `user_label` is applied to nobody and every voice clusters as unknown.
+    segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6)]
+    emb = {"speaker_0": [1.0], "speaker_1": [2.0]}
+    mapping = resolve_speaker_labels(segs, emb, None, user_label="Me")
+    assert mapping == {"speaker_0": "THEM-A", "speaker_1": "THEM-B"}
+    assert "Me" not in mapping.values()
 
 
 def test_resolve_labels_roster_names_win_over_them():
     segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6), _seg("speaker_2", 6, 7)]
     emb = {"speaker_0": [1.0], "speaker_1": [2.0], "speaker_2": [3.0]}
     roster = _FakeRoster([([2.0], "Bob")])  # speaker_1 -> Bob
-    mapping = resolve_speaker_labels(segs, emb, roster, user_label="Me")
+    mapping = resolve_speaker_labels(segs, emb, roster, user_label="Me", mic_me="speaker_0")
     assert mapping == {"speaker_0": "Me", "speaker_1": "Bob", "speaker_2": "THEM-A"}
 
 
 def test_resolve_labels_me_never_roster_matched():
     segs = [_seg("speaker_0", 0, 10), _seg("speaker_1", 10, 11)]
     emb = {"speaker_0": [1.0], "speaker_1": [2.0]}
-    # speaker_0 is dominant, so it stays "Me" even though the roster would match
-    # it; speaker_1 gets its roster name.
+    # speaker_0 is "me" by the mic channel, so it keeps the user's name even
+    # though the roster would match it; speaker_1 gets its roster name.
     roster = _FakeRoster([([1.0], "Alice"), ([2.0], "Bob")])
-    mapping = resolve_speaker_labels(segs, emb, roster, user_label="Me")
+    mapping = resolve_speaker_labels(segs, emb, roster, user_label="Me", mic_me="speaker_0")
     assert mapping["speaker_0"] == "Me"
     assert mapping["speaker_1"] == "Bob"
 
