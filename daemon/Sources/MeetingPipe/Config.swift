@@ -34,9 +34,17 @@ struct Config {
         var regulatedMode: Bool
     }
 
+    struct Transcription {
+        /// FluidAudio diarization clustering threshold (see `FluidAudioRunner.defaultClusteringThreshold`
+        /// for the why). Clamped to FluidAudio's valid 0.5-0.9 range on load, so a
+        /// stray hand-edit degrades gracefully instead of producing nonsense clusters.
+        var diarizationClusteringThreshold: Double
+    }
+
     var recording: Recording
     var detection: Detection
     var modes: Modes
+    var transcription: Transcription
 
     static let defaultPath: URL = {
         FileManager.default.homeDirectoryForCurrentUser
@@ -55,6 +63,7 @@ struct Config {
         let rec = toml["recording"]?.table
         let det = toml["detection"]?.table
         let mod = toml["modes"]?.table
+        let tra = toml["transcription"]?.table
 
         let outputDirRaw = rec?["output_dir"]?.string ?? "~/Documents/Meetings/raw"
         let sampleRate = rec?["sample_rate"]?.int ?? 16000
@@ -80,6 +89,14 @@ struct Config {
 
         let regulated = mod?["regulated_mode"]?.bool ?? false
 
+        // Accept both double and integer literals; clamp to FluidAudio's documented range.
+        let clusteringRaw: Double = {
+            if let d = tra?["diarization_clustering_threshold"]?.double { return d }
+            if let i = tra?["diarization_clustering_threshold"]?.int { return Double(i) }
+            return FluidAudioRunner.defaultClusteringThreshold
+        }()
+        let clusteringThreshold = min(0.9, max(0.5, clusteringRaw))
+
         return Config(
             recording: Recording(
                 outputDir: expandTilde(outputDirRaw),
@@ -99,7 +116,8 @@ struct Config {
                 repromptCooldownSec: repromptCooldown,
                 micOnlySilenceSec: micOnlySilenceSec
             ),
-            modes: Modes(regulatedMode: regulated)
+            modes: Modes(regulatedMode: regulated),
+            transcription: Transcription(diarizationClusteringThreshold: clusteringThreshold)
         )
     }
 
@@ -124,7 +142,10 @@ struct Config {
                 repromptCooldownSec: 60,
                 micOnlySilenceSec: 900
             ),
-            modes: Modes(regulatedMode: false)
+            modes: Modes(regulatedMode: false),
+            transcription: Transcription(
+                diarizationClusteringThreshold: FluidAudioRunner.defaultClusteringThreshold
+            )
         )
     }
 

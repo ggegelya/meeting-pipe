@@ -11,10 +11,23 @@ final class FluidAudioRunner: TranscriptionRunner {
 
     let backendName = "fluidaudio"
 
+    /// Diarization clustering threshold (FluidAudio `DiarizerConfig`, valid range
+    /// 0.5-0.9; lower groups fewer embeddings, so it yields MORE speakers). The
+    /// default sits below FluidAudio's own 0.7 because this product reads the
+    /// meeting's attendees and its action / decision owners off these labels, so
+    /// a merge (several people collapsed into one voice, DIAR2) asserts a
+    /// confidently wrong name, while the opposite failure only shows one person
+    /// as two unnamed clusters the owner can merge in the app. Tune it against a
+    /// hand-labelled corpus with `scripts/valid1_check.py --der` (its "MERGED
+    /// CLUSTERS" line is the regression detector); the config knob makes that
+    /// sweep possible without a rebuild.
+    static let defaultClusteringThreshold: Double = 0.65
+
     /// Parakeet variant. v3 is multilingual (25 European + JA + ZH); v2 is English-only
     /// with slightly lower WER on English. User archive is en/uk/es/ru, so v3 is default.
     private let asrVersion: AsrModelVersion
     private let unknownSpeaker: String
+    private let clusteringThreshold: Double
 
     private var asrManager: AsrManager?
     private var diarizer: DiarizerManager?
@@ -22,10 +35,12 @@ final class FluidAudioRunner: TranscriptionRunner {
 
     init(
         asrVersion: AsrModelVersion = .v3,
-        unknownSpeaker: String = "speaker_unknown"
+        unknownSpeaker: String = "speaker_unknown",
+        clusteringThreshold: Double = FluidAudioRunner.defaultClusteringThreshold
     ) {
         self.asrVersion = asrVersion
         self.unknownSpeaker = unknownSpeaker
+        self.clusteringThreshold = clusteringThreshold
     }
 
     func transcribe(
@@ -72,11 +87,14 @@ final class FluidAudioRunner: TranscriptionRunner {
         }
 
         let tokens = Self.tokens(from: asrResult)
-        let segments = SegmentBuilder.build(
+        let built = SegmentBuilder.build(
             tokens: tokens,
             speakers: speakers,
             unknownSpeaker: unknownSpeaker
         )
+        // Fold the ASR's sentence-level over-splitting and phantom punctuation-only
+        // rows into readable speaker turns before they reach the sidecar (DIAR2).
+        let segments = SegmentBuilder.coalesce(built)
 
         let audioSeconds = asrResult.duration > 0
             ? asrResult.duration
@@ -119,7 +137,9 @@ final class FluidAudioRunner: TranscriptionRunner {
         if let d = diarizer { return d }
         do {
             let models = try await DiarizerModels.downloadIfNeeded()
-            let manager = DiarizerManager()
+            let manager = DiarizerManager(
+                config: DiarizerConfig(clusteringThreshold: Float(clusteringThreshold))
+            )
             manager.initialize(models: models)
             self.diarizerModels = models
             self.diarizer = manager

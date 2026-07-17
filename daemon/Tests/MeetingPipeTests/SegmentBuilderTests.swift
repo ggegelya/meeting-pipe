@@ -110,4 +110,115 @@ final class SegmentBuilderTests: XCTestCase {
         )
         XCTAssertEqual(segment, "early")
     }
+
+    // MARK: - coalesce (DIAR2)
+
+    private func seg(
+        _ text: String, _ start: Double, _ end: Double, _ speaker: String,
+        words: [SidecarWord]? = nil
+    ) -> SidecarSegment {
+        SidecarSegment(
+            start: start, end: end, text: text,
+            words: words ?? [SidecarWord(word: text, start: start, end: end)],
+            speaker: speaker
+        )
+    }
+
+    func test_coalesce_empty_returns_empty() {
+        XCTAssertEqual(SegmentBuilder.coalesce([]), [])
+    }
+
+    func test_coalesce_merges_adjacent_same_speaker_into_a_turn() {
+        let input = [
+            seg("Hello world.", 0.0, 1.0, "A",
+                words: [SidecarWord(word: "Hello world.", start: 0.0, end: 1.0)]),
+            seg("Next up", 1.1, 1.9, "A",
+                words: [SidecarWord(word: " Next up", start: 1.1, end: 1.9)])
+        ]
+        let out = SegmentBuilder.coalesce(input)
+        XCTAssertEqual(out.count, 1)
+        XCTAssertEqual(out[0].text, "Hello world. Next up")
+        XCTAssertEqual(out[0].start, 0.0, accuracy: 1e-9)
+        XCTAssertEqual(out[0].end, 1.9, accuracy: 1e-9)
+        XCTAssertEqual(out[0].words.count, 2)
+        XCTAssertEqual(out[0].speaker, "A")
+    }
+
+    func test_coalesce_keeps_different_speakers_separate() {
+        let input = [
+            seg("Hello.", 0.0, 1.0, "A"),
+            seg("Hi there.", 1.1, 2.0, "B")
+        ]
+        XCTAssertEqual(SegmentBuilder.coalesce(input).count, 2)
+    }
+
+    func test_coalesce_respects_the_gap_threshold() {
+        // Same speaker but a 2.0s pause exceeds the 1.2s merge gap: stays two turns.
+        let input = [
+            seg("First.", 0.0, 1.0, "A"),
+            seg("Second.", 3.0, 4.0, "A")
+        ]
+        XCTAssertEqual(SegmentBuilder.coalesce(input).count, 2)
+    }
+
+    func test_coalesce_caps_a_long_monologue() {
+        // Twenty 2s same-speaker segments with tiny gaps (~42s total) must split
+        // at the 30s turn cap rather than becoming one wall of text.
+        let input = (0..<20).map { i -> SidecarSegment in
+            let start = Double(i) * 2.1
+            return seg("word\(i).", start, start + 2.0, "A",
+                       words: [SidecarWord(word: " word\(i).", start: start, end: start + 2.0)])
+        }
+        let out = SegmentBuilder.coalesce(input)
+        XCTAssertGreaterThan(out.count, 1, "should split at the 30s turn cap")
+        for turn in out {
+            XCTAssertLessThanOrEqual(turn.end - turn.start, 30.0 + 1e-6)
+        }
+    }
+
+    func test_coalesce_drops_standalone_punctuation_only_segments() {
+        let input = [
+            seg("Hello.", 0.0, 1.0, "A"),
+            seg(".", 1.05, 1.3, "B"),
+            seg("Bye.", 5.0, 6.0, "C")
+        ]
+        let out = SegmentBuilder.coalesce(input)
+        XCTAssertEqual(out.map(\.speaker), ["A", "C"])
+        XCTAssertFalse(out.contains { $0.text == "." })
+    }
+
+    func test_coalesce_merges_across_dropped_punctuation_without_injecting_it() {
+        // A phantom "." between two same-speaker fragments is removed, and the
+        // fragments then read as one turn WITHOUT the stray period folded in.
+        let input = [
+            seg("Hello", 0.0, 1.0, "A",
+                words: [SidecarWord(word: "Hello", start: 0.0, end: 1.0)]),
+            seg(".", 1.02, 1.2, "A",
+                words: [SidecarWord(word: " .", start: 1.02, end: 1.2)]),
+            seg("world", 1.25, 2.0, "A",
+                words: [SidecarWord(word: " world", start: 1.25, end: 2.0)])
+        ]
+        let out = SegmentBuilder.coalesce(input)
+        XCTAssertEqual(out.count, 1)
+        XCTAssertEqual(out[0].text, "Hello world")
+    }
+
+    func test_coalesce_keeps_a_short_real_interjection() {
+        // "Yeah" between two other speakers is real speech, not noise: kept.
+        let input = [
+            seg("What do you think?", 0.0, 2.0, "A"),
+            seg("Yeah", 2.1, 2.4, "B"),
+            seg("I agree.", 2.5, 3.5, "A")
+        ]
+        let out = SegmentBuilder.coalesce(input)
+        XCTAssertEqual(out.count, 3)
+        XCTAssertEqual(out[1].text, "Yeah")
+    }
+
+    func test_coalesce_treats_cyrillic_as_speech() {
+        // hasSpeech is Unicode-aware, so a Cyrillic-only turn is not dropped.
+        let out = SegmentBuilder.coalesce([seg("Привіт", 0.0, 1.0, "A")])
+        XCTAssertEqual(out.count, 1)
+        XCTAssertEqual(out[0].text, "Привіт")
+    }
 }

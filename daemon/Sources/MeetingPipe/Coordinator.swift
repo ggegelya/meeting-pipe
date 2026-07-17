@@ -102,7 +102,9 @@ final class Coordinator: NSObject {
         self.launcher = resolvedLauncher
         // FluidAudio is the only ASR path: in-process Parakeet TDT +
         // pyannote on the ANE; Python does summarize + publish only.
-        let runner = TranscriptionService.makeRunner()
+        let runner = TranscriptionService.makeRunner(
+            clusteringThreshold: config.transcription.diarizationClusteringThreshold
+        )
         Log.event(category: "transcription", action: "engine_resolved", attributes: [
             "engine": runner.backendName,
         ])

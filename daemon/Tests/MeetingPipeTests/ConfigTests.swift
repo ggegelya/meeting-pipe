@@ -121,4 +121,37 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(scrubbed["PATH"], "/usr/bin")
         XCTAssertEqual(scrubbed["HOME"], "/Users/x")
     }
+
+    // MARK: - transcription.diarization_clustering_threshold (DIAR2)
+
+    func testParsesDiarizationClusteringThreshold() throws {
+        let url = writeTOML("""
+        [transcription]
+        diarization_clustering_threshold = 0.6
+        """)
+        let cfg = try Config.load(from: url)
+        XCTAssertEqual(cfg.transcription.diarizationClusteringThreshold, 0.6, accuracy: 1e-9)
+    }
+
+    func testDiarizationClusteringThresholdDefaultsWhenAbsent() throws {
+        let cfg = try Config.load(from: writeTOML(""))
+        XCTAssertEqual(
+            cfg.transcription.diarizationClusteringThreshold,
+            FluidAudioRunner.defaultClusteringThreshold, accuracy: 1e-9
+        )
+    }
+
+    func testDiarizationClusteringThresholdClampsToFluidAudioRange() throws {
+        let low = try Config.load(from: writeTOML("""
+        [transcription]
+        diarization_clustering_threshold = 0.1
+        """))
+        XCTAssertEqual(low.transcription.diarizationClusteringThreshold, 0.5, accuracy: 1e-9)
+
+        let high = try Config.load(from: writeTOML("""
+        [transcription]
+        diarization_clustering_threshold = 2.0
+        """))
+        XCTAssertEqual(high.transcription.diarizationClusteringThreshold, 0.9, accuracy: 1e-9)
+    }
 }

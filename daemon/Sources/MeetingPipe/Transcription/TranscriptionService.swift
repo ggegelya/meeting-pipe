@@ -4,9 +4,11 @@ import Foundation
 /// Returns FluidAudioRunner unless a test fake has been injected.
 enum TranscriptionService {
 
-    static func makeRunner() -> TranscriptionRunner {
+    static func makeRunner(
+        clusteringThreshold: Double = FluidAudioRunner.defaultClusteringThreshold
+    ) -> TranscriptionRunner {
         if let override = testingOverride { return override }
-        return FluidAudioRunner()
+        return FluidAudioRunner(clusteringThreshold: clusteringThreshold)
     }
 
     // MARK: - Test seam

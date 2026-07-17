@@ -264,8 +264,8 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 
 ### Transcription - "ASR + speaker labels, on device"
 
-- `Transcription/FluidAudioRunner.swift` - FluidAudio (Parakeet TDT for ASR, pyannote-community-1 for diarization) on the Apple Neural Engine. `SinkDispatcher` runs it after the recorder closes the WAV, producing `<stem>.json` / `<stem>.md`.
-- `Transcription/SegmentBuilder.swift`, `TranscriptionRunner.swift`, `TranscriptionService.swift` - segment assembly, the runner protocol, and the factory the dispatcher calls.
+- `Transcription/FluidAudioRunner.swift` - FluidAudio (Parakeet TDT for ASR, pyannote-community-1 for diarization) on the Apple Neural Engine. `SinkDispatcher` runs it after the recorder closes the WAV, producing `<stem>.json` / `<stem>.md`. The diarizer's clustering threshold is the one tunable dial (`transcription.diarization_clustering_threshold` in `config.toml`, default 0.65, clamped to FluidAudio's 0.5-0.9; DIAR2): lower biases toward more distinct speakers over merging several people into one voice, which would name the wrong owner. Threaded `Config` -> `TranscriptionService.makeRunner` -> here.
+- `Transcription/SegmentBuilder.swift`, `TranscriptionRunner.swift`, `TranscriptionService.swift` - segment assembly, the runner protocol, and the factory the dispatcher calls. `SegmentBuilder.build` splits the token stream into fine segments; `SegmentBuilder.coalesce` (applied by the runner right after) drops phantom punctuation-only rows and merges consecutive same-speaker fragments into readable turns bounded by a gap + a max-turn cap (DIAR2).
 
 ### Workflows — per-context routing (TECH-B)
 

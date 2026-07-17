@@ -29,6 +29,21 @@ enum SegmentBuilder {
         /// Discard tokens whose text strips to empty after trimming.
         var dropEmptyTokens: Bool = true
 
+        /// `coalesce` merges consecutive same-speaker segments into one readable
+        /// turn when the inter-segment gap is at most this. The builder splits on
+        /// every sentence terminator, so a monologue arrives as one row per
+        /// sentence; folding those back into turns is what fixes the mid-thought
+        /// splits and absorbs the sub-second fragments.
+        var mergeGapSeconds: Double = 1.2
+        /// Ceiling on a coalesced turn, so a long monologue stays several
+        /// readable rows rather than one wall of text (and per-segment markers /
+        /// reassignment keep usable granularity).
+        var maxTurnSeconds: Double = 30.0
+        /// `coalesce` drops a segment whose text carries no letter or number: the
+        /// lone `.` (0.16-0.32 s) the ASR emits as phantom punctuation, which
+        /// clutters the transcript and credits a near-empty span to nobody.
+        var dropPunctuationOnlySegments: Bool = true
+
         static let `default` = Config()
     }
 
@@ -84,6 +99,40 @@ enum SegmentBuilder {
         }
         flush()
         return segments
+    }
+
+    /// Clean `build`'s fine-grained stream for readability: drop phantom
+    /// punctuation-only segments, then merge consecutive same-speaker segments
+    /// into readable turns, bounded by an inter-segment gap and a maximum turn
+    /// duration. Pure and FluidAudio-free, applied by `FluidAudioRunner` after
+    /// `build`; kept separate so the split primitive stays independently tested.
+    static func coalesce(_ segments: [SidecarSegment], config: Config = .default) -> [SidecarSegment] {
+        let kept = config.dropPunctuationOnlySegments
+            ? segments.filter { hasSpeech($0.text) }
+            : segments
+        var out: [SidecarSegment] = []
+        for segment in kept {
+            guard var last = out.last,
+                  last.speaker == segment.speaker,
+                  segment.start - last.end <= config.mergeGapSeconds,
+                  segment.end - last.start <= config.maxTurnSeconds
+            else {
+                out.append(segment)
+                continue
+            }
+            last.words.append(contentsOf: segment.words)
+            last.text = last.words.map(\.word).joined().trimmingCharacters(in: .whitespaces)
+            last.end = segment.end
+            out[out.count - 1] = last
+        }
+        return out
+    }
+
+    /// True when the text carries at least one letter or number. A segment that
+    /// strips to only punctuation / whitespace is phantom ASR output; `isLetter`
+    /// is Unicode-aware, so Cyrillic (the uk / ru archive) still counts as speech.
+    private static func hasSpeech(_ text: String) -> Bool {
+        text.contains { $0.isLetter || $0.isNumber }
     }
 
     /// Assign the speaker with the largest overlap; ties broken by earliest span start.

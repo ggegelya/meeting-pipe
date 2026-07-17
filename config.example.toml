@@ -76,6 +76,20 @@ reprompt_cooldown_sec = 60
 # ambient room noise no longer resets the timer. Default 900 (15 minutes).
 mic_only_silence_seconds = 900
 
+[transcription]
+# Diarization clustering threshold for the on-device FluidAudio diarizer, in
+# FluidAudio's valid 0.5-0.9 range (values outside are clamped on load). Lower
+# groups fewer voice embeddings together, so it produces MORE distinct speakers;
+# higher merges more of them into one. The default 0.65 sits below FluidAudio's
+# own 0.7 on purpose: this app reads the attendees and the action / decision
+# owners off the speaker labels, so merging several people into one voice puts a
+# confidently wrong name on the summary, while the opposite failure only shows
+# one person as two unnamed THEM-* clusters you can merge in the Library. Tune it
+# against meetings you have hand-labelled with `scripts/valid1_check.py --der`
+# (its "MERGED CLUSTERS" line flags a regression); a change takes effect on the
+# next recording, no rebuild needed.
+diarization_clustering_threshold = 0.65
+
 [summarization]
 # Latest Sonnet at time of writing. Bump deliberately.
 model = "claude-sonnet-4-6"
