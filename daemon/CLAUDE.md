@@ -29,6 +29,7 @@ swift test                # full Xcode required locally (CI on macos-14 has it)
 - Don't log or write files from inside an audio render callback (`MeetingRecorder` taps, `SystemAudioCapture`). Those run on real-time threads; blocking work there glitches the recording.
 - Don't `print(...)` for event-stream data. Use `Log.event(category:action:attributes:)` so `mp logs` / `mp analyze-detection` see it.
 - Don't pile inline styles into a SwiftUI view. The shared primitives (`SettingsGroup`, `SettingsRow`, `SettingsSegmented`, `SettingsSlider`, `SettingsStatusPill`, `SettingsSecretField`, `SettingsHotkeyField` in `Preferences/PreferencesControls.swift`) are the design system. Add new primitives there rather than parallel one-offs.
+- Don't reference another file's types from `Automation/MeetingPipeAppIntents.swift`. `install.sh` compiles that file **standalone** with `swift-frontend` to emit the App Intents metadata Shortcuts discovers, and a lone-file compile cannot resolve cross-file references. The breakage is silent in the worst way: `swift build` still succeeds, the app still installs, and only the native Shortcuts actions quietly vanish. Keep its `meetingpipe://` verbs as literals (`MeetingPipeAppIntentsTests` pins them to `AutomationCommand.parse` so they cannot drift), and re-run `daemon/scripts/auto1-app-intents-probe.sh` after an Xcode bump, since the extraction rides private compiler flags.
 
 ## Where things live (quick index)
 
@@ -47,4 +48,4 @@ swift test                # full Xcode required locally (CI on macos-14 has it)
 | Pipeline subprocess | `PipelineLauncher.swift`, `LocalServerReaper.swift` (kills an `mlx_lm.server` orphaned by a watchdog SIGKILL) |
 | Event log | `Logger.swift` (`Log.event` / `Log.writeLine` / `Log.main`; size-rotated via `Log.rotateIfNeeded`, read across generations via `Log.logGenerations`) |
 | Diagnostics viewer (UX20) | `DiagnosticsWindow.swift` + `DiagnosticsView.swift` + `DiagnosticsLog.swift` (read-only event-log viewer); `DoctorCommand.daemonSelfCheckProbes` folds the argv-doctor probes into the Preferences doctor sheet (`DoctorRunner`) |
-| Automation (`meetingpipe://`) | `Automation/AutomationCommand.swift` (pure parser), `Automation/Coordinator+Automation.swift` (router), `AppDelegate.application(_:open:)` in `App.swift`, `CFBundleURLTypes` in `scripts/install.sh` |
+| Automation (`meetingpipe://` + App Intents) | `Automation/AutomationCommand.swift` (pure parser), `Automation/Coordinator+Automation.swift` (router), `AppDelegate.application(_:open:)` in `App.swift`, `CFBundleURLTypes` in `scripts/install.sh`; native Shortcuts actions in `Automation/MeetingPipeAppIntents.swift` (+ the `Metadata.appintents` extraction step in `install.sh`) |

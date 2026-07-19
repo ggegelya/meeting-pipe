@@ -196,6 +196,87 @@ cat >"$APP_BUILD/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+# 2b-2. Native App Intents metadata (AUTO1) --------------------------------
+#
+# Shortcuts, Spotlight, and Siri discover App Intents from a
+# Metadata.appintents bundle inside the app, which Xcode normally produces via
+# its "App Intents Metadata Extractor" build phase. `swift build` has no such
+# phase, so we run the two underlying tools by hand: a swift-frontend
+# const-values pass over the intents source, then appintentsmetadataprocessor.
+#
+# MeetingPipeAppIntents.swift is deliberately dependency-free precisely so this
+# pass can compile it STANDALONE (a lone-file compile cannot resolve cross-file
+# references). Its meetingpipe:// URLs are pinned to the real router by
+# MeetingPipeAppIntentsTests, so the two copies of the verb vocabulary cannot
+# drift. The verified recipe and its four traps (bare protocol names, the
+# frontend-not-driver flag, absolute source paths, -parse-as-library) are in
+# docs/spikes/auto1-app-intents-metadata.md, and
+# daemon/scripts/auto1-app-intents-probe.sh is the regression guard to re-run
+# after an Xcode bump, since these flags are private and can drift.
+#
+# Runs BEFORE the signing below so the metadata is covered by the signature.
+# Non-fatal on purpose: without it the app still installs and every
+# meetingpipe:// URL still works (Shortcuts via its "Open URL" action); only
+# the native no-typing actions go missing.
+
+INTENTS_SRC="$REPO_ROOT/daemon/Sources/MeetingPipe/Automation/MeetingPipeAppIntents.swift"
+APPINTENTS_PROC="$(xcrun --find appintentsmetadataprocessor 2>/dev/null || true)"
+SWIFT_FRONTEND="$(xcrun -f swift-frontend 2>/dev/null || true)"
+
+if [[ ! -f "$INTENTS_SRC" ]]; then
+    warn "App Intents source missing; skipping native Shortcuts actions."
+elif [[ -z "$APPINTENTS_PROC" || -z "$SWIFT_FRONTEND" ]]; then
+    warn "Full Xcode not found (Command Line Tools only?); skipping native App Intents."
+    warn "  The meetingpipe:// URL scheme still works. For native Shortcuts actions:"
+    warn "  sudo xcode-select -s /Applications/Xcode.app, then re-run this script."
+else
+    say "Extracting App Intents metadata (native Shortcuts actions)"
+    AI_TMP="$(mktemp -d)"
+    AI_SDK="$(xcrun --show-sdk-path)"
+    AI_TOOLCHAIN="$(dirname "$(dirname "$(dirname "$SWIFT_FRONTEND")")")"
+    AI_TRIPLE="$(uname -m)-apple-macosx14.0"
+    AI_XCV="$(xcodebuild -version 2>/dev/null | awk '/Build version/{print $3}')"
+    [[ -n "$AI_XCV" ]] || AI_XCV="$(xcrun --show-sdk-build-version 2>/dev/null)"
+
+    # Bare protocol names: module-qualified ones silently gather nothing.
+    printf '%s\n' '["AppIntent","AppShortcutsProvider","AppEnum"]' >"$AI_TMP/protocols.json"
+
+    if "$SWIFT_FRONTEND" -c -primary-file "$INTENTS_SRC" \
+            -target "$AI_TRIPLE" -sdk "$AI_SDK" \
+            -module-name MeetingPipe -parse-as-library \
+            -emit-const-values-path "$AI_TMP/intents.swiftconstvalues" \
+            -const-gather-protocols-file "$AI_TMP/protocols.json" \
+            -o "$AI_TMP/intents.o" 2>"$AI_TMP/compile.err"; then
+        printf '%s\n' "$INTENTS_SRC" >"$AI_TMP/sources.txt"
+        printf '%s\n' "$AI_TMP/intents.swiftconstvalues" >"$AI_TMP/constvals.txt"
+        if "$APPINTENTS_PROC" \
+                --output "$APP_BUILD/Contents/Resources" \
+                --toolchain-dir "$AI_TOOLCHAIN" \
+                --module-name MeetingPipe \
+                --sdk-root "$AI_SDK" \
+                --xcode-version "$AI_XCV" \
+                --platform-family macOS \
+                --deployment-target 14.0 \
+                --target-triple "$AI_TRIPLE" \
+                --source-file-list "$AI_TMP/sources.txt" \
+                --swift-const-vals-list "$AI_TMP/constvals.txt" \
+                --force >"$AI_TMP/proc.log" 2>&1 \
+            && [[ -f "$APP_BUILD/Contents/Resources/Metadata.appintents/extract.actionsdata" ]]; then
+            say "App Intents metadata written; Shortcuts will list MeetingPipe actions."
+        else
+            warn "App Intents metadata step failed; native Shortcuts actions will be missing."
+            warn "  (meetingpipe:// URLs still work.) Log: $AI_TMP/proc.log"
+            warn "  Re-run daemon/scripts/auto1-app-intents-probe.sh to see if a toolchain bump broke it."
+            AI_KEEP=1
+        fi
+    else
+        warn "App Intents const-values pass failed; native Shortcuts actions will be missing."
+        warn "  (meetingpipe:// URLs still work.) Log: $AI_TMP/compile.err"
+        AI_KEEP=1
+    fi
+    [[ "${AI_KEEP:-0}" == "1" ]] || rm -rf "$AI_TMP"
+fi
+
 # 2c. Place .app in ~/Applications so Spotlight indexes it ----------------
 #
 # ~/Applications wins over /Applications here: it doesn't need admin, it

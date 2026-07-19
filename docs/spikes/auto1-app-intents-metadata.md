@@ -2,6 +2,8 @@
 
 Spike, 2026-07-18. Probe: [`daemon/scripts/auto1-app-intents-probe.sh`](../../daemon/scripts/auto1-app-intents-probe.sh) (owner-run on a real Mac with full Xcode; self-contained, touches nothing in the repo or the installed app). Unlike the DET2 / MIC7 / MIC8 spikes, the headline mechanism question IS answerable in-harness and this spike answers it: the metadata bundle can be built off a SwiftPM-style compile. What stays owner-owed is only the last mile, that Shortcuts.app actually surfaces the action, which needs an interactive Mac with the app installed.
 
+> **Outcome (2026-07-19): built.** The owner ran the probe (`MECHANISM GO` on their Mac) and elected to build the leg rather than wait for DIST1. Shipped: `daemon/Sources/MeetingPipe/Automation/MeetingPipeAppIntents.swift` (six intents + an `AppShortcutsProvider`), `MeetingPipeAppIntentsTests` (the drift fence), and the extraction step in `scripts/install.sh` (writing `Contents/Resources/Metadata.appintents` before signing). The "do not build yet" recommendation below is therefore **superseded**; everything above it (the mechanism, the four traps, the fragility argument) still stands and is what the build implements. The probe stays the toolchain-bump regression guard, and the DIST1 convergence note is still the durable path: if DIST1 moves to an Xcode project, the install.sh hand-roll retires.
+
 ## Question
 
 AUTO1's `meetingpipe://` URL scheme shipped and its acceptance is met (a Shortcut driving the built-in "Open URL" action toggles a recording end-to-end; Raycast and Stream Deck ride the same way). The one substantive remainder is **native App Intents**: a first-class, no-URL-typing Shortcuts action. The spec deferred it on a toolchain fact, that a plain `swift build` never runs `appintentsmetadataprocessor`, the build phase Shortcuts needs to discover App Intents, so shipping intents on the SwiftPM bundle alone would be undiscoverable dead code. Lighting them up meant "either moving the build to Xcode or invoking the metadata processor in install.sh, a separate spike that DIST1's build-system question may force anyway".
@@ -48,7 +50,7 @@ One more non-blocking design note for the build: on macOS the metadata bundle li
 - **Build timing: the owner's call, and now a bounded build.** It is no longer blind: N intents + one provider + one install.sh step, all routed through the shipped, tested `handleAutomation` gate. Two residual risks, both named and mitigated: the final Shortcuts-discovery eyeball (owner-owed, one-time), and toolchain-bump fragility of the private flag surface (probe-guarded, re-run on each Xcode bump).
 - **Durable path: converge with DIST1.** Fold the metadata step into whatever build system DIST1 blesses. Do not hand-roll it into install.sh ahead of that decision unless the owner wants the native Shortcuts action sooner than DIST1 lands.
 
-Net: **do not add App Intents to the shipping build yet.** The URL scheme already meets AUTO1's acceptance; native App Intents are a discoverability upgrade whose metadata mechanism is now proven and whose build is now bounded. Keep this doc + the probe; promote on the owner's go.
+Net (as written 2026-07-18): **do not add App Intents to the shipping build yet.** The URL scheme already meets AUTO1's acceptance; native App Intents are a discoverability upgrade whose metadata mechanism is now proven and whose build is now bounded. Keep this doc + the probe; promote on the owner's go. **The owner gave that go on 2026-07-19 and the leg is built, see the Outcome note at the top.**
 
 ## Follow-on
 
