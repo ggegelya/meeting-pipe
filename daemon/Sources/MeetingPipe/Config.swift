@@ -165,7 +165,7 @@ struct Config {
     }
 }
 
-/// Seeds the process env with the managed Keychain tokens (ANTHROPIC_API_KEY / NOTION_TOKEN / HF_TOKEN) so
+/// Seeds the process env with the managed Keychain tokens (`KeychainSecrets.managedKeys`: ANTHROPIC_API_KEY / NOTION_TOKEN / HF_TOKEN / OPENAI_API_KEY) so
 /// pipeline subprocesses inherit them and the in-daemon Notion database picker can read NOTION_TOKEN (SEC8).
 /// Reads through the same `/usr/bin/security` path every tree uses.
 enum Secrets {

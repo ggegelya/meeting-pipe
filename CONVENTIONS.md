@@ -38,7 +38,7 @@ Plus a completeness axis: a key in the README reference but not in `config.examp
 
 **Event categories.** Every `Log.event` / `events.emit` category literal is diffed against the `### Categories` table below, in both directions, and action literals are checked for snake_case.
 
-Known drift lives in the script's two allowlists, each entry naming the backlog task that clears it (DOC9 for the sink sections missing from `config.example.toml`; HYG2's three dead-knob entries are gone, cleared when the knobs were wired or deleted). **A stale allowlist entry fails too**, so the lists cannot outlive the drift they describe, and clearing the owning task means deleting lines from them. Anything not listed fails from the day it appears.
+The script's two allowlists exist for known drift a named backlog task will clear, and **both are empty** as of HYG2 (three dead knobs) and DOC9 (eleven keys `config.example.toml` never showed). That is the intended steady state. **A stale allowlist entry fails too**, so a list can neither outlive the drift it describes nor quietly absorb new drift; anything not listed fails from the day it appears.
 
 Not mirrored into `scripts/pre-commit`: the whole-state scan takes ~2.7 s, which is too slow for every commit. Same call as the DSN3 token guards, which are also CI-only.
 
@@ -87,7 +87,7 @@ Don't add packages without asking. The dependency surface is deliberately small.
 
 ### Secrets (macOS Keychain, SEC8)
 
-The API tokens (`ANTHROPIC_API_KEY`, `NOTION_TOKEN`, plus optional `HF_TOKEN`) live in the macOS login Keychain, not a file. Three trees touch the same items and must agree on the naming:
+Four managed API tokens live in the macOS login Keychain, not a file: `ANTHROPIC_API_KEY`, `NOTION_TOKEN`, `HF_TOKEN`, and `OPENAI_API_KEY` (the last joined with the `openai` backend in PROV1). Only the ones your configured backends and sinks need are ever set; the list is one source of truth on each side (`KeychainSecrets.managedKeys`, `mp.config.MANAGED_SECRET_KEYS`) and both the backup manifest and the SEC14 env scrub iterate it, so adding a fifth means editing those two constants and nothing else. Three trees touch the same items and must agree on the naming:
 
 - Swift daemon: `KeychainSecrets` / `SecretsStore` (reads at startup + on each Preferences save).
 - Python pipeline: `mp.config.load_secrets` / `_keychain_get`.
@@ -199,7 +199,7 @@ A tripwire pins this (PIPE8, `test_entry_contract.py`): it walks every dispatch 
 ### Test discipline
 
 - pytest + monkeypatch. No live HTTP, no network sockets.
-- VCR cassettes live next to the test file (`tests/cassettes/`) for replaying Notion / Anthropic interactions. Re-record only when the upstream API changes.
+- Outbound HTTP (Notion / Anthropic / OpenAI) is faked with `httpx.MockTransport`: monkeypatch `httpx.Client` to inject `transport=httpx.MockTransport(handler)` and answer from a handler function. See `tests/test_publish_notion.py`. No cassettes, so nothing to re-record.
 - Services depend on `Protocol`s from `services.py`. Tests inject in-memory fakes, not vendor SDK mocks.
 
 ### Ruff is strict in CI
@@ -514,7 +514,7 @@ Note for tests: `com.apple.icloud.desktop` can be written by an unprivileged pro
 
 `mp backup <dir>` writes `meeting-pipe-backup-<YYYYMMDD-HHMMSS>.tar.gz`, stdlib `tarfile`, gzip **level 1**: JSON sidecars compress well even at level 1 while WAV barely compresses at any level, so the default level 6 burns minutes of CPU on a multi-gigabyte library for nothing. Each root goes under a stable prefix (`library/`, `digests/`, `config/`, `corrections/`) rather than an absolute path, which is what lets a new Mac restore to a different library location.
 
-**Never archived**, each with a reason in the manifest's `excluded` list: `originals/` (ADR 0016 makes them 0600 and Time-Machine-excluded; a tarball on a NAS would undo that), `secrets.env`, `.last-backup.json` (a fact about *this* Mac), `published/`, and the caches. Keychain values are never exported; the manifest names the three items under service `com.meetingpipe.daemon` and `mp restore` prints the `security add-generic-password` commands.
+**Never archived**, each with a reason in the manifest's `excluded` list: `originals/` (ADR 0016 makes them 0600 and Time-Machine-excluded; a tarball on a NAS would undo that), `secrets.env`, `.last-backup.json` (a fact about *this* Mac), `published/`, and the caches. Keychain values are never exported; the manifest names the four managed items (from `MANAGED_SECRET_KEYS`) under service `com.meetingpipe.daemon` and `mp restore` prints the `security add-generic-password` commands.
 
 `mp restore <archive>` maps prefixes back to **this** machine's roots via `backup_roots(cfg)`, refuses a destination that already has files (`--force` overrides), and extracts with `tarfile`'s `data` filter so a crafted member cannot escape; a `FilterError` surfaces as a `RestoreError`, not a traceback.
 

@@ -36,8 +36,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
-    "pytest-vcr>=1.0.2",
-    "vcrpy>=6.0.1",
+    # No pytest-vcr / vcrpy: outbound HTTP is faked with httpx.MockTransport
+    # (see CONVENTIONS.md "Test discipline"). Both were declared here for years
+    # with no import and no cassette on disk; DOC9 dropped them.
     "ruff>=0.5.0",
     # T3: coverage measurement. Not a CI gate (no threshold is enforced); it is
     # what `scripts/coverage.sh` reports so the untested surface is a number

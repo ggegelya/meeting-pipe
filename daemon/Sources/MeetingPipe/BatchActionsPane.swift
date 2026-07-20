@@ -179,8 +179,8 @@ struct BatchActionsPane: View {
             VStack(spacing: 0) {
                 actionRow(
                     icon: "arrow.up.right.square",
-                    title: "Republish all to Notion",
-                    hint: "Re-runs the publish step against each selected meeting. Existing Notion pages are updated in place."
+                    title: "Republish all",
+                    hint: "Re-runs the publish step against each selected meeting, fanning out to every sink that meeting's workflow configures. Idempotent: an existing Notion page or Markdown file is updated in place."
                 )
                 cardFooter {
                     if case .running(let label, let done, let total) = state,

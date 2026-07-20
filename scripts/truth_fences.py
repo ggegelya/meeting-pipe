@@ -23,13 +23,13 @@ stops noticing. This script is the mechanical reader.
 
 Stdlib only (tomllib, ast, re), so CI can run it without installing anything.
 
-**The allowlists below are a ratchet, not an exemption.** Each entry names the
-backlog task that will clear it. Anything NOT listed fails, so the fence is
-live for new drift from the day it lands, while the known-drift backlog stays
-honest and visible instead of being silently tolerated. Clearing the owning
-task means deleting lines from these lists, and a stale entry also fails, so
-the lists cannot outlive the drift they describe. HYG2's three dead-knob
-entries were removed this way when the knobs were wired or deleted.
+**The allowlists below are a ratchet, not an exemption.** Both are empty now,
+which is the intended steady state: the fence landed with the then-known drift
+listed and tagged with the task that owned it, and HYG2 (three dead knobs) and
+DOC9 (eleven keys the example file never showed) emptied them by fixing what
+they described. Anything not listed fails, and a stale entry fails too, so a
+list can neither outlive its drift nor quietly absorb new drift. Add an entry
+only for drift a named backlog task will clear, and expect to delete it soon.
 """
 from __future__ import annotations
 
@@ -47,23 +47,10 @@ REPO = Path(__file__).resolve().parents[1]
 
 # Documented but read by nothing, or read but documented nowhere. Anything not
 # listed here is a failure.
-CONFIG_ALLOWLIST: dict[str, str] = {
-    # DOC9: real keys the pipeline parses that `config.example.toml` never
-    # shows, so the file is not the complete reference it reads as. The five
-    # sink keys below are additionally in the README but not the example file,
-    # which the completeness check catches separately.
-    "output.sinks": "DOC9: config.example.toml has no [output] section",
-    "obsidian.vault_path": "DOC9: config.example.toml has no [obsidian] section",
-    "obsidian.folder": "DOC9: config.example.toml has no [obsidian] section",
-    "obsidian.template_path": "DOC9: config.example.toml has no [obsidian] section",
-    "obsidian.attach_audio": "DOC9: config.example.toml has no [obsidian] section",
-    "obsidian.attachments_subfolder": "DOC9: config.example.toml has no [obsidian] section",
-    "obsidian.daily_note_backlink": "DOC9: config.example.toml has no [obsidian] section",
-    "filesystem.output_dir": "DOC9: config.example.toml has no [filesystem] section",
-    "lan.mount_path": "DOC9: config.example.toml has no [lan] section",
-    "lan.host": "DOC9: config.example.toml has no [lan] section",
-    "detection.default_prompt_action": "DOC9: read by both trees, absent from config.example.toml",
-}
+# Empty, and that is the intended steady state: HYG2 cleared the three dead
+# knobs and DOC9 the eleven keys `config.example.toml` never showed. A new entry
+# here should be rare and short-lived.
+CONFIG_ALLOWLIST: dict[str, str] = {}
 
 # Parsed at runtime but deliberately never sourced from TOML, so neither the
 # documented-vs-parsed diff nor the completeness check applies.

@@ -5,8 +5,9 @@ The archive stores each root under a stable prefix (`library/`, `digests/`,
 different library location restores correctly: destinations come from *this*
 machine's config, not from wherever the backup was taken.
 
-Nothing here touches the Keychain. The manifest names the three items to
-re-create; `mp backup` never exported their values and this never asks for them.
+Nothing here touches the Keychain. The manifest names the managed items to
+re-create (`MANAGED_SECRET_KEYS`, four today); `mp backup` never exported their
+values and this never asks for them.
 Per ADR 0003 a manual `cp -R` of the same roots works just as well, and the README
 runbook says so.
 

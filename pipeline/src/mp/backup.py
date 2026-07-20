@@ -16,8 +16,9 @@ What deliberately stays out:
   would defeat the property that ADR establishes. The redacted recording in the
   library is the canonical artifact, and it is backed up.
 - **`secrets.env`**, the legacy plaintext file SEC8 migrated into the Keychain.
-- **Keychain values.** The manifest names the three items to re-create; the secrets
-  themselves are never exported. `mp restore` prints the commands.
+- **Keychain values.** The manifest names the managed items to re-create (from
+  `MANAGED_SECRET_KEYS`, four of them today); the secrets themselves are never
+  exported. `mp restore` prints the commands.
 - **`published/`** (republish regenerates it) and the caches (waveform peaks,
   HuggingFace models), which rebuild on demand.
 

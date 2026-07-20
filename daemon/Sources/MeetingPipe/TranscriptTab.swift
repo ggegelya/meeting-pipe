@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// Speaker-labeled transcript with click-to-seek and current-line highlight (TECH-A6). Segments from `<stem>.json` (whisperx/mlx-whisper `{start, end, text, speaker?}`). Uses the parent-owned `AudioPlaybackController` shared with the Audio tab (A7) so flipping tabs keeps the same play head.
+/// Speaker-labeled transcript with click-to-seek and current-line highlight (TECH-A6). Segments from `<stem>.json`, written by the daemon's FluidAudio runner in the long-standing `{start, end, text, speaker?}` shape (inherited from the whisperx era, kept when ASR moved to Swift). Uses the parent-owned `AudioPlaybackController` shared with the Audio tab (A7) so flipping tabs keeps the same play head.
 
 // MARK: - Segment model
 

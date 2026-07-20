@@ -66,6 +66,15 @@ flag_moment_hotkey = "ctrl+option+f"
 # "Off the record" state while on; an open span auto-closes at stop. No-op when idle.
 off_the_record_hotkey = "ctrl+option+o"
 prompt_timeout_sec = 30
+# What happens when you ignore the prompt for `prompt_timeout_sec`.
+#   "skip"   : (default) suppress the call. The menu bar shows
+#              "Suppressed (<app>)" while the meeting is still detected, and a
+#              "Skipped <app>" notification offers a Start recording action that
+#              begins the recording late, bypassing the cooldown.
+#   "record" : auto-start an auto-summary recording.
+#   "byo"    : auto-start a BYO (manual-paste) recording, no Anthropic call.
+# Also a segmented control in Preferences -> Prompt.
+default_prompt_action = "skip"
 # After a recording for a bundle ends (or its prompt is skipped /
 # timed out), suppress detector-driven prompts for the same bundle for
 # this many seconds. Catches the post-call "Teams chat surface
@@ -181,12 +190,52 @@ local_request_timeout_sec = 120
 # with `mp cleanup-diarization <stem>.json`.
 diarize_cleanup = false
 
+[output]
+# Ordered list of publishers to invoke after a summary is produced. Each sink
+# fails independently, so one going down does not block the others. Add any of
+# "obsidian", "filesystem", "lan" to fan out; each has its own section below and
+# is only consulted when it appears here.
+sinks = ["notion"]
+
 [notion]
 # Notion database ID (32 chars, no hyphens — copy from the database URL).
 database_id = ""
 default_status = "Captured"
 # Toggle off for regulated meetings to keep transcripts out of Notion.
 include_full_transcript = true
+
+# Every key below is only read when its sink is listed in `output.sinks` above.
+# The values shown are the defaults, so a sink you never enable costs nothing.
+
+[obsidian]
+# Required when "obsidian" is in output.sinks: the vault root. Left blank the
+# sink cannot run, and `mp doctor` warns. Notes land at
+# <vault_path>/<folder>/<date> <slug>.md with YAML front-matter.
+# vault_path = "~/Documents/Obsidian/Personal"
+folder = "Meetings"
+# Point at your own Markdown template; blank uses the built-in one, which
+# covers the common case.
+template_path = ""
+# Copy the recording into the vault beside the note.
+attach_audio = true
+attachments_subfolder = "_attachments"
+# Also append a link to that day's daily note.
+daily_note_backlink = false
+
+[filesystem]
+# Where the "filesystem" sink drops its three files per meeting (summary,
+# transcript, actions). A sibling of the recordings dir by default.
+output_dir = "~/Documents/Meetings/published"
+
+[lan]
+# Target directory on an ALREADY-MOUNTED SMB/NFS share for the "lan" sink.
+# Same three files as the filesystem sink, but written atomically and only
+# after a reachability check: the publisher never creates the mount root
+# itself, so a share that is down fails loudly instead of quietly writing to
+# local disk. On-prem, so it survives regulated mode.
+mount_path = "/Volumes/meetings"
+# Optional label, used only in the "share unreachable" error message.
+host = ""
 
 [modes]
 # When true, pipeline writes local Markdown only and skips Notion entirely.

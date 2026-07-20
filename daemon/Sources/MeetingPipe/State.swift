@@ -93,7 +93,7 @@ enum AppState: Equatable {
     }
 }
 
-/// One unit of background pipeline work. Queued sequentially (two concurrent whisper.cpp runs would thrash the CPU). Recording is unaffected by queue depth.
+/// One unit of background pipeline work. Queued sequentially (two concurrent transcription runs would thrash the Neural Engine). Recording is unaffected by queue depth.
 struct ProcessingJob: Equatable {
     let id: UUID
     let file: URL

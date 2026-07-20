@@ -1,8 +1,8 @@
 import Foundation
 
-/// Decides whether the 5-minute mic+system silence backstop (TECH-C2) should
-/// actually stop the recording, or stand down because the silence is a wait,
-/// not a meeting end.
+/// Decides whether the mic+system silence backstop (TECH-END3; horizon from
+/// `detection.mic_only_silence_seconds`, default 900 s) should actually stop the
+/// recording, or stand down because the silence is a wait, not a meeting end.
 ///
 /// The backstop exists for browser / stale-window meetings where end-detection
 /// is blind and a finished call can leave the title probe firing. For a native

@@ -147,7 +147,7 @@ The installer can't do these for you:
    - **Notifications** — record/skip prompts and completion alerts.
    - **Microphone** — `AVAudioEngine` reads from the system default input.
    - **Screen Recording** — gates `SCStream.capturesAudio` in TCC.
-   - **Accessibility** — reads window titles to detect when a meeting ends (Teams / Zoom / Webex / Slack desktop AND browser tabs). Without this, native apps will record fine but the call won't auto-stop — the daemon falls back to manual hotkey / silence-based stop, which can mean an extra 5 minutes of wav file. **Granting Accessibility requires a daemon restart** for the new trust verdict to propagate (macOS caches AX trust per-process at launch); the detector re-evaluates immediately on restart so a meeting that's still in progress is picked up automatically.
+   - **Accessibility** — reads window titles to detect when a meeting ends (Teams / Zoom / Webex / Slack desktop AND browser tabs). Without this, native apps will record fine but the call won't auto-stop — the daemon falls back to manual hotkey / silence-based stop, which can mean up to another 15 minutes of wav file (the idle backstop's default horizon). **Granting Accessibility requires a daemon restart** for the new trust verdict to propagate (macOS caches AX trust per-process at launch); the detector re-evaluates immediately on restart so a meeting that's still in progress is picked up automatically.
 
    The **Preferences ▸ Permissions** tab shows the live status of all four with **Request** (when never determined) or **Open Settings** (when denied) buttons; the menu bar surfaces a "⚠ Permissions need attention" row whenever any of mic / Screen Recording / Accessibility is missing. Recording is gated on Microphone — if it's missing, the daemon refuses to start the recording and routes you to the Permissions tab rather than producing a silent wav.
 
@@ -270,7 +270,7 @@ The `Raw files` tab was dropped in the same pass. Getting at the sidecars on dis
 
 A filter bar sits above the list with a search field plus chips for workflow, source app, status, and date range (today / last 7 days / last 30 days / this year). The search field searches the **full transcripts** as well as titles, summaries, and open questions, backed by a SQLite FTS5 index over the library (UX16); it is the same engine behind **Cmd+K** Quick Find from the menu bar, so there is one search story. The index is a rebuildable cache under `~/Library/Caches/MeetingPipe/search/` (safe to delete; it rebuilds), updated in the background as recordings land, and search falls back to the in-memory title/summary corpus while the index catches up, so it never comes up empty. Multiple words are ANDed and prefix-matched (so "bud" finds "budget"), matching is case-insensitive and Cyrillic-aware. The chips (workflow / app / status / date) narrow within the search results; **Clear** wipes every filter. The match-count line ("N of M meetings") only appears while a filter is applied.
 
-Cmd+click (or Shift+click for a range) to select multiple rows. The detail pane swaps to a batch-actions panel that lists the selection and offers **Merge into one meeting…** (FEAT9, described below), **Republish all** (loops `mp publish-notion` sequentially so the daemon's processing queue doesn't fan out), **Export markdown…** (writes one `<stem>.md` bundle per meeting into a chosen folder), and **Move to Trash…** (per-row soft delete with one confirmation up front). A linear progress strip shows `<done> / <total>` while a batch is in flight.
+Cmd+click (or Shift+click for a range) to select multiple rows. The detail pane swaps to a batch-actions panel that lists the selection and offers **Merge into one meeting…** (FEAT9, described below), **Republish all** (runs `mp publish` per meeting, sequentially so the daemon's processing queue doesn't fan out; each meeting reaches every sink its workflow configures, not just Notion), **Export markdown…** (writes one `<stem>.md` bundle per meeting into a chosen folder), and **Move to Trash…** (per-row soft delete with one confirmation up front). A linear progress strip shows `<done> / <total>` while a batch is in flight.
 
 **Merge into one meeting…** rejoins a call that dropped and reconnected, leaving two (or more) separate recordings. Select the fragments and merge: `mp merge-meetings` concatenates their audio into the earliest one (the primary), stitches the transcripts together with an explicit gap marker, re-summarizes the whole, and republishes under the primary's page (an upsert, so the existing page is updated in place). The later fragments then move to the Trash, and the completion note points at the combined page. The button is offered only when the selection is safe to merge: all finished, all in the same workflow, and all sharing the same privacy posture (a local-only recording is never merged with a cloud one). Nothing is deleted until the concatenated audio is verified on disk (the REC1 verified-outcome rule), and a re-run after a publish hiccup re-publishes rather than concatenating the audio twice.
 
@@ -352,7 +352,7 @@ This is an operating-system behaviour, not something the app can override, so me
 
 ## Backup, and moving to a new Mac
 
-What cannot be recreated is scattered across four places: the library, the config directory (config, workflows, voiceprint, roster, glossary), the corrections corpus, and three Keychain items. `mp backup` gathers the four, names the Keychain items, and exports no secret.
+What cannot be recreated is scattered across four places: the library, the config directory (config, workflows, voiceprint, roster, glossary), the corrections corpus, and the Keychain items. `mp backup` gathers the four, names the Keychain items, and exports no secret.
 
 ```bash
 mp backup ~/Backups              # a dated meeting-pipe-backup-YYYYMMDD-HHMMSS.tar.gz
@@ -365,7 +365,7 @@ Or from **Preferences ▸ Storage ▸ Backup**: pick a destination once (it is r
 
 **Deliberately not in the archive:**
 
-- **Keychain values.** The manifest names the three items (`ANTHROPIC_API_KEY`, `NOTION_TOKEN`, `HF_TOKEN` under service `com.meetingpipe.daemon`); the secrets themselves are never exported. You re-add them by hand.
+- **Keychain values.** The manifest names the four managed items (`ANTHROPIC_API_KEY`, `NOTION_TOKEN`, `HF_TOKEN`, `OPENAI_API_KEY` under service `com.meetingpipe.daemon`); the secrets themselves are never exported. You re-add them by hand.
 - **`originals/`**, the kept pre-redaction recordings. [ADR 0016](./docs/decisions/) makes them mode 0600 and excludes them from Time Machine because they are the most sensitive thing on disk; putting them in a tarball you copy to a NAS would undo that. The redacted recording in the library *is* backed up.
 - `secrets.env` (the legacy plaintext file), `published/` (republish regenerates it), and the caches.
 
@@ -378,13 +378,14 @@ Or from **Preferences ▸ Storage ▸ Backup**: pick a destination once (it is r
    mp restore ~/Backups/meeting-pipe-backup-20260709-215757.tar.gz
    ```
    Restore refuses to write into a root that already has files (pass `--force` if you mean it), and it keeps the `config.toml` you wrote in step 1 rather than the backup's, which names the old Mac's paths. Everything else under the config directory (workflows, roster, voiceprint, glossary) is restored.
-3. **Re-add the three Keychain items.** `mp restore` prints the exact commands:
+3. **Re-add the Keychain items.** `mp restore` prints the exact commands:
    ```bash
    security add-generic-password -U -s com.meetingpipe.daemon -a ANTHROPIC_API_KEY -w '<value>'
    security add-generic-password -U -s com.meetingpipe.daemon -a NOTION_TOKEN      -w '<value>'
    security add-generic-password -U -s com.meetingpipe.daemon -a HF_TOKEN          -w '<value>'
+   security add-generic-password -U -s com.meetingpipe.daemon -a OPENAI_API_KEY    -w '<value>'
    ```
-   `HF_TOKEN` is optional. Skip any you do not use.
+   Only the ones your backends actually use are needed: `HF_TOKEN` is optional, `OPENAI_API_KEY` only matters for the `openai` backend, and `ANTHROPIC_API_KEY` is not needed on `local` or `claude_cli`. Skip any you do not use.
 4. **`mp doctor`.** It should report the library at its new path, no cloud sync, and your local model stack.
 
 Per [ADR 0003](./docs/decisions/) nothing here is magic: a `cp -R` of the same four roots works just as well, and `mp restore` is only unpacking a tarball into them.
@@ -523,7 +524,9 @@ There are no microphone or output-device settings — the daemon auto-detects bo
 
 **The recording never ends; the daemon thinks the meeting is still going long after I hung up.** The end-detection probe scans the meeting app's window titles via Accessibility. If you have an unrelated window whose title contains a matching meeting word (e.g. a Slack channel named "team-calls", a Zoom "Schedule Meeting" dialog left open, a Teams chat thread named "Sprint planning meeting"), the per-app recognizer should reject it. If it doesn't, capture the offending titles with `swift scripts/dump_window_titles.swift <bundle_id> <state> reject`, add the row to `daemon/Tests/MeetingPipeTests/Fixtures/window_titles.json`, and the next test run shows whether `Detector.isActiveMeetingWindow` needs a refinement.
 
-As a safety net, the daemon also watches the audio level. After 90 s of unbroken silence on both mic and system audio it surfaces a "Still meeting?" notification with a Stop action; after 5 min it auto-stops and emits an `auto_stop_silence` event. Look for that event in `events.jsonl` if a runaway recording stopped on its own.
+As a safety net, the daemon also watches for silence on both mic and system audio (gated on voice activity, not raw level, so ambient room noise does not reset the timer). Partway through the streak it surfaces a "Still meeting?" notification with a Stop action; at the end of it the recording auto-stops and emits an `auto_stop_silence` event. Look for that event in `events.jsonl` if a runaway recording stopped on its own.
+
+The auto-stop horizon is `detection.mic_only_silence_seconds`, **default 900 s (15 minutes)**, adjustable from 1 to 30 minutes on the **Mic-only silence backstop** slider in Preferences ▸ Prompt. The nudge fires at half that horizon, capped at 8 minutes (so 7.5 minutes at the default), which keeps the warning ahead of the stop at every setting. One exception: a native meeting the lifecycle subsystem still tracks as live is kept and re-nudged rather than stopped, because prolonged silence there is usually someone waiting for a participant to join.
 
 **Local backend won't start.**
 - `mlx-lm not found`: rerun `scripts/install.sh` (or `cd pipeline && uv sync`). The dep is declared in `pyproject.toml` with an Apple-Silicon marker; non-arm64 hosts fall back to `backend="anthropic"` automatically.

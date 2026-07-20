@@ -41,12 +41,11 @@ CI also runs pyright (TYPE1), configured in `pyproject.toml`'s `[tool.pyright]`.
 ## Tests
 
 - pytest + monkeypatch. No live HTTP, no real network sockets.
-- VCR cassettes for Notion / Anthropic replay live next to the test file.
-- Don't re-record cassettes for cosmetic changes; only when the upstream API actually changed.
+- **Outbound HTTP is faked with `httpx.MockTransport`, not recorded.** Monkeypatch `httpx.Client` to inject `transport=httpx.MockTransport(handler)` and answer from a handler function (`test_publish_notion.py` is the template; `test_summarize_backend.py` and `test_publish_from_paste.py` use the same shape). There are no cassettes and no `tests/cassettes/` directory: responses are written inline, so a test says what it expects instead of hiding it in a recorded fixture, and nothing ever needs re-recording. `pytest-vcr` / `vcrpy` were declared as dev deps for years without a single import; DOC9 dropped them.
 
 ## Event log
 
-`mp.events.emit(category, action, **attrs)` from `events.py` appends to `~/Library/Logs/MeetingPipe/pipeline_events.jsonl`. Categories the pipeline writes: `pipeline` and `publisher`. Schema details in [`../CONVENTIONS.md#event-log-schema`](../CONVENTIONS.md#event-log-schema).
+`mp.events.emit(category, action, **attrs)` from `events.py` appends to `~/Library/Logs/MeetingPipe/pipeline_events.jsonl`. Categories the pipeline writes: `pipeline`, `prefetch`, and `publisher` (fenced against the emitters by `scripts/truth_fences.py events`, so a new one needs a row in the CONVENTIONS table in the same commit). Schema details in [`../CONVENTIONS.md#event-log-schema`](../CONVENTIONS.md#event-log-schema).
 
 Under pytest it appends somewhere else, and that is load-bearing. `mp.events.logs_dir` honours `MEETINGPIPE_LOGS_DIR` and otherwise redirects to a temp dir when it sees a test runner, so the suite cannot write fixture rows into the log every analysis reads back. Without it pytest owned 21% of that file. Don't remove the guard, and don't reintroduce a hard-coded path in a new writer. Reading the log has its own trap (historical residue that no filter can fully remove); `is_test_residue` and the "Event log schema" section of `../CONVENTIONS.md` cover it.
 
