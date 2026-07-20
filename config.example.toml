@@ -2,10 +2,10 @@
 
 [recording]
 # Where raw WAVs land. Tilde is expanded at runtime.
+#
+# There is no sample-rate knob: capture is a deliberate 16 kHz constant (what
+# Parakeet TDT consumes). The key existed until HYG2 and nothing read it.
 output_dir = "~/Documents/Meetings/raw"
-# Sample rate of the produced WAV. 16 kHz is what Whisper consumes;
-# bumping higher just wastes disk + transcription time.
-sample_rate = 16000
 # Bundle IDs that auto-start recording without a prompt, e.g. ["us.zoom.xos"].
 auto_consent_apps = []
 # When true, AVAudioEngine's voice-processing chain runs on the mic
@@ -40,11 +40,15 @@ honor_app_mute = true
 # System Settings ▸ Sound ▸ Input and the next recording follows.
 
 [detection]
-debounce_start_sec = 5
-# Window-closed signal (Signal C) lets us shrink this from 10s — Zoom and
-# Teams keep the input device opened for a few seconds after a hangup, but
-# the call window disappears immediately. 5s is enough margin to absorb
+# Seconds the detector waits after a meeting's signals go away before ending
+# the recording. Window-closed signal (Signal C) lets us shrink this from 10s —
+# Zoom and Teams keep the input device opened for a few seconds after a hangup,
+# but the call window disappears immediately. 5s is enough margin to absorb
 # a stuttery probe without trimming the tail of speech.
+#
+# There is no start-side twin: detection promotes on the first live signal so
+# the prompt appears promptly, and the recorder arming is the real start gate.
+# `debounce_start_sec` existed until HYG2 and nothing read it.
 debounce_end_sec = 5
 manual_hotkey = "ctrl+option+m"
 # Stop-only hotkey (TECH-C5). Unlike `manual_hotkey`, pressing this
@@ -77,6 +81,17 @@ reprompt_cooldown_sec = 60
 mic_only_silence_seconds = 900
 
 [transcription]
+# ASR language for the on-device FluidAudio (Parakeet TDT) runner. "auto" (the
+# default) lets the SDK detect the language per meeting; an ISO 639-1 code pins
+# it and skips detection, which is the safer setting if your meetings are always
+# in one language. Recognised codes: en, uk, ru, de, es, fr, it, pt, pl. An
+# unknown code falls back to auto-detect rather than failing. Also editable as
+# Preferences -> Pipeline -> Languages -> Transcription; a change applies on the
+# next daemon launch (the value is read once at startup).
+#
+# This is the ASR input language. `summarization.summary_language` below is the
+# separate output-language knob for the generated summary.
+language = "auto"
 # Diarization clustering threshold for the on-device FluidAudio diarizer, in
 # FluidAudio's valid 0.5-0.9 range (values outside are clamped on load). Lower
 # groups fewer voice embeddings together, so it produces MORE distinct speakers;

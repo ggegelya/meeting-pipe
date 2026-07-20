@@ -29,16 +29,18 @@ MANAGED_SECRET_KEYS = ("ANTHROPIC_API_KEY", "NOTION_TOKEN", "HF_TOKEN", "OPENAI_
 
 class Recording(BaseModel):
     output_dir: Path = Field(default=_expand("~/Documents/Meetings/raw"))
-    sample_rate: int = 16000
     auto_consent_apps: list[str] = Field(default_factory=list)
     # `extra="ignore"` — old config files in the wild may still have
-    # capture_mode / audio_device / mic_device fields. Tolerate them
+    # capture_mode / audio_device / mic_device / sample_rate fields (the last
+    # deleted by HYG2: capture is a deliberate 16 kHz constant). Tolerate them
     # silently rather than rejecting the whole config.
     model_config = {"extra": "ignore"}
 
 
 class Detection(BaseModel):
-    debounce_start_sec: float = 5.0
+    # No `debounce_start_sec` twin: HYG2 deleted it as a dead knob. Detection
+    # promotes on the first live signal and the recorder arming is the real
+    # start gate, so there was never a start-side debounce to configure.
     # 5s (down from 10s) since Signal C (meeting-window-closed) gives us a
     # faster confirmation that the call actually ended. Stays in sync with
     # the daemon's Config.swift default and config.example.toml.
@@ -48,11 +50,13 @@ class Detection(BaseModel):
 
 
 class Transcription(BaseModel):
-    """Empty placeholder so legacy `[transcription]` TOML sections still
-    load. ASR + diarization run in Swift (FluidAudio); nothing in this
-    section steers behaviour anymore. `extra="ignore"` swallows whatever
-    fields older configs carry (model, fallback_model, language,
-    disable_diarization, min_speakers, max_speakers, etc.)."""
+    """Empty placeholder so `[transcription]` TOML sections still load. ASR +
+    diarization run in Swift (FluidAudio), so nothing in this section steers
+    the pipeline. Two keys in it are live but Swift-owned and read only there
+    (`diarization_clustering_threshold`, and `language` since HYG2 wired it);
+    `extra="ignore"` swallows those along with whatever legacy fields older
+    configs carry (model, fallback_model, disable_diarization, min_speakers,
+    max_speakers, etc.)."""
 
     model_config = {"extra": "ignore"}
 

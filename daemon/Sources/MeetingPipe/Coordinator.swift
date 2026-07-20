@@ -108,9 +108,15 @@ final class Coordinator: NSObject {
         Log.event(category: "transcription", action: "engine_resolved", attributes: [
             "engine": runner.backendName,
         ])
+        // HYG2: honor the ASR language knob. It was read into ConfigStore and shown
+        // as a Preferences picker but never reached the runner, which always got
+        // `languageHint: nil`. Read once at init (edits apply next launch), like the
+        // end-debounce and silence-backstop windows below.
+        let transcriptionLanguage = configStore?.transcriptionLanguage ?? config.transcription.language
         self.sinkDispatcher = SinkDispatcher(
             launcher: resolvedLauncher,
-            transcriptionRunner: runner
+            transcriptionRunner: runner,
+            languageHint: transcriptionLanguage
         )
         // Snapshot the recordings dir at init for the library root; a live
         // change needs a daemon restart for the library window (rare).

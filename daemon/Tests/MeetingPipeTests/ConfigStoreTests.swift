@@ -20,13 +20,14 @@ final class ConfigStoreTests: XCTestCase {
         let url = try makeTempConfigURL()
         // Don't create the file — store should bootstrap empty.
         let store = try ConfigStore(configURL: url)
-        XCTAssertEqual(store.sampleRate, 16000)
         XCTAssertEqual(store.debounceEndSec, 5)
         XCTAssertEqual(store.manualHotkey, "ctrl+option+m")
         XCTAssertFalse(store.regulatedMode)
         XCTAssertTrue(store.autoConsentApps.isEmpty)
-        // Transcription language default is "en"; auto-detect is opt-in.
-        XCTAssertEqual(store.transcriptionLanguage, "en")
+        // HYG2: "auto", not "en". The key now reaches the ASR runner, and before
+        // it was wired the runner got `languageHint: nil` (auto-detect); an "en"
+        // default would silently pin every existing config to English.
+        XCTAssertEqual(store.transcriptionLanguage, "auto")
         // Recording / detection knobs surfaced in Preferences.
         XCTAssertFalse(store.voiceProcessing, "voice_processing defaults off; VPIO drops mic gain system-wide")
         XCTAssertTrue(store.honorAppMute, "honor_app_mute defaults on; MicGate tracks in-app mute for the redaction timeline + idle backstop, not live zeroing (ADR 0016)")
@@ -55,6 +56,33 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertTrue(reloaded.honorAppMute)
     }
 
+    func test_integer_seconds_literals_survive_a_load_and_save() throws {
+        // The store used to read these `.double`-only, so an integer literal in a
+        // hand-edited config was dropped on load and then overwritten with the
+        // default on the next Preferences save.
+        let url = try makeTempConfigURL()
+        try """
+        [detection]
+        debounce_end_sec = 7
+        prompt_timeout_sec = 45
+        reprompt_cooldown_sec = 120
+        mic_only_silence_seconds = 600
+        """.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        XCTAssertEqual(store.debounceEndSec, 7)
+        XCTAssertEqual(store.promptTimeoutSec, 45)
+        XCTAssertEqual(store.repromptCooldownSec, 120)
+        XCTAssertEqual(store.micOnlySilenceSec, 600)
+
+        // An unrelated save must not clobber the values it just read.
+        store.regulatedMode = true
+        try store.saveNow()
+        let reloaded = try ConfigStore(configURL: url)
+        XCTAssertEqual(reloaded.debounceEndSec, 7)
+        XCTAssertEqual(reloaded.micOnlySilenceSec, 600)
+    }
+
     func test_transcription_language_round_trip() throws {
         let url = try makeTempConfigURL()
         try """
@@ -77,11 +105,9 @@ final class ConfigStoreTests: XCTestCase {
         try """
         [recording]
         output_dir = "~/Documents/Meetings/raw"
-        sample_rate = 16000
         auto_consent_apps = []
 
         [detection]
-        debounce_start_sec = 5
         debounce_end_sec = 5
         manual_hotkey = "ctrl+option+m"
         prompt_timeout_sec = 30
@@ -229,14 +255,16 @@ final class ConfigStoreTests: XCTestCase {
         let url = try makeTempConfigURL()
         try "".write(to: url, atomically: true, encoding: .utf8)
         let store = try ConfigStore(configURL: url)
-        store.sampleRate = 48000
+        // Any round-tripped knob proves the invariant; this used to assert on
+        // `sample_rate`, which HYG2 deleted as a dead knob.
+        store.manualHotkey = "cmd+shift+z"
         store.writeBack()
         // currentTOML reflects the in-memory document — useful for tests
         // that don't want disk I/O.
-        XCTAssertTrue(store.currentTOML().contains("sample_rate = 48000"))
+        XCTAssertTrue(store.currentTOML().contains("manual_hotkey = \"cmd+shift+z\""))
         // No file write should have happened yet (writeBack is pure).
         let onDisk = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertFalse(onDisk.contains("48000"))
+        XCTAssertFalse(onDisk.contains("cmd+shift+z"))
     }
 
     func test_init_does_not_persist_compile_time_defaults() throws {

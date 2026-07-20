@@ -25,17 +25,11 @@ struct RecordingSectionView: View {
                     .buttonStyle(.mpIcon)
                     .help("Reveal in Finder")
                 }
-                SettingsRow("Sample rate",
-                    sublabel: "16 kHz matches Whisper. Higher rates are downsampled.") {
-                    Picker("", selection: $store.sampleRate) {
-                        Text("16 kHz · recommended").tag(16000)
-                        Text("24 kHz").tag(24000)
-                        Text("48 kHz").tag(48000)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .fixedSize()
-                }
+            } footer: {
+                // The sample-rate picker lived here until HYG2. Capture is a
+                // deliberate 16 kHz constant (what Parakeet TDT consumes), so the
+                // control offered a choice nothing honored.
+                Text("Recordings are stereo 16 kHz WAV: your mic on the left channel, system audio on the right.")
             }
 
             SettingsGroup("Microphone") {
@@ -51,15 +45,7 @@ struct RecordingSectionView: View {
             }
 
             SettingsGroup("Detection") {
-                SettingsStackRow("Start debounce", showsDivider: false) {
-                    SettingsSlider(
-                        value: $store.debounceStartSec,
-                        range: 1...30,
-                        step: 1,
-                        format: { "\(Int($0)) s" }
-                    )
-                }
-                SettingsStackRow("End debounce") {
+                SettingsStackRow("End debounce", showsDivider: false) {
                     SettingsSlider(
                         value: $store.debounceEndSec,
                         range: 1...30,
@@ -68,7 +54,10 @@ struct RecordingSectionView: View {
                     )
                 }
             } footer: {
-                Text("Debounce smooths out brief mic gaps. A higher start debounce avoids recording phantom audio; a higher end debounce avoids cutting off pauses.")
+                // The start-debounce slider lived here until HYG2. Nothing consumed
+                // it: detection promotes on the first live signal so the prompt
+                // appears promptly, and the real start gate is the recorder arming.
+                Text("How long the detector waits after a meeting's signals go away before ending the recording, so a brief gap does not cut off a pause. Takes effect on the next daemon launch.")
             }
 
             SettingsGroup("Auto-record allowlist") {

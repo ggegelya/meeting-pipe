@@ -38,7 +38,7 @@ Plus a completeness axis: a key in the README reference but not in `config.examp
 
 **Event categories.** Every `Log.event` / `events.emit` category literal is diffed against the `### Categories` table below, in both directions, and action literals are checked for snake_case.
 
-Known drift lives in the script's two allowlists, each entry naming the backlog task that clears it (HYG2 for the three dead knobs, DOC9 for the sink sections missing from `config.example.toml`). **A stale allowlist entry fails too**, so the lists cannot outlive the drift they describe, and clearing HYG2 or DOC9 means deleting lines from them. Anything not listed fails from the day it appears.
+Known drift lives in the script's two allowlists, each entry naming the backlog task that clears it (DOC9 for the sink sections missing from `config.example.toml`; HYG2's three dead-knob entries are gone, cleared when the knobs were wired or deleted). **A stale allowlist entry fails too**, so the lists cannot outlive the drift they describe, and clearing the owning task means deleting lines from them. Anything not listed fails from the day it appears.
 
 Not mirrored into `scripts/pre-commit`: the whole-state scan takes ~2.7 s, which is too slow for every commit. Same call as the DSN3 token guards, which are also CI-only.
 

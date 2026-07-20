@@ -5,7 +5,6 @@ import TOMLKit
 struct Config {
     struct Recording {
         var outputDir: URL
-        var sampleRate: Int
         var autoConsentApps: [String]
         /// `AVAudioInputNode.setVoiceProcessingEnabled(true)`: Apple VoIP DSP (noise suppression, echo cancellation, AGC), mono only. Costs dynamic range. Default false - see load() comment.
         var voiceProcessing: Bool
@@ -14,7 +13,7 @@ struct Config {
     }
 
     struct Detection {
-        var debounceStartSec: Double
+        /// End-side debounce only. There is deliberately no start-side twin: `.idle` -> `.starting` fires on the first PRIMARY `.live` so the prompt panel appears promptly, and the real start gate is `PromotionEngine.confirmRecording()` (the recorder arming), not a timer. HYG2 deleted the dead `debounce_start_sec` knob rather than inserting a delay that would only cost the head of every meeting.
         var debounceEndSec: Double
         var manualHotkey: String
         /// Stop-only hotkey (TECH-C5). Distinct from `manualHotkey` so the user can force-stop without risking an accidental new recording start when the daemon is idle. Default `ctrl+option+shift+m`.
@@ -39,6 +38,10 @@ struct Config {
         /// for the why). Clamped to FluidAudio's valid 0.5-0.9 range on load, so a
         /// stray hand-edit degrades gracefully instead of producing nonsense clusters.
         var diarizationClusteringThreshold: Double
+        /// ASR language hint passed to FluidAudio: `"auto"` (the default) lets the SDK
+        /// detect per meeting, an ISO 639-1 code pins it. `FluidAudioRunner.resolveLanguage`
+        /// maps an unknown code back to auto-detect, so a typo degrades rather than fails.
+        var language: String
     }
 
     var recording: Recording
@@ -66,26 +69,32 @@ struct Config {
         let tra = toml["transcription"]?.table
 
         let outputDirRaw = rec?["output_dir"]?.string ?? "~/Documents/Meetings/raw"
-        let sampleRate = rec?["sample_rate"]?.int ?? 16000
         let consent = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string }) ?? []
         // Default OFF: VPIO's AGC degrades the HAL device gain system-wide while the engine is running, so other mic users (Teams, Zoom, FaceTime) hear the user as extremely quiet. Opt in via TOML when recording in isolation.
         let voiceProcessing = rec?["voice_processing"]?.bool ?? false
         let honorAppMute = rec?["honor_app_mute"]?.bool ?? true
 
-        let debounceStart = det?["debounce_start_sec"]?.double ?? 5
-        let debounceEnd = det?["debounce_end_sec"]?.double ?? 5
+        // TOML distinguishes integer from float literals and TOMLKit does not
+        // coerce between them, so reading a seconds knob through `.double` alone
+        // silently ignores `debounce_end_sec = 7` and falls back to the default.
+        // That matters because `config.example.toml` writes every one of these as
+        // an integer, so hand-editing the shipped file was a no-op (HYG2: the same
+        // "changed a setting, nothing happened" class as the three dead knobs, and
+        // why `mic_only_silence_seconds` already read both).
+        func seconds(_ key: String, _ fallback: Double) -> Double {
+            if let d = det?[key]?.double { return d }
+            if let i = det?[key]?.int { return Double(i) }
+            return fallback
+        }
+
+        let debounceEnd = seconds("debounce_end_sec", 5)
         let hotkey = det?["manual_hotkey"]?.string ?? "ctrl+option+m"
         let forceStop = det?["force_stop_hotkey"]?.string ?? "ctrl+option+shift+m"
         let flagMoment = det?["flag_moment_hotkey"]?.string ?? "ctrl+option+f"
         let offTheRecord = det?["off_the_record_hotkey"]?.string ?? "ctrl+option+o"
-        let promptTimeout = det?["prompt_timeout_sec"]?.double ?? 30
-        let repromptCooldown = det?["reprompt_cooldown_sec"]?.double ?? 60
-        // Accept both integer and double TOML literals (`= 120` and `= 120.0`); other detection knobs are doubles-only because their TOML defaults are written as doubles.
-        let micOnlySilenceSec: Double = {
-            if let d = det?["mic_only_silence_seconds"]?.double { return d }
-            if let i = det?["mic_only_silence_seconds"]?.int { return Double(i) }
-            return 900
-        }()
+        let promptTimeout = seconds("prompt_timeout_sec", 30)
+        let repromptCooldown = seconds("reprompt_cooldown_sec", 60)
+        let micOnlySilenceSec = seconds("mic_only_silence_seconds", 900)
 
         let regulated = mod?["regulated_mode"]?.bool ?? false
 
@@ -96,17 +105,16 @@ struct Config {
             return FluidAudioRunner.defaultClusteringThreshold
         }()
         let clusteringThreshold = min(0.9, max(0.5, clusteringRaw))
+        let language = tra?["language"]?.string ?? "auto"
 
         return Config(
             recording: Recording(
                 outputDir: expandTilde(outputDirRaw),
-                sampleRate: sampleRate,
                 autoConsentApps: consent,
                 voiceProcessing: voiceProcessing,
                 honorAppMute: honorAppMute
             ),
             detection: Detection(
-                debounceStartSec: debounceStart,
                 debounceEndSec: debounceEnd,
                 manualHotkey: hotkey,
                 forceStopHotkey: forceStop,
@@ -117,7 +125,10 @@ struct Config {
                 micOnlySilenceSec: micOnlySilenceSec
             ),
             modes: Modes(regulatedMode: regulated),
-            transcription: Transcription(diarizationClusteringThreshold: clusteringThreshold)
+            transcription: Transcription(
+                diarizationClusteringThreshold: clusteringThreshold,
+                language: language
+            )
         )
     }
 
@@ -126,13 +137,11 @@ struct Config {
         Config(
             recording: Recording(
                 outputDir: expandTilde("~/Documents/Meetings/raw"),
-                sampleRate: 16000,
                 autoConsentApps: [],
                 voiceProcessing: false,
                 honorAppMute: true
             ),
             detection: Detection(
-                debounceStartSec: 5,
                 debounceEndSec: 5,
                 manualHotkey: "ctrl+option+m",
                 forceStopHotkey: "ctrl+option+shift+m",
@@ -144,7 +153,8 @@ struct Config {
             ),
             modes: Modes(regulatedMode: false),
             transcription: Transcription(
-                diarizationClusteringThreshold: FluidAudioRunner.defaultClusteringThreshold
+                diarizationClusteringThreshold: FluidAudioRunner.defaultClusteringThreshold,
+                language: "auto"
             )
         )
     }

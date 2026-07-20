@@ -7,7 +7,9 @@ checker, a linter, or a test:
   1. A **dead knob**: a config key documented in `config.example.toml` or the
      README, rendered as a live Preferences control, parsed and persisted, and
      consumed by nothing. END4(b) fixed one instance; the 2026-07-12 assessment
-     found three more. The user changes the setting and nothing happens.
+     found three more, cleared by HYG2 (`transcription.language` wired,
+     `recording.sample_rate` and `detection.debounce_start_sec` deleted). The
+     user changes the setting and nothing happens.
   2. An **undocumented event category**: a `Log.event` / `events.emit` category
      absent from the CONVENTIONS.md table, so a session reading that table to
      orient gets an incomplete map of the event stream.
@@ -23,10 +25,11 @@ Stdlib only (tomllib, ast, re), so CI can run it without installing anything.
 
 **The allowlists below are a ratchet, not an exemption.** Each entry names the
 backlog task that will clear it. Anything NOT listed fails, so the fence is
-live for new drift from the day it lands, while the known-drift backlog
-(HYG2, DOC9) stays honest and visible instead of being silently tolerated.
-Clearing HYG2 or DOC9 means deleting lines from these lists, and a stale entry
-also fails, so the lists cannot outlive the drift they describe.
+live for new drift from the day it lands, while the known-drift backlog stays
+honest and visible instead of being silently tolerated. Clearing the owning
+task means deleting lines from these lists, and a stale entry also fails, so
+the lists cannot outlive the drift they describe. HYG2's three dead-knob
+entries were removed this way when the knobs were wired or deleted.
 """
 from __future__ import annotations
 
@@ -45,14 +48,6 @@ REPO = Path(__file__).resolve().parents[1]
 # Documented but read by nothing, or read but documented nowhere. Anything not
 # listed here is a failure.
 CONFIG_ALLOWLIST: dict[str, str] = {
-    # HYG2: dead knobs. Parsed, persisted, and rendered as live Preferences
-    # controls; consumed by nothing. HYG2 wires or deletes each.
-    "recording.sample_rate": "HYG2: dead, capture is a deliberate 16 kHz constant; delete",
-    "detection.debounce_start_sec": "HYG2: dead (the END4(b) class); wire or delete",
-    "transcription.language": (
-        "HYG2: dead AND undocumented; the languageHint plumbing exists end to end "
-        "but SinkDispatcher passes nil"
-    ),
     # DOC9: real keys the pipeline parses that `config.example.toml` never
     # shows, so the file is not the complete reference it reads as. The five
     # sink keys below are additionally in the README but not the example file,
@@ -230,8 +225,29 @@ def _camel(key: str) -> str:
     return head + "".join(w.capitalize() for w in rest)
 
 
+def _reader_helpers(src: str, aliases: dict[str, str]) -> dict[str, str]:
+    """`func seconds(...) { ... det?[key] ... }` -> {"seconds": "detection"}.
+
+    A parse does not have to be written inline. `ConfigStore` reads its four
+    seconds knobs through one local helper (TOML separates int from float
+    literals and TOMLKit will not coerce, so each needs both branches), and a
+    property-name map that only understood the inline subscript form silently
+    lost those entries. The helper's own body names the table alias, so the
+    section is still derived from source rather than hardcoded.
+    """
+    out: dict[str, str] = {}
+    for name, body in re.findall(r"\bfunc\s+(\w+)\s*\([^)]*\)[^{]*\{(.*?)\n        \}", src, re.S):
+        for alias in re.findall(r"\b(\w+)\?\[\s*key\s*\]", body):
+            if alias in aliases:
+                out[name] = aliases[alias]
+    return out
+
+
 def configstore_properties() -> dict[str, str]:
-    """`self.<prop> = <alias>?["<key>"]` -> {"section.key": "prop"}."""
+    """`self.<prop> = <alias>["<key>"]`, or `self.<prop> = <helper>("<key>", …)`,
+    -> {"section.key": "prop"}. The map matters for any key whose TOML name and
+    Swift property disagree (`mic_only_silence_seconds` -> `micOnlySilenceSec`,
+    kept for back-compat), since `_camel` alone cannot bridge those."""
     src = _read("daemon/Sources/MeetingPipe/ConfigStore.swift")
     aliases = _swift_alias_map(src)
     out: dict[str, str] = {}
@@ -240,6 +256,11 @@ def configstore_properties() -> dict[str, str]:
     ):
         if alias in aliases:
             out[f"{aliases[alias]}.{key}"] = prop
+
+    helpers = _reader_helpers(src, aliases)
+    for prop, helper, key in re.findall(r'self\.(\w+)\s*=\s*(\w+)\("([a-z_]+)"', src):
+        if helper in helpers:
+            out[f"{helpers[helper]}.{key}"] = prop
     return out
 
 

@@ -501,4 +501,56 @@ final class SinkDispatcherTests: XCTestCase {
         let err = PipelineLauncher.LaunchError.timeout(90 * 60)
         XCTAssertEqual(SinkDispatcher.stage(for: err), .pipeline)
     }
+
+    // MARK: - transcription.language reaches the runner (HYG2)
+
+    /// Records the `languageHint` it was handed. The knob was parsed, persisted,
+    /// and rendered as a Preferences picker while `runDaemonTranscription` passed
+    /// a hardcoded `nil`, so the only thing that proves it is wired is asserting
+    /// on what the runner actually receives.
+    private final class LanguageRecordingRunner: TranscriptionRunner, @unchecked Sendable {
+        let backendName = "recording"
+        private(set) var seenHints: [String?] = []
+
+        func transcribe(wavURL: URL, languageHint: String?) async throws -> TranscriptSidecar {
+            seenHints.append(languageHint)
+            return TranscriptSidecar(
+                language: languageHint ?? "auto",
+                segments: [],
+                audioPath: wavURL.path,
+                audioSeconds: 0,
+                model: "recording",
+                backend: backendName,
+                diarization: false,
+                diarizationFailed: false,
+                diarizationFailureReason: nil,
+                streaming: false,
+                finalized: true
+            )
+        }
+    }
+
+    func test_configured_language_reaches_the_transcription_runner() throws {
+        let driver = FakeDriver()
+        let runner = LanguageRecordingRunner()
+        let dispatcher = SinkDispatcher(
+            launcher: driver, transcriptionRunner: runner, languageHint: "uk"
+        )
+        dispatcher.enqueue(file: try makeTempWav(), summaryMode: .auto)
+        waitForPipelineStart(driver)
+        XCTAssertEqual(runner.seenHints, ["uk"])
+    }
+
+    func test_language_defaults_to_auto_detect() throws {
+        // The pre-HYG2 behaviour was `languageHint: nil`, i.e. let the SDK detect.
+        // "auto" resolves to the same nil `Language` in `FluidAudioRunner`, so an
+        // untouched config transcribes exactly as it did before the wiring.
+        let driver = FakeDriver()
+        let runner = LanguageRecordingRunner()
+        let dispatcher = SinkDispatcher(launcher: driver, transcriptionRunner: runner)
+        dispatcher.enqueue(file: try makeTempWav(), summaryMode: .auto)
+        waitForPipelineStart(driver)
+        XCTAssertEqual(runner.seenHints, ["auto"])
+        XCTAssertNil(FluidAudioRunner.resolveLanguage(hint: "auto"))
+    }
 }

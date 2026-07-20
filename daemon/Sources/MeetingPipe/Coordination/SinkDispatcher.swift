@@ -15,6 +15,12 @@ final class SinkDispatcher: @unchecked Sendable {
 
     private let transcriptionRunner: TranscriptionRunner
 
+    /// ASR language hint handed to the runner for every job (HYG2). `"auto"` or an
+    /// unknown code means auto-detect (`FluidAudioRunner.resolveLanguage`). Read once
+    /// at Coordinator init from `transcription.language`, like the end-debounce and
+    /// idle-backstop horizons, so it is immutable here and safe to read off-main.
+    private let languageHint: String
+
     /// Fires when queue depth changes. Status-bar processing badge subscribes.
     var onQueueDepthChanged: ((Int) -> Void)?
 
@@ -40,10 +46,12 @@ final class SinkDispatcher: @unchecked Sendable {
 
     init(
         launcher: PipelineDriver,
-        transcriptionRunner: TranscriptionRunner = TranscriptionService.makeRunner()
+        transcriptionRunner: TranscriptionRunner = TranscriptionService.makeRunner(),
+        languageHint: String = "auto"
     ) {
         self.launcher = launcher
         self.transcriptionRunner = transcriptionRunner
+        self.languageHint = languageHint
     }
 
     // MARK: - Pipeline-job queue
@@ -93,7 +101,7 @@ final class SinkDispatcher: @unchecked Sendable {
             "engine": transcriptionRunner.backendName,
         ])
         do {
-            let sidecar = try await transcriptionRunner.transcribe(wavURL: job.file, languageHint: nil)
+            let sidecar = try await transcriptionRunner.transcribe(wavURL: job.file, languageHint: languageHint)
             let jsonURL = job.file
                 .deletingPathExtension()
                 .appendingPathExtension("json")

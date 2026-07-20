@@ -147,7 +147,7 @@ struct PipelineSectionView: View {
 
             SettingsGroup("Languages") {
                 SettingsRow("Transcription",
-                    sublabel: "Whisper. Auto-detect chooses per-meeting.",
+                    sublabel: "On-device ASR (FluidAudio Parakeet TDT). Auto-detect chooses per meeting; a fixed code skips detection. Applies on the next daemon launch.",
                     showsDivider: false) {
                     languagePicker(selection: $store.transcriptionLanguage, includeMatch: false)
                 }

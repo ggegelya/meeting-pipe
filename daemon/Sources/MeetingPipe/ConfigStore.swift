@@ -16,7 +16,6 @@ final class ConfigStore: ObservableObject {
 
     /// Live values exposed to SwiftUI. didSet → schedule debounced save.
     @Published var outputDirPath: String { didSet { scheduleSave() } }
-    @Published var sampleRate: Int { didSet { scheduleSave() } }
     @Published var autoConsentApps: [String] { didSet { scheduleSave() } }
     /// Apple's VoIP DSP on the mic path. Off by default: VPIO drops the HAL
     /// gain system-wide so other clients hear the user quietly. Applies next
@@ -28,7 +27,6 @@ final class ConfigStore: ObservableObject {
     /// only the regulated / NDA gate zeroes the mic live. Off skips mute tracking.
     @Published var honorAppMute: Bool { didSet { scheduleSave() } }
 
-    @Published var debounceStartSec: Double { didSet { scheduleSave() } }
     @Published var debounceEndSec: Double { didSet { scheduleSave() } }
     @Published var manualHotkey: String { didSet { scheduleSave() } }
     /// Stop-only hotkey (TECH-C5); second Carbon binding. Default
@@ -56,8 +54,10 @@ final class ConfigStore: ObservableObject {
     /// Pipeline-side fields surfaced for first-run setup; the pipeline reads
     /// the same TOML at spawn time, so edits apply next recording.
     @Published var notionDatabaseId: String { didSet { scheduleSave() } }
-    /// ISO 639-1 code (e.g. "en") forces Whisper to skip its flaky 30 s
-    /// auto-detect; "auto" re-enables it. Mirrors `transcription.language`.
+    /// ASR language for the on-device FluidAudio (Parakeet TDT) runner: an ISO
+    /// 639-1 code pins it, `"auto"` (the default) lets the SDK detect per meeting.
+    /// Mirrors `transcription.language`; read once at Coordinator init and passed
+    /// to `SinkDispatcher`, so a change applies on the next daemon launch.
     @Published var transcriptionLanguage: String { didSet { scheduleSave() } }
     @Published var summaryLanguage: String { didSet { scheduleSave() } }
     @Published var summarizationSkipAboveChars: Int { didSet { scheduleSave() } }
@@ -100,28 +100,38 @@ final class ConfigStore: ObservableObject {
         let summ = doc["summarization"]?.table
 
         self.outputDirPath = rec?["output_dir"]?.string ?? "~/Documents/Meetings/raw"
-        self.sampleRate = rec?["sample_rate"]?.int ?? 16000
         self.autoConsentApps = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string }) ?? []
         self.voiceProcessing = rec?["voice_processing"]?.bool ?? false
         self.honorAppMute = rec?["honor_app_mute"]?.bool ?? true
 
-        self.debounceStartSec = det?["debounce_start_sec"]?.double ?? 5
-        self.debounceEndSec = det?["debounce_end_sec"]?.double ?? 5
+        // Both literal forms, for the reason spelled out in `Config.load`: TOMLKit
+        // does not coerce int to double, and `config.example.toml` writes every
+        // seconds knob as an integer, so a `.double`-only read silently discarded
+        // a hand-edit and then wrote the default back over it on the next save.
+        func seconds(_ key: String, _ fallback: Double) -> Double {
+            if let d = det?[key]?.double { return d }
+            if let i = det?[key]?.int { return Double(i) }
+            return fallback
+        }
+
+        self.debounceEndSec = seconds("debounce_end_sec", 5)
         self.manualHotkey = det?["manual_hotkey"]?.string ?? "ctrl+option+m"
         self.forceStopHotkey = det?["force_stop_hotkey"]?.string ?? "ctrl+option+shift+m"
         self.flagMomentHotkey = det?["flag_moment_hotkey"]?.string ?? "ctrl+option+f"
         self.offTheRecordHotkey = det?["off_the_record_hotkey"]?.string ?? "ctrl+option+o"
-        self.promptTimeoutSec = det?["prompt_timeout_sec"]?.double ?? 30
+        self.promptTimeoutSec = seconds("prompt_timeout_sec", 30)
         self.defaultPromptAction = det?["default_prompt_action"]?.string ?? "skip"
-        self.repromptCooldownSec = det?["reprompt_cooldown_sec"]?.double ?? 60
-        self.micOnlySilenceSec = det?["mic_only_silence_seconds"]?.double
-            ?? det?["mic_only_silence_seconds"]?.int.map(Double.init)
-            ?? 900
+        self.repromptCooldownSec = seconds("reprompt_cooldown_sec", 60)
+        self.micOnlySilenceSec = seconds("mic_only_silence_seconds", 900)
 
         self.regulatedMode = mod?["regulated_mode"]?.bool ?? false
 
         self.notionDatabaseId = notion?["database_id"]?.string ?? ""
-        self.transcriptionLanguage = trans?["language"]?.string ?? "en"
+        // "auto", not "en": until HYG2 wired this key the transcribe call passed
+        // `languageHint: nil`, i.e. auto-detect. Defaulting to "en" here would have
+        // turned the wiring into a silent behaviour change that pins every meeting
+        // to English on any config that never set the key.
+        self.transcriptionLanguage = trans?["language"]?.string ?? "auto"
         self.summaryLanguage = summ?["summary_language"]?.string ?? "auto"
         self.summarizationSkipAboveChars = summ?["skip_above_chars"]?.int ?? 80000
         self.summarizationBackend = summ?["backend"]?.string ?? "anthropic"
@@ -171,12 +181,10 @@ final class ConfigStore: ObservableObject {
     /// Visible to tests so they can assert the round-trip without disk I/O.
     func writeBack() {
         ensureTable("recording")["output_dir"] = outputDirPath
-        ensureTable("recording")["sample_rate"] = sampleRate
         ensureTable("recording")["auto_consent_apps"] = autoConsentApps
         ensureTable("recording")["voice_processing"] = voiceProcessing
         ensureTable("recording")["honor_app_mute"] = honorAppMute
 
-        ensureTable("detection")["debounce_start_sec"] = debounceStartSec
         ensureTable("detection")["debounce_end_sec"] = debounceEndSec
         ensureTable("detection")["manual_hotkey"] = manualHotkey
         ensureTable("detection")["force_stop_hotkey"] = forceStopHotkey

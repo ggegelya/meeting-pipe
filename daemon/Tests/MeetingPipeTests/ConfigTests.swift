@@ -26,11 +26,9 @@ final class ConfigTests: XCTestCase {
         let url = writeTOML("""
         [recording]
         output_dir = "/tmp/recordings"
-        sample_rate = 48000
         auto_consent_apps = ["us.zoom.xos", "com.microsoft.teams2"]
         """)
         let cfg = try Config.load(from: url)
-        XCTAssertEqual(cfg.recording.sampleRate, 48000)
         XCTAssertEqual(cfg.recording.outputDir.path, "/tmp/recordings")
         XCTAssertEqual(cfg.recording.autoConsentApps, ["us.zoom.xos", "com.microsoft.teams2"])
     }
@@ -39,12 +37,38 @@ final class ConfigTests: XCTestCase {
         // Empty TOML → defaults.
         let url = writeTOML("")
         let cfg = try Config.load(from: url)
-        XCTAssertEqual(cfg.recording.sampleRate, 16000)
         XCTAssertEqual(cfg.detection.manualHotkey, "ctrl+option+m")
         XCTAssertEqual(cfg.detection.forceStopHotkey, "ctrl+option+shift+m")
-        XCTAssertEqual(cfg.detection.debounceStartSec, 5)
         XCTAssertEqual(cfg.detection.debounceEndSec, 5)
         XCTAssertFalse(cfg.modes.regulatedMode)
+    }
+
+    func testSecondsKnobsAcceptIntegerTomlLiterals() throws {
+        // `config.example.toml` writes every seconds knob as an integer, and
+        // TOMLKit does not coerce int to double, so a `.double`-only read made
+        // hand-editing the shipped file a silent no-op. Same class as the HYG2
+        // dead knobs: the user changes the setting and nothing happens.
+        let cfg = try Config.load(from: writeTOML("""
+        [detection]
+        debounce_end_sec = 7
+        prompt_timeout_sec = 45
+        reprompt_cooldown_sec = 120
+        mic_only_silence_seconds = 600
+        """))
+        XCTAssertEqual(cfg.detection.debounceEndSec, 7)
+        XCTAssertEqual(cfg.detection.promptTimeoutSec, 45)
+        XCTAssertEqual(cfg.detection.repromptCooldownSec, 120)
+        XCTAssertEqual(cfg.detection.micOnlySilenceSec, 600)
+    }
+
+    func testSecondsKnobsStillAcceptFloatTomlLiterals() throws {
+        let cfg = try Config.load(from: writeTOML("""
+        [detection]
+        debounce_end_sec = 7.5
+        prompt_timeout_sec = 45.5
+        """))
+        XCTAssertEqual(cfg.detection.debounceEndSec, 7.5, accuracy: 1e-9)
+        XCTAssertEqual(cfg.detection.promptTimeoutSec, 45.5, accuracy: 1e-9)
     }
 
     func testParsesForceStopHotkeyOverride() throws {
@@ -82,13 +106,14 @@ final class ConfigTests: XCTestCase {
     func testDefaultFallbackInstantiates() {
         // Public API used when no config file exists.
         let cfg = Config.defaultFallback()
-        XCTAssertEqual(cfg.recording.sampleRate, 16000)
         XCTAssertEqual(cfg.detection.manualHotkey, "ctrl+option+m")
+        XCTAssertEqual(cfg.transcription.language, "auto")
     }
 
     func testIgnoresLegacyFieldsWithoutCrashing() throws {
-        // Older configs may still have audio_device / capture_mode etc.
-        // We don't read them anymore but parsing should silently succeed.
+        // Older configs may still have audio_device / capture_mode etc., plus the
+        // two knobs HYG2 deleted (sample_rate, debounce_start_sec). We don't read
+        // any of them anymore but parsing should silently succeed.
         let url = writeTOML("""
         [recording]
         output_dir = "/tmp/x"
@@ -97,10 +122,15 @@ final class ConfigTests: XCTestCase {
         capture_mode = "process_tap"
         mic_device = "old-mic"
         auto_route_output = true
+
+        [detection]
+        debounce_start_sec = 12
+        debounce_end_sec = 7
         """)
         let cfg = try Config.load(from: url)
-        XCTAssertEqual(cfg.recording.sampleRate, 16000)
         XCTAssertEqual(cfg.recording.outputDir.path, "/tmp/x")
+        // The live neighbour still parses; a deleted key alongside it is inert.
+        XCTAssertEqual(cfg.detection.debounceEndSec, 7)
     }
 
     func test_scrubbed_environment_drops_every_managed_token() {
@@ -153,5 +183,35 @@ final class ConfigTests: XCTestCase {
         diarization_clustering_threshold = 2.0
         """))
         XCTAssertEqual(high.transcription.diarizationClusteringThreshold, 0.9, accuracy: 1e-9)
+    }
+
+    // MARK: - transcription.language (HYG2)
+
+    func testParsesTranscriptionLanguage() throws {
+        let cfg = try Config.load(from: writeTOML("""
+        [transcription]
+        language = "uk"
+        """))
+        XCTAssertEqual(cfg.transcription.language, "uk")
+    }
+
+    func testTranscriptionLanguageDefaultsToAutoWhenAbsent() throws {
+        // Not "en": before HYG2 wired the key the transcribe call passed
+        // `languageHint: nil` (auto-detect), so anything else would make the
+        // wiring a silent behaviour change for every config missing the key.
+        XCTAssertEqual(try Config.load(from: writeTOML("")).transcription.language, "auto")
+    }
+
+    func testUnknownTranscriptionLanguageResolvesToAutoDetect() throws {
+        // Config keeps the raw string; the runner is what degrades a bad code to
+        // auto-detect, so a typo cannot fail a transcription.
+        let cfg = try Config.load(from: writeTOML("""
+        [transcription]
+        language = "klingon"
+        """))
+        XCTAssertEqual(cfg.transcription.language, "klingon")
+        XCTAssertNil(FluidAudioRunner.resolveLanguage(hint: cfg.transcription.language))
+        XCTAssertNil(FluidAudioRunner.resolveLanguage(hint: "auto"))
+        XCTAssertNotNil(FluidAudioRunner.resolveLanguage(hint: "en"))
     }
 }

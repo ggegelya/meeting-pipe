@@ -246,23 +246,19 @@ const PWGeneralPane = () => (
 const PWRecordingPane = () => (
   <div>
     <PWSectionHeader title="Recording" caption="How audio is captured to disk, and which apps record automatically."/>
-    <PWGroup label="Audio">
+    <PWGroup label="Audio" footer="Recordings are stereo 16 kHz WAV: your mic on the left channel, system audio on the right.">
       <PWStackRow first label="Output directory">
         <PWField value="~/Documents/Meetings/raw" mono/>
         <PWSmallButton>Choose…</PWSmallButton>
         <PWIconButton name="external" title="Reveal in Finder"/>
       </PWStackRow>
-      <PWRow label="Sample rate" sublabel="16 kHz matches Whisper. Higher rates are downsampled.">
-        <PWMenuPicker value="16 kHz · recommended"/>
-      </PWRow>
     </PWGroup>
     <PWGroup label="Microphone" footer="Voice processing takes effect on the next recording. Mute pausing applies to every meeting.">
       <PWToggleRow first on label="Pause mic when muted" sublabel="Pauses mic capture while you're muted in Teams / Zoom / Slack / Webex. Uses the locale catalogue (en, uk, de, es, fr, ja, pt, ru)."/>
       <PWToggleRow on={false} label="Voice processing" sublabel="Apple's noise-suppression + AGC. Drops your mic gain system-wide while recording, so other apps hear you quietly. Off by default; flip on only for solo voice memos."/>
     </PWGroup>
-    <PWGroup label="Detection" footer="Debounce smooths out brief mic gaps. A higher start debounce avoids recording phantom audio; a higher end debounce avoids cutting off pauses.">
-      <PWStackRow first label="Start debounce"><PWSlider value={5} max={30} format="5 s"/></PWStackRow>
-      <PWStackRow label="End debounce"><PWSlider value={8} max={30} format="8 s"/></PWStackRow>
+    <PWGroup label="Detection" footer="How long the detector waits after a meeting's signals go away before ending the recording, so a brief gap does not cut off a pause. Takes effect on the next daemon launch.">
+      <PWStackRow first label="End debounce"><PWSlider value={8} max={30} format="8 s"/></PWStackRow>
     </PWGroup>
     <PWGroup label="Auto-record allowlist" footer="When the daemon detects audio from these apps, recording starts without showing the prompt.">
       <PWFullRow first>
@@ -321,7 +317,7 @@ const PWPipelinePane = () => (
       <PWRow first label="System prompt"><PWSmallButton>View prompt</PWSmallButton></PWRow>
     </PWGroup>
     <PWGroup label="Languages">
-      <PWRow first label="Transcription" sublabel="Whisper. Auto-detect chooses per-meeting."><PWMenuPicker value="Auto-detect"/></PWRow>
+      <PWRow first label="Transcription" sublabel="On-device ASR (FluidAudio Parakeet TDT). Auto-detect chooses per meeting; a fixed code skips detection. Applies on the next daemon launch."><PWMenuPicker value="Auto-detect"/></PWRow>
       <PWRow label="Summary" sublabel="Output language for the Notion summary."><PWMenuPicker value="Match transcript"/></PWRow>
     </PWGroup>
     <PWGroup label="Long meetings" footer="When the transcript exceeds this size, the pipeline writes a paste-into-Claude bundle instead of calling the Anthropic API. 0 disables the guard. ~80,000 chars ≈ 1 hour of speech.">
