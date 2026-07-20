@@ -21,6 +21,10 @@ env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+# T3: scripts/coverage.sh output
+.coverage
+.coverage.*
+.coverage-html/
 build/
 dist/
 *.so

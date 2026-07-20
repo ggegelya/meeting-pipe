@@ -58,22 +58,21 @@ final class SearchIndexer: ObservableObject {
 
     private func reconcile(_ meetings: [Meeting]) {
         guard let index else { return }
-        let indexed = index.indexedSignatures()
-        var live = Set<String>()
-        var changed = false
-        for meeting in meetings {
-            live.insert(meeting.stem)
-            let sig = signature(for: meeting)
-            if indexed[meeting.stem] != sig {
-                index.upsert(stem: meeting.stem, sig: sig, body: documentBody(for: meeting))
-                changed = true
+        let byStem = Dictionary(meetings.map { ($0.stem, $0) }, uniquingKeysWith: { a, _ in a })
+        let actions = SearchIndexReconciler.decide(
+            indexed: index.indexedSignatures(),
+            live: meetings.map { .init(stem: $0.stem, sig: signature(for: $0)) }
+        )
+        for action in actions {
+            switch action {
+            case .upsert(let stem, let sig):
+                guard let meeting = byStem[stem] else { continue }
+                index.upsert(stem: stem, sig: sig, body: documentBody(for: meeting))
+            case .delete(let stem):
+                index.delete(stem: stem)
             }
         }
-        for stem in indexed.keys where !live.contains(stem) {
-            index.delete(stem: stem)
-            changed = true
-        }
-        if changed {
+        if !actions.isEmpty {
             DispatchQueue.main.async { [weak self] in self?.indexRevision += 1 }
         }
     }

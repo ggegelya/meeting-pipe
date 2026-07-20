@@ -96,6 +96,9 @@ Pure logic lives in its own type with explicit inputs (a `Date`, a `Bool`, a fun
 - `MicGate.decide(state:)` - pure precedence over the fused mute signals, no AX or CoreAudio dependency. Test feeds synthetic probe states.
 - `AudioRetention.decide(...)` - pure keep / compress / drop verdict over a meeting's age and workflow policy, no filesystem dependency (STOR1).
 - `WorkflowMatcher.match(source:workflows:)` — pure function, full unit coverage.
+- `StatusBarModel.derive(_:)` - the menu-bar title, icon, header, and conditional rows from a snapshot of state + permissions + download + counts, no `NSStatusItem` (T3).
+- `NotificationRouter.route(id:action:isDefault:doneEntry:)` - which delegate calls a notification response makes, no `UNUserNotificationCenter` (T3).
+- `SearchIndexReconciler.decide(indexed:live:)` - the FTS upsert/delete diff, no SQLite and no filesystem (T3).
 
 When a subsystem grows non-trivial conditional logic, lift the decision into a `decide(…)`-style entry point on its own type before adding the next branch.
 

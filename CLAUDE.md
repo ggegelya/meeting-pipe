@@ -35,6 +35,7 @@ The active backlog lives in [`docs/backlog/`](./docs/backlog/): the highest-numb
 | Daemon build (release) | `cd daemon && swift build -c release` |
 | Daemon tests | `cd daemon && swift test` — needs full Xcode; Command Line Tools alone errors on `import XCTest`. Write tests anyway; CI (macos-14) runs them. |
 | Fast rebuild + relaunch | `./scripts/rebuild.sh` — for live-testing daemon changes against a running install. |
+| Coverage (both trees) | `./scripts/coverage.sh [both\|python\|swift]` - a report, not a gate; CI does not run it. Baselines in `docs/backlog/q6-final.md` under T3. |
 
 CI enforces ruff strictly (any F401 unused import fails). Run ruff locally before committing. CI deliberately installs only light deps and bypasses `uv sync`, so the darwin/arm64-only packages (`mlx-lm`, `mlx-embeddings`) and the heavy `soundfile` / `numpy` pair never download on the Linux runner; their imports live inside function bodies (see `pipeline/CLAUDE.md`). ASR and diarization moved to Swift/FluidAudio long ago; there is no torch or whisperx in this repo.
 

@@ -35,24 +35,28 @@ protocol NotifierDelegate: AnyObject {
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     weak var delegate: NotifierDelegate?
 
-    private static let doneCategory = "MP_DONE"
-    private static let doneCorrectableCategory = "MP_DONE_CORRECTABLE"
-    private static let doneCorrectableLocalCategory = "MP_DONE_CORRECTABLE_LOCAL"
-    private static let actionOpen = "MP_OPEN_PAGE"
-    private static let actionLooksGood = "MP_LOOKS_GOOD"
-    private static let actionEditSummary = "MP_EDIT_SUMMARY"
-    private static let permCategory = "MP_PERM"
-    private static let actionOpenSettings = "MP_OPEN_SETTINGS"
-    private static let stillMeetingCategory = "MP_STILL_MEETING"
+    // `NotificationRouter` owns the identifier vocabulary: it is the type that
+    // interprets these, and the routing table's test needs them without
+    // reaching into this class. Aliased so every `Self.x` call site below reads
+    // the same as before.
+    private static let doneCategory = NotificationRouter.doneCategory
+    private static let doneCorrectableCategory = NotificationRouter.doneCorrectableCategory
+    private static let doneCorrectableLocalCategory = NotificationRouter.doneCorrectableLocalCategory
+    private static let actionOpen = NotificationRouter.actionOpen
+    private static let actionLooksGood = NotificationRouter.actionLooksGood
+    private static let actionEditSummary = NotificationRouter.actionEditSummary
+    private static let permCategory = NotificationRouter.permCategory
+    private static let actionOpenSettings = NotificationRouter.actionOpenSettings
+    private static let stillMeetingCategory = NotificationRouter.stillMeetingCategory
     /// Separate from `permCategory` so "Open Settings" routes to Accessibility instead of Screen Recording.
-    private static let accessibilityCategory = "MP_ACCESSIBILITY"
-    private static let actionOpenAccessibilitySettings = "MP_OPEN_ACCESS_SETTINGS"
-    private static let actionStopRecording = "MP_STOP_RECORDING"
-    private static let actionKeepRecording = "MP_KEEP_RECORDING"
-    private static let stillMeetingIDPrefix = "still-meeting-"
+    private static let accessibilityCategory = NotificationRouter.accessibilityCategory
+    private static let actionOpenAccessibilitySettings = NotificationRouter.actionOpenAccessibilitySettings
+    private static let actionStopRecording = NotificationRouter.actionStopRecording
+    private static let actionKeepRecording = NotificationRouter.actionKeepRecording
+    private static let stillMeetingIDPrefix = NotificationRouter.stillMeetingIDPrefix
     private static let skipLateCategory = "MP_SKIP_LATE"
-    private static let actionStartLate = "MP_START_LATE"
-    private static let skipLateIDPrefix = "skip-late-"
+    private static let actionStartLate = NotificationRouter.actionStartLate
+    private static let skipLateIDPrefix = NotificationRouter.skipLateIDPrefix
 
     /// Per-notification state kept so "Looks good" can find the recording without re-deriving paths on click.
     private struct DoneEntry {
@@ -224,7 +228,16 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             // No "Open Settings" action - it's not a permission problem.
         }
         content.sound = .default
-        let req = UNNotificationRequest(identifier: "perm-stop-\(file.lastPathComponent)", content: content, trigger: nil)
+        // The `.granted` case is not a permission problem, so it must not carry
+        // the `perm-` id namespace: it sets no category, a plain tap is
+        // therefore the only interaction, and `perm-` + a default tap used to
+        // open the Screen Recording pane, which is the one place that cannot
+        // help someone whose permission is already granted (found by T3's
+        // routing table). The other two states keep the permission namespace.
+        let prefix = permissionState == .granted
+            ? NotificationRouter.micOnlyIDPrefix
+            : "perm-stop-"
+        let req = UNNotificationRequest(identifier: "\(prefix)\(file.lastPathComponent)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(req)
     }
 
@@ -368,68 +381,49 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                                  didReceive response: UNNotificationResponse,
                                  withCompletionHandler completionHandler: @escaping () -> Void) {
         let id = response.notification.request.identifier
-        let action = response.actionIdentifier
-        let isDefault = action == UNNotificationDefaultActionIdentifier
+        let entry = doneEntries[id]
 
-        if let entry = doneEntries[id] {
-            switch action {
-            case Self.actionLooksGood:
-                if !entry.stem.isEmpty {
-                    delegate?.notifier(
-                        self,
-                        didMarkLooksGoodFor: entry.stem,
-                        recordingsDir: entry.recordingsDir
-                    )
-                }
-                doneEntries.removeValue(forKey: id)
-            case Self.actionEditSummary:
-                if !entry.stem.isEmpty {
-                    delegate?.notifier(
-                        self,
-                        didRequestEditSummaryFor: entry.stem,
-                        recordingsDir: entry.recordingsDir
-                    )
-                }
-                doneEntries.removeValue(forKey: id)
-            case Self.actionOpen:
-                if let url = entry.pageURL {
-                    delegate?.notifier(self, didOpenPage: url)
-                }
-                doneEntries.removeValue(forKey: id)
-            default:
-                if isDefault, let url = entry.pageURL {
-                    delegate?.notifier(self, didOpenPage: url)
-                    doneEntries.removeValue(forKey: id)
-                }
-            }
-        }
+        // The whole matrix lives in `NotificationRouter.route`, which is pure and
+        // table-tested (T3). This method is the effect half: look up state, ask
+        // for the routes, call the delegate.
+        let decision = NotificationRouter.route(
+            id: id,
+            action: response.actionIdentifier,
+            isDefault: response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+            doneEntry: entry.map { .init(stem: $0.stem, hasPageURL: $0.pageURL != nil) }
+        )
 
-        // Permission notifications: any tap opens System Settings. The `perm-` prefix disambiguates from the done category handled above.
-        if id == "perm-accessibility-startup",
-           action == Self.actionOpenAccessibilitySettings || isDefault {
-            delegate?.notifierDidRequestAccessibilitySettings(self)
-        } else if id.hasPrefix("perm-"),
-                  action == Self.actionOpenSettings || isDefault {
-            delegate?.notifierDidRequestScreenRecordingSettings(self)
-        }
-
-        // TECH-C2: only the explicit "Stop recording" action stops. "Keep
-        // recording" and a plain banner tap restart the silence countdown, so
-        // an accidental tap can no longer kill an active meeting.
-        if id.hasPrefix(Self.stillMeetingIDPrefix) {
-            if action == Self.actionStopRecording {
+        for route in decision.routes {
+            switch route {
+            case .markLooksGood(let stem):
+                guard let entry else { continue }
+                delegate?.notifier(self, didMarkLooksGoodFor: stem, recordingsDir: entry.recordingsDir)
+            case .editSummary(let stem):
+                guard let entry else { continue }
+                delegate?.notifier(self, didRequestEditSummaryFor: stem, recordingsDir: entry.recordingsDir)
+            case .openPage:
+                guard let url = entry?.pageURL else { continue }
+                delegate?.notifier(self, didOpenPage: url)
+            case .openAccessibilitySettings:
+                delegate?.notifierDidRequestAccessibilitySettings(self)
+            case .openScreenRecordingSettings:
+                delegate?.notifierDidRequestScreenRecordingSettings(self)
+            case .stopRecording:
                 delegate?.notifierDidRequestStopRecording(self)
-            } else if action == Self.actionKeepRecording || isDefault {
+            case .keepRecording:
                 delegate?.notifierDidRequestKeepRecording(self)
+            case .startLate:
+                // The host still owns the decode, so an undecodable payload
+                // drops the route rather than starting an unattributed recording.
+                guard let source = AppSource(
+                    notificationUserInfo: response.notification.request.content.userInfo
+                ) else { continue }
+                delegate?.notifier(self, didRequestStartLate: source)
             }
         }
 
-        // UX10: "Start recording" (or a banner tap) on a timeout-skip notification
-        // rebuilds the source from `userInfo` and starts the recording late.
-        if id.hasPrefix(Self.skipLateIDPrefix),
-           action == Self.actionStartLate || isDefault,
-           let source = AppSource(notificationUserInfo: response.notification.request.content.userInfo) {
-            delegate?.notifier(self, didRequestStartLate: source)
+        if decision.consumeDoneEntry {
+            doneEntries.removeValue(forKey: id)
         }
         completionHandler()
     }

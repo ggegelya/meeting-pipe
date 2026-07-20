@@ -8,6 +8,7 @@ Loaded when you touch files in this subtree. Full subsystem map in [`../ARCHITEC
 uv run --extra dev ruff check src tests       # from pipeline/
 uv run --extra dev pyright                    # from pipeline/ (basic mode, src/ only)
 uv run --extra dev pytest -q                  # from pipeline/
+../scripts/coverage.sh python                 # T3: pytest-cov report, not a gate
 ```
 
 CI runs ruff strictly — any F401 unused import fails the pipeline job. Run locally before committing.

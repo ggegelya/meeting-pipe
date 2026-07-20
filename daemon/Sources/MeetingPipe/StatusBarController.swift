@@ -265,7 +265,7 @@ final class StatusBarController {
     private func applyTitle() {
         let lock = (regulatedMode && UISettings.shared.showRegulatedBadge) ? " \u{1F512}" : ""
         let clause: String
-        if isIdleState, let download = modelDownloadTitleClause {
+        if isIdleState, let download = StatusBarModel.downloadTitleClause(modelDownload) {
             clause = download
         } else if isIdleState, processingCount > 0 {
             clause = "Processing (\(processingCount))"
@@ -273,22 +273,6 @@ final class StatusBarController {
             clause = baseTitle
         }
         item.button?.title = " \(clause)\(lock)"
-    }
-
-    /// Compact download clause: percent only (or "…" when total is unknown, or
-    /// "failed"); the byte breakdown lives in the menu. `nil` when not downloading.
-    private var modelDownloadTitleClause: String? {
-        switch modelDownload {
-        case .idle, .completed:
-            return nil
-        case .downloading(_, let progress, _, _):
-            if let pct = progress {
-                return "↓ \(Int(pct * 100))%"
-            }
-            return "↓ …"
-        case .failed:
-            return "↓ failed"
-        }
     }
 
     // MARK: Icons
@@ -406,16 +390,11 @@ final class StatusBarController {
     /// every cold launch.
     private func hasPendingPermissionIssue() -> Bool {
         let center = PermissionsCenter.shared
-        if center.microphone == .denied || center.microphone == .notDetermined {
-            return true
-        }
-        if center.screenRecording == .denied {
-            return true
-        }
-        if center.accessibility == .denied {
-            return true
-        }
-        return false
+        return StatusBarModel.hasPendingPermissionIssue(.init(
+            microphone: center.microphone,
+            screenRecording: center.screenRecording,
+            accessibility: center.accessibility
+        ))
     }
 
     private func rebuildMenu(state: AppState) {
@@ -491,19 +470,16 @@ final class StatusBarController {
         // Failed-pipeline row, backed by the durable error sidecar, so a
         // notification missed under Focus isn't the only surface. Stays
         // until retry or delete.
-        if let coordinator = coordinator {
-            let failedCount = coordinator.failedMeetingCount()
-            if failedCount > 0 {
-                let noun = failedCount == 1 ? "meeting" : "meetings"
-                let failedRow = NSMenuItem(
-                    title: "⚠ \(failedCount) \(noun) failed - open Library to retry",
-                    action: #selector(Coordinator.menuOpenLibrary),
-                    keyEquivalent: ""
-                )
-                failedRow.target = coordinator
-                menu.addItem(failedRow)
-                menu.addItem(.separator())
-            }
+        if let coordinator = coordinator,
+           let title = StatusBarModel.failedMeetingsTitle(count: coordinator.failedMeetingCount()) {
+            let failedRow = NSMenuItem(
+                title: title,
+                action: #selector(Coordinator.menuOpenLibrary),
+                keyEquivalent: ""
+            )
+            failedRow.target = coordinator
+            menu.addItem(failedRow)
+            menu.addItem(.separator())
         }
 
         switch state {
@@ -618,67 +594,27 @@ final class StatusBarController {
     /// Detailed model-download row, or nil when there's nothing to show.
     /// Disabled (informational); clicking does nothing.
     private var modelDownloadMenuRow: NSMenuItem? {
-        switch modelDownload {
-        case .idle:
-            return nil
-        case .downloading(let modelId, let progress, let downloaded, let total):
-            let head = Self.shortModelId(modelId)
-            let body: String
-            if total > 0 {
-                body = "\(Self.formatBytes(downloaded)) / \(Self.formatBytes(total))"
-                    + (progress.map { " (\(Int($0 * 100))%)" } ?? "")
-            } else {
-                body = "\(Self.formatBytes(downloaded)) downloaded"
-            }
-            let item = NSMenuItem(title: "Downloading \(head): \(body)", action: nil, keyEquivalent: "")
+        guard case .modelDownload(let title, let retryable, let toolTip) =
+            StatusBarModel.downloadRow(modelDownload) else { return nil }
+        guard retryable else {
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             item.isEnabled = false
             return item
-        case .completed(let modelId):
-            let item = NSMenuItem(title: "✓ Downloaded \(Self.shortModelId(modelId))", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            return item
-        case .failed(let modelId, let error):
-            // Actionable (LOCAL1): clicking re-spawns the prefetch. The full
-            // error goes to the tooltip so the row title stays short and clean.
-            let item = NSMenuItem(
-                title: "⚠ Model download failed (\(Self.shortModelId(modelId))) - Retry",
-                action: #selector(Coordinator.menuRetryModelDownload),
-                keyEquivalent: ""
-            )
-            item.target = coordinator
-            item.toolTip = error
-            return item
         }
-    }
-
-    /// Drop the `org/` prefix so the menu row stays readable; the full id is
-    /// in Preferences -> Pipeline.
-    private static func shortModelId(_ id: String) -> String {
-        if let slash = id.lastIndex(of: "/") {
-            return String(id[id.index(after: slash)...])
-        }
-        return id
-    }
-
-    private static func formatBytes(_ bytes: Int64) -> String {
-        let kb = Double(bytes) / 1024.0
-        let mb = kb / 1024.0
-        let gb = mb / 1024.0
-        if gb >= 1 { return String(format: "%.1f GB", gb) }
-        if mb >= 1 { return String(format: "%.0f MB", mb) }
-        if kb >= 1 { return String(format: "%.0f KB", kb) }
-        return "\(bytes) B"
+        // Actionable (LOCAL1): clicking re-spawns the prefetch. The full error
+        // goes to the tooltip so the row title stays short and clean.
+        let item = NSMenuItem(
+            title: title,
+            action: #selector(Coordinator.menuRetryModelDownload),
+            keyEquivalent: ""
+        )
+        item.target = coordinator
+        item.toolTip = toolTip
+        return item
     }
 
     private func stateLabel(_ s: AppState) -> String {
-        let suffix = processingCount > 0 ? " · Processing (\(processingCount))" : ""
-        switch s {
-        case .idle: return "MeetingPipe: Idle\(suffix)"
-        case .prompting(let src): return "MeetingPipe: Detected \(src.displayName)\(suffix)"
-        case .suppressed(let src): return "MeetingPipe: Suppressed (\(src.displayName))\(suffix)"
-        case .recording: return "MeetingPipe: Recording\(suffix)"
-        case .stopping: return "MeetingPipe: Stopping…\(suffix)"
-        }
+        StatusBarModel.headerLabel(.init(state: s, processingCount: processingCount))
     }
 }
 
