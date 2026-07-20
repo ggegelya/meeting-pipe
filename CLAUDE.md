@@ -16,6 +16,7 @@ Personal macOS product (single-user, not for sale). Two trees:
 | [`ARCHITECTURE.md#glossary`](./ARCHITECTURE.md#glossary) | Project terms (workflow, lockon, BYO, regulated, sidecar, RMS fallback, …). Skim when a term is unfamiliar. |
 | [`docs/decisions/`](./docs/decisions/) + README [Why it is shaped this way](./README.md#why-it-is-shaped-this-way) | Architectural *why* (ADRs are the long form, the README section the short). Read when the question is "why is it shaped this way?" |
 | [`README.md`](./README.md) | Operating guide (the *how*). Edit when user-visible behaviour or surfaces change. |
+| [`docs/SETUP.md`](./docs/SETUP.md) | The clean-Mac-to-first-summary walkthrough for a non-programmer (DOC10). Edit when install steps, prerequisites, permissions, or the first-run path change. |
 | [`PRODUCT.md`](./PRODUCT.md) | Strategic UX context: register, users, brand personality (local-first, quiet, deliberate), anti-references, design principles, a11y floor. Read before any UI work or design judgement call. |
 | [`design/`](./design/) | Visual system: `colors_and_type.css` (tokens), `README.md` (voice + visual rules + iconography), `ui_kits/macos_app/` (JSX recreations of surfaces). The "match this" doc for chrome. |
 | `daemon/CLAUDE.md` | Auto-loads when you touch Swift. Short Swift-specific gotchas. |
@@ -59,7 +60,9 @@ CI enforces ruff strictly (any F401 unused import fails). Run ruff locally befor
 
 ## Out of scope (user is the only user)
 
-Anything tied to **selling** stays deferred: onboarding flows, license keys, telemetry, code signing / notarization / Sparkle, landing site, marketing copy, compliance docs. Don't add them unless a task explicitly calls for them. If the backlog marks a task **P3**, leave it alone. One exception, promoted in the q4 backlog: GitHub repo presence (README, LICENSE, repo metadata) and the app's visual identity are in scope, for contributor visibility.
+Anything tied to **selling** stays deferred: license keys, telemetry, code signing / notarization / Sparkle, landing site, marketing copy, compliance docs. Don't add them unless a task explicitly calls for them. If the backlog marks a task **P3**, leave it alone. Two exceptions: GitHub repo presence (README, LICENSE, repo metadata) and the app's visual identity are in scope for contributor visibility (promoted in the q4 backlog); and **setup ease is in scope** (DOC10).
+
+Setup ease used to be caught by "onboarding flows" in that list, which was wrong: an in-app onboarding *flow* is selling machinery, but a person getting a working install is not. [`docs/SETUP.md`](./docs/SETUP.md) is the single exhaustive clean-Mac walkthrough (no programming background assumed) and is expected to stay true the way `README.md` and `ARCHITECTURE.md` are: a change to install steps, prerequisites, permissions, or the first-run path updates it in the same commit. A missing prerequisite should fail early with a message naming the fix, not surface as a compiler error. Still deferred: in-app onboarding wizards, first-run tours, and anything that exists to convert a stranger rather than unblock a user.
 
 ## Memory hygiene
 

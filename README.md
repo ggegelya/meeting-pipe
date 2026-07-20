@@ -28,7 +28,7 @@ cd meeting-pipe
 ./scripts/install.sh
 ```
 
-Then `⌃⌥M` to record manually, or join any meeting and answer the prompt. Detailed install steps, requirements, and the configuration reference live below. The design rationale is in [Why it is shaped this way](#why-it-is-shaped-this-way) and the [ADRs](./docs/decisions/).
+Then `⌃⌥M` to record manually, or join any meeting and answer the prompt. Detailed install steps, requirements, and the configuration reference live below. **If you would rather be walked through it**, including the prerequisites the three lines above assume you already have, [`docs/SETUP.md`](./docs/SETUP.md) is the clean-Mac-to-first-summary guide. The design rationale is in [Why it is shaped this way](#why-it-is-shaped-this-way) and the [ADRs](./docs/decisions/).
 
 ---
 
@@ -95,10 +95,15 @@ The subsystem map and sequence diagrams are in [ARCHITECTURE.md](./ARCHITECTURE.
 ## Requirements
 
 - **macOS 14 (Sonoma) or later** — required for ScreenCaptureKit's `excludesCurrentProcessAudio`.
-- **Apple Silicon (M-series), required.** FluidAudio (ASR + diarization) runs on the Apple Neural Engine; there is no Intel fallback.
-- A few GB of free disk for the FluidAudio models, downloaded on first use.
-- A Notion integration token + a database to write to.
+- **Apple Silicon (M-series), required.** FluidAudio (ASR + diarization) runs on the Apple Neural Engine; there is no Intel fallback. `install.sh` refuses to build on Intel rather than failing at the first recording.
+- **Xcode Command Line Tools** (`xcode-select --install`), for the Swift toolchain that builds the daemon. Full Xcode is only needed to run `swift test`.
+- **Homebrew**, which the installer uses to fetch `ffmpeg` and `uv`. On Apple Silicon, run the "Next steps" commands Homebrew prints at the end of its own install, or it will not be on your `PATH`.
+- **About 5 GB of free disk and 1.5 GB of download** for a first install: the FluidAudio speech models are ~475 MB (pre-fetched by the installer into `~/Library/Application Support/FluidAudio/`), the rest is Homebrew packages and build output. The on-device summarization model is a further ~4.3 GB, downloaded only if you choose the `local` backend.
+- **The four macOS permissions** the app requests on first launch: Notifications, Microphone, Screen Recording, and Accessibility. Accessibility needs the daemon relaunched before it takes effect (macOS caches AX trust per process at launch).
+- A Notion integration token + a database to write to, unless you publish to Obsidian, the filesystem, or a LAN share instead.
 - An Anthropic API key for the default backend. Not needed for the `local` or `claude_cli` backends (the latter rides your existing Claude Code login); the `openai` backend needs an OpenAI key instead.
+
+**New to this, or setting up a Mac from scratch?** [`docs/SETUP.md`](./docs/SETUP.md) is the step-by-step version of everything above and below, written for someone who does not want to reverse-engineer a README. It goes from a clean Mac to a first published summary, including the Notion database and the permission dialogs.
 
 ---
 

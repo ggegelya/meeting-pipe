@@ -6,7 +6,9 @@ product
 
 ## Users
 
-Built for one user (Georgy), and people built like him: engineers, PMs, and consultants who care about local-first software, run meetings on a single Mac, and won't tolerate a cloud database. They live in macOS day to day, expect native chrome, and read CLI flags faster than landing pages. The job-to-be-done is: capture a meeting, get a labelled transcript plus a usable summary published into the notes system they already keep, with no surprises and no egress that wasn't opted into.
+Built for one user (Georgy), and people built like him: engineers, PMs, and consultants who care about local-first software, run meetings on a single Mac, and won't tolerate a cloud database. They live in macOS day to day and expect native chrome. The job-to-be-done is: capture a meeting, get a labelled transcript plus a usable summary published into the notes system they already keep, with no surprises and no egress that wasn't opted into.
+
+**Reading CLI flags is a tolerance, not a preference, and getting set up is not the job.** An earlier version of this section said the persona "reads CLI flags faster than landing pages", which was true as a description and wrong as a licence: it was read as permission to leave setup as an exercise for the reader, and it steered work away from the one path a new user actually walks. Setup ease is in scope and always was. [`docs/SETUP.md`](./docs/SETUP.md) is the single exhaustive clean-Mac walkthrough, written for someone with no programming background, and it is expected to stay true as surfaces change. What stays out of scope is everything tied to *selling* (see the project `CLAUDE.md`): licence keys, telemetry, a landing site, marketing copy. A guide that gets one person from a fresh Mac to a first published summary is not marketing.
 
 meeting-pipe runs in the menu bar so it stays out of the way during the meeting itself. The user only really sees the UI at four moments: the prompt panel when a call is detected, the recording HUD while audio is flowing, the done-notification when a summary is ready, and the Library window when reviewing or republishing yesterday's meetings. Every other moment is "nothing visible, nothing needed."
 
@@ -37,7 +39,7 @@ Voice: address the user as "you" in second person. Refer to the system in third 
 
 ## Design Principles
 
-Six strategic principles. These shape decisions about what to build and why; visual rules live in DESIGN.md.
+Seven strategic principles. These shape decisions about what to build and why; visual rules live in DESIGN.md.
 
 1. **Local-first is a UI commitment, not just a backend setting.** Every surface that lets the user route data shows the local option at the same visual level as the cloud one. Regulated mode and BYO mode get first-class affordances on the prompt panel and the Workflow editor, not "Advanced" tucks.
 2. **Truthful states, not aspirational ones.** Status copy describes literal current state. "Idle", "Detected Zoom", "Recording", "Stopping...", "Processing...". Never "Listening" or "Standing by". When the daemon is unsure, the UI says so; it does not paper over with a confident label.
@@ -45,6 +47,7 @@ Six strategic principles. These shape decisions about what to build and why; vis
 4. **Match the mac, then earn deviations.** Default to AppKit conventions: SF Pro at 13px, SF Symbols, sentence case for chrome (Title Case for menu commands), hairline borders not heavy shadows, fixed window sizes, system Dark Mode auto-follow, cool-porcelain canvas. When a custom pattern is right (the Library's smart-folder rail, the workflow tint on the HUD, the two-channel waveform), keep it grounded in native materials.
 5. **Show the work; never hide a failure.** When detection misses, the manual hotkey is one keypress away and the Permissions tab tells the user exactly which grant is missing. When a sink fails, the row's status pill says why and the other sinks still fire. When a long meeting skips Anthropic, the `.READY_FOR_MANUAL.md` sidecar tells the user what to paste into Claude Code. No silent fallbacks, no quiet degradations.
 6. **The CLI is an escape hatch, not a surface.** Every product operation gets a UI affordance; the `mp` CLI and the daemon's argv commands exist for debugging, dogfood, and owner-dev diagnostics. A capability that ships CLI-only is unfinished (standing rule since 2026-07; the backlog delegation contract enforces it). The persona above reads CLI flags fine, but that is tolerance, not preference.
+7. **Setup is a surface, and its failures are the loudest ones.** A first-run user has no mental model to fall back on, so an unexplained prerequisite or a silently-ineffective permission reads as "this is broken", not "I missed a step". Prerequisites fail early with a message naming the fix (`install.sh` dies on a missing Swift toolchain rather than letting `swift build` emit `invalid active developer path`), permissions explain what they buy and what breaks without them, and the walkthrough in [`docs/SETUP.md`](./docs/SETUP.md) is maintained as a first-class surface, not a nice-to-have. This is principle 5 (show the work, never hide a failure) applied to the half hour before anything works.
 
 ## Accessibility & Inclusion
 

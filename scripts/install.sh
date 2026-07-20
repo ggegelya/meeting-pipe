@@ -87,8 +87,36 @@ if (( SW_MAJOR < 14 )); then
     die "macOS 14 (Sonoma) or newer required. Detected: $SW_VERS"
 fi
 
+# Apple Silicon only: FluidAudio's ASR + diarization run on the Apple Neural
+# Engine and there is no Intel fallback, so an x86_64 Mac builds and then fails
+# at the first recording. Fail here instead, where the message can say why.
+ARCH=$(uname -m)
+if [[ "$ARCH" != "arm64" ]]; then
+    die "Apple Silicon (M-series) required; detected $ARCH.
+   Transcription runs on the Apple Neural Engine via FluidAudio and has no Intel fallback."
+fi
+
+# The Swift toolchain is what builds the daemon, and it ships with the Xcode
+# Command Line Tools. Without them `swift build` below dies with a bare
+# "xcrun: error: invalid active developer path", which sends a first-time user
+# looking in the wrong place. `xcode-select -p` alone is not enough: it can
+# point at a directory that no longer exists after an OS upgrade.
+if ! xcode-select -p >/dev/null 2>&1 || ! command -v swift >/dev/null 2>&1; then
+    die "Xcode Command Line Tools not found (no Swift toolchain).
+   Run this, accept the dialog, wait for it to finish, then re-run this script:
+
+       xcode-select --install
+
+   Already installed but still failing after a macOS upgrade? Repoint it:
+
+       sudo xcode-select -s /Library/Developer/CommandLineTools"
+fi
+
 if ! command -v brew >/dev/null 2>&1; then
-    die "Homebrew not found. Install from https://brew.sh first."
+    die "Homebrew not found. Install it with the one-liner from https://brew.sh,
+   then re-run this script. On Apple Silicon, follow the 'Next steps' brew
+   prints at the end: without them, brew is not on your PATH and this check
+   fails again in a new terminal."
 fi
 
 # ffmpeg merges the daemon's mic + system WAVs into the final stereo
