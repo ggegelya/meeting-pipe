@@ -2,6 +2,27 @@
 
 Spike, 2026-07-12. Probe: [`daemon/scripts/mic7-meet-mute-probe.js`](../../daemon/scripts/mic7-meet-mute-probe.js) (owner-run in the Meet tab's DevTools console, read-only). This spike ships the architecture analysis + the stability-measuring instrument; the DOM-stability verdict is owner-owed because it needs a live Meet call in the owner's browser, and the current Meet DOM (not a stale training-time snapshot).
 
+## Measured signal verdict (2026-07-20): candidate 1 confirmed, `data-is-muted`
+
+The owner ran the probe on a live Meet call and toggled the mic. Per-toggle dump:
+
+| Signal | Behaviour | Verdict |
+|---|---|---|
+| `data-is-muted` | flips `'false'` / `'true'` on every toggle | **primary key** |
+| `aria-label` | flips every toggle, but localized (`Вимкнути мікрофон` / `Увімкнути мікрофон`) | rejected, the native-title mistake |
+| `className` | flips (`aLTxue MNEgVb` / `Y3DJRd GgyKtd`) | rejected, build-obfuscated |
+| `aria-pressed` | `null`, absent entirely | not available |
+| `data-muted`, `data-tooltip` | `null` | not available |
+
+So the spike's candidate 1 exists and candidate 2 does not. **The signal-stability gate is GO**, and the primary key is `data-is-muted`.
+
+Two implementation notes the dump makes explicit, both easy to get wrong:
+
+1. **The attribute is state; the label is the inverse action.** `data-is-muted='false'` pairs with the label `Вимкнути мікрофон` ("turn off microphone"), because the button advertises the action available, not the state held. Anyone keying on the label rather than the attribute gets inverted polarity on top of the localization problem. `data-is-muted` is read directly: `true` means muted.
+2. **It is the string `'true'` / `'false'`, not a boolean**, and it can be absent (the other probed attributes came back `null`). Parse it explicitly and treat absent as unknown rather than as unmuted, so a DOM change degrades to "no signal" instead of to "mic is live".
+
+**Caveat on what was measured.** This is 4 toggles in one session against one Meet build. It establishes that the attribute exists and flips reliably right now; it does not measure stability across Meet's deploy churn, which is the actual long-term risk and cannot be measured in one sitting. That argues for the same defensive shape as note 2: a `MeetMuteAdapter` that reports unknown when the attribute vanishes, plus something that notices the signal has gone quiet, rather than silently falling back to an RMS guess.
+
 ## Question
 
 Browser-hosted meetings expose no Accessibility mute oracle. `NoOpMuteAdapter` (wired for both the `.meet` and `.browser` surfaces in `Coordinator`) emits nothing, so `MicGate` falls through to HAL VAD + RMS and the recorded mute state for a browser meeting is an energy guess. Under MIC5's offline redaction that means a browser meeting's muted spans are guessed from RMS rather than a real mute signal.
@@ -40,16 +61,19 @@ How it wires in with no fusion changes: replace `NoOpMuteAdapter(config: .meet)`
 
 END5 recorded the operative fact: **0 browser meetings in 19.8 days** of dogfood (the 3 Chrome-PWA `lifecycle.ended` events drove no recording). For this owner, browser meetings are currently rare-to-nonexistent. Building, signing, distributing, and consent-gating a per-browser extension for an accuracy improvement on a surface that has produced zero recordings is a poor trade *today*, however feasible.
 
+**Still true after the 2026-07-20 probe call, and worth recording precisely.** That session put a real Meet call in Chrome on the machine, and the daemon handled it correctly: `shareable_content_window_present` plus `lifecycle/starting`, then `prompt_shown` at 13:05:15 local (timed out unanswered 30 s later) and again at 13:12:19 (`user_skipped` 4 s later). So browser *detection* works and asks; what is still missing is a browser meeting the owner actually wants recorded. The corpus count of recorded browser meetings remains **0**. A probe call the owner deliberately declined twice is not the promotion trigger, so the build gate below stands unchanged.
+
 ## Verdict: GO on feasibility, DEFER on build (gate on a real browser meeting), DOM-stability owner-owed
 
 - **Architecture: GO.** The in-page-extension-to-`MicGateAdapter` path is sound and is the futureproof, tool-scoped shape the user approved. If a stable boolean signal exists on the Meet mic button, a real oracle is a clean, well-bounded build with no fusion changes.
-- **Signal stability: owner-owed.** Whether a *stable* signal (not just a localized label) exists on the *current* Meet DOM is the one thing this spike cannot assert from here. Run the probe on a live call and read which signal flips every time. If a `data-*` / `aria-pressed` boolean flips reliably: the primary key is found. If only the localized label flips: MIC7 is a NO-GO on Meet until Meet exposes something stabler (do not ship a localized-string oracle, the incident already taught that lesson).
+- **Signal stability: RESOLVED 2026-07-20, GO.** `data-is-muted` flips on every toggle and is the primary key (measured verdict at the top of this doc). `aria-pressed` does not exist on Meet's mic button, so the fallback candidate is unavailable and the localized `aria-label` stays rejected. This bullet was the spike's owner-owed half and it is now closed.
 - **Build timing: DEFER.** Even on a GO signal, gate the actual extension build on a real browser meeting appearing in the corpus, aligning with END5's identical promotion trigger (they share the extension artifact and the consent gating; build them together when browser usage is real). Shipping the extension now is net-new surface for a surface with zero recordings.
 
-Net recommendation: **do not build the extension yet.** Keep this doc + the probe; when the owner starts taking meetings in the browser (or wants to validate now), run `mic7-meet-mute-probe.js` on a live Meet call. A stable-boolean result promotes MIC7 (and END5) to a real build; a localized-only result closes the Meet leg until Meet changes.
+Net recommendation after the measurement: **the signal question is settled GO, and the build is still the right thing not to do yet.** Of the two gates this spike set, one has fallen (a stable boolean exists) and one has not (a browser meeting the owner actually records). Both were required, deliberately, so one falling does not promote the task.
 
 ## Follow-on
 
-- Owner: on the next browser Meet call (or a test call), paste `daemon/scripts/mic7-meet-mute-probe.js` into the Meet tab's console, toggle the mic, and note which signal flips reliably.
-- On a stable-boolean GO + a real browser meeting: build the `MeetMuteAdapter` + the content-script extension together with END5's browser end signal (shared artifact + consent gating), Teams-web / Webex-web after Meet.
-- On a localized-only result: close the Meet leg of MIC7; revisit if Meet exposes a stable attribute later. MIC8 (native Zoom/Teams logs) remains the stronger futureproofing bet for native surfaces.
+- ~~Owner: run the probe on a live Meet call.~~ **Done 2026-07-20:** `data-is-muted` is the stable boolean; see the measured verdict above.
+- Remaining gate: a real browser meeting in the corpus. When one appears, build the `MeetMuteAdapter` + the content-script extension together with END5's browser end signal (shared artifact + consent gating), Teams-web / Webex-web after Meet. Build against `data-is-muted`, parsed as a string with absent treated as unknown, never the `aria-label`.
+- If the owner wants the oracle before that trigger fires, the signal work is no longer blocked on research; it is a scoped build decision. MIC8 (native Zoom/Teams logs) remains the stronger futureproofing bet for native surfaces, which are where this owner's meetings actually happen.
+- Re-run the probe before starting the build regardless. The verdict is one session against one Meet build, and Meet's churn is the standing risk; a cheap re-run at build time confirms the key is still there.
