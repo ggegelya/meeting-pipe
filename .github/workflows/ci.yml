@@ -133,6 +133,34 @@ jobs:
           fi
           echo "No newly-introduced raw font-size literals."
 
+  truth-fences:
+    name: Truth fences (CI5)
+    # Diffs what the docs SAY against what the code DOES: config keys documented
+    # in config.example.toml / the README versus the keys the three readers
+    # actually parse and consume, and the event categories emitted by
+    # `Log.event` / `events.emit` versus the CONVENTIONS.md table.
+    #
+    # Whole-state, not diff-based, on purpose. Both failure classes here are
+    # things that go WRONG BY OMISSION (a knob that stops being read, a table
+    # that stops being updated), and a diff-based guard sees neither: nothing
+    # was added, so there is no added line to flag.
+    #
+    # Known drift sits in the script's allowlists, each entry naming the backlog
+    # task that clears it (HYG2, DOC9). A stale allowlist entry also fails, so
+    # the lists cannot outlive the drift they describe.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # tomllib is stdlib from 3.11; the script needs no other dependency,
+          # so this job installs nothing.
+          python-version: "3.12"
+      - name: Config keys and event categories match their docs
+        shell: bash
+        run: python3 scripts/truth_fences.py
+
   pipeline:
     name: Pipeline (pytest)
     # Pure-Python tests, run on Linux. ASR and diarization are Swift

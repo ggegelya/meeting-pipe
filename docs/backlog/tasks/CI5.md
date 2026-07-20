@@ -1,5 +1,0 @@
-# CI5: Truth fences
-
-Band origin: assessment review 2026-07-12. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
-
-**CI5 (P2): truth fences.** This review found the same failure class END4(b) fixed once, three more times (a documented, rendered knob consumed by nothing) and the event-category table five categories behind the emitters despite DOC7. Scope: a CI step that extracts keys from `config.example.toml` + the README config reference and diffs them against the actual readers (`Config.swift` / `ConfigStore.swift` / `config.py`), and one that greps `Log.event` / `events.emit` category literals and diffs against the CONVENTIONS table (rejecting non-snake actions like `toolbar.action`). Sequence after HYG2 and DOC9 make the current state clean. Noted but not gated here: an arm64 pipeline CI leg; the Swift-warning fence lands with CONC4 (its own acceptance). Acceptance: reintroducing a dead knob or an undocumented event category fails CI.

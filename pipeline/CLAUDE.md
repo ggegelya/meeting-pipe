@@ -63,5 +63,6 @@ A third: `mp.transcript_corrections` reads `<stem>.transcript_corrections.json` 
 - Don't add a new top-level import for a heavy dep. Move it inside the function body.
 - Don't introduce a new package without asking. The current dep list is deliberately small.
 - Don't spawn a subprocess with an inherited env. Pass `env=egress_guard.child_env()` so a zero-egress run cannot egress from inside the child (the httpx patch only covers this process).
-- Don't `print(...)` for event-stream data. Use `events.emit(...)` so `mp logs` and `mp analyze-detection` see it.
+- Don't `print(...)` for event-stream data. Use `events.emit(...)` so `mp logs` and `mp analyze-detection` see it. A new category goes in the `CONVENTIONS.md` table in the same commit, fenced by `scripts/truth_fences.py` (CI5); `prefetch` sat undocumented for months before that fence existed.
+- Don't add a field to a `config.py` model without documenting it in `config.example.toml`. CI5 diffs the pydantic models against that file and the README, in both directions, and `[extra] = "ignore"` on several models means an undocumented key is swallowed silently rather than rejected.
 - Don't bypass `services.Protocol` boundaries — tests can't fake what they can't see.

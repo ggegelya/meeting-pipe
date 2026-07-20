@@ -24,6 +24,24 @@ Two enforcement points, each with two layers:
 - CI: the `conventions` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) fails the build on any em-dash in an added line (diff-based, so untouched legacy lines aren't flagged) AND on any em-dash present at all under `daemon/Sources` / `daemon/Resources` (whole-file, TECH-UI-2). Both match the raw U+2014 bytes via `LC_ALL=C grep -F` on an ANSI-C escape, with a matcher self-test; the old raw-character `grep -P` form went silently dead and let em-dashes through (repaired 2026-07-13).
 - Pre-commit (local): [`scripts/pre-commit`](scripts/pre-commit) fires the same two checks at commit time. Install once with `ln -sf ../../scripts/pre-commit .git/hooks/pre-commit`. Without it, a violation only surfaces as a late CI red after the push, so install it.
 
+### Truth fences (CI5)
+
+Two classes of drift are checked mechanically by [`scripts/truth_fences.py`](scripts/truth_fences.py), run as the `truth-fences` CI job. Both go wrong *by omission*, which is why they are whole-state checks and not diff-based: nothing gets added when a knob quietly stops being read, so there is no added line for a diff guard to flag.
+
+**Config keys.** The keys documented in `config.example.toml` (including commented-out ones, which still show the user the knob) and the README's Configuration reference are diffed against the keys the three readers actually parse: `Config.swift`, `ConfigStore.swift` (both the subscript reads and the `ensureTable` write-back), and `config.py`'s pydantic models. Three ways to fail:
+
+- a documented key nothing parses,
+- a parsed key documented nowhere,
+- a **dead knob**: parsed and persisted, but nothing anywhere reads the value. This is the END4(b) class, and it is the one a documented-versus-parsed diff structurally cannot see, because a dead knob *is* parsed, persisted, and rendered as a live Preferences control. The check is deliberately conservative: only reads through a config receiver (`cfg.x`, `configStore?.x`, `self._cfg.x`) count, assignments do not, and the Preferences UI is excluded, because rendering a control is what makes a dead knob convincing rather than evidence it drives anything.
+
+Plus a completeness axis: a key in the README reference but not in `config.example.toml`, since the example file is what people copy.
+
+**Event categories.** Every `Log.event` / `events.emit` category literal is diffed against the `### Categories` table below, in both directions, and action literals are checked for snake_case.
+
+Known drift lives in the script's two allowlists, each entry naming the backlog task that clears it (HYG2 for the three dead knobs, DOC9 for the sink sections missing from `config.example.toml`). **A stale allowlist entry fails too**, so the lists cannot outlive the drift they describe, and clearing HYG2 or DOC9 means deleting lines from them. Anything not listed fails from the day it appears.
+
+Not mirrored into `scripts/pre-commit`: the whole-state scan takes ~2.7 s, which is too slow for every commit. Same call as the DSN3 token guards, which are also CI-only.
+
 ### Commits
 
 ```
@@ -231,8 +249,14 @@ Every line is one JSON object with at least three fields:
 
 | Source | Categories |
 |---|---|
-| Daemon (`Log.event` / `EventLog.emit`) | `automation`, `axbus`, `coordinator`, `correction`, `detector`, `doctor`, `halbus`, `library`, `lifecycle`, `main`, `micgate`, `recorder`, `recording`, `signal`, `transcription`, `workflow` |
-| Pipeline (`mp.events.emit`) | `pipeline`, `publisher` |
+| Daemon (`Log.event` / `EventLog.emit`) | `automation`, `axbus`, `coordinator`, `correction`, `daemon`, `detail`, `detector`, `doctor`, `halbus`, `library`, `lifecycle`, `main`, `micgate`, `pipeline`, `recorder`, `recording`, `signal`, `transcription`, `workflow` |
+| Pipeline (`mp.events.emit`) | `pipeline`, `prefetch`, `publisher` |
+
+This table is fenced: `scripts/truth_fences.py events` diffs it against the category literals at every `Log.event` / `events.emit` call site, in both directions, and CI runs it (CI5). A category emitted but not listed fails, and so does a category listed but no longer emitted.
+
+`pipeline` appears in **both** rows on purpose. It is the pipeline's own category, and the daemon emits exactly one row under it: `LocalServerReaper` logging `local_server_reaped` when it kills an `mlx_lm.server` that a watchdog SIGKILL orphaned. The event is about the pipeline's process, not the daemon's own machinery, so it reads correctly in `mp logs` alongside the pipeline's rows.
+
+`daemon` (Notion database fetches from the Preferences and Workflows pickers) and `detail` (Library detail-pane toolbar actions, for audit traceability) are small and UI-adjacent; they were emitted for months before this table listed them, which is the drift CI5 exists to stop.
 
 `recorder` and `recording` are both real and are not the same thing: `recorder` is the capture machinery's own narration, while `recording` carries exactly the two mid-recording capture-health transitions the HUD banner rides on (`recording.degraded` / `recording.recovered`, emitted from `Coordinator.onSystemAudioDegraded`). VALID1's UX4 bar asserts on `recording.degraded`, so do not fold it into `recorder`.
 
@@ -249,9 +273,9 @@ Two things it deliberately does not do, both worth knowing before you trust a nu
 
 ### Adding a new action
 
-1. Pick the right category (don't invent one unless you're adding a new subsystem).
-2. Use snake_case for the action (`recording_started`, not `RecordingStarted`).
-3. Add it directly via `Log.event(...)` / `events.emit(...)`. There's no central registry.
+1. Pick the right category (don't invent one unless you're adding a new subsystem). A genuinely new one goes in the table above in the same commit, or CI5 fails the build.
+2. Use snake_case for the action (`recording_started`, not `RecordingStarted`). Fenced: CI5 rejects a dotted or camelCase literal at any `Log.event` / `events.emit` call site. `detail` / `toolbar.action` was the last survivor and is now `toolbar_action`.
+3. Add it directly via `Log.event(...)` / `events.emit(...)`. There's no central registry, and deliberately so: actions are ungoverned, only categories and the snake_case rule are fenced.
 4. If the pipeline's `mp logs` filter or `mp analyze-detection` cares about it, update them too.
 
 ### Non-serializable attributes

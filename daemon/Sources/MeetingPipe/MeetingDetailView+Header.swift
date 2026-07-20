@@ -182,7 +182,7 @@ extension MeetingDetailView {
     }
 
     /// Detail-pane `...` actions menu (TECH-UI-5). Each item logs a
-    /// `detail.toolbar.action` event for audit traceability.
+    /// `detail` / `toolbar_action` event for audit traceability.
     var actionsMenu: some View {
         Menu {
             Button("Rename") { beginRename() }
@@ -393,9 +393,9 @@ extension MeetingDetailView {
         isRenamingTitle = false
     }
 
-    /// Log a `detail.toolbar.action` event then run the action (TECH-UI-5).
+    /// Log a `detail` / `toolbar_action` event then run the action (TECH-UI-5).
     func toolbarAction(_ item: String, _ body: () -> Void) {
-        Log.event(category: "detail", action: "toolbar.action", attributes: [
+        Log.event(category: "detail", action: "toolbar_action", attributes: [
             "item": item,
             "stem": meeting.stem,
         ])
