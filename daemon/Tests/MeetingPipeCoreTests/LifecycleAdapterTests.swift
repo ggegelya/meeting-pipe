@@ -44,9 +44,15 @@ final class LifecycleAdapterTests: XCTestCase {
 
     func test_process_audio_signal_is_disabled_for_every_provider() {
         // TECH-END1: the process mic-release signal returned object 0 for 19.8
-        // days under our ScreenCaptureKit capture model and is now off for all
-        // providers, so no NativeLifecycleAdapter constructs a ProcessAudioSignal
-        // and the `process_audio_unresolved` log spam stops at the source.
+        // days (13,419 unresolved, 0 resolved) and is off for all providers, so no
+        // NativeLifecycleAdapter constructs a ProcessAudioSignal and the
+        // `process_audio_unresolved` log spam stops at the source.
+        // DET2 (2026-07-20) made this permanent rather than provisional: an
+        // owner-run probe on a real Mac, holding the Screen Recording grant during
+        // a live call, got object 0 from the grant alone, from a live bare process
+        // tap, and from a private aggregate device around that tap. Adopting a tap
+        // does not revive the read, so flipping any of these to true needs a new
+        // macOS measurement first, not just a build. Do not relax this test.
         XCTAssertFalse(NativeLifecycleConfig.teams.usesProcessAudio)
         XCTAssertFalse(NativeLifecycleConfig.zoom.usesProcessAudio)
         XCTAssertFalse(NativeLifecycleConfig.webex.usesProcessAudio)

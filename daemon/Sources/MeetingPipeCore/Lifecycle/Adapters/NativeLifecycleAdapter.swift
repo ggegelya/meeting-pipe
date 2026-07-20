@@ -5,14 +5,19 @@ import Foundation
 public struct NativeLifecycleConfig {
     public let bundleIDs: Set<String>
     public let titleMatch: (String?) -> Bool
-    /// TECH-END1: false for every provider now. The `kAudioProcessPropertyIsRunningInput`
-    /// signal needs the PID-to-HAL-process-object translation, which returns object 0 under
-    /// our capture model: we capture system audio via ScreenCaptureKit, hold no audio-tap
-    /// authorization, and never create a Core Audio process tap, so the HAL process-object
-    /// list is empty for us and no PID ever resolves. It produced 0 successful reads in
-    /// 19.8 days (13,407 `process_audio_unresolved`). Kept as a flag + wired machinery so
-    /// the signal can be revived if we ever adopt a process tap; until then it stays false,
-    /// which also stops the per-run unresolved log spam by never constructing the signal.
+    /// TECH-END1: false for every provider, and DET2 made that permanent. The
+    /// `kAudioProcessPropertyIsRunningInput` signal needs the PID-to-HAL-process-object
+    /// translation, which returns object 0: 0 successful reads in 19.8 days (13,419
+    /// `process_audio_unresolved`, every OSStatus `noErr`, so the HAL answers and reports
+    /// no process object rather than refusing). The obvious fix was to blame our capture
+    /// model (ScreenCaptureKit, no audio-tap authorization, no process tap) and adopt a
+    /// tap. DET2 measured that on a real Mac against a live call while holding the Screen
+    /// Recording grant: object 0 from the grant alone, from a live bare process tap, and
+    /// from a private aggregate device around that tap, with tap and aggregate both
+    /// constructing fine. The tap hypothesis is refuted, not untried, so this flag stays
+    /// false and the machinery is kept only to re-measure cheaply if a future macOS changes
+    /// process-object authorization. Never constructing the signal also stops the log spam.
+    /// See `docs/spikes/det2-process-tap-attribution.md`.
     /// (Webex/Slack were already false: Cisco holds the mic open post-call for ultrasound.)
     public let usesProcessAudio: Bool
 

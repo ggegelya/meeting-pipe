@@ -14,6 +14,14 @@
 // wrapper, a heavy aggregate subsystem, or a close. See
 // docs/spikes/det2-process-tap-attribution.md for the decision tree.
 //
+// ANSWERED 2026-07-20: none of A / B / C. The owner ran this on a real Mac against
+// a live Teams call with the grant line reading `granted`, and all three mechanisms
+// returned object 0 (OSStatus noErr) with tap and aggregate construction both
+// succeeding. DET2 is closed NO-GO and `usesProcessAudio` stays false everywhere.
+// This script is kept only to re-measure if a future macOS changes process-object
+// authorization; it is no longer a pending question. Re-running is cheap, but read
+// the grant line first (see below) or the verdict is void.
+//
 // It reads only (its tap + aggregate are private, muted, and torn down
 // immediately); it is not part of the app. Run it on the owner's Mac DURING a
 // live meeting where the client is holding the mic:
@@ -24,6 +32,16 @@
 // It needs the same Screen Recording TCC grant the daemon uses (System Settings
 // -> Privacy & Security -> Screen & System Audio Recording -> enable Terminal /
 // your IDE). Requires macOS 14.2+ (the repo floor).
+//
+// CHECK THE `screen-recording grant:` LINE THIS PRINTS BEFORE TRUSTING A VERDICT.
+// Granting the grant to MeetingPipe.app does nothing for this script: the process
+// that actually executes is `swift-frontend`, which holds no grant of its own and
+// relies on TCC responsible-process inheritance from the terminal that launched it.
+// An ordinary granted terminal inherits fine. A TCC-*disclaimed* parent does not:
+// agent harnesses spawn their shell through a `disclaimer` helper that deliberately
+// severs that inheritance, so running this through one reports NOT granted and
+// silently measures nothing. That produced one void "close the leg" run before the
+// real one. If the line says NOT granted, the SUMMARY below is meaningless.
 //
 import AppKit
 import CoreAudio

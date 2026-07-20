@@ -208,7 +208,8 @@ if inPinned && outPinned {
     `CADefaultDeviceAggregate` that spans both directions. While the daemon records, no
     device on the machine can read idle, so `kAudioDevicePropertyDeviceIsRunningSomewhere`
     carries no information about the meeting client, in either direction. END6's device-idle
-    leg cannot exist. The unconfounded read is the PER-PROCESS one (DET2).
+    leg cannot exist. The PER-PROCESS read (DET2) would be unconfounded, but it does
+    not resolve under any mechanism either: DET2 closed NO-GO on 2026-07-20.
     """)
 } else if inPinned {
     print("""

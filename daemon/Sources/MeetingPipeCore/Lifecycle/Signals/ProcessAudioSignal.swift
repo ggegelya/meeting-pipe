@@ -4,10 +4,17 @@ import Foundation
 /// `kAudioProcessPropertyIsRunningInput` PRIMARY signal. HAL property listener fires immediately when
 /// the process starts or stops capturing input; supplemented by a 1 Hz poll because macOS Sequoia drops
 /// HAL property-listener notifications silently.
-/// TECH-END1: currently disabled in every `NativeLifecycleConfig` (`usesProcessAudio == false`). The
-/// PID-to-process-object translation returns object 0 under our ScreenCaptureKit capture model (no
-/// audio-tap authorization, no Core Audio process tap), so it never resolved in 19.8 days of dogfood.
-/// The class and its tests are retained so the signal can be revived if we adopt a process tap.
+/// TECH-END1: disabled in every `NativeLifecycleConfig` (`usesProcessAudio == false`), permanently.
+/// The PID-to-process-object translation returns object 0, so it never resolved in 19.8 days of
+/// dogfood (13,419 `process_audio_unresolved`, 0 successful reads, every OSStatus `noErr`).
+/// DET2 measured why, and the answer is not our capture model: adopting a Core Audio process tap
+/// does NOT revive it. An owner-run probe on a real Mac against a live call, holding the Screen
+/// Recording grant, got object 0 from all three mechanisms (grant alone, a live bare process tap,
+/// and a private aggregate device around that tap), with tap and aggregate construction both
+/// succeeding. So do not re-propose "hold a tap and the read will resolve"; that hypothesis is
+/// refuted, not untried. See `docs/spikes/det2-process-tap-attribution.md`. The class and its tests
+/// are retained only so a future macOS that changes process-object authorization can be re-measured
+/// cheaply; until then the signal is never constructed, which is also what stops the log spam.
 /// Threading: `start`/`stop` on main; probe and `onChange` fire on the HAL bus queue or poll timer queue.
 public final class ProcessAudioSignal {
 

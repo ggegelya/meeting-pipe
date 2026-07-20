@@ -72,8 +72,8 @@ END6 is done. The correlated-pair gate shipped and is validated in production; t
 
 Closing leaves no hole, because every genuinely independent end corroborator is already owned elsewhere:
 
-- **Per-process audio (`kAudioProcessPropertyIsRunningInput`)** is the unconfounded read: it asks about the meeting client's process, so our own IOProc cannot blind it. That is **DET2**, which is already probe-gated and owner-owed. It is the right home for this need.
-- **Calendar end horizon** is **CAL1**, likewise probe-gated.
+- **Per-process audio (`kAudioProcessPropertyIsRunningInput`)** is the unconfounded read: it asks about the meeting client's process, so our own IOProc cannot blind it. That was **DET2**, probe-gated and owner-owed when this was written. **Update 2026-07-20: DET2 closed NO-GO.** The read does not resolve under any mechanism (the Screen Recording grant alone, a live bare process tap, or a private aggregate device around it all return object 0), corroborated by 13,419 unresolved and 0 resolved reads logged over eight weeks with the grant held. So this corroborator does not exist; it was unconfounded in principle and unavailable in fact.
+- **Calendar end horizon** was **CAL1**, likewise probe-gated. **Update 2026-07-17: CAL1 closed NO-GO** too, because the owner's Outlook/Teams calendar never reaches macOS EventKit.
 - **An AX-free end path already exists and works.** Window-gone comes from ScreenCaptureKit, not AX, and led 12 historical ends on the debounce, so an AX regression does not leave native end detection with nothing. The idle-stop backstop remains the ceiling.
 
 ## Follow-on

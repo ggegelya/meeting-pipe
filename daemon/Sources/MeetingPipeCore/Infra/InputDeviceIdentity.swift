@@ -124,8 +124,12 @@ public enum InputDeviceResolver {
     /// `AVAudioEngine.inputNode` builds a `CADefaultDeviceAggregate` spanning both directions, so
     /// our mic capture pins the default OUTPUT device RUNNING too. Never reuse this property as
     /// an end signal. Measured: `daemon/scripts/end6-device-idle-probe.swift`, written up in
-    /// `docs/spikes/end6-device-idle-corroborator.md`. The unconfounded read is the per-process
-    /// one (`ProcessAudioSignal` / DET2), which asks about the client's process, not the device.
+    /// `docs/spikes/end6-device-idle-corroborator.md`. The per-process read
+    /// (`ProcessAudioSignal` / DET2) would be unconfounded in principle, since it asks about the
+    /// client's process rather than the device, but it does not resolve at all: DET2 closed NO-GO
+    /// 2026-07-20 after measuring that neither the Screen Recording grant, a live process tap, nor
+    /// a private aggregate device revives it. So there is no unconfounded alternative to reach for
+    /// here; end detection rests on the AX re-walk and the idle-stop backstop.
     public static func shouldWarnMismatch(defaultInputRunning: Bool, anotherInputRunning: Bool) -> Bool {
         !defaultInputRunning && anotherInputRunning
     }

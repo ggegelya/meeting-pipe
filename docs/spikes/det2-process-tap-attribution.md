@@ -2,6 +2,33 @@
 
 Spike, 2026-07-12. Probe: [`daemon/scripts/det2-process-tap-probe.swift`](../../daemon/scripts/det2-process-tap-probe.swift) (owner-run on a real Mac during a live call, read-only). This spike ships the mechanism analysis + a measuring instrument; the empirical verdict (which mechanism, if any, revives the read) is owner-owed because it can only be answered on real hardware with a live meeting client holding the mic, not in this harness.
 
+## Measured verdict (2026-07-20): none of A / B / C. Close the leg.
+
+The owner ran the probe on a real Mac against a live Teams call (PID 667), with the probe's own grant line reading `screen-recording grant: granted`. All three mechanisms returned the identical failure:
+
+```
+A. Baseline (grant only, no tap):     translate -> FAILED (OSStatus 0, object 0)
+B. Bare process tap held live:        translate -> FAILED (OSStatus 0, object 0)
+C. Private aggregate around the tap:  translate -> FAILED (OSStatus 0, object 0)
+```
+
+B and C were genuinely exercised, not skipped: the probe prints a distinct `AudioHardwareCreateProcessTap FAILED` / `CreateAggregateDevice FAILED` line when construction fails, and neither appeared, so the tap and the private aggregate were both created successfully and the translate still returned `kAudioObjectUnknown`. `OSStatus 0` is `noErr`: the HAL answers the query and reports no process object, rather than refusing it.
+
+**Independent corroboration at production scale.** Mechanism A did not need the probe at all: `ProcessAudioSignal` ran live in the daemon before TECH-END1 disabled it, and `~/Library/Logs/MeetingPipe/events.1.jsonl` (2026-05-18 to 2026-07-13) holds the record.
+
+| Measurement | Value |
+|---|---|
+| `process_audio_unresolved` | 13,419 (all `com.microsoft.teams2`) |
+| `process_audio_object_unresolved` | 64, every one `osstatus: 0` |
+| `process_audio_is_running_input` (any resolved read) | 0, across both log generations |
+| `permission_granted kind=screenRecording` | 71, first at `2026-05-18T13:23:54Z` |
+
+The Screen Recording grant was held from the first minute of that window, so mechanism A was measured from inside a genuinely authorized app, at production scale, for eight weeks, with the same `osstatus 0` / object 0 signature the probe reproduced. (13,419 supersedes the 13,407 mid-flight count quoted elsewhere; the log kept accruing until the signal was disabled.)
+
+**Gotcha worth keeping: the first probe run was void.** It reported `screen-recording grant: NOT granted` because it was launched as `swift daemon/scripts/det2-process-tap-probe.swift` from a TCC-*disclaimed* parent process (an agent harness spawns its shell through a `disclaimer` helper, which deliberately severs responsible-process inheritance). The executing process is `swift-frontend`, so it holds no grant of its own and inherits none. Re-running from an ordinary granted terminal produced `granted` and the numbers above. Any future re-run must confirm the probe's own grant line before its verdict is worth reading, which is exactly why the probe prints it.
+
+**Disposition: close the process-audio leg.** `ProcessAudioSignal` stays dead by design and `usesProcessAudio` stays `false` on all four native adapters. DET1's frontmost attribution remains the catch-all, the AX re-walk plus the idle-stop backstop remain the end-detection ceiling, and MIC8 (UI-independent native signals) remains the stronger futureproofing bet. The `requiresCorroboration` rail below was never needed, since nothing was flipped. Doc and probe are kept, per the CAL1 precedent, so the decision is revisitable if a future macOS changes process-object authorization; the sections below are the original pre-measurement analysis, retained as the trail.
+
 ## Question
 
 `ProcessAudioSignal` is fully built and unit-tested but dead in production: the PID-to-HAL translation (`kAudioHardwarePropertyTranslatePIDToProcessObject`) returns object 0, so `kAudioProcessPropertyIsRunningInput` never reads (0 successful reads in 19.8 days, 13,407 `process_audio_unresolved`; `usesProcessAudio` is hard-`false` on all four native adapters). DET2 asks: **what makes the read resolve?** The revival hinges on one empirical question, unanswerable from documentation (the tap API is, per ADR 0001, "a private-looking API surface that is officially documented but sparsely" whose macOS-15 behaviour "had to be discovered by testing"):
@@ -50,9 +77,11 @@ Matching the CAL1 / MIC7 pattern (the headline question needs live hardware, so 
 
 Net: **do not write production detection code yet.** The probe is typecheck-clean here (it resolves the `NS_REFINED_FOR_SWIFT` initializer spelling against the SDK), so the mechanism code is known to compile; only the runtime answer is pending.
 
-## Follow-on
+## Follow-on (resolved 2026-07-20)
 
-- Owner: during a live meeting where the client holds the mic, run `swift daemon/scripts/det2-process-tap-probe.swift` (grant Screen Recording to Terminal / your IDE first). Read the `SUMMARY` and `READ` lines: which of A / B / C resolved.
-- On A or B: promote DET2 to a small build (the flip, or the flip + `ProcessAudioTap` wrapper) with the `requiresCorroboration` rail, and update `LifecycleAdapterTests.test_process_audio_signal_is_disabled_for_every_provider`.
-- On C-only: keep DET2 partial with a DEFER note; the boolean is not worth the aggregate subsystem unless start-side coverage changes the maths.
-- On none: close the process-audio leg in the backlog; DET1 remains the catch-all and MIC8 (UI-independent native signals) remains the stronger futureproofing bet.
+The decision tree above ran to its "none" branch, so the close is taken:
+
+- DET2 moved to [`q6-final.md`](../backlog/q6-final.md) as done, closed NO-GO by measurement. No production detection code was written, so there was nothing to revert.
+- `usesProcessAudio` stays `false` on all four native adapters, and `LifecycleAdapterTests.test_process_audio_signal_is_disabled_for_every_provider` stays as-is; it now pins a measured permanent state rather than a provisional one, and carries the DET2 measurement in its comment so a future reader does not re-open it.
+- The stale "revive it if we adopt a process tap" note is corrected in place at both sites that carried it (`ProcessAudioSignal`, `NativeLifecycleConfig.usesProcessAudio`), because adopting a tap is precisely what was measured and it did not revive the read.
+- A revisit needs a macOS release that changes process-object authorization. Re-run the probe from a granted terminal, confirm its grant line says `granted` first, and read `SUMMARY`.
