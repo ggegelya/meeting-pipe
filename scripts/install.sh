@@ -223,7 +223,19 @@ INTENTS_SRC="$REPO_ROOT/daemon/Sources/MeetingPipe/Automation/MeetingPipeAppInte
 APPINTENTS_PROC="$(xcrun --find appintentsmetadataprocessor 2>/dev/null || true)"
 SWIFT_FRONTEND="$(xcrun -f swift-frontend 2>/dev/null || true)"
 
-if [[ ! -f "$INTENTS_SRC" ]]; then
+if [[ "${MP_APP_INTENTS:-0}" != "1" ]]; then
+    # OFF by default, and this is a correctness choice, not caution. The metadata
+    # makes all six actions DISCOVERABLE in Shortcuts, but invoking one fails with
+    # "Shortcuts couldn't communicate with the app" on an ad-hoc-signed bundle
+    # (measured 2026-07-19/20; see MeetingPipeAppIntents.swift for the six causes
+    # excluded and docs/spikes/auto1-app-intents-metadata.md for the trail).
+    # Emitting it anyway would advertise six actions that every user click fails
+    # on, which is worse than not offering them. The meetingpipe:// URL scheme is
+    # the working automation surface meanwhile. Re-enable with
+    # MP_APP_INTENTS=1 ./scripts/install.sh once the app has a real Developer ID
+    # (D8 / DIST1), which is the one remaining unexcluded cause.
+    say "Native App Intents: skipped (needs a Developer ID; meetingpipe:// URLs unaffected)."
+elif [[ ! -f "$INTENTS_SRC" ]]; then
     warn "App Intents source missing; skipping native Shortcuts actions."
 elif [[ -z "$APPINTENTS_PROC" || -z "$SWIFT_FRONTEND" ]]; then
     warn "Full Xcode not found (Command Line Tools only?); skipping native App Intents."
@@ -466,7 +478,15 @@ if (( RESET_TCC )); then
     say "TCC permissions reset. Next launch re-prompts for Mic / Screen Recording / Accessibility."
 fi
 
-launchctl load -w "$PLIST"
+launchctl load -w "$PLIST" 2>/dev/null || true
+# `load -w` is a no-op when the job is already loaded, and the `unload` above is
+# swallowed by `|| true` when it fails, so a reinstall used to leave the PREVIOUS
+# binary running: install.sh reported success while the old build stayed live
+# (found 2026-07-19, a daemon from 22:50 surviving a 23:14 install). kickstart -k
+# force-restarts the job onto the freshly installed bundle, so "install finished"
+# actually means "the new build is running". Confirm via the `app_rebuild` event,
+# which logs the cdhash change.
+launchctl kickstart -k "gui/$(id -u)/${LAUNCHD_LABEL}" 2>/dev/null || true
 say "LaunchAgent installed → $PLIST"
 
 cat <<EOF

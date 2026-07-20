@@ -16,6 +16,25 @@ import Foundation
 // are string literals here instead of reusing `AutomationCommand`.
 // `MeetingPipeAppIntentsTests` parses every URL built here back through
 // `AutomationCommand.parse`, so the two cannot drift apart silently.
+//
+// NOT REACHABLE ON AN AD-HOC-SIGNED BUILD (measured 2026-07-19/20). These intents
+// are DISCOVERED correctly (all six list in Shortcuts with their parameters,
+// because discovery only reads the static Metadata.appintents), but INVOKING one
+// fails with "Shortcuts couldn't communicate with the app": the app is never
+// contacted, never crashes, and no `automation` event is logged. Six candidate
+// causes were each excluded by measurement, so do not re-run these experiments:
+// the intent types ARE in the binary (AppIntents linked, conformance sections
+// present, not dead-stripped); Launch Services DOES register the app; the failure
+// is identical with `openAppWhenRun` true and false; identical whether launchd
+// execs the binary or Launch Services opens it (`open -a`); identical with
+// LSUIElement true and false; and the app never crashes. What is left is code
+// signing: the bundle is `spctl`-rejected with `TeamIdentifier=not set` (the only
+// third-party app on the dogfood Mac that is, next to Ghostty / Obsidian / Notion
+// which all pass), and the intent XPC handoff is the one path that needs that
+// trust, which is why `meetingpipe://` URLs keep working. So this code is correct
+// and ready, but gated on a real Developer ID (D8 / DIST1). `install.sh` only
+// emits the metadata when MP_APP_INTENTS=1, so an unsigned build does not show
+// six Shortcuts actions that all fail.
 
 /// Builds the `meetingpipe://` URLs the intents open. Kept tiny and pure so the
 /// tests can pin each intent's URL without running `perform()`.

@@ -61,18 +61,13 @@ The same controls are reachable through a `meetingpipe://` URL scheme (AUTO1), s
 | `meetingpipe://ask?q=<question>` | Open the Ask rail with the question prefilled and run it |
 | `meetingpipe://digest` | Open the Digests rail and generate the weekly digest |
 
-External triggers respect exactly the gates the hotkey does: a denied-mic trigger routes to the Permissions tab instead of failing silently, and `record` never stacks a second recording on a live one. Everything stays local (Launch Services delivers the URL to the running daemon; no new egress). Registering the scheme is part of the bundle Info.plist, so a URL scheme added by an update needs one `scripts/install.sh` run (the fast `rebuild.sh` path does not rewrite Info.plist). **Native Shortcuts actions.** Beyond the raw URLs, MeetingPipe ships six first-class App Intents, so you can build a Shortcut (or ask Siri, or use Spotlight) without typing a URL. Open Shortcuts.app, search for **MeetingPipe** in the action list, and you'll find:
+External triggers respect exactly the gates the hotkey does: a denied-mic trigger routes to the Permissions tab instead of failing silently, and `record` never stacks a second recording on a live one. Everything stays local (Launch Services delivers the URL to the running daemon; no new egress). Registering the scheme is part of the bundle Info.plist, so a URL scheme added by an update needs one `scripts/install.sh` run (the fast `rebuild.sh` path does not rewrite Info.plist). **Native Shortcuts actions are built but not enabled**, and the reason is worth knowing before you go looking for them. Six first-class App Intents exist in the code (toggle / start with a BYO flag / stop / open Library at a rail / ask / digest), and `scripts/install.sh` can emit the metadata Shortcuts reads. They are off by default because they are **discoverable but not invocable** on this build: the actions list correctly in Shortcuts, but running one fails with "Shortcuts couldn't communicate with the app". Six candidate causes were excluded by measurement (2026-07-19/20); what remains is that the app is ad-hoc signed with no Apple Developer ID, and the intent handoff is the one path that requires that trust. Shipping them anyway would put six actions in your Shortcuts library that every click fails on, so `install.sh` skips the metadata unless you ask for it:
 
-| Action | Does |
-| --- | --- |
-| Toggle Meeting Recording | Start or stop, like `⌃⌥M` |
-| Start Meeting Recording | Start if idle; a "Bring your own summary" toggle selects the BYO variant |
-| Stop Meeting Recording | Stop only |
-| Open MeetingPipe Library | Open the Library, with a Rail picker (All Meetings / Ask / Digests / Facts) |
-| Ask MeetingPipe | Takes a Question, opens the Ask rail and runs it |
-| Generate MeetingPipe Digest | Opens the Digests rail and generates the weekly digest |
+```bash
+MP_APP_INTENTS=1 ./scripts/install.sh    # only useful once the app is properly signed
+```
 
-Toggle, Stop, and Generate Digest also register as ready-made shortcuts you can run by voice ("Toggle recording in MeetingPipe"). Each action runs by opening its own `meetingpipe://` URL, so it obeys exactly the same gates as the hotkey. These are registered by `scripts/install.sh` (it writes the App Intents metadata into the bundle; `swift build` has no such step), so they appear after a full `install.sh` run, not a fast `rebuild.sh`. If Shortcuts shows nothing, see "Shortcuts actions missing" in Troubleshooting.
+Until then the `meetingpipe://` URL scheme above is the supported automation surface, and it is fully verified: a Shortcut using the built-in **Open URL** action drives every verb, as do Raycast, Stream Deck, and `open` in a shell. The trail is in [`docs/spikes/auto1-app-intents-metadata.md`](docs/spikes/auto1-app-intents-metadata.md).
 
 For meetings longer than ~1 hour on a cloud backend, the pipeline writes the transcript to disk along with a paste-into-Claude-Code bundle and **does not call the Anthropic API**; on a local backend it summarizes them on-device at no cost instead. See "Long meetings" below.
 
@@ -521,13 +516,9 @@ There are no microphone or output-device settings — the daemon auto-detects bo
 - 401 → `NOTION_TOKEN` is wrong or revoked. `mp doctor` confirms.
 - 404 → the integration isn't shared with your database, or `notion.database_id` is wrong (use the ID, not the page slug).
 
-**The MeetingPipe actions don't show up in Shortcuts.** The native actions come from an App Intents metadata bundle that `scripts/install.sh` writes into the app. `swift build` and the fast `./scripts/rebuild.sh` do not write it, so a rebuild-only update leaves Shortcuts with nothing to show. In order:
-1. Run the full `scripts/install.sh` (it prints "App Intents metadata written" on success, or a warning naming what failed).
-2. Confirm it's in the bundle: `ls ~/Applications/MeetingPipe.app/Contents/Resources/Metadata.appintents` should list `extract.actionsdata`.
-3. Quit Shortcuts.app completely and reopen it. It caches the action list, so a running instance keeps showing the old one.
-4. In Shortcuts, click **+** for a new shortcut and search the right-hand action list for `MeetingPipe`.
+**The MeetingPipe actions don't show up in Shortcuts.** Expected: they are off by default (see "Native Shortcuts actions" above). Use a Shortcut built on the **Open URL** action with a `meetingpipe://` URL instead, which is the supported path.
 
-If it's still empty, force Launch Services to re-index: `/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f ~/Applications/MeetingPipe.app`. The extraction needs full Xcode (not just Command Line Tools); `bash daemon/scripts/auto1-app-intents-probe.sh` reports whether the toolchain can still produce the metadata, which is worth re-running after an Xcode update. The `meetingpipe://` URLs keep working either way, so a Shortcut built on the "Open URL" action is the fallback.
+**A MeetingPipe Shortcuts action fails with "couldn't communicate with the app".** This is the known limitation that keeps the native actions disabled, not a broken install. The app is ad-hoc signed (no Apple Developer ID), and invoking an App Intent requires the system to hand off to the app over a trusted channel, which it refuses for a `spctl`-rejected bundle. Discovery works because it only reads a static metadata file, which is why the actions can appear and still fail. Six other causes were excluded by measurement (dead-stripped symbols, Launch Services registration, `openAppWhenRun`, launchd vs Launch Services launch, `LSUIElement`, an app crash); the notes are in `MeetingPipeAppIntents.swift`. The fix is a real Developer ID (tracked as D8 / DIST1). Meanwhile the `meetingpipe://` URLs work and are verified. If you re-enable the metadata with `MP_APP_INTENTS=1` and the actions do not appear at all, quit and reopen Shortcuts (it caches the action list), and re-run `bash daemon/scripts/auto1-app-intents-probe.sh` to confirm the toolchain can still produce the metadata after an Xcode update.
 
 **The recording never ends; the daemon thinks the meeting is still going long after I hung up.** The end-detection probe scans the meeting app's window titles via Accessibility. If you have an unrelated window whose title contains a matching meeting word (e.g. a Slack channel named "team-calls", a Zoom "Schedule Meeting" dialog left open, a Teams chat thread named "Sprint planning meeting"), the per-app recognizer should reject it. If it doesn't, capture the offending titles with `swift scripts/dump_window_titles.swift <bundle_id> <state> reject`, add the row to `daemon/Tests/MeetingPipeTests/Fixtures/window_titles.json`, and the next test run shows whether `Detector.isActiveMeetingWindow` needs a refinement.
 
