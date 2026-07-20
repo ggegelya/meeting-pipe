@@ -218,7 +218,6 @@ final class MeetingDiscoveryWatcher {
                     "leave_button": winner.signals.leaveButton,
                     "mute_button": winner.signals.muteButton,
                     "title_match": winner.signals.titleMatch,
-                    "process_audio_active": winner.signals.processAudioActive,
                 ])
             }
             // Report every winner, not just changes; keeps re-discovery working when the same app is
@@ -295,7 +294,6 @@ final class MeetingDiscoveryWatcher {
                 "leave_button": c.signals.leaveButton,
                 "mute_button": c.signals.muteButton,
                 "title_match": c.signals.titleMatch,
-                "process_audio_active": c.signals.processAudioActive,
             ])
         }
     }

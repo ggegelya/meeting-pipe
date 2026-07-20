@@ -9,14 +9,17 @@ struct MeetingSourceCandidate: Equatable {
 
     var signals: Signals
 
-    /// Whether this native has a live process-audio leg. False for the audio-excluded bundles
-    /// (Webex/spark, which keep the mic open post-call for ultrasound device discovery, so a
-    /// positive audio read cannot distinguish a live call from an idle post-call state). DET5 uses
-    /// it to pick the lone-native confidence bar: an audio-probed native can reach two distinct
-    /// signals in a real call (toolbar + Leave + Mute), so it is held to `isConfidentNativeMeeting`;
-    /// an audio-excluded native structurally cannot, and its toolbar label is an unreliable English
-    /// guess, so it keeps the single-corroborator bar (its DET4 behaviour, since DET5's walk-gate
-    /// change never applied to it - it always walked). Browsers set true; the browser path ignores it.
+    /// Which lone-native confidence bar DET5 applies. False only for the Webex/spark bundles.
+    ///
+    /// The name is historical: it once meant "this native is probed for process audio", the probe
+    /// that excluded Webex/spark because they keep the mic open post-call for ultrasound device
+    /// discovery. DET2 closed that probe as permanently dead (2026-07-20) and the discovery path
+    /// no longer reads process audio at all, so no candidate has an audio leg now. The flag is kept
+    /// because the behaviour it gates is still wanted and unrelated to audio: a normal native can
+    /// reach two distinct signals in a real call (toolbar + Leave + Mute) so it is held to
+    /// `isConfidentNativeMeeting`, while Webex/spark cannot reach that bar as reliably (their
+    /// toolbar label is an unreliable English guess), so they keep DET4's single-corroborator bar.
+    /// Browsers set true; the browser path ignores it.
     var hasAudioLeg: Bool = true
 
     /// Assigned by `MeetingSourceScorer.pickBest`; defaults to 0 pre-scoring.
@@ -35,9 +38,6 @@ struct MeetingSourceCandidate: Equatable {
         /// At least one window/tab title matches the meeting pattern. For natives: per-bundle recognizer. For browsers: meeting URL fragments from meeting_apps.toml.
         var titleMatch: Bool
 
-        /// `kAudioProcessPropertyIsRunningInput` reports active input for this PID. Webex suppression is a scanner-side filter, not applied here.
-        var processAudioActive: Bool
-
         /// SCShareableContent lists this bundle as an active source. Reserved; scanner always passes `false` pending async pre-scan wiring.
         var shareableContentActive: Bool
 
@@ -46,14 +46,12 @@ struct MeetingSourceCandidate: Equatable {
             leaveButton: Bool = false,
             muteButton: Bool = false,
             titleMatch: Bool = false,
-            processAudioActive: Bool = false,
             shareableContentActive: Bool = false
         ) {
             self.callingControlsToolbar = callingControlsToolbar
             self.leaveButton = leaveButton
             self.muteButton = muteButton
             self.titleMatch = titleMatch
-            self.processAudioActive = processAudioActive
             self.shareableContentActive = shareableContentActive
         }
     }

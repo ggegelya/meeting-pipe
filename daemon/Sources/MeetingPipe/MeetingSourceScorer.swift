@@ -9,7 +9,6 @@ enum MeetingSourceScorer {
         static let leaveButton = 3
         static let muteButton = 2
         static let titleMatch = 2
-        static let processAudioActive = 3
         static let shareableContentActive = 2
         /// Recency bonus applied when the candidate's bundle matches the previous scan's winner.
         static let sticky = 1
@@ -26,7 +25,6 @@ enum MeetingSourceScorer {
         if signals.leaveButton { total += Weights.leaveButton }
         if signals.muteButton { total += Weights.muteButton }
         if signals.titleMatch { total += Weights.titleMatch }
-        if signals.processAudioActive { total += Weights.processAudioActive }
         if signals.shareableContentActive { total += Weights.shareableContentActive }
         if isStickyLast { total += Weights.sticky }
         return total
@@ -39,17 +37,20 @@ enum MeetingSourceScorer {
         if signals.leaveButton { count += 1 }
         if signals.muteButton { count += 1 }
         if signals.titleMatch { count += 1 }
-        if signals.processAudioActive { count += 1 }
         if signals.shareableContentActive { count += 1 }
         return count
     }
 
-    /// True when at least one in-call signal beyond `titleMatch` is set. `titleMatch` alone is unreliable for natives: Teams/Slack title recognizers match chat threads and calendar windows. Leave button, calling-controls toolbar, mute button, process audio, and shareable-content only appear during an active call.
+    /// True when at least one in-call signal beyond `titleMatch` is set. `titleMatch` alone is
+    /// unreliable for natives: Teams/Slack title recognizers match chat threads and calendar
+    /// windows. The calling-controls toolbar, Leave button and Mute button only appear during an
+    /// active call. `shareableContentActive` is listed but never set (see its declaration), and the
+    /// process-audio disjunct was removed when DET2 closed that signal as permanently dead, so in
+    /// practice this is the three AX control signals.
     static func hasCorroboratingSignal(_ signals: MeetingSourceCandidate.Signals) -> Bool {
         signals.callingControlsToolbar
             || signals.leaveButton
             || signals.muteButton
-            || signals.processAudioActive
             || signals.shareableContentActive
     }
 
@@ -105,12 +106,13 @@ enum MeetingSourceScorer {
                 if best.signals.titleMatch { return best }
                 return hasCorroboratingSignal(best.signals) ? best : nil
             case .native:
-                // DET5: an audio-probed native (Zoom/Teams/Slack) must be a CONFIDENT live call,
-                // not a single stale/lingering control that the widened walk-gate now surfaces on
-                // an idle frontmost/lone app. The audio-excluded set (Webex/spark) always walked
-                // and cannot reach two signals as reliably (no audio leg, and its toolbar label is
-                // an unreliable English guess), so it keeps DET4's single-corroborator bar - DET5
-                // must not regress its single-control detection (a missed recording).
+                // DET5: a normal native (Zoom/Teams/Slack) must be a CONFIDENT live call, not a
+                // single stale/lingering control that the widened walk-gate now surfaces on an
+                // idle frontmost/lone app. The Webex/spark set always walked and cannot reach two
+                // signals as reliably (its toolbar label is an unreliable English guess), so it
+                // keeps DET4's single-corroborator bar - DET5 must not regress its single-control
+                // detection (a missed recording). See `hasAudioLeg` for why that flag is named
+                // after a probe that no longer exists.
                 let confident = best.hasAudioLeg
                     ? isConfidentNativeMeeting(best.signals)
                     : hasCorroboratingSignal(best.signals)

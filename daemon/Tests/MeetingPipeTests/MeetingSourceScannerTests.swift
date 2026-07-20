@@ -52,30 +52,29 @@ final class MeetingSourceScannerTests: XCTestCase {
 
     func test_idle_backgrounded_app_in_a_multi_native_scan_skips_the_control_walk() {
         // The hot case PERF6 protects (Teams backgrounded, no call, another native also running):
-        // no meeting-titled window, no audio, not frontmost, not the lone native -> walk skipped.
+        // no meeting-titled window, not frontmost, not the lone native -> walk skipped.
         XCTAssertFalse(MeetingSourceScanner.shouldWalkControlAX(
-            titleMatch: false, processAudioActive: false,
+            titleMatch: false,
             isFrontmost: false, isLoneNative: false, bundleID: "com.microsoft.teams2"))
     }
 
     func test_meeting_titled_window_admits_the_control_walk() {
         XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
-            titleMatch: true, processAudioActive: false,
+            titleMatch: true,
             isFrontmost: false, isLoneNative: false, bundleID: "com.microsoft.teams2"))
     }
 
-    func test_active_process_audio_admits_the_control_walk() {
-        XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
-            titleMatch: false, processAudioActive: true,
-            isFrontmost: false, isLoneNative: false, bundleID: "us.zoom.xos"))
-    }
+    // DET2 (2026-07-20) removed the `processAudioActive` precondition from the walk gate, so the
+    // test that pinned "active process audio admits the walk" is gone with it: the read is
+    // permanently dead, and that admission could never occur. The remaining cases below are the
+    // ones that actually fire.
 
     func test_lone_native_walks_even_with_a_renamed_window() {
         // DET5 acceptance: a Zoom build that dropped "Zoom Meeting" from its title (titleMatch
-        // false, audio leg dead) is the only native running, so its control walk still runs and
-        // the leave/mute/toolbar signals can carry it to a prompt.
+        // false) is the only native running, so its control walk still runs and the
+        // leave/mute/toolbar signals can carry it to a prompt.
         XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
-            titleMatch: false, processAudioActive: false,
+            titleMatch: false,
             isFrontmost: false, isLoneNative: true, bundleID: "us.zoom.xos"))
     }
 
@@ -83,18 +82,19 @@ final class MeetingSourceScannerTests: XCTestCase {
         // The user is actively looking at the meeting window; walk it even when its title was
         // renamed and another native idles in the background.
         XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
-            titleMatch: false, processAudioActive: false,
+            titleMatch: false,
             isFrontmost: true, isLoneNative: false, bundleID: "us.zoom.xos"))
     }
 
     func test_webex_always_walks_even_without_a_cheap_signal() {
-        // Webex is excluded from the process-audio probe (ultrasound device discovery keeps its
-        // mic open), so it has no audio leg and must not be gated on title alone.
+        // Webex must not be gated on title alone (ultrasound device discovery keeps its mic open,
+        // which is why it was carved out of the old process-audio probe; the always-walk exemption
+        // outlived that probe deliberately).
         XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
-            titleMatch: false, processAudioActive: false,
+            titleMatch: false,
             isFrontmost: false, isLoneNative: false, bundleID: "com.cisco.webexmeetingsapp"))
         XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
-            titleMatch: false, processAudioActive: false,
+            titleMatch: false,
             isFrontmost: false, isLoneNative: false, bundleID: "com.cisco.spark"))
     }
 }

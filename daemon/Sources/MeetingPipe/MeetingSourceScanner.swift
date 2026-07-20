@@ -140,12 +140,26 @@ final class MeetingSourceScanner {
                 // END5: a strong meeting title / URL (a Google Meet code, `meet.google.com`) stands
                 // alone; a bare brand-token title (a page whose title merely contains "webex" /
                 // "microsoft teams" / "huddle") can't be told from a doc *about* those products, so
-                // it must be corroborated by live process audio (a real browser call holds the mic)
-                // before it becomes a candidate. Kills the doc-title false start without gating a
-                // real, mic-holding browser call.
+                // it is rejected here.
+                //
+                // END5 originally let such a title in when live process audio corroborated it (a
+                // real browser call holds the mic). DET2 closed that signal as permanently dead on
+                // 2026-07-20, so the disjunct was removed rather than left reading as if
+                // corroboration were still possible. The consequence is a real coverage gap, stated
+                // plainly so it is not rediscovered as a surprise: a plain browser tab running
+                // Teams, Webex or a Slack huddle can never become a candidate, and Zoom-in-browser
+                // never reaches here at all (no Zoom title matcher). Only Google Meet clears
+                // `strongMatch`, because `strongTitleMatchers` holds only the Meet room-code
+                // pattern and `fragmentMatch` reads the window title, which browsers fill with the
+                // page title and not the URL. Rejected tabs never enter `candidates`, so they do
+                // not show up in `droppedCandidates` either. Native apps and Chromium PWAs are
+                // unaffected (the PWA branch below has no such gate).
+                //
+                // Do not "fix" this by widening `strongTitleMatchers`: an unmeasured widening
+                // reopens the doc-title false start END5 closed. The gap is filed as its own task.
                 let strongMatch = fragmentMatch
                     || (titleMatched && anyWindowMatchesStrongMeetingTitle(pid: pid))
-                guard strongMatch || signals.processAudioActive else { continue }
+                guard strongMatch else { continue }
                 candidates.append(MeetingSourceCandidate(source: source, signals: signals))
                 continue
             }
@@ -185,14 +199,16 @@ final class MeetingSourceScanner {
         return candidates
     }
 
-    /// Cisco Webex keeps the mic open after a call for ultrasound device discovery, so its
-    /// process-audio signal cannot distinguish an active call from an idle post-call state.
+    /// Cisco Webex keeps the mic open after a call for ultrasound device discovery. That is why it
+    /// was excluded from the process-audio probe, and DET2's removal of that probe (2026-07-20)
+    /// leaves this set doing two jobs that survive it: `shouldWalkControlAX` always walks these
+    /// bundles, and `hasAudioLeg` is false for them so the scorer holds them to DET4's
+    /// single-corroborator bar. Both are deliberate behaviour, not probe leftovers.
     private static let webexBundleIDs: Set<String> = ["com.cisco.webexmeetingsapp", "com.cisco.spark"]
 
     /// PERF6 + DET5: whether the three control-button AX walks (toolbar / leave / mute) are worth
     /// running for a candidate. They are recursive AX-tree IPC and dominate idle discovery CPU,
-    /// so PERF6 skips them for a backgrounded app that shows no cheap sign of a live meeting: no
-    /// meeting-titled window and no active process audio.
+    /// so PERF6 skips them for a backgrounded app that shows no cheap sign of a live meeting.
     ///
     /// DET5 adds two "this app deserves a walk even without a title match" cases, because start
     /// detection was single-gated on the exact window title and the audio leg is dead, so one
@@ -200,17 +216,18 @@ final class MeetingSourceScanner {
     /// app's start detection. `isFrontmost` (the user is actively looking at the window) and
     /// `isLoneNative` (it is the only native meeting app running, so the walk is cheap and there
     /// is nothing to disambiguate) both admit the walk. PERF6's cost gate still bites for an idle
-    /// backgrounded app in a multi-native scan. Webex is exempt (excluded from the audio probe,
-    /// so it has no audio leg and must always walk).
+    /// backgrounded app in a multi-native scan. Webex always walks (see `webexBundleIDs`).
+    ///
+    /// A `processAudioActive` precondition was removed here when DET2 closed that signal as
+    /// permanently dead (2026-07-20); it could never be true, so it never admitted a walk.
     static func shouldWalkControlAX(
         titleMatch: Bool,
-        processAudioActive: Bool,
         isFrontmost: Bool,
         isLoneNative: Bool,
         bundleID: String
     ) -> Bool {
         if webexBundleIDs.contains(bundleID) { return true }
-        return titleMatch || processAudioActive || isFrontmost || isLoneNative
+        return titleMatch || isFrontmost || isLoneNative
     }
 
     /// Populate the signal tuple. Each signal degrades to false on AX denied / read failure.
@@ -228,21 +245,10 @@ final class MeetingSourceScanner {
     ) -> MeetingSourceCandidate.Signals {
         var signals = MeetingSourceCandidate.Signals()
 
-        // Cheap process-audio probe first: it is one of the two gate preconditions for the
-        // expensive AX walks below (PERF6) and needs no AX access. Webex excluded (see
-        // `webexBundleIDs`): a positive audio signal would push it above threshold long after
-        // the call ends.
-        if !MeetingSourceScanner.webexBundleIDs.contains(bundleID) {
-            let context = MeetingLifecycleContext(
-                bundleID: bundleID,
-                kind: kind == .browser ? .browser : .native,
-                pid: pid,
-                title: nil
-            )
-            if let active = ProcessAudioSignal.defaultProbe(context) {
-                signals.processAudioActive = active
-            }
-        }
+        // A cheap per-process audio probe used to run here, ahead of the AX walks, as one of the
+        // PERF6 gate preconditions. DET2 measured it permanently dead (2026-07-20) and it was
+        // removed: it cost a CoreAudio HAL round-trip per candidate process on every scan to
+        // produce a value that could never be true.
 
         if axTrusted {
             let axApp = AXUIElementCreateApplication(pid)
@@ -265,7 +271,6 @@ final class MeetingSourceScanner {
             // "walked and found nothing".
             if MeetingSourceScanner.shouldWalkControlAX(
                 titleMatch: signals.titleMatch,
-                processAudioActive: signals.processAudioActive,
                 isFrontmost: isFrontmost,
                 isLoneNative: isLoneNative,
                 bundleID: bundleID

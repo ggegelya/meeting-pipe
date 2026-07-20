@@ -43,8 +43,9 @@ final class MeetingSourceScorerTests: XCTestCase {
 
     private let webexBundle = "com.cisco.webexmeetingsapp"
 
-    /// Webex is excluded from the process-audio probe (`hasAudioLeg: false`), so it structurally
-    /// cannot reach a second distinct signal from audio and keeps DET4's single-corroborator bar.
+    /// Webex carries `hasAudioLeg: false`, so it keeps DET4's single-corroborator bar rather than
+    /// DET5's two-signal bar. The flag is named after the process-audio probe DET2 removed; see its
+    /// declaration for why the behaviour it gates outlived the probe.
     private func webex(signals: MeetingSourceCandidate.Signals = .init()) -> MeetingSourceCandidate {
         MeetingSourceCandidate(
             source: AppSource(bundleID: webexBundle, displayName: "Webex", kind: .native),
@@ -74,10 +75,9 @@ final class MeetingSourceScorerTests: XCTestCase {
             leaveButton: true,             // +3
             muteButton: true,              // +2
             titleMatch: true,              // +2
-            processAudioActive: true,      // +3
             shareableContentActive: true   // +2
         )
-        XCTAssertEqual(MeetingSourceScorer.score(signals, isStickyLast: false), 16)
+        XCTAssertEqual(MeetingSourceScorer.score(signals, isStickyLast: false), 13)
     }
 
     func test_sticky_bonus_adds_one_when_lastWinner_matches() {
@@ -178,10 +178,9 @@ final class MeetingSourceScorerTests: XCTestCase {
                 callingControlsToolbar: true,
                 leaveButton: true,
                 muteButton: true,
-                titleMatch: true,
-                processAudioActive: true
+                titleMatch: true
             )),
-            chrome(signals: .init(titleMatch: true, processAudioActive: true)),
+            chrome(signals: .init(titleMatch: true)),
         ]
         let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
         XCTAssertEqual(winner?.source.bundleID, "com.microsoft.teams2")
@@ -192,18 +191,16 @@ final class MeetingSourceScorerTests: XCTestCase {
     /// passes the recognizer, so titleMatch is true - the realistic
     /// case, since a Teams shell always has SOME window). The user is
     /// actually in a Google Meet via Chrome (meeting controls toolbar
-    /// shows, title matches, process audio active). Both are genuine
-    /// contenders, so the threshold path runs; Chrome's far higher
-    /// score wins.
+    /// shows, title matches). Both are genuine contenders, so the
+    /// threshold path runs; Chrome's far higher score wins.
     func test_2026_05_20_incident_scorer_picks_chrome_over_teams_shell() {
         var candidates = [
             // Teams shell: a chat window passes the recognizer = 2.
             teams(signals: .init(titleMatch: true)),
-            // Chrome: Meet tab with the full UI rendered = 4 + 2 + 3 = 9.
+            // Chrome: Meet tab with the full UI rendered = 4 + 2 = 6.
             chrome(signals: .init(
                 callingControlsToolbar: true,
-                titleMatch: true,
-                processAudioActive: true
+                titleMatch: true
             )),
         ]
         let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
@@ -278,15 +275,14 @@ final class MeetingSourceScorerTests: XCTestCase {
     // MARK: - In-progress meeting beats a transient candidate
 
     func test_higher_scorer_wins_against_lower_scorer_even_with_sticky() {
-        // Teams: full call (toolbar + leave + mute + title + audio) = 14.
+        // Teams: full call (toolbar + leave + mute + title) = 11.
         // Zoom: just title (2). Even with sticky (3) Zoom can't win.
         var candidates = [
             teams(signals: .init(
                 callingControlsToolbar: true,
                 leaveButton: true,
                 muteButton: true,
-                titleMatch: true,
-                processAudioActive: true
+                titleMatch: true
             )),
             zoom(signals: .init(titleMatch: true)),
         ]
@@ -347,12 +343,17 @@ final class MeetingSourceScorerTests: XCTestCase {
     }
 
     func test_single_name_only_pwa_with_corroborator_wins() {
-        // The same name-only PWA, but genuinely in a call: process audio is active.
-        // That is an in-call corroborator, so the lone browser is returned even
-        // though it has no title match. The corroboration gate now treats a
+        // The same name-only PWA, but genuinely in a call: the AX walk found a Leave
+        // button. That is an in-call corroborator, so the lone browser is returned
+        // even though it has no title match. The corroboration gate now treats a
         // name-only browser exactly like a native (START3/AUD-4); a vetted title
         // would have stood alone, but app-name-only admission does not.
-        var candidates = [meetPWA(signals: .init(processAudioActive: true))]
+        //
+        // This fixture used process audio as the corroborator until DET2 removed that
+        // signal (2026-07-20). A control-AX signal is the honest replacement: the walk
+        // gate admits a frontmost PWA, so leave/mute/toolbar are the corroborators a
+        // browser candidate can still actually carry.
+        var candidates = [meetPWA(signals: .init(leaveButton: true))]
         let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
         XCTAssertEqual(winner?.source.kind, .browser)
         XCTAssertEqual(winner?.source.displayName, "Google Meet")
