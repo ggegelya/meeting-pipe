@@ -24,21 +24,56 @@ def overlay_path(transcript_md: Path) -> Path:
     return transcript_md.parent / f"{transcript_md.stem}.speaker_labels.json"
 
 
+def _swift_int(s: str) -> int | None:
+    """Parse a segment key the way Swift's `Int(String)` does: an optional sign
+    then ASCII digits, nothing else. Python's `int()` is looser (it accepts
+    surrounding whitespace, underscore separators, and non-ASCII digits), so
+    using it directly would let the two readers disagree on a hand-edited key
+    that only one of them accepts."""
+    body = s[1:] if s[:1] in ("+", "-") else s
+    if not body or not body.isascii() or not body.isdigit():
+        return None
+    return int(s)
+
+
 def read_overlay(transcript_md: Path) -> dict:
     """The overlay for a meeting, or an empty overlay when the sidecar is missing or
-    malformed (so a bad file never breaks summarize)."""
+    malformed (so a bad file never breaks summarize).
+
+    Entries are filtered exactly as Swift's `SpeakerLabelStore.read` filters them:
+    an empty cluster key, an empty or non-string name, and a segment key that is
+    not an integer are all dropped. Both sides are fail-open on a hand-edited
+    sidecar, and being fail-open in DIFFERENT ways is what made the two readers
+    diverge: an empty or non-string value used to resolve a speaker to `""` or to
+    an integer here while Swift ignored it, so a regenerated summary could
+    attribute lines to a nameless speaker the Library never showed. Segment keys
+    are canonicalized (`"01"` -> `"1"`) because Swift keys them by `Int`, so an
+    un-normalized key would match on one side only. Pinned by
+    `Fixtures/speaker-overlay-golden.json` (CI4)."""
     try:
         obj = json.loads(overlay_path(transcript_md).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"labels": {}, "segments": {}}
     if not isinstance(obj, dict):
         return {"labels": {}, "segments": {}}
-    labels = obj.get("labels")
-    segments = obj.get("segments")
-    return {
-        "labels": labels if isinstance(labels, dict) else {},
-        "segments": segments if isinstance(segments, dict) else {},
-    }
+    raw_labels = obj.get("labels")
+    raw_segments = obj.get("segments")
+    labels = {}
+    if isinstance(raw_labels, dict):
+        labels = {
+            k: v
+            for k, v in raw_labels.items()
+            if isinstance(k, str) and k and isinstance(v, str) and v
+        }
+    segments = {}
+    if isinstance(raw_segments, dict):
+        for k, v in raw_segments.items():
+            if not isinstance(k, str) or not isinstance(v, str) or not v:
+                continue
+            idx = _swift_int(k)
+            if idx is not None:
+                segments[str(idx)] = v
+    return {"labels": labels, "segments": segments}
 
 
 def is_empty(overlay: dict) -> bool:

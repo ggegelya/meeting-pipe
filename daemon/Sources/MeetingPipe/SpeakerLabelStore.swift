@@ -10,7 +10,7 @@ import Foundation
 /// the assigned name here, resolved at load time. Undo just drops the override, so
 /// the diarization label always survives on disk.
 ///
-/// Schema: `{ "labels": { "THEM-A": "Alice" }, "segments": { "42": "Bob" } }`.
+/// Schema: `{ "schema_version": 1, "labels": { "THEM-A": "Alice" }, "segments": { "42": "Bob" } }`.
 ///   - `labels` maps a raw diarization cluster label to the whole-cluster name
 ///     (FEAT3-UNDO's "Name this speaker").
 ///   - `segments` maps a zero-based segment index (matching `TranscriptSegment.index`)
@@ -18,6 +18,12 @@ import Foundation
 ///     "Reassign to..."). The value is a raw label or a name; display resolves it
 ///     through `TranscriptDisplay.displayName`.
 enum SpeakerLabelStore {
+
+    /// Sidecar shape version (CI4). This was the one cross-language sidecar with
+    /// no stamp. Both readers are fail-open on it (an unknown value is ignored,
+    /// not rejected), matching `TranscriptCorrectionStore`; it exists so a future
+    /// shape change is diagnosable from the file rather than inferred.
+    static let schemaVersion = 1
 
     /// The parsed overlay. Empty maps read as "no overrides", so a missing or
     /// malformed sidecar never hides the transcript's own labels.
@@ -168,7 +174,7 @@ enum SpeakerLabelStore {
             }
             return
         }
-        var payload: [String: Any] = [:]
+        var payload: [String: Any] = ["schema_version": Self.schemaVersion]
         if !overlay.labels.isEmpty { payload["labels"] = overlay.labels }
         if !overlay.segments.isEmpty {
             payload["segments"] = Dictionary(uniqueKeysWithValues: overlay.segments.map { (String($0.key), $0.value) })

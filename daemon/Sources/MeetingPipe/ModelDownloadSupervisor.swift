@@ -195,7 +195,10 @@ final class ModelDownloadSupervisor {
         }
     }
 
-    private func handleEvent(_ event: [String: Any]) {
+    /// Internal rather than private so `CI4ContractFixtureTests` can drive it
+    /// with the committed `prefetch-progress-golden.json` lines, which are
+    /// generated from the Python emitter's own call sites.
+    func handleEvent(_ event: [String: Any]) {
         let kind = event["event"] as? String ?? "?"
         let modelId = (event["repo_id"] as? String) ?? currentModelId ?? ""
         switch kind {

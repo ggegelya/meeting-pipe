@@ -52,6 +52,7 @@ CI enforces ruff strictly (any F401 unused import fails). Run ruff locally befor
 - **Event log schema + adding actions:** `CONVENTIONS.md#event-log-schema`.
 - **Sidecar (`<stem>.meta.json`) schema:** `CONVENTIONS.md#sidecar-schema-stem-metajson`. Swift writer and Python reader both have to agree — touch both sides + `test_workflow_overlay.py`.
 - **Publish result (`<stem>.publish.json`) + the exit-3 contract:** `CONVENTIONS.md#publish-result-stempublishjson`. Python writes, Swift reads. An all-sinks-failed publish exits 3, never 0.
+- **Cross-tree golden fixtures:** `CONVENTIONS.md#cross-tree-golden-fixtures` lists every Swift/Python surface pinned by a shared fixture. The CI4 three are generated: `cd pipeline && uv run python ../scripts/gen_contract_fixtures.py` after changing a writer.
 - **Verbose run:** `MP_VERBOSE=1` is exported when `UISettings.verboseLogging` is on; the daemon also logs an info line at startup so you can confirm.
 
 ## Out of scope (user is the only user)
