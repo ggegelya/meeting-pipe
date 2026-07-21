@@ -88,4 +88,28 @@ final class ModelDownloadSupervisorTests: XCTestCase {
         try Data("config".utf8).write(to: snapshot.appendingPathComponent("config.json"))
         XCTAssertTrue(ModelDownloadSupervisor.isComplete(modelId: modelId, hubRoot: hubRoot))
     }
+
+    // MARK: - UX21 download-size estimate
+
+    func test_download_size_label_parses_param_count() {
+        // The default 7B at ~0.62 GB/B is the spec's "~4.3 GB".
+        XCTAssertEqual(
+            ModelDownloadSupervisor.downloadSizeLabel(forModelId: "mlx-community/Qwen2.5-7B-Instruct-4bit"),
+            "~4.3 GB"
+        )
+        XCTAssertEqual(
+            ModelDownloadSupervisor.downloadSizeLabel(forModelId: "mlx-community/Qwen2.5-3B-Instruct-4bit"),
+            "~1.9 GB"
+        )
+    }
+
+    func test_download_size_label_ignores_the_quant_suffix() {
+        // "4bit" must not be read as a 4B parameter count; only the "-7B-" token.
+        XCTAssertEqual(ModelDownloadSupervisor.estimatedDownloadGB(forModelId: "org/Model-7B-Instruct-4bit"), 4.3)
+    }
+
+    func test_download_size_label_falls_back_when_unparseable() {
+        XCTAssertNil(ModelDownloadSupervisor.estimatedDownloadGB(forModelId: "org/mystery-model"))
+        XCTAssertEqual(ModelDownloadSupervisor.downloadSizeLabel(forModelId: "org/mystery-model"), "several GB")
+    }
 }

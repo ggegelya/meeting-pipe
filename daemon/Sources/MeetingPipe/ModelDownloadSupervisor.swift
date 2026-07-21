@@ -97,6 +97,28 @@ final class ModelDownloadSupervisor {
         }
     }
 
+    /// UX21: a rough download-size label for a 4-bit MLX chat model, e.g.
+    /// "~4.3 GB", for the "model not downloaded" affordance. Parsed from the
+    /// parameter count in the repo id (`...-7B-...` -> 7B at ~0.62 GB/B, matching
+    /// the measured ~4.3 GB for the default 7B). Mirrors the pipeline doctor's
+    /// `_estimate_model_gb`; a display estimate only, so a small drift is harmless.
+    static func downloadSizeLabel(forModelId id: String) -> String {
+        guard let gb = estimatedDownloadGB(forModelId: id) else { return "several GB" }
+        return "~\(String(format: "%.1f", gb)) GB"
+    }
+
+    /// The parsed size in GB, or nil when the parameter count is unreadable.
+    static func estimatedDownloadGB(forModelId id: String) -> Double? {
+        // First "<number>B" token, e.g. the 7 in "Qwen2.5-7B-Instruct-4bit".
+        guard let match = id.range(
+            of: #"(\d+(?:\.\d+)?)\s*[bB]\b"#, options: .regularExpression
+        ) else { return nil }
+        let token = id[match]
+        let digits = token.prefix { $0.isNumber || $0 == "." }
+        guard let paramsB = Double(digits) else { return nil }
+        return (paramsB * 0.62 * 10).rounded() / 10
+    }
+
     /// Idempotent. Call on `Coordinator.start()` (local/auto backend) and when config is persisted with a backend or local_model change. No-op when backend is anthropic.
     func ensure(modelId: String) {
         // Already downloading the same model -> let it run.

@@ -111,10 +111,30 @@ def test_estimate_model_gb_ignores_the_quant_suffix() -> None:
     assert _estimate_model_gb("mlx-community/some-instruct-4bit") is None
 
 
-def test_check_local_stack_skips_for_cloud_backend(capsys) -> None:
+def test_check_local_stack_skips_for_cloud_backend(capsys, tmp_path) -> None:
     cfg = Config.model_validate({"summarization": {"backend": "anthropic"}})
-    check_local_stack(cfg)
+    check_local_stack(cfg, workflows_dir=tmp_path / "none")
     assert "local stack not used" in capsys.readouterr().out
+
+
+def test_check_local_stack_runs_when_a_workflow_forces_local(capsys, tmp_path, monkeypatch) -> None:
+    # UX21: a global anthropic backend must not skip the stack when a workflow
+    # pins local (or is NDA) - that workflow's first meeting still hits it.
+    workflows_dir = tmp_path / "workflows"
+    workflows_dir.mkdir()
+    (workflows_dir / "client.toml").write_text(
+        'name = "Client"\nbackend = "local"\n\n[flags]\nnda_mode = false\n', encoding="utf-8"
+    )
+    cfg = Config.model_validate({
+        "summarization": {"backend": "anthropic", "local_model": "mlx-community/Qwen2.5-7B-Instruct-4bit"},
+    })
+    monkeypatch.setattr("mp.doctor._physical_ram_gb", lambda: 64.0)
+    monkeypatch.setattr("mp.doctor._free_disk_gb", lambda _p: 500.0)
+    monkeypatch.setattr("mp.prefetch_model._bytes_on_disk", lambda _p: 0)
+    check_local_stack(cfg, workflows_dir=workflows_dir)
+    out = capsys.readouterr().out
+    assert "local stack not used" not in out
+    assert "a workflow forces local: Client" in out
 
 
 def test_check_local_stack_fails_when_ram_below_model(capsys, monkeypatch) -> None:

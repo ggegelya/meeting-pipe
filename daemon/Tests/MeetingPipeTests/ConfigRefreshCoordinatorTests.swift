@@ -69,4 +69,21 @@ final class ConfigRefreshCoordinatorTests: XCTestCase {
         XCTAssertEqual(regulatedFlags, [false])
         XCTAssertTrue(modelStates.isEmpty)
     }
+
+    // MARK: - UX21 local-model preflight
+
+    func test_preflight_without_config_store_offers_nothing_and_is_safe() {
+        // No ConfigStore means no configured model id: the affordance must not be
+        // offered (isModelMissing == false), the label degrades to the generic
+        // phrase, and startDownload is a harmless no-op rather than a crash.
+        let coord = ConfigRefreshCoordinator(
+            configStore: nil,
+            onModelDownloadState: { _ in },
+            onRegulatedMode: { _ in }
+        )
+        let preflight = coord.makeLocalModelPreflight()
+        XCTAssertFalse(preflight.isModelMissing())
+        XCTAssertEqual(preflight.downloadSizeLabel(), "several GB")
+        preflight.startDownload()
+    }
 }

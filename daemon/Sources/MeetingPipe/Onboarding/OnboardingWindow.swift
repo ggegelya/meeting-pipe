@@ -19,6 +19,13 @@ struct OnboardingDependencies {
     let toggleRecording: () -> Void
     /// True while a recording is in flight, so the test step can reflect state.
     let isRecording: () -> Bool
+    /// UX21: lets the on-device workflow preset offer an inline model download
+    /// when the picked backend is local but the MLX model is not yet cached.
+    let localModelPreflight: LocalModelPreflight
+    /// UX21: called once onboarding is completed or skipped, so the app can warm
+    /// ScreenCaptureKit and re-read permission state in the startup burst's place
+    /// (the burst is gated off during onboarding).
+    let onFinish: () -> Void
 }
 
 /// Hosts the 4-step first-run flow in a borderless-titlebar window (TECH-UX1).
@@ -39,6 +46,9 @@ final class OnboardingWindowController {
         }
         let root = OnboardingRootView(deps: deps) { [weak self] in
             OnboardingGate.markCompleted()
+            // UX21: stands in for the startup TCC burst that `Coordinator.start()`
+            // gated off while onboarding was open (prewarm + refresh, not a re-prompt).
+            self?.deps.onFinish()
             self?.close()
         }
         let host = NSHostingController(rootView: MPControlAccent(root))
@@ -89,7 +99,10 @@ struct OnboardingRootView: View {
                 switch step {
                 case 0: OnboardingStepWelcome()
                 case 1: OnboardingStepPermissions()
-                case 2: OnboardingStepWorkflow(workflowStore: deps.workflowStore)
+                case 2: OnboardingStepWorkflow(
+                    workflowStore: deps.workflowStore,
+                    localModelPreflight: deps.localModelPreflight
+                )
                 default: OnboardingStepTest(toggleRecording: deps.toggleRecording, isRecording: deps.isRecording)
                 }
             }

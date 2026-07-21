@@ -324,19 +324,31 @@ def _free_disk_gb(path: Path) -> float | None:
         return None
 
 
-def check_local_stack(cfg: Config | None) -> None:
+def check_local_stack(cfg: Config | None, workflows_dir: Path | None = None) -> None:
     """Preflight the on-device summarization stack (LOCAL4): mlx availability,
     the model cache, and RAM/disk headroom against the chosen model. A clear
     refuse-with-explanation here beats a first-run OOM inside mlx_lm.server.
+
+    Runs whenever the on-device stack can be reached: a local / auto global
+    backend, regulated_mode, OR any workflow that resolves to local (UX21). A
+    workflow-level local / NDA backend under a global anthropic backend still hits
+    the stack on its first meeting, so skipping here would hide a missing model
+    from exactly the setup that trips over it.
     """
     print("\n== local summarization stack ==")
     if cfg is None:
         _warn("config did not load; skipping local-stack checks")
         return
     backend = cfg.summarization.backend
-    if backend not in {"local", "auto"} and not cfg.modes.regulated_mode:
-        _info(f"backend = {backend!r} and regulated_mode off; local stack not used (skipping)")
+    local_workflows = workflows.local_backend_workflow_names(workflows_dir)
+    stack_reachable = (
+        backend in {"local", "auto"} or cfg.modes.regulated_mode or bool(local_workflows)
+    )
+    if not stack_reachable:
+        _info(f"backend = {backend!r}, regulated_mode off, no local workflow; local stack not used (skipping)")
         return
+    if backend not in {"local", "auto"} and not cfg.modes.regulated_mode and local_workflows:
+        _info(f"global backend = {backend!r}, but a workflow forces local: {', '.join(local_workflows)}")
 
     # `find_spec` verifies mlx is installed without importing heavy Metal here.
     from importlib.util import find_spec

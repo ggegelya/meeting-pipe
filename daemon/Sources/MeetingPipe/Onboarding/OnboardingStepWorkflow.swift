@@ -4,8 +4,18 @@ import SwiftUI
 /// default workflow; re-choosing swaps it; "set up later" leaves none.
 struct OnboardingStepWorkflow: View {
     @ObservedObject var workflowStore: WorkflowStore
+    /// UX21: the "Client work (NDA)" preset creates a local-backend workflow, so
+    /// the first NDA meeting needs the MLX model cached. This lets the step offer
+    /// the download inline instead of letting that meeting fail after the fact.
+    var localModelPreflight: LocalModelPreflight? = nil
     @State private var selected: Preset?
     @State private var createdID: Workflow.ID?
+    /// UX21: the picked preset resolves to the local backend and the model is not
+    /// cached. Cached in state (the probe is a filesystem scan) and refreshed when
+    /// the selection changes.
+    @State private var localModelMissing: Bool = false
+    /// UX21: latched once "Download now" is tapped.
+    @State private var localModelDownloadStarted: Bool = false
 
     enum Preset: String, CaseIterable, Identifiable {
         case personal, client, team, later
@@ -43,9 +53,53 @@ struct OnboardingStepWorkflow: View {
             VStack(spacing: 8) {
                 ForEach(Preset.allCases) { card($0) }
             }
+            if localModelMissing {
+                localModelDownloadNote
+            }
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: selected) { _, _ in refreshLocalModelMissing() }
+    }
+
+    /// UX21: the inline model-download note under the preset cards. Shown when the
+    /// picked preset (Client work / NDA) resolves to the local backend but the MLX
+    /// model is not cached. "Download now" routes through the daemon's shared
+    /// supervisor, so the pull persists past onboarding and shows in the menu bar.
+    @ViewBuilder
+    private var localModelDownloadNote: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.down.circle")
+                .foregroundStyle(.mpWarning)
+            if localModelDownloadStarted {
+                Text("Downloading the on-device model. Progress shows in the menu bar.")
+                    .font(.mpTextXS)
+                    .foregroundStyle(Color(MPColors.fgMuted))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            } else {
+                Text("This keeps summaries on-device, which needs a model that is not downloaded yet (\(localModelPreflight?.downloadSizeLabel() ?? "several GB")).")
+                    .font(.mpTextXS)
+                    .foregroundStyle(Color(MPColors.fgMuted))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Button("Download now") {
+                    localModelPreflight?.startDownload()
+                    localModelDownloadStarted = true
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(MPColors.border)))
+    }
+
+    /// UX21: recompute whether the download should be offered for the current
+    /// selection. Only the on-device preset (Client work / NDA) resolves to local.
+    private func refreshLocalModelMissing() {
+        let resolvesLocal = (selected == .client)
+        localModelMissing = resolvesLocal && (localModelPreflight?.isModelMissing() ?? false)
     }
 
     private func card(_ p: Preset) -> some View {

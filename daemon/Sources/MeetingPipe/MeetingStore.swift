@@ -63,6 +63,21 @@ struct Meeting: Identifiable, Hashable {
         ) != nil
     }
 
+    /// UX21: substring the pipeline's local-model-missing failure carries (a
+    /// regulated / NDA run cannot download the model, so summarize refuses and
+    /// points at `mp prefetch-model`). The Python side (`summarize_local`) must
+    /// keep this phrase in that message; there is no shared constant across the
+    /// language boundary, so this mirrors the AppleIntelligence marker pattern.
+    static let modelNotCachedMarker = "not in the local HuggingFace cache"
+
+    /// UX21: true when the failure was the on-device model not being downloaded,
+    /// so the failed-state view can offer an in-app "Download model" instead of
+    /// leaving the user with the reason text's terminal-command remedy.
+    var failureSuggestsModelDownload: Bool {
+        guard let reason = failureReason else { return false }
+        return reason.range(of: Self.modelNotCachedMarker, options: .caseInsensitive) != nil
+    }
+
     /// Lowercased search corpus (TECH-A14): title + summary bullets + decisions + action tasks. Built once per scan so the filter loop never re-reads JSON. Transcripts stay excluded here to keep the scan cheap; UX16's `SearchIndexer` reads the transcript body off the scan path and adds it to the FTS5 index (the retired TECH-A3 upgrade), so full-transcript search rides on top of this corpus without slowing the scan.
     let searchableText: String
 

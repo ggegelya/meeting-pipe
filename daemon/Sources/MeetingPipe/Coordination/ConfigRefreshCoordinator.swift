@@ -1,6 +1,25 @@
 import Combine
 import Foundation
 
+/// UX21: the local-model preflight the workflow editor and onboarding's on-device
+/// preset use. A workflow that resolves to the local backend (an explicit local
+/// pin, or NDA forcing it) needs the MLX model in the HuggingFace cache before its
+/// first meeting; otherwise that meeting records fine and then summarize fails
+/// after the fact, with a terminal-command remedy. This exposes the two things a
+/// surface needs: whether that model is missing right now, and a "Download now"
+/// that routes through the daemon's one long-lived `ModelDownloadSupervisor` (so
+/// the pull survives the sheet closing and its progress shows in the menu bar).
+/// A struct of closures rather than a protocol so a headless test can pass a
+/// canned one and the UI stays decoupled from the Coordinator.
+struct LocalModelPreflight {
+    /// Is the configured local model absent from the cache at this moment?
+    var isModelMissing: () -> Bool
+    /// A human-readable size estimate for the download, e.g. "~4.3 GB".
+    var downloadSizeLabel: () -> String
+    /// Start (or resume) the download on the daemon's shared supervisor.
+    var startDownload: () -> Void
+}
+
 /// Owns the daemon's response to configuration changes: the eager
 /// local-model prefetch, the model-download status surface, and the
 /// regulated-mode glyph. Subscribes to `ConfigStore.didPersist` (already
@@ -73,6 +92,40 @@ final class ConfigRefreshCoordinator {
     private func handleConfigPersisted() {
         ensureModelPrefetchIfNeeded()
         onRegulatedMode(configStore?.regulatedMode ?? false)
+    }
+
+    // MARK: - UX21 local-model preflight
+
+    /// Build the preflight surface for a workflow that will summarize on-device.
+    /// The daemon's eager prefetch (`ensureModelPrefetchIfNeeded`) keys on the
+    /// global backend only, so a workflow-level local / NDA backend under a global
+    /// anthropic backend never triggers it; this lets the editor / preset offer a
+    /// deliberate manual download instead of pulling 4+ GB silently on save.
+    func makeLocalModelPreflight() -> LocalModelPreflight {
+        LocalModelPreflight(
+            isModelMissing: { [weak self] in
+                guard let id = self?.configStore?.summarizationLocalModel, !id.isEmpty
+                else { return false }
+                return !ModelDownloadSupervisor.isCached(modelId: id)
+            },
+            downloadSizeLabel: { [weak self] in
+                ModelDownloadSupervisor.downloadSizeLabel(
+                    forModelId: self?.configStore?.summarizationLocalModel ?? ""
+                )
+            },
+            startDownload: { [weak self] in self?.downloadLocalModelNow() }
+        )
+    }
+
+    /// Start (or resume) a download of the configured local model on demand,
+    /// independent of the global backend (UX21). Idempotent: the supervisor
+    /// short-circuits a cached or in-flight model, and progress surfaces in the
+    /// menu bar like the eager prefetch. Main queue, like every supervisor call.
+    func downloadLocalModelNow() {
+        guard let store = configStore else { return }
+        let modelId = store.summarizationLocalModel
+        guard !modelId.isEmpty else { return }
+        modelDownload.ensure(modelId: modelId)
     }
 
     /// Spawn (or skip) a background `mp prefetch-model`. Idempotent; the supervisor short-circuits when the model is already cached or downloading.

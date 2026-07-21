@@ -38,6 +38,16 @@ struct OnboardingStepPermissions: View {
                     .font(.mpTextXS)
                     .foregroundStyle(Color(MPColors.fgMuted))
                     .fixedSize(horizontal: false, vertical: true)
+                if kind == .accessibility {
+                    // UX21: the product's own model needs a relaunch here (macOS
+                    // caches AX trust per-process at launch), documented in the
+                    // Preferences footnote; say so where the grant happens too, or
+                    // it reads as granted but does nothing until the next launch.
+                    Text("After granting, quit and reopen MeetingPipe for it to take effect.")
+                        .font(.mpTextXS)
+                        .foregroundStyle(.mpWarning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer()
             trailing(kind)

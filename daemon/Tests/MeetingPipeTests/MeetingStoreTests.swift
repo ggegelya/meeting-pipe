@@ -776,5 +776,41 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(try mode(md), 0o600)
         XCTAssertEqual(try mode(wav), 0o644)
     }
+
+    // MARK: - UX21 failed-row model-download remedy
+
+    func test_failureSuggestsModelDownload_matches_the_pipeline_marker() {
+        // The Python local-model-missing failure carries "not in the local
+        // HuggingFace cache"; the Library keys the in-app "Download model" remedy
+        // off it. Producer (summarize_local) and consumer must not drift.
+        let reason = "pipeline exited 1: Model 'mlx-community/Qwen2.5-7B-Instruct-4bit' is "
+            + "not in the local HuggingFace cache, and this is a regulated/NDA run"
+        XCTAssertTrue(failedMeeting(reason: reason).failureSuggestsModelDownload)
+        XCTAssertFalse(failedMeeting(reason: "pipeline exited 1: network timeout").failureSuggestsModelDownload)
+        XCTAssertFalse(failedMeeting(reason: nil).failureSuggestsModelDownload)
+    }
+
+    private func failedMeeting(reason: String?) -> Meeting {
+        Meeting(
+            stem: "20260721-1500",
+            startedAt: Date(timeIntervalSince1970: 0),
+            audioURL: URL(fileURLWithPath: "/tmp/20260721-1500.wav"),
+            recordingsDir: URL(fileURLWithPath: "/tmp"),
+            summaryTitle: nil,
+            meetingTitle: nil,
+            sourceBundleID: nil,
+            sourceDisplayName: nil,
+            sourceKind: nil,
+            workflowName: nil,
+            workflowColor: nil,
+            durationSec: nil,
+            backend: nil,
+            modelId: nil,
+            status: .failed,
+            failureReason: reason,
+            failureStage: "pipeline",
+            searchableText: ""
+        )
+    }
 }
 

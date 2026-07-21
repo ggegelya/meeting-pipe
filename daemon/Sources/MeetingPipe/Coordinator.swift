@@ -379,8 +379,15 @@ final class Coordinator: NSObject {
         // Funnel every TCC dialog through PermissionsCenter so the
         // Preferences tab and startup share one published state, and the
         // prompts surface in the first seconds instead of across the first
-        // recording.
-        requestPermissionsAtStartup()
+        // recording. UX21: only for a returning install. On a fresh one the
+        // framed onboarding permissions step is the sole prompt surface, so
+        // firing the burst here would stack four unframed system dialogs over
+        // the onboarding window and pre-answer its permissions step. The
+        // onboarding-completion handler (`onboardingDidComplete`) does the
+        // lightweight prewarm + refresh in the burst's place.
+        if OnboardingGate.isCompleted {
+            requestPermissionsAtStartup()
+        }
 
         if dryRun {
             Log.main.info("MEETING_PIPE_DRY_RUN=1: detection enabled, recorder disabled")

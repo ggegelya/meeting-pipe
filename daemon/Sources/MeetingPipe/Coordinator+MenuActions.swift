@@ -95,10 +95,43 @@ extension Coordinator {
         let controller = OnboardingWindowController(deps: OnboardingDependencies(
             workflowStore: workflowStore,
             toggleRecording: { [weak self] in self?.menuStart() },
-            isRecording: { [weak self] in self?.recorder.isRecording ?? false }
+            isRecording: { [weak self] in self?.recorder.isRecording ?? false },
+            localModelPreflight: localModelPreflight,
+            onFinish: { [weak self] in self?.onboardingDidComplete() }
         ))
         onboardingController = controller
         controller.show()
+    }
+
+    /// UX21: onboarding finished (or was skipped). The framed permissions step
+    /// has already requested each TCC one at a time, so instead of re-firing the
+    /// startup burst we only warm ScreenCaptureKit (so the first recording never
+    /// re-prompts Screen Recording) and re-read the published permission state the
+    /// menu bar and Preferences show. Called on the completion of the onboarding
+    /// window, the one path `Coordinator.start()` skipped the burst for.
+    func onboardingDidComplete() {
+        Task.detached { await SystemAudioCapture.prewarm() }
+        Task { @MainActor in
+            await PermissionsCenter.shared.refreshAll()
+            self.statusBar.refreshMenuForPermissionChange()
+        }
+    }
+
+    /// UX21: the local-model preflight the workflow editor and onboarding's
+    /// on-device preset use to offer an inline "Download now" when a workflow will
+    /// summarize on-device but the MLX model is not yet cached. Backed by the
+    /// daemon's one long-lived `ModelDownloadSupervisor` (via ConfigRefresh), so
+    /// the download persists past a transient sheet and its progress shows in the
+    /// menu bar like the eager prefetch.
+    var localModelPreflight: LocalModelPreflight {
+        configRefresh.makeLocalModelPreflight()
+    }
+
+    /// UX21: start (or resume) a download of the configured local model on demand,
+    /// independent of the global backend. The failed-row "Download model" remedy
+    /// and the inline affordance both route here.
+    func downloadLocalModelNow() {
+        configRefresh.downloadLocalModelNow()
     }
 
     @objc func menuOpenScreenRecordingSettings() {

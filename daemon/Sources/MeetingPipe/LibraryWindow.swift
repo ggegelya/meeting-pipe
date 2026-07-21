@@ -438,14 +438,14 @@ struct LibraryRootView: View {
         }
         .sheet(item: $editingWorkflow, onDismiss: { editingWorkflow = nil }) { wf in
             if let store = model.workflowStore {
-                WorkflowEditorSheet(workflow: wf, store: store) {
+                WorkflowEditorSheet(workflow: wf, store: store, localModelPreflight: model.coordinator?.localModelPreflight) {
                     editingWorkflow = nil
                 }
             }
         }
         .sheet(isPresented: $isCreatingWorkflow) {
             if let store = model.workflowStore {
-                NewWorkflowSheet(store: store) { newID in
+                NewWorkflowSheet(store: store, localModelPreflight: model.coordinator?.localModelPreflight) { newID in
                     isCreatingWorkflow = false
                     // Jump to the new workflow's scope so the rail + inspector confirm the action.
                     if let id = newID { scope = .workflow(id) }
@@ -614,6 +614,8 @@ struct LibraryRootView: View {
 private struct WorkflowEditorSheet: View {
     let workflow: Workflow
     @ObservedObject var store: WorkflowStore
+    /// UX21: passed through to the editor's inline model-download affordance.
+    var localModelPreflight: LocalModelPreflight? = nil
     let onClose: () -> Void
 
     /// Live mirror of the editor's name field (TECH-UI-7). Nil until the editor
@@ -638,7 +640,7 @@ private struct WorkflowEditorSheet: View {
             .padding(.vertical, 12)
             Divider()
             // Save commits and closes; Cancel above discards unsaved edits.
-            WorkflowEditor(workflow: workflow, store: store, onNameChange: { liveName = $0 }, onCommit: onClose)
+            WorkflowEditor(workflow: workflow, store: store, onNameChange: { liveName = $0 }, onCommit: onClose, localModelPreflight: localModelPreflight)
                 .padding(20)
         }
         .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 640)
@@ -648,6 +650,8 @@ private struct WorkflowEditorSheet: View {
 /// "+ New workflow" sheet. Inserts a stub and returns its id so the rail can route to the new scope.
 private struct NewWorkflowSheet: View {
     @ObservedObject var store: WorkflowStore
+    /// UX21: passed through to the editor's inline model-download affordance.
+    var localModelPreflight: LocalModelPreflight? = nil
     let onClose: (Workflow.ID?) -> Void
     @State private var stub: Workflow? = nil
     /// Live name from the (blank-started) editor field (TECH-UI-7); header reads
@@ -680,7 +684,7 @@ private struct NewWorkflowSheet: View {
                     .padding(.vertical, 12)
                     Divider()
                     // Save commits (keeping the stub, renamed) and closes.
-                    WorkflowEditor(workflow: s, store: store, startsBlank: true, onNameChange: { liveName = $0 }, onCommit: { onClose(s.id) })
+                    WorkflowEditor(workflow: s, store: store, startsBlank: true, onNameChange: { liveName = $0 }, onCommit: { onClose(s.id) }, localModelPreflight: localModelPreflight)
                         .padding(20)
                 }
             } else {

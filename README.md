@@ -148,7 +148,7 @@ The installer can't do these for you:
    - Set `notion.database_id` to your Meetings database ID (the 32-char string in the database URL).
    - Adjust `output.sinks` and the summarization backend if the defaults (Notion, Anthropic) are not what you want.
 
-3. **Grant macOS permissions** when prompted on first launch. The daemon fires every TCC dialog in one ordered sequence within the first few seconds, instead of dribbling them out across the first recording:
+3. **Grant macOS permissions** when prompted on first launch. On a fresh install a Welcome window walks you through the four permissions one at a time, each framed with what it is for and requested only when you click its row (so the system dialogs never stack unlabelled over the window). On every launch after onboarding is done, the daemon instead re-checks and fires any still-needed dialog in one ordered sequence within the first few seconds, rather than dribbling them out across the first recording. The four, in the order the onboarding step lists them:
    - **Notifications** — record/skip prompts and completion alerts.
    - **Microphone** — `AVAudioEngine` reads from the system default input.
    - **Screen Recording** — gates `SCStream.capturesAudio` in TCC.
@@ -256,6 +256,8 @@ The window is a smart-folder rail + scoped list + context-aware detail pane, wit
 A failed row names the stage that failed, and **Retry** does the least work that stage needs. When the failure was `Publishing` (every configured sink rejected the summary, e.g. Notion was down), Retry republishes the summary already on disk rather than re-transcribing and re-summarizing the meeting, so a retry after an outage costs nothing and cannot produce a different summary than the one you already reviewed. Every other stage retries the whole pipeline. A publish that landed nowhere never reports success, so it will not clear the failed row or notify you with a link to the previous meeting's page.
 
 When a summary failed because the backend rejected the transcript's language (Apple Intelligence refuses a language it does not support, which would leave a transcript but no summary), a plain retry on the same backend would just fail again, so the failed row instead leads with **Re-summarize with Local**, which re-runs the summary on the on-device MLX model over the transcript already on disk and succeeds. The plain same-backend retry stays available underneath. You can also switch backends any time from the detail `...` menu's **Re-summarize with…** (Local or Anthropic); it re-runs summarize + republish over the existing transcript for that one run only and never rewrites the workflow's configured backend (regulated / NDA meetings still stay on-device).
+
+When a local or NDA summary failed because the on-device model was not downloaded (a regulated / NDA run cannot fetch it mid-meeting, so it refuses), the failed row leads with **Download model** rather than a terminal command: it pulls the model through the same menu-bar download the daemon uses, and once it finishes you **Retry pipeline** over the transcript already on disk. The download is also offered up front, so you rarely reach the failed row: picking the **Client work (NDA)** onboarding preset, or saving any workflow whose backend resolves to Local while the model is uncached, shows an inline "model not downloaded (~4.3 GB) · Download now" affordance in that step / the workflow editor.
 
 Preferences is no longer a rail item — it lives on the toolbar's gear icon. Workflows are no longer a top-level tab — they're rail scopes.
 

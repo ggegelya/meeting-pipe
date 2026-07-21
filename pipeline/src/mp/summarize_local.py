@@ -520,6 +520,10 @@ class LocalSummaryClient:
         # model from inside a regulated / NDA run is exactly what the guard
         # exists to prevent, so this is a refusal, not a fallback.
         if egress_guard.is_armed() and not model_is_cached(self._model):
+            # UX21: keep the phrase "not in the local HuggingFace cache" here. It
+            # is the marker Swift's `Meeting.failureSuggestsModelDownload` matches
+            # (this message becomes the failed row's reason), so the Library can
+            # offer an in-app "Download model" instead of the terminal command.
             raise LocalSummaryError(
                 f"Model {self._model!r} is not in the local HuggingFace cache, and this "
                 f"is a regulated/NDA run, so it cannot be downloaded now. Fetch it "

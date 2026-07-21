@@ -84,7 +84,7 @@ When it finishes you will see `Install complete` and a list of next steps, which
 
 Look at the right end of your menu bar. There should be a small icon reading **MeetingPipe: Idle** when clicked. If it is not there, open your `~/Applications` folder in Finder, **right-click** `MeetingPipe.app`, and choose **Open**. Right-click rather than double-click matters the first time: the app is not signed by a paid Apple developer account, so macOS shows an "unverified developer" warning that only the right-click Open path lets you get past. Confirm once and macOS remembers.
 
-On first launch the app asks for four permissions in sequence. All four are needed for the whole thing to work, and each dialog explains itself:
+On first launch a **Welcome** window opens and walks you through the four permissions one at a time. Each has its own row explaining what it is for, with a button that asks for just that one when you click it (so you are never faced with a stack of unlabelled system dialogs). All four are needed for the whole thing to work:
 
 | Permission | Why it is needed | If you deny it |
 |---|---|---|

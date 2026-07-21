@@ -49,6 +49,10 @@ struct WorkflowEditor: View {
     /// Called after a successful Save so the host sheet can dismiss; Save now
     /// commits *and* closes instead of silently persisting with no visible change.
     var onCommit: (() -> Void)? = nil
+    /// UX21: lets the editor offer an inline model download when this workflow
+    /// resolves to the on-device backend but the MLX model is not yet cached. Nil
+    /// in headless tests and any host that has no daemon behind it.
+    var localModelPreflight: LocalModelPreflight? = nil
     /// Notion DB list for the picker (TECH-B8). Held at editor level so the picker is populated on open, not only when Notion is toggled on.
     @StateObject private var notionDBs = NotionDatabaseList()
 
@@ -68,6 +72,13 @@ struct WorkflowEditor: View {
     @State private var pendingDeleteAlert: Bool = false
     @State private var saveError: String?
     @State private var colorPopoverOpen: Bool = false
+    /// UX21: whether the configured local model is uncached while this workflow
+    /// resolves to the local backend. Cached in state (refreshed on appear and on
+    /// a backend / NDA change) so the filesystem cache probe never runs per-render.
+    @State private var localModelMissing: Bool = false
+    /// UX21: latched once the user taps "Download now", so the affordance switches
+    /// from the button to a quiet "downloading, see the menu bar" acknowledgement.
+    @State private var localModelDownloadStarted: Bool = false
 
     var body: some View {
         // WF6: rebuilt on the Preferences design system (SettingsGroup / SettingsRow
@@ -99,6 +110,8 @@ struct WorkflowEditor: View {
         .onAppear(perform: hydrate)
         .onChange(of: workflow.id) { _, _ in hydrate() }
         .onChange(of: name) { _, newName in onNameChange?(newName) }
+        .onChange(of: ndaMode) { _, _ in refreshLocalModelMissing() }
+        .onChange(of: backend) { _, _ in refreshLocalModelMissing() }
         .alert("Delete this workflow?", isPresented: $pendingDeleteAlert) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive, action: deleteSelf)
@@ -509,6 +522,43 @@ struct WorkflowEditor: View {
             } else if backend == .appleIntelligence, let reason = AppleIntelligenceSummarizer.availabilityReason {
                 note("Apple Intelligence is unavailable here: \(reason)", color: .mpWarning)
             }
+            if localModelMissing {
+                localModelDownloadRow
+            }
+        }
+    }
+
+    /// UX21: the inline "model not downloaded" affordance. Shown when this
+    /// workflow resolves to the on-device backend but the MLX model is not cached,
+    /// so the first meeting summarizes fine only if the model is fetched first.
+    /// "Download now" routes through the daemon's shared supervisor (progress in
+    /// the menu bar); the download persists after this sheet closes.
+    @ViewBuilder
+    private var localModelDownloadRow: some View {
+        SettingsFullRow {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.down.circle")
+                    .foregroundStyle(.mpWarning)
+                if localModelDownloadStarted {
+                    Text("Downloading the local model. Progress shows in the menu bar.")
+                        .font(.mpTextSM)
+                        .foregroundStyle(Color(MPColors.fgMuted))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                } else {
+                    Text("The local model is not downloaded (\(localModelPreflight?.downloadSizeLabel() ?? "several GB")). It is needed before this workflow's first meeting.")
+                        .font(.mpTextSM)
+                        .foregroundStyle(Color(MPColors.fgMuted))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button("Download now") {
+                        localModelPreflight?.startDownload()
+                        localModelDownloadStarted = true
+                    }
+                    .buttonStyle(.mpGhost)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -615,6 +665,18 @@ struct WorkflowEditor: View {
         retentionPolicy = workflow.retention.policy
         retentionAfterDays = workflow.retention.afterDays
         saveError = nil
+        localModelDownloadStarted = false
+        refreshLocalModelMissing()
+    }
+
+    /// UX21: recompute whether the on-device model download should be offered.
+    /// Only when the workflow resolves to the local backend (an NDA flag, or a
+    /// `.local` pin) AND the model is uncached. The preflight's probe is a
+    /// filesystem scan, so this runs on appear and on a backend / NDA change, not
+    /// per-render.
+    private func refreshLocalModelMissing() {
+        let resolvesLocal = ndaMode || backend == .local
+        localModelMissing = resolvesLocal && (localModelPreflight?.isModelMissing() ?? false)
     }
 
     private func save() {

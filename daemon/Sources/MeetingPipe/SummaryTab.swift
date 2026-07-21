@@ -22,6 +22,9 @@ struct SummaryTab: View {
 
     @State private var isEditing = false
     @State private var editorModel: CorrectionViewModel? = nil
+    /// UX21: latched once the failed-state "Download model" remedy is tapped, so
+    /// the button becomes a "downloading, then Retry" acknowledgement.
+    @State private var modelDownloadStarted = false
     /// UX13: surfaced save outcome. `saveError` keeps the user in edit with an
     /// inline warning (edits preserved); `savedCue` shows a brief confirmation
     /// before the crossfade back to the reader.
@@ -407,7 +410,32 @@ struct SummaryTab: View {
                 }
                 .frame(maxWidth: 460, maxHeight: 150)
             }
-            if meeting.failureSuggestsLocalReSummarize {
+            if meeting.failureSuggestsModelDownload {
+                // UX21: the on-device model was not downloaded, so a regulated / NDA
+                // run refused to fetch it and summarize failed after the recording
+                // was already captured. The in-app remedy replaces the reason text's
+                // terminal command: download the model here (progress in the menu
+                // bar), then Retry once it lands.
+                VStack(spacing: 6) {
+                    if modelDownloadStarted {
+                        Text("Downloading the model. Retry once the menu bar shows it finished.")
+                            .font(.mpTextSM)
+                            .foregroundStyle(Color(MPColors.fgMuted))
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 460)
+                        Button("Retry pipeline") { runRetry() }
+                            .controlSize(.large)
+                    } else {
+                        Button("Download model") {
+                            libraryModel.coordinator?.downloadLocalModelNow()
+                            modelDownloadStarted = true
+                        }
+                        .controlSize(.large)
+                        Button("Retry pipeline") { runRetry() }
+                            .controlSize(.small)
+                    }
+                }
+            } else if meeting.failureSuggestsLocalReSummarize {
                 // PIPE6: the failure is a deterministic backend rejection (Apple
                 // Intelligence declining this transcript's language). A same-backend
                 // retry just fails again, so lead with a local re-summarize that
