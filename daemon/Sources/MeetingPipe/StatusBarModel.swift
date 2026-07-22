@@ -217,8 +217,15 @@ enum StatusBarModel {
             rows.append(.failedMeetings(count: i.failedMeetingCount, title: title))
         }
 
+        // Offer Start whenever a manual toggle would actually start a recording.
+        // `.suppressed` is a presentation-only label (the skip-latch display in
+        // `StatusBarController.setSuppressed`); the state machine underneath is
+        // `.idle`, so `toggleManual` records and the menu must keep the affordance.
+        // Dropping it here left a skipped meeting with no way to record from the
+        // menu for the rest of the call. `.prompting` keeps the prompt window as its
+        // record affordance; `.stopping` is a genuine no-op mid-flush.
         switch i.state {
-        case .idle:
+        case .idle, .suppressed:
             rows.append(.startRecording)
         case .recording(let file, _, _):
             rows.append(.stopRecording(stem: file.deletingPathExtension().lastPathComponent))

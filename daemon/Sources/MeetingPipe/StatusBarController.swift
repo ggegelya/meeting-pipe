@@ -505,8 +505,11 @@ final class StatusBarController {
             menu.addItem(.separator())
         }
 
+        // `.suppressed` is the skip-latch display over an idle state machine (see
+        // `setSuppressed`), so a manual start still works; keep offering it or a
+        // skipped meeting has no menu route to record for the rest of the call.
         switch state {
-        case .idle:
+        case .idle, .suppressed:
             let start = NSMenuItem(title: "Start Recording", action: #selector(Coordinator.menuStart), keyEquivalent: "")
             start.target = coordinator
             menu.addItem(start)

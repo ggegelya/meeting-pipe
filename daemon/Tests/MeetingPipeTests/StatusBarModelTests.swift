@@ -218,6 +218,17 @@ final class StatusBarModelTests: XCTestCase {
         )
     }
 
+    /// The "Suppressed (App)" menu is a presentation-only label over an idle state
+    /// machine (the skip-latch display), so a manual start still succeeds and the
+    /// menu must keep offering it. Regression: this row was dropped while suppressed,
+    /// leaving a skipped meeting with no menu route to record for the rest of the call.
+    func test_suppressed_display_still_offers_start() {
+        XCTAssertEqual(
+            M.rows(.init(state: .suppressed(source: source()))),
+            [.startRecording, .quitWithoutRelaunch]
+        )
+    }
+
     func test_quit_without_relaunch_is_hidden_when_auto_restart_is_off() {
         XCTAssertEqual(M.rows(.init(state: .idle, disableAutoRestart: true)), [.startRecording])
     }
