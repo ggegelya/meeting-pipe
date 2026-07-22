@@ -483,6 +483,32 @@ final class MeetingPromptWindow {
 /// overriding it lets Tab / Space / Return drive the controls once the user clicks the panel.
 private final class PromptPanel: NSPanel {
     override var canBecomeKey: Bool { true }
+
+    /// A floating panel in an accessory (menu-bar) app does not reliably become key on its own, so a
+    /// click left it unfocused with no ring. Force it here, but only for a click on empty / non-control
+    /// area: a mouse click on Record / Skip / the chevron keeps the quiet nonactivating behavior (it
+    /// does not pull focus off the meeting app), while a click in the pill body focuses the panel so
+    /// Tab / Space drive the buttons (UX23). Mirrors QuickFind's makeKey + activate.
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown, !isKeyWindow, MPPanelFocus.isEmptyAreaClick(self, event) {
+            NSApp.activate(ignoringOtherApps: true)
+            makeKey()
+        }
+        super.sendEvent(event)
+    }
+}
+
+/// Shared "did this click land on empty, non-interactive area?" test for the floating panels (UX23),
+/// so a background click focuses the panel while a control click stays nonactivating.
+enum MPPanelFocus {
+    static func isEmptyAreaClick(_ window: NSWindow, _ event: NSEvent) -> Bool {
+        var view = window.contentView?.hitTest(event.locationInWindow)
+        while let current = view {
+            if current.acceptsFirstResponder { return false }   // an interactive control (or its subtree)
+            view = current.superview
+        }
+        return true
+    }
 }
 
 // MARK: - Background

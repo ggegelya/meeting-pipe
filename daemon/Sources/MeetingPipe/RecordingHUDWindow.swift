@@ -497,6 +497,19 @@ final class RecordingHUDWindow {
 /// `canBecomeKey`; overriding it lets Tab / Space / Return drive the controls after a click.
 private final class HUDPanel: NSPanel {
     override var canBecomeKey: Bool { true }
+
+    /// A floating panel in an accessory app does not reliably become key on its own, so a click left
+    /// the pill unfocused with no ring. Force it here, but only for a click on the empty pill body: a
+    /// mouse click on Stop / the off-record toggle keeps the quiet nonactivating behavior, while a
+    /// click in the pill body focuses it so Tab / Space drive Stop + the toggle (UX23). Mirrors
+    /// QuickFind's makeKey + activate. A body click still drags the pill (super handles it).
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown, !isKeyWindow, MPPanelFocus.isEmptyAreaClick(self, event) {
+            NSApp.activate(ignoringOtherApps: true)
+            makeKey()
+        }
+        super.sendEvent(event)
+    }
 }
 
 /// Translucent rounded background using `hudWindow` material, matching the prompt panel.
