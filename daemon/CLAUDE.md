@@ -46,7 +46,8 @@ swift test                # full Xcode required locally (CI on macos-14 has it)
 | Workflows | `Workflow.swift`, `WorkflowStore.swift`, `WorkflowMatcher.swift`, `WorkflowsView.swift` |
 | Library UI | `LibraryWindow.swift`, `LibraryListView.swift`, `MeetingDetailView.swift`, `MeetingStore.swift`; search: `SearchIndex.swift` (SQLite FTS5) + `SearchIndexer.swift` + `SearchQuery.swift` (UX16) |
 | Speaker naming | `TranscriptTab.swift` (rows + menus), `MeetingCast.swift` (pure: who the meeting's people are; a raw diarization label is NOT an identity, it is a mix of baked names, unnamed clusters, and the `speaker_unknown` bucket), `SpeakerLabelStore.swift` (the reversible overlay), `Library/MeetingLibraryService.swift` (enroll / rename / undo; all voiceprint-gated) |
-| Preferences | `PreferencesWindow.swift`, `Preferences/PreferencesView.swift`, `Preferences/PreferencesControls.swift`, `Preferences/UISettings.swift` |
+| Preferences | `PreferencesWindow.swift`, `Preferences/PreferencesView.swift`, `Preferences/PreferencesControls.swift`, `Preferences/UISettings.swift`; `NotionDatabasePicker.swift` (the shared three-state Notion DB picker, UX22) |
+| Menu bar + onboarding | `StatusBarController.swift` + `StatusBarModel.swift` (pure presentation) + `SetupChecklist.swift` (UX22 "Finish setup" checklist, inputs from `Coordinator.setupChecklistInputs()`); first-run `Onboarding/` (`OnboardingWindow` navigator + `OnboardingStep{Welcome,Permissions,Workflow,PublishTarget,Test}`), gated by `OnboardingGate` |
 | Permissions | `PermissionsCenter.swift` |
 | Pipeline subprocess | `PipelineLauncher.swift`, `LocalServerReaper.swift` (kills an `mlx_lm.server` orphaned by a watchdog SIGKILL) |
 | Event log | `Logger.swift` (`Log.event` / `Log.writeLine` / `Log.main`; size-rotated via `Log.rotateIfNeeded`, read across generations via `Log.logGenerations`) |

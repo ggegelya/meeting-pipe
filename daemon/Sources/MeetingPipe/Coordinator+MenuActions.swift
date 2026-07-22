@@ -36,6 +36,20 @@ extension Coordinator {
         preferencesWindow?.show(initial: .permissions)
     }
 
+    /// Deeplink to Preferences -> Integrations, the fix for the "Finish setup"
+    /// checklist's Anthropic-key and Notion items (UX22).
+    @objc func menuPreferencesIntegrations() {
+        preferencesWindow?.show(initial: .integrations)
+    }
+
+    /// Start (or resume) the on-device model download from the "Finish setup"
+    /// checklist's model item (UX22). Routes through the shared supervisor like
+    /// the failed-row remedy, so it works even when the global backend is not
+    /// local (a local / NDA workflow under a global anthropic backend).
+    @objc func menuFinishSetupDownloadModel() {
+        downloadLocalModelNow()
+    }
+
     /// Retry a failed model prefetch (LOCAL1), from the failed download row.
     /// Re-runs the same eager-prefetch decision; the supervisor re-spawns
     /// `mp prefetch-model` (a partial cache resumes), or short-circuits to
@@ -92,8 +106,14 @@ extension Coordinator {
     /// the startup permission prewarm on a fresh install.
     func presentOnboardingIfNeeded() {
         guard !OnboardingGate.isCompleted else { return }
+        // The publish-target step needs both stores; they are always present in
+        // production (App builds them) and nil only in headless/test, which has
+        // no UI to onboard. Skip rather than show a half-wired flow.
+        guard let configStore = configStore, let secretsStore = secretsStore else { return }
         let controller = OnboardingWindowController(deps: OnboardingDependencies(
             workflowStore: workflowStore,
+            configStore: configStore,
+            secretsStore: secretsStore,
             toggleRecording: { [weak self] in self?.menuStart() },
             isRecording: { [weak self] in self?.recorder.isRecording ?? false },
             localModelPreflight: localModelPreflight,
@@ -158,5 +178,34 @@ extension Coordinator {
 
     func failedMeetingCount() -> Int {
         library.failedMeetingCount()
+    }
+
+    /// Assemble the "Finish setup" checklist snapshot (UX22) from the same
+    /// signals `mp doctor` reads: config, workflows, secrets, permissions, and
+    /// the local-model cache. Called by `StatusBarController` on each menu
+    /// rebuild; all in-memory except `isModelMissing()` (a bounded cache scan).
+    /// Nil stores (headless/test) read as "configured", so no phantom items.
+    func setupChecklistInputs() -> SetupChecklist.Inputs {
+        let center = PermissionsCenter.shared
+        let globalBackend = configStore?.summarizationBackend ?? "anthropic"
+        let workflows = workflowStore.workflows
+        return SetupChecklist.Inputs(
+            regulatedMode: configStore?.regulatedMode ?? false,
+            globalBackend: globalBackend,
+            globalSinks: configStore?.outputSinks ?? ["notion"],
+            // A nil backend pin inherits the global backend; resolve it here so
+            // the pure model never has to know about inheritance.
+            workflowBackends: workflows.map { $0.effectiveBackend?.rawValue ?? globalBackend },
+            workflowSinks: workflows.map { $0.effectiveSinkTypeNames },
+            anthropicKeyPresent: secretsStore.map { !$0.anthropicAPIKey.isEmpty } ?? true,
+            notionTokenPresent: secretsStore.map { !$0.notionToken.isEmpty } ?? true,
+            notionDatabaseIdPresent: configStore.map { !$0.notionDatabaseId.isEmpty } ?? true,
+            localModelMissing: localModelPreflight.isModelMissing(),
+            hasPermissionIssue: StatusBarModel.hasPendingPermissionIssue(.init(
+                microphone: center.microphone,
+                screenRecording: center.screenRecording,
+                accessibility: center.accessibility
+            ))
+        )
     }
 }

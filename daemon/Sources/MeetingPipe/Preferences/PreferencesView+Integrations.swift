@@ -6,6 +6,12 @@ struct IntegrationsSectionView: View {
     @ObservedObject var secrets: SecretsStore
     var onRunDoctor: () -> Void
 
+    /// Notion DB list for the picker (UX22): the same component the workflow
+    /// editor and onboarding use, so a database is chosen from a list here too
+    /// instead of pasting a 32-char id. Held at view level so it is populated
+    /// from cache on open.
+    @StateObject private var notionDBs = NotionDatabaseList()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsSectionHeader("Integrations",
@@ -52,10 +58,12 @@ struct IntegrationsSectionView: View {
                 SettingsStackRow("Integration token", showsDivider: false) {
                     SettingsSecretField(text: $secrets.notionToken, placeholder: "ntn_…")
                 }
-                SettingsStackRow("Database ID") {
-                    TextField("32-char hex from your database URL", text: $store.notionDatabaseId)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
+                SettingsStackRow("Database") {
+                    NotionDatabasePicker(
+                        databaseID: $store.notionDatabaseId,
+                        list: notionDBs,
+                        disableFetch: store.regulatedMode
+                    )
                 }
                 SettingsRow("Status") {
                     if !secrets.notionToken.isEmpty && !store.notionDatabaseId.isEmpty {
@@ -65,7 +73,7 @@ struct IntegrationsSectionView: View {
                     }
                 }
             } footer: {
-                Text("Create the integration at notion.so/profile/integrations, share your Meetings database with it, and paste the database ID here.")
+                Text("Create the integration at notion.so/profile/integrations and share your Meetings database with it. Fetch pulls your databases to pick from; paste a database ID if it is not listed.")
             }
         }
     }

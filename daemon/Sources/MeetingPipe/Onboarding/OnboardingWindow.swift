@@ -15,6 +15,11 @@ enum OnboardingGate {
 /// stays decoupled from the Coordinator.
 struct OnboardingDependencies {
     let workflowStore: WorkflowStore
+    /// UX22: the publish-target step binds the Notion database picker to the
+    /// global config and the token field to the secrets store, so a clean-Mac
+    /// user sets their publish target in-app instead of hand-editing config.toml.
+    let configStore: ConfigStore
+    let secretsStore: SecretsStore
     /// Toggle a manual recording (start, then stop) for the test-recording step.
     let toggleRecording: () -> Void
     /// True while a recording is in flight, so the test step can reflect state.
@@ -71,14 +76,15 @@ final class OnboardingWindowController {
     }
 }
 
-/// Step navigator. Welcome -> Permissions -> Workflow -> Test recording, with a
-/// Skip that completes onboarding from any step (power-user escape hatch).
+/// Step navigator. Welcome -> Permissions -> Workflow -> Publish target -> Test
+/// recording, with a Skip that completes onboarding from any step (power-user
+/// escape hatch).
 struct OnboardingRootView: View {
     let deps: OnboardingDependencies
     let onComplete: () -> Void
 
     @State private var step = 0
-    private static let stepCount = 4
+    private static let stepCount = 5
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -102,6 +108,10 @@ struct OnboardingRootView: View {
                 case 2: OnboardingStepWorkflow(
                     workflowStore: deps.workflowStore,
                     localModelPreflight: deps.localModelPreflight
+                )
+                case 3: OnboardingStepPublishTarget(
+                    store: deps.configStore,
+                    secrets: deps.secretsStore
                 )
                 default: OnboardingStepTest(toggleRecording: deps.toggleRecording, isRecording: deps.isRecording)
                 }

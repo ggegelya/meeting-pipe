@@ -399,7 +399,11 @@ struct WorkflowEditor: View {
             SettingsToggleRow("Notion", isOn: $sinks.notionEnabled, showsDivider: false)
             if sinks.notionEnabled {
                 SettingsFullRow(showsDivider: false) {
-                    notionDBPicker
+                    NotionDatabasePicker(
+                        databaseID: $sinks.notionDatabaseID,
+                        list: notionDBs,
+                        disableFetch: ndaMode
+                    )
                 }
             }
             SettingsToggleRow("Obsidian", isOn: $sinks.obsidianEnabled)
@@ -420,79 +424,6 @@ struct WorkflowEditor: View {
                 .foregroundStyle(color)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    /// Notion DB picker (TECH-B8). Three states: populated cache shows a Picker + Refresh; empty cache shows a "Fetch databases" button + raw TextField fallback; loading/failed shows a status row alongside the fallback.
-    @ViewBuilder
-    private var notionDBPicker: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if !notionDBs.entries.isEmpty {
-                Picker("Database", selection: $sinks.notionDatabaseID) {
-                    Text("(none)").tag("")
-                    ForEach(notionDBs.entries) { db in
-                        Text(db.title).tag(db.id)
-                    }
-                    // Preserve a manually-pasted id not yet in the cache; without this clause SwiftUI's Picker silently snaps the selection to (none) and the user's input vanishes on the next render.
-                    if !sinks.notionDatabaseID.isEmpty,
-                       !notionDBs.entries.contains(where: { $0.id == sinks.notionDatabaseID }) {
-                        Text("Custom · \(sinks.notionDatabaseID.prefix(8))…")
-                            .tag(sinks.notionDatabaseID)
-                    }
-                }
-                .pickerStyle(.menu)
-            }
-            HStack {
-                if notionDBs.entries.isEmpty || sinks.notionDatabaseID.isEmpty {
-                    TextField("paste DB id", text: $sinks.notionDatabaseID)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.mpTextBase.monospaced())
-                        .frame(minWidth: 220)
-                }
-                Spacer(minLength: 0)
-                refreshButton
-            }
-            statusLabel
-        }
-    }
-
-    @ViewBuilder
-    private var refreshButton: some View {
-        Button {
-            notionDBs.refresh()
-        } label: {
-            Label(
-                notionDBs.entries.isEmpty ? "Fetch databases" : "Refresh",
-                systemImage: "arrow.clockwise"
-            )
-        }
-        .buttonStyle(.borderless)
-        // NDA workflows are local-only; don't offer a network DB fetch for them
-        // (the regulated global flag is gated inside refresh()). (TECH-SEC4)
-        .disabled(notionDBs.state == .loading || ndaMode)
-    }
-
-    @ViewBuilder
-    private var statusLabel: some View {
-        switch notionDBs.state {
-        case .idle:
-            EmptyView()
-        case .loading:
-            HStack(spacing: 4) {
-                ProgressView().controlSize(.small)
-                Text("Fetching databases…")
-                    .font(.mpTextSM)
-                    .foregroundStyle(Color(MPColors.fgMuted))
-            }
-        case .loaded(let list):
-            Text("\(list.count) database\(list.count == 1 ? "" : "s") cached")
-                .font(.mpTextXS)
-                .foregroundStyle(Color(MPColors.fgSubtle))
-        case .failed(let err):
-            Text(err)
-                .font(.mpTextSM)
-                .foregroundStyle(.mpDanger)
-                .lineLimit(2)
         }
     }
 

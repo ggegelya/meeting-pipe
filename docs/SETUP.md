@@ -101,17 +101,15 @@ To see where you stand at any time, click the menu-bar icon, open **Preferences*
 
 ## Step 5: Confirm it is alive
 
-Before wiring anything up, check the installation itself:
+The menu-bar icon reading **MeetingPipe: Idle** is the first sign it works. For a full check you never need a terminal: click the icon, open **Preferences ▸ Integrations**, and click **Run doctor…**. It runs the app's own self-check (permissions, per-app reachability) followed by the credential and network checks, and shows both in one window. At this stage expect it to flag missing keys and a missing Notion database, which the next steps fix; what you want to see is that it runs at all and that the model and permission checks pass.
 
-```bash
-~/.local/share/meeting-pipe/venv/bin/mp doctor
-```
+The menu bar also shows a **Finish setup** row for as long as anything is still missing: a key, a Notion database, a permission, or the on-device model. Each item there links straight to its fix, and the whole row disappears once you are set up. It is the quickest answer to "am I done?".
 
-This prints a report. At this stage expect complaints about missing keys and a missing Notion database, which the next two steps fix. What you want to see is that it runs at all and that the model and permission checks pass.
+(If you prefer the terminal, the same report is `~/.local/share/meeting-pipe/venv/bin/mp doctor`, or just `mp doctor` once `~/.local/bin` is on your PATH.)
 
 ## Step 6: Connect Notion
 
-Skip this step if you would rather write summaries to Obsidian or a plain folder; [step 8](#step-8-edit-your-configuration) shows how to point them somewhere else instead.
+Skip this step if you would rather write summaries to Obsidian or a plain folder; [step 8](#step-8-advanced-configuration-optional) shows how to point them somewhere else instead.
 
 Notion needs two things from you: a database for meetings to land in, and a token that lets meeting-pipe write to it.
 
@@ -129,15 +127,11 @@ Other columns are optional. If you add any of `Workflow`, `Source`, `Attendees` 
 
 **Give the integration access to the database.** This is the step people miss, and skipping it produces a 404 later. Open your Meetings database as a full page, click the **•••** menu at the top right, choose **Connections**, and pick your `meeting-pipe` integration.
 
-**Copy the database ID.** With the database open as a full page, look at the URL:
+**Set it in the app.** You do not edit any file. In the Welcome window's **Where summaries go** step, or later in **Preferences ▸ Integrations**:
 
-```
-https://www.notion.so/yourworkspace/1a2b3c4d5e6f7890abcdef1234567890?v=...
-```
-
-The database ID is the 32-character block after the last `/` and before the `?`. Copy it without any hyphens.
-
-**Store the token.** Click the menu-bar icon, open **Preferences**, go to **Integrations**, and paste the token into the Notion field. It is saved to your Keychain.
+1. Paste the **Internal Integration Secret** into the Notion token field. It is saved to your Keychain.
+2. Click **Fetch databases** and pick your `Meetings` database from the list. If it does not appear, paste its ID: the 32-character block after the last `/` and before the `?` in the database URL (`.../yourworkspace/1a2b3c4d5e6f7890abcdef1234567890?v=...`), without hyphens.
+3. Click **Verify connection**. This checks, read-only, that the token works and the integration is connected to that database, so the first real meeting will not fail to publish. Nothing is written to Notion.
 
 ## Step 7: Choose how summaries are written
 
@@ -145,26 +139,15 @@ Transcription always happens on your Mac. Summarization is the one step with a c
 
 - **Anthropic (the default).** Best quality. Costs a few cents per meeting and needs an API key from [console.anthropic.com](https://console.anthropic.com), which requires adding credit. Paste the key into **Preferences ▸ Integrations**. The transcript is sent to Anthropic; nothing else leaves your Mac.
 - **Claude Code.** Free if you already pay for a Claude subscription: it drives your existing login rather than an API key. Still a cloud backend, so the transcript leaves your Mac.
-- **Local.** Fully on-device, no network, no cost. Quality is lower than Anthropic's. The first meeting downloads a 4.3 GB model, so pick this now if you want it and let the download happen in the background.
+- **Local.** Fully on-device, no network, no cost. Quality is lower than Anthropic's. It needs a 4.3 GB model; the Welcome flow's workflow step, the workflow editor, and the menu bar's **Finish setup** row all offer a **Download now** button when you pick an on-device backend, so it downloads in the background instead of stalling your first meeting. No terminal involved.
 
 You can change this later at any time, and switch a single meeting's backend after the fact from the Library.
 
-## Step 8: Edit your configuration
+## Step 8: Advanced configuration (optional)
 
-The installer created a settings file at `~/.config/meeting-pipe/config.toml`. Open it in TextEdit:
+There is nothing you have to edit. Your Notion database, your backend, and your API keys are all set in the app (the Welcome flow, or Preferences at any time), and the menu bar's **Finish setup** row tells you if anything is still missing. Most people never open a config file.
 
-```bash
-open -e ~/.config/meeting-pipe/config.toml
-```
-
-Most settings have working defaults and are documented with comments in the file itself. For a Notion setup, the one line you must change is the database ID. Find the `[notion]` section and paste your 32-character ID between the quotes:
-
-```toml
-[notion]
-database_id = "1a2b3c4d5e6f7890abcdef1234567890"
-```
-
-To publish somewhere other than Notion, find the `[output]` section and change `sinks`. Writing to an Obsidian vault, for example:
+The installer did create one at `~/.config/meeting-pipe/config.toml` for power users. Every option is documented with comments in the file, and most have working defaults. You only need it for the few things without a dedicated control yet, such as changing the **global** publish target to Obsidian or a plain folder:
 
 ```toml
 [output]
@@ -174,13 +157,7 @@ sinks = ["obsidian"]
 vault_path = "~/Documents/MyVault"
 ```
 
-`sinks` takes a list, so `["notion", "obsidian"]` writes to both, and each is independent: if one fails the other still lands. Save the file and close TextEdit. Most changes take effect on the next recording; a few need the app relaunched, and the comments say which.
-
-Now run the doctor again. It should be clean:
-
-```bash
-~/.local/share/meeting-pipe/venv/bin/mp doctor
-```
+`sinks` takes a list, so `["notion", "obsidian"]` writes to both, and each is independent: if one fails the other still lands. (Per-workflow sinks are set with checkboxes in the workflow editor instead, no file needed.) Most changes take effect on the next recording; a few need the app relaunched, and the comments say which. When you are done, re-run the doctor from **Preferences ▸ Integrations ▸ Run doctor…** and it should come up clean.
 
 ## Step 9: Record your first meeting
 
@@ -212,9 +189,9 @@ That is the whole loop. From here, meetings turn into summaries without you doin
 
 **Notion fails with 401.** The token is wrong or was revoked. Re-copy it from your integration page into Preferences ▸ Integrations.
 
-**Notion fails with 404.** Either the integration was never connected to the database (the **•••** ▸ **Connections** step in step 6), or the database ID is wrong. The ID is the 32 characters before the `?` in the URL, not the page name.
+**Notion fails with 404.** Either the integration was never connected to the database (the **•••** ▸ **Connections** step in step 6), or the database ID is wrong. The ID is the 32 characters before the `?` in the URL, not the page name. The **Verify connection** button in the publish-target step catches both before you ever record, so use it if you are unsure.
 
-**Anything else.** Run `~/.local/share/meeting-pipe/venv/bin/mp doctor`, which checks each piece and names what is broken. The menu bar's **Diagnostics…** item shows the same underlying logs in a readable window. The README's [troubleshooting section](../README.md#troubleshooting) goes deeper on individual failures.
+**Anything else.** Open **Preferences ▸ Integrations ▸ Run doctor…**; it checks each piece and names what is broken, and the menu bar's **Diagnostics…** item shows the underlying logs in a readable window. The same report is on the command line as `~/.local/share/meeting-pipe/venv/bin/mp doctor`. The README's [troubleshooting section](../README.md#troubleshooting) goes deeper on individual failures.
 
 ## Changing your mind
 

@@ -142,11 +142,9 @@ The installer can't do these for you:
 
    A change takes effect on the next recording, no restart needed. A hand-run `mp` (without the daemon) reads the same Keychain items.
 
-   To verify: `~/.local/share/meeting-pipe/venv/bin/mp doctor`, which pings each API, validates the ML runtimes, and tells you which secret is wrong.
+   To verify: **Preferences ▸ Integrations ▸ Run doctor…** (the app's self-check plus the credential and network probes, in one sheet), or `mp doctor` from a terminal, which pings each API, validates the ML runtimes, and tells you which secret is wrong. The installer links `mp` into `~/.local/bin` for that; add it to your PATH for the bare command.
 
-2. **Configure** `~/.config/meeting-pipe/config.toml`:
-   - Set `notion.database_id` to your Meetings database ID (the 32-char string in the database URL).
-   - Adjust `output.sinks` and the summarization backend if the defaults (Notion, Anthropic) are not what you want.
+2. **Choose where summaries publish.** No file to edit for the default path. The Welcome flow's **Where summaries go** step, and **Preferences ▸ Integrations** afterwards, take your Notion token and let you pick the database from a fetched list (with a read-only **Verify connection** check), so the last install-to-first-value TOML dependency is gone. The menu bar's **Finish setup** row lists anything still missing (a key, a Notion database, a permission, the on-device model) and links straight to its fix, disappearing once you are set up. `~/.config/meeting-pipe/config.toml` still exists for advanced tweaks (a different global `output.sinks`, an Obsidian vault path) and documents every key, but the default path needs none of it.
 
 3. **Grant macOS permissions** when prompted on first launch. On a fresh install a Welcome window walks you through the four permissions one at a time, each framed with what it is for and requested only when you click its row (so the system dialogs never stack unlabelled over the window). On every launch after onboarding is done, the daemon instead re-checks and fires any still-needed dialog in one ordered sequence within the first few seconds, rather than dribbling them out across the first recording. The four, in the order the onboarding step lists them:
    - **Notifications** — record/skip prompts and completion alerts.
@@ -190,6 +188,8 @@ A property that exists under one of these names but with a different type is ski
 ---
 
 ## Running by hand
+
+The CLI is a debugging and owner-dev escape hatch, not something normal use needs (every user-facing command has an in-app home). The installer links the launcher to `~/.local/bin/mp`, so the bare `mp` examples below work once `~/.local/bin` is on your PATH; otherwise call it at `~/.local/share/meeting-pipe/venv/bin/mp`.
 
 You can run any pipeline stage on its own audio file — useful for debugging or re-publishing a fixed transcript:
 

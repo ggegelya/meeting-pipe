@@ -79,6 +79,15 @@ fi
 # the bundle out from under it.
 pkill -f "MeetingPipe.app/Contents/MacOS/MeetingPipe" 2>/dev/null || true
 
+# Remove the ~/.local/bin/mp launcher symlink (UX22), but only if it still
+# points into our venv, so an unrelated `mp` on the user's PATH is never touched.
+LOCAL_BIN_MP="$HOME/.local/bin/mp"
+if [[ -L "$LOCAL_BIN_MP" ]]; then
+    case "$(readlink "$LOCAL_BIN_MP" 2>/dev/null || true)" in
+        "$DATA_DIR"/*) rm -f "$LOCAL_BIN_MP"; echo "Removed mp symlink ($LOCAL_BIN_MP)." ;;
+    esac
+fi
+
 rm -rf "$DATA_DIR"
 rm -rf "$LOG_DIR"
 rm -rf "$APP_SUPPORT"

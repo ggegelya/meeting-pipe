@@ -11,6 +11,10 @@ import MeetingPipeCore
 final class Coordinator: NSObject {
     let config: Config
     let configStore: ConfigStore?
+    /// Retained so the menu-bar "Finish setup" checklist (UX22) and the
+    /// onboarding publish-target step can read secret presence. Nil in
+    /// headless/test builds, like `configStore`.
+    let secretsStore: SecretsStore?
     let statusBar: StatusBarController
     let recorder: MeetingRecorder
     let notifier: Notifier
@@ -91,6 +95,7 @@ final class Coordinator: NSObject {
     ) {
         self.config = config
         self.configStore = configStore
+        self.secretsStore = secretsStore
         self.statusBar = statusBar
         self.recorder = MeetingRecorder()
         self.notifier = Notifier()

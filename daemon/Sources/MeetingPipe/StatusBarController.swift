@@ -482,6 +482,15 @@ final class StatusBarController {
             menu.addItem(.separator())
         }
 
+        // UX22: the "Finish setup" checklist, a quiet holistic "am I done?"
+        // view. Present only while something is unmet; the submenu lists each
+        // gap and deep-links to its fix. The urgent per-permission rows above
+        // stay as the fast nudge.
+        if let finishSetup = finishSetupMenuItem() {
+            menu.addItem(finishSetup)
+            menu.addItem(.separator())
+        }
+
         switch state {
         case .idle:
             let start = NSMenuItem(title: "Start Recording", action: #selector(Coordinator.menuStart), keyEquivalent: "")
@@ -611,6 +620,45 @@ final class StatusBarController {
         item.target = coordinator
         item.toolTip = toolTip
         return item
+    }
+
+    /// The "Finish setup" checklist parent row + submenu (UX22), or nil when
+    /// every setup item is green (so the row disappears entirely). Each submenu
+    /// row deep-links to its fix.
+    private func finishSetupMenuItem() -> NSMenuItem? {
+        guard let coordinator = coordinator else { return nil }
+        var inputs = coordinator.setupChecklistInputs()
+        // The dedicated download row already covers an in-flight / just-finished
+        // pull, so don't also nag to start the model download from here.
+        switch modelDownload {
+        case .downloading, .completed: inputs.localModelMissing = false
+        default: break
+        }
+        let items = SetupChecklist.decide(inputs)
+        guard let title = SetupChecklist.menuTitle(count: items.count) else { return nil }
+
+        let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        for item in items {
+            let row = NSMenuItem(
+                title: item.title,
+                action: Self.selector(for: item.fix),
+                keyEquivalent: ""
+            )
+            row.target = coordinator
+            submenu.addItem(row)
+        }
+        parent.submenu = submenu
+        return parent
+    }
+
+    /// Map a checklist fix to the Coordinator selector that resolves it.
+    private static func selector(for fix: SetupChecklist.Fix) -> Selector {
+        switch fix {
+        case .permissions:   return #selector(Coordinator.menuPreferencesPermissions)
+        case .integrations:  return #selector(Coordinator.menuPreferencesIntegrations)
+        case .downloadModel: return #selector(Coordinator.menuFinishSetupDownloadModel)
+        }
     }
 
     private func stateLabel(_ s: AppState) -> String {

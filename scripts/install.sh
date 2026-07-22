@@ -385,6 +385,28 @@ mkdir -p "$DATA_DIR"
 )
 [[ -x "$DATA_DIR/venv/bin/mp" ]] || die "mp launcher not at $DATA_DIR/venv/bin/mp"
 
+# 3b. `mp` launcher symlink (UX22) ----------------------------------------
+#
+# The daemon resolves `mp` internally, so the app never needs it on PATH. This
+# symlink is a convenience only: it makes the README's bare `mp` examples work
+# and gives a stable handle for the owner-dev diagnostics that are CLI-only by
+# design (dogfood, train-adapter, analyze-detection). ~/.local/bin is the
+# conventional user bin dir.
+#
+# We deliberately do NOT edit your shell profile. An end user drives everything
+# from the UI (every user-facing `mp` command has an in-app home), so PATH
+# surgery for a CLI you may never touch would overreach. If ~/.local/bin is not
+# already on PATH we just print the one line to add it.
+LOCAL_BIN="$HOME/.local/bin"
+mkdir -p "$LOCAL_BIN"
+ln -sf "$DATA_DIR/venv/bin/mp" "$LOCAL_BIN/mp"
+say "Linked mp -> $LOCAL_BIN/mp"
+case ":$PATH:" in
+    *":$LOCAL_BIN:"*) : ;;   # already on PATH, nothing to say
+    *) say "For the bare 'mp' command in a terminal, add this to your shell profile:"
+       printf '       export PATH="%s:$PATH"\n' "$LOCAL_BIN" ;;
+esac
+
 # 4. Diarization + ASR models ---------------------------------------------
 #
 # Pre-fetch the FluidAudio CoreML models (Parakeet TDT v3 ~600 MB +
@@ -406,7 +428,7 @@ fi
 mkdir -p "$CONFIG_DIR" "$LOG_DIR"
 if [[ ! -f "$CONFIG_DIR/config.toml" ]]; then
     cp "$REPO_ROOT/config.example.toml" "$CONFIG_DIR/config.toml"
-    say "Staged $CONFIG_DIR/config.toml — edit before first use"
+    say "Staged $CONFIG_DIR/config.toml (defaults; set it up in-app, no editing needed to start)"
 fi
 # 5b. API tokens -> macOS Keychain (SEC8) ---------------------------------
 #
@@ -519,18 +541,30 @@ say "LaunchAgent installed → $PLIST"
 
 cat <<EOF
 
-✓ Install complete.
+✓ Install complete. MeetingPipe is running in your menu bar (〰️).
 
-Next steps:
-  1. API keys are stored in your macOS Keychain (you were prompted above).
-     Change them any time in Preferences -> Integrations, or re-run this script.
-  2. Edit $CONFIG_DIR/config.toml — particularly notion.database_id.
-  3. Grant macOS permissions when prompted:
-       Microphone (records your voice via the system default input),
-       Screen Recording (lets ScreenCaptureKit capture system audio),
-       Notifications, Accessibility (browser tab detection).
-       (System Settings → Privacy & Security)
-  4. Look for the menu bar icon: 〰️  → "MeetingPipe: Idle".
+On first launch a Welcome window walks you through setup, in the order the app
+actually does it. No config file to edit:
+  1. Grant macOS permissions: Microphone, Screen Recording, Notifications,
+     Accessibility. Each is requested on its own when you click its row, so the
+     system dialogs never stack up unlabelled.
+  2. Pick a default workflow (Personal, Client / NDA, Internal team, or later).
+  3. Choose where summaries publish: add your Notion token and pick a database
+     from the list, or skip it. Every meeting is always saved on your Mac, so
+     Notion is optional.
+  4. Try a short test recording, end to end.
+
+Everything above is also in Preferences at any time. The menu bar's
+"Finish setup" row lists anything still missing (a key, a database, a
+permission, the on-device model) and links straight to its fix; it disappears
+once you are set up.
+
+Anthropic / Notion tokens live in your macOS Keychain (you were prompted above
+for any that were missing). Change them in Preferences -> Integrations.
+
+Diagnostics (optional): mp is linked at $LOCAL_BIN/mp for command-line tools
+like 'mp doctor' and 'mp backup'. Everything they do is also in the app, so you
+do not need a terminal for normal use.
 
 Logs: $LOG_DIR
 Reinstall: $REPO_ROOT/scripts/install.sh

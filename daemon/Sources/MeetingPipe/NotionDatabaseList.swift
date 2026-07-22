@@ -137,6 +137,66 @@ final class NotionDatabaseList: ObservableObject {
         return parse(jsonData: data)
     }
 
+    /// Read-only reachability check for one database (UX22 onboarding "Verify
+    /// connection"): a `GET /v1/databases/{id}`, the same probe `mp doctor`
+    /// runs. Success means the token is valid AND the integration is connected
+    /// to this database, so the publish target is ready. Throws a user-facing
+    /// message otherwise (404 is the "not shared with the integration" case).
+    /// No page is created; the daemon stays read-only, writes stay the
+    /// pipeline's job. Returns the database's title for a confirming message.
+    @discardableResult
+    static func verifyDatabase(
+        token: String,
+        databaseId: String,
+        session: URLSession = .shared
+    ) async throws -> String {
+        // Every daemon-originated Notion call emits an audit line, like `refresh()`.
+        Log.event(category: "daemon", action: "notion_verify_started",
+                  attributes: ["host": "api.notion.com"])
+        func fail(_ code: Int, _ message: String) -> NSError {
+            Log.event(category: "daemon", action: "notion_verify_failed",
+                      attributes: ["host": "api.notion.com", "error": message])
+            return NSError(domain: "NotionDatabaseList", code: code,
+                           userInfo: [NSLocalizedDescriptionKey: message])
+        }
+        let id = databaseId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: "https://api.notion.com/v1/databases/\(id)") else {
+            throw fail(-1, "Database id is not a valid value.")
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("2022-06-28", forHTTPHeaderField: "Notion-Version")
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse else {
+            throw fail(-1, "No HTTP response from Notion.")
+        }
+        switch http.statusCode {
+        case 200:
+            Log.event(category: "daemon", action: "notion_verify_completed",
+                      attributes: ["host": "api.notion.com"])
+            return databaseTitle(jsonData: data)
+        case 404:
+            throw fail(404, "Database not found, or the integration is not connected to it. In Notion, open the database, then the '…' menu -> Connections -> add your integration.")
+        case 401, 403:
+            throw fail(http.statusCode, "Notion rejected the token (HTTP \(http.statusCode)). Check the integration token.")
+        default:
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw fail(http.statusCode, "Notion returned HTTP \(http.statusCode): \(body.prefix(160))")
+        }
+    }
+
+    /// The `title` plain-text of a `/v1/databases/{id}` response, or "(untitled)".
+    /// Exposed for tests to lock the JSON shape.
+    static func databaseTitle(jsonData: Data) -> String {
+        guard let raw = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              let parts = raw["title"] as? [[String: Any]] else {
+            return "(untitled)"
+        }
+        let title = parts.compactMap { $0["plain_text"] as? String }.joined()
+        return title.isEmpty ? "(untitled)" : title
+    }
+
     /// Parse `(id, title)` pairs from a `/v1/search` response. Exposed for tests to lock in the JSON shape contract.
     static func parse(jsonData: Data) -> [NotionDatabaseEntry] {
         guard let raw = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],

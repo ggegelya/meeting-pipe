@@ -70,6 +70,18 @@ final class ConfigStore: ObservableObject {
     /// reads as a real name (`summarization.user_label`).
     @Published var summarizationUserLabel: String { didSet { scheduleSave() } }
 
+    /// Global publish sinks (`output.sinks`), read straight off the live TOML.
+    /// Read-only, so the setup checklist (UX22) can tell whether a notion sink
+    /// is active without this becoming a persisted, Preferences-rendered knob
+    /// that the CI5 dead-knob fence would flag. `output.sinks` is already a live
+    /// pipeline key; defaults to the pipeline's own default when absent.
+    var outputSinks: [String] {
+        if let arr = rawDocument["output"]?.table?["sinks"]?.array {
+            return arr.compactMap { $0.string }
+        }
+        return ["notion"]
+    }
+
     /// Fired after a successful disk write so subscribers re-read without
     /// polling ("config changed, refresh what you care about").
     let didPersist = PassthroughSubject<Void, Never>()
