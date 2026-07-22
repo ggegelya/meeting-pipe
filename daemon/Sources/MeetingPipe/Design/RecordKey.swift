@@ -181,6 +181,32 @@ final class RecordKey: NSControl {
         setAccessibilityRole(.button)
         setAccessibilityLabel(keyState == .record ? "Record" : "Stop recording")
     }
+
+    // MARK: Keyboard (UX23)
+
+    override var acceptsFirstResponder: Bool { isEnabled }
+
+    override func becomeFirstResponder() -> Bool {
+        // Accent focus ring on the circular key edge, drawn as a layer border (the control is
+        // layer-only, so the AppKit focus-ring mask has nothing to composite against).
+        layer?.borderColor = NSColor.keyboardFocusIndicatorColor.cgColor
+        layer?.borderWidth = 2
+        return super.becomeFirstResponder()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        applyColors()   // restore the resting hairline border
+        return super.resignFirstResponder()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        // Space / Return / keypad Enter activate, like a standard button.
+        if event.keyCode == 49 || event.keyCode == 36 || event.keyCode == 76 {
+            if isEnabled { sendAction(action, to: target) }
+        } else {
+            super.keyDown(with: event)
+        }
+    }
 }
 
 /// SwiftUI host for `RecordKey`, for the Library toolbar (DSN27). Bridges the
