@@ -258,7 +258,7 @@ final class RecordingHUDWindow {
 
     private func makePanel(source: AppSource?, workflow: Workflow?) -> NSPanel {
         let rect = NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight)
-        let panel = HUDPanel(
+        let panel = NSPanel(
             contentRect: rect,
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
@@ -268,19 +268,13 @@ final class RecordingHUDWindow {
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
-        // false (was true) so Stop + the off-record toggle are keyboard-reachable once the user clicks
-        // the pill: a borderless nonactivating panel becomes key on click and takes keystrokes without
-        // pulling activation off the meeting app (UX23). Shown without stealing focus (quiet register);
-        // it only becomes key on an explicit click.
-        panel.becomesKeyOnlyIfNeeded = false
+        panel.becomesKeyOnlyIfNeeded = true
         panel.isMovableByWindowBackground = true
         panel.hasShadow = true
         panel.backgroundColor = .clear
         panel.isOpaque = false
 
         panel.contentView = makeContentView(source: source, workflow: workflow)
-        // Stop takes first keyboard focus; Tab reaches the off-record toggle (wired in makeContentView).
-        panel.initialFirstResponder = stopButton
         return panel
     }
 
@@ -418,12 +412,6 @@ final class RecordingHUDWindow {
             offRecord.widthAnchor.constraint(equalToConstant: 26),
             offRecord.heightAnchor.constraint(equalToConstant: 26),
         ])
-
-        // Keyboard tab order (UX23): Stop <-> off-record toggle. `stopButton` is the panel's initial
-        // first responder (set in makePanel), so a click on the pill focuses Stop and Tab reaches
-        // the toggle.
-        stop.nextKeyView = offRecord
-        offRecord.nextKeyView = stop
         return bg
     }
 
@@ -491,26 +479,6 @@ final class RecordingHUDWindow {
 }
 
 // MARK: - HUD chrome
-
-/// Borderless nonactivating pill that can still become key (UX23), so Stop + the off-record toggle
-/// are keyboard-reachable once the user clicks the pill. A plain borderless window returns false from
-/// `canBecomeKey`; overriding it lets Tab / Space / Return drive the controls after a click.
-private final class HUDPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-
-    /// A floating panel in an accessory app does not reliably become key on its own, so a click left
-    /// the pill unfocused with no ring. Force it here, but only for a click on the empty pill body: a
-    /// mouse click on Stop / the off-record toggle keeps the quiet nonactivating behavior, while a
-    /// click in the pill body focuses it so Tab / Space drive Stop + the toggle (UX23). Mirrors
-    /// QuickFind's makeKey + activate. A body click still drags the pill (super handles it).
-    override func sendEvent(_ event: NSEvent) {
-        if event.type == .leftMouseDown, !isKeyWindow, MPPanelFocus.isEmptyAreaClick(self, event) {
-            NSApp.activate(ignoringOtherApps: true)
-            makeKey()
-        }
-        super.sendEvent(event)
-    }
-}
 
 /// Translucent rounded background using `hudWindow` material, matching the prompt panel.
 private final class HUDBackgroundView: NSView {
@@ -785,16 +753,5 @@ private final class HUDOffRecordButton: NSButton {
     }
 
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
-
-    // Keyboard (UX23): reachable by Tab and activatable by Space / Return, with the system focus ring.
-    override var acceptsFirstResponder: Bool { true }
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 49 || event.keyCode == 36 || event.keyCode == 76 { performClick(nil) }
-        else { super.keyDown(with: event) }
-    }
-    override func drawFocusRingMask() {
-        NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 5, yRadius: 5).fill()
-    }
-    override var focusRingMaskBounds: NSRect { bounds }
 }
 
