@@ -32,6 +32,7 @@ struct LibraryListView: View {
                         matchCount: derived.filtered.count,
                         totalCount: derived.scoped.count
                     )
+                    searchHintStrip
                     Divider()
                     if derived.filtered.isEmpty {
                         emptyListState
@@ -78,6 +79,28 @@ struct LibraryListView: View {
             return wf.name
         }
         return scope.title
+    }
+
+    /// UX23: a one-line hint under the filter bar when full-text search is still building or has
+    /// degraded, shown only while the user is actually searching (an empty query needs no hint).
+    /// Without this, a degraded index silently narrowed to title/summary matches with no signal.
+    @ViewBuilder
+    private var searchHintStrip: some View {
+        if !filter.query.isEmpty, let hint = libraryModel.searchHint {
+            let degraded = libraryModel.searchHealth == .degraded
+            HStack(spacing: 6) {
+                Image(systemName: degraded ? "exclamationmark.triangle" : "clock")
+                    .font(.system(size: 10))
+                    .foregroundStyle(degraded ? Color.mpWarning : Color(MPColors.fgSubtle))
+                Text(hint)
+                    .font(.mpTextXS)
+                    .foregroundStyle(Color(MPColors.fgMuted))
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 6)
+        }
     }
 
     /// Recompute the derived list state, guarded by the fingerprint so unrelated re-renders don't run the filter/group chain.

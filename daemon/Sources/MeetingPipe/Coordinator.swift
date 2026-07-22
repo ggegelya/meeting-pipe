@@ -674,6 +674,7 @@ final class Coordinator: NSObject {
     lazy var quickFindWindow: QuickFindWindow = QuickFindWindow(
         meetingStore: libraryModel.meetingStore,
         ftsMatches: { [weak self] query in self?.libraryModel.matchingStems(query) },
+        searchHealth: { [weak self] in self?.libraryModel.searchHealth ?? .ready },
         onSelect: { [weak self] meeting in
             self?.openMeeting(stem: meeting.stem)
         }

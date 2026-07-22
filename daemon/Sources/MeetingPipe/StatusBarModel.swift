@@ -26,8 +26,12 @@ enum StatusBarModel {
     enum Row: Equatable {
         /// Informational unless `retryable`, which is the LOCAL1 retry affordance.
         case modelDownload(title: String, retryable: Bool, toolTip: String?)
-        case permissionsWarning
-        /// The Screen Recording deep link, only alongside `permissionsWarning`.
+        /// One row per missing permission, naming what stops working (UX23):
+        /// "Microphone off: recordings will be silent", etc. Replaces the old
+        /// single vague "Permissions need attention" row.
+        case permissionConsequence(title: String)
+        /// The Screen Recording deep link, only alongside a screen-recording
+        /// `permissionConsequence`.
         case screenRecordingShortcut
         case accessibilityDegraded
         case failedMeetings(count: Int, title: String)
@@ -193,14 +197,14 @@ enum StatusBarModel {
             rows.append(download)
         }
 
-        // One warning row when any of mic / screen-recording / accessibility is
-        // ungranted, routing to the Permissions tab (TECH-E3); the Screen
-        // Recording deep link stays for that specific case.
-        if hasPendingPermissionIssue(i) {
-            rows.append(.permissionsWarning)
-            if i.screenRecordingCaptureDenied {
-                rows.append(.screenRecordingShortcut)
-            }
+        // One row per missing permission, each naming what stops working (UX23),
+        // routing to the Permissions tab (TECH-E3); the Screen Recording deep link
+        // stays under the screen-recording consequence.
+        for line in permissionConsequences(i) {
+            rows.append(.permissionConsequence(title: line))
+        }
+        if i.screenRecordingCaptureDenied {
+            rows.append(.screenRecordingShortcut)
         }
 
         // TECH-END4 (c): Accessibility drives native meeting-end detection, so a
@@ -249,6 +253,25 @@ enum StatusBarModel {
         if i.screenRecording == .denied { return true }
         if i.accessibility == .denied { return true }
         return false
+    }
+
+    /// One consequence line per missing permission (UX23): the menu names what
+    /// actually stops working, not just that "attention is needed". Accessibility
+    /// is deliberately absent here because it already has its own dedicated
+    /// `accessibilityDegraded` row that names its own consequence. Mic counts
+    /// `.notDetermined` for the same reason `hasPendingPermissionIssue` does (an
+    /// unprompted mic is a recording that will be silent), and the screen-recording
+    /// line fires on either the TCC `.denied` status or the capture probe's denial,
+    /// since either one means the call audio is lost.
+    static func permissionConsequences(_ i: Inputs) -> [String] {
+        var out: [String] = []
+        if i.microphone == .denied || i.microphone == .notDetermined {
+            out.append("⚠ Microphone off: recordings will be silent")
+        }
+        if i.screenRecording == .denied || i.screenRecordingCaptureDenied {
+            out.append("⚠ Screen Recording off: the call audio will not be recorded (mic only)")
+        }
+        return out
     }
 
     static func downloadRow(_ download: ModelDownloadSupervisor.State) -> Row? {

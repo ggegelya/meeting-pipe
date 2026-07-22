@@ -397,6 +397,17 @@ final class StatusBarController {
         ))
     }
 
+    /// The per-permission consequence lines for the menu (UX23), sourced from the
+    /// live `PermissionsCenter` + the separate capture-denial probe.
+    private func permissionConsequences() -> [String] {
+        let center = PermissionsCenter.shared
+        return StatusBarModel.permissionConsequences(.init(
+            microphone: center.microphone,
+            screenRecording: center.screenRecording,
+            screenRecordingCaptureDenied: SystemAudioCapture.permissionState == .denied
+        ))
+    }
+
     private func rebuildMenu(state: AppState) {
         lastMenuState = state
         let menu = NSMenu()
@@ -426,17 +437,20 @@ final class StatusBarController {
             menu.addItem(.separator())
         }
 
-        // One warning row when any of mic/screen-recording/accessibility is
-        // ungranted, routing to the Permissions tab (TECH-E3); the
-        // Screen-Recording shortcut stays for that specific case.
-        if hasPendingPermissionIssue() {
-            let warn = NSMenuItem(
-                title: "⚠ Permissions need attention - Open Preferences…",
-                action: #selector(Coordinator.menuPreferencesPermissions),
-                keyEquivalent: ""
-            )
-            warn.target = coordinator
-            menu.addItem(warn)
+        // One row per missing permission, each naming what stops working (UX23),
+        // routing to the Permissions tab (TECH-E3); the Screen-Recording shortcut
+        // stays under the screen-recording consequence.
+        let consequences = permissionConsequences()
+        if !consequences.isEmpty {
+            for line in consequences {
+                let row = NSMenuItem(
+                    title: line,
+                    action: #selector(Coordinator.menuPreferencesPermissions),
+                    keyEquivalent: ""
+                )
+                row.target = coordinator
+                menu.addItem(row)
+            }
             if SystemAudioCapture.permissionState == .denied {
                 let scrShortcut = NSMenuItem(
                     title: "Open Screen Recording Settings…",

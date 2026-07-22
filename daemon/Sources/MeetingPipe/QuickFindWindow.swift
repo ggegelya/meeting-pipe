@@ -11,11 +11,13 @@ final class QuickFindWindow {
     init(
         meetingStore: MeetingStore,
         ftsMatches: @escaping (String) -> Set<String>? = { _ in nil },
+        searchHealth: @escaping () -> SearchIndexer.Health = { .ready },
         onSelect: @escaping (Meeting) -> Void
     ) {
         let placeholder = QuickFindModel(
             meetingStore: meetingStore,
             ftsMatches: ftsMatches,
+            searchHealth: searchHealth,
             onSelect: onSelect,
             onDismiss: {}
         )
@@ -67,11 +69,16 @@ final class QuickFindModel: ObservableObject {
     @Published private(set) var matches: [QuickFindRanker.Match] = []
     /// Clamped on every recompute so a result reshuffle doesn't strand the highlight off the end of the list.
     @Published var selectedIndex: Int = 0
+    /// UX23: the search index's health, refreshed on each recompute so the panel can show a one-line
+    /// hint when full-text search is still building or has degraded. Read at recompute time (rather
+    /// than observed) because the panel is transient and re-samples on every keystroke.
+    @Published private(set) var indexHealth: SearchIndexer.Health = .ready
 
     private let meetingStore: MeetingStore
     /// UX16: FTS candidate stems for the query, so Quick Find searches full transcripts too. Nil
     /// (empty query / no index) means field-only ranking, unchanged.
     private let ftsMatches: (String) -> Set<String>?
+    private let searchHealth: () -> SearchIndexer.Health
     private let onSelect: (Meeting) -> Void
     var onDismiss: () -> Void
     private var cancellables: Set<AnyCancellable> = []
@@ -79,11 +86,13 @@ final class QuickFindModel: ObservableObject {
     init(
         meetingStore: MeetingStore,
         ftsMatches: @escaping (String) -> Set<String>? = { _ in nil },
+        searchHealth: @escaping () -> SearchIndexer.Health = { .ready },
         onSelect: @escaping (Meeting) -> Void,
         onDismiss: @escaping () -> Void
     ) {
         self.meetingStore = meetingStore
         self.ftsMatches = ftsMatches
+        self.searchHealth = searchHealth
         self.onSelect = onSelect
         self.onDismiss = onDismiss
         meetingStore.objectWillChange
@@ -115,6 +124,7 @@ final class QuickFindModel: ObservableObject {
     }
 
     private func recomputeMatches() {
+        indexHealth = searchHealth()
         let m = QuickFindRanker.rank(
             query: query,
             in: meetingStore.meetings,
@@ -145,6 +155,7 @@ struct QuickFindView: View {
     var body: some View {
         VStack(spacing: 0) {
             searchHeader
+            searchHintStrip
             Divider()
             results
         }
@@ -174,6 +185,27 @@ struct QuickFindView: View {
         }
         .padding(.horizontal, 14)
         .frame(height: 40)
+    }
+
+    /// UX23: the same building/degraded hint the Library filter bar shows, so a Quick Find search
+    /// over a still-building or degraded index explains why transcript matches may be missing. Shown
+    /// only while the user is searching.
+    @ViewBuilder
+    private var searchHintStrip: some View {
+        if !model.query.isEmpty, let hint = SearchIndexer.searchHint(for: model.indexHealth) {
+            let degraded = model.indexHealth == .degraded
+            HStack(spacing: 6) {
+                Image(systemName: degraded ? "exclamationmark.triangle" : "clock")
+                    .font(.system(size: 10))
+                    .foregroundStyle(degraded ? Color.mpWarning : Color(MPColors.fgSubtle))
+                Text(hint)
+                    .font(.mpTextXS)
+                    .foregroundStyle(Color(MPColors.fgMuted))
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 6)
+        }
     }
 
     @ViewBuilder

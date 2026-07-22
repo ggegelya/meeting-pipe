@@ -5,6 +5,9 @@ protocol RecordingHUDDelegate: AnyObject {
     func recordingHUDDidRequestStop(_ hud: RecordingHUDWindow)
     /// User tapped "Retry system audio" on the degraded banner (TECH-UX4).
     func recordingHUDDidRequestRetrySystemAudio(_ hud: RecordingHUDWindow)
+    /// User toggled off-the-record from the HUD (MIC14 discoverability, UX23): the icon toggle beside
+    /// Stop, or the right-click menu. The session controller owns the actual on/off state.
+    func recordingHUDDidRequestToggleOffTheRecord(_ hud: RecordingHUDWindow)
 }
 
 /// Threading: every public method must run on the main queue. Same contract
@@ -37,6 +40,10 @@ final class RecordingHUDWindow {
     /// The "Recording" state label, swapped to "Off the record" while a manual off-record span is
     /// open (MIC14). Held so `setOffTheRecord` can retitle + retint it.
     private weak var recordingLabel: NSTextField?
+
+    /// The off-the-record toggle beside Stop (MIC14 discoverability, UX23). Held so `setOffTheRecord`
+    /// can flip its glyph + tint to reflect the live state.
+    private weak var offRecordButton: HUDOffRecordButton?
 
     // 60 → 76: at 60 the "Recording" label (8pt dot + 5pt gap + 50pt text = 63pt) and
     // workflow names past ~9 chars overflowed the pill and were sliced by the rounded
@@ -231,6 +238,8 @@ final class RecordingHUDWindow {
     func setOffTheRecord(_ on: Bool) {
         recordingLabel?.stringValue = on ? "Off the record" : "Recording"
         recordingLabel?.textColor = on ? MPColors.pulse600 : MPColors.fgMuted
+        offRecordButton?.setActive(on)
+        (contentView as? HUDBackgroundView)?.isOffRecord = on
         if degradedBanner == nil {
             resizePanelAnchoringTopRight(width: on ? Self.offRecordPanelWidth : Self.panelWidth, height: Self.panelHeight)
         }
@@ -344,6 +353,16 @@ final class RecordingHUDWindow {
         stop.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(stop)
 
+        // Off-the-record toggle beside Stop (MIC14 discoverability, UX23). One click marks a
+        // sensitive stretch to keep out of the notes; the glyph + tint flip to coral while the span
+        // is open, mirroring the "Off the record" state label. Also reachable from the HUD's
+        // right-click menu. The [Stop + toggle] pair is centred (Stop shifted left by half the
+        // toggle+gap), so it still fits the 76pt pill.
+        let offRecord = HUDOffRecordButton(target: bg, action: #selector(HUDBackgroundView.didClickOffRecord))
+        offRecord.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(offRecord)
+        self.offRecordButton = offRecord
+
         // Retain refs so the degraded banner can be added lazily (TECH-UX4):
         // keeping it out of the tree while collapsed stops its wide content
         // from inflating the borderless panel's fitting width.
@@ -379,13 +398,19 @@ final class RecordingHUDWindow {
             // No fixed height: the label sizes to one row (name) or two (name +
             // NDA eyebrow). TECH-DSN13 - it used to overlap in a fixed 14pt box.
 
-            // The 40pt record key sits at the foot, pinned to the bottom; the
-            // top-anchored stack above and this pin leave a flexible gap between,
-            // which absorbs the taller (NDA two-row) workflow label.
-            stop.centerXAnchor.constraint(equalTo: bg.centerXAnchor),
+            // The record key sits at the foot, pinned to the bottom; the top-anchored stack above
+            // and this pin leave a flexible gap between, which absorbs the taller (NDA two-row)
+            // workflow label. Shifted left by 17pt so [Stop + off-record toggle] reads as a centred
+            // pair (34 + 8 + 26 = 68pt within the 76pt pill).
+            stop.centerXAnchor.constraint(equalTo: bg.centerXAnchor, constant: -17),
             stopBottom,
             stop.widthAnchor.constraint(equalToConstant: RecordKey.Geometry.side),
             stop.heightAnchor.constraint(equalToConstant: RecordKey.Geometry.side),
+
+            offRecord.leadingAnchor.constraint(equalTo: stop.trailingAnchor, constant: 8),
+            offRecord.centerYAnchor.constraint(equalTo: stop.centerYAnchor),
+            offRecord.widthAnchor.constraint(equalToConstant: 26),
+            offRecord.heightAnchor.constraint(equalToConstant: 26),
         ])
         return bg
     }
@@ -429,6 +454,10 @@ final class RecordingHUDWindow {
         delegate?.recordingHUDDidRequestRetrySystemAudio(self)
     }
 
+    fileprivate func handleToggleOffTheRecord() {
+        delegate?.recordingHUDDidRequestToggleOffTheRecord(self)
+    }
+
     private static func fallbackGlyph() -> NSImage {
         // Vector waveform mark (same as the menu-bar icon) so it scales cleanly at 24x24.
         let img = NSImage(size: NSSize(width: 24, height: 24), flipped: false) { rect in
@@ -455,6 +484,8 @@ final class RecordingHUDWindow {
 private final class HUDBackgroundView: NSView {
     var cornerRadius: CGFloat = MPRadius.lg { didSet { needsLayout = true } }
     weak var host: RecordingHUDWindow?
+    /// Mirrors the live off-the-record state so the right-click menu label reads correctly (UX23).
+    var isOffRecord = false
 
     private let blur = NSVisualEffectView()
 
@@ -492,6 +523,25 @@ private final class HUDBackgroundView: NSView {
 
     @objc func didClickStop() { host?.handleStop() }
     @objc func didClickRetrySystemAudio() { host?.handleRetrySystemAudio() }
+    @objc func didClickOffRecord() { host?.handleToggleOffTheRecord() }
+
+    /// Right-click menu (UX23): the second discoverable path to off-the-record, plus Stop. The label
+    /// reflects the live state so it reads "Back on the record" while a span is open.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        let offRec = NSMenuItem(
+            title: isOffRecord ? "Back on the record" : "Go off the record",
+            action: #selector(didClickOffRecord),
+            keyEquivalent: ""
+        )
+        offRec.target = self
+        menu.addItem(offRec)
+        menu.addItem(.separator())
+        let stop = NSMenuItem(title: "Stop recording", action: #selector(didClickStop), keyEquivalent: "")
+        stop.target = self
+        menu.addItem(stop)
+        return menu
+    }
 }
 
 /// Core Animation opacity-loop pulse dot; starts with the HUD, stops on dismiss.
@@ -671,5 +721,37 @@ private final class HUDDegradedBanner: NSView {
         ])
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+/// Compact off-the-record toggle beside Stop on the HUD (MIC14 discoverability, UX23). A borderless
+/// mic-slash glyph that tints coral and fills while an off-record span is open, mirroring the "Off
+/// the record" state label. VoiceOver reads its current action; the tooltip mirrors it.
+private final class HUDOffRecordButton: NSButton {
+    init(target: AnyObject?, action: Selector?) {
+        super.init(frame: .zero)
+        self.target = target
+        self.action = action
+        title = ""
+        isBordered = false
+        bezelStyle = .regularSquare
+        imagePosition = .imageOnly
+        wantsLayer = true
+        setActive(false)
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Reflect the live off-the-record state: a filled coral glyph while open, a muted outline when
+    /// not. Also updates the tooltip + VoiceOver label to name the action the next tap performs.
+    func setActive(_ on: Bool) {
+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        image = NSImage(systemSymbolName: on ? "mic.slash.fill" : "mic.slash", accessibilityDescription: nil)?
+            .withSymbolConfiguration(config)
+        contentTintColor = on ? MPColors.pulse600 : MPColors.fgMuted
+        let label = on ? "Back on the record" : "Go off the record"
+        toolTip = label
+        setAccessibilityLabel(label)
+    }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 }
 

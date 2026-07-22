@@ -85,6 +85,7 @@ enum DoctorCommand {
         out.append(Probe(name: "pipeline.roundtrip", run: probePipelineRoundtrip))
         out.append(Probe(name: "events.writable", run: probeEventsWritable))
         out.append(Probe(name: "library.orphans", run: probeOrphans))
+        out.append(Probe(name: "search.index", run: probeSearchIndex))
         return out
     }
 
@@ -104,6 +105,7 @@ enum DoctorCommand {
         }
         out.append(Probe(name: "events.writable", run: probeEventsWritable))
         out.append(Probe(name: "library.orphans", run: probeOrphans))
+        out.append(Probe(name: "search.index", run: probeSearchIndex))
         return out
     }
 
@@ -366,6 +368,26 @@ enum DoctorCommand {
             name: "events.writable",
             status: .ok,
             message: "\(url.path) writable."
+        )
+    }
+
+    /// Open the FTS5 search index and report whether Library search has its full-text depth (UX23).
+    /// A `.fail` is the permanent degraded case (SQLite could not open the cache, or FTS5 is not
+    /// compiled into the linked SQLite), where search silently falls back to titles + summaries only.
+    static func probeSearchIndex() -> ProbeResult {
+        let url = SearchIndexer.defaultIndexURL()
+        guard let index = SearchIndex(url: url) else {
+            return ProbeResult(
+                name: "search.index",
+                status: .fail,
+                message: "FTS index could not open at \(url.path); Library search is limited to titles and summaries."
+            )
+        }
+        let count = index.indexedSignatures().count
+        return ProbeResult(
+            name: "search.index",
+            status: .ok,
+            message: "FTS index reachable; \(count) meeting\(count == 1 ? "" : "s") indexed."
         )
     }
 }

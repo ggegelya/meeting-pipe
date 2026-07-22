@@ -96,6 +96,7 @@ final class DoctorCommandTests: XCTestCase {
         XCTAssertTrue(names.contains("pipeline.binary"))
         XCTAssertTrue(names.contains("pipeline.roundtrip"))
         XCTAssertTrue(names.contains("events.writable"))
+        XCTAssertTrue(names.contains("search.index"))   // UX23
         // Every known meeting app gets an ax.app.<bundle> probe.
         for bundleID in DoctorCommand.knownMeetingBundleIDs {
             XCTAssertTrue(
@@ -103,6 +104,12 @@ final class DoctorCommandTests: XCTestCase {
                 "missing per-app probe for \(bundleID)"
             )
         }
+    }
+
+    /// UX23: the search-index probe is in the in-app doctor sheet's probe set too, not only the CLI.
+    func test_daemonSelfCheckProbes_includes_search_index() {
+        let names = DoctorCommand.daemonSelfCheckProbes().map { $0.name }
+        XCTAssertTrue(names.contains("search.index"))
     }
 
     // MARK: - Per-probe pure helpers

@@ -169,4 +169,10 @@ extension Coordinator: RecordingHUDDelegate {
         // onSystemAudioRecovered to clear the banner on success.
         recorder.retrySystemAudio()
     }
+
+    func recordingHUDDidRequestToggleOffTheRecord(_ hud: RecordingHUDWindow) {
+        // MIC14 discoverability (UX23): same entry point the off-the-record hotkey uses. A no-op
+        // when idle; `toggleOffTheRecord` calls back into `hud.setOffTheRecord` to reflect the state.
+        session.toggleOffTheRecord()
+    }
 }

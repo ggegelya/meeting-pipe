@@ -32,6 +32,10 @@ final class SearchIndex {
             return nil
         }
         db = handle
+        // WAL allows a second connection (the UX23 doctor `search.index` probe opens one against the
+        // live cache); wait briefly for a lock rather than fail on SQLITE_BUSY during an in-flight
+        // reconcile write.
+        sqlite3_busy_timeout(handle, 2000)
         guard prepareSchema() else {
             sqlite3_close(handle)
             db = nil

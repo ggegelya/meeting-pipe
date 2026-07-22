@@ -11,12 +11,41 @@ import Foundation
 /// not open, so search never regresses below the pre-FTS title/summary behaviour.
 final class SearchIndexer: ObservableObject {
 
+    /// Whether full-text search is usable, so the surfaces can say why it is not (UX23). Before this,
+    /// `matchingStems` returned nil for both "index still building" and "SQLite could not open" and
+    /// degraded silently forever, with no way to tell the two apart.
+    enum Health: Equatable {
+        /// The index opened but the first reconcile has not finished, so transcript matches may be
+        /// incomplete for a moment (first-ever build, or after the cache was cleared).
+        case building
+        /// The index is open and caught up.
+        case ready
+        /// SQLite could not open the index or FTS5 is unavailable; search is stuck on the in-memory
+        /// title/summary corpus for this whole run.
+        case degraded
+    }
+
+    /// Published so the Library filter bar, Quick Find, and the mirror on `LibraryWindowModel` can
+    /// show a one-line hint. `.degraded` is terminal; `.building` flips to `.ready` after the first
+    /// reconcile completes.
+    @Published private(set) var health: Health
+
     /// Bumped on main after a reconcile that actually changed the index, so the list re-derives and
     /// picks up transcript matches that finished indexing after the query was typed. Folded into the
     /// list's memoization key.
     @Published private(set) var indexRevision: Int = 0
 
     private let index: SearchIndex?
+
+    /// A one-line hint for `health`, or nil when search is fully working. Shared by every surface so
+    /// the filter bar and Quick Find read identically (UX23).
+    static func searchHint(for health: Health) -> String? {
+        switch health {
+        case .ready: return nil
+        case .building: return "Indexing transcripts…"
+        case .degraded: return "Full-text search unavailable; searching titles and summaries only."
+        }
+    }
     private let indexQueue = DispatchQueue(label: "MeetingPipe.SearchIndexer", qos: .utility)
     private var cancellable: AnyCancellable?
 
@@ -28,7 +57,14 @@ final class SearchIndexer: ObservableObject {
     }
 
     init(store: MeetingStore, indexURL: URL = SearchIndexer.defaultIndexURL()) {
-        index = SearchIndex(url: indexURL)
+        let opened = SearchIndex(url: indexURL)
+        index = opened
+        // `.degraded` is terminal (SQLite/FTS5 unavailable); otherwise start `.building` and flip to
+        // `.ready` once the first reconcile finishes.
+        health = (opened == nil) ? .degraded : .building
+        if opened == nil {
+            Log.main.warning("Search index could not open at \(indexURL.path); search falls back to titles/summaries only.")
+        }
         // Rebuild off every rescan (already 500 ms-debounced by the store); snapshot the published
         // array on main, reconcile off-main. `revision` bumps on the first scan too, so the initial
         // build rides the same path.
@@ -72,8 +108,12 @@ final class SearchIndexer: ObservableObject {
                 index.delete(stem: stem)
             }
         }
-        if !actions.isEmpty {
-            DispatchQueue.main.async { [weak self] in self?.indexRevision += 1 }
+        // First (and every) reconcile completing means the index is caught up: leave `.building`.
+        let changed = !actions.isEmpty
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.health != .degraded { self.health = .ready }
+            if changed { self.indexRevision += 1 }
         }
     }
 

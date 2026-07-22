@@ -26,10 +26,18 @@ final class MeetingPromptWindow {
     private var currentWorkflow: Workflow?
     private let levelMonitor = MicLevelMonitor()
 
-    /// Auto-dismiss timer; paused on hover.
+    /// Primary Record button, held so the panel can make it the initial keyboard focus (UX23).
+    private weak var recordButton: PromptRecordButton?
+    /// Key-window observers: the auto-dismiss pauses while the panel is keyboard-engaged so it can't
+    /// vanish under a keyboard user mid-interaction (UX23).
+    private var keyObservers: [NSObjectProtocol] = []
+
+    /// Auto-dismiss timer; paused while the panel is hovered or keyboard-engaged.
     private var dismissTimer: Timer?
     private var dismissDeadline: Date?
     private var dismissRemainingOnPause: TimeInterval?
+    private var hoverActive = false
+    private var keyActive = false
 
     // 520 → 600 to fit the workflow chip (TECH-B5) without crowding the action cluster.
     private static let panelWidth: CGFloat = 600
@@ -52,8 +60,11 @@ final class MeetingPromptWindow {
         let panel = makePanel(source: source, timeoutSec: seconds)
         self.panel = panel
         positionPanel(panel)
+        observeKeyState(of: panel)
 
         panel.alphaValue = 0
+        // Shown without stealing key focus (quiet register); the nonactivating panel becomes key only
+        // when the user clicks it, and then receives keyboard without activating the app (UX23).
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = MPMotion.durBase
@@ -73,6 +84,11 @@ final class MeetingPromptWindow {
         dismissTimer = nil
         dismissDeadline = nil
         dismissRemainingOnPause = nil
+        for o in keyObservers { NotificationCenter.default.removeObserver(o) }
+        keyObservers.removeAll()
+        hoverActive = false
+        keyActive = false
+        recordButton = nil
         levelMonitor.stop()
         dismissProgress?.stop()
 
@@ -96,7 +112,7 @@ final class MeetingPromptWindow {
 
     private func makePanel(source: AppSource, timeoutSec: TimeInterval) -> NSPanel {
         let rect = NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight)
-        let panel = NSPanel(
+        let panel = PromptPanel(
             contentRect: rect,
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
@@ -106,13 +122,19 @@ final class MeetingPromptWindow {
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
-        panel.becomesKeyOnlyIfNeeded = true
+        // false (was true) so the panel's buttons are reachable by keyboard once the user engages it:
+        // a borderless nonactivating panel becomes key on click and, being nonactivating, takes
+        // keystrokes without pulling activation off the meeting app (UX23).
+        panel.becomesKeyOnlyIfNeeded = false
         panel.isMovableByWindowBackground = false
         panel.hasShadow = true
         panel.backgroundColor = .clear
         panel.isOpaque = false
 
         panel.contentView = makeContentView(source: source, timeoutSec: timeoutSec)
+        // Record is the primary action, so it takes first keyboard focus; Tab then reaches the
+        // chevron and the close control (wired in makeContentView).
+        panel.initialFirstResponder = recordButton
         return panel
     }
 
@@ -265,6 +287,13 @@ final class MeetingPromptWindow {
             progress.bottomAnchor.constraint(equalTo: bg.bottomAnchor),
             progress.heightAnchor.constraint(equalToConstant: 2),
         ])
+
+        // Keyboard tab order (UX23), reading order: Record (primary) -> chevron (more options) ->
+        // close (skip) -> back to Record. `recordButton` is the panel's initial first responder.
+        record.nextKeyView = chevron
+        chevron.nextKeyView = close
+        close.nextKeyView = record
+        self.recordButton = record
         return bg
     }
 
@@ -287,9 +316,24 @@ final class MeetingPromptWindow {
     }
 
     fileprivate func setHovered(_ hovered: Bool) {
-        dismissProgress?.setPaused(hovered)
-        if hovered {
-            if let deadline = dismissDeadline {
+        hoverActive = hovered
+        updateDismissHold()
+    }
+
+    /// Pause the auto-dismiss while the panel is keyboard-engaged (the key window), so it cannot
+    /// disappear under a keyboard user who has tabbed off the hover area (UX23).
+    private func setKeyboardEngaged(_ engaged: Bool) {
+        keyActive = engaged
+        updateDismissHold()
+    }
+
+    /// The auto-dismiss is held whenever the panel is hovered or keyboard-engaged; it resumes with
+    /// the time that was remaining when the first hold began.
+    private func updateDismissHold() {
+        let hold = hoverActive || keyActive
+        dismissProgress?.setPaused(hold)
+        if hold {
+            if dismissRemainingOnPause == nil, let deadline = dismissDeadline {
                 dismissRemainingOnPause = max(0, deadline.timeIntervalSinceNow)
             }
             dismissTimer?.invalidate()
@@ -298,6 +342,19 @@ final class MeetingPromptWindow {
             scheduleAutoDismiss(after: remaining)
             dismissRemainingOnPause = nil
         }
+    }
+
+    /// Observe the panel's key state so `setKeyboardEngaged` can hold/resume the auto-dismiss (UX23).
+    private func observeKeyState(of panel: NSPanel) {
+        let center = NotificationCenter.default
+        keyObservers = [
+            center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: panel, queue: .main) { [weak self] _ in
+                self?.setKeyboardEngaged(true)
+            },
+            center.addObserver(forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) { [weak self] _ in
+                self?.setKeyboardEngaged(false)
+            },
+        ]
     }
 
     // MARK: - Click handling
@@ -419,6 +476,15 @@ final class MeetingPromptWindow {
     }
 }
 
+// MARK: - Panel
+
+/// Borderless nonactivating panel that can still become key (UX23). A plain borderless window returns
+/// false from `canBecomeKey`, which would leave the prompt's buttons unreachable by keyboard;
+/// overriding it lets Tab / Space / Return drive the controls once the user clicks the panel.
+private final class PromptPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
 // MARK: - Background
 
 /// Translucent rounded background; owns the mouse-tracking that pauses the auto-dismiss progress bar on hover.
@@ -499,8 +565,18 @@ private final class CloseButton: NSButton {
         wantsLayer = true
         title = ""
         toolTip = "Dismiss"
+        setAccessibilityLabel("Skip meeting")
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    // Keyboard (UX23): reachable by Tab and activatable by Space / Return, with the system focus ring.
+    override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 49 || event.keyCode == 36 || event.keyCode == 76 { performClick(nil) }
+        else { super.keyDown(with: event) }
+    }
+    override func drawFocusRingMask() { NSBezierPath(ovalIn: bounds.insetBy(dx: 1, dy: 1)).fill() }
+    override var focusRingMaskBounds: NSRect { bounds }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -561,8 +637,21 @@ private final class ChevronMenuButton: NSButton {
         wantsLayer = true
         title = ""
         toolTip = "More options"
+        setAccessibilityLabel("More options")
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    // Keyboard (UX23): reachable by Tab and activatable by Space / Return (opens the menu), with the
+    // system focus ring on the capsule.
+    override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 49 || event.keyCode == 36 || event.keyCode == 76 { performClick(nil) }
+        else { super.keyDown(with: event) }
+    }
+    override func drawFocusRingMask() {
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: MPRadius.full, yRadius: MPRadius.full).fill()
+    }
+    override var focusRingMaskBounds: NSRect { bounds }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -677,6 +766,32 @@ final class PromptRecordButton: NSControl {
     }
 
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+
+    // MARK: Keyboard (UX23)
+
+    override var acceptsFirstResponder: Bool { isEnabled }
+
+    override func becomeFirstResponder() -> Bool {
+        // Accent focus ring on the capsule edge. Drawn as a layer border (the control is layer-backed
+        // with no `draw(_:)`, so the AppKit focus-ring mask has nothing to composite against).
+        layer?.borderColor = NSColor.keyboardFocusIndicatorColor.cgColor
+        layer?.borderWidth = 2
+        return super.becomeFirstResponder()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        layer?.borderWidth = 0
+        return super.resignFirstResponder()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        // Space / Return / keypad Enter activate, like a standard button.
+        if event.keyCode == 49 || event.keyCode == 36 || event.keyCode == 76 {
+            if isEnabled { sendAction(action, to: target) }
+        } else {
+            super.keyDown(with: event)
+        }
+    }
 }
 
 /// Single-line label with an optional click target; used for the question subline (plain) or the permission-denied warning (clickable to System Settings).

@@ -70,8 +70,12 @@ struct GeneralSectionView: View {
                     sublabel: "Mark the current moment while recording; it surfaces in the summary and as a chip in the transcript.") {
                     SettingsHotkeyField(text: $store.flagMomentHotkey)
                 }
+                SettingsRow("Off the record",
+                    sublabel: "Mark a sensitive stretch as off the record while recording; toggle again to resume. The marked span is kept out of the notes.") {
+                    SettingsHotkeyField(text: $store.offTheRecordHotkey)
+                }
             } footer: {
-                Text("Click a field, then press the chord you want to bind (one or more of ⌃⌥⇧⌘ plus a letter). The toggle hotkey starts/stops; the force-stop hotkey only stops, so panic-pressing can never accidentally start a recording; the flag hotkey marks the current moment while a recording is running. Restart MeetingPipe after changing.")
+                Text("Click a field, then press the chord you want to bind (one or more of ⌃⌥⇧⌘ plus a letter). The toggle hotkey starts/stops; the force-stop hotkey only stops, so panic-pressing can never accidentally start a recording; the flag hotkey marks the current moment while a recording is running; the off-the-record hotkey (also a toggle on the recording HUD) marks a stretch to keep out of the notes. Restart MeetingPipe after changing.")
             }
         }
     }

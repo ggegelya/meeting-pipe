@@ -161,6 +161,39 @@ final class StatusBarModelTests: XCTestCase {
         XCTAssertFalse(M.hasPendingPermissionIssue(.init(accessibility: .notDetermined)))
     }
 
+    /// UX23: each missing permission names what stops working, and accessibility
+    /// is deliberately not among them (it has its own `accessibilityDegraded` row).
+    func test_permission_consequences_name_what_breaks() {
+        XCTAssertEqual(M.permissionConsequences(.init()), [])
+        XCTAssertEqual(
+            M.permissionConsequences(.init(microphone: .denied)),
+            ["⚠ Microphone off: recordings will be silent"]
+        )
+        // notDetermined is still a silent recording waiting to happen.
+        XCTAssertEqual(
+            M.permissionConsequences(.init(microphone: .notDetermined)),
+            ["⚠ Microphone off: recordings will be silent"]
+        )
+        XCTAssertEqual(
+            M.permissionConsequences(.init(screenRecording: .denied)),
+            ["⚠ Screen Recording off: the call audio will not be recorded (mic only)"]
+        )
+        // The capture probe alone is authoritative even if the TCC read lags.
+        XCTAssertEqual(
+            M.permissionConsequences(.init(screenRecordingCaptureDenied: true)),
+            ["⚠ Screen Recording off: the call audio will not be recorded (mic only)"]
+        )
+        XCTAssertEqual(M.permissionConsequences(.init(accessibility: .denied)), [])
+        // Order is mic, then screen recording.
+        XCTAssertEqual(
+            M.permissionConsequences(.init(microphone: .denied, screenRecording: .denied)),
+            [
+                "⚠ Microphone off: recordings will be silent",
+                "⚠ Screen Recording off: the call audio will not be recorded (mic only)",
+            ]
+        )
+    }
+
     // MARK: - Rows
 
     func test_idle_menu_is_start_plus_quit() {
@@ -189,31 +222,33 @@ final class StatusBarModelTests: XCTestCase {
         XCTAssertEqual(M.rows(.init(state: .idle, disableAutoRestart: true)), [.startRecording])
     }
 
-    /// The Screen Recording deep link only appears alongside the generic warning,
-    /// and only for the capture probe's `.denied`, which is a separate signal
-    /// from the `screenRecording` permission status.
-    func test_screen_recording_shortcut_requires_the_warning_row() {
-        let withWarning = M.rows(.init(
+    /// The Screen Recording deep link sits under the screen-recording consequence
+    /// row. The capture probe's `.denied` is a separate signal from the
+    /// `screenRecording` permission status, and on its own is authoritative enough
+    /// to name the consequence and offer the link (UX23).
+    func test_screen_recording_consequence_and_shortcut() {
+        let srLine = "⚠ Screen Recording off: the call audio will not be recorded (mic only)"
+        let denied = M.rows(.init(
             state: .idle, screenRecording: .denied, screenRecordingCaptureDenied: true
         ))
         XCTAssertEqual(
-            withWarning,
-            [.permissionsWarning, .screenRecordingShortcut, .startRecording, .quitWithoutRelaunch]
+            denied,
+            [.permissionConsequence(title: srLine), .screenRecordingShortcut, .startRecording, .quitWithoutRelaunch]
         )
 
         let captureOnly = M.rows(.init(state: .idle, screenRecordingCaptureDenied: true))
-        XCTAssertFalse(
-            captureOnly.contains(.screenRecordingShortcut),
-            "the deep link is a child of the warning row, not a standalone"
+        XCTAssertEqual(
+            captureOnly,
+            [.permissionConsequence(title: srLine), .screenRecordingShortcut, .startRecording, .quitWithoutRelaunch]
         )
     }
 
-    /// TECH-END4 (c): Accessibility gets its own row on top of the generic one,
-    /// because a denial silently degrades native end-detection.
-    func test_accessibility_denied_adds_its_own_row_as_well() {
+    /// TECH-END4 (c): Accessibility keeps its own consequence row; it is not
+    /// duplicated into the per-permission consequence list (UX23).
+    func test_accessibility_denied_adds_its_own_row_only() {
         XCTAssertEqual(
             M.rows(.init(state: .idle, accessibility: .denied)),
-            [.permissionsWarning, .accessibilityDegraded, .startRecording, .quitWithoutRelaunch]
+            [.accessibilityDegraded, .startRecording, .quitWithoutRelaunch]
         )
     }
 
@@ -241,7 +276,8 @@ final class StatusBarModelTests: XCTestCase {
         ))
         XCTAssertEqual(rows, [
             .modelDownload(title: "⚠ Model download failed (b) - Retry", retryable: true, toolTip: "boom"),
-            .permissionsWarning,
+            .permissionConsequence(title: "⚠ Microphone off: recordings will be silent"),
+            .permissionConsequence(title: "⚠ Screen Recording off: the call audio will not be recorded (mic only)"),
             .screenRecordingShortcut,
             .accessibilityDegraded,
             .failedMeetings(count: 2, title: "⚠ 2 meetings failed - open Library to retry"),

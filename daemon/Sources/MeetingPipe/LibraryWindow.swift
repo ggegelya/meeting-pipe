@@ -139,6 +139,15 @@ final class LibraryWindowModel: ObservableObject {
     @Published private(set) var searchIndexRevision: Int = 0
     private var searchCancellable: AnyCancellable?
 
+    /// Mirrors `searchIndexer.health` so the filter bar and Quick Find can show why full-text search
+    /// is unavailable or still building (UX23). Defaults to `.ready` so the hint stays hidden until an
+    /// indexer that is actually building or degraded is attached (headless has none).
+    @Published private(set) var searchHealth: SearchIndexer.Health = .ready
+    private var searchHealthCancellable: AnyCancellable?
+
+    /// The one-line search hint for the current health, or nil when search is fully working (UX23).
+    var searchHint: String? { SearchIndexer.searchHint(for: searchHealth) }
+
     /// Assigned by the Coordinator after it builds the store (TECH-B). Nil-able so headless tests and the initial-state path don't need it.
     weak var workflowStore: WorkflowStore?
 
@@ -154,6 +163,9 @@ final class LibraryWindowModel: ObservableObject {
         searchCancellable = indexer.$indexRevision
             .receive(on: DispatchQueue.main)
             .sink { [weak self] rev in self?.searchIndexRevision = rev }
+        searchHealthCancellable = indexer.$health
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] h in self?.searchHealth = h }
     }
 
     /// FTS candidate stems for the free-text query, or nil to fall back to in-memory search (empty
