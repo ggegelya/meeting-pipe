@@ -109,8 +109,32 @@ def test_write_run_sidecar_roundtrip(tmp_path: Path):
         "summary_json_path": str(summary_json),
         "backend": "anthropic",
         "model": "claude-sonnet-4-6",
+        # LOCAL11: always present, "" for every backend but a local one serving a
+        # LoRA adapter. A cloud run records the empty string rather than omitting
+        # the key, so a reader never has to distinguish "no adapter" from "written
+        # by an older `mp`".
+        "adapter_path": "",
         "ts": "2026-05-08T14:33:00Z",
     }
+
+
+def test_write_run_sidecar_records_the_served_adapter(tmp_path: Path):
+    """LOCAL11: a local run that served a LoRA adapter says so, so an adapter A/B
+    can tell "the adapter did not help" from "the adapter never served"."""
+    out = corrections.write_run_sidecar(
+        recordings_dir=tmp_path,
+        stem="20260508",
+        transcript_path=tmp_path / "20260508.md",
+        transcript_chars=42,
+        summary_json_path=tmp_path / "20260508.summary.json",
+        backend="local",
+        model="mlx-community/Qwen2.5-7B-Instruct-4bit",
+        adapter_path="/adapters/lora-2026-07",
+        ts="2026-05-08T14:33:00Z",
+    )
+    data = corrections.read_run_sidecar(out)
+    assert data is not None
+    assert data["adapter_path"] == "/adapters/lora-2026-07"
 
 
 def test_read_run_sidecar_returns_none_on_missing(tmp_path: Path):

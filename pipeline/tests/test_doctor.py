@@ -18,6 +18,7 @@ from mp import storage
 from mp.config import Config
 from mp.doctor import (
     _estimate_model_gb,
+    _report_local_server_identity,
     _scan_recorder_log_for_tcc,
     check_last_backup,
     check_library_sync,
@@ -355,3 +356,69 @@ def test_doctor_main_still_exits_zero_on_a_hard_fail(monkeypatch, tmp_path) -> N
         cfg, home=tmp_path, workflows_dir=tmp_path / "none"
     ))
     assert doctor_main([]) == 0
+
+
+# ----- LOCAL11: served-vs-configured identity -----
+
+
+def _local_cfg(model: str = "some/model", adapter: str = "") -> Config:
+    return Config.model_validate({
+        "summarization": {
+            "backend": "local",
+            "local_model": model,
+            "local_adapter_path": adapter,
+            "local_endpoint": "http://127.0.0.1:8765",
+        },
+    })
+
+
+def _fake_served(monkeypatch, identity) -> None:
+    monkeypatch.setattr("mp.local_server.served_identity", lambda _port, home=None: identity)
+
+
+def _identity(model: str | None, adapter: str | None = None):
+    from mp import local_server
+    return local_server.ServedIdentity(pid=4242, model=model, adapter_path=adapter, source="argv")
+
+
+def test_identity_probe_is_quiet_when_nothing_is_listening(capsys, monkeypatch) -> None:
+    _fake_served(monkeypatch, None)
+    _report_local_server_identity(_local_cfg(), None)
+    out = capsys.readouterr().out
+    assert "[WARN]" not in out
+    assert "nothing is serving on port 8765" in out
+
+
+def test_identity_probe_confirms_a_matching_server(capsys, monkeypatch) -> None:
+    _fake_served(monkeypatch, _identity("some/model"))
+    _report_local_server_identity(_local_cfg(), None)
+    out = capsys.readouterr().out
+    assert "[WARN]" not in out
+    assert "serves the configured some/model" in out
+
+
+def test_identity_probe_names_a_stale_model(capsys, monkeypatch) -> None:
+    """The acceptance case: the user flipped `local_model` and a warm server kept
+    answering with the old weights. Doctor has to say so by name."""
+    _fake_served(monkeypatch, _identity("stale/model"))
+    _report_local_server_identity(_local_cfg(model="fresh/model"), None)
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "serves stale/model" in out
+    assert "config asks for fresh/model" in out
+
+
+def test_identity_probe_names_a_missing_adapter(capsys, monkeypatch) -> None:
+    """Same model, no adapter: without this, a LOCAL9 A/B cannot tell "the adapter
+    did not help" from "the adapter never served"."""
+    _fake_served(monkeypatch, _identity("some/model", adapter=None))
+    _report_local_server_identity(_local_cfg(adapter="/adapters/lora"), None)
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "/adapters/lora" in out
+
+
+def test_identity_probe_is_silent_without_config(capsys, monkeypatch) -> None:
+    _fake_served(monkeypatch, _identity("some/model"))
+    _report_local_server_identity(None, None)
+    assert capsys.readouterr().out == ""

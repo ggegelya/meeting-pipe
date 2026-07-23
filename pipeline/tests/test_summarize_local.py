@@ -599,3 +599,140 @@ def test_short_transcript_is_single_pass_not_map_reduce(
         m["content"] for r in requests for m in r["messages"] if m["role"] == "user"
     ]
     assert not any("Merge these partial" in u for u in user_msgs)
+
+
+# ----- LOCAL11: warm-server identity verification -----
+#
+# The seam is `local_server.served_identity`, the one lookup that answers "what is
+# this port actually serving". Faking it covers match / mismatch / unknown without
+# an `lsof`, a `ps`, or a real model server.
+
+
+def _identity(model: str | None, adapter: str | None = None, pid: int = 4242):
+    from mp import local_server
+    return local_server.ServedIdentity(
+        pid=pid, model=model, adapter_path=adapter, source="argv",
+    )
+
+
+def _fake_identity(monkeypatch: pytest.MonkeyPatch, identity) -> None:
+    monkeypatch.setattr(
+        "mp.local_server.served_identity", lambda _port, home=None: identity
+    )
+
+
+def _serve_valid_summary(server: ThreadingHTTPServer) -> None:
+    server.builder = lambda _: {  # type: ignore[attr-defined]
+        "choices": [{"message": {"content": json.dumps(_valid_summary_obj())}}]
+    }
+
+
+def _summarize(client: LocalSummaryClient):
+    return client.summarize(
+        system_prompt="Summarize.", transcript="A: hello.",
+        model="ignored", max_tokens=512,
+    )
+
+
+def test_matching_warm_server_is_reused(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host, port, server = fake_server
+    _serve_valid_summary(server)
+    _fake_identity(monkeypatch, _identity("some/model"))
+
+    with LocalSummaryClient(
+        host=host, port=port, model="some/model", manage_subprocess=False
+    ) as c:
+        _summarize(c)
+        assert c.model == "some/model"
+        assert c.adapter_path == ""
+
+
+def test_mismatched_warm_server_we_do_not_own_is_left_alone(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daemon's warm `mp serve-local`: killing it would race its supervisor,
+    so the run proceeds and the sidecar records what actually served rather than
+    what config asked for."""
+    host, port, server = fake_server
+    _serve_valid_summary(server)
+    _fake_identity(monkeypatch, _identity("stale/model"))
+    monkeypatch.setattr("mp.local_server.terminate_server", _fail_if_called)
+
+    with LocalSummaryClient(
+        host=host, port=port, model="fresh/model", manage_subprocess=False
+    ) as c:
+        _summarize(c)
+        assert c.model == "stale/model"
+
+
+def test_mismatched_server_we_own_is_replaced(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A server an earlier `mp` spawned still carries its LOCAL10 marker, so this
+    one may restart it: the model flip takes effect on the next run with no
+    manual kill, which is LOCAL11's acceptance."""
+    host, port, server = fake_server
+    _serve_valid_summary(server)
+    _fake_identity(monkeypatch, _identity("stale/model", pid=4242))
+    monkeypatch.setattr("mp.local_server.read_marker", lambda home=None: {"pid": 4242})
+
+    killed: list[int] = []
+    monkeypatch.setattr(
+        "mp.local_server.terminate_server",
+        lambda pid, home=None: killed.append(pid) or True,
+    )
+    spawned: list[str] = []
+    c = LocalSummaryClient(host=host, port=port, model="fresh/model")
+    monkeypatch.setattr(c, "_spawn", lambda: spawned.append("spawn"))
+    monkeypatch.setattr(c, "_wait_for_health", lambda _t: None)
+
+    c._ensure_running()
+    assert killed == [4242]
+    assert spawned == ["spawn"]
+
+
+def test_adapter_flip_alone_replaces_a_server_we_own(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same model, different adapter. Without this a LOCAL9 A/B would silently
+    compare the base model against itself."""
+    host, port, _server = fake_server
+    _fake_identity(monkeypatch, _identity("same/model", adapter=None, pid=4242))
+    monkeypatch.setattr("mp.local_server.read_marker", lambda home=None: {"pid": 4242})
+    killed: list[int] = []
+    monkeypatch.setattr(
+        "mp.local_server.terminate_server",
+        lambda pid, home=None: killed.append(pid) or True,
+    )
+    c = LocalSummaryClient(
+        host=host, port=port, model="same/model", adapter_path="/adapters/lora",
+    )
+    monkeypatch.setattr(c, "_spawn", lambda: None)
+    monkeypatch.setattr(c, "_wait_for_health", lambda _t: None)
+
+    c._ensure_running()
+    assert killed == [4242]
+
+
+def test_unreadable_identity_reuses_rather_than_respawning(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No `lsof`, no marker: not knowing is not the same as knowing it is wrong,
+    and a needless respawn costs a multi-GB model reload."""
+    host, port, server = fake_server
+    _serve_valid_summary(server)
+    _fake_identity(monkeypatch, None)
+    monkeypatch.setattr("mp.local_server.terminate_server", _fail_if_called)
+
+    with LocalSummaryClient(
+        host=host, port=port, model="configured/model", manage_subprocess=False
+    ) as c:
+        _summarize(c)
+        # Nothing better to report than what was configured.
+        assert c.model == "configured/model"
+
+
+def _fail_if_called(*_args: object, **_kwargs: object):
+    raise AssertionError("a server this client did not spawn must not be killed")

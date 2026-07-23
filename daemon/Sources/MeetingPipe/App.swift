@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var configStore: ConfigStore?
     private var secretsStore: SecretsStore?
     private var secretsCancellable: AnyCancellable?
+    private var localModelCancellable: AnyCancellable?
     private let localModelPreloader = LocalModelPreloader()
 
     /// Dispatch source for SIGTERM. Held so it stays armed for the process
@@ -164,8 +165,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             localModelPreloader.start(
                 enabled: UISettings.shared.preloadLocalModelAtLaunch,
                 backend: store.summarizationBackend,
-                localModel: store.summarizationLocalModel
+                localModel: store.summarizationLocalModel,
+                adapterPath: store.summarizationLocalAdapterPath
             )
+            // LOCAL11: the warm server pins one model + adapter for the daemon's
+            // lifetime, so without this a Preferences change to either left the old
+            // weights answering every summary until the app was quit. `mp` refuses
+            // to kill a server it did not spawn (rightly - it would race this
+            // supervisor), which makes restarting it our job. `didPersist` is
+            // already debounced 500 ms and `refresh` no-ops on an unrelated save.
+            localModelCancellable = store.didPersist
+                .receive(on: DispatchQueue.main)
+                .sink { [weak store, weak localModelPreloader] in
+                    guard let store, let localModelPreloader else { return }
+                    localModelPreloader.refresh(
+                        enabled: UISettings.shared.preloadLocalModelAtLaunch,
+                        backend: store.summarizationBackend,
+                        localModel: store.summarizationLocalModel,
+                        adapterPath: store.summarizationLocalAdapterPath
+                    )
+                }
         }
 
         installTerminationSignalHandler()

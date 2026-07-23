@@ -70,6 +70,17 @@ final class ConfigStore: ObservableObject {
     /// reads as a real name (`summarization.user_label`).
     @Published var summarizationUserLabel: String { didSet { scheduleSave() } }
 
+    /// Opt-in LoRA adapter the local backend serves (`summarization.local_adapter_path`,
+    /// LOCAL9), read straight off the live TOML. Read-only for the same reason as
+    /// `outputSinks` below: the warm-server preloader has to know it (a preloader
+    /// left serving the base model after the user opts into an adapter is exactly
+    /// the LOCAL11 staleness), but it has no Preferences control, and persisting a
+    /// knob nothing renders is what the CI5 dead-knob fence exists to catch.
+    /// Empty (the pipeline's own default) means the base model.
+    var summarizationLocalAdapterPath: String {
+        rawDocument["summarization"]?.table?["local_adapter_path"]?.string ?? ""
+    }
+
     /// Global publish sinks (`output.sinks`), read straight off the live TOML.
     /// Read-only, so the setup checklist (UX22) can tell whether a notion sink
     /// is active without this becoming a persisted, Preferences-rendered knob

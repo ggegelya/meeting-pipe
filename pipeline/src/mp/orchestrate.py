@@ -506,6 +506,7 @@ def _run_all_inner(
             # tolerantly rather than turn a missing key into a lost sidecar.
             backend=s.get("backend", ""),
             model=s.get("model", ""),
+            adapter_path=s.get("adapter_path", ""),
         )
         log.info("Wrote run sidecar: %s", sidecar)
     except Exception as e:  # noqa: BLE001

@@ -283,19 +283,36 @@ class LocalSummaryClient:
         self._proc: subprocess.Popen[bytes] | None = None
         self._lock = threading.Lock()
         self._idle_timer: threading.Timer | None = None
+        # LOCAL11: what the server on this port actually turned out to be serving,
+        # read back in `_ensure_running`. None until a request has been made (or
+        # when the identity could not be read), which is why `model` and
+        # `adapter_path` below fall back to the configured values.
+        self._served: local_server.ServedIdentity | None = None
         # Base client timeout; the chat-completion POST overrides the read leg
         # per call, scaled to max_tokens (LOCAL2). Health checks override to 2s.
         self._http = httpx.Client(timeout=httpx.Timeout(request_timeout_sec, connect=5.0))
 
     @property
     def model(self) -> str:
-        """Repo id of the MLX model this client is pinned to.
+        """Repo id of the MLX model that actually answered.
 
-        Read by ``mp.summarize._identify_backend`` so the run sidecar
-        records the actual model that produced a summary, even when
-        Preferences swaps the configured model later.
+        Read by ``mp.summarize._identify_backend`` so the run sidecar records the
+        model that produced a summary, even when Preferences swaps the configured
+        model later. LOCAL11: when the identity check found a warm server we do
+        not own serving something else, this reports what *served*, not what was
+        configured, so the sidecar never mis-attributes a summary. Falls back to
+        the configured id before the first call and whenever identity could not be
+        read.
         """
-        return self._model
+        return (self._served.model if self._served else None) or self._model
+
+    @property
+    def adapter_path(self) -> str:
+        """LoRA adapter the answering server was started with, or "" for the base
+        model (LOCAL9/LOCAL11). Same served-over-configured rule as ``model``."""
+        if self._served is not None and self._served.model is not None:
+            return self._served.adapter_path or ""
+        return self._adapter_path or ""
 
     # ----- Public API (SummaryClient) -----
 
@@ -550,7 +567,7 @@ class LocalSummaryClient:
         return f"http://{self._host}:{self._port}"
 
     def _ensure_running(self) -> None:
-        if self._is_healthy():
+        if self._is_healthy() and self._reuse_is_safe():
             return
         if not self._manage_subprocess:
             raise LocalSummaryError(
@@ -558,6 +575,67 @@ class LocalSummaryClient:
             )
         self._spawn()
         self._wait_for_health(self._startup_timeout_sec)
+        self._served = local_server.served_identity(self._port)
+
+    def _reuse_is_safe(self) -> bool:
+        """LOCAL11: is the warm server on this port serving what we configured?
+
+        A bare HTTP 200 says a server is up, not *which* server, so a
+        `local_model` / `local_adapter_path` change used to keep serving the old
+        weights until someone killed the process by hand. Records the served
+        identity either way (that is what the run sidecar reports) and returns
+        False only when the caller should spawn a replacement.
+
+        Three outcomes on a mismatch:
+
+        - **We spawned it** (this process, or a previous `mp` whose LOCAL10 marker
+          still names the pid): kill it and return False so the caller respawns.
+        - **We did not** (the daemon's warm `mp serve-local`, or
+          `manage_subprocess=False`): killing another owner's process would just
+          race its supervisor, so warn, keep the served identity for the sidecar,
+          and proceed. The daemon restarts its own preloader on a config save
+          (`LocalModelPreloader.refresh`), which is the fix for that case; `mp
+          doctor` names it if it persists.
+        - **Identity unknown**: reuse, because a `lsof`/`ps` we could not read is
+          not evidence of a mismatch and a needless respawn costs a model reload.
+        """
+        identity = local_server.served_identity(self._port)
+        self._served = identity
+        if identity is None or identity.matches(
+            model=self._model, adapter_path=self._adapter_path
+        ):
+            return True
+
+        want = self._model + (f" + adapter {self._adapter_path}" if self._adapter_path else "")
+        if not self._manage_subprocess or not self._owns(identity):
+            log.warning(
+                "warm mlx_lm.server on %s serves %s but this run is configured for %s; "
+                "it is not ours to restart, so the run sidecar will record what served",
+                self.base_url, identity.describe(), want,
+            )
+            return True
+
+        log.warning(
+            "mlx_lm.server on %s serves %s but this run is configured for %s; "
+            "restarting it",
+            self.base_url, identity.describe(), want,
+        )
+        if self._proc is not None:
+            self._terminate_proc()
+        else:
+            local_server.terminate_server(identity.pid)
+        self._served = None
+        return False
+
+    def _owns(self, identity: local_server.ServedIdentity) -> bool:
+        """May this client kill `identity`'s server? True when we spawned it in
+        this process, or when the LOCAL10 marker names that exact pid (an earlier
+        `mp` spawned it and is gone). The daemon's warm server writes no marker,
+        which is precisely what keeps it off-limits here."""
+        if self._proc is not None and self._proc.poll() is None:
+            return True
+        marker = local_server.read_marker()
+        return marker is not None and marker.get("pid") == identity.pid
 
     def _spawn(self) -> None:
         if shutil.which("mlx_lm.server") is None and shutil.which("python3") is None:
@@ -603,7 +681,10 @@ class LocalSummaryClient:
         # pipeline watchdog does exactly that to a wedged run) leaves the server
         # running with no one who knows about it. Record who it is, so `mp doctor`
         # can report it and the daemon can reap it.
-        local_server.write_marker(pid=proc.pid, port=self._port, model=self._model)
+        local_server.write_marker(
+            pid=proc.pid, port=self._port, model=self._model,
+            adapter_path=self._adapter_path,
+        )
 
     def _wait_for_health(self, timeout_sec: float) -> None:
         deadline = time.monotonic() + timeout_sec
@@ -635,6 +716,9 @@ class LocalSummaryClient:
     def _terminate_proc(self) -> None:
         proc = self._proc
         self._proc = None
+        # The identity we read belonged to the server we are about to stop; a
+        # later call re-reads it rather than reporting the dead one (LOCAL11).
+        self._served = None
         if proc is None:
             # A server we health-checked into rather than spawned (the warm
             # `mp serve-local` path). Not ours to kill, and it has no marker.

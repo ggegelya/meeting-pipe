@@ -60,14 +60,18 @@ log = logging.getLogger("mp.summarize")
 
 
 class SummaryOutput(TypedDict):
-    """What `summarize()` wrote, and which path wrote it. `backend` / `model` are
-    what the run sidecar records, so a summary can always be attributed to the
-    engine that actually answered (`auto` resolves per call)."""
+    """What `summarize()` wrote, and which path wrote it. `backend` / `model` /
+    `adapter_path` are what the run sidecar records, so a summary can always be
+    attributed to the engine that actually answered (`auto` resolves per call, and
+    LOCAL11 resolves `model` / `adapter_path` to what the local server was really
+    serving rather than what config asked for). `adapter_path` is "" for every
+    backend but a local one running a LoRA adapter."""
 
     json: Path
     md: Path
     backend: str
     model: str
+    adapter_path: str
 
 # Retry only on transient failures. BadRequestError / AuthenticationError /
 # PermissionDeniedError / NotFoundError are caller bugs, so failing fast is right.
@@ -473,6 +477,7 @@ def summarize(
         md=md_path,
         backend=backend,
         model=model_used,
+        adapter_path=_identify_adapter(client),
     )
 
 
@@ -566,6 +571,39 @@ def _identify_backend(client: SummaryClient, cfg: Config) -> tuple[str, str]:
     return "unknown", cfg.summarization.model
 
 
+def _identify_adapter(client: SummaryClient) -> str:
+    """LoRA adapter the answering client served, or "" (LOCAL9/LOCAL11).
+
+    Only the local backend has one, and only it can report the *served* value
+    rather than the configured one. Duck-typed rather than isinstance-checked so
+    both shapes answer with one rule: `_AutoFallbackClient` publishes
+    `last_used_adapter_path` per call, `LocalSummaryClient` exposes
+    `adapter_path`, and every other backend has neither."""
+    for attr in ("last_used_adapter_path", "adapter_path"):
+        value = getattr(client, attr, None)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _served_local_identity(client: object, cfg: Config) -> tuple[str, str]:
+    """The ``(model, adapter_path)`` a local client reports actually serving,
+    falling back to the configured pair (LOCAL11).
+
+    Tolerant on purpose. This is attribution metadata read *after* a summary has
+    already been produced, so a client that does not publish its identity must
+    cost the caller a less precise sidecar, never the summary itself. Same rule
+    ``orchestrate`` applies one layer up, where a failed ``write_run_sidecar`` is
+    logged rather than raised.
+    """
+    model = getattr(client, "model", None)
+    adapter = getattr(client, "adapter_path", None)
+    return (
+        model if isinstance(model, str) and model else cfg.summarization.local_model,
+        adapter if isinstance(adapter, str) else (cfg.summarization.local_adapter_path or ""),
+    )
+
+
 def _select_backend(cfg: Config) -> SummaryClient:
     """Resolve the backend per `summarization.backend`.
 
@@ -643,6 +681,11 @@ class _AutoFallbackClient:
         # sidecar to whichever path actually answered.
         self.last_used_backend: str | None = None
         self.last_used_model: str | None = None
+        self.last_used_adapter_path: str = ""
+        # LOCAL11: the (model, adapter) the local client reported *serving*, read
+        # off it before the `with` block closes it. The configured pair is only a
+        # fallback: a warm server we do not own can be serving older weights.
+        self._local_identity: tuple[str, str] | None = None
 
     def summarize(
         self,
@@ -673,16 +716,26 @@ class _AutoFallbackClient:
                 # LOCAL9: opt-in fine-tuned adapter; empty config keeps the base model.
                 adapter_path=self._cfg.summarization.local_adapter_path or None,
             ) as fallback:
-                return fallback.summarize(
+                out = fallback.summarize(
                     system_prompt=system_prompt, transcript=transcript,
                     model=model, max_tokens=max_tokens,
                 )
+                # LOCAL11: read the served identity while the client is still
+                # open. Reporting the *configured* local model here was the same
+                # mis-attribution the local path had, one ladder rung further in.
+                self._local_identity = _served_local_identity(fallback, self._cfg)
+                return out
 
         result, backend = run_with_local_fallback(cloud=_cloud, local=_local)
         self.last_used_backend = backend
-        self.last_used_model = (
-            model if backend == "anthropic" else self._cfg.summarization.local_model
-        )
+        if backend == "anthropic":
+            self.last_used_model = model
+            self.last_used_adapter_path = ""
+        else:
+            self.last_used_model, self.last_used_adapter_path = self._local_identity or (
+                self._cfg.summarization.local_model,
+                self._cfg.summarization.local_adapter_path or "",
+            )
         return result
 
 

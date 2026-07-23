@@ -413,6 +413,7 @@ Who owns the detached `mlx_lm.server` (LOCAL10). A Python-to-Swift surface: `mp.
   "owner_pid": 1111,
   "port": 8765,
   "model": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+  "adapter_path": "",
   "spawned_at": 1770000000.0
 }
 ```
@@ -425,6 +426,14 @@ The server is spawned with `preexec_fn=os.setsid`, so it lives in its own sessio
 - `owner_pid` counts as alive only when its command looks like a Python `mp` invocation. A recycled owner pid must not shield an orphan.
 
 A marker whose server is already gone is stale, not an orphan, and is cleared in passing. Two triggers reap: `Coordinator.reapStorage()` at launch, and `PipelineLauncher`'s termination handler right after the watchdog kills a job (the case that creates the orphan). `mp doctor` reports one without killing it. `mp serve-local` writes no marker at all: the daemon spawns it directly and holds its lifetime through a child handle, so it can never be orphaned this way.
+
+**Served identity is read from argv, not from the marker or the API (LOCAL11).** The marker answers *who owns* the server; the separate question of *what it serves* is answered by `local_server.served_identity(port)`, because a warm server is reused on a bare HTTP 200 and a `local_model` / `local_adapter_path` change would otherwise keep the old weights answering every run. Neither HTTP endpoint can tell you: `/v1/models` scans the whole HuggingFace cache and lists every downloaded MLX model (appending `--model` only when it is a filesystem path), and `/v1/chat/completions` echoes back whatever `model` the caller sent. Verified against mlx-lm 0.31.3. So identity comes from `lsof` on the port, `ps` on that pid, and a parse of the `--model` / `--adapter-path` flags `build_server_command` emitted; the marker's copies of those two fields are the fallback for when `lsof` is unavailable. Argv is the *spawn contract*, not a readback of the loaded weights, so this catches a server started for a different model or adapter, not one that failed to apply the adapter it was handed.
+
+Three rules the two ends of that check have to keep:
+
+- **Unknown is not mismatch.** An unparseable `ps` line, nothing listening, or a non-mlx process on the port all read as "no answer" and reuse the server. Respawning on ignorance costs a multi-GB model reload.
+- **Only kill what you spawned.** `LocalSummaryClient` replaces a mismatched server when it spawned it, or when the marker names that exact pid; it never kills the daemon's warm `mp serve-local`, which would just race that supervisor. The daemon restarts its own on `ConfigStore.didPersist` (`LocalModelPreloader.refresh`), which is the fix for that half.
+- **Never launder the mismatch.** When the run proceeds against a server we could not replace, `<stem>.run.json` records the model and adapter that *served*, not the ones config asked for, and `mp doctor` names the mismatch.
 
 ---
 

@@ -57,6 +57,7 @@ def write_run_sidecar(
     summary_json_path: Path,
     backend: str,
     model: str,
+    adapter_path: str = "",
     ts: str | None = None,
 ) -> Path:
     """Snapshot the run that produced ``<stem>.summary.json``.
@@ -64,6 +65,12 @@ def write_run_sidecar(
     Returns the absolute path of the written sidecar. Written atomically
     via a temp-file + rename so a crashing pipeline never leaves a
     half-written sidecar that breaks downstream readers.
+
+    ``backend`` / ``model`` / ``adapter_path`` describe the engine that actually
+    answered, not the one config asked for (LOCAL11): a warm ``mlx_lm.server``
+    can be serving weights an earlier config selected, and attributing the
+    summary to the current config would quietly launder that. ``adapter_path`` is
+    "" for every backend but a local one serving a LoRA adapter.
     """
     payload: dict[str, Any] = {
         "schema_version": 1,
@@ -73,6 +80,7 @@ def write_run_sidecar(
         "summary_json_path": str(summary_json_path),
         "backend": backend,
         "model": model,
+        "adapter_path": adapter_path,
         "ts": ts or _now_utc_iso(),
     }
     out = recordings_dir / f"{stem}.run.json"

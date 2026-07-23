@@ -399,8 +399,19 @@ def check_local_stack(cfg: Config | None, workflows_dir: Path | None = None) -> 
             _ok(f"free disk {free_gb} GB fits the ~{need_gb} GB download")
 
 
-def check_local_server(home: Path | None = None) -> None:
-    """Report an `mlx_lm.server` that outlived the `mp` that spawned it (LOCAL10).
+def check_local_server(cfg: Config | None = None, home: Path | None = None) -> None:
+    """Report on the local model server: orphans (LOCAL10) and identity (LOCAL11).
+
+    Two independent questions about the same process, so both run: an orphan can
+    be serving the right model, and the right owner can be serving the wrong one.
+    """
+    print("\n== local model server ==")
+    _report_local_server_orphan(home)
+    _report_local_server_identity(cfg, home)
+
+
+def _report_local_server_orphan(home: Path | None) -> None:
+    """An `mlx_lm.server` that outlived the `mp` that spawned it (LOCAL10).
 
     The server detaches into its own session so a signal aimed at `mp`'s process
     group misses it; when the daemon's watchdog SIGKILLs a wedged `run-all`, the
@@ -410,7 +421,6 @@ def check_local_server(home: Path | None = None) -> None:
     """
     from . import local_server
 
-    print("\n== local model server ==")
     marker = local_server.read_marker(home)
     if marker is None:
         _ok("no detached mlx_lm.server is registered")
@@ -432,6 +442,48 @@ def check_local_server(home: Path | None = None) -> None:
     _warn(f"orphaned mlx_lm.server: pid {pid}, model {model}{age}")
     _info("its `mp` process was killed (usually the pipeline watchdog) and it holds several GB of RAM")
     _info("restart MeetingPipe to reap it, or: kill " + str(pid))
+
+
+def _report_local_server_identity(cfg: Config | None, home: Path | None) -> None:
+    """Does the listening server serve what config asks for (LOCAL11)?
+
+    The case worth catching is a *warm* server: `LocalSummaryClient` reuses one on
+    a bare HTTP 200, and the daemon's launch-time preloader keeps one resident for
+    the whole session, so flipping `local_model` or `local_adapter_path` used to
+    leave the old weights answering every run with nothing on screen to say so.
+    A mismatch here is also the precondition for trusting a LOCAL9 adapter A/B:
+    without it, "the adapter did not help" and "the adapter never served" look
+    identical.
+
+    Silent when nothing is listening (the common case: no local backend in use).
+    """
+    from . import local_server
+    from .config import parse_local_endpoint
+
+    if cfg is None:
+        return
+    try:
+        _, port = parse_local_endpoint(cfg.summarization.local_endpoint)
+    except ValueError as e:
+        _warn(f"summarization.local_endpoint is unusable: {e}")
+        return
+
+    identity = local_server.served_identity(port, home)
+    if identity is None:
+        _info(f"nothing is serving on port {port}; the next local run starts its own server")
+        return
+
+    want_model = cfg.summarization.local_model
+    want_adapter = cfg.summarization.local_adapter_path or ""
+    if identity.matches(model=want_model, adapter_path=want_adapter):
+        _ok(f"server on port {port} serves the configured {identity.describe()}")
+        return
+
+    want = want_model + (f" + adapter {want_adapter}" if want_adapter else "")
+    _warn(f"server on port {port} serves {identity.describe()}, but config asks for {want}")
+    _info("summaries produced now are attributed to the served model, not the configured one")
+    _info("a `mp`-spawned server is replaced automatically on the next run; "
+          f"for the daemon's warm server, quit and reopen MeetingPipe (or: kill {identity.pid})")
 
 
 def check_storage(cfg: Config | None, home: Path | None = None) -> None:
