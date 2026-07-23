@@ -158,11 +158,22 @@ final class LibraryScopeTests: XCTestCase {
     }
 
     func test_ask_and_facts_are_projections_not_list_filters() {
-        // Both render in the center column; no meeting "belongs" to the scope, so
+        // Each renders in the center column; no meeting "belongs" to the scope, so
         // `includes` is always false (they must never filter the meeting list).
         let m = makeMeeting(stem: "a")
         XCTAssertFalse(LibraryScope.ask.includes(m, workflows: [], now: now))
         XCTAssertFalse(LibraryScope.facts.includes(m, workflows: [], now: now))
+        XCTAssertFalse(LibraryScope.people.includes(m, workflows: [], now: now))
+    }
+
+    func test_people_scope_is_railed_with_chrome_and_no_count() {
+        // DV3: the People projection joins Facts / Ask / Digests in INSIGHTS.
+        XCTAssertTrue(LibrarySidebar.insightsSections.contains(.people))
+        XCTAssertFalse(LibrarySidebar.librarySections.contains(.people))
+        XCTAssertEqual(LibraryScope.people.title, "People")
+        XCTAssertNotNil(LibraryScope.people.systemImage)
+        XCTAssertFalse(LibraryScope.people.isWorkflow)
+        XCTAssertEqual(ScopeCounts.zero.count(for: .people), 0)  // a view, not a counted subset
     }
 
     func test_ask_scope_is_railed_with_chrome_and_no_count() {

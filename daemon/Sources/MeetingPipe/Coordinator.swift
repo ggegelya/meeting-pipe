@@ -682,6 +682,12 @@ final class Coordinator: NSObject {
         searchHealth: { [weak self] in self?.libraryModel.searchHealth ?? .ready },
         onSelect: { [weak self] meeting in
             self?.openMeeting(stem: meeting.stem)
+        },
+        // UX25: hand a question-shaped query straight to the Ask rail through the same
+        // router `meetingpipe://ask` uses, so the panel and the URL scheme cannot drift
+        // into two prefill paths.
+        onAsk: { [weak self] question in
+            self?.handleAutomation(.ask(question: question), source: "quick_find")
         }
     )
 

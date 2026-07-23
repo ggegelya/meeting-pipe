@@ -133,7 +133,7 @@ struct PipelineSectionView: View {
                 if let error = rosterError {
                     Text(error).foregroundStyle(.mpDanger)
                 } else {
-                    Text("Named voices are matched across meetings so a recurring person surfaces by name. Removing one stops it being auto-named; it does not change past transcripts.")
+                    Text("Named voices are matched across meetings so a recurring person surfaces by name; the Library's People view lists each one's meetings and open actions. Renaming carries the new name into past meetings (reversibly, through the speaker-label overlay). Removing one stops it being auto-named; it does not change past transcripts.")
                 }
             }
 
@@ -203,29 +203,18 @@ struct PipelineSectionView: View {
         rosterPeople = RosterProfile.people()
     }
 
+    /// Rename through `RosterRename`, the shared path the Library's People rail
+    /// (DV3) also calls, so the roster entry and every meeting that names this
+    /// person move together rather than only the roster.
     private func beginRename(_ person: RosterProfile.Person) {
-        guard let entered = Self.promptForName(
-            title: "Rename “\(person.name)”",
-            message: "The voiceprint is kept; only the name changes.",
-            initial: person.name
-        ) else { return }
-        let trimmed = entered.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != person.name else { return }
+        guard let newName = RosterRename.prompt(currentName: person.name) else { return }
         rosterError = nil
-        Log.event(category: "coordinator", action: "roster_rename_requested",
-                  attributes: ["old": person.name, "new": trimmed])
-        launcher.rosterRename(old: person.name, new: trimmed) { result in
-            Task { @MainActor in
-                switch result {
-                case .success:
-                    Log.event(category: "coordinator", action: "roster_rename_done",
-                              attributes: ["old": person.name, "new": trimmed])
-                    refreshRoster()
-                case .failure(let error):
-                    Log.event(category: "coordinator", action: "roster_rename_failed",
-                              attributes: ["old": person.name, "error": error.localizedDescription])
-                    rosterError = "Rename failed: \(error.localizedDescription)"
-                }
+        RosterRename.run(from: person.name, to: newName, launcher: launcher) { result in
+            switch result {
+            case .success:
+                refreshRoster()
+            case .failure(let error):
+                rosterError = "Rename failed: \(error.localizedDescription)"
             }
         }
     }
@@ -255,21 +244,6 @@ struct PipelineSectionView: View {
                 }
             }
         }
-    }
-
-    /// A modal name prompt (NSAlert + text field), the AppKit idiom for the few text
-    /// inputs outside SwiftUI. Returns nil on cancel.
-    private static func promptForName(title: String, message: String, initial: String) -> String? {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        field.stringValue = initial
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        return alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil
     }
 
     // MARK: - Digest schedule (AI4)
