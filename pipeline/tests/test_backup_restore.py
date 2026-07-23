@@ -14,7 +14,8 @@ from pathlib import Path
 import pytest
 
 from mp import storage
-from mp.backup import MANIFEST_NAME, create_backup
+from mp import backup as backup_mod
+from mp.backup import MANIFEST_NAME, BackupError, check_destination, create_backup
 from mp.config import KEYCHAIN_SERVICE, MANAGED_SECRET_KEYS, Config
 from mp.restore import RestoreError, read_manifest, restore_archive
 
@@ -186,6 +187,49 @@ def test_backup_stamps_the_marker_doctor_reads(tmp_path: Path) -> None:
     assert marker["archive"] == str(archive)
     assert marker["audio_included"] is True
     datetime.fromisoformat(marker["at"])
+
+
+# ---------- the unmounted-drive guard (STOR4) --------------------------------
+
+
+def test_an_unmounted_volume_destination_is_refused(tmp_path: Path) -> None:
+    """A scheduled backup to an unplugged drive must fail, not silently fill the
+    boot disk under the empty mount point."""
+    volumes = tmp_path / "Volumes"
+    volumes.mkdir()
+    destination = volumes / "BackupDrive" / "meeting-pipe"
+
+    with pytest.raises(BackupError, match="not mounted"):
+        check_destination(destination, volumes_root=volumes)
+    assert not destination.exists()
+
+
+def test_a_mounted_volume_destination_is_allowed(tmp_path: Path) -> None:
+    volumes = tmp_path / "Volumes"
+    (volumes / "BackupDrive").mkdir(parents=True)
+
+    # The subfolder does not exist yet; the mount point does, so mkdir is safe.
+    check_destination(volumes / "BackupDrive" / "meeting-pipe", volumes_root=volumes)
+
+
+def test_a_destination_outside_volumes_is_never_refused(tmp_path: Path) -> None:
+    check_destination(tmp_path / "nowhere" / "deep", volumes_root=tmp_path / "Volumes")
+
+
+def test_a_refused_destination_leaves_no_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failure mode this guards is a *fresh-looking* marker for a backup that
+    landed on the wrong disk, so the refusal has to happen before the stamp."""
+    home = _make_home(tmp_path)
+    _populate(home)
+    volumes = tmp_path / "Volumes"
+    volumes.mkdir()
+    monkeypatch.setattr(backup_mod, "VOLUMES_ROOT", volumes)
+
+    with pytest.raises(BackupError):
+        create_backup(_cfg(home), volumes / "Gone" / "out", home=home)
+    assert not storage.backup_marker(home).exists()
 
 
 # ---------- the round trip, which is the acceptance criterion ----------------

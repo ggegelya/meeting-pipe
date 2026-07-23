@@ -368,6 +368,10 @@ mp backup ~/Backups --no-audio   # sidecars only; much smaller, meetings restore
 
 Or from **Preferences ▸ Storage ▸ Backup**: pick a destination once (it is remembered) and click **Back up now**; the section shows how long ago the last backup ran and surfaces any failure inline. `mp doctor` reports the same age under `== storage ==`. Restore stays a terminal step (below): a new-Mac restore runs before the app is installed and configured.
 
+**Automatic backup.** The same section carries an **Automatic backup** toggle, which installs a launch agent that runs the same `mp backup <destination>` on its own, daily (the default) or on a chosen weekday, at a time you pick. A Mac asleep at that hour backs up when it next wakes. Changing the destination rewrites the schedule; turning the toggle off removes the agent. The runs are unattended, so read their outcome from the last-backup line here, from `mp doctor`, or from `~/Library/Logs/MeetingPipe/backup.err.log`.
+
+If the destination is on an external drive, `mp backup` refuses to run while that drive is unmounted rather than filling the startup disk under the empty mount point. Nothing is written and no backup is recorded, so the last-backup age keeps ageing and tells you.
+
 **In the archive:** the library (recordings plus every sidecar), `digests/`, `~/.config/meeting-pipe/`, and `~/Library/Application Support/MeetingPipe/corrections/`.
 
 **Deliberately not in the archive:**

@@ -311,7 +311,9 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 - `ModelDownloadSupervisor.swift` — spawns `mp prefetch-model` for local-backend MLX models; surfaces progress in the menu bar.
 - `WindowActivationManager.swift` — keeps the daemon Dock-less when no windows are visible but flips activation policy to `.regular` when the Library or Preferences window is open so Cmd+Tab works.
 - `LaunchAtLoginService.swift` — `SMAppService.mainApp` wrapper for the General-tab toggle.
-- `DigestSchedulerService.swift` — AI4: writes `~/Library/LaunchAgents/com.meetingpipe.digest.plist` (a `StartCalendarInterval` running `mp digest`) and `launchctl bootstrap`/`bootout`s it, driven by the Preferences → Pipeline digest toggle. Schedule state lives in `UISettings`.
+- `LaunchAgentScheduler.swift` — the shared scheduled-LaunchAgent mechanism (STOR4): writes a `StartCalendarInterval` plist under `~/Library/LaunchAgents/` and `launchctl bootstrap`/`bootout`s it. A nil weekday omits the key, which is how launchd expresses "every day". Callers own their label, `mp` subcommand, and events.
+- `DigestSchedulerService.swift` — AI4: `com.meetingpipe.digest`, a weekly `mp digest`, driven by the Preferences → Pipeline digest toggle. Schedule state lives in `UISettings`.
+- `BackupSchedulerService.swift` — STOR4: `com.meetingpipe.backup`, a daily (or weekly) `mp backup <dir>`, driven by the Preferences → Storage "Automatic backup" toggle. The destination is baked into the plist's `ProgramArguments`, so changing it in Preferences rewrites the agent; no destination means no agent, whatever the toggle says.
 
 ---
 
@@ -471,6 +473,7 @@ lifecycle verdict .ended (or hotkey, or silence backstop)
 | `~/Library/Logs/MeetingPipe/` | both | tail-able text logs + JSONL event logs |
 | `~/Library/LaunchAgents/com.meetingpipe.daemon.plist` | install.sh writes | LaunchAgent |
 | `~/Library/LaunchAgents/com.meetingpipe.digest.plist` | `DigestSchedulerService` writes | optional weekly-digest LaunchAgent (AI4): a `StartCalendarInterval` that runs `mp digest`, installed/removed by the Preferences → Pipeline toggle |
+| `~/Library/LaunchAgents/com.meetingpipe.backup.plist` | `BackupSchedulerService` writes | optional automatic-backup LaunchAgent (STOR4): a `StartCalendarInterval` that runs `mp backup <dir>` daily (or weekly), installed/removed by the Preferences → Storage toggle. Its output lands in `~/Library/Logs/MeetingPipe/backup.{out,err}.log` |
 | `~/Documents/Meetings/digests/digest-<date>.summary.{json,md}` | `mp digest` writes, daemon reads | weekly review digest (AI4); a `digests` sibling of `raw/`, surfaced in the Library's Digests rail view |
 | `~/Applications/MeetingPipe.app/` | install.sh / rebuild.sh writes | installed bundle |
 

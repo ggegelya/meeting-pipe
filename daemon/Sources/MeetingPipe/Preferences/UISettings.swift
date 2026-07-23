@@ -83,9 +83,40 @@ final class UISettings: ObservableObject {
 
     /// STOR3: the folder `mp backup` writes to, remembered so the user picks a
     /// destination once. UI-only (the pipeline takes it as a CLI arg, never reads
-    /// this key); nil until the user first chooses one.
+    /// this key); nil until the user first chooses one. STOR4 also bakes it into
+    /// the scheduled agent's `ProgramArguments`, so changing it rewrites the plist.
     @Published var backupDestinationPath: String? {
         didSet { UserDefaults.standard.set(backupDestinationPath, forKey: Keys.backupDestinationPath) }
+    }
+
+    /// STOR4 automatic-backup schedule, the same shape as the digest one above:
+    /// these are what the controls re-render from, the installed plist is what
+    /// fires. Only meaningful with a `backupDestinationPath`.
+    @Published var backupScheduleEnabled: Bool {
+        didSet { UserDefaults.standard.set(backupScheduleEnabled, forKey: Keys.backupScheduleEnabled) }
+    }
+
+    /// `daily` or `weekly` (`BackupSchedulerService.Frequency`). Default daily: a
+    /// weekly backup leaves up to seven days of meetings on one disk.
+    @Published var backupFrequency: BackupSchedulerService.Frequency {
+        didSet { UserDefaults.standard.set(backupFrequency.rawValue, forKey: Keys.backupFrequency) }
+    }
+
+    /// Weekday for a weekly backup, 1=Monday … 7=Sunday (ISO 8601). Ignored when
+    /// the frequency is daily. Default Sunday.
+    @Published var backupWeekday: Int {
+        didSet { UserDefaults.standard.set(backupWeekday, forKey: Keys.backupWeekday) }
+    }
+
+    /// Hour (0–23) for the scheduled backup. Default 21: late enough that the
+    /// day's meetings are in, early enough that the Mac is usually still awake.
+    @Published var backupHour: Int {
+        didSet { UserDefaults.standard.set(backupHour, forKey: Keys.backupHour) }
+    }
+
+    /// Minute (0–59) for the scheduled backup. Default 0.
+    @Published var backupMinute: Int {
+        didSet { UserDefaults.standard.set(backupMinute, forKey: Keys.backupMinute) }
     }
 
     private enum Keys {
@@ -102,6 +133,11 @@ final class UISettings: ObservableObject {
         static let digestHour = "mp.ui.digestHour"
         static let digestMinute = "mp.ui.digestMinute"
         static let backupDestinationPath = "mp.ui.backupDestinationPath"
+        static let backupScheduleEnabled = "mp.ui.backupScheduleEnabled"
+        static let backupFrequency = "mp.ui.backupFrequency"
+        static let backupWeekday = "mp.ui.backupWeekday"
+        static let backupHour = "mp.ui.backupHour"
+        static let backupMinute = "mp.ui.backupMinute"
     }
 
     private init() {
@@ -124,6 +160,13 @@ final class UISettings: ObservableObject {
         self.digestHour = d.object(forKey: Keys.digestHour) as? Int ?? 9
         self.digestMinute = d.object(forKey: Keys.digestMinute) as? Int ?? 0
         self.backupDestinationPath = d.string(forKey: Keys.backupDestinationPath)
+        self.backupScheduleEnabled = d.bool(forKey: Keys.backupScheduleEnabled)
+        self.backupFrequency = BackupSchedulerService.Frequency(
+            rawValue: d.string(forKey: Keys.backupFrequency) ?? ""
+        ) ?? .daily
+        self.backupWeekday = d.object(forKey: Keys.backupWeekday) as? Int ?? 7
+        self.backupHour = d.object(forKey: Keys.backupHour) as? Int ?? 21
+        self.backupMinute = d.object(forKey: Keys.backupMinute) as? Int ?? 0
     }
 
     /// Apply the theme to `NSApp.appearance`. `nil` restores the system default.

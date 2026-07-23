@@ -22,6 +22,10 @@ What deliberately stays out:
 - **`published/`** (republish regenerates it) and the caches (waveform peaks,
   HuggingFace models), which rebuild on demand.
 
+STOR4 schedules this command as a launch agent, so it also has to fail loudly when
+the destination drive is not mounted rather than quietly filling the boot disk;
+`check_destination` is that guard.
+
 Stdlib `tarfile`, no new dependency. Compression is `gzip` at level 1 on purpose:
 JSON sidecars compress well even at level 1, and WAV barely compresses at any
 level, so the default level 6 would burn minutes of CPU on a multi-gigabyte
@@ -42,6 +46,13 @@ from .config import KEYCHAIN_SERVICE, MANAGED_SECRET_KEYS, Config
 
 MANIFEST_NAME = "manifest.json"
 MANIFEST_SCHEMA_VERSION = 1
+
+#: Where macOS mounts external and network volumes. See `check_destination`.
+VOLUMES_ROOT = Path("/Volumes")
+
+
+class BackupError(Exception):
+    """A refusal the caller can print, not a traceback."""
 
 #: Never archived, whatever root it is found under. `secrets.env` is the legacy
 #: plaintext file; `.last-backup.json` is a fact about *this* Mac, and restoring a
@@ -145,6 +156,38 @@ def build_manifest(
     }
 
 
+def check_destination(destination: Path, *, volumes_root: Path | None = None) -> None:
+    """Refuse a destination on an external volume that is not mounted (STOR4).
+
+    `mkdir(parents=True)` cannot tell "the drive is unplugged" from "the folder is
+    new": with the drive away it happily creates `/Volumes/Backups/…` as a plain
+    directory on the boot disk, writes gigabytes there, stamps the marker, and
+    reports success. Doctor and Preferences then show a fresh backup that is on
+    the wrong disk, and the real drive gets mounted at `/Volumes/Backups 1` next
+    time it is plugged in. Unattended scheduling is what makes this bite, because
+    nobody is watching the run.
+
+    The signature is narrow on purpose: only a *missing* volume root under
+    `/Volumes` is refused. A mounted volume, or any path elsewhere, still creates
+    its directories as before.
+    """
+    # Resolved here, not as a default argument, so a test can point the whole
+    # check at a scratch tree by monkeypatching the module constant.
+    volumes_root = volumes_root or VOLUMES_ROOT
+    destination = destination.expanduser()
+    if destination.exists() or volumes_root not in destination.parents:
+        return
+    # `/Volumes/<name>` is the mount point; anything deeper is a folder on it.
+    volume = destination
+    while volume.parent != volumes_root:
+        volume = volume.parent
+    if not volume.exists():
+        raise BackupError(
+            f"{volume} is not mounted, so {destination} would be created on the startup disk "
+            "instead of the drive. Plug the drive in, or pick another destination."
+        )
+
+
 def create_backup(
     cfg: Config,
     destination: Path,
@@ -156,6 +199,7 @@ def create_backup(
     """Write a dated archive into `destination` and stamp the backup marker."""
     now = now or datetime.now(timezone.utc)
     destination = destination.expanduser()
+    check_destination(destination)
     destination.mkdir(parents=True, exist_ok=True)
     archive = destination / f"meeting-pipe-backup-{now.strftime('%Y%m%d-%H%M%S')}.tar.gz"
 
@@ -207,7 +251,11 @@ def main(argv: list[str]) -> int:
     cfg = entry.prepare(secrets=False)
 
     include_audio = not args.no_audio
-    archive = create_backup(cfg, args.directory, include_audio=include_audio)
+    try:
+        archive = create_backup(cfg, args.directory, include_audio=include_audio)
+    except BackupError as exc:
+        print(f"[FAIL] {exc}")
+        return 1
 
     with tarfile.open(archive, "r:gz") as tar:
         member = tar.extractfile(MANIFEST_NAME)

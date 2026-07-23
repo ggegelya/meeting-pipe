@@ -170,7 +170,8 @@ struct StorageSectionView: View {
 
     // MARK: Backup (STOR3)
 
-    /// Spawns `mp backup <dir>` to a remembered destination. Restore stays a terminal
+    /// Spawns `mp backup <dir>` to a remembered destination, and (STOR4) schedules
+    /// the same command as an unattended launch agent. Restore stays a terminal
     /// step (a new-Mac restore runs before the app is configured), so it is not
     /// surfaced here - the footer points at the README runbook.
     private var backupGroup: some View {
@@ -178,8 +179,7 @@ struct StorageSectionView: View {
             SettingsRow(
                 "Back up now",
                 sublabel: backupDestinationSublabel,
-                alignTop: true,
-                showsDivider: false
+                alignTop: true
             ) {
                 HStack(spacing: MPSpace.s2) {
                     if backupInFlight {
@@ -194,6 +194,31 @@ struct StorageSectionView: View {
                         .buttonStyle(.mpGhost)
                         .disabled(backupInFlight || ui.backupDestinationPath == nil)
                 }
+            }
+            SettingsToggleRow(
+                "Automatic backup",
+                sublabel: ui.backupDestinationPath == nil
+                    ? "Pick a destination above first."
+                    : "Installs a per-user launch agent that runs the same backup on its own.",
+                isOn: backupScheduleEnabledBinding
+            )
+            .disabled(ui.backupDestinationPath == nil)
+            SettingsRow("How often", sublabel: "Daily keeps at most a day of meetings on one disk.") {
+                SettingsMenuPicker(
+                    selection: backupFrequencyBinding, options: Self.frequencyOptions, width: 140
+                )
+                .disabled(!scheduleControlsEnabled)
+            }
+            SettingsRow("Day", sublabel: "Which day a weekly backup runs.") {
+                SettingsMenuPicker(
+                    selection: backupWeekdayBinding, options: Self.weekdayOptions, width: 140
+                )
+                .disabled(!scheduleControlsEnabled || ui.backupFrequency != .weekly)
+            }
+            SettingsRow("Time", sublabel: "When it runs. A Mac asleep at that hour backs up on wake.", showsDivider: false) {
+                DatePicker("", selection: backupTimeBinding, displayedComponents: .hourAndMinute)
+                    .labelsHidden()
+                    .disabled(!scheduleControlsEnabled)
             }
         } footer: {
             if let error = backupError {
@@ -225,6 +250,9 @@ struct StorageSectionView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         ui.backupDestinationPath = url.path
         backupError = nil
+        // The destination is baked into the agent's ProgramArguments, so a change
+        // has to rewrite the plist or the schedule keeps backing up to the old folder.
+        applyBackupSchedule()
     }
 
     private func runBackup() {
@@ -246,6 +274,70 @@ struct StorageSectionView: View {
 
     private func refreshLastBackup() {
         lastBackupAge = LastBackup.ageDescription()
+    }
+
+    // MARK: Automatic backup (STOR4)
+
+    private static let frequencyOptions: [(value: BackupSchedulerService.Frequency, label: String)] = [
+        (.daily, "Daily"), (.weekly, "Weekly"),
+    ]
+
+    private static let weekdayOptions: [(value: Int, label: String)] = [
+        (1, "Monday"), (2, "Tuesday"), (3, "Wednesday"), (4, "Thursday"),
+        (5, "Friday"), (6, "Saturday"), (7, "Sunday"),
+    ]
+
+    /// The schedule controls only mean anything once the toggle is on and a
+    /// destination exists, since both are baked into the installed agent.
+    private var scheduleControlsEnabled: Bool {
+        ui.backupScheduleEnabled && ui.backupDestinationPath != nil
+    }
+
+    /// (Re)install or remove the launch agent so a change takes effect immediately,
+    /// mirroring the digest toggle in Preferences ▸ Pipeline.
+    private func applyBackupSchedule() {
+        BackupSchedulerService.apply(
+            enabled: ui.backupScheduleEnabled,
+            destination: ui.backupDestinationPath,
+            frequency: ui.backupFrequency,
+            weekday: ui.backupWeekday, hour: ui.backupHour, minute: ui.backupMinute
+        )
+    }
+
+    private var backupScheduleEnabledBinding: Binding<Bool> {
+        Binding(get: { ui.backupScheduleEnabled }, set: { on in
+            ui.backupScheduleEnabled = on
+            applyBackupSchedule()
+        })
+    }
+
+    private var backupFrequencyBinding: Binding<BackupSchedulerService.Frequency> {
+        Binding(get: { ui.backupFrequency }, set: { frequency in
+            ui.backupFrequency = frequency
+            applyBackupSchedule()
+        })
+    }
+
+    private var backupWeekdayBinding: Binding<Int> {
+        Binding(get: { ui.backupWeekday }, set: { day in
+            ui.backupWeekday = day
+            applyBackupSchedule()
+        })
+    }
+
+    private var backupTimeBinding: Binding<Date> {
+        Binding(
+            get: {
+                Calendar.current.date(from: DateComponents(hour: ui.backupHour, minute: ui.backupMinute))
+                    ?? Date(timeIntervalSince1970: 0)
+            },
+            set: { newDate in
+                let c = Calendar.current.dateComponents([.hour, .minute], from: newDate)
+                ui.backupHour = c.hour ?? 21
+                ui.backupMinute = c.minute ?? 0
+                applyBackupSchedule()
+            }
+        )
     }
 
     private var policyGroup: some View {
