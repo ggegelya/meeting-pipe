@@ -6,8 +6,12 @@ extension Coordinator {
     /// through exactly the paths the global hotkey uses, so the same gates apply:
     /// a denied mic routes to the Permissions tab (via `beginRecording`), and
     /// `record` never stacks a second start on a live recording.
-    func handleAutomation(_ command: AutomationCommand) {
-        Log.event(category: "automation", action: "command", attributes: ["verb": command.verb])
+    ///
+    /// `source` names who triggered it, so an in-app caller reusing this router
+    /// (UX25's Quick Find handoff) is distinguishable in the event log from a real
+    /// deeplink instead of inflating the URL-scheme's usage trail.
+    func handleAutomation(_ command: AutomationCommand, source: String = "url_scheme") {
+        Log.event(category: "automation", action: "command", attributes: ["verb": command.verb, "source": source])
         switch command {
         case .toggle:
             session.toggleManual()
