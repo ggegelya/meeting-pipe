@@ -308,10 +308,16 @@ class LocalSummaryClient:
 
     @property
     def adapter_path(self) -> str:
-        """LoRA adapter the answering server was started with, or "" for the base
-        model (LOCAL9/LOCAL11). Same served-over-configured rule as ``model``."""
-        if self._served is not None and self._served.model is not None:
-            return self._served.adapter_path or ""
+        """LoRA adapter that served this run's requests, or "" for the base model
+        (LOCAL9/LOCAL11/LOCAL15).
+
+        Not the served-over-configured rule ``model`` uses, and the asymmetry is the
+        point: since LOCAL15 the adapter travels in the request body, which decides
+        what gets loaded no matter what the server was started with. So our own
+        configured value *is* what served, in both directions. A warm server started
+        with an adapter still answers our adapter-free requests from the base model,
+        because mlx-lm drops its own `--adapter-path` (upstream #1248).
+        """
         return self._adapter_path or ""
 
     # ----- Public API (SummaryClient) -----
@@ -601,12 +607,17 @@ class LocalSummaryClient:
         """
         identity = local_server.served_identity(self._port)
         self._served = identity
+        # Model only, deliberately: since LOCAL15 the adapter rides in every request,
+        # which overrides whatever the server was started with (mlx-lm ignores its own
+        # `--adapter-path` entirely), so a warm server started for a different adapter,
+        # or for none, still serves ours correctly. Respawning a multi-GB server over
+        # an adapter difference would cost a full model load and change nothing.
         if identity is None or identity.matches(
-            model=self._model, adapter_path=self._adapter_path
+            model=self._model, adapter_path=identity.adapter_path
         ):
             return True
 
-        want = self._model + (f" + adapter {self._adapter_path}" if self._adapter_path else "")
+        want = self._model
         if not self._manage_subprocess or not self._owns(identity):
             log.warning(
                 "warm mlx_lm.server on %s serves %s but this run is configured for %s; "
@@ -810,6 +821,18 @@ class LocalSummaryClient:
             # separate refactor; this hint is the practical bridge.
             "response_format": response_format,
         }
+        if self._adapter_path:
+            # LOCAL15: the per-request route is the only one that actually serves the
+            # adapter. mlx-lm 0.31.3 accepts `--adapter-path` on the server and then
+            # drops it: `ModelProvider.load` resolves the model alias first and then
+            # keys `_adapter_map` by the resolved path, while the map is keyed
+            # "default_model", so the lookup always misses and falls back to None.
+            # Upstream issue ml-explore/mlx-lm#1248, fix PR #1249 unmerged since
+            # 2026-05-06. `adapters` is a documented public field of the server API
+            # (mlx_lm/SERVER.md), and `tuner.utils.load_adapters` raises
+            # FileNotFoundError on a bad path, so a typo'd `local_adapter_path` now
+            # fails loudly instead of silently serving the base model.
+            payload["adapters"] = self._adapter_path
         # Scale the read timeout to the requested output length so a long
         # generation is not cut off mid-stream (LOCAL2/AUD-21). Connect stays
         # tight: a server that will not accept the connection should fail fast.
@@ -823,9 +846,19 @@ class LocalSummaryClient:
         except httpx.HTTPError as e:
             raise LocalSummaryError(f"local backend HTTP error: {e}") from e
         if r.status_code != 200:
-            raise LocalSummaryError(
-                f"local backend returned {r.status_code}: {r.text[:500]}"
-            )
+            detail = f"local backend returned {r.status_code}: {r.text[:500]}"
+            if r.status_code == 404 and self._adapter_path:
+                # mlx_lm.server answers a bare 404, no body, when it cannot load the
+                # adapter a request asked for (LOCAL15). The endpoint itself is fixed
+                # and known-good by this point, so name the likely cause: otherwise
+                # the user sees an unexplained 404 from their own machine.
+                detail += (
+                    f". The request asked for LoRA adapter {self._adapter_path!r}; the "
+                    "server answers 404 when it cannot load one. Check that "
+                    "summarization.local_adapter_path exists and holds "
+                    "adapter_config.json + adapters.safetensors."
+                )
+            raise LocalSummaryError(detail)
         data = r.json()
         try:
             return data["choices"][0]["message"]["content"]
