@@ -352,7 +352,7 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 | `corrections.py` | `mp corrections-stats` | aggregate over correction records |
 | `train_adapter.py` | `mp train-adapter` | fine-tune a local LoRA adapter on-device (LOCAL9); `--source` picks the corpus: the corrections you edited, the cloud summaries already on disk (`runs`), or both. Writes a `split.json` beside the adapter so the A/B can tell trained-on meetings from held-out ones |
 | `analyze_detection.py` | `mp analyze-detection` | detection audit, both ends: meeting-end miss rate, and (DET3) mic-busy spans where nothing recorded (start-detection false negatives), correlated against prompts / recordings / `candidate_dropped` |
-| `classify.py` | `mp classify-meetings` | AI5 spike: heuristic (+ optional local-LLM) meeting-type labels over the library |
+| `classify.py` | `mp classify-meetings` | AI5 spike: heuristic (+ optional local-LLM) meeting-type labels over the library. Kept as the owner-dev harness; its verdict is **NO-GO on a `MeetingSummary.meeting_type` field** (measured on 193 real meetings: the two independent labellers agree on 1 of 10 types and have zero overlap on 4, because the classified "title" is the summarizer's invented one, not the calendar's). Before reaching for a type field, read [`docs/spikes/ai5-meeting-type-classification.md`](./docs/spikes/ai5-meeting-type-classification.md) |
 | `dogfood.py` | `mp dogfood` | side-by-side backend comparison (Anthropic vs local, or `--adapter` for base vs LoRA; refuses a meeting the adapter trained on unless `--allow-trained`) |
 
 ### Sinks

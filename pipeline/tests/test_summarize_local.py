@@ -73,6 +73,12 @@ class _FakeHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length) or b"{}")
         out = builder(body)
+        if out is None:
+            # Bodyless 404, exactly what mlx_lm.server answers when it cannot load
+            # the adapter a request asked for (LOCAL15).
+            self.send_response(404)
+            self.end_headers()
+            return
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -248,6 +254,66 @@ def test_summarize_sends_response_format_hint(
     assert rf is not None, "response_format hint must be present in the payload"
     assert rf.get("type") == "json_schema"
     assert rf.get("json_schema", {}).get("strict") is True
+
+
+def _captured_payload(
+    fake_server: tuple[str, int, ThreadingHTTPServer], **client_kwargs
+) -> dict:
+    """Run one summarize against the fake server and return the request payload."""
+    host, port, server = fake_server
+    captured: dict = {}
+
+    def builder(payload: dict) -> dict:
+        captured.update(payload)
+        return {"choices": [{"message": {"content": json.dumps(_valid_summary_obj())}}]}
+
+    server.builder = builder  # type: ignore[attr-defined]
+    with LocalSummaryClient(
+        host=host, port=port, manage_subprocess=False, **client_kwargs
+    ) as c:
+        c.summarize(system_prompt="Summarize.", transcript="A: hello.",
+                    model="ignored", max_tokens=512)
+    return captured
+
+
+def test_configured_adapter_rides_in_the_request_not_only_the_spawn_flag(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    """LOCAL15: mlx-lm 0.31.3 accepts `--adapter-path` and then drops it (its
+    `_adapter_map` is keyed by the model alias but looked up by the resolved path,
+    upstream #1248). The per-request `adapters` field is the route that actually
+    serves the adapter, so a client configured with one must send it. Relying on the
+    spawn flag alone silently serves the base model."""
+    captured = _captured_payload(fake_server, adapter_path="/adapters/mine")
+    assert captured.get("adapters") == "/adapters/mine"
+
+
+def test_no_adapter_configured_sends_no_adapters_key(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    """An empty `local_adapter_path` must omit the key entirely: an empty string is
+    not a path, and sending one would make the server raise on every request."""
+    assert "adapters" not in _captured_payload(fake_server)
+    assert "adapters" not in _captured_payload(fake_server, adapter_path="")
+
+
+def test_unloadable_adapter_fails_loudly_naming_the_path(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    """LOCAL15 acceptance: a configured adapter that cannot be loaded must stop the
+    run with the path named, never quietly produce a base-model summary. The server
+    answers a bodyless 404, so the client supplies the diagnosis."""
+    host, port, server = fake_server
+    server.builder = lambda _payload: None  # type: ignore[attr-defined]
+
+    with LocalSummaryClient(host=host, port=port, manage_subprocess=False,
+                            adapter_path="/adapters/typo") as c:
+        with pytest.raises(LocalSummaryError) as excinfo:
+            c.summarize(system_prompt="Summarize.", transcript="A: hello.",
+                        model="ignored", max_tokens=512)
+    message = str(excinfo.value)
+    assert "/adapters/typo" in message
+    assert "404" in message
 
 
 # ----- Lifecycle: no server reachable -----
@@ -693,27 +759,32 @@ def test_mismatched_server_we_own_is_replaced(
     assert spawned == ["spawn"]
 
 
-def test_adapter_flip_alone_replaces_a_server_we_own(
+def test_adapter_flip_alone_does_not_replace_a_server(
     fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Same model, different adapter. Without this a LOCAL9 A/B would silently
-    compare the base model against itself."""
-    host, port, _server = fake_server
+    """Same model, different adapter: reuse it, do not pay a multi-GB reload.
+
+    LOCAL11 respawned here, to stop a LOCAL9 A/B silently comparing the base model
+    against itself. LOCAL15 showed that respawn never delivered that: the fresh
+    server would have been started with the same `--adapter-path` mlx-lm ignores, so
+    it would have served the base model too. The adapter now rides in the request
+    body, which is what actually decides the loaded weights, so an adapter-only
+    difference is not a reason to restart anything. The guarantee the old test
+    wanted lives in `test_configured_adapter_rides_in_the_request_not_only_the_spawn_flag`.
+    """
+    host, port, server = fake_server
+    _serve_valid_summary(server)
     _fake_identity(monkeypatch, _identity("same/model", adapter=None, pid=4242))
     monkeypatch.setattr("mp.local_server.read_marker", lambda home=None: {"pid": 4242})
-    killed: list[int] = []
-    monkeypatch.setattr(
-        "mp.local_server.terminate_server",
-        lambda pid, home=None: killed.append(pid) or True,
-    )
-    c = LocalSummaryClient(
-        host=host, port=port, model="same/model", adapter_path="/adapters/lora",
-    )
-    monkeypatch.setattr(c, "_spawn", lambda: None)
-    monkeypatch.setattr(c, "_wait_for_health", lambda _t: None)
+    monkeypatch.setattr("mp.local_server.terminate_server", _fail_if_called)
 
-    c._ensure_running()
-    assert killed == [4242]
+    with LocalSummaryClient(
+        host=host, port=port, model="same/model", adapter_path="/adapters/lora",
+        manage_subprocess=False,
+    ) as c:
+        _summarize(c)
+        # And the sidecar still attributes the summary to the adapter that served it.
+        assert c.adapter_path == "/adapters/lora"
 
 
 def test_unreadable_identity_reuses_rather_than_respawning(

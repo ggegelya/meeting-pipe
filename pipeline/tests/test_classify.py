@@ -18,6 +18,16 @@ def test_heuristic_keyword_matches():
     assert classify.classify_heuristic("Weekly", "Client account", 4)[0] == "client"
 
 
+def test_sync_is_not_a_one_on_one():
+    """AI5 measurement: "sync" names a cadence, not a headcount. On the real
+    library it mislabelled 20 team syncs (4 to 12 attendees) as one_on_one."""
+    assert classify.classify_heuristic("Team Sync: Releases & Hotfix", "", 12)[0] != "one_on_one"
+    assert classify.classify_heuristic("Dev Sync - Auth Rework", "", 5)[0] != "one_on_one"
+    # a genuine 1:1 still lands, by keyword and by the attendee fallback
+    assert classify.classify_heuristic("1:1 with Anna", "", 5)[0] == "one_on_one"
+    assert classify.classify_heuristic("Weekly sync", "", 2)[0] == "one_on_one"
+
+
 def test_heuristic_attendee_fallbacks():
     assert classify.classify_heuristic("Weekly chat", "", 2) == ("one_on_one", "attendees=2")
     assert classify.classify_heuristic("Company update", "", 12)[0] == "all_hands"

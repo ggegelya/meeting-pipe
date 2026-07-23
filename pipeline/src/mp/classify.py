@@ -30,7 +30,11 @@ TAXONOMY = [
 
 # First-match keyword rules over the title + workflow name (lower-cased).
 _KEYWORDS: list[tuple[str, list[str]]] = [
-    ("one_on_one", [r"\b1:1\b", r"\bone[- ]on[- ]one\b", r"\bcatch[- ]?up\b", r"\bsync\b"]),
+    # `sync` deliberately absent: measured on the real 193-meeting library it fired
+    # 22 of the 33 one_on_one labels, and 20 of those had 4 to 12 attendees ("Team
+    # Sync", "Sprint Sync"). It names a cadence, not a headcount. See
+    # docs/spikes/ai5-meeting-type-classification.md.
+    ("one_on_one", [r"\b1:1\b", r"\bone[- ]on[- ]one\b", r"\bcatch[- ]?up\b"]),
     ("standup", [r"\bstand[- ]?up\b", r"\bdaily\b", r"\bscrum\b"]),
     ("planning", [r"\bplanning\b", r"\bsprint\b", r"\broadmap\b", r"\bkick[- ]?off\b"]),
     ("retro", [r"\bretro\b", r"\bretrospective\b", r"\bpost[- ]?mortem\b"]),
