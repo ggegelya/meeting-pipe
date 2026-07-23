@@ -73,6 +73,8 @@ For meetings longer than ~1 hour on a cloud backend, the pipeline writes the tra
 
 The on-screen prompt also has a **Record (BYO)** button: same flow, but opt-in per-meeting - useful for sensitive calls or when you'd rather hand-summarise. After the recording finishes, the meeting's Summary tab shows a **Paste your summary** box: drop your text in, hit **Save & publish**, and it fans out to your configured sinks. (`mp publish-from-paste <stem>.md` does the same thing from a shell, reading `<stem>.summary.md` off disk.)
 
+When the workflow about to record has met before, the prompt grows a quiet **Last time** button (CAL2). Click it and the panel expands in place to show the previous meeting in that workflow: its title, how long ago it was, the first few points of its summary, and the actions it left open. Nothing pops up and nothing takes focus; the button only appears when there is something to show, and switching workflows from the chip re-reads the card for the one you picked. `mp prep <workflow>` prints the same card in a shell.
+
 ---
 
 ## Why it is shaped this way
@@ -310,7 +312,7 @@ Ties on score break by the workflow's `order` (ascending). Manual recordings (`C
 **Extra summary sections (WF7).** A workflow can add its own summary sections on top of the standard ones (Summary / Decisions / Action items / Open questions / Attendees). In the workflow editor's *Extra summary sections*, add a row per section: a name (e.g. "Billable follow-ups", "Feedback given / received") and an instruction telling the model what to put there. Those flow to the summarizer for every meeting in the workflow, and the produced sections render everywhere the summary does: the Library detail (read-only), Notion, Obsidian, and the filesystem/LAN Markdown. They also survive the BYO paste round-trip (any non-standard `##` heading in a hand-written `<stem>.summary.md` is kept as an extra section) and a correction edit (read-only there for now, but never dropped). Stored as `[[extra_sections]]` in the workflow TOML; a workflow that adds none keeps the standard shape unchanged.
 
 **Where it shows up.**
-- The **prompt panel** sprouts a chip next to the action buttons with the resolved workflow's color/emoji + name. Click it to pick a different workflow before clicking Record.
+- The **prompt panel** sprouts a chip next to the action buttons with the resolved workflow's color/emoji + name. Click it to pick a different workflow before clicking Record. When that workflow has a previous meeting worth recapping, a **Last time** button appears beside the chip (CAL2); picking a different workflow re-reads the card for it.
 - The **recording HUD** shows the workflow's name (with an "NDA" tag when applicable) below the elapsed timer. The recording dot itself stays coral - it signals recording, not the workflow (DSN25).
 - The **menu-bar title** reads `Recording - {Workflow}` with a trailing `· NDA` when NDA mode is on.
 
@@ -472,6 +474,16 @@ mp actions --min-confidence high --json             # machine-readable
 ```
 
 The resolved flag lives in `<stem>.summary.json` and round-trips through a republish, so marking an action done (a control DV1 adds to the Library) survives re-publishing.
+
+To recap one workflow before a recurring call, `mp prep <workflow>` (CAL2) prints the last meeting recorded under it: the title, how long ago it was, the opening points of its summary, and the actions it left open. It is the shell twin of the prompt panel's **Last time** button and reads the same two sidecars, so both say the same thing:
+
+```bash
+mp prep "Client work"                               # the last Client work meeting
+mp prep client                                      # a unique substring works too
+mp prep "Client work" --json                        # machine-readable
+```
+
+The workflow name is matched exactly first, then as a unique substring; an ambiguous or unknown name lists the workflows that have meetings instead of guessing. Deliberately bounded to the last meeting: rolling every older open action forward is what `mp actions` and `mp digest` are for.
 
 For a periodic review, `mp digest` (AI4) rolls the week up into one on-device digest: it aggregates the aging open actions and the decisions from meetings in the last N days (grounded, read straight from your summaries), asks the configured engine to narrate the state of your week over those facts, and writes the result as a `MeetingSummary` to disk (a `digests` sibling of your recordings folder, outside the scanned library). Narration runs through the same backend + egress clamp as everything else (regulated / NDA keep it on-device with no cloud fallback), and if no engine is reachable the digest still generates with a deterministic summary. With `--publish` it fans out through your configured sinks like a meeting does:
 

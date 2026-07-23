@@ -25,6 +25,7 @@ ENTRY_CONTRACT_EXEMPT = {
     "analyze_detection": "audits the event stream (read-only)",
     "roster_cmd": "local voiceprint management; no sink, no engine",
     "actions": "lists action items already extracted into <stem>.summary.json",
+    "prep": "recaps <stem>.meta.json + <stem>.summary.json already on disk; no sink, no engine",
     "doctor": "preflight diagnostic; loads secrets on purpose to test live API access",
 }
 

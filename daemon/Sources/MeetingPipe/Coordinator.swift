@@ -20,6 +20,9 @@ final class Coordinator: NSObject {
     let notifier: Notifier
     let promptWindow: MeetingPromptWindow
     let recordingHUD: RecordingHUDWindow
+    /// CAL2: supplies the prompt's "Last time" card. Owned here because the panel
+    /// holds it weakly, and it reads the same recordings root the Library does.
+    let prepCards: PrepCardStore
     /// Cold-start discovery: finds a meeting app and engages the lifecycle
     /// adapter; the `.starting` verdict raises the prompt (TECH-C13 step 5).
     let discoveryWatcher = MeetingDiscoveryWatcher()
@@ -131,6 +134,7 @@ final class Coordinator: NSObject {
             }
             return config.recording.outputDir
         }()
+        self.prepCards = PrepCardStore(recordingsDir: recordingsDir)
         let libraryModel = LibraryWindowModel(recordingsDir: recordingsDir)
         // UX16: the FTS5 search index, built over the same store. Attached here (not in the model's
         // init) so headless tests never touch the real cache and fall back to in-memory search.
@@ -374,6 +378,7 @@ final class Coordinator: NSObject {
     func start() {
         notifier.delegate = self
         promptWindow.delegate = self
+        promptWindow.prepProvider = prepCards
         recordingHUD.delegate = self
 
         // Drive the recorder writer + silence backstop from the gate's
