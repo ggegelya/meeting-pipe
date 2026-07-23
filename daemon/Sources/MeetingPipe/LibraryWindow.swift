@@ -487,6 +487,15 @@ struct LibraryRootView: View {
                             scope = .allMeetings
                             meetingSelection = [stem]
                         }
+                    } else if case .people = scope {
+                        // People (DV3): the same center-column shape as Facts, with
+                        // rows that are people rather than facts. Opening one of a
+                        // person's meetings or actions navigates back the same way.
+                        PeopleView(store: meetingStore) { stem in
+                            model.openedFromInsight = .init(stem: stem, source: "People")
+                            scope = .allMeetings
+                            meetingSelection = [stem]
+                        }
                     } else if case .ask = scope {
                         // Ask-AI (AI3) also takes the center column: a question box
                         // over a cited answer, each citation navigating back to its
