@@ -19,6 +19,15 @@
 # not transcript content; each match is still truncated to 200 chars as a privacy guard.
 # Nothing is written, uploaded, or sent anywhere.
 #
+# TEAMS IS ALREADY ANSWERED (2026-07-23), so you do not need this probe for it. The
+# signal exists, is default-on and stable: Teams' SlimCore media-stack log writes
+# "AirPodsService: Input mute event received: mute|unmute" on every in-call toggle.
+# It was measured offline against 11 days of real dogfood rather than a live toggle
+# session - see docs/spikes/mic8_log_correlation.py, which replays every mute
+# transition already on disk and pairs it against the AX oracle. Re-run THAT after a
+# Teams update to confirm the format held; this probe is now for Zoom (unmeasured, and
+# the dogfood has no Zoom calls) and for eyeballing a live stream.
+#
 # Run it on the owner's Mac DURING a live Zoom or Teams call:
 #
 #     bash daemon/scripts/mic8-native-mute-probe.sh
@@ -28,8 +37,8 @@
 #   - A line appears within ~1 s of each press, same token every time -> the log is a
 #     candidate durable signal (promote to the MeetMuteAdapter-style plan in the doc).
 #   - No line appears (or only on some presses, or the token/format varies) -> the log
-#     is not a reliable oracle; MIC8's native-signal bet is a close, and MIC6 (the AX
-#     state-attribute read) stays the durable direction.
+#     is not a reliable oracle; MIC8's native-signal bet is a close for that app, and
+#     the AX read stays the durable direction there.
 # Ctrl-C to stop.
 #
 # NOTE ON ZOOM: Zoom's verbose troubleshooting logging is OPT-IN (System Settings won't
@@ -37,12 +46,24 @@
 # first: Zoom > Settings > (report a problem / troubleshooting) to install the logging
 # build, reproduce, then re-run. A signal that only exists with troubleshooting logging
 # enabled is, by itself, evidence against durability.
+#
+# TIMEZONE GOTCHA (Teams): SlimCore prints UTC but suffixes it with the machine's local
+# offset, so a line stamped "13:31:12+03:00" happened at 13:31:12 UTC, not 10:31:12 UTC.
+# Compare against wall clock accordingly, and see the note in mic8_log_correlation.py.
 
 set -uo pipefail
 
 # Tokens that a client MIGHT use for a mute-state transition. Broad on purpose: the
 # formats are undocumented, so we cast wide and let the owner read which (if any) fire.
-TOKENS='mute|unmute|self.?mute|micphone|microphone|mic (on|off|muted|unmuted)|audio.?(mute|status|state).?(change|on|off)|SetAudioMute|onUserAudioStatusChange|isMuted|muteState'
+#
+# The trailing context class is load-bearing, not cosmetic. Teams' *shell* log
+# (MSTeams_*.log) dumps a ~100 KB ECS config blob every hour whose feature-flag keys
+# include `hfpOsUnmuteFixEnabled`; a bare `mute` alternative matches that blob once an
+# hour whether or not a call is happening, and truncated to 200 chars it reads exactly
+# like a hit. Requiring a non-identifier character after the token drops the config
+# keys while keeping real event lines ("... received: mute", "isMuted: true").
+BOUND='([^A-Za-z0-9_]|$)'
+TOKENS="(mute|unmute|self.?mute|micphone|microphone|mic (on|off|muted|unmuted)|audio.?(mute|status|state).?(change|on|off)|SetAudioMute|SetMuteState|onUserAudioStatusChange|isMuted|muteState|InputMuteStateChangeNotification)$BOUND"
 
 # label:root pairs. We glob each root for diagnostic logs (below) and tail whatever
 # exists; being loose about the exact path makes the probe robust to per-version
@@ -73,8 +94,15 @@ for pair in "${ROOTS[@]}"; do
   root="${pair#*:}"
   [ -d "$root" ] || continue
   # Diagnostic logs only: drop the Chromium storage subtrees and leveldb noise, then take
-  # the newest few per app (a live call writes the freshest log, so that is where a mute
-  # line would land) so the probe tails a handful of relevant files, not a whole tree.
+  # the newest few per log FAMILY (basename with the date/generation suffix stripped) so
+  # the probe tails a handful of relevant files, not a whole tree.
+  #
+  # Per-family and not simply "the newest few in the tree": Teams' families rotate at wildly
+  # different rates. MSTeams_*.log and TeamsSwitcher.log_* roll every ~2 MB (hourly on a busy
+  # day) while MSTeamsNM_SlimCore_* rolls only when Teams restarts - roughly weekly. SlimCore
+  # is the ONLY family that carries mute transitions, so a flat newest-6 cut evicts the one
+  # file that matters on exactly the busy days you would want to measure, and the probe then
+  # reports "no mute lines" while the signal sits one rotation out of view.
   while IFS= read -r f; do
     [ -f "$f" ] || continue
     mtime=$(stat -f %m "$f" 2>/dev/null || echo 0)
@@ -91,8 +119,19 @@ for pair in "${ROOTS[@]}"; do
     find "$root" -type f \( -name '*.log' -o -name '*.txt' \) -size -50M -print 2>/dev/null \
       | grep -vaE "$NOISE_DIRS" \
       | grep -vaE "$NOISE_FILES" \
-      | while IFS= read -r p; do printf '%s\t%s\n' "$(stat -f %m "$p" 2>/dev/null || echo 0)" "$p"; done \
-      | sort -rn | head -6 | cut -f2-
+      | while IFS= read -r p; do
+          base="${p##*/}"
+          # Family = basename with the rotation stamp stripped, so every generation of one
+          # log collapses to a single key:
+          #   MSTeamsNM_SlimCore_2026-07-17_16-11-07.18.log -> MSTeamsNM_SlimCore
+          #   TeamsSwitcher.log_2026-07-23_18-23-06.525.log -> TeamsSwitcher.log
+          fam=$(printf '%s' "$base" \
+            | sed -E 's/_?[0-9]{4}-[0-9]{2}-[0-9]{2}[-_0-9.]*\.(log|txt)$//; s/[-_.]?[0-9]+\.(log|txt)$//; s/\.(log|txt)$//')
+          printf '%s\t%s\t%s\n' "$fam" "$(stat -f %m "$p" 2>/dev/null || echo 0)" "$p"
+        done \
+      | sort -t"$(printf '\t')" -k1,1 -k2,2nr \
+      | awk -F'\t' '{ if (++n[$1] <= 2) printf "%s\t%s\n", $2, $3 }' \
+      | sort -rn | head -20 | cut -f2-
   )
 done
 

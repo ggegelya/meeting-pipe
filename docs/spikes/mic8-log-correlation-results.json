@@ -1,0 +1,78 @@
+{
+  "slimcore_transitions": 594,
+  "slimcore_generations": 9,
+  "ax_transitions": 62,
+  "paired": 61,
+  "agree": 59,
+  "disagree": 2,
+  "unmatched_beyond_window": 1,
+  "pair_window_s": 30.0,
+  "log_led_ax": 59,
+  "log_lagged_ax": 2,
+  "abs_delta_ms": {
+    "min": 22.1,
+    "p50": 49.7,
+    "p90": 812.2,
+    "max": 16773.2
+  },
+  "ax_reason_breakdown": {
+    "health_poll": 17,
+    "notification": 44
+  },
+  "format_census": [
+    {
+      "generation": "MSTeamsNM_SlimCore_2026-06-12_01-19-25.10.log",
+      "input_mute_event": 218,
+      "set_mute_state": 181,
+      "input_mute_state_change_notification": 204
+    },
+    {
+      "generation": "MSTeamsNM_SlimCore_2026-06-21_11-38-25.11.log",
+      "input_mute_event": 88,
+      "set_mute_state": 72,
+      "input_mute_state_change_notification": 81
+    },
+    {
+      "generation": "MSTeamsNM_SlimCore_2026-06-29_10-33-03.12.log",
+      "input_mute_event": 5,
+      "set_mute_state": 3,
+      "input_mute_state_change_notification": 4
+    },
+    {
+      "generation": "MSTeamsNM_SlimCore_2026-06-29_17-01-30.13.log",
+      "input_mute_event": 6,
+      "set_mute_state": 5,
+      "input_mute_state_change_notification": 6
+    },
+    {
+      "generation": "MSTeamsNM_SlimCore_2026-06-30_10-19-33.14.log",
+      "input_mute_event": 0,
+      "set_mute_state": 0,
+      "input_mute_state_change_notification": 0
+    },
+    {
+      "generation": "MSTeamsNM_SlimCore_2026-06-30_10-38-14.15.log",
+      "input_mute_event": 11,
+      "set_mute_state": 7,
+      "input_mute_state_change_notification": 10
+    },
+    {
+      "generation": "MSTeamsNM_SlimCore_2026-06-30_18-56-54.16.log",
+      "input_mute_event": 110,
+      "set_mute_state": 89,
+      "input_mute_state_change_notification": 101
+    },
+    {
+      "generation": "MSTeamsNM_SlimCore_2026-07-13_11-17-22.17.log",
+      "input_mute_event": 94,
+      "set_mute_state": 71,
+      "input_mute_state_change_notification": 87
+    },
+    {
+      "generation": "MSTeamsNM_SlimCore_2026-07-17_16-11-07.18.log",
+      "input_mute_event": 62,
+      "set_mute_state": 46,
+      "input_mute_state_change_notification": 54
+    }
+  ]
+}

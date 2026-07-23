@@ -1,6 +1,8 @@
 # MIC8 spike: UI-independent native mute signals (logs / SDK / OS)
 
-Spike, 2026-07-13. Probe: [`daemon/scripts/mic8-native-mute-probe.sh`](../../daemon/scripts/mic8-native-mute-probe.sh) (owner-run during a live call, read-only). This spike closes two of the three candidate signal classes from documentation and reduces the third to one empirical question a live mute/unmute cycle answers, so the per-app verdict is owner-owed.
+Spike, 2026-07-13. **Measured and resolved 2026-07-23: GO for Teams.** Instruments: [`docs/spikes/mic8_log_correlation.py`](./mic8_log_correlation.py) (the offline measurement that settled it) and [`daemon/scripts/mic8-native-mute-probe.sh`](../../daemon/scripts/mic8-native-mute-probe.sh) (the live tail, still the instrument for Zoom).
+
+This spike closes two of the three candidate signal classes from documentation. The third, the client's own local log, was owner-owed on a live instrumented call; it was instead answered **offline against 11 days of real dogfood**, which is a strictly stronger read than 3-4 toggles in one meeting would have been. The measured result is in [Candidate A: measured](#candidate-a-local-client-logs-measured-go-for-teams) below.
 
 ## Question
 
@@ -19,35 +21,86 @@ So the SDK path is a non-starter under the "watch the client the user is already
 
 Tempting because it would be app-independent, but it measures the wrong thing. CoreAudio's device-level mute (what Mic Drop / MicControl / Control Center toggle) mutes the **hardware input**. A meeting client's in-call mute is a **client-side transmit gate**: by design it keeps the OS microphone live and simply stops sending audio (this is exactly the property that forced MIC1's capture-first architecture, and why a "mic in use" read cannot stand in for "muted"). Reading the OS device-mute therefore tells you nothing about whether the user clicked Mute in Teams, and macOS exposes no public API to read another app's client-side mute or its contribution to the system mute affordance. Dead end for the signal MIC6 needs.
 
-## Candidate A (local client logs): the one empirically-open thread
+## Candidate A (local client logs): measured, GO for Teams
 
-The remaining UI-independent per-app signal is the client's own diagnostic log. If Zoom or Teams writes a stable line on each mute/unmute, tailing it is UI-independent (no button, no locale, no window scoping). Whether that line exists, and is stable, is undocumented and per-app, so it can only be measured live. That is what the probe does: it tails the client's diagnostic logs (read-only, storage subtrees pruned, matches truncated as a privacy guard) and timestamps any line matching a broad mute/audio-state token set, so the owner can correlate each toggle against a log line and read the latency + token stability.
+The remaining UI-independent per-app signal is the client's own diagnostic log. If Zoom or Teams writes a stable line on each mute/unmute, tailing it is UI-independent (no button, no locale, no window scoping). Whether that line exists, and is stable, is undocumented and per-app.
 
-On-disk recon on this Mac (2026-07-13) frames the measurement but cannot answer it:
+### Correction to the 2026-07-13 recon
 
-- **Zoom** has `~/Library/Logs/zoom.us/` but its diagnostic logs are empty/stale (`Diagnostic/53061/` empty; newest text log ~285d old). Zoom's verbose troubleshooting logging is **opt-in**, not on by default - and a signal that exists only with troubleshooting logging enabled is, by that fact, weak evidence for durability.
-- **Teams** writes `MSTeams_*.log` under `~/Library/Group Containers/UBF8T346G9.com.microsoft.teams/Library/Application Support/Logs/`, but the newest is ~405d old (the owner's recent Teams use looks browser-side, not the native app). Format is undocumented.
+The original recon concluded Teams was not logging, from `MSTeams_*.log` being ~405 d stale and "recent Teams use looks browser-side". **That read the wrong file family.** `MSTeams_*.log` is the Electron/WebView2 *shell* log. The call media stack writes a separate family in the same directory, `MSTeamsNM_SlimCore_*.log`, and that one was live: its generation `.10` dates from 2026-06-12 and already held 218 mute transitions, a month before the spike was written. The dogfood was native Teams all along (which the meeting corpus independently says), and the signal was on disk the whole time.
 
-Neither app is logging live right now, so the latency/stability read is owner-owed: run the probe during an actual call.
+Two properties of this directory explain how the miss survived, and both were defects in the probe until 2026-07-23:
 
-## What a GO would look like (and the durability caveat)
+- **The shell log drowns the media log.** `MSTeams_*.log` and `TeamsSwitcher.log_*` roll every ~2 MB, hourly on a working day; `MSTeamsNM_SlimCore_*` rolls only when Teams restarts, roughly weekly. The probe took the newest 6 files in the tree, so on any busy day the six newest are shell-log rotations and the one file carrying mute lines is evicted. (Observed live: during the 2026-07-23 session a single shell rotation pushed SlimCore from 5th to 10th newest.) It now takes the newest 2 per log *family*.
+- **The shell log fakes a hit.** Once an hour it dumps a ~100 KB ECS config blob whose feature-flag keys include `hfpOsUnmuteFixEnabled`. The probe's `mute` token matched that, and truncated to 200 chars it reads exactly like a mute event, so the noise is the same shape as the signal. The token set now requires a non-identifier character after the token: shell-log false positives went 3 to 0 while all 216 real SlimCore lines still match.
 
-If the log proves reliable for an app, the build is small and needs no fusion change, mirroring MIC7's `MeetMuteAdapter` shape: a per-app `LogMuteAdapter` tails the client log, parses the mute token, and injects an `AXMuteButtonProbe.Event`-equivalent into `MicGate` exactly where the AX poll does today (`MeetingAXWindowWatcher` / `injectAxMuteEvent`), superseding that app's AX read. No `PromotionEngine` / scorer change; the mute layer is already an injectable seam.
+Left unfixed, those two would have produced a confident false close: config noise scrolling past on every hour boundary while the real file sat out of view.
 
-The caveat that reshapes the verdict: an **undocumented log format is not obviously more futureproof than the AX state-attribute read MIC6 targets.** A vendor changing its log line breaks a `LogMuteAdapter` the same way a UI change breaks the scrape - and unlike the AX read, the log path also depends on verbose logging staying enabled (Zoom). So MIC8's filed framing ("the strongest futureproofing") holds only if the log line turns out to be stable *and* default-on. The a-priori evidence (B and C closed, A undocumented/opt-in) already downgrades this from "the durable replacement" to "measure the log path before betting on it; MIC6 likely stays the primary durable track."
+### The signal
 
-## Verdict: measure the log path per app; lean is a close
+Three line forms, all from the `AirPodsService` component of the SlimCore media stack:
 
-Per-app decision tree, owner-owed on the probe:
+```
+AirPodsService: Input mute event received: mute|unmute
+AirPodsService: AirPodsService::SetMuteState: true|false with cause_id: <uuid>
+AirPodsService: AirPodsService InputMuteStateChangeNotification received with value: true|false
+```
 
-- **A stable line appears** (same token, < ~1 s after each toggle, default logging, survives a client update): GO a `LogMuteAdapter` for that app, superseding its AX read. Cleanest for that tool.
-- **The line is flaky / format varies / only with troubleshooting logging on:** the log is not a durable oracle; close the native-signal bet for that app. MIC6 (read the mute button's stable *state attribute*, not its localized title) stays the durable direction, backed by the capture-first safety net (ADR 0016 / MIC9) that already removes the data-loss failure mode regardless of oracle accuracy.
-- **No line at all:** close candidate A for that app; the native-signal track for it is dead.
+`AirPodsService` is a **misnomer** for our purposes: the component logs the transmit gate on the built-in mic too. On every day carrying mute lines (2026-07-20 through 07-23, 52/36/23/51 lines) the daemon resolved `MacBook Pro Microphone` as the input device; AirPods appear as an input device exactly once in the entire event log (2026-07-14). What this data cannot separate is whether the component still requires AirPods *connected for output*, so the build must degrade an absent line to **unknown, never to unmuted** (the same rule MIC7 pinned for an absent `data-is-muted`).
 
-Net: **do not build a log adapter yet.** B and C are closed by documentation; A is the only live thread and its durability is exactly what is unproven. The probe is the cheap instrument that settles it without a blind build.
+### The measurement
+
+[`mic8_log_correlation.py`](./mic8_log_correlation.py) replays every mute transition already on disk and pairs the two oracles: source A the SlimCore log, source B meeting-pipe's own `micgate` / `ax_mute_button_state` events, i.e. the incumbent AX label scrape. Aggregates in [`mic8-log-correlation-results.json`](./mic8-log-correlation-results.json). Over 2026-06-12 to 07-23:
+
+| Measure | Result |
+|---|---|
+| SlimCore mute transitions | 594 across 9 log generations |
+| AX transitions available to pair | 62 (2026-07-13 to 07-23) |
+| Paired within 30 s | 61 (1 unmatched) |
+| State agreement | 59 agree, 2 disagree |
+| Log line arrived **before** the AX read | 59 of 61 |
+| \|delta\| ms | min 22, p50 50, p90 812, max 16773 |
+
+Against the spike's own pre-registered GO bar: same token every time **yes**; under ~1 s **yes** (p50 50 ms, and it *leads* the incumbent rather than trailing it); default logging **yes**, no troubleshooting toggle involved; survives a client update **yes**, identical across all 9 generations spanning six weeks and at least one client update (the 2026-07-17 relaunch).
+
+The four imperfect pairs were read individually and three are AX-side defects, not log misses:
+
+- `07-23T07:39:54` the log recorded `mute` and the daemon's own poll confirmed it 391 ms later, but the AX *notification* did not fire for **16.8 s**. That is the p90/max tail, and it is the incumbent lagging.
+- `07-20T07:35:22` AX announced a transition to `unmuted` when the state had already been unmuted for 68 s; the log shows only the two real transitions. An AX bookkeeping artefact.
+- `07-20T13:37:22` a 1.8 s AX poll lag, the log leading.
+- `07-20T13:44:26` AX saw a `muted` transition with no log line within the window. One unexplained gap in 62, and the only one that goes against the log.
+
+So the log is not merely as good as the AX scrape on this corpus, it is **better**: it leads on 59 of 61 pairs, it caught a transition the AX notification missed for 16.8 s, and it declined to invent one the AX side invented.
+
+### Not candidate C in disguise
+
+Worth stating explicitly, because the component name invites the confusion. This is the client-side transmit gate, not the OS device mute that section C closes as a category error: across the same window meeting-pipe's `system_mute_state` was `false` in **34 of 34** observations, i.e. the hardware input mute never toggled at all, while the log tracked 60 in-call transitions. The `cause_id` on each `SetMuteState` is Teams' own internal mute-cause bookkeeping. Client-side, as required.
+
+### Zoom: still open, and effectively moot
+
+`~/Library/Logs/zoom.us/` is empty/stale (newest text log from 2023; `Diagnostic/` empty) and Zoom's verbose troubleshooting logging is **opt-in**, so a signal that appears only with it enabled is weak evidence for durability. Unresolved, but the dogfood has recorded **zero** Zoom calls, so this stays unmeasured until a Zoom meeting actually happens. The live probe remains the instrument for it.
+
+
+## Verdict: GO for Teams, build a `LogMuteAdapter`; Zoom unmeasured
+
+The pre-registered decision tree resolves on the first branch for Teams: a stable, default-on line, sub-100 ms at p50, unchanged across 9 log generations. Two things this changes from the spike's a-priori lean:
+
+- **The lean was wrong.** The doc leaned toward a close on the grounds that an undocumented log format is no more futureproof than the label scrape it would replace. That argument still holds in principle, but it was an argument about an unmeasured signal, and the measurement beat it: 42 days and 9 generations of format stability, sub-100 ms median, and a demonstrated accuracy edge over the incumbent. A vendor can still break the line, but the same vendor broke the AX scrape twice in the period this project has existed (the Teams mini-window incident, MIC9/MIC10) and did not break this line once.
+- **The comparison MIC8 was filed against is gone.** MIC8 was filed as beating MIC6's AX state-attribute read; MIC6 was **refuted** by the 2026-07-14 live dump (Teams exposes no `AXValue` and no `AXIdentifier` on any element) and closed as unachievable. So the incumbent this actually has to beat is the localized-description scrape in `MuteLabels.toml` plus MIC10's `AXSystemDialog` structural anchor. On the measured corpus it beats that incumbent on latency and on accuracy, and it is locale-independent, which the scrape structurally cannot be.
+
+The build is small and needs no fusion change, mirroring MIC7's `MeetMuteAdapter` shape: a `LogMuteAdapter` conforming to `MicGateAdapter` (alongside `NativeMuteAdapter` / `NoOpMuteAdapter`) tails the newest `MSTeamsNM_SlimCore_*.log`, parses the transition line, and hands an `AXMuteButtonProbe.Event` to the sink, landing in `MicGate.injectAxMuteEvent` exactly where the AX poll does today. No `PromotionEngine` / scorer change; the mute layer is already an injectable seam.
+
+**Open design question for the build, owner's call: supersede or fuse.** The spike assumed a log adapter *replaces* that app's AX read. The measurement supports fusing instead, and it is barely more code: the one case that went against the log (`07-20T13:44:26`) is exactly what a fusion covers, and the three that went against AX are cases the log already covers. Precedence "log wins when present, AX carries when absent" keeps both, costs one comparison, and never leaves the gate blind if Microsoft renames the line. Replacing outright is simpler but bets the whole Teams mute oracle on one undocumented string.
+
+Build gotchas, all measured and all easy to get wrong:
+
+- **The timestamps lie about their timezone.** SlimCore prints UTC and suffixes the machine's local offset, so a line stamped `13:31:12+03:00` happened at 13:31:12 **UTC**. Parse the naive reading as UTC and discard the offset, or every event is wrong by the local offset, and correct-looking on a UTC machine, which is the worst kind of wrong.
+- **Pick the file by family, not by mtime.** The shell log rotates hourly and will always look fresher than the media log that carries the signal.
+- **Absent means unknown, not unmuted.** See the AirPods-misnomer caveat above.
+- **Rotation is per Teams restart**, so the adapter re-resolves the newest generation rather than holding one file handle.
 
 ## Follow-on
 
-- Owner: during a live Zoom call and, separately, a live Teams call, run `bash daemon/scripts/mic8-native-mute-probe.sh`, toggle mute/unmute 3-4 times noting each press time, and read which token (if any) appears and how fast. For Zoom, enable troubleshooting logging first if the probe reports no live writes.
-- On a stable default-on line for an app: promote MIC8 to a small `LogMuteAdapter` build for that app (the MIC7 adapter shape), superseding its `MeetingAXWindowWatcher` read.
-- On flaky / opt-in-only / absent: record the per-app close in the backlog row; MIC6 + capture-first remain the durable answer, and MIC8's "supersedes the whole scrape class" promotion rationale does not hold.
+- Build the Teams `LogMuteAdapter`. The supersede-vs-fuse question above wants an owner decision first.
+- Re-run `python3 docs/spikes/mic8_log_correlation.py` after a Teams update to confirm the line held. That is the regression test for this bet, and it costs one command.
+- Zoom stays unmeasured: `bash daemon/scripts/mic8-native-mute-probe.sh` during a live Zoom call, enabling troubleshooting logging first if it reports no live writes. Not worth chasing until a Zoom meeting actually happens; the corpus has none.
