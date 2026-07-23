@@ -1,7 +1,7 @@
 import Foundation
 
-/// Filter state for the library list (TECH-A14). Pure value type; SwiftUI re-runs it trivially and tests drive every branch without rendering. FTS5 over full transcripts shipped as UX16 (the retired TECH-A3 upgrade path): `MeetingFilterEngine.apply` takes the FTS candidate stems, the chips stay in-memory equality filters.
-struct MeetingFilter: Equatable {
+/// Filter state for the library list (TECH-A14). Pure value type; SwiftUI re-runs it trivially and tests drive every branch without rendering. FTS5 over full transcripts shipped as UX16 (the retired TECH-A3 upgrade path): `MeetingFilterEngine.apply` takes the FTS candidate stems, the chips stay in-memory equality filters. `Codable` since UX24, which persists a filter inside a saved smart folder.
+struct MeetingFilter: Equatable, Codable {
     var query: String = ""
     var workflow: String? = nil           // nil = any
     var sourceBundleID: String? = nil     // nil = any
@@ -25,6 +25,56 @@ struct MeetingFilter: Equatable {
             && sourceBundleID == nil
             && status == nil
             && dateRange == .all
+    }
+
+    /// Compose a refinement over a base filter (UX24, saving from inside a saved
+    /// folder). A live chip wins where it is set; the two free-text queries AND
+    /// together, since `MeetingFilterEngine.tokenize` splits on whitespace and every
+    /// token has to match. This mirrors what the user is looking at, where the folder's
+    /// filter and the live filter run one after the other.
+    static func refining(_ base: MeetingFilter, with live: MeetingFilter) -> MeetingFilter {
+        let queries = [base.query, live.query]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return MeetingFilter(
+            query: queries.joined(separator: " "),
+            workflow: live.workflow ?? base.workflow,
+            sourceBundleID: live.sourceBundleID ?? base.sourceBundleID,
+            status: live.status ?? base.status,
+            dateRange: live.dateRange == .all ? base.dateRange : live.dateRange
+        )
+    }
+}
+
+/// Stable on-disk tokens for `DateRange`, decoupled from `rawValue` because that
+/// doubles as the chip's menu label (UX24): rewording "Last 7 days" must not orphan a
+/// saved folder. An unrecognised token decodes to `.all` rather than throwing, so a
+/// hand-edited `saved_searches.json` degrades to a wider view instead of dropping the
+/// folder entirely.
+extension MeetingFilter.DateRange: Codable {
+    private var token: String {
+        switch self {
+        case .all:   return "all"
+        case .today: return "today"
+        case .week:  return "week"
+        case .month: return "month"
+        case .year:  return "year"
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        switch try decoder.singleValueContainer().decode(String.self) {
+        case "today": self = .today
+        case "week":  self = .week
+        case "month": self = .month
+        case "year":  self = .year
+        default:      self = .all
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(token)
     }
 }
 

@@ -8,8 +8,16 @@ struct LibraryListView: View {
     let scope: LibraryScope
     /// Workflow snapshot needed by the NDA and workflow scope predicates.
     let workflows: [Workflow]
+    /// The folder behind a `.saved` scope (UX24), resolved by the root. Nil for every
+    /// other scope, and for a folder that was deleted out from under the selection.
+    var savedSearch: SavedSearch? = nil
+    /// UX24: open the naming sheet for the current view. Nil when the scope has no list
+    /// to save. The root owns the sheet and reads `filter` directly.
+    var onSaveSmartFolder: (() -> Void)? = nil
     @Binding var selection: Set<Meeting.ID>
-    @State private var filter: MeetingFilter = MeetingFilter()
+    /// Owned by `LibraryRootView` (UX24), which needs the live chips to save or update a
+    /// smart folder. It already owns `scope`, and the two are peer state.
+    @Binding var filter: MeetingFilter
 
     /// Cached derived state, recomputed only when the (revision, scope, workflowsCount, filter) fingerprint changes. Without this, each body re-execution ran six O(n) walks over the meeting array.
     @State private var derived: DerivedList = .empty
@@ -30,7 +38,8 @@ struct LibraryListView: View {
                         filter: $filter,
                         facets: derived.facets,
                         matchCount: derived.filtered.count,
-                        totalCount: derived.scoped.count
+                        totalCount: derived.scoped.count,
+                        onSaveSmartFolder: onSaveSmartFolder
                     )
                     searchHintStrip
                     Divider()
@@ -52,6 +61,8 @@ struct LibraryListView: View {
         .onChange(of: workflows.count) { _, _ in recomputeDerived() }
         .onChange(of: filter) { _, _ in recomputeDerived() }
         .onChange(of: libraryModel.searchIndexRevision) { _, _ in recomputeDerived() }
+        // UX24: "Update to current view" rewrites the folder under a live selection.
+        .onChange(of: savedSearch) { _, _ in recomputeDerived() }
     }
 
     /// Scope header: title + count. Workflow scopes resolve the title via the snapshot.
@@ -77,6 +88,10 @@ struct LibraryListView: View {
         if case .workflow(let id) = scope,
            let wf = workflows.first(where: { $0.id == id }) {
             return wf.name
+        }
+        // UX24: a saved folder resolves its name the same way, via the store snapshot.
+        if case .saved = scope, let savedSearch {
+            return savedSearch.name
         }
         return scope.title
     }
@@ -110,7 +125,8 @@ struct LibraryListView: View {
             scope: scope,
             workflowsCount: workflows.count,
             filter: filter,
-            searchRevision: libraryModel.searchIndexRevision
+            searchRevision: libraryModel.searchIndexRevision,
+            savedSearch: savedSearch
         )
         if key == lastDerivedKey { return }
         lastDerivedKey = key
@@ -118,6 +134,20 @@ struct LibraryListView: View {
         let scoped: [Meeting]
         if case .allMeetings = scope {
             scoped = store.meetings
+        } else if case .saved = scope {
+            // UX24: a saved folder is a base scope plus its own filter, so it resolves
+            // through `SavedSearch.apply` (which needs the FTS index) rather than the
+            // pure `scope.includes` predicate. The live filter bar then narrows within
+            // it, exactly as it narrows within a built-in scope. A folder deleted out
+            // from under the selection resolves to nil and shows nothing, and the root
+            // snaps the rail back to All meetings.
+            scoped = savedSearch.map {
+                $0.apply(
+                    to: store.meetings,
+                    workflows: workflows,
+                    ftsMatches: libraryModel.matchingStems($0.filter.query)
+                )
+            } ?? []
         } else {
             scoped = store.meetings.filter { scope.includes($0, workflows: workflows) }
         }
@@ -156,12 +186,16 @@ struct LibraryListView: View {
         /// UX16: bumps when a background index build completes, so a held query re-derives against
         /// the now-complete transcript matches.
         let searchRevision: Int
+        /// UX24: the resolved folder, so "Update to current view" (which keeps the same
+        /// scope id) still re-derives.
+        let savedSearch: SavedSearch?
         static let empty = DerivedKey(
             storeRevision: -1,
             scope: .allMeetings,
             workflowsCount: 0,
             filter: MeetingFilter(),
-            searchRevision: -1
+            searchRevision: -1,
+            savedSearch: nil
         )
     }
 
@@ -174,6 +208,14 @@ struct LibraryListView: View {
                 systemImage: "checkmark.circle",
                 title: "Nothing needs you",
                 message: "Failed, unpublished, partial, no-speech and paste-pending meetings show up here."
+            )
+        } else if case .saved = scope, filter.isEmpty, let savedSearch {
+            // UX24: an empty saved folder is not a failed search, so "Clear filter"
+            // would be a dead button. Restate the criteria instead.
+            LibraryListEmptyState(
+                systemImage: "folder.badge.gearshape",
+                title: "Nothing in this folder yet",
+                message: "Matches \(SavedSearchSummary.text(for: savedSearch))."
             )
         } else {
             LibraryListEmptyState(

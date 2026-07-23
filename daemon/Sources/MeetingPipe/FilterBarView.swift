@@ -6,6 +6,10 @@ struct FilterBarView: View {
     let facets: MeetingFacets
     let matchCount: Int
     let totalCount: Int
+    /// UX24: save the current view as a named rail scope. Nil on a scope with no list to
+    /// save (the Facts / Ask / Digests projections never render this bar anyway), so the
+    /// button is absent rather than inert.
+    var onSaveSmartFolder: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -17,11 +21,29 @@ struct FilterBarView: View {
             // TECH-DSN17: Clear only appears once a filter is active, so the
             // resting bar reads lighter (the count badge appears with it).
             if !filter.isEmpty {
+                if let onSaveSmartFolder {
+                    saveSmartFolderButton(action: onSaveSmartFolder)
+                }
                 clearButton
             }
         }
         .padding(.horizontal, 14)
         .frame(height: 38)
+    }
+
+    // MARK: Save as smart folder
+
+    /// UX24. Icon-only and grouped with Clear, so the resting bar is unchanged and the
+    /// affordance appears exactly when there is a filter worth keeping.
+    private func saveSmartFolderButton(action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "folder.badge.plus")
+                .font(.mpTextSM)
+                .foregroundStyle(Color(MPColors.fgSubtle))
+        }
+        .buttonStyle(.plain)
+        .help("Save as smart folder…")
+        .accessibilityLabel("Save as smart folder")
     }
 
     // MARK: Search

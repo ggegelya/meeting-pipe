@@ -5,8 +5,8 @@ import Foundation
 /// One row in the Library list, materialized from on-disk sidecars alongside the recording.
 struct Meeting: Identifiable, Hashable {
 
-    /// Coarse lifecycle state derived from which sidecars exist on disk. `.failed` uses a precise `<stem>.error.json` signal; other states infer from presence/absence of summary/paste-ready sidecars, with an age fallback when no sidecar was written.
-    enum Status: String, Hashable {
+    /// Coarse lifecycle state derived from which sidecars exist on disk. `.failed` uses a precise `<stem>.error.json` signal; other states infer from presence/absence of summary/paste-ready sidecars, with an age fallback when no sidecar was written. `Codable` since UX24, which persists a status chip inside a saved smart folder; the raw values are case names, so they are safe on-disk tokens.
+    enum Status: String, Hashable, Codable {
         case recording            // currently being written (live)
         case processing           // wav present, no summary yet
         case manualPasteReady     // long-meeting bundle waiting on user paste

@@ -131,6 +131,11 @@ final class LibraryWindowModel: ObservableObject {
     /// Backing store for the meetings list; the list view subscribes to it.
     let meetingStore: MeetingStore
 
+    /// Saved smart folders (UX24). Owned here like `meetingStore` rather than injected,
+    /// so the rail always has a store to render; it does not read disk until the
+    /// Coordinator calls `load()`, so a headless model never touches the real file.
+    let savedSearches: SavedSearchStore
+
     /// The FTS5 search index over transcripts + summaries (UX16). Attached by the Coordinator so
     /// headless tests don't touch the real cache; when nil the list falls back to in-memory search.
     private(set) var searchIndexer: SearchIndexer?
@@ -151,9 +156,14 @@ final class LibraryWindowModel: ObservableObject {
     /// Assigned by the Coordinator after it builds the store (TECH-B). Nil-able so headless tests and the initial-state path don't need it.
     weak var workflowStore: WorkflowStore?
 
-    init(coordinator: Coordinator? = nil, recordingsDir: URL) {
+    init(
+        coordinator: Coordinator? = nil,
+        recordingsDir: URL,
+        savedSearchesURL: URL = SavedSearchStore.defaultURL
+    ) {
         self.coordinator = coordinator
         self.meetingStore = MeetingStore(recordingsDir: recordingsDir)
+        self.savedSearches = SavedSearchStore(url: savedSearchesURL)
     }
 
     /// Wire the FTS index (UX16). Called by the Coordinator with an indexer built over `meetingStore`;
@@ -381,6 +391,9 @@ final class LibraryWindowModel: ObservableObject {
 struct LibraryRootView: View {
     @ObservedObject var model: LibraryWindowModel
     @ObservedObject var meetingStore: MeetingStore
+    /// Captured explicitly for the same reason as `meetingStore`: the rail has to
+    /// re-render when a folder is added, renamed, or deleted (UX24).
+    @ObservedObject var savedSearches: SavedSearchStore
     @State private var scope: LibraryScope = .allMeetings
     @State private var meetingSelection: Set<Meeting.ID> = []
     /// Digest list + selection, shared by the center list (`DigestsView`) and the detail reader
@@ -394,11 +407,20 @@ struct LibraryRootView: View {
     @State private var cachedCounts: ScopeCounts = .zero
     /// Fingerprint paired with `cachedCounts`: (revision, workflow ids).
     @State private var lastCountsKey: CountsKey = .empty
+    /// Filter-bar state, owned here rather than in `LibraryListView` because saving or
+    /// updating a smart folder needs the live chips alongside `scope` (UX24). Lives
+    /// across scope switches exactly as it did when the list held it.
+    @State private var filter: MeetingFilter = MeetingFilter()
+    /// UX24: true while the "Save as smart folder" naming sheet is up.
+    @State private var isSavingSmartFolder: Bool = false
+    /// UX24: drives the rename sheet.
+    @State private var renamingSavedSearch: SavedSearch? = nil
 
     /// Captures the store explicitly so SwiftUI tracks it as `@ObservedObject`. Reaching through `model.meetingStore` would re-render on every parent property, not just `revision` bumps.
     init(model: LibraryWindowModel) {
         self.model = model
         self.meetingStore = model.meetingStore
+        self.savedSearches = model.savedSearches
     }
 
     var body: some View {
@@ -435,6 +457,15 @@ struct LibraryRootView: View {
         }
         .onChange(of: meetingStore.revision) { _, _ in recomputeCounts() }
         .onChange(of: model.workflowStore?.workflows.count ?? 0) { _, _ in recomputeCounts() }
+        // UX24: adding, editing, or deleting a folder changes its rail count.
+        .onChange(of: savedSearches.searches) { _, _ in
+            recomputeCounts()
+            // A deleted folder must not leave the rail pointed at a scope that no
+            // longer resolves; fall back to All meetings rather than an empty list.
+            if let id = scope.savedSearchID, savedSearches.search(id: id) == nil {
+                scope = .allMeetings
+            }
+        }
         .onChange(of: model.pendingSelection) { _, stem in
             guard let stem else { return }
             // Quick Find can fire while a workflow scope is active; switch to All Meetings so the row is always visible.
@@ -464,6 +495,107 @@ struct LibraryRootView: View {
                 }
             }
         }
+        .sheet(isPresented: $isSavingSmartFolder) {
+            saveSmartFolderSheet
+        }
+        .sheet(item: $renamingSavedSearch) { search in
+            SmartFolderNameSheet(
+                title: "Rename smart folder",
+                confirmLabel: "Rename",
+                initialName: search.name,
+                validate: { name in
+                    savedSearches.isNameTaken(name, excluding: search.id)
+                        ? "Another smart folder already uses this name."
+                        : nil
+                },
+                onCancel: { renamingSavedSearch = nil },
+                onConfirm: { name in
+                    savedSearches.rename(id: search.id, to: name)
+                    renamingSavedSearch = nil
+                }
+            )
+        }
+    }
+
+    // MARK: - Saved smart folders (UX24)
+
+    /// The folder behind the current scope, or nil on any other scope.
+    private var scopedSavedSearch: SavedSearch? {
+        scope.savedSearchID.flatMap { savedSearches.search(id: $0) }
+    }
+
+    /// Bundle id to display name, so a folder's criteria line reads "Zoom" and not
+    /// "us.zoom.xos". Derived from the same corpus the filter chips are.
+    private var sourceDisplayNames: [String: String] {
+        var out: [String: String] = [:]
+        for m in meetingStore.meetings {
+            guard let bid = m.sourceBundleID, !bid.isEmpty else { continue }
+            out[bid] = m.sourceDisplayName ?? bid
+        }
+        return out
+    }
+
+    /// Fold the view on screen right now into a saveable folder, or nil when this scope
+    /// has no meeting list (the Facts / Ask / Digests projections).
+    private func captureCurrentView(name: String, order: Int) -> SavedSearch? {
+        SavedSearch.capture(
+            name: name,
+            scope: scope,
+            liveFilter: filter,
+            workflows: model.workflowStore?.workflows ?? [],
+            savedSearches: savedSearches.searches,
+            order: order
+        )
+    }
+
+    private var savedSearchRail: SavedSearchRail {
+        let names = sourceDisplayNames
+        return SavedSearchRail(
+            searches: savedSearches.searches,
+            summaries: Dictionary(
+                uniqueKeysWithValues: savedSearches.searches.map {
+                    ($0.id, SavedSearchSummary.text(for: $0, sourceNames: names))
+                }
+            ),
+            onRename: { renamingSavedSearch = $0 },
+            onUpdate: { search in
+                // "Update to current view": re-capture from wherever the rail is
+                // pointed now, keeping the folder's id, name, and order so the rail row
+                // and the current selection survive the rewrite.
+                guard let captured = captureCurrentView(name: search.name, order: search.order) else { return }
+                savedSearches.updateCriteria(id: search.id, base: captured.base, filter: captured.filter)
+                // The refinement is now part of the folder; leaving it in the bar would
+                // apply it a second time on top of itself.
+                if scope.savedSearchID == search.id { filter = MeetingFilter() }
+            },
+            onDelete: { savedSearches.delete(id: $0.id) }
+        )
+    }
+
+    @ViewBuilder
+    private var saveSmartFolderSheet: some View {
+        // Preview the folder that would actually be written, so the sheet shows the real
+        // criteria (including a workflow scope folded into the chip) rather than a
+        // restatement of the bar.
+        let preview = captureCurrentView(name: "preview", order: 0)
+        SmartFolderNameSheet(
+            title: "Save as smart folder",
+            confirmLabel: "Save",
+            summary: preview.map { SavedSearchSummary.text(for: $0, sourceNames: sourceDisplayNames) },
+            validate: { savedSearches.isNameTaken($0) ? "A smart folder with this name already exists." : nil },
+            onCancel: { isSavingSmartFolder = false },
+            onConfirm: { name in
+                if let search = captureCurrentView(name: name, order: savedSearches.nextOrder) {
+                    savedSearches.upsert(search)
+                    // Land on the new folder so the rail confirms the action, the way
+                    // "+ New workflow" jumps to the workflow it just created. The bar
+                    // clears because its chips are now the folder's own criteria.
+                    scope = .saved(search.id)
+                    filter = MeetingFilter()
+                }
+                isSavingSmartFolder = false
+            }
+        )
     }
 
     @ViewBuilder
@@ -473,6 +605,7 @@ struct LibraryRootView: View {
                 LibrarySidebar(
                     selection: $scope,
                     workflowStore: store,
+                    saved: savedSearchRail,
                     counts: cachedCounts,
                     onCreateWorkflow: { isCreatingWorkflow = true }
                 )
@@ -507,7 +640,10 @@ struct LibraryRootView: View {
                             libraryModel: model,
                             scope: scope,
                             workflows: store.workflows,
-                            selection: $meetingSelection
+                            savedSearch: scopedSavedSearch,
+                            onSaveSmartFolder: { isSavingSmartFolder = true },
+                            selection: $meetingSelection,
+                            filter: $filter
                         )
                     }
                 }
@@ -522,13 +658,15 @@ struct LibraryRootView: View {
                     .navigationSplitViewColumnWidth(min: LibraryLayout.detailMinWidth, ideal: LibraryLayout.detailIdealWidth)
             }
         } else {
-            // WorkflowStore not yet wired; fall back to a sidebar-less list.
+            // WorkflowStore not yet wired; fall back to a sidebar-less list. No rail
+            // means nowhere to put a smart folder, so the save affordance stays absent.
             LibraryListView(
                 store: meetingStore,
                 libraryModel: model,
                 scope: .allMeetings,
                 workflows: [],
-                selection: $meetingSelection
+                selection: $meetingSelection,
+                filter: $filter
             )
         }
     }
@@ -538,12 +676,17 @@ struct LibraryRootView: View {
         let workflows = model.workflowStore?.workflows ?? []
         let key = CountsKey(
             storeRevision: meetingStore.revision,
-            workflowIDs: workflows.map(\.id)
+            workflowIDs: workflows.map(\.id),
+            savedSearches: savedSearches.searches
         )
         if key == lastCountsKey { return }
         cachedCounts = ScopeCounts.build(
             meetings: meetingStore.meetings,
-            workflows: workflows
+            workflows: workflows,
+            savedSearches: savedSearches.searches,
+            // UX24: a folder's free-text half counts through the FTS index, so its rail
+            // count matches what selecting it actually shows.
+            ftsMatches: { model.matchingStems($0) }
         )
         lastCountsKey = key
     }
@@ -551,7 +694,9 @@ struct LibraryRootView: View {
     private struct CountsKey: Equatable {
         let storeRevision: Int
         let workflowIDs: [Workflow.ID]
-        static let empty = CountsKey(storeRevision: -1, workflowIDs: [])
+        /// UX24: the whole folder, not just its id, so editing one recounts its row.
+        let savedSearches: [SavedSearch]
+        static let empty = CountsKey(storeRevision: -1, workflowIDs: [], savedSearches: [])
     }
 
     /// Context-aware detail column: multi-selection shows batch-actions, single shows MeetingDetailView, empty workflow scope shows WorkflowInspector, otherwise empty state.

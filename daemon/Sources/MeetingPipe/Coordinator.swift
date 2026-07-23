@@ -135,6 +135,9 @@ final class Coordinator: NSObject {
         // UX16: the FTS5 search index, built over the same store. Attached here (not in the model's
         // init) so headless tests never touch the real cache and fall back to in-memory search.
         libraryModel.attachSearchIndexer(SearchIndexer(store: libraryModel.meetingStore))
+        // UX24: saved smart folders. Loaded here, not in the model's init, for the same
+        // reason as the index above: a headless model never reads the real file.
+        libraryModel.savedSearches.load()
         self.libraryModel = libraryModel
         self.libraryWindow = LibraryWindow(model: libraryModel)
         // Load workflows synchronously so the matcher (TECH-B3) and

@@ -21,6 +21,10 @@ enum LibraryScope: Hashable {
     /// sibling, read-only. Like `.facts`/`.ask`, a view rather than a list filter.
     case digests
     case workflow(Workflow.ID)
+    /// A saved smart folder (UX24): a base scope plus a persisted filter, resolved
+    /// through `SavedSearchStore`. Like `.workflow` it carries the id rather than the
+    /// name, so a rename can't silently drop the scope.
+    case saved(SavedSearch.ID)
 
     /// Rail row label and list header.
     var title: String {
@@ -36,6 +40,7 @@ enum LibraryScope: Hashable {
         case .ask:         return "Ask"
         case .digests:     return "Digests"
         case .workflow:    return ""   // resolved at render time via the store
+        case .saved:       return ""   // resolved at render time via the store
         }
     }
 
@@ -51,6 +56,7 @@ enum LibraryScope: Hashable {
         case .ask:         return "bubble.left.and.text.bubble.right"
         case .digests:     return "calendar.badge.clock"
         case .workflow:    return nil
+        case .saved:       return "folder.badge.gearshape"
         }
     }
 
@@ -62,6 +68,11 @@ enum LibraryScope: Hashable {
 
     var workflowID: Workflow.ID? {
         if case .workflow(let id) = self { return id }
+        return nil
+    }
+
+    var savedSearchID: SavedSearch.ID? {
+        if case .saved(let id) = self { return id }
         return nil
     }
 
@@ -103,6 +114,15 @@ enum LibraryScope: Hashable {
         case .facts, .ask, .digests:
             // Not a list filter: these projections render in their own center
             // column, so no meeting "belongs" to the scope.
+            return false
+        case .saved:
+            // Not resolvable here (UX24): a saved folder is a base scope plus a
+            // filter whose free-text arm needs the FTS index, which a pure
+            // predicate cannot reach. The two call sites that need it
+            // (`LibraryListView.recomputeDerived` and `ScopeCounts.build`) look
+            // the folder up in `SavedSearchStore` and call `SavedSearch.apply`,
+            // the same way the projection scopes above are handled at the call
+            // site rather than here.
             return false
         case .workflow(let id):
             return Self.resolveWorkflow(for: meeting, in: workflows)?.id == id

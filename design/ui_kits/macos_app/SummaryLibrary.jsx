@@ -81,6 +81,15 @@ const SL_SCOPES = [
   { icon: "lock",     label: "NDA only",     count: 4,  key: "nda" },
 ];
 
+// SMART FOLDERS (UX24): the user's own saved searches, each a base scope plus the
+// filter chips saved with it. They read as ordinary scope rows on purpose (same row
+// shape, same quiet count) because they behave like built-ins once saved. The group
+// is absent until the first one exists; it is created from the filter bar, not here.
+const SL_SAVED = [
+  { icon: "folder", label: "Client escalations", count: 3, key: "saved-escalations" },
+  { icon: "folder", label: "Unpublished this month", count: 2, key: "saved-unpublished" },
+];
+
 /* =============================================================== shared chrome */
 
 const SL_iconBtn = {
@@ -175,6 +184,13 @@ const SLSidebar = ({ activeScope = "all", firstRun }) => (
   }}>
     <SLRailHeader>Library</SLRailHeader>
     {SL_SCOPES.map((s) => <SLScopeRow key={s.key} {...s} count={firstRun ? 0 : s.count} active={s.key === activeScope}/>)}
+    {!firstRun && SL_SAVED.length > 0 && (
+      <>
+        <div style={{ height: 14 }}/>
+        <SLRailHeader>Smart folders</SLRailHeader>
+        {SL_SAVED.map((s) => <SLScopeRow key={s.key} {...s}/>)}
+      </>
+    )}
     <div style={{ height: 14 }}/>
     <SLRailHeader>Workflows</SLRailHeader>
     {Object.values(SL_WF).map((w) => <SLWorkflowRow key={w.name} {...w}/>)}
@@ -299,6 +315,16 @@ const SLFilterBar = ({ query }) => (
     <SLFilterChip label="Status"/>
     <SLFilterChip label="App"/>
     <SLFilterChip label="Date"/>
+    {/* UX24: save-as-smart-folder and Clear appear together, only once a filter is
+        active, so the resting bar reads exactly as it did before. */}
+    {query && (
+      <>
+        <span style={{ color: "var(--mp-fg-subtle)", display: "flex", flexShrink: 0 }} title="Save as smart folder…">
+          <Icon name="folder" size={12}/>
+        </span>
+        <span style={{ fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-subtle)", whiteSpace: "nowrap" }}>Clear</span>
+      </>
+    )}
   </div>
 );
 
