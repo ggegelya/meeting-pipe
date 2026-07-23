@@ -291,6 +291,18 @@ final class LibraryWindowModel: ObservableObject {
         }
     }
 
+    /// Group a recurring series' restatements of one commitment (AI7). Async-wrapped
+    /// like `askMeetings`; the Facts projection regroups when it lands and stays on
+    /// DV1's ungrouped list if it does not.
+    func actionClusters() async -> Result<[ActionClusterAssignment], Error> {
+        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Result<[ActionClusterAssignment], Error>, Never>) in
+            library.actionClusters { result in
+                cont.resume(returning: result)
+            }
+        }
+    }
+
     /// The digests directory (AI4), or nil when the service isn't wired.
     var digestsDirectory: URL? { library?.digestsDirectory }
 
@@ -394,6 +406,17 @@ struct LibraryRootView: View {
     @State private var cachedCounts: ScopeCounts = .zero
     /// Fingerprint paired with `cachedCounts`: (revision, workflow ids).
     @State private var lastCountsKey: CountsKey = .empty
+    /// The cross-meeting facts aggregate (DV1 + AI7). Owned here rather than inside
+    /// `FactsView` because the rail's amber overdue badge has to show the same
+    /// number without Facts ever being opened.
+    @State private var facts: FactsSnapshot = .empty
+    /// AI7: the pipeline's cluster assignment, keyed by `OpenActionFact.clusterKey`,
+    /// and the open-action key set it was computed over. Marking a commitment done
+    /// only *removes* keys, so a resolve reuses the assignment instead of respawning
+    /// the embedding subprocess; a new meeting adds one and triggers a fresh pass.
+    @State private var clusterAssignments: [String: Int] = [:]
+    @State private var clusteredKeys: Set<String> = []
+    @State private var clusteringInFlight = false
 
     /// Captures the store explicitly so SwiftUI tracks it as `@ObservedObject`. Reaching through `model.meetingStore` would re-render on every parent property, not just `revision` bumps.
     init(model: LibraryWindowModel) {
@@ -428,12 +451,16 @@ struct LibraryRootView: View {
         .onAppear {
             meetingStore.start()
             recomputeCounts()
+            reloadFacts()
         }
         .onDisappear {
             // Suspend the watcher while hidden. The window outlives the view (isReleasedWhenClosed=false), so without this a closed Library would keep rescanning on every pipeline write.
             meetingStore.stop()
         }
-        .onChange(of: meetingStore.revision) { _, _ in recomputeCounts() }
+        .onChange(of: meetingStore.revision) { _, _ in
+            recomputeCounts()
+            reloadFacts()
+        }
         .onChange(of: model.workflowStore?.workflows.count ?? 0) { _, _ in recomputeCounts() }
         .onChange(of: model.pendingSelection) { _, stem in
             guard let stem else { return }
@@ -473,7 +500,10 @@ struct LibraryRootView: View {
                 LibrarySidebar(
                     selection: $scope,
                     workflowStore: store,
-                    counts: cachedCounts,
+                    // AI7: the Facts row's amber badge rides on the facts load, not
+                    // on the meeting-list bucketing, so it is overlaid here rather
+                    // than folded into the memoized `build`.
+                    counts: cachedCounts.with(factsOverdue: facts.overdueCount),
                     onCreateWorkflow: { isCreatingWorkflow = true }
                 )
             } content: {
@@ -482,7 +512,10 @@ struct LibraryRootView: View {
                         // The facts projection takes the center column (DV1):
                         // its rows are facts, not meetings, and "open" navigates
                         // back to All Meetings with the source row selected.
-                        FactsView(store: meetingStore) { stem in
+                        FactsView(
+                            snapshot: facts,
+                            onResolve: resolveCommitment
+                        ) { stem in
                             model.openedFromInsight = .init(stem: stem, source: "Facts")
                             scope = .allMeetings
                             meetingSelection = [stem]
@@ -552,6 +585,81 @@ struct LibraryRootView: View {
         let storeRevision: Int
         let workflowIDs: [Workflow.ID]
         static let empty = CountsKey(storeRevision: -1, workflowIDs: [])
+    }
+
+    // MARK: - Facts aggregate (DV1 + AI7)
+
+    /// Reload the cross-meeting facts off-main and regroup them with whatever cluster
+    /// assignment is already known, then ask the pipeline for a fresh one if the set
+    /// of open actions grew. Runs on appear and on each store revision, because the
+    /// rail badge has to be right whether or not Facts is the active scope.
+    private func reloadFacts() {
+        let meetings = meetingStore.meetings   // value snapshot
+        let assignments = clusterAssignments
+        Task.detached(priority: .userInitiated) {
+            let now = Date()
+            let raw = FactsLoader.load(meetings: meetings, now: now)
+            let clusters = ActionClusterBuilder.group(raw.actions, assignments: assignments)
+            let snapshot = FactsSnapshot(
+                clusters: clusters,
+                decisions: raw.decisions,
+                overdueCount: ActionClusterBuilder.overdueCount(clusters, now: now),
+                loaded: true
+            )
+            let keys = Set(raw.actions.map(\.clusterKey))
+            await MainActor.run {
+                facts = snapshot
+                refreshClustersIfNeeded(for: keys)
+            }
+        }
+    }
+
+    /// Spawn `mp actions --cluster` only when the open-action set contains something
+    /// the last pass never saw. Resolving a commitment strictly shrinks the set, so
+    /// the common interaction never pays for an embedding-model load. A failure marks
+    /// the keys seen too, so an unavailable pipeline degrades to DV1's ungrouped list
+    /// instead of retrying on every revision bump.
+    private func refreshClustersIfNeeded(for keys: Set<String>) {
+        guard !clusteringInFlight, !keys.isEmpty, !keys.isSubset(of: clusteredKeys) else { return }
+        clusteringInFlight = true
+        Task {
+            let result = await model.actionClusters()
+            await MainActor.run {
+                clusteringInFlight = false
+                clusteredKeys = keys
+                guard case .success(let rows) = result else { return }
+                clusterAssignments = ActionClusterBuilder.assignments(from: rows)
+                regroupFacts()
+            }
+        }
+    }
+
+    /// Re-apply the cluster assignment to the facts already in memory. No disk read:
+    /// clustering changes the grouping, never the underlying actions.
+    private func regroupFacts() {
+        let actions = facts.clusters.flatMap(\.instances)
+        guard !actions.isEmpty else { return }
+        let now = Date()
+        let clusters = ActionClusterBuilder.group(actions, assignments: clusterAssignments)
+        facts.clusters = clusters
+        facts.overdueCount = ActionClusterBuilder.overdueCount(clusters, now: now)
+    }
+
+    /// AI7 resolve-the-cluster: mark every restatement of one commitment done.
+    /// Optimistic, matching DV1's single-action behaviour: the row leaves now, the
+    /// atomic writes land off-main, and the watcher's revision bump confirms.
+    private func resolveCommitment(_ cluster: ActionCluster) {
+        facts.clusters.removeAll { $0.id == cluster.id }
+        facts.overdueCount = ActionClusterBuilder.overdueCount(facts.clusters)
+        Task.detached(priority: .userInitiated) {
+            let written = FactsResolver.resolve(cluster)
+            await MainActor.run {
+                Log.event(category: "library", action: "action_resolved", attributes: [
+                    "stem": cluster.representative.stem,
+                    "instances": written,
+                ])
+            }
+        }
     }
 
     /// Context-aware detail column: multi-selection shows batch-actions, single shows MeetingDetailView, empty workflow scope shows WorkflowInspector, otherwise empty state.

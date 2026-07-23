@@ -187,21 +187,36 @@ const SLSidebar = ({ activeScope = "all", firstRun }) => (
     </button>
     <div style={{ height: 14 }}/>
     <SLRailHeader>Insights</SLRailHeader>
-    <SLInsightRow icon="seal-check" label="Facts"/>
+    <SLInsightRow icon="seal-check" label="Facts" overdue={3}/>
     <SLInsightRow icon="message" label="Ask"/>
+    <SLInsightRow icon="calendar" label="Digests"/>
   </div>
 );
 
-// INSIGHTS (DSN22 audit #7): Facts and Ask are projections that replace the list,
-// not filters that narrow it, so they get their own group below the filter groups
-// (Library scopes, Workflows). No count -- they are views, not buckets.
-const SLInsightRow = ({ icon, label }) => (
+// INSIGHTS (DSN22 audit #7): Facts, Ask and Digests are projections that replace
+// the list, not filters that narrow it, so they get their own group below the
+// filter groups (Library scopes, Workflows). They carry no inventory count -- they
+// are views, not buckets.
+//
+// The one exception is Facts (AI7): when a commitment is overdue it wears the same
+// amber pill "Needs you" wears, because an open action that resurfaces only if you
+// open Facts is an open action that rots. It is an attention cue, not a count, so
+// the row stays bare at zero rather than showing a quiet 0 like a filter scope does.
+const SLInsightRow = ({ icon, label, overdue = 0 }) => (
   <div style={{
     display: "flex", alignItems: "center", gap: 8, height: 28, padding: "0 8px",
     borderRadius: "var(--mp-radius-sm)", cursor: "pointer", fontSize: "var(--mp-text-base)", color: "var(--mp-fg)",
   }}>
     <Icon name={icon} size={14}/>
-    <span>{label}</span>
+    <span style={{ flex: 1 }}>{label}</span>
+    {overdue > 0 && (
+      <span style={{
+        minWidth: 16, height: 16, padding: "0 5px", borderRadius: "var(--mp-radius-full)",
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        fontSize: "var(--mp-text-xs)", fontWeight: 600, fontFamily: "var(--mp-font-mono)",
+        color: "#fff", background: "var(--mp-warning-600)",
+      }}>{overdue}</span>
+    )}
   </div>
 );
 
