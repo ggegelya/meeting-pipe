@@ -18,9 +18,11 @@ from mp.dogfood import (
     Scorecard,
     _read_scorecard,
     aggregate,
+    contamination_refusal,
     main,
     render_report,
 )
+from mp.train_adapter import Pair, write_split_manifest
 
 
 def _write_card(path: Path, *, actions: str, decisions: str, hall: str, notes: str = "") -> None:
@@ -226,3 +228,55 @@ def test_main_adapter_mode_runs_locally_without_cloud(tmp_path: Path, monkeypatc
     assert rc == 0
     assert str(seen["adapter_path"]) == str(tmp_path / "adapter")
     anthropic.assert_not_called()  # adapter mode never builds a cloud baseline
+
+
+def _adapter_with_manifest(tmp_path: Path, *, trained: str, held_out: str) -> Path:
+    adapter = tmp_path / "adapter"
+    write_split_manifest(
+        {
+            "train": [Pair("p", "c", stem=trained, source="runs")],
+            "valid": [],
+            "test": [Pair("p", "c", stem=held_out, source="runs")],
+        },
+        adapter, source="runs", model="qwen",
+    )
+    return adapter
+
+
+def test_contamination_refusal_blocks_a_trained_on_meeting(tmp_path: Path) -> None:
+    """LOCAL9: the A/B decides adoption, so it must not run on a meeting the adapter
+    memorized. The refusal names a held-out alternative."""
+    adapter = _adapter_with_manifest(tmp_path, trained="20260501-1300",
+                                     held_out="20260502-0900")
+    trained = tmp_path / "20260501-1300.md"
+    held_out = tmp_path / "20260502-0900.md"
+
+    msg = contamination_refusal(adapter, trained)
+    assert msg is not None
+    assert "training set" in msg
+    assert "20260502-0900" in msg  # points at the held-out one
+
+    assert contamination_refusal(adapter, held_out) is None
+    assert contamination_refusal(adapter, trained, allow_trained=True) is None
+    # An adapter with no manifest is unverifiable, not contaminated: warn, don't block.
+    assert contamination_refusal(tmp_path / "handmade", trained) is None
+
+
+def test_main_adapter_mode_refuses_a_trained_on_transcript(tmp_path: Path, monkeypatch) -> None:
+    transcript = tmp_path / "20260501-1300.md"
+    transcript.write_text("**A**: hi there\n", encoding="utf-8")
+    adapter = _adapter_with_manifest(tmp_path, trained="20260501-1300",
+                                     held_out="20260502-0900")
+
+    monkeypatch.setattr(Config, "load", lambda: Config())
+    monkeypatch.setattr("mp.entry.load_secrets", lambda *a, **k: None)
+    ran = Mock()
+    monkeypatch.setattr("mp.dogfood.run_one_adapter", ran)
+
+    assert main([str(transcript), "--adapter", str(adapter)]) == 2
+    ran.assert_not_called()
+
+    # ...and the escape hatch runs it anyway.
+    ran.return_value = tmp_path / "out.md"
+    assert main([str(transcript), "--adapter", str(adapter), "--allow-trained"]) == 0
+    ran.assert_called_once()

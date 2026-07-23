@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import entry
+from . import entry, train_adapter
 from .config import Config, parse_local_endpoint, zero_egress
 from .schemas import MeetingSummary
 from .summarize import (
@@ -167,6 +167,41 @@ def run_one_adapter(
     )
     log.info("wrote %s", out_path)
     return out_path
+
+
+def contamination_refusal(
+    adapter_path: Path, transcript_md: Path, *, allow_trained: bool = False
+) -> str | None:
+    """Refusal text when `transcript_md` is a meeting the adapter trained on, else None.
+
+    An adapter reproducing a summary it was trained on tells you nothing about whether
+    it generalizes, and the trained-on meetings are exactly the ones nearest to hand.
+    `mp train-adapter` reserves a test split and records it in the adapter's split
+    manifest, so the check is a set lookup. Adapters with no manifest (hand-built, or
+    trained before manifests existed) are unverifiable, so they pass with a warning
+    rather than a refusal.
+    """
+    if allow_trained:
+        return None
+    manifest = train_adapter.read_split_manifest(adapter_path)
+    if manifest is None:
+        log.warning(
+            "no %s beside %s: cannot tell whether this meeting was trained on.",
+            train_adapter.SPLIT_MANIFEST_NAME, adapter_path,
+        )
+        return None
+    if transcript_md.stem not in train_adapter.trained_stems(manifest):
+        return None
+    held_out = train_adapter.held_out_stems(manifest)
+    suggestion = (
+        "Held out for exactly this: " + ", ".join(held_out[:5]) + "."
+        if held_out
+        else "That training run reserved no held-out meetings (corpus too small to spare any)."
+    )
+    return (
+        f"{transcript_md.name} is in the adapter's training set, so the A/B would measure "
+        f"memorization, not quality. {suggestion} Pass --allow-trained to run it anyway.\n"
+    )
 
 
 _FRONTMATTER_TEMPLATE = """\
@@ -358,6 +393,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--adapter", type=Path, default=None,
                    help="Compare local base vs local + this LoRA adapter (LOCAL9), no cloud call, "
                         "instead of Anthropic vs local.")
+    p.add_argument("--allow-trained", action="store_true",
+                   help="Run the adapter A/B even on a meeting the adapter trained on "
+                        "(the scorecard then measures memorization, not quality).")
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO,
@@ -388,6 +426,12 @@ def main(argv: list[str]) -> int:
     if args.adapter is not None:
         # LOCAL9 base-vs-adapter A/B: both sides are on-device, so there is no cloud
         # baseline and no zero_egress refusal; a regulated/NDA meeting is fine here.
+        contaminated = contamination_refusal(
+            args.adapter, transcript_md, allow_trained=args.allow_trained
+        )
+        if contaminated is not None:
+            sys.stderr.write(contaminated)
+            return 2
         run_one_adapter(
             transcript_md, cfg=cfg, runs_dir=args.runs_dir,
             adapter_path=args.adapter, local_model=args.local_model,

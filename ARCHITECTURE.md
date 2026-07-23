@@ -347,10 +347,10 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 | `logs_cmd.py` | `mp logs` | `events.jsonl` pretty-printer / filter |
 | `prefetch_model.py` | `mp prefetch-model <repo>` | MLX model download (JSONL progress) |
 | `corrections.py` | `mp corrections-stats` | aggregate over correction records |
-| `train_adapter.py` | `mp train-adapter` | fine-tune a local LoRA adapter on the corrections corpus (LOCAL9, on-device) |
+| `train_adapter.py` | `mp train-adapter` | fine-tune a local LoRA adapter on-device (LOCAL9); `--source` picks the corpus: the corrections you edited, the cloud summaries already on disk (`runs`), or both. Writes a `split.json` beside the adapter so the A/B can tell trained-on meetings from held-out ones |
 | `analyze_detection.py` | `mp analyze-detection` | detection audit, both ends: meeting-end miss rate, and (DET3) mic-busy spans where nothing recorded (start-detection false negatives), correlated against prompts / recordings / `candidate_dropped` |
 | `classify.py` | `mp classify-meetings` | AI5 spike: heuristic (+ optional local-LLM) meeting-type labels over the library |
-| `dogfood.py` | `mp dogfood` | side-by-side backend comparison (Anthropic vs local, or `--adapter` for base vs LoRA) |
+| `dogfood.py` | `mp dogfood` | side-by-side backend comparison (Anthropic vs local, or `--adapter` for base vs LoRA; refuses a meeting the adapter trained on unless `--allow-trained`) |
 
 ### Sinks
 
@@ -384,7 +384,7 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 - `endpoints.py` - the external-service URLs and API versions, in one place so nothing hardcodes a host.
 - `storage.py` - where state lives on disk and how big it is (backs `doctor`'s disk numbers and STOR1's reaper); also owns `atomic_write_text`, the shared tmp-then-`os.replace` helper for rewriting transcript/summary content (PIPE8).
 - `cloudsync.py` - is the library sitting inside an iCloud / Dropbox folder? (SEC12; the zero-egress promise the filesystem can undo.)
-- `local_server.py` - the ownership marker for the detached `mlx_lm.server` (LOCAL10). `_spawn` registers it, a clean `close()` clears it, and a live server with a dead owner is an orphan `mp doctor` reports and `LocalServerReaper` (Swift) kills.
+- `local_server.py` - who owns the detached `mlx_lm.server`, and what it is serving. **Ownership** (LOCAL10): `_spawn` registers a marker, a clean `close()` clears it, and a live server with a dead owner is an orphan `mp doctor` reports and `LocalServerReaper` (Swift) kills. **Identity** (LOCAL11): `served_identity(port)` reads the model and adapter back off the listening process's argv (`lsof` then `ps`), because neither `/v1/models` nor a completion response can name the loaded model. `LocalSummaryClient` verifies it before reusing a warm server and respawns on a mismatch it owns; `mp doctor` names a mismatch it cannot fix; `<stem>.run.json` records what served rather than what was configured.
 
 ---
 

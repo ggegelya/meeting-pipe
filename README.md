@@ -415,7 +415,13 @@ When `summarization.backend` is `"local"`, you can grade each published summary 
 
 Every grade lands as one JSON file under `~/Library/Application Support/MeetingPipe/corrections/<stem>.json`. The corpus stays on your machine. Nothing in this loop touches the network, regardless of which summarization backend you use.
 
-Run `mp corrections-stats` to see the current state of your corpus plus a Phase 3 readiness check (pass `--json` for a script-friendly form). Once you have ~20 corrections covering ~200 minutes of speech, `mp train-adapter --adapter-path <dir>` fine-tunes a per-user LoRA on the corpus on-device via MLX (fully local, no egress). A/B the result against the base model with `mp dogfood --adapter <dir>` (a local-only comparison, no cloud baseline) and grade the runs; if the adapter wins, opt it into the local backend by setting `summarization.local_adapter_path = "<dir>"` in `~/.config/meeting-pipe/config.toml`. Nothing is ever applied silently, and an honest negative result (the adapter is not worth adopting) is a fine outcome: the corpus stays a useful record either way.
+Run `mp corrections-stats` to see the current state of your corpus plus a Phase 3 readiness check (pass `--json` for a script-friendly form). Once you have ~20 corrections covering ~200 minutes of speech, `mp train-adapter --adapter-path <dir>` fine-tunes a per-user LoRA on the corpus on-device via MLX (fully local, no egress).
+
+You do not have to wait for that bar. `--source runs` trains on the meetings you have already summarized instead: every run the cloud backend answered becomes one example of what a good summary of *your* meetings looks like, which is the same trick that makes small models punch above their weight. `--source both` uses your corrections first and fills the rest from the runs, so a summary you actually corrected always wins over the one it replaced. Both read only what is already on your disk.
+
+Training keeps whole meetings or skips them: anything longer than `--max-seq-length` (default 4096 tokens) is dropped with a count in the log rather than silently cut off mid-summary. Raise it if your meetings are long and your Mac has the memory.
+
+A/B the result against the base model with `mp dogfood --adapter <dir> <transcript>` (a local-only comparison, no cloud baseline) and grade the runs. Training reserves a held-out slice and records it beside the adapter, so `mp dogfood` refuses a meeting the adapter trained on and names one it did not; that keeps the scorecard a test of quality rather than of memory (`--allow-trained` overrides). If the adapter wins, opt it into the local backend by setting `summarization.local_adapter_path = "<dir>"` in `~/.config/meeting-pipe/config.toml`. Nothing is ever applied silently, and an honest negative result (the adapter is not worth adopting) is a fine outcome: the corpus stays a useful record either way.
 
 ---
 

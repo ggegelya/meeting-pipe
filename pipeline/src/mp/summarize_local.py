@@ -151,6 +151,58 @@ def _loopback_only(host: str) -> str:
     return DEFAULT_HOST
 
 
+def augment_with_schema(system_prompt: str) -> str:
+    """Append the ``MeetingSummary`` JSON schema and a strict-output
+    directive to the existing system prompt. The local model has no
+    tool-use forcing, so we lean on prompt discipline to keep the
+    output parseable. Layer 1 of the 3-layer fallback in
+    ``_extract_summary``.
+
+    The reinforcement block restates the failure modes the local
+    model exhibited in dogfood (decision-vs-intent confusion, owner
+    propagation, empty questions) right before the schema, where
+    token attention is highest. Belt-and-suspenders with the master
+    prompt's worked examples.
+
+    Module-level (not a `LocalSummaryClient` method) because `mp train-adapter`
+    has to build the identical system turn to train on, and a LoRA tuned on a
+    prompt shape the server never sends is a LoRA tuned for nothing (LOCAL9).
+    """
+    schema = json.dumps(SUMMARY_TOOL["input_schema"], indent=2)
+    reinforcement = (
+        "\n\n---\n\n## Before you reply, double-check these rules:\n"
+        "1. `decisions` must contain ONLY statements with explicit"
+        " commitment language (will/agreed/decided/approved). Plans to"
+        " analyze, intentions to study, or ideas being floated are NOT"
+        " decisions. If unsure, leave the array empty.\n"
+        "2. `owner` for each action must be a person literally named in"
+        " the transcript for THAT task. Do not assign every action to one"
+        " person. Use null when the transcript does not name an owner.\n"
+        "3. `questions` should not be empty unless the meeting truly"
+        " closed every loop. Look for unresolved clarifications,"
+        " expressed uncertainty, or deferred decisions.\n"
+        "4. Tools (Claude, Notion, Anthropic) are never owners.\n\n"
+    )
+    directive = (
+        "Your reply MUST be a single JSON object that validates"
+        " against this JSON Schema. Output the JSON object and nothing else:"
+        " no prose, no Markdown fences, no commentary.\n\n"
+        f"```json-schema\n{schema}\n```"
+    )
+    return system_prompt + reinforcement + directive
+
+
+def compose_user_message(transcript: str) -> str:
+    """The user turn the local client sends. Shared with `mp train-adapter` for the
+    same reason `augment_with_schema` is."""
+    # Fence the transcript as untrusted content (TECH-SEC6); the system
+    # prompt (via _load_system_prompt) explains the markers.
+    return (
+        "Summarize this meeting. Reply with ONLY the JSON object described "
+        "in the system message.\n\n" + wrap_untrusted(transcript)
+    )
+
+
 def build_server_command(
     model: str, host: str, port: int, adapter_path: str | None = None
 ) -> list[str]:
@@ -631,48 +683,10 @@ class LocalSummaryClient:
     # ----- Request shaping -----
 
     def _augment_with_schema(self, system_prompt: str) -> str:
-        """Append the ``MeetingSummary`` JSON schema and a strict-output
-        directive to the existing system prompt. The local model has no
-        tool-use forcing, so we lean on prompt discipline to keep the
-        output parseable. Layer 1 of the 3-layer fallback in
-        ``_extract_summary``.
-
-        The reinforcement block restates the failure modes the local
-        model exhibited in dogfood (decision-vs-intent confusion, owner
-        propagation, empty questions) right before the schema, where
-        token attention is highest. Belt-and-suspenders with the master
-        prompt's worked examples.
-        """
-        schema = json.dumps(SUMMARY_TOOL["input_schema"], indent=2)
-        reinforcement = (
-            "\n\n---\n\n## Before you reply, double-check these rules:\n"
-            "1. `decisions` must contain ONLY statements with explicit"
-            " commitment language (will/agreed/decided/approved). Plans to"
-            " analyze, intentions to study, or ideas being floated are NOT"
-            " decisions. If unsure, leave the array empty.\n"
-            "2. `owner` for each action must be a person literally named in"
-            " the transcript for THAT task. Do not assign every action to one"
-            " person. Use null when the transcript does not name an owner.\n"
-            "3. `questions` should not be empty unless the meeting truly"
-            " closed every loop. Look for unresolved clarifications,"
-            " expressed uncertainty, or deferred decisions.\n"
-            "4. Tools (Claude, Notion, Anthropic) are never owners.\n\n"
-        )
-        directive = (
-            "Your reply MUST be a single JSON object that validates"
-            " against this JSON Schema. Output the JSON object and nothing else:"
-            " no prose, no Markdown fences, no commentary.\n\n"
-            f"```json-schema\n{schema}\n```"
-        )
-        return system_prompt + reinforcement + directive
+        return augment_with_schema(system_prompt)
 
     def _compose_user_message(self, transcript: str) -> str:
-        # Fence the transcript as untrusted content (TECH-SEC6); the system
-        # prompt (via _load_system_prompt) explains the markers.
-        return (
-            "Summarize this meeting. Reply with ONLY the JSON object described "
-            "in the system message.\n\n" + wrap_untrusted(transcript)
-        )
+        return compose_user_message(transcript)
 
     def _chat_completion(
         self,
