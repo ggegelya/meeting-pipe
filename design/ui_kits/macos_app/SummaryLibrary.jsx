@@ -188,15 +188,16 @@ const SLSidebar = ({ activeScope = "all", firstRun }) => (
     <div style={{ height: 14 }}/>
     <SLRailHeader>Insights</SLRailHeader>
     <SLInsightRow icon="seal-check" label="Facts" overdue={3}/>
+    <SLInsightRow icon="users" label="People"/>
     <SLInsightRow icon="message" label="Ask"/>
     <SLInsightRow icon="calendar" label="Digests"/>
   </div>
 );
 
-// INSIGHTS (DSN22 audit #7): Facts, Ask and Digests are projections that replace
-// the list, not filters that narrow it, so they get their own group below the
-// filter groups (Library scopes, Workflows). They carry no inventory count -- they
-// are views, not buckets.
+// INSIGHTS (DSN22 audit #7): Facts, People, Ask and Digests are projections that
+// replace the list, not filters that narrow it, so they get their own group below
+// the filter groups (Library scopes, Workflows). They carry no inventory count --
+// they are views, not buckets.
 //
 // The one exception is Facts (AI7): when a commitment is overdue it wears the same
 // amber pill "Needs you" wears, because an open action that resurfaces only if you

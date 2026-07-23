@@ -64,7 +64,7 @@ struct LibrarySidebar: View {
             Section {
                 ForEach(LibrarySidebar.insightsSections, id: \.self) { scope in
                     LibraryScopeRow(
-                        // Facts carries AI7's overdue count; Ask and Digests resolve to 0.
+                        // Facts carries AI7's overdue count; People, Ask and Digests resolve to 0.
                         scope: scope,
                         count: counts.count(for: scope),
                         isSelected: scope == selection
@@ -96,10 +96,10 @@ struct LibrarySidebar: View {
         .allMeetings, .today, .last7Days, .last30Days, .needsYou, .ndaOnly, .untagged,
     ]
 
-    /// Cross-meeting projections (DV1 / AI3): views that replace the list rather
-    /// than filter it, so they get their own INSIGHTS group below Workflows
-    /// (DSN22 #7), set apart from the date/status filters above.
-    static let insightsSections: [LibraryScope] = [.facts, .ask, .digests]
+    /// Cross-meeting projections (DV1 / AI3 / AI4 / DV3): views that replace the
+    /// list rather than filter it, so they get their own INSIGHTS group below
+    /// Workflows (DSN22 #7), set apart from the date/status filters above.
+    static let insightsSections: [LibraryScope] = [.facts, .people, .ask, .digests]
 }
 
 /// Pre-computed count bag handed in from the parent, so the sidebar never touches the meeting store directly.
@@ -141,8 +141,8 @@ struct ScopeCounts: Equatable {
         case .needsYou:    return needsYou
         case .ndaOnly:     return nda
         case .untagged:    return untagged
-        case .facts:       return factsOverdue
-        case .ask, .digests: return 0   // views, not counted subsets
+        case .facts:       return factsOverdue   // AI7: the overdue attention count
+        case .ask, .digests, .people: return 0   // views, not counted subsets
         case .workflow(let id): return perWorkflow[id] ?? 0
         }
     }
@@ -215,12 +215,12 @@ private struct LibraryScopeRow: View {
         }
     }
 
-    /// `.ask` / `.digests` are views, not counted subsets, so they show no trailing
-    /// count (AI3 / AI4). `.facts` is a view too, so it stays bare until something is
-    /// actually overdue: the badge is an attention cue, not an inventory (AI7).
+    /// `.people` / `.ask` / `.digests` are views, not counted subsets, so they show no
+    /// trailing count (DV3 / AI3 / AI4). `.facts` is a view too, so it stays bare until
+    /// something is actually overdue: the badge is an attention cue, not an inventory (AI7).
     private var showsCount: Bool {
         switch scope {
-        case .ask, .digests: return false
+        case .ask, .digests, .people: return false
         case .facts: return count > 0
         default: return true
         }

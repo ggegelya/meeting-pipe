@@ -133,6 +133,16 @@ enum SpeakerLabelStore {
         return overlay
     }
 
+    /// Replace the whole overlay in one write. The per-key setters above are
+    /// read-modify-write, so a caller that computed a new overlay in one pure step
+    /// (DV3's roster-rename carry) would otherwise pay N rewrites of the same file
+    /// to apply it. Empty deletes the sidecar, like every other write here.
+    @discardableResult
+    static func replace(overlay: Overlay, stem: String, in directory: URL) throws -> Overlay {
+        try write(overlay: overlay, stem: stem, in: directory)
+        return overlay
+    }
+
     // MARK: - Resolution (pure, no I/O)
 
     /// The label to render for a segment: the per-segment reassignment if any, else

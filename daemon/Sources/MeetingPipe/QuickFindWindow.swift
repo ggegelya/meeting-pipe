@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// Menu-bar quick-find floating panel (TECH-A3; opened with Cmd+K since UX16). Enter opens the selected meeting, Esc dismisses, arrows move selection. Searches the same FTS5 index as the Library filter bar (UX16). Not annotated `@MainActor` so it remains usable from the non-isolated `Coordinator`, which already calls it on the main thread.
+/// Menu-bar quick-find floating panel (TECH-A3; opened with Cmd+K since UX16). Enter opens the selected meeting, Esc dismisses, arrows move selection. Searches the same FTS5 index as the Library filter bar (UX16). UX25 adds the Ask handoff: `onAsk` sends the typed query to the Library's Ask rail, prefilled and running. Not annotated `@MainActor` so it remains usable from the non-isolated `Coordinator`, which already calls it on the main thread.
 final class QuickFindWindow {
 
     private let model: QuickFindModel
@@ -12,13 +12,15 @@ final class QuickFindWindow {
         meetingStore: MeetingStore,
         ftsMatches: @escaping (String) -> Set<String>? = { _ in nil },
         searchHealth: @escaping () -> SearchIndexer.Health = { .ready },
-        onSelect: @escaping (Meeting) -> Void
+        onSelect: @escaping (Meeting) -> Void,
+        onAsk: @escaping (String) -> Void = { _ in }
     ) {
         let placeholder = QuickFindModel(
             meetingStore: meetingStore,
             ftsMatches: ftsMatches,
             searchHealth: searchHealth,
             onSelect: onSelect,
+            onAsk: onAsk,
             onDismiss: {}
         )
         self.model = placeholder
@@ -66,7 +68,13 @@ final class QuickFindModel: ObservableObject {
     @Published var query: String = "" {
         didSet { recomputeMatches() }
     }
-    @Published private(set) var matches: [QuickFindRanker.Match] = []
+    /// UX25: the ranked meetings plus the Ask handoff row, in display order. The panel drives
+    /// selection over this list rather than over the matches, so the Ask row is a first-class
+    /// keyboard target instead of a click-only footer.
+    @Published private(set) var items: [QuickFindItem] = []
+    /// Whether any meeting matched, so the panel can say "No meetings matched." above an
+    /// Ask-only list. Stored rather than derived so the view doesn't rescan on every render.
+    @Published private(set) var hasMeetingMatches: Bool = false
     /// Clamped on every recompute so a result reshuffle doesn't strand the highlight off the end of the list.
     @Published var selectedIndex: Int = 0
     /// UX23: the search index's health, refreshed on each recompute so the panel can show a one-line
@@ -80,6 +88,8 @@ final class QuickFindModel: ObservableObject {
     private let ftsMatches: (String) -> Set<String>?
     private let searchHealth: () -> SearchIndexer.Health
     private let onSelect: (Meeting) -> Void
+    /// UX25: hand the query to the Library's Ask rail, prefilled and running.
+    private let onAsk: (String) -> Void
     var onDismiss: () -> Void
     private var cancellables: Set<AnyCancellable> = []
 
@@ -88,12 +98,14 @@ final class QuickFindModel: ObservableObject {
         ftsMatches: @escaping (String) -> Set<String>? = { _ in nil },
         searchHealth: @escaping () -> SearchIndexer.Health = { .ready },
         onSelect: @escaping (Meeting) -> Void,
+        onAsk: @escaping (String) -> Void = { _ in },
         onDismiss: @escaping () -> Void
     ) {
         self.meetingStore = meetingStore
         self.ftsMatches = ftsMatches
         self.searchHealth = searchHealth
         self.onSelect = onSelect
+        self.onAsk = onAsk
         self.onDismiss = onDismiss
         meetingStore.objectWillChange
             .receive(on: DispatchQueue.main)
@@ -102,20 +114,37 @@ final class QuickFindModel: ObservableObject {
     }
 
     /// Forces a store scan, then recomputes. Called on open so a stale list from yesterday doesn't appear.
+    /// The highlight resets to the top row too (UX25): the panel outlives its window, and a selection
+    /// left three rows down last time would silently steer the first Return of the next open.
     func refresh() {
         meetingStore.start()
+        selectedIndex = 0
         recomputeMatches()
     }
 
     func moveSelection(by delta: Int) {
-        guard !matches.isEmpty else { return }
-        let next = min(max(selectedIndex + delta, 0), matches.count - 1)
+        guard !items.isEmpty else { return }
+        let next = min(max(selectedIndex + delta, 0), items.count - 1)
         selectedIndex = next
     }
 
     func selectCurrent() {
-        guard let m = matches[safe: selectedIndex]?.meeting else { return }
-        onSelect(m)
+        guard let item = items[safe: selectedIndex] else { return }
+        switch item {
+        case .meeting(let match):
+            onSelect(match.meeting)
+        case .ask(let question):
+            onAsk(question)
+        }
+        onDismiss()
+    }
+
+    /// UX25: ⌘↩ hands the typed query to Ask from anywhere in the panel, so the handoff never
+    /// depends on scrolling past 50 results to reach the row.
+    func askCurrentQuery() {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return }
+        onAsk(q)
         onDismiss()
     }
 
@@ -131,11 +160,13 @@ final class QuickFindModel: ObservableObject {
             ftsMatches: ftsMatches(query) ?? [],
             limit: 50
         )
-        self.matches = m
-        if m.isEmpty {
+        let rows = QuickFindList.items(query: query, matches: m)
+        self.hasMeetingMatches = !m.isEmpty
+        self.items = rows
+        if rows.isEmpty {
             selectedIndex = 0
-        } else if selectedIndex >= m.count {
-            selectedIndex = m.count - 1
+        } else if selectedIndex >= rows.count {
+            selectedIndex = rows.count - 1
         }
     }
 }
@@ -168,6 +199,7 @@ struct QuickFindView: View {
                 onDown: { model.moveSelection(by: 1) },
                 onUp: { model.moveSelection(by: -1) },
                 onReturn: { model.selectCurrent() },
+                onCommandReturn: { model.askCurrentQuery() },
                 onEscape: { model.cancel() }
             )
         )
@@ -210,12 +242,10 @@ struct QuickFindView: View {
 
     @ViewBuilder
     private var results: some View {
-        if model.matches.isEmpty {
+        if model.items.isEmpty {
             VStack {
                 Spacer()
-                Text(model.query.isEmpty
-                     ? "Start typing to search the library."
-                     : "No matches.")
+                Text("Start typing to search the library.")
                     .font(.callout)
                     .foregroundStyle(Color(MPColors.fgSubtle))
                 Spacer()
@@ -225,17 +255,23 @@ struct QuickFindView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(model.matches.enumerated()), id: \.element.id) { idx, match in
-                            QuickFindRow(
-                                match: match,
-                                isSelected: idx == model.selectedIndex
-                            )
-                            .id(idx)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                model.selectedIndex = idx
-                                model.selectCurrent()
-                            }
+                        // UX25: a query with no meeting match is no longer a dead end, it is an
+                        // Ask-only list, so the miss is stated instead of implied by an empty pane.
+                        if !model.hasMeetingMatches {
+                            Text("No meetings matched.")
+                                .font(.mpTextSM)
+                                .foregroundStyle(Color(MPColors.fgSubtle))
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                        }
+                        ForEach(Array(model.items.enumerated()), id: \.element.id) { idx, item in
+                            row(for: item, at: idx)
+                                .id(idx)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    model.selectedIndex = idx
+                                    model.selectCurrent()
+                                }
                         }
                     }
                 }
@@ -245,6 +281,16 @@ struct QuickFindView: View {
                     }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func row(for item: QuickFindItem, at idx: Int) -> some View {
+        switch item {
+        case .meeting(let match):
+            QuickFindRow(match: match, isSelected: idx == model.selectedIndex)
+        case .ask(let question):
+            QuickFindAskRow(question: question, isSelected: idx == model.selectedIndex)
         }
     }
 }
@@ -297,11 +343,51 @@ private struct QuickFindRow: View {
     }()
 }
 
+/// UX25: the "Ask about …" handoff row. Leads the list when the query ends in a question mark
+/// and trails it otherwise; either way ⌘↩ reaches it from anywhere, which the trailing hint says
+/// out loud so the shortcut is learnable without a tour.
+private struct QuickFindAskRow: View {
+    let question: String
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "bubble.left.and.text.bubble.right")
+                .font(.mpTextBase)
+                .foregroundStyle(Color.mpSignal)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Ask about your meetings")
+                    .font(.mpTextBase.weight(.medium))
+                    .foregroundStyle(.primary)
+                Text(question)
+                    .font(.mpTextXS)
+                    .lineLimit(1)
+                    .foregroundStyle(Color(MPColors.fgMuted))
+            }
+            Spacer(minLength: 8)
+            Text("⌘↩")
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgSubtle))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            isSelected
+            ? Color.mpSignal.opacity(0.25)
+            : Color.clear
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Ask about your meetings: \(question)")
+    }
+}
+
 /// Invisible NSView that intercepts arrow/return/escape so the TextField keeps focus while the panel drives list selection.
 private struct KeyCatcher: NSViewRepresentable {
     let onDown: () -> Void
     let onUp: () -> Void
     let onReturn: () -> Void
+    let onCommandReturn: () -> Void
     let onEscape: () -> Void
 
     func makeNSView(context: Context) -> KeyCatcherView {
@@ -309,6 +395,7 @@ private struct KeyCatcher: NSViewRepresentable {
         v.onDown = onDown
         v.onUp = onUp
         v.onReturn = onReturn
+        v.onCommandReturn = onCommandReturn
         v.onEscape = onEscape
         return v
     }
@@ -317,6 +404,7 @@ private struct KeyCatcher: NSViewRepresentable {
         nsView.onDown = onDown
         nsView.onUp = onUp
         nsView.onReturn = onReturn
+        nsView.onCommandReturn = onCommandReturn
         nsView.onEscape = onEscape
     }
 }
@@ -325,15 +413,21 @@ private final class KeyCatcherView: NSView {
     var onDown: (() -> Void)?
     var onUp: (() -> Void)?
     var onReturn: (() -> Void)?
+    var onCommandReturn: (() -> Void)?
     var onEscape: (() -> Void)?
 
     override var acceptsFirstResponder: Bool { true }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let command = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .contains(.command)
         switch Int(event.keyCode) {
         case 125: onDown?(); return true  // arrow down
         case 126: onUp?(); return true    // arrow up
-        case 36:  onReturn?(); return true // return
+        case 36:                          // return, ⌘↩ asks (UX25)
+            if command { onCommandReturn?() } else { onReturn?() }
+            return true
         case 53:  onEscape?(); return true // escape
         default:  return super.performKeyEquivalent(with: event)
         }

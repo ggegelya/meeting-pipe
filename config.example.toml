@@ -169,9 +169,12 @@ backend = "anthropic"
 local_model = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 local_endpoint = "http://127.0.0.1:8765"
 # Opt-in path to a locally-trained LoRA adapter (LOCAL9). Empty (the default)
-# serves the base model. Train one with `mp train-adapter` on your corrections
-# corpus, A/B it with `mp dogfood --adapter <dir>`, and set this only if it wins.
-# Fully on-device, so a regulated/NDA run can use it too.
+# serves the base model. Train one with `mp train-adapter`, A/B it with
+# `mp dogfood --adapter <dir>`, and set this only if it wins. Fully on-device, so
+# a regulated/NDA run can use it too. Sent with every request rather than only on
+# the server command line, because mlx-lm 0.31.3 accepts `--adapter-path` and then
+# ignores it (LOCAL15, upstream #1248); a path that does not exist now fails the
+# run loudly instead of quietly serving the base model.
 # local_adapter_path = ""
 # Model id for the "openai" backend (PROV1). Ignored by every other backend.
 openai_model = "gpt-4o"
