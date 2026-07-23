@@ -67,7 +67,7 @@ struct SavedSearch: Identifiable, Codable, Equatable {
             case .needsYou:    self = .needsYou
             case .ndaOnly:     self = .ndaOnly
             case .untagged:    self = .untagged
-            case .facts, .ask, .digests, .workflow, .saved: return nil
+            case .facts, .ask, .digests, .people, .workflow, .saved: return nil
             }
         }
     }
@@ -112,7 +112,7 @@ struct SavedSearch: Identifiable, Codable, Equatable {
         let base: Base
         var filter = liveFilter
         switch scope {
-        case .facts, .ask, .digests:
+        case .facts, .ask, .digests, .people:
             return nil
         case .workflow(let id):
             guard let wf = workflows.first(where: { $0.id == id }) else { return nil }

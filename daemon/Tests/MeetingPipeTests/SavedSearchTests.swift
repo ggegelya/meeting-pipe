@@ -22,6 +22,7 @@ final class SavedSearchTests: XCTestCase {
         XCTAssertNil(SavedSearch.Base(scope: .facts))
         XCTAssertNil(SavedSearch.Base(scope: .ask))
         XCTAssertNil(SavedSearch.Base(scope: .digests))
+        XCTAssertNil(SavedSearch.Base(scope: .people))
         XCTAssertNil(SavedSearch.Base(scope: .workflow(UUID())))
         XCTAssertNil(SavedSearch.Base(scope: .saved(UUID())))
     }
@@ -76,7 +77,7 @@ final class SavedSearchTests: XCTestCase {
     }
 
     func test_capture_from_a_projection_scope_is_nil() {
-        for scope in [LibraryScope.facts, .ask, .digests] {
+        for scope in [LibraryScope.facts, .ask, .digests, .people] {
             XCTAssertNil(SavedSearch.capture(
                 name: "n", scope: scope, liveFilter: MeetingFilter(query: "x"),
                 workflows: [], savedSearches: [], order: 0

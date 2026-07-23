@@ -20,6 +20,10 @@ enum LibraryScope: Hashable {
     /// Digests projection (AI4): the weekly review digests in the `digests` library
     /// sibling, read-only. Like `.facts`/`.ask`, a view rather than a list filter.
     case digests
+    /// People projection (DV3): one row per enrolled roster person with their
+    /// meetings, the open actions they own, and last-seen. Like the three above,
+    /// a view rather than a list filter.
+    case people
     case workflow(Workflow.ID)
     /// A saved smart folder (UX24): a base scope plus a persisted filter, resolved
     /// through `SavedSearchStore`. Like `.workflow` it carries the id rather than the
@@ -39,6 +43,7 @@ enum LibraryScope: Hashable {
         case .facts:       return "Facts"
         case .ask:         return "Ask"
         case .digests:     return "Digests"
+        case .people:      return "People"
         case .workflow:    return ""   // resolved at render time via the store
         case .saved:       return ""   // resolved at render time via the store
         }
@@ -55,6 +60,7 @@ enum LibraryScope: Hashable {
         case .facts:       return "list.bullet.rectangle"
         case .ask:         return "bubble.left.and.text.bubble.right"
         case .digests:     return "calendar.badge.clock"
+        case .people:      return "person.2"
         case .workflow:    return nil
         case .saved:       return "folder.badge.gearshape"
         }
@@ -111,7 +117,7 @@ enum LibraryScope: Hashable {
             return Self.resolveWorkflow(for: meeting, in: workflows)?.flags.ndaMode == true
         case .untagged:
             return (meeting.workflowName?.isEmpty ?? true)
-        case .facts, .ask, .digests:
+        case .facts, .ask, .digests, .people:
             // Not a list filter: these projections render in their own center
             // column, so no meeting "belongs" to the scope.
             return false

@@ -204,7 +204,9 @@ const SLSidebar = ({ activeScope = "all", firstRun }) => (
     <div style={{ height: 14 }}/>
     <SLRailHeader>Insights</SLRailHeader>
     <SLInsightRow icon="seal-check" label="Facts"/>
+    <SLInsightRow icon="users" label="People"/>
     <SLInsightRow icon="message" label="Ask"/>
+    <SLInsightRow icon="calendar" label="Digests"/>
   </div>
 );
 

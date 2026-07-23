@@ -1,0 +1,211 @@
+{
+  "meetings": 193,
+  "heuristic_distribution": {
+    "other": 69,
+    "standup": 50,
+    "one_on_one": 33,
+    "review": 24,
+    "planning": 10,
+    "all_hands": 3,
+    "client": 3,
+    "brainstorm": 1
+  },
+  "reason_distribution": {
+    "no match": 69,
+    "keyword:standup": 50,
+    "keyword:review": 24,
+    "keyword:one_on_one": 22,
+    "attendees=2": 11,
+    "keyword:planning": 10,
+    "keyword:client": 3,
+    "attendees=24": 1,
+    "attendees=12": 1,
+    "attendees=17": 1,
+    "keyword:brainstorm": 1
+  },
+  "attendee_distribution": {
+    "1": 31,
+    "2": 13,
+    "3": 18,
+    "4": 29,
+    "5": 28,
+    "6": 14,
+    "7": 16,
+    "8": 10,
+    "9": 8,
+    "10": 10,
+    "11": 5,
+    "12": 6,
+    "13": 2,
+    "17": 2,
+    "24": 1
+  },
+  "workflow_distribution": {
+    "Personal": 95,
+    "General": 52,
+    "(none)": 45,
+    "Client work": 1
+  },
+  "llm_distribution": {
+    "standup": 49,
+    "one_on_one": 48,
+    "review": 42,
+    "planning": 27,
+    "other": 13,
+    "brainstorm": 4,
+    "interview": 4,
+    "retro": 3,
+    "all_hands": 2,
+    "client": 1
+  },
+  "overall_agreement": {
+    "agreed": 88,
+    "of": 193,
+    "pct": 45.6
+  },
+  "per_label_agreement": {
+    "one_on_one": {
+      "heuristic": 33,
+      "llm": 48,
+      "both": 8,
+      "jaccard_pct": 11.0
+    },
+    "standup": {
+      "heuristic": 50,
+      "llm": 49,
+      "both": 48,
+      "jaccard_pct": 94.1
+    },
+    "planning": {
+      "heuristic": 10,
+      "llm": 27,
+      "both": 7,
+      "jaccard_pct": 23.3
+    },
+    "retro": {
+      "heuristic": 0,
+      "llm": 3,
+      "both": 0,
+      "jaccard_pct": 0.0
+    },
+    "interview": {
+      "heuristic": 0,
+      "llm": 4,
+      "both": 0,
+      "jaccard_pct": 0.0
+    },
+    "client": {
+      "heuristic": 3,
+      "llm": 1,
+      "both": 0,
+      "jaccard_pct": 0.0
+    },
+    "review": {
+      "heuristic": 24,
+      "llm": 42,
+      "both": 19,
+      "jaccard_pct": 40.4
+    },
+    "brainstorm": {
+      "heuristic": 1,
+      "llm": 4,
+      "both": 0,
+      "jaccard_pct": 0.0
+    },
+    "all_hands": {
+      "heuristic": 3,
+      "llm": 2,
+      "both": 1,
+      "jaccard_pct": 25.0
+    },
+    "other": {
+      "heuristic": 69,
+      "llm": 13,
+      "both": 5,
+      "jaccard_pct": 6.5
+    }
+  },
+  "confusion_top": [
+    {
+      "heuristic": "other",
+      "llm": "one_on_one",
+      "n": 36
+    },
+    {
+      "heuristic": "other",
+      "llm": "review",
+      "n": 15
+    },
+    {
+      "heuristic": "one_on_one",
+      "llm": "planning",
+      "n": 11
+    },
+    {
+      "heuristic": "one_on_one",
+      "llm": "other",
+      "n": 7
+    },
+    {
+      "heuristic": "other",
+      "llm": "planning",
+      "n": 6
+    },
+    {
+      "heuristic": "one_on_one",
+      "llm": "review",
+      "n": 4
+    },
+    {
+      "heuristic": "review",
+      "llm": "one_on_one",
+      "n": 4
+    },
+    {
+      "heuristic": "standup",
+      "llm": "planning",
+      "n": 2
+    },
+    {
+      "heuristic": "planning",
+      "llm": "review",
+      "n": 2
+    },
+    {
+      "heuristic": "other",
+      "llm": "brainstorm",
+      "n": 2
+    },
+    {
+      "heuristic": "client",
+      "llm": "review",
+      "n": 2
+    },
+    {
+      "heuristic": "other",
+      "llm": "interview",
+      "n": 2
+    },
+    {
+      "heuristic": "other",
+      "llm": "retro",
+      "n": 1
+    },
+    {
+      "heuristic": "one_on_one",
+      "llm": "client",
+      "n": 1
+    },
+    {
+      "heuristic": "all_hands",
+      "llm": "planning",
+      "n": 1
+    }
+  ],
+  "one_on_one_sanity": {
+    "meetings_with_2_attendees": 13,
+    "llm_called_them_one_on_one": 5,
+    "llm_one_on_one_total": 48,
+    "heuristic_one_on_one_with_over_3_attendees": 20
+  }
+}
