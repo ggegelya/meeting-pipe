@@ -1,10 +1,12 @@
 ---
-description: Implement a backlog task from the active backlog, one task per session, one commit
+description: Implement one or more backlog tasks, one commit each; several ids fan out to parallel subagents
 ---
 
-You're picking up a single backlog task: $ARGUMENTS
+You're picking up backlog work: $ARGUMENTS
 
 0. Sweep stale worktrees first: `sh scripts/prune-worktrees.sh`. It removes a worktree under `.claude/worktrees/` only when every gate clears: merged into `main`, at least one commit made, idle, no live session transcript, clean tree, and never the one you are standing in. A session that has not committed yet is always kept, which is the fix for the 2026-07-24 incident where a live session lost its worktree. Silent no-op when nothing is stale. A `SessionStart` hook runs it too; this line is the backstop for when the hook isn't installed. If you ever change that script, `sh scripts/test-prune-worktrees.sh` is mandatory.
+**Count the ids first.** One id: follow steps 1 to 11 below, in this session, as always. More than one: skip steps 1 to 11 entirely and follow **Multi-task orchestration** at the bottom, which hands each id to its own subagent and then sequences the landings. Steps 1 to 11 are still the procedure in that mode; the subagents are the ones running them.
+
 1. Read the task definition from the active backlog: the highest-numbered `docs/backlog/meetingpipe-q<N>-backlog.md` (currently `docs/backlog/meetingpipe-q6-backlog.md`; earlier quarters are archived beside it, and the current quarter's shipped items live in `docs/backlog/q<N>-final.md`). The task ID format is `<letter><number>` (e.g. `E5`); ids no longer carry the `TECH-` prefix, so strip a legacy `TECH-` if the argument includes one. Find the task's `| <ID> |` row in the Table of contents for its Status and one-line Comment, then read its full spec: `docs/backlog/tasks/<ID>.md` (one file per task; its Band-origin line points at the shared context in the backlog's Task specs section), or, for an item carried from Q4 unchanged (no `tasks/` file), the `**<ID>` spec in `docs/backlog/q4-final.md` (search the id). If you can't find it, stop and tell me.
 2. Read the orientation docs the task touches:
    - [`CLAUDE.md`](CLAUDE.md) at the repo root for git workflow, verification, and conventions worth knowing.
@@ -44,3 +46,21 @@ You're picking up a single backlog task: $ARGUMENTS
 11. Summarise: changed files, decisions that weren't in the spec, which docs you checked in step 7 (and which you updated), anything I'd want to know that the diff doesn't show. If you landed from a worktree, say so and name the commit `main` now points at.
 
 If the task is a P3 deferred item, or its prerequisites aren't done, stop and tell me; don't ship a half-implementation.
+
+## Multi-task orchestration
+
+Only when `$ARGUMENTS` names more than one id. You are the orchestrator: you do not implement anything and you do not merge anybody's branch. You preflight, fan out, relay questions, and sequence the landings so each author lands its own work.
+
+That division is deliberate. Conflicts here are the normal case, not an edge: across the last 20 task commits the two `docs/backlog/` files, `README.md`, and `ARCHITECTURE.md` each appeared in 15, `daemon/CLAUDE.md` in 12, `LibraryWindow.swift` in 11, and `Coordinator.swift` in 10. Resolving one well needs to know why the code is shaped the way it is, which the author knows and you do not. ASR3 got its five-file rebase right on 2026-07-24 by putting a sibling's `recordCorrection` first so Swift declaration order matched every call site; that is authorship knowledge, not merge skill. So conflicts always go back to whoever wrote the code, over `SendMessage`, which reaches a subagent with its context intact.
+
+1. **Preflight before spending anything.** Resolve every id per step 1. If one is missing, is P3, or has unmet prerequisites, stop and report rather than fan out; a partial batch is fine, a guessed one isn't. Read enough of each spec to name any pair aimed at the same file, and say so, since that is what decides landing order. Then tell me the cost up front: one max-effort subagent per task, each running `swift build` and both suites, and that background work dies under clamshell sleep so the Mac stays lid-open or under `caffeinate -i`.
+2. **Fan out**, at most 3 running at once, because concurrent `swift build` is heavy and thrashing helps nobody. One `Agent` per task with `isolation: "worktree"`, `run_in_background: true`, `model: "opus"`. Effort is inherited, not settable per agent, so if I asked for max effort say plainly whether this session is actually at max rather than implying the subagents are.
+   Point each agent at this file and tell it to follow **steps 1 through 9** for its id, rather than restating the procedure, so there is one source of truth. Four deltas, verbatim in the prompt:
+   - Stop after step 9's commit. Do not land, do not rebase, do not touch `main` or the main checkout.
+   - Skip step 0; the orchestrator already swept.
+   - Any gate step 4 or step 5 reserves for the owner (a new dependency, a global stylesheet, a pattern CLAUDE.md flags, a P3 promotion, a spec worth arguing with) means **stop and return the question**. Never decide one of those alone; a subagent cannot reach the owner and guessing is how a batch ships something nobody approved.
+   - Return a report: branch, worktree path, commit sha, files changed, which verification actually ran and what it said, docs checked and docs updated, decisions that weren't in the spec, and any question.
+3. **Question round.** Collect every returned question and put them to me in one message, not a trickle. Relay my answers with `SendMessage` to the agents that asked, and let them finish. Agents that asked nothing are left alone.
+4. **Sequence the landings, strictly one at a time**, in the order I gave the ids unless preflight found a reason to reorder. For each: `SendMessage` that task's agent with the current `main` sha and tell it to rebase onto `main`, re-run its step 6 verification, resolve any conflict, land per step 10's bullets, and report the new `main` sha. Wait for that confirmation before starting the next one; `--ff-only` and `index.lock` both need an exclusive window. Carry the standing conflict guidance in that message: a backlog ToC or `q6-final.md` clash is two sessions each moving their own row, so keep both sides; doc lists are almost always a union; a red suite after the rebase means don't land, report instead.
+5. **A task that can't land doesn't block the batch.** Land everything else, then name exactly which one stalled and why, and leave its branch and worktree intact so it can be picked up. Never resolve its conflict yourself to keep things moving.
+6. **Close out.** Confirm `main` is linear across the whole batch, then `MP_PRUNE_MIN_AGE_MIN=0 sh scripts/prune-worktrees.sh` (the escape hatch is legitimate here, since you know those agents are done). Summarise per task: what shipped, what landed, decisions that weren't in the spec, docs touched, and anything still owed. Report failures as failures; a batch where two of three landed is a two-of-three result, not a success with caveats.
