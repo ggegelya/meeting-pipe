@@ -524,7 +524,10 @@ struct LibraryRootView: View {
                         // People (DV3): the same center-column shape as Facts, with
                         // rows that are people rather than facts. Opening one of a
                         // person's meetings or actions navigates back the same way.
-                        PeopleView(store: meetingStore) { stem in
+                        // The open actions are the same grouped commitments Facts
+                        // renders (AI7), so a restated promise is one row in both
+                        // and resolving it in Facts drops it here at once.
+                        PeopleView(store: meetingStore, commitments: facts.clusters) { stem in
                             model.openedFromInsight = .init(stem: stem, source: "People")
                             scope = .allMeetings
                             meetingSelection = [stem]

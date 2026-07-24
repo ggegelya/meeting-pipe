@@ -22,13 +22,23 @@ import Foundation
 /// a transcript: the whole library's `<stem>.json` is ~80 MB, its
 /// `<stem>.summary.json` under 1 MB, and the summary already carries the
 /// speaker set the transcript produced.
+///
+/// **The actions are AI7's commitments, handed in already grouped.** This rail
+/// does not aggregate open actions itself: it filters the very `[ActionCluster]`
+/// the Facts projection is showing (`LibraryRootView` owns the one load). DV3 and
+/// AI7 shipped in parallel and briefly disagreed about what an open action is, so
+/// a standup promise restated five times was one row in Facts and five under its
+/// owner here, and resolving it in Facts left this rail stale until the next
+/// reload. Sharing the grouped objects is what makes the two rails agree by
+/// construction rather than by two implementations staying in step.
 enum PeopleRail {
 
     // MARK: - Inputs
 
     /// One meeting reduced to what the rail needs. Built by the view off the
     /// sidecars; kept separate from `Meeting` so `derive` is pure and testable
-    /// without a library on disk.
+    /// without a library on disk. Carries no actions: those arrive pre-grouped as
+    /// `[ActionCluster]`, and a meeting's ownership is read off their instances.
     struct MeetingFacts: Equatable {
         let stem: String
         let title: String
@@ -36,16 +46,6 @@ enum PeopleRail {
         /// Display names this meeting resolves to (summary attendees mapped
         /// through the overlay, plus names the overlay itself introduced).
         let people: [String]
-        /// Unresolved actions only; a resolved one is history, not a to-do.
-        let openActions: [OpenAction]
-    }
-
-    struct OpenAction: Equatable {
-        /// Index into `MeetingSummary.actions`, so a row can point at its source.
-        let index: Int
-        let task: String
-        let owner: String?
-        let due: String?
     }
 
     // MARK: - Outputs
@@ -55,8 +55,9 @@ enum PeopleRail {
         let sampleCount: Int
         /// Every meeting they appear in, newest first.
         let meetings: [MeetingRef]
-        /// The open actions they own, soonest due first, undated last.
-        let actions: [ActionRef]
+        /// The open commitments they own, in the Facts order (soonest due first,
+        /// undated last). One entry per commitment, not per restatement.
+        let actions: [ActionCluster]
 
         /// The most recent meeting they appear in. Nil for someone enrolled but
         /// not yet matched anywhere.
@@ -70,18 +71,6 @@ enum PeopleRail {
         let title: String
         let date: Date
         var id: String { stem }
-    }
-
-    struct ActionRef: Identifiable, Equatable {
-        let stem: String
-        let meetingTitle: String
-        let meetingDate: Date
-        let index: Int
-        let task: String
-        let due: String?
-
-        var id: String { "\(stem)#a\(index)" }
-        var dueDate: Date? { PeopleDate.day(from: due) }
     }
 
     // MARK: - Name identity
@@ -99,46 +88,50 @@ enum PeopleRail {
 
     /// One row per enrolled person, in roster order (case-insensitive by name, so
     /// the rail and Preferences ▸ Pipeline ▸ People read the same).
-    static func derive(roster: [RosterProfile.Person], meetings: [MeetingFacts]) -> [Person] {
+    ///
+    /// `commitments` is the Facts projection's grouped open actions (AI7). A
+    /// person owns a commitment when they own **any** of its restatements: a
+    /// series that named the owner in some occurrences and left the rest
+    /// unattributed is still one promise they made, and taking the whole cluster
+    /// is what keeps this rail's "restated N×" identical to Facts'. Passing none
+    /// (the pre-AI7 shape, and what the view shows before the first load lands)
+    /// simply gives every row an empty action list.
+    static func derive(
+        roster: [RosterProfile.Person],
+        meetings: [MeetingFacts],
+        commitments: [ActionCluster] = []
+    ) -> [Person] {
         guard !roster.isEmpty else { return [] }
         let ordered = meetings.sorted { $0.date > $1.date }
         return roster.map { entry in
             let key = normalized(entry.name)
+            // Order is inherited from Facts (soonest due first, undated last), so
+            // the two rails cannot sort one person's commitments differently.
+            let owned = commitments.filter { cluster in
+                cluster.instances.contains { normalized($0.owner ?? "") == key }
+            }
+            // Only the restatements they are actually named on make a meeting
+            // theirs. Widening this to every instance of an owned cluster would
+            // put them in a meeting the sidecars never place them in.
+            let ownedStems = Set(
+                owned.flatMap(\.instances)
+                    .filter { normalized($0.owner ?? "") == key }
+                    .map(\.stem)
+            )
             var refs: [MeetingRef] = []
-            var actions: [ActionRef] = []
             for m in ordered {
-                var owned: [ActionRef] = []
-                for a in m.openActions where normalized(a.owner ?? "") == key {
-                    owned.append(ActionRef(
-                        stem: m.stem, meetingTitle: m.title, meetingDate: m.date,
-                        index: a.index, task: a.task, due: a.due
-                    ))
-                }
                 let attended = m.people.contains { normalized($0) == key }
                 // Owning an action counts as being in the meeting: the summarizer
                 // names owners the diarizer never labelled, so attendance alone
                 // would hide meetings whose actions the rail is already showing.
-                if attended || !owned.isEmpty {
+                if attended || ownedStems.contains(m.stem) {
                     refs.append(MeetingRef(stem: m.stem, title: m.title, date: m.date))
                 }
-                actions.append(contentsOf: owned)
             }
-            actions.sort(by: dueSooner)
             return Person(
                 name: entry.name, sampleCount: entry.sampleCount,
-                meetings: refs, actions: actions
+                meetings: refs, actions: owned
             )
-        }
-    }
-
-    /// Dated actions first (soonest, so overdue floats up), undated last, ties
-    /// broken by meeting recency. Mirrors `FactsView`'s open-action ordering.
-    private static func dueSooner(_ lhs: ActionRef, _ rhs: ActionRef) -> Bool {
-        switch (lhs.dueDate, rhs.dueDate) {
-        case let (l?, r?): return l < r
-        case (nil, _?):    return false
-        case (_?, nil):    return true
-        case (nil, nil):   return lhs.meetingDate > rhs.meetingDate
         }
     }
 
@@ -217,33 +210,14 @@ enum PeopleRail {
 
 // MARK: - Date helpers
 
-/// Day-granular parsing / formatting for the rail. Parallels `FactsView`'s
-/// private `FactsDate`; kept separate rather than shared because that one is
-/// file-private to the Facts projection.
+/// The rail's one date helper of its own. Day parsing and short-date formatting
+/// come from `FactsDate` rather than being duplicated here: DV3 originally carried
+/// its own copies because that type was file-private to the Facts projection, and
+/// AI7 promoted it to `Facts.swift` at file scope. Now that both rails age the same
+/// `ActionCluster` off the same `due` strings, two parsers would be two ways for
+/// the same commitment to read differently in two places.
 enum PeopleDate {
-    static let dayParser: DateFormatter = {
-        let f = DateFormatter()
-        f.calendar = Calendar(identifier: .gregorian)
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = .current
-        f.dateFormat = "yyyy-MM-dd"
-        return f
-    }()
-
-    static let shortDate: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.setLocalizedDateFormatFromTemplate("MMMd")
-        return f
-    }()
-
-    /// Parse the leading `yyyy-MM-dd` of an ISO `due` value (which may carry a time).
-    static func day(from s: String?) -> Date? {
-        guard let s, s.count >= 10 else { return nil }
-        return dayParser.date(from: String(s.prefix(10)))
-    }
-
-    static func short(_ date: Date) -> String { shortDate.string(from: date) }
+    static func short(_ date: Date) -> String { FactsDate.short(date) }
 
     /// "today" / "yesterday" / "3d ago" / a short date past a week. The rail's
     /// last-seen column, where recency is the signal and an exact date is not.

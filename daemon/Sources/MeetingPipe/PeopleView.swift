@@ -10,8 +10,16 @@ import SwiftUI
 /// Preferences ▸ Pipeline ▸ People, and past transcripts all read the same name.
 /// The derivation itself is `PeopleRail.derive`; this view only does the I/O and
 /// the chrome.
+///
+/// The open actions are not loaded here: `commitments` is the same grouped
+/// `[ActionCluster]` the Facts projection renders, handed down by the host (AI7).
+/// That is what makes a restated commitment one row in both rails, and what makes
+/// resolving it in Facts drop it from here in the same breath instead of leaving
+/// this rail stale until the next reload.
 struct PeopleView: View {
     @ObservedObject var store: MeetingStore
+    /// The library's open commitments, already grouped and ordered by the host.
+    let commitments: [ActionCluster]
     /// Navigate to a meeting (set by the host: All Meetings + selected row).
     let onOpenMeeting: (String) -> Void
 
@@ -21,6 +29,11 @@ struct PeopleView: View {
     @State private var errorText: String?
     @State private var renaming: String?
     @State private var launcher = PipelineLauncher()
+    /// The last loaded per-meeting attendee facts, kept so a change in
+    /// `commitments` (the async clustering landing, or a Facts resolve) re-derives
+    /// in memory instead of re-reading every summary off disk.
+    @State private var facts: [PeopleRail.MeetingFacts] = []
+    @State private var roster: [RosterProfile.Person] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,6 +44,7 @@ struct PeopleView: View {
         }
         .onAppear(perform: reaggregate)
         .onChange(of: store.revision) { _, _ in reaggregate() }
+        .onChange(of: commitments) { _, _ in rederive() }
     }
 
     @ViewBuilder
@@ -125,9 +139,10 @@ struct PeopleView: View {
 
     // MARK: - Aggregation
 
-    /// Rebuild every person's meetings + owned actions off-main. Triggered on
-    /// appear and on each `MeetingStore.revision` bump, so a finished pipeline
-    /// run or a rename's overlay writes land here.
+    /// Reload the roster + every meeting's resolved attendee names off-main.
+    /// Triggered on appear and on each `MeetingStore.revision` bump, so a finished
+    /// pipeline run or a rename's overlay writes land here. The open actions are
+    /// not read here at all; they arrive as `commitments` from the host.
     private func reaggregate() {
         let meetings = store.meetings        // value snapshot
         Task.detached(priority: .userInitiated) {
@@ -140,28 +155,29 @@ struct PeopleView: View {
                     ? MeetingSummary.load(
                         from: m.recordingsDir.appendingPathComponent("\(m.stem).summary.json"))
                     : nil
-                var actions: [PeopleRail.OpenAction] = []
-                for (i, a) in (summary?.actions ?? []).enumerated() where !a.resolved {
-                    let task = a.task.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !task.isEmpty else { continue }
-                    actions.append(PeopleRail.OpenAction(
-                        index: i, task: task, owner: a.owner, due: a.due))
-                }
                 facts.append(PeopleRail.MeetingFacts(
                     stem: m.stem,
                     title: m.displayTitle,
                     date: m.startedAt,
                     people: PeopleRail.resolvedPeople(
-                        attendees: summary?.attendees ?? [], overlay: overlay),
-                    openActions: actions
+                        attendees: summary?.attendees ?? [], overlay: overlay)
                 ))
             }
-            let derived = PeopleRail.derive(roster: roster, meetings: facts)
+            let loaded = facts, people = roster
             await MainActor.run {
-                self.people = derived
+                self.facts = loaded
+                self.roster = people
                 self.loading = false
+                rederive()
             }
         }
+    }
+
+    /// Re-run the pure derivation against the current `commitments`. No disk read:
+    /// a clustering pass landing (or a Facts resolve removing one) changes which
+    /// commitments a person owns, never which meetings they were in.
+    private func rederive() {
+        people = PeopleRail.derive(roster: roster, meetings: facts, commitments: commitments)
     }
 
     // MARK: - Rename
@@ -207,8 +223,11 @@ private struct PersonDisclosure: View {
             }
             if !person.actions.isEmpty {
                 subheader("Open actions")
-                ForEach(person.actions) { action in
-                    PersonActionRow(action: action, onOpen: { onOpenMeeting(action.stem) })
+                ForEach(person.actions) { commitment in
+                    PersonActionRow(
+                        commitment: commitment,
+                        onOpen: { onOpenMeeting(commitment.representative.stem) }
+                    )
                 }
             }
             if !person.meetings.isEmpty {
@@ -264,6 +283,11 @@ private struct PersonDisclosure: View {
 
     /// "12 meetings · 3 open actions · last seen 3d ago". Counts are dropped when
     /// zero rather than rendered as "0", so a quiet row stays quiet.
+    ///
+    /// The action count is **commitments, not restatements**, the same thing the
+    /// Facts rail badge counts (AI7): a standup promise made once and repeated
+    /// weekly is one thing this person owes, and counting the repeats turned a
+    /// real roster row into "66 open actions", a number too inflated to act on.
     private var metaLine: String {
         var parts: [String] = []
         if person.meetings.isEmpty {
@@ -290,49 +314,45 @@ private struct PersonDisclosure: View {
     }
 }
 
-/// One owned open action: the task, its aging, and a link back to the meeting it
-/// came from. Read-only here; "mark done" stays in Facts, which owns the
-/// resolved-flag write.
+/// One owned commitment: the task, its aging, how often the series restated it,
+/// and a link back to the meeting it came from. Aging comes from `ActionCluster`
+/// itself rather than a local copy, so this row and the Facts row can never word
+/// the same deadline differently. Read-only here; "mark done" stays in Facts,
+/// which owns the resolved-flag write across every restatement.
 private struct PersonActionRow: View {
-    let action: PeopleRail.ActionRef
+    let commitment: ActionCluster
     let onOpen: () -> Void
 
     var body: some View {
+        let fact = commitment.representative
         VStack(alignment: .leading, spacing: 2) {
-            Text(action.task)
+            Text(fact.task)
                 .foregroundStyle(Color(MPColors.fg))
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 6) {
-                if let aging = agingLabel {
+                if let aging = commitment.agingLabel(now: Date()) {
                     Text(aging.text)
                         .foregroundStyle(aging.overdue ? Color.mpWarning : Color(MPColors.fgSubtle))
                     Text("·")
                 }
+                if commitment.count > 1 {
+                    Text("restated \(commitment.count)×")
+                        .accessibilityLabel("restated in \(commitment.count) meetings")
+                    Text("·")
+                }
                 Button(action: onOpen) {
-                    Text(action.meetingTitle)
+                    Text(fact.meetingTitle)
                         .lineLimit(1)
                         .foregroundStyle(Color.mpSignal)
                 }
                 .buttonStyle(.plain)
                 .help("Open meeting")
-                .accessibilityLabel("Open meeting \(action.meetingTitle)")
+                .accessibilityLabel("Open meeting \(fact.meetingTitle)")
                 Spacer(minLength: 8)
             }
             .font(.mpTextXS)
             .foregroundStyle(Color(MPColors.fgSubtle))
         }
         .padding(.vertical, 2)
-    }
-
-    /// Day-granular aging off the ISO `due` date, matching the Facts row wording.
-    private var agingLabel: (text: String, overdue: Bool)? {
-        guard let due = action.dueDate else { return nil }
-        let cal = Calendar.current
-        let days = cal.dateComponents(
-            [.day], from: cal.startOfDay(for: Date()), to: cal.startOfDay(for: due)
-        ).day ?? 0
-        if days < 0 { return ("\(-days)d overdue", true) }
-        if days == 0 { return ("due today", true) }
-        return ("in \(days)d", false)
     }
 }
