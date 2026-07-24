@@ -248,6 +248,15 @@ final class LibraryWindowModel: ObservableObject {
         coordinator?.cancelActiveJob()
     }
 
+    /// AI8: `summarization.user_label`, the display name the pipeline stamps on
+    /// the owner's own diarized speaker. Read live off the config store (the
+    /// `summarizationBackend` idiom) rather than snapshotted, so changing it in
+    /// Preferences is picked up on the next load. Empty when it was never set,
+    /// which the Meeting time view surfaces rather than papering over.
+    var ownerLabel: String {
+        coordinator?.summarizationUserLabel ?? ""
+    }
+
     /// True when the configured backend is on-device (MLX-local or Apple
     /// Intelligence), so the free local re-run preview is offered (TECH-A16).
     var canPreviewLocally: Bool {
@@ -665,6 +674,11 @@ struct LibraryRootView: View {
                             scope = .allMeetings
                             meetingSelection = [stem]
                         }
+                    } else if case .stats = scope {
+                        // Meeting time (AI8): the same center-column shape again,
+                        // with rows that are workflows rather than people. Read-only,
+                        // so unlike Facts and People it hands back no navigation.
+                        StatsView(store: meetingStore, ownerLabel: model.ownerLabel)
                     } else if case .ask = scope {
                         // Ask-AI (AI3) also takes the center column: a question box
                         // over a cited answer, each citation navigating back to its
@@ -844,6 +858,21 @@ struct LibraryRootView: View {
                     .font(.system(size: 36))
                     .foregroundStyle(Color(MPColors.fgSubtle))
                 Text("Answers are drawn from your meetings, on-device, with citations.")
+                    .foregroundStyle(Color(MPColors.fgMuted))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 260)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if case .stats = scope {
+            // Meeting time owns the center column; the detail stays a quiet hint,
+            // the same shape Facts and Ask use.
+            VStack(spacing: 8) {
+                // DSN3: the token scale, not a raw literal, so the CI font guard
+                // stays green. The neighbouring hints are pre-token 36pt.
+                Image(systemName: "clock")
+                    .font(.mpText2XL)
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+                Text("Hours per workflow and how much of the talking was yours, over a range you pick.")
                     .foregroundStyle(Color(MPColors.fgMuted))
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 260)

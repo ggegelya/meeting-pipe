@@ -57,6 +57,7 @@ extension Coordinator {
         case "digest", "digests": return .digests
         case "facts": return .facts
         case "people": return .people
+        case "time", "stats": return .stats
         default: return nil
         }
     }

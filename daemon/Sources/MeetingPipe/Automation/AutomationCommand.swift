@@ -15,9 +15,10 @@ enum AutomationCommand: Equatable {
     case stop
     /// Start-or-stop, like the toggle hotkey.
     case toggle
-    /// Open the Library, optionally at a rail (`scope`: "ask" / "digests" / "facts";
-    /// nil or unknown opens the default All Meetings view). Raw string so the
-    /// parser stays free of the `LibraryScope` type; the router maps it.
+    /// Open the Library, optionally at a rail (`scope`: "ask" / "digests" / "facts"
+    /// / "people" / "time"; nil or unknown opens the default All Meetings view).
+    /// Raw string so the parser stays free of the `LibraryScope` type; the router
+    /// maps it.
     case openLibrary(scope: String?)
     /// Open the Library's Ask rail with `question` prefilled and run it (AI3).
     case ask(question: String)

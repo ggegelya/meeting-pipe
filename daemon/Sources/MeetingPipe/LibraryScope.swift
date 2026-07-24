@@ -24,6 +24,10 @@ enum LibraryScope: Hashable {
     /// meetings, the open actions they own, and last-seen. Like the three above,
     /// a view rather than a list filter.
     case people
+    /// Meeting-time projection (AI8): hours per workflow and your share of the
+    /// talking over a picked range. Like the four above, a view rather than a
+    /// list filter.
+    case stats
     case workflow(Workflow.ID)
     /// A saved smart folder (UX24): a base scope plus a persisted filter, resolved
     /// through `SavedSearchStore`. Like `.workflow` it carries the id rather than the
@@ -44,6 +48,7 @@ enum LibraryScope: Hashable {
         case .ask:         return "Ask"
         case .digests:     return "Digests"
         case .people:      return "People"
+        case .stats:       return "Meeting time"
         case .workflow:    return ""   // resolved at render time via the store
         case .saved:       return ""   // resolved at render time via the store
         }
@@ -61,6 +66,7 @@ enum LibraryScope: Hashable {
         case .ask:         return "bubble.left.and.text.bubble.right"
         case .digests:     return "calendar.badge.clock"
         case .people:      return "person.2"
+        case .stats:       return "clock"
         case .workflow:    return nil
         case .saved:       return "folder.badge.gearshape"
         }
@@ -117,7 +123,7 @@ enum LibraryScope: Hashable {
             return Self.resolveWorkflow(for: meeting, in: workflows)?.flags.ndaMode == true
         case .untagged:
             return (meeting.workflowName?.isEmpty ?? true)
-        case .facts, .ask, .digests, .people:
+        case .facts, .ask, .digests, .people, .stats:
             // Not a list filter: these projections render in their own center
             // column, so no meeting "belongs" to the scope.
             return false

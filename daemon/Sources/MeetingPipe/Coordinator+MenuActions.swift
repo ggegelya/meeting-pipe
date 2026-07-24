@@ -101,6 +101,13 @@ extension Coordinator {
         configStore?.summarizationBackend ?? "anthropic"
     }
 
+    /// AI8: `summarization.user_label`, the name stamped on the owner's own
+    /// diarized speaker. Empty when unset, and empty is meaningful: without it no
+    /// transcript can say which voice is the owner's.
+    var summarizationUserLabel: String {
+        configStore?.summarizationUserLabel ?? ""
+    }
+
     /// Show the first-run onboarding window unless it has already been completed
     /// (TECH-UX1). The flow requests each TCC one at a time, so the caller skips
     /// the startup permission prewarm on a fresh install.
