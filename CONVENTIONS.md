@@ -385,6 +385,27 @@ Swift's `MeetingSummary.jsonObject()` writes `group` as an explicit null when ab
 
 ---
 
+## Evidence anchors (FEAT10)
+
+`<stem>.summary.json` carries up to two anchors per summary point, each an `{"quote": "<verbatim phrase>", "t": <seconds>}`. They ride in two places, because the four sections have two shapes on disk:
+
+- **`actions[].evidence`**, inline, since an action is already an object.
+- **`evidence: {"summary"|"decisions"|"questions": [[Evidence]]}`**, a parallel map *index-aligned* with the string section it names, since turning `summary` into a list of objects would break the ADR 0014 lock and every publisher. `evidence["summary"][2]` backs `summary[2]`.
+
+Both are additive and optional: a pre-FEAT10 file has neither and round-trips unchanged, and every existing consumer ignores them.
+
+Three rules are load-bearing:
+
+**Alignment is repaired, not assumed.** The pydantic model trims or pads each section's anchor list to the section's length on every validate, and drops keys that are not one of the three sections. Readers still index-guard (`markdown._section_suffix`, Swift's `MeetingSummary.evidence(section:at:)`), because a hand-edited file reaches a renderer without passing through that repair, and a chip on the wrong bullet is worse than no chip.
+
+**Nothing unverified reaches disk.** `evidence.verify` re-checks every anchor against the real `<stem>.json` segments after generation and drops what does not resolve, so a stored anchor always points at a real row. Absence beats a wrong anchor everywhere, which is also why the local map-reduce path and the Apple Intelligence backend emit none at all rather than guessing.
+
+**Swift has to model the field.** `MeetingSummary.jsonObject()` re-serializes only what the struct knows about, and it is the writer behind *both* in-place `summary.json` rewrites (`FactsResolver.resolve`'s mark-done and `SummaryTab.persistEdit`'s correction save). An unmodeled field here is not preserved-by-default, it is deleted the first time the user ticks an action done. The correction save additionally *remaps*: `MeetingSummary.carryEvidence` keeps anchors on lines whose text the user did not touch and drops them from edited or newly added ones, because a quote backed the sentence that was there before.
+
+LANG1 deliberately does not see quotes. `summary_language._summary_sections` reads the section strings and `actions[].task`, never `evidence`, so a forced-language summary over a foreign-language meeting (English summary, Ukrainian quotes) is not flagged as divergent and repaired when it was already correct. Keeping quotes in their own field rather than inside the section strings is what makes that exclusion structural.
+
+---
+
 ## Cross-tree golden fixtures
 
 Every Swift-Python surface where both trees implement the same thing is pinned by one checked-in fixture that both suites read, so the two cannot agree with each other while disagreeing with reality. They live in `daemon/Tests/MeetingPipeTests/Fixtures/` and are read from the Python side by a repo-relative path.
@@ -394,7 +415,7 @@ Every Swift-Python surface where both trees implement the same thing is pinned b
 | `meta-contract/*.meta.json` (CI2) | `<stem>.meta.json` | `MetaContractFixtureTests` | `test_workflow_overlay.py` |
 | `chunking-golden.json` (ARCH4) | transcript chunking | `TranscriptChunkerTests` | `test_chunking.py` |
 | `json-extract-golden.json` (CI3) | balanced-JSON scan | `AppleIntelligenceSummarizerTests` | `test_ci3_parity.py` |
-| `summary-md-golden.json` (CI3) | summary markdown render, incl. AI10 action groups | `AppleIntelligenceSummarizerTests` | `test_ci3_parity.py` |
+| `summary-md-golden.json` (CI3) | summary markdown render, incl. AI10 action groups and FEAT10 evidence suffixes | `AppleIntelligenceSummarizerTests` | `test_ci3_parity.py` |
 | `transcript-corrections-golden.json` (PIPE9) | text-correction overlay | `TranscriptCorrectionStoreTests` | `test_transcript_corrections.py` |
 | `publish-result-golden.json` (CI4) | `<stem>.publish.json` + the `state` vocabulary | `CI4ContractFixtureTests` | `test_ci4_contracts.py` |
 | `prefetch-progress-golden.json` (CI4) | the progress stream above | `CI4ContractFixtureTests` | `test_ci4_contracts.py` |

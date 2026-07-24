@@ -35,7 +35,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from . import entry, storage, transcript_corrections
+from . import entry, events, evidence, storage, transcript_corrections
 from .backend_fallback import run_with_local_fallback
 from .config import (
     Config,
@@ -46,7 +46,7 @@ from .config import (
     require_env,
     with_backend_override,
 )
-from .markdown import render_summary_md
+from .markdown import render_markdown, render_summary_md
 from .markers import FLAGGED_INSTRUCTION, flagged_moments_block
 from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
@@ -444,8 +444,21 @@ def summarize(
     # FEAT3-UNDO / FEAT3-SEGMENT + PIPE9: if the user renamed/reassigned speakers or
     # edited transcript lines in the Library, apply both reversible overlays so the
     # regenerated summary + attendees reflect them. No overlay -> use <stem>.md as-is.
-    overlaid = transcript_corrections.overlaid_markdown(transcript_md)
-    transcript = overlaid if overlaid is not None else transcript_md.read_text(encoding="utf-8")
+    #
+    # FEAT10: when the structured transcript is readable, the model reads a
+    # timestamped render of it instead, so it can anchor each point to a turn.
+    # `<stem>.md` on disk is untouched, and a meeting with only markdown (a BYO
+    # paste, or a `<stem>.json` we cannot parse) falls back to exactly the old
+    # path and simply produces no evidence.
+    composed = transcript_corrections.overlaid_structured(transcript_md)
+    segments: list[dict] = []
+    if composed is not None:
+        structured, _ = composed
+        segments = structured.get("segments") or []
+        transcript = render_markdown(structured, timestamps=True)
+    else:
+        overlaid = transcript_corrections.overlaid_markdown(transcript_md)
+        transcript = overlaid if overlaid is not None else transcript_md.read_text(encoding="utf-8")
     if not transcript.strip():
         raise ValueError(f"Empty transcript: {transcript_md}")
 
@@ -492,6 +505,11 @@ def summarize(
         summary = _verify_and_repair_language(
             client, summary, system_prompt, transcript, cfg
         )
+        # FEAT10: and only then check the anchors, so the pass runs on whichever
+        # summary actually won the language repair. Every backend goes through
+        # here, including the ones that emit no evidence at all, so "a stored
+        # anchor resolves to a real segment" holds without exception.
+        summary = _verify_evidence(summary, segments, transcript_md)
     finally:
         # The plain `local` backend owns an mlx_lm.server subprocess;
         # close it so it does not outlive this CLI process, matching the
@@ -526,6 +544,33 @@ def summarize(
         model=model_used,
         adapter_path=_identify_adapter(client),
     )
+
+
+def _verify_evidence(
+    summary: MeetingSummary, segments: list[dict], transcript_md: Path
+) -> MeetingSummary:
+    """FEAT10: drop every anchor that does not resolve against the transcript.
+
+    Thin wrapper over `evidence.verify` so `summarize` keeps one line and the
+    event emission lives next to the decision it reports. Emitted only when the
+    summary carried anchors at all, so the ~half of backends that emit none (the
+    local map-reduce path, Apple Intelligence) do not fill the log with zeroes.
+    """
+    result = evidence.verify(summary, segments)
+    if result.kept or result.dropped:
+        events.emit(
+            "pipeline",
+            "evidence_verified",
+            stem=transcript_md.stem,
+            kept=result.kept,
+            dropped=result.dropped,
+            segments=len(segments),
+        )
+        log.info(
+            "FEAT10: kept %d evidence anchor(s), dropped %d that did not resolve",
+            result.kept, result.dropped,
+        )
+    return result.summary
 
 
 def _verify_and_repair_language(

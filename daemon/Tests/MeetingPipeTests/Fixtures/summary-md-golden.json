@@ -155,6 +155,82 @@
         "detected_language": "en"
       },
       "expected": "# Weekly review (2026-06-27 to 2026-07-04)\n\n_Language: en_\n\n## Summary\n- 2 commitments are past due in Standup\n\n## Decisions\n1. Ship on Friday (Client sync)\n\n## Action Items\n\n### Standup\n- [ ] **Alice**: Email the vendor - due 2026-06-01  _(confidence: high)_\n- [ ] **_unassigned_**: Draft the SOW  _(confidence: medium)_\n\n### Client sync\n- [ ] **Bob**: Book the room - due 2026-07-05  _(confidence: low)_\n\n## Action scope\n- Showing 3 of 40 open action(s) from the last 7 day(s), across 2 of 6 group(s).\n- Standup: 2 of 31 shown\n"
+    },
+    {
+      "name": "evidence_feat10",
+      "input": {
+        "title": "Export sync",
+        "attendees": [
+          "Alice",
+          "Bob"
+        ],
+        "summary": [
+          "Agreed the export ships Friday.",
+          "SOP revision is in flight."
+        ],
+        "decisions": [
+          "Ship the export on Friday."
+        ],
+        "actions": [
+          {
+            "task": "Send revised SOP to QA",
+            "owner": "Alice",
+            "due": "2026-08-01",
+            "confidence": "high",
+            "resolved": false,
+            "evidence": [
+              {
+                "quote": "send the revised SOP to QA",
+                "t": 40.0
+              }
+            ]
+          },
+          {
+            "task": "Book the review room",
+            "owner": null,
+            "due": null,
+            "confidence": "low",
+            "resolved": false,
+            "evidence": []
+          }
+        ],
+        "questions": [
+          "Is the QMS export green?"
+        ],
+        "detected_language": "en",
+        "evidence": {
+          "summary": [
+            [
+              {
+                "quote": "We will ship the export on Friday",
+                "t": 12.0
+              }
+            ],
+            []
+          ],
+          "decisions": [
+            [
+              {
+                "quote": "ship the export on Friday",
+                "t": 12.0
+              },
+              {
+                "quote": "Friday it is",
+                "t": 3723.0
+              }
+            ]
+          ],
+          "questions": [
+            [
+              {
+                "quote": "Is the QMS export green yet",
+                "t": 754.0
+              }
+            ]
+          ]
+        }
+      },
+      "expected": "# Export sync\n\n**Attendees:** Alice, Bob\n\n_Language: en_\n\n## Summary\n- Agreed the export ships Friday. [0:12]\n- SOP revision is in flight.\n\n## Decisions\n1. Ship the export on Friday. [0:12, 1:02:03]\n\n## Action Items\n- [ ] **Alice**: Send revised SOP to QA - due 2026-08-01  _(confidence: high)_ [0:40]\n- [ ] **_unassigned_**: Book the review room  _(confidence: low)_\n\n## Open Questions\n- Is the QMS export green? [12:34]\n"
     }
   ]
 }

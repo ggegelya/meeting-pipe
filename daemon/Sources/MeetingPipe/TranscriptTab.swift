@@ -213,6 +213,13 @@ struct TranscriptTab: View {
     @ObservedObject var playback: AudioPlaybackController
     @EnvironmentObject private var libraryModel: LibraryWindowModel
     let meeting: Meeting
+    /// FEAT10: a time another tab asked us to reveal, set when the reader clicks
+    /// an evidence chip in the Summary tab. Consumed (set back to nil) once the
+    /// row has been scrolled to, so the same chip can be clicked again. A binding
+    /// rather than a one-shot value because the tab switch and the transcript
+    /// load race: the request outlives the switch and is honoured whenever the
+    /// segments actually arrive. AUT02's deep link rides this same seam.
+    @Binding var pendingSeek: Double?
 
     @State private var segments: [TranscriptSegment] = []
     @State private var language: String? = nil
@@ -381,6 +388,8 @@ struct TranscriptTab: View {
                 voiceprintLabels: voiceprintLabels,
                 cast: cast,
                 playback: playback,
+                pendingSeek: pendingSeek,
+                onSeekHandled: { pendingSeek = nil },
                 onEdit: { seg in editingSegment = seg },
                 onName: { label in namingTarget = NamingTarget(label: label) },
                 onRename: { label, current in
@@ -509,6 +518,10 @@ private struct TranscriptList: View {
     /// the open "Assign to..." submenu mid-interaction.
     let cast: [CastMember]
     @ObservedObject var playback: AudioPlaybackController
+    /// FEAT10: a time to reveal, from an evidence chip in the Summary tab.
+    let pendingSeek: Double?
+    /// Called once the pending seek has been resolved to a row and scrolled to.
+    let onSeekHandled: () -> Void
     /// Called on "Edit text" context-menu action; the host owns sheet presentation.
     let onEdit: (TranscriptSegment) -> Void
     /// Called on "Name this speaker" (FEAT3-ROSTER) with the raw speaker label.
@@ -528,6 +541,13 @@ private struct TranscriptList: View {
     @State private var activeIndex: Int? = nil
     /// Multi-segment selection for reassignment (FEAT3-SEGMENT); layered on Cmd/Shift-click so a plain click still seeks.
     @State private var selection = SegmentSelection()
+    /// FEAT10: the row a just-followed evidence chip pointed at, held briefly so
+    /// the reader's eye can find it after the jump, then cleared.
+    @State private var citedIndex: Int? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// How long the cited row stays highlighted after a chip jump.
+    private static let citationFlashSeconds: UInt64 = 2
 
     var body: some View {
         let markerMap = TranscriptMarkerLayout.assign(markers: markers, to: segments)
@@ -566,6 +586,7 @@ private struct TranscriptList: View {
                             } ?? false,
                             isActive: seg.index == activeIndex,
                             isSelected: selection.contains(seg.index),
+                            isCited: seg.index == citedIndex,
                             assignTargets: MeetingCast.assignTargets(
                                 for: seg, cast: cast, overlay: overlay
                             ),
@@ -617,8 +638,39 @@ private struct TranscriptList: View {
                     }
                 }
             }
+            // FEAT10: honour a citation jump both when the request arrives while
+            // this tab is already up, and when the tab was only just switched to
+            // (the request is set before this view exists, so `onAppear` is the
+            // one that fires then).
+            .onAppear { reveal(pendingSeek, proxy: proxy) }
+            .onChange(of: pendingSeek) { _, t in reveal(t, proxy: proxy) }
         }
         .textSelection(.enabled)
+    }
+
+    /// FEAT10: scroll the row containing `time` into view and hold a highlight on
+    /// it briefly. The time-to-row mapping is the same binary search the play head
+    /// uses, so a chip lands exactly where playback would.
+    private func reveal(_ time: Double?, proxy: ScrollViewProxy) {
+        guard let time, !segments.isEmpty else { return }
+        // The verifier snaps every stored anchor to a real segment start, so the
+        // lookup effectively always hits; falling back to the first row keeps a
+        // hand-edited summary from doing nothing at all.
+        let position = TranscriptSegmentLookup.index(at: time, in: segments) ?? 0
+        let id = segments[position].index
+        if reduceMotion {
+            proxy.scrollTo(id, anchor: .center)
+        } else {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        }
+        citedIndex = id
+        onSeekHandled()
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.citationFlashSeconds * 1_000_000_000)
+            if citedIndex == id { citedIndex = nil }
+        }
     }
 }
 
@@ -673,6 +725,9 @@ private struct TranscriptRow: View {
     let isActive: Bool
     /// Selected for a multi-segment reassignment (FEAT3-SEGMENT).
     let isSelected: Bool
+    /// FEAT10: this is the row a just-followed evidence chip cited. Held for a
+    /// couple of seconds after the jump so the reader can see where they landed.
+    let isCited: Bool
     /// The other people in this meeting, for the "Assign to..." menu.
     let assignTargets: [CastMember]
     /// True when this segment carries a per-segment reassignment (offers "Reset").
@@ -736,7 +791,10 @@ private struct TranscriptRow: View {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(isActive
                           ? Color.mpSignal.opacity(0.18)
-                          : Color.clear)
+                          // FEAT10: the citation landing is a lighter wash than
+                          // the play-head fill, so the two never read as the
+                          // same state when both happen to be on screen.
+                          : (isCited ? Color.mpSignal.opacity(0.10) : Color.clear))
                     .padding(.horizontal, 8)
             )
             .contentShape(Rectangle())

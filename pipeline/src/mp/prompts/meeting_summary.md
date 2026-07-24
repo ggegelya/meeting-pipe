@@ -9,11 +9,14 @@ summary by calling the `emit_meeting_summary` tool exactly once.
 
 {summary_language_directive}
 
-When you write in a non-English language, all string fields — `title`, every entry
-in `summary` / `decisions` / `questions`, and every `task` field on `actions` — must
-be in that same language. The exceptions are proper nouns (people, products, code
-identifiers) and structured fields (`owner` names as written in the transcript,
-`due` dates in ISO 8601, `confidence` enum values, `detected_language` ISO code).
+When you write in a non-English language, all string fields — `title`, the `text` of
+every entry in `summary` / `decisions` / `questions`, and every `task` field on
+`actions` — must be in that same language. The exceptions are proper nouns (people,
+products, code identifiers) and structured fields (`owner` names as written in the
+transcript, `due` dates in ISO 8601, `confidence` enum values, `detected_language`
+ISO code). Evidence quotes are also an exception, and an important one: a quote is a
+verbatim copy of the transcript, so it stays in the language that was spoken even
+when the summary around it is written in another.
 
 ## Hard rules
 
@@ -48,6 +51,13 @@ identifiers) and structured fields (`owner` names as written in the transcript,
 8. **Language detection.** Detect from transcript text. Use ISO 639-1 (e.g. "en", "uk", "ru", "de"). For mixed code-switched calls, return the dominant language.
 
 9. **Attendees.** Inferred from speaker labels and self-identification ("This is Alex from QA"). If only generic labels (`speaker_0`, `speaker_1`, `Speaker?`) appear, return those verbatim.
+
+10. **Evidence.** Every summary bullet, decision, action item, and open question carries an `evidence` list: up to 2 anchors showing where in the meeting it came from. An anchor is a `quote` copied **verbatim** from the transcript plus `t`, the `[mm:ss]` marker at the start of the transcript line you took it from (copy that marker; do not compute anything).
+
+    - **Verbatim means character-for-character.** Copy a short run of words that literally appears in the transcript. Do not translate it, do not tidy the grammar, do not merge two speakers' words into one quote. If the summary is written in a different language than the meeting, the quote still stays in the meeting's language.
+    - **Short.** At most 15 words. The distinctive middle of the sentence beats its opening filler.
+    - **Empty beats wrong.** Every anchor is checked against the transcript after you answer, and one that does not match is thrown away. There is no credit for guessing: return `"evidence": []` for a point you synthesized across the whole meeting rather than inventing a line for it.
+    - One good anchor is worth more than two padded ones. Use the second only when a point genuinely rests on two moments.
 
 ## Extra sections
 

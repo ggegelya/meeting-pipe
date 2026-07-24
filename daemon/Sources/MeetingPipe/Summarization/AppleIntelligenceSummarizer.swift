@@ -358,9 +358,22 @@ struct AppleIntelligenceSummarizer {
         }
     }
 
+    /// FEAT10: the ` [12:34]` (or ` [12:34, 18:22]`) tail a cited point carries,
+    /// mirroring `markdown.evidence_suffix`. Timestamps only, never the quote:
+    /// the phrase is in-app hover detail, not note content.
+    static func evidenceSuffix(_ anchors: [MeetingSummary.Evidence]) -> String {
+        guard !anchors.isEmpty else { return "" }
+        return " [" + anchors.map { TranscriptDisplay.timestamp($0.t) }.joined(separator: ", ") + "]"
+    }
+
     /// Human-readable rendering mirroring `markdown.render_summary_md`, using a
     /// plain hyphen for the due-date separator (the project bans em-dashes).
     /// Pinned by the CI3 golden fixture.
+    ///
+    /// This backend emits no evidence of its own (FEAT10 v1: absence over wrong
+    /// anchors on the on-device path), but it is still the renderer every summary
+    /// goes through on this side, so it has to render anchors written by any
+    /// other backend.
     static func renderMarkdown(_ s: MeetingSummary) -> String {
         var lines: [String] = ["# \(s.title)", ""]
         if !s.attendees.isEmpty {
@@ -370,11 +383,15 @@ struct AppleIntelligenceSummarizer {
         lines.append("_Language: \(s.detectedLanguage ?? "en")_")
         lines.append("")
         lines.append("## Summary")
-        for bullet in s.summary { lines.append("- \(bullet)") }
+        for (i, bullet) in s.summary.enumerated() {
+            lines.append("- \(bullet)\(evidenceSuffix(s.evidence(section: "summary", at: i)))")
+        }
         lines.append("")
         if !s.decisions.isEmpty {
             lines.append("## Decisions")
-            for (i, d) in s.decisions.enumerated() { lines.append("\(i + 1). \(d)") }
+            for (i, d) in s.decisions.enumerated() {
+                lines.append("\(i + 1). \(d)\(evidenceSuffix(s.evidence(section: "decisions", at: i)))")
+            }
             lines.append("")
         }
         if !s.actions.isEmpty {
@@ -392,14 +409,19 @@ struct AppleIntelligenceSummarizer {
                     let owner = (a.owner?.isEmpty == false) ? a.owner! : "_unassigned_"
                     let due = (a.due?.isEmpty == false) ? " - due \(a.due!)" : ""
                     let box = a.resolved ? "[x]" : "[ ]"
-                    lines.append("- \(box) **\(owner)**: \(a.task)\(due)  _(confidence: \(a.confidence))_")
+                    let cite = evidenceSuffix(a.evidence)
+                    lines.append(
+                        "- \(box) **\(owner)**: \(a.task)\(due)  _(confidence: \(a.confidence))_\(cite)"
+                    )
                 }
             }
             lines.append("")
         }
         if !s.questions.isEmpty {
             lines.append("## Open Questions")
-            for q in s.questions { lines.append("- \(q)") }
+            for (i, q) in s.questions.enumerated() {
+                lines.append("- \(q)\(evidenceSuffix(s.evidence(section: "questions", at: i)))")
+            }
             lines.append("")
         }
         // WF7: workflow-defined extra sections, mirroring markdown.render_summary_md.

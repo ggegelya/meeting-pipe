@@ -79,6 +79,36 @@ def apply_corrections(segments: list[dict], corrections: dict[int, str]) -> bool
     return changed
 
 
+def overlaid_structured(transcript_md: Path) -> tuple[dict, bool] | None:
+    """The structured ``<stem>.json`` with BOTH reversible overlays applied, plus
+    whether either actually changed anything. None when the file is missing or
+    unreadable.
+
+    The composed *data*, where ``overlaid_markdown`` is the composed *view*.
+    FEAT10 needs the segments themselves (their times and text) to render a
+    timestamped transcript for the model and then to verify the anchors that come
+    back, and both have to see exactly what the Library shows, not the raw
+    pipeline text.
+    """
+    from . import speaker_overlay
+
+    overlay = speaker_overlay.read_overlay(transcript_md)
+    corrections = read_corrections(transcript_md)
+    json_path = transcript_md.with_suffix(".json")
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    segments = data.get("segments") or []
+    changed = speaker_overlay.apply_overlay(segments, overlay)
+    # `or changed` order matters: apply_corrections must always run, not be
+    # short-circuited away when the speaker overlay already reported a change.
+    changed = apply_corrections(segments, corrections) or changed
+    return data, changed
+
+
 def overlaid_markdown(transcript_md: Path) -> str | None:
     """The transcript markdown re-rendered with BOTH reversible overlays applied:
     the speaker-label overlay (FEAT3) and these text corrections (PIPE9). Returns
@@ -91,16 +121,10 @@ def overlaid_markdown(transcript_md: Path) -> str | None:
     corrections = read_corrections(transcript_md)
     if speaker_overlay.is_empty(overlay) and is_empty(corrections):
         return None
-    json_path = transcript_md.with_suffix(".json")
-    try:
-        data = json.loads(json_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    composed = overlaid_structured(transcript_md)
+    if composed is None:
         return None
-    segments = data.get("segments") or []
-    changed = speaker_overlay.apply_overlay(segments, overlay)
-    # `or changed` order matters: apply_corrections must always run, not be
-    # short-circuited away when the speaker overlay already reported a change.
-    changed = apply_corrections(segments, corrections) or changed
+    data, changed = composed
     if not changed:
         return None
     from .markdown import render_markdown

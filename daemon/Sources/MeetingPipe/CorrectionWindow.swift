@@ -157,6 +157,12 @@ struct EditableAction: Identifiable, Equatable {
     // Carried through the editor untouched (no resolve control here; that is
     // DV1's surface) so a text edit does not reopen a resolved action. AI1.
     var resolved: Bool = false
+    // FEAT10: the item's verified anchors, plus the task text they were verified
+    // against. The pair is what lets the save decide whether they still apply:
+    // an untouched task keeps them, a rewritten one drops them. A row the user
+    // adds in the editor has neither, so it starts uncited.
+    var evidence: [MeetingSummary.Evidence] = []
+    var originalTask: String = ""
 }
 
 final class CorrectionViewModel: ObservableObject {
@@ -197,7 +203,9 @@ final class CorrectionViewModel: ObservableObject {
                 owner: $0.owner ?? "",
                 due: $0.due ?? "",
                 confidence: $0.confidence,
-                resolved: $0.resolved
+                resolved: $0.resolved,
+                evidence: $0.evidence,
+                originalTask: $0.task
             )
         }
     }
@@ -226,21 +234,66 @@ final class CorrectionViewModel: ObservableObject {
                     owner: a.owner.isEmpty ? nil : a.owner,
                     due: a.due.isEmpty ? nil : a.due,
                     confidence: a.confidence.isEmpty ? "medium" : a.confidence,
-                    resolved: a.resolved
+                    resolved: a.resolved,
+                    // FEAT10: the quote backed the task as it was written. Rewrite
+                    // the task and the citation no longer supports it, so it goes.
+                    // Owner / due / confidence edits are not text edits and keep it.
+                    evidence: a.task == a.originalTask ? a.evidence : []
                 )
             }
+        let summaryOut = Self.trimmed(summary)
+        let decisionsOut = Self.trimmed(decisions)
+        let questionsOut = Self.trimmed(questions)
         return MeetingSummary(
             title: title,
-            summary: Self.trimmed(summary),
-            decisions: Self.trimmed(decisions),
+            summary: summaryOut,
+            decisions: decisionsOut,
             actions: items,
-            questions: Self.trimmed(questions),
+            questions: questionsOut,
             attendees: Self.trimmed(attendees),
             detectedLanguage: detectedLanguage,
             // WF7: the editor renders extra sections read-only; carry the
             // originals through unchanged so a correction save never drops them.
-            extraSections: originalSummary.extraSections
+            extraSections: originalSummary.extraSections,
+            // FEAT10: rebuild the index alignment against the edited sections,
+            // since the editor freely adds, deletes, and reorders rows.
+            evidence: Self.remappedEvidence(
+                original: originalSummary,
+                summary: summaryOut,
+                decisions: decisionsOut,
+                questions: questionsOut
+            )
         )
+    }
+
+    /// FEAT10: the anchors that survive a correction save, per string section.
+    private static func remappedEvidence(
+        original: MeetingSummary,
+        summary: [String],
+        decisions: [String],
+        questions: [String]
+    ) -> [String: [[MeetingSummary.Evidence]]] {
+        let edited = ["summary": summary, "decisions": decisions, "questions": questions]
+        var out: [String: [[MeetingSummary.Evidence]]] = [:]
+        for section in MeetingSummary.evidenceSections {
+            guard let anchors = original.evidence[section], let lines = edited[section] else { continue }
+            let carried = MeetingSummary.carryEvidence(
+                original: originalLines(of: original, section: section),
+                anchors: anchors,
+                edited: lines
+            )
+            if carried.contains(where: { !$0.isEmpty }) { out[section] = carried }
+        }
+        return out
+    }
+
+    private static func originalLines(of summary: MeetingSummary, section: String) -> [String] {
+        switch section {
+        case "summary":   return summary.summary
+        case "decisions": return summary.decisions
+        case "questions": return summary.questions
+        default:          return []
+        }
     }
 
     private static func trimmed(_ items: [String]) -> [String] {

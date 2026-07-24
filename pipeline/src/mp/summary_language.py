@@ -112,7 +112,15 @@ def expected_summary_language(summary_language: str, transcript: str) -> str | N
 def _summary_sections(summary: MeetingSummary) -> dict[str, list[str]]:
     """The language-bearing prose of a summary, grouped by section. Owners, dates,
     attendees, and enums are excluded: they carry proper nouns and codes, not
-    running-language signal."""
+    running-language signal.
+
+    FEAT10 evidence quotes are excluded too, and deliberately. A quote is a
+    verbatim copy of the transcript, so under a forced `summary_language` (an
+    English summary over a Ukrainian meeting) the quotes are *supposed* to read as
+    the other language. Feeding them to the detector would flag every section they
+    sit in and trigger a repair of a summary that was already correct. They live
+    in their own field rather than inside the section strings, so this exclusion
+    is structural; keep it that way."""
     return {
         "title": [summary.title],
         "summary": list(summary.summary),

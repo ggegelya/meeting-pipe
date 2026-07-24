@@ -12,6 +12,9 @@ struct SummaryTab: View {
     let meeting: Meeting
     /// Bumped by the detail-pane `...` menu's "Edit summary" to enter edit mode (TECH-UI-5).
     var editToken: Int = 0
+    /// FEAT10: an evidence chip was clicked; take the reader to that transcript
+    /// row. The host owns the tab switch, since this tab cannot see the tab bar.
+    var onJumpToTranscript: (Double) -> Void = { _ in }
 
     /// Loaded off-main on stem change. Caching avoids disk IO on the main thread, which pinned it during recording.
     @State private var loadedSummary: MeetingSummary? = nil
@@ -101,7 +104,7 @@ struct SummaryTab: View {
                     reprocessPane
                 } else if let summary = loadedSummary {
                     VStack(alignment: .leading, spacing: 0) {
-                        SummaryRenderedView(summary: summary)
+                        SummaryRenderedView(summary: summary, onCite: onJumpToTranscript)
                         reprocessBar
                     }
                 } else if loadedForStem == meeting.stem {
@@ -123,13 +126,13 @@ struct SummaryTab: View {
             Label("Current", systemImage: "doc.text")
                 .font(.headline)
                 .foregroundStyle(Color(MPColors.fgMuted))
-            SummaryRenderedView(summary: current)
+            SummaryRenderedView(summary: current, onCite: onJumpToTranscript)
             Divider()
             // PRODUCT "no sparkle" rule: a plain inspect glyph, label "Candidate".
             Label("Candidate", systemImage: "doc.text.magnifyingglass")
                 .font(.headline)
                 .foregroundStyle(.mpSignal)
-            SummaryRenderedView(summary: candidate)
+            SummaryRenderedView(summary: candidate, onCite: onJumpToTranscript)
         }
         .padding(.bottom, 8)
     }

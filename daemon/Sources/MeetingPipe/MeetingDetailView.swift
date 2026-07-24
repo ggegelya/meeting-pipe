@@ -28,6 +28,12 @@ struct MeetingDetailView: View {
     /// Corrections moved from a tab to a sheet off the "..." menu (DSN2).
     @State var showCorrectionsSheet = false
 
+    /// FEAT10: a transcript time the Summary tab asked us to reveal, set when an
+    /// evidence chip is clicked. Lives here because the jump crosses tabs: the
+    /// Summary tab raises it, the tab switch happens, and the Transcript tab
+    /// consumes it once its segments are loaded.
+    @State var pendingTranscriptSeek: Double? = nil
+
     /// Shared across Transcript (A6) and Audio (A7) so click-to-seek keeps the same play head when flipping tabs. Re-attached on stem change via `.task(id:)`.
     @StateObject var playback = AudioPlaybackController()
 
@@ -140,12 +146,22 @@ struct MeetingDetailView: View {
     // MARK: Tabs
 
     private var summaryTab: some View {
-        SummaryTab(store: libraryModel.meetingStore, meeting: meeting, editToken: summaryEditToken)
-            .environmentObject(libraryModel)
+        SummaryTab(
+            store: libraryModel.meetingStore,
+            meeting: meeting,
+            editToken: summaryEditToken,
+            onJumpToTranscript: { time in
+                // Order matters: raise the request first, then switch, so the
+                // Transcript tab already sees it in its `onAppear`.
+                pendingTranscriptSeek = time
+                selectedTab = Tab.transcript.rawValue
+            }
+        )
+        .environmentObject(libraryModel)
     }
 
     private var transcriptTab: some View {
-        TranscriptTab(playback: playback, meeting: meeting)
+        TranscriptTab(playback: playback, meeting: meeting, pendingSeek: $pendingTranscriptSeek)
     }
 
     private var audioTab: some View {
