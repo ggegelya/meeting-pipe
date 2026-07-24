@@ -23,7 +23,7 @@ from . import entry
 from .config import Config
 from .publish_router import EXIT_PUBLISH_FAILED, all_sinks_failed, fanout
 from .schemas import ActionItem, ExtraSection, MeetingSummary
-from .markdown import render_summary_md
+from .markdown import deeplink_stem, render_summary_md
 
 log = logging.getLogger("mp.publish_from_paste")
 
@@ -263,7 +263,13 @@ def publish_from_paste(transcript_md: Path, cfg: Config | None = None) -> dict:
     # Re-render the summary.md from the parsed form so the published body
     # matches what we publish: preserves user content but drops whatever
     # ad-hoc styling the LLM produced.
-    summary_md_path.write_text(render_summary_md(summary), encoding="utf-8")
+    # AUTO2: `deeplink_stem` so this writer spells the stored `.summary.md` the
+    # same way `summarize` does. A pasted summary carries no anchors today, so
+    # the rendered text is unchanged; wiring it here is what keeps the two
+    # writers of one file from drifting the day it can.
+    summary_md_path.write_text(
+        render_summary_md(summary, deeplink_stem(transcript_md)), encoding="utf-8"
+    )
 
     # Route through the fanout so every configured sink receives the summary,
     # not just Notion (PIPE2/AUD-15). An NDA workflow still drops the Notion

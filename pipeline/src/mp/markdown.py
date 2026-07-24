@@ -10,17 +10,25 @@ writes it directly after recording); the render becomes the human-readable
 summarizer, `publish-from-paste`, `digest`, and the LAN and filesystem sinks.
 The filesystem sink used to carry its own copy of this function to avoid
 importing a private helper from `summarize`; the copy drifted (PIPE7).
+
+`deeplink_url` (AUTO2) is the third shared piece: the `meetingpipe://open`
+address of one transcript moment, which every Markdown-file sink wraps its
+`[mm:ss]` citations in so a published note jumps back into the app.
 """
 from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from .schemas import ActionItem, Evidence, MeetingSummary
 
 _UNSET: object = object()
 _UNKNOWN_SPEAKER = "Speaker?"
+
+# AUTO2: the daemon's registered URL scheme (Swift's `AutomationCommand.scheme`).
+_SCHEME = "meetingpipe"
 
 
 def format_timestamp(seconds: float) -> str:
@@ -143,7 +151,52 @@ def _action_runs(actions: list[ActionItem]) -> list[tuple[str | None, list[Actio
     return runs
 
 
-def evidence_suffix(anchors: list[Evidence]) -> str:
+def deeplink_seconds(seconds: float) -> str:
+    """AUTO2: the `t=` value of a `meetingpipe://open` link.
+
+    Millisecond precision, trailing zeros stripped, so `754.0` reads `754` and a
+    snapped anchor keeps its fraction. The fraction is load-bearing: Swift's
+    `TranscriptSegmentLookup` picks the last segment starting at or before `t`,
+    so truncating an anchor snapped to a segment start at 754.32 would land the
+    jump on the row before it. Clamped at zero, matching `format_timestamp`, so
+    the link and the label it wears can never disagree about a negative.
+    """
+    text = f"{max(0.0, float(seconds)):.3f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def deeplink_url(stem: str, seconds: float) -> str:
+    """AUTO2: `meetingpipe://open?stem=<stem>&t=<seconds>`, the link a published
+    `[mm:ss]` wears.
+
+    Parsed by Swift's `AutomationCommand.parse`, which opens the Library at that
+    meeting's Transcript tab and scrolls to the cited row. The stem is fully
+    percent-encoded (nothing but the unreserved set survives), because it also
+    has to be safe inside a Markdown link target, where a bare `)` would end the
+    link early.
+    """
+    return f"{_SCHEME}://open?stem={quote(stem, safe='')}&t={deeplink_seconds(seconds)}"
+
+
+def deeplink_stem(transcript_md: Path | None) -> str | None:
+    """AUTO2: the recording stem a `meetingpipe://open` link needs, from the
+    transcript path a publisher was handed, or None when this publish has no
+    recording behind it (a summary published without a transcript invents a stem
+    that addresses no Library row, so it gets plain timestamps instead of links
+    that would all miss).
+
+    Strips a trailing `.summary`, since a caller may pass `<stem>.summary.md`;
+    the same convention `publish_obsidian._compute_note_path` follows.
+    """
+    if transcript_md is None:
+        return None
+    stem = transcript_md.stem
+    if stem.endswith(".summary"):
+        stem = stem[: -len(".summary")]
+    return stem or None
+
+
+def evidence_suffix(anchors: list[Evidence], stem: str | None = None) -> str:
     """FEAT10: the ` [12:34]` (or ` [12:34, 18:22]`) tail a cited point carries in
     a published note.
 
@@ -151,13 +204,23 @@ def evidence_suffix(anchors: list[Evidence]) -> str:
     is in-app hover detail, so a note stays readable prose rather than turning
     into a transcript with citations bolted on. Empty for an uncited point, so an
     evidence-free summary renders byte-identically to before.
+
+    AUTO2: with a `stem`, each timestamp becomes a `[12:34](meetingpipe://…)`
+    link that opens the Library on that transcript row. The link syntax eats the
+    brackets rather than nesting inside them, because a leading `[[` is an
+    Obsidian wikilink and the note is read in Obsidian first. Notion never passes
+    a stem: custom schemes are not reliably clickable in its rich text.
     """
     if not anchors:
         return ""
-    return " [" + ", ".join(format_timestamp(a.t) for a in anchors) + "]"
+    if stem is None:
+        return " [" + ", ".join(format_timestamp(a.t) for a in anchors) + "]"
+    return " " + ", ".join(
+        f"[{format_timestamp(a.t)}]({deeplink_url(stem, a.t)})" for a in anchors
+    )
 
 
-def _section_suffix(s: MeetingSummary, section: str, index: int) -> str:
+def _section_suffix(s: MeetingSummary, section: str, index: int, stem: str | None) -> str:
     """`evidence_suffix` for one entry of a string section, index-guarded.
 
     The schema keeps the anchor list aligned with the section, but a hand-edited
@@ -165,15 +228,20 @@ def _section_suffix(s: MeetingSummary, section: str, index: int) -> str:
     on the wrong bullet is worse than no citation.
     """
     anchors = s.evidence.get(section) or []
-    return evidence_suffix(anchors[index]) if index < len(anchors) else ""
+    return evidence_suffix(anchors[index], stem) if index < len(anchors) else ""
 
 
-def render_summary_md(s: MeetingSummary) -> str:
+def render_summary_md(s: MeetingSummary, deeplink_stem: str | None = None) -> str:
     """Render a validated summary into the human-readable `<stem>.summary.md`.
 
-    FEAT10: a point with verified anchors carries a ` [mm:ss]` suffix. The Swift
-    mirror is `AppleIntelligenceSummarizer.renderMarkdown`, pinned by the CI3
-    `summary-md-golden.json` fixture, so the two cannot drift.
+    FEAT10: a point with verified anchors carries a ` [mm:ss]` suffix. AUTO2:
+    passing `deeplink_stem` turns each of those into a `meetingpipe://open` link
+    back to the transcript row it cites, which is what the Markdown-file sinks
+    (obsidian / filesystem / lan) and the stored `<stem>.summary.md` do. A caller
+    without a stem (a digest, which spans meetings) renders the plain form.
+
+    The Swift mirror is `AppleIntelligenceSummarizer.renderMarkdown`, pinned by
+    the CI3 `summary-md-golden.json` fixture, so the two cannot drift.
     """
     lines: list[str] = [f"# {s.title}", ""]
     if s.attendees:
@@ -184,13 +252,13 @@ def render_summary_md(s: MeetingSummary) -> str:
 
     lines.append("## Summary")
     for i, bullet in enumerate(s.summary):
-        lines.append(f"- {bullet}{_section_suffix(s, 'summary', i)}")
+        lines.append(f"- {bullet}{_section_suffix(s, 'summary', i, deeplink_stem)}")
     lines.append("")
 
     if s.decisions:
         lines.append("## Decisions")
         for i, d in enumerate(s.decisions):
-            lines.append(f"{i + 1}. {d}{_section_suffix(s, 'decisions', i)}")
+            lines.append(f"{i + 1}. {d}{_section_suffix(s, 'decisions', i, deeplink_stem)}")
         lines.append("")
 
     if s.actions:
@@ -207,7 +275,7 @@ def render_summary_md(s: MeetingSummary) -> str:
                 owner = a.owner or "_unassigned_"
                 due = f" - due {a.due}" if a.due else ""
                 box = "[x]" if a.resolved else "[ ]"
-                cite = evidence_suffix(a.evidence)
+                cite = evidence_suffix(a.evidence, deeplink_stem)
                 lines.append(
                     f"- {box} **{owner}**: {a.task}{due}  _(confidence: {a.confidence})_{cite}"
                 )
@@ -216,7 +284,7 @@ def render_summary_md(s: MeetingSummary) -> str:
     if s.questions:
         lines.append("## Open Questions")
         for i, q in enumerate(s.questions):
-            lines.append(f"- {q}{_section_suffix(s, 'questions', i)}")
+            lines.append(f"- {q}{_section_suffix(s, 'questions', i, deeplink_stem)}")
         lines.append("")
 
     # WF7: workflow-defined extra sections, after the standard ones. Skip an

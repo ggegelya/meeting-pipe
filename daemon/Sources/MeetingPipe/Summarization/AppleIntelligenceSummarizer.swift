@@ -353,7 +353,7 @@ struct AppleIntelligenceSummarizer {
             options: [.prettyPrinted, .withoutEscapingSlashes]
         )
         try data.write(to: jsonURL)
-        if let md = renderMarkdown(summary).data(using: .utf8) {
+        if let md = renderMarkdown(summary, deeplinkStem: stem).data(using: .utf8) {
             try md.write(to: mdURL)
         }
     }
@@ -361,10 +361,54 @@ struct AppleIntelligenceSummarizer {
     /// FEAT10: the ` [12:34]` (or ` [12:34, 18:22]`) tail a cited point carries,
     /// mirroring `markdown.evidence_suffix`. Timestamps only, never the quote:
     /// the phrase is in-app hover detail, not note content.
-    static func evidenceSuffix(_ anchors: [MeetingSummary.Evidence]) -> String {
+    ///
+    /// AUTO2: with a `deeplinkStem`, each timestamp becomes a
+    /// `[12:34](meetingpipe://open?stem=…&t=…)` link back into the app. The link
+    /// syntax eats the brackets rather than nesting inside them, because a
+    /// leading `[[` is an Obsidian wikilink.
+    static func evidenceSuffix(
+        _ anchors: [MeetingSummary.Evidence], deeplinkStem: String? = nil
+    ) -> String {
         guard !anchors.isEmpty else { return "" }
-        return " [" + anchors.map { TranscriptDisplay.timestamp($0.t) }.joined(separator: ", ") + "]"
+        guard let stem = deeplinkStem else {
+            return " [" + anchors.map { TranscriptDisplay.timestamp($0.t) }.joined(separator: ", ") + "]"
+        }
+        return " " + anchors.map {
+            "[\(TranscriptDisplay.timestamp($0.t))](\(deeplinkURL(stem: stem, seconds: $0.t)))"
+        }.joined(separator: ", ")
     }
+
+    /// AUTO2: `meetingpipe://open?stem=<stem>&t=<seconds>`, mirroring
+    /// `markdown.deeplink_url`. The stem is percent-encoded down to the
+    /// unreserved set (what Python's `quote(safe="")` leaves alone), because it
+    /// also has to be safe inside a Markdown link target where a bare `)` would
+    /// end the link early.
+    static func deeplinkURL(stem: String, seconds: Double) -> String {
+        let encoded = stem.addingPercentEncoding(withAllowedCharacters: Self.urlUnreserved) ?? stem
+        return "\(AutomationCommand.scheme)://open?stem=\(encoded)&t=\(deeplinkSeconds(seconds))"
+    }
+
+    /// Millisecond precision with trailing zeros stripped, mirroring
+    /// `markdown.deeplink_seconds`. The fraction is load-bearing:
+    /// `TranscriptSegmentLookup` picks the last segment starting at or before
+    /// `t`, so truncating an anchor snapped to a 754.32 s segment start would
+    /// land the jump on the row before it.
+    static func deeplinkSeconds(_ seconds: Double) -> String {
+        var text = String(format: "%.3f", max(0, seconds))
+        while text.hasSuffix("0") { text.removeLast() }
+        if text.hasSuffix(".") { text.removeLast() }
+        return text.isEmpty ? "0" : text
+    }
+
+    /// RFC 3986 unreserved characters, the exact set Python's
+    /// `urllib.parse.quote` leaves unescaped with `safe=""`. Spelled out as
+    /// ASCII literals on purpose: `CharacterSet.alphanumerics` is every Unicode
+    /// letter, so a Cyrillic stem would survive here and be percent-encoded on
+    /// the Python side, and `urlQueryAllowed` permits `&` and `=`, which would
+    /// let a stem forge query parameters.
+    private static let urlUnreserved = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+    )
 
     /// Human-readable rendering mirroring `markdown.render_summary_md`, using a
     /// plain hyphen for the due-date separator (the project bans em-dashes).
@@ -374,7 +418,12 @@ struct AppleIntelligenceSummarizer {
     /// anchors on the on-device path), but it is still the renderer every summary
     /// goes through on this side, so it has to render anchors written by any
     /// other backend.
-    static func renderMarkdown(_ s: MeetingSummary) -> String {
+    ///
+    /// AUTO2: `deeplinkStem` links each rendered timestamp back into the app, the
+    /// same way `render_summary_md`'s does. The file this writes is the stored
+    /// `<stem>.summary.md`, which Python's writer also links, so the stem is
+    /// passed rather than defaulted away.
+    static func renderMarkdown(_ s: MeetingSummary, deeplinkStem: String? = nil) -> String {
         var lines: [String] = ["# \(s.title)", ""]
         if !s.attendees.isEmpty {
             lines.append("**Attendees:** " + s.attendees.joined(separator: ", "))
@@ -384,13 +433,13 @@ struct AppleIntelligenceSummarizer {
         lines.append("")
         lines.append("## Summary")
         for (i, bullet) in s.summary.enumerated() {
-            lines.append("- \(bullet)\(evidenceSuffix(s.evidence(section: "summary", at: i)))")
+            lines.append("- \(bullet)\(evidenceSuffix(s.evidence(section: "summary", at: i), deeplinkStem: deeplinkStem))")
         }
         lines.append("")
         if !s.decisions.isEmpty {
             lines.append("## Decisions")
             for (i, d) in s.decisions.enumerated() {
-                lines.append("\(i + 1). \(d)\(evidenceSuffix(s.evidence(section: "decisions", at: i)))")
+                lines.append("\(i + 1). \(d)\(evidenceSuffix(s.evidence(section: "decisions", at: i), deeplinkStem: deeplinkStem))")
             }
             lines.append("")
         }
@@ -409,7 +458,7 @@ struct AppleIntelligenceSummarizer {
                     let owner = (a.owner?.isEmpty == false) ? a.owner! : "_unassigned_"
                     let due = (a.due?.isEmpty == false) ? " - due \(a.due!)" : ""
                     let box = a.resolved ? "[x]" : "[ ]"
-                    let cite = evidenceSuffix(a.evidence)
+                    let cite = evidenceSuffix(a.evidence, deeplinkStem: deeplinkStem)
                     lines.append(
                         "- \(box) **\(owner)**: \(a.task)\(due)  _(confidence: \(a.confidence))_\(cite)"
                     )
@@ -420,7 +469,7 @@ struct AppleIntelligenceSummarizer {
         if !s.questions.isEmpty {
             lines.append("## Open Questions")
             for (i, q) in s.questions.enumerated() {
-                lines.append("- \(q)\(evidenceSuffix(s.evidence(section: "questions", at: i)))")
+                lines.append("- \(q)\(evidenceSuffix(s.evidence(section: "questions", at: i), deeplinkStem: deeplinkStem))")
             }
             lines.append("")
         }

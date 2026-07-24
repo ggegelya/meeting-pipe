@@ -239,16 +239,33 @@ final class AppleIntelligenceSummarizerTests: XCTestCase {
     /// reproduce `markdown.render_summary_md` byte-for-byte, including the resolved
     /// action-item checkbox (`[x]`), which this mirror silently dropped before CI3.
     func test_renderMarkdown_golden_parity_with_python() throws {
-        struct Case: Decodable { let name: String; let input: MeetingSummary; let expected: String }
+        // AUTO2: `deeplink_stem` is optional per case. Present, the case pins the
+        // linked render a Markdown-file sink writes; absent, the plain one.
+        struct Case: Decodable {
+            let name: String
+            let input: MeetingSummary
+            let expected: String
+            let deeplinkStem: String?
+
+            enum CodingKeys: String, CodingKey {
+                case name, input, expected
+                case deeplinkStem = "deeplink_stem"
+            }
+        }
         struct Doc: Decodable { let cases: [Case] }
         guard let url = Bundle.module.url(forResource: "summary-md-golden", withExtension: "json") else {
             return XCTFail("summary-md-golden.json not found in the test bundle")
         }
         let doc = try JSONDecoder().decode(Doc.self, from: Data(contentsOf: url))
         XCTAssertFalse(doc.cases.isEmpty)
+        XCTAssertTrue(
+            doc.cases.contains { $0.deeplinkStem != nil },
+            "the golden lost its AUTO2 deeplinked case; the linked render is then unpinned"
+        )
         for c in doc.cases {
             XCTAssertEqual(
-                AppleIntelligenceSummarizer.renderMarkdown(c.input), c.expected,
+                AppleIntelligenceSummarizer.renderMarkdown(c.input, deeplinkStem: c.deeplinkStem),
+                c.expected,
                 "summary-md golden mismatch in case \(c.name)"
             )
         }

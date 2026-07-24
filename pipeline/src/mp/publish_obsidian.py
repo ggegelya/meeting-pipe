@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .markdown import deeplink_stem, evidence_suffix
 from .schemas import MeetingSummary
 
 log = logging.getLogger("mp.publish_obsidian")
@@ -165,11 +166,10 @@ class ObsidianPublisher:
     # ----- Path layout -----
 
     def _compute_note_path(self, summary: MeetingSummary, transcript_md: Path | None) -> Path:
-        stem = transcript_md.stem if transcript_md else _slugify(summary.title)
-        # Strip the speaker-segmented suffix so two Markdown files
-        # do not share a name. Same convention summarize.py uses.
-        if stem.endswith(".summary"):
-            stem = stem[: -len(".summary")]
+        # `deeplink_stem` strips the speaker-segmented `.summary` suffix so two
+        # Markdown files do not share a name (the convention summarize.py uses),
+        # and is the same stem the note's citation links address.
+        stem = deeplink_stem(transcript_md) or _slugify(summary.title)
         date = _today_iso()
         # Title prefix with the meeting topic for human-grokkability
         # at the file-listing level. Falls back to bare stem when the
@@ -220,11 +220,31 @@ class ObsidianPublisher:
             else DEFAULT_TEMPLATE
         )
 
+        # AUTO2: a cited point carries its `[mm:ss]` as a `meetingpipe://open`
+        # link back to the transcript row, so the note is checkable without
+        # hunting for the meeting first. This sink renders its own template
+        # rather than `render_summary_md`, so the suffix is applied per section
+        # here; the shared `evidence_suffix` is what keeps the two spellings
+        # identical. Nothing is added to an anchor-free summary.
+        stem = deeplink_stem(transcript_md)
+
+        def cite(section: str, index: int) -> str:
+            anchors = summary.evidence.get(section) or []
+            # Index-guarded like `markdown._section_suffix`: a hand-edited file
+            # reaches a renderer without the schema's alignment repair.
+            return evidence_suffix(anchors[index], stem) if index < len(anchors) else ""
+
         attendees_yaml = "[" + ", ".join(_yaml_str(a) for a in summary.attendees) + "]"
-        summary_bullets = "\n".join(f"- {bullet}" for bullet in summary.summary) or "_no summary_"
-        decisions = "\n".join(f"{i+1}. {d}" for i, d in enumerate(summary.decisions)) or "_none_"
-        actions = "\n".join(_format_action(a) for a in summary.actions) or "_none_"
-        questions = "\n".join(f"- {q}" for q in summary.questions) or "_none_"
+        summary_bullets = "\n".join(
+            f"- {bullet}{cite('summary', i)}" for i, bullet in enumerate(summary.summary)
+        ) or "_no summary_"
+        decisions = "\n".join(
+            f"{i+1}. {d}{cite('decisions', i)}" for i, d in enumerate(summary.decisions)
+        ) or "_none_"
+        actions = "\n".join(_format_action(a, stem) for a in summary.actions) or "_none_"
+        questions = "\n".join(
+            f"- {q}{cite('questions', i)}" for i, q in enumerate(summary.questions)
+        ) or "_none_"
         # WF7: render each non-empty workflow-defined section as its own H2 block.
         # Empty when the workflow defines none, so an ordinary note is unchanged.
         # A custom template without `{extra_sections}` simply omits them.
@@ -262,13 +282,14 @@ class ObsidianPublisher:
 
 # ----- Helpers (file-scope so they're testable in isolation) -----
 
-def _format_action(a: Any) -> str:
+def _format_action(a: Any, stem: str | None = None) -> str:
     owner = getattr(a, "owner", None) or "_unassigned_"
     due = getattr(a, "due", None)
     confidence = getattr(a, "confidence", "medium")
     suffix = f"  (due: {due})" if due else ""
     box = "[x]" if getattr(a, "resolved", False) else "[ ]"
-    return f"- {box} **{owner}** {a.task}{suffix} _(confidence: {confidence})_"
+    cite = evidence_suffix(getattr(a, "evidence", None) or [], stem)
+    return f"- {box} **{owner}** {a.task}{suffix} _(confidence: {confidence})_{cite}"
 
 
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")  # control chars incl newline / tab / CR

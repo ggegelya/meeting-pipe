@@ -20,6 +20,11 @@ enum AutomationCommand: Equatable {
     /// Raw string so the parser stays free of the `LibraryScope` type; the router
     /// maps it.
     case openLibrary(scope: String?)
+    /// Open one meeting's Transcript tab, optionally scrolled to `seek` seconds
+    /// (AUTO2). This is the link a published note's `[12:34]` citation wears, so
+    /// `stem` comes from a file that may outlive its recording; the router treats
+    /// an unknown stem as a quiet Library open, never an error.
+    case openMeeting(stem: String, seek: Double?)
     /// Open the Library's Ask rail with `question` prefilled and run it (AI3).
     case ask(question: String)
     /// Open the Library's Digests rail and generate the weekly digest (AI4).
@@ -35,6 +40,7 @@ enum AutomationCommand: Equatable {
         case .stop: return "stop"
         case .toggle: return "toggle"
         case .openLibrary: return "open_library"
+        case .openMeeting: return "open_meeting"
         case .ask: return "ask"
         case .digest: return "digest"
         }
@@ -59,6 +65,14 @@ enum AutomationCommand: Equatable {
         case "toggle":
             return .toggle
         case "library", "open":
+            // AUTO2: `?stem=` addresses one meeting instead of a rail. Both verb
+            // spellings take it, since they are synonyms everywhere else and a
+            // silently-ignored stem on one of them is the kind of difference
+            // nobody would guess. `URLComponents` has already percent-decoded it.
+            if let stem = query["stem"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !stem.isEmpty {
+                return .openMeeting(stem: stem, seek: seekSeconds(query["t"]))
+            }
             let scope = query["scope"]?.trimmingCharacters(in: .whitespaces).lowercased()
             return .openLibrary(scope: (scope?.isEmpty ?? true) ? nil : scope)
         case "ask":
@@ -80,6 +94,17 @@ enum AutomationCommand: Equatable {
             out[item.name.lowercased()] = item.value ?? ""
         }
         return out
+    }
+
+    /// AUTO2: the `t=` seconds of an `open?stem=` deeplink, or nil when it is
+    /// absent or unusable. A published note can be hand-edited, copied through a
+    /// tool that mangles it, or written by a future version, so anything that is
+    /// not a finite non-negative number degrades to opening the meeting without
+    /// a seek rather than to no navigation at all.
+    private static func seekSeconds(_ raw: String?) -> Double? {
+        guard let text = raw?.trimmingCharacters(in: .whitespaces), !text.isEmpty,
+              let t = Double(text), t.isFinite, t >= 0 else { return nil }
+        return t
     }
 
     /// A query flag is on when present with a truthy value, or present bare

@@ -70,11 +70,31 @@ struct MeetingDetailView: View {
             tabContent
         }
         .frame(minWidth: LibraryLayout.detailMinWidth)
-        .onAppear { syncEditingTitle(force: true) }
-        .onChange(of: meeting.stem) { _, _ in syncEditingTitle(force: true) }
+        .onAppear {
+            syncEditingTitle(force: true)
+            consumeTranscriptJump()
+        }
+        .onChange(of: meeting.stem) { _, _ in
+            syncEditingTitle(force: true)
+            consumeTranscriptJump()
+        }
+        .onChange(of: libraryModel.pendingTranscriptJump) { _, _ in consumeTranscriptJump() }
         .onChange(of: meeting.displayTitle) { _, _ in syncEditingTitle(force: false) }
         .task(id: meeting.stem) { await reloadPublishURLs() }
         .sheet(isPresented: $showCorrectionsSheet) { correctionsSheet }
+    }
+
+    /// AUTO2: a `meetingpipe://open?stem=&t=` citation link from a published note
+    /// that the root view resolved to this meeting. Consumed here, not there,
+    /// because the seek and the tab both live in this view; the stem guard is
+    /// what keeps a request meant for another meeting from seeking in this one.
+    private func consumeTranscriptJump() {
+        guard let jump = libraryModel.pendingTranscriptJump, jump.stem == meeting.stem else { return }
+        libraryModel.pendingTranscriptJump = nil
+        // Same order the evidence chip uses: raise the request first, then switch
+        // tabs, so the Transcript tab already sees it in its `onAppear`.
+        pendingTranscriptSeek = jump.seek
+        selectedTab = Tab.transcript.rawValue
     }
 
     /// Corrections surface, presented as a sheet from the "..." menu (DSN2). The

@@ -243,6 +243,48 @@ final class EvidenceTests: XCTestCase {
         XCTAssertEqual(AppleIntelligenceSummarizer.evidenceSuffix([]), "")
     }
 
+    // MARK: - AUTO2: the same suffix as a link
+
+    /// The URL spelling has to match `markdown.deeplink_url` exactly, since the
+    /// CI3 golden compares whole rendered notes. These pin the two rules that
+    /// are easy to get subtly wrong on this side.
+    func test_deeplink_seconds_keep_their_fraction_and_drop_trailing_zeros() {
+        XCTAssertEqual(AppleIntelligenceSummarizer.deeplinkSeconds(754), "754")
+        XCTAssertEqual(AppleIntelligenceSummarizer.deeplinkSeconds(12.5), "12.5")
+        XCTAssertEqual(AppleIntelligenceSummarizer.deeplinkSeconds(40.755), "40.755")
+        XCTAssertEqual(AppleIntelligenceSummarizer.deeplinkSeconds(0), "0")
+        XCTAssertEqual(AppleIntelligenceSummarizer.deeplinkSeconds(-3), "0")
+    }
+
+    func test_deeplink_stem_is_percent_encoded_down_to_the_unreserved_set() {
+        XCTAssertEqual(
+            AppleIntelligenceSummarizer.deeplinkURL(stem: "a b&c)d", seconds: 1),
+            "meetingpipe://open?stem=a%20b%26c%29d&t=1"
+        )
+        // Not `CharacterSet.alphanumerics`, which would leave Cyrillic raw here
+        // while Python percent-encodes it.
+        XCTAssertEqual(
+            AppleIntelligenceSummarizer.deeplinkURL(stem: "Екс", seconds: 0),
+            "meetingpipe://open?stem=%D0%95%D0%BA%D1%81&t=0"
+        )
+    }
+
+    func test_linked_suffix_round_trips_through_the_parser() throws {
+        let suffix = AppleIntelligenceSummarizer.evidenceSuffix(
+            [.init(quote: "a", t: 754.32)], deeplinkStem: "2026 Екс"
+        )
+        // ` [12:34](meetingpipe://…)`: the brackets are the link text, not a
+        // wrapper, because a leading `[[` is an Obsidian wikilink.
+        XCTAssertFalse(suffix.contains("[["), suffix)
+        let open = suffix.firstIndex(of: "(")!
+        let target = String(suffix[suffix.index(after: open)..<suffix.index(before: suffix.endIndex)])
+        XCTAssertEqual(
+            AutomationCommand.parse(URL(string: target)!),
+            .openMeeting(stem: "2026 Екс", seek: 754.32),
+            target
+        )
+    }
+
     /// A chip hands the Transcript tab a time; the tab maps it to a row with the
     /// same lookup the play head uses. A stored anchor is always snapped to a
     /// segment start by the pipeline, so it must land on that exact row.

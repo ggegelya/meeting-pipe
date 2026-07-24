@@ -533,7 +533,10 @@ def summarize(
     # Atomic (PIPE8) + 0600 (SEC14): a crash mid-rewrite leaves the prior summary
     # intact rather than a truncated one; summaries carry meeting content.
     storage.atomic_write_text(json_path, summary.model_dump_json(indent=2, exclude_none=False))
-    storage.atomic_write_text(md_path, render_summary_md(summary))
+    # AUTO2: the stored `.summary.md` is a Markdown file a human reads outside
+    # the app (it is what `mp publish-from-paste` and the fs sinks copy), so its
+    # citations link back to the transcript like a published note's do.
+    storage.atomic_write_text(md_path, render_summary_md(summary, stem))
 
     backend, model_used = _identify_backend(client, cfg)
     log.info("Wrote %s and %s", json_path, md_path)

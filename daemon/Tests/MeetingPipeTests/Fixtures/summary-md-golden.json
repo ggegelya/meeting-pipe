@@ -1,5 +1,5 @@
 {
-  "_comment": "CI3 golden vectors for the summary-markdown mirror (Swift AppleIntelligenceSummarizer.renderMarkdown vs Python markdown.render_summary_md). Python is the source of truth; regenerate with scripts under git history, do not hand-edit.",
+  "_comment": "CI3 golden vectors for the summary-markdown mirror (Swift AppleIntelligenceSummarizer.renderMarkdown vs Python markdown.render_summary_md). Python is the source of truth; regenerate with scripts under git history, do not hand-edit. A case may carry a `deeplink_stem` (AUTO2), which both sides pass to the renderer to pin the linked form a Markdown-file sink writes; without it the case pins the plain form.",
   "cases": [
     {
       "name": "full_bilingual",
@@ -231,6 +231,83 @@
         }
       },
       "expected": "# Export sync\n\n**Attendees:** Alice, Bob\n\n_Language: en_\n\n## Summary\n- Agreed the export ships Friday. [0:12]\n- SOP revision is in flight.\n\n## Decisions\n1. Ship the export on Friday. [0:12, 1:02:03]\n\n## Action Items\n- [ ] **Alice**: Send revised SOP to QA - due 2026-08-01  _(confidence: high)_ [0:40]\n- [ ] **_unassigned_**: Book the review room  _(confidence: low)_\n\n## Open Questions\n- Is the QMS export green? [12:34]\n"
+    },
+    {
+      "name": "evidence_deeplinked_auto2",
+      "input": {
+        "title": "Export sync",
+        "attendees": [
+          "Alice",
+          "Bob"
+        ],
+        "summary": [
+          "Agreed the export ships Friday.",
+          "SOP revision is in flight."
+        ],
+        "decisions": [
+          "Ship the export on Friday."
+        ],
+        "actions": [
+          {
+            "task": "Send revised SOP to QA",
+            "owner": "Alice",
+            "due": "2026-08-01",
+            "confidence": "high",
+            "resolved": false,
+            "evidence": [
+              {
+                "quote": "send the revised SOP to QA",
+                "t": 40.75
+              }
+            ]
+          },
+          {
+            "task": "Book the review room",
+            "owner": null,
+            "due": null,
+            "confidence": "low",
+            "resolved": false,
+            "evidence": []
+          }
+        ],
+        "questions": [
+          "Is the QMS export green?"
+        ],
+        "detected_language": "en",
+        "evidence": {
+          "summary": [
+            [
+              {
+                "quote": "We will ship the export on Friday",
+                "t": 12.5
+              }
+            ],
+            []
+          ],
+          "decisions": [
+            [
+              {
+                "quote": "ship the export on Friday",
+                "t": 12.5
+              },
+              {
+                "quote": "Friday it is",
+                "t": 3723.25
+              }
+            ]
+          ],
+          "questions": [
+            [
+              {
+                "quote": "Is the QMS export green yet",
+                "t": 754.0
+              }
+            ]
+          ]
+        }
+      },
+      "deeplink_stem": "20260722-140312 Експорт",
+      "expected": "# Export sync\n\n**Attendees:** Alice, Bob\n\n_Language: en_\n\n## Summary\n- Agreed the export ships Friday. [0:12](meetingpipe://open?stem=20260722-140312%20%D0%95%D0%BA%D1%81%D0%BF%D0%BE%D1%80%D1%82&t=12.5)\n- SOP revision is in flight.\n\n## Decisions\n1. Ship the export on Friday. [0:12](meetingpipe://open?stem=20260722-140312%20%D0%95%D0%BA%D1%81%D0%BF%D0%BE%D1%80%D1%82&t=12.5), [1:02:03](meetingpipe://open?stem=20260722-140312%20%D0%95%D0%BA%D1%81%D0%BF%D0%BE%D1%80%D1%82&t=3723.25)\n\n## Action Items\n- [ ] **Alice**: Send revised SOP to QA - due 2026-08-01  _(confidence: high)_ [0:40](meetingpipe://open?stem=20260722-140312%20%D0%95%D0%BA%D1%81%D0%BF%D0%BE%D1%80%D1%82&t=40.75)\n- [ ] **_unassigned_**: Book the review room  _(confidence: low)_\n\n## Open Questions\n- Is the QMS export green? [12:34](meetingpipe://open?stem=20260722-140312%20%D0%95%D0%BA%D1%81%D0%BF%D0%BE%D1%80%D1%82&t=754)\n"
     }
   ]
 }

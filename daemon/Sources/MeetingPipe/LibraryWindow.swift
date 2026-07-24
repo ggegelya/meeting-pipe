@@ -114,6 +114,22 @@ final class LibraryWindowModel: ObservableObject {
     /// question, runs it, then clears it.
     @Published var pendingAskQuestion: String? = nil
 
+    /// AUTO2: one meeting's transcript, addressed by a `meetingpipe://open?stem=`
+    /// citation link in a published note. `seek` is the cited moment, or nil for
+    /// a link without a time.
+    struct TranscriptJump: Equatable {
+        let stem: String
+        let seek: Double?
+    }
+
+    /// AUTO2: the pending citation jump. `LibraryRootView` resolves the stem
+    /// against the loaded list and selects the row; `MeetingDetailView` then
+    /// consumes it (matching on the stem, so a request meant for another meeting
+    /// can never seek in this one) by switching to the Transcript tab. Two
+    /// consumers rather than one because the seek and the tab both live inside
+    /// the detail view, exactly like the evidence chip's in-app jump.
+    @Published var pendingTranscriptJump: TranscriptJump? = nil
+
     /// Non-`@Published` so toolbar reads don't republish the parent model; the toolbar observes it directly via `@ObservedObject`.
     let processing = ProcessingTracker()
 
@@ -463,6 +479,9 @@ struct LibraryRootView: View {
             meetingStore.start()
             recomputeCounts()
             reloadFacts()
+            // AUTO2: the deeplink that opened this window set its request before
+            // the view existed, so `onChange` never fired for it.
+            resolveTranscriptJump()
         }
         .onDisappear {
             // Suspend the watcher while hidden. The window outlives the view (isReleasedWhenClosed=false), so without this a closed Library would keep rescanning on every pipeline write.
@@ -471,6 +490,9 @@ struct LibraryRootView: View {
         .onChange(of: meetingStore.revision) { _, _ in
             recomputeCounts()
             reloadFacts()
+            // AUTO2: the first scan is what turns a pending citation jump from
+            // undecidable into an answer.
+            resolveTranscriptJump()
         }
         .onChange(of: model.workflowStore?.workflows.count ?? 0) { _, _ in recomputeCounts() }
         // UX24: adding, editing, or deleting a folder changes its rail count.
@@ -495,6 +517,7 @@ struct LibraryRootView: View {
             scope = newScope
             model.pendingScope = nil
         }
+        .onChange(of: model.pendingTranscriptJump) { _, _ in resolveTranscriptJump() }
         .sheet(item: $editingWorkflow, onDismiss: { editingWorkflow = nil }) { wf in
             if let store = model.workflowStore {
                 WorkflowEditorSheet(workflow: wf, store: store, localModelPreflight: model.coordinator?.localModelPreflight) {
@@ -530,6 +553,36 @@ struct LibraryRootView: View {
                     renamingSavedSearch = nil
                 }
             )
+        }
+    }
+
+    // MARK: - Citation deeplinks (AUTO2)
+
+    /// Land a `meetingpipe://open?stem=&t=` citation link on its meeting. Called
+    /// on appear, when the request arrives, and on every store revision, because
+    /// the click usually reaches a Library that has not scanned yet and the list
+    /// is the only thing that can tell a stale note from a live one.
+    ///
+    /// A resolved jump is deliberately left on the model: `MeetingDetailView`
+    /// consumes it once it mounts for this stem, which is what carries the seek
+    /// across to the Transcript tab.
+    private func resolveTranscriptJump() {
+        guard let jump = model.pendingTranscriptJump else { return }
+        switch TranscriptDeeplink.resolve(
+            stem: jump.stem,
+            seek: jump.seek,
+            knownStems: Set(meetingStore.meetings.map(\.stem)),
+            hasLoadedOnce: meetingStore.hasLoadedOnce
+        ) {
+        case .wait:
+            return
+        case .libraryOnly:
+            model.pendingTranscriptJump = nil
+        case .openMeeting(let stem, _):
+            // The row may be filtered out of the active scope, so snap to All
+            // meetings first, the same move a Facts or Ask citation makes.
+            scope = .allMeetings
+            meetingSelection = [stem]
         }
     }
 

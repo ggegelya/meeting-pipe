@@ -21,6 +21,8 @@ extension Coordinator {
             session.forceStop(reason: "url_scheme")
         case .openLibrary(let scope):
             openLibraryViaAutomation(scope: scope)
+        case .openMeeting(let stem, let seek):
+            openMeetingViaAutomation(stem: stem, seek: seek)
         case .ask(let question):
             openLibraryViaAutomation(scope: "ask")
             libraryModel.pendingAskQuestion = question
@@ -40,6 +42,17 @@ extension Coordinator {
             return
         }
         session.beginRecording(source: nil, summaryMode: byo ? .byo : .auto)
+    }
+
+    /// AUTO2: a citation link clicked in a published note. The request is handed
+    /// to the Library rather than resolved here, because the meeting list scans
+    /// asynchronously and is usually empty at this instant (the window is only
+    /// now coming up); `LibraryRootView` applies `TranscriptDeeplink.resolve` as
+    /// soon as the list is real, and `MeetingDetailView` carries the seek into
+    /// the Transcript tab. An unknown stem lands on a plain Library, quietly.
+    private func openMeetingViaAutomation(stem: String, seek: Double?) {
+        libraryModel.pendingTranscriptJump = .init(stem: stem, seek: seek)
+        libraryWindow.show()
     }
 
     private func openLibraryViaAutomation(scope: String?) {

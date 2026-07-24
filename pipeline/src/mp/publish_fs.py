@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .markdown import render_summary_md
+from .markdown import deeplink_stem, render_summary_md
 from .schemas import MeetingSummary
 
 log = logging.getLogger("mp.publish_fs")
@@ -58,7 +58,10 @@ class FilesystemPublisher:
         self._out.mkdir(parents=True, exist_ok=True)
         stem = transcript_md.stem if transcript_md else stem_from_summary(summary)
 
-        summary_md = render_summary_md(summary)
+        # AUTO2: a Markdown-file sink, so its `[mm:ss]` citations link back into
+        # the app. The signature below hashes the rendered text, so a note whose
+        # links changed republishes rather than reading as unchanged.
+        summary_md = render_summary_md(summary, deeplink_stem(transcript_md))
         actions_json = json.dumps(
             [a.model_dump(mode="json") for a in summary.actions],
             indent=2, sort_keys=True,

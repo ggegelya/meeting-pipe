@@ -27,7 +27,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .markdown import render_summary_md
+from .markdown import deeplink_stem, render_summary_md
 from .publish_fs import (
     file_url,
     load_sidecar,
@@ -65,7 +65,9 @@ class LanPublisher:
         target.mkdir(parents=True, exist_ok=True)
         stem = transcript_md.stem if transcript_md else stem_from_summary(summary)
 
-        summary_md = render_summary_md(summary)
+        # AUTO2: same linked citations the filesystem sink writes; the deeplink
+        # opens the app on the Mac reading the share, not on the share itself.
+        summary_md = render_summary_md(summary, deeplink_stem(transcript_md))
         actions_json = json.dumps(
             [a.model_dump(mode="json") for a in summary.actions],
             indent=2, sort_keys=True,

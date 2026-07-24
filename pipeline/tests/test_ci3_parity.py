@@ -36,4 +36,6 @@ def test_largest_balanced_json_object_golden(case: dict) -> None:
 @pytest.mark.parametrize("case", _cases("summary-md-golden.json"))
 def test_render_summary_md_golden(case: dict) -> None:
     model = MeetingSummary.model_validate(case["input"])
-    assert render_summary_md(model) == case["expected"]
+    # AUTO2: a case may pin the deeplinked render (a Markdown-file sink); absent,
+    # it pins the plain one, which is what a digest and Notion still get.
+    assert render_summary_md(model, case.get("deeplink_stem")) == case["expected"]
