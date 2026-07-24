@@ -895,7 +895,9 @@ struct LibraryRootView: View {
         } else if case .digests = scope {
             // Digests: the center column lists them; the detail reads the selected one at
             // full width (the reader moved here from the narrow, split center column).
-            DigestReaderView(model: digestList)
+            // AI10: the digest's action list is a bounded slice; Facts is where the
+            // whole open set lives, so the reader can hand off to it.
+            DigestReaderView(model: digestList) { scope = .facts }
         } else if selected.count > 1 {
             BatchActionsPane(meetings: selected, libraryModel: model)
         } else if let only = selected.first {

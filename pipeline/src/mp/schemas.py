@@ -30,6 +30,13 @@ class ActionItem(BaseModel):
         validation_alias=AliasChoices("resolved", "done"),
         serialization_alias="resolved",
     )
+    # AI10: the grouping key of a roll-up that gathers actions from many
+    # meetings - the workflow the action's meeting belongs to, or that meeting's
+    # title when it is untagged. Only `mp digest` sets it (inside one meeting's
+    # summary every action shares one source, so the field would say nothing),
+    # and it is deliberately absent from SUMMARY_TOOL below: no model ever fills
+    # it, the digest assembles it from facts already on disk.
+    group: str | None = None
 
     model_config = {"populate_by_name": True}
 

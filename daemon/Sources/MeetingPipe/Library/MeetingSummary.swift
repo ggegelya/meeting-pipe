@@ -52,17 +52,24 @@ struct MeetingSummary: Decodable, Equatable {
         /// legacy summaries, so it defaults to open; the older `done` spelling
         /// is also accepted on read (mirrors the pydantic alias in schemas.py).
         var resolved: Bool
+        /// AI10: the grouping key of a roll-up that gathers actions from many
+        /// meetings (the weekly digest): the source meeting's workflow, or its
+        /// title when untagged. Nil on every meeting summary, where all the
+        /// actions share one source, so the reader renders those flat as before.
+        var group: String?
 
         enum CodingKeys: String, CodingKey {
-            case task, owner, due, confidence, resolved, done
+            case task, owner, due, confidence, resolved, done, group
         }
 
-        init(task: String, owner: String? = nil, due: String? = nil, confidence: String = "medium", resolved: Bool = false) {
+        init(task: String, owner: String? = nil, due: String? = nil, confidence: String = "medium",
+             resolved: Bool = false, group: String? = nil) {
             self.task = task
             self.owner = owner
             self.due = due
             self.confidence = confidence
             self.resolved = resolved
+            self.group = group
         }
 
         init(from decoder: Decoder) throws {
@@ -74,6 +81,7 @@ struct MeetingSummary: Decodable, Equatable {
             let resolvedFlag = (try? c.decodeIfPresent(Bool.self, forKey: .resolved)) ?? nil
             let doneFlag = (try? c.decodeIfPresent(Bool.self, forKey: .done)) ?? nil
             resolved = resolvedFlag ?? doneFlag ?? false
+            group = (try? c.decodeIfPresent(String.self, forKey: .group)) ?? nil
         }
     }
 
@@ -116,6 +124,34 @@ struct MeetingSummary: Decodable, Equatable {
         extraSections = (try? c.decode([ExtraSection].self, forKey: .extraSections)) ?? []
     }
 
+    // MARK: - Action grouping (AI10)
+
+    /// One run of consecutive actions sharing an `ActionItem.group`.
+    struct ActionRun {
+        let group: String?
+        let actions: [ActionItem]
+    }
+
+    /// Consecutive runs of actions sharing a `group`, mirroring
+    /// `markdown._action_runs` on the Python side (pinned by the CI3
+    /// `summary-md-golden.json` fixture, case `action_groups_ai10`).
+    ///
+    /// Runs, not buckets: the writer decides the order and a renderer never
+    /// reorders it. Untagged actions fold into one nil run, which is every
+    /// meeting summary, so an ungrouped list renders exactly as it always did.
+    /// The contract is that a writer tags all of its actions or none.
+    static func actionRuns(_ actions: [ActionItem]) -> [ActionRun] {
+        var runs: [ActionRun] = []
+        for a in actions {
+            if let last = runs.last, last.group == a.group {
+                runs[runs.count - 1] = ActionRun(group: last.group, actions: last.actions + [a])
+            } else {
+                runs.append(ActionRun(group: a.group, actions: [a]))
+            }
+        }
+        return runs
+    }
+
     // MARK: - Bridges to the disk format
 
     /// Decode `<stem>.summary.json`. Returns nil only when the file is missing or
@@ -151,6 +187,10 @@ struct MeetingSummary: Decodable, Equatable {
                 ]
                 d["owner"] = (a.owner?.isEmpty == false) ? a.owner! : NSNull()
                 d["due"] = (a.due?.isEmpty == false) ? a.due! : NSNull()
+                // AI10: explicit null like owner/due, matching what the Python
+                // writer emits, so a rewrite never silently drops a digest's
+                // grouping nor invents a key shape the reader has not seen.
+                d["group"] = (a.group?.isEmpty == false) ? a.group! : NSNull()
                 return d
             }
         return [

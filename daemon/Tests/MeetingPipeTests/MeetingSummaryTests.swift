@@ -168,4 +168,43 @@ final class MeetingSummaryTests: XCTestCase {
     func test_missing_extra_sections_decodes_to_empty() throws {
         XCTAssertEqual(try decode("{\"title\":\"t\"}").extraSections, [])
     }
+
+    // MARK: action grouping (AI10)
+
+    func test_action_group_decodes_and_survives_the_write_bridge() throws {
+        let s = try decode("""
+        {"actions": [
+          {"task": "grouped", "confidence": "high", "group": "Weekly standup"},
+          {"task": "ungrouped", "confidence": "high"}
+        ]}
+        """)
+        XCTAssertEqual(s.actions[0].group, "Weekly standup")
+        XCTAssertNil(s.actions[1].group)
+        // A digest is read-only in-app, but the write bridge is shared with the
+        // correction save path, so the grouping must round-trip rather than vanish.
+        let rebuilt = try XCTUnwrap(MeetingSummary(jsonObject: s.jsonObject()))
+        XCTAssertEqual(rebuilt.actions, s.actions)
+        let actions = try XCTUnwrap(s.jsonObject()["actions"] as? [[String: Any]])
+        XCTAssertEqual(actions[0]["group"] as? String, "Weekly standup")
+        XCTAssertTrue(actions[1]["group"] is NSNull)  // explicit null, like owner/due
+    }
+
+    func test_actionRuns_splits_consecutive_groups_and_folds_untagged() throws {
+        let runs = MeetingSummary.actionRuns([
+            .init(task: "a", group: "Standup"),
+            .init(task: "b", group: "Standup"),
+            .init(task: "c", group: "Client sync"),
+        ])
+        XCTAssertEqual(runs.map(\.group), ["Standup", "Client sync"])
+        XCTAssertEqual(runs[0].actions.map(\.task), ["a", "b"])
+        XCTAssertEqual(runs[1].actions.map(\.task), ["c"])
+
+        // Every meeting summary: one nameless run, so the reader stays flat.
+        let flat = MeetingSummary.actionRuns([.init(task: "a"), .init(task: "b")])
+        XCTAssertEqual(flat.count, 1)
+        XCTAssertNil(flat[0].group)
+        XCTAssertEqual(flat[0].actions.count, 2)
+
+        XCTAssertTrue(MeetingSummary.actionRuns([]).isEmpty)
+    }
 }

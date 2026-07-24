@@ -25,15 +25,29 @@ struct SummaryRenderedView: View {
                     bulletList(decisions, numbered: true)
                 }
             }
-            if !actions.isEmpty {
+            if !actionRuns.isEmpty {
                 section(title: "Action items", systemImage: "checklist") {
-                    // A whole-library digest can carry hundreds of actions. LazyVStack
-                    // (inside the enclosing ScrollView) realizes and markdown-parses only
-                    // the visible rows, instead of building and laying out all of them up
-                    // front, which froze scrolling on a large digest.
+                    // A digest can carry a few dozen actions across several groups
+                    // (AI10 bounds it; before that it was the library's whole open
+                    // set). LazyVStack (inside the enclosing ScrollView) realizes and
+                    // markdown-parses only the visible rows, instead of building and
+                    // laying out all of them up front, which froze scrolling.
                     LazyVStack(alignment: .leading, spacing: MPSpace.s2) {
-                        ForEach(Array(actions.enumerated()), id: \.offset) { _, a in
-                            ActionItemRow(action: a)
+                        ForEach(Array(actionRuns.enumerated()), id: \.offset) { _, run in
+                            // AI10: a roll-up across meetings names each run's source
+                            // (workflow, or the meeting when untagged). A meeting's own
+                            // summary has one nameless run, so it renders flat as before.
+                            if let group = run.group {
+                                Text(group)
+                                    .font(.mpTextXS.weight(.semibold))
+                                    .tracking(0.08 * 10)
+                                    .textCase(.uppercase)
+                                    .foregroundStyle(Color(MPColors.fgMuted))
+                                    .padding(.top, MPSpace.s2)
+                            }
+                            ForEach(Array(run.actions.enumerated()), id: \.offset) { _, a in
+                                ActionItemRow(action: a)
+                            }
                         }
                     }
                 }
@@ -76,15 +90,24 @@ struct SummaryRenderedView: View {
             return MeetingSummary.ExtraSection(name: sec.name, content: content)
         }
     }
-    private var actions: [ActionItemRow.Action] {
-        summary.actions.map { a in
-            ActionItemRow.Action(
-                task: a.task,
-                owner: a.owner ?? "",
-                due: a.due ?? "",
-                confidence: a.confidence
-            )
-        }.filter { !$0.task.isEmpty }
+    /// The action rows, split into AI10's named runs. A meeting summary yields at
+    /// most one run with a nil group, which renders exactly as the flat list did.
+    private var actionRuns: [(group: String?, actions: [ActionItemRow.Action])] {
+        MeetingSummary.actionRuns(summary.actions).compactMap { run in
+            let rows = run.actions
+                .map { a in
+                    ActionItemRow.Action(
+                        task: a.task,
+                        owner: a.owner ?? "",
+                        due: a.due ?? "",
+                        confidence: a.confidence
+                    )
+                }
+                .filter { !$0.task.isEmpty }
+            guard !rows.isEmpty else { return nil }
+            let name = run.group?.isEmpty == false ? run.group : nil
+            return (group: name, actions: rows)
+        }
     }
 
     private func nonEmpty(_ items: [String]) -> [String] {

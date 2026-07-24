@@ -375,6 +375,16 @@ The one cross-language contract that is a *stream*, not a file. `prefetch_model.
 
 ---
 
+## Action grouping (`ActionItem.group`, AI10)
+
+`<stem>.summary.json`'s action items carry an optional `group`: the source a roll-up gathered the action from. **Only `mp digest` sets it** (the workflow of the meeting the action came from, or that meeting's title when the meeting is untagged); inside one meeting's summary every action shares one source, so a meeting summary leaves it null and renders exactly as it always did. It is deliberately absent from `schemas.SUMMARY_TOOL`, so no model ever fills it: the digest assembles it from facts already on disk.
+
+The contract both renderers assume is **all-or-none**: a writer tags every action it emits or none of them. Both `markdown._action_runs` (Python) and `MeetingSummary.actionRuns` (Swift) split the list into *consecutive runs* sharing a group, never buckets, so the writer's order is the render order and a renderer never reorders a list it did not build. A mixed list therefore renders its untagged run with no heading, which reads as belonging to whatever heading preceded it. Don't produce one. The grouped render is pinned by `summary-md-golden.json`'s `action_groups_ai10` case, so the two trees cannot drift on it.
+
+Swift's `MeetingSummary.jsonObject()` writes `group` as an explicit null when absent, matching `owner` / `due` and matching what the pydantic writer emits, so the in-app correction save never drops a grouping nor invents a key shape the other tree has not seen.
+
+---
+
 ## Cross-tree golden fixtures
 
 Every Swift-Python surface where both trees implement the same thing is pinned by one checked-in fixture that both suites read, so the two cannot agree with each other while disagreeing with reality. They live in `daemon/Tests/MeetingPipeTests/Fixtures/` and are read from the Python side by a repo-relative path.
@@ -384,7 +394,7 @@ Every Swift-Python surface where both trees implement the same thing is pinned b
 | `meta-contract/*.meta.json` (CI2) | `<stem>.meta.json` | `MetaContractFixtureTests` | `test_workflow_overlay.py` |
 | `chunking-golden.json` (ARCH4) | transcript chunking | `TranscriptChunkerTests` | `test_chunking.py` |
 | `json-extract-golden.json` (CI3) | balanced-JSON scan | `AppleIntelligenceSummarizerTests` | `test_ci3_parity.py` |
-| `summary-md-golden.json` (CI3) | summary markdown render | `AppleIntelligenceSummarizerTests` | `test_ci3_parity.py` |
+| `summary-md-golden.json` (CI3) | summary markdown render, incl. AI10 action groups | `AppleIntelligenceSummarizerTests` | `test_ci3_parity.py` |
 | `transcript-corrections-golden.json` (PIPE9) | text-correction overlay | `TranscriptCorrectionStoreTests` | `test_transcript_corrections.py` |
 | `publish-result-golden.json` (CI4) | `<stem>.publish.json` + the `state` vocabulary | `CI4ContractFixtureTests` | `test_ci4_contracts.py` |
 | `prefetch-progress-golden.json` (CI4) | the progress stream above | `CI4ContractFixtureTests` | `test_ci4_contracts.py` |

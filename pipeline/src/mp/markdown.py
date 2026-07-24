@@ -17,7 +17,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from .schemas import MeetingSummary
+from .schemas import ActionItem, MeetingSummary
 
 _UNSET: object = object()
 _UNKNOWN_SPEAKER = "Speaker?"
@@ -93,6 +93,27 @@ def render_markdown(structured: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _action_runs(actions: list[ActionItem]) -> list[tuple[str | None, list[ActionItem]]]:
+    """Consecutive runs of actions sharing an `ActionItem.group` (AI10).
+
+    Runs, not buckets: the writer decides the order and the renderer never
+    reorders it. Untagged actions fold into one `None` run, which is every
+    meeting summary, so the ungrouped render stays byte-identical.
+
+    The contract is that a writer tags all of its actions or none of them (the
+    digest tags all, a meeting summary tags none). A mixed list renders its
+    untagged run without a heading, which reads as belonging to whatever heading
+    came before it, so don't produce one.
+    """
+    runs: list[tuple[str | None, list[ActionItem]]] = []
+    for a in actions:
+        if runs and runs[-1][0] == a.group:
+            runs[-1][1].append(a)
+        else:
+            runs.append((a.group, [a]))
+    return runs
+
+
 def render_summary_md(s: MeetingSummary) -> str:
     """Render a validated summary into the human-readable `<stem>.summary.md`."""
     lines: list[str] = [f"# {s.title}", ""]
@@ -115,11 +136,19 @@ def render_summary_md(s: MeetingSummary) -> str:
 
     if s.actions:
         lines.append("## Action Items")
-        for a in s.actions:
-            owner = a.owner or "_unassigned_"
-            due = f" - due {a.due}" if a.due else ""
-            box = "[x]" if a.resolved else "[ ]"
-            lines.append(f"- {box} **{owner}**: {a.task}{due}  _(confidence: {a.confidence})_")
+        # AI10: a roll-up across many meetings (the weekly digest) tags each
+        # action with the workflow or meeting it came from, so the list reads as
+        # named groups instead of one long run. A meeting summary tags nothing
+        # and renders exactly as it always did, flat and heading-free.
+        for group, items in _action_runs(s.actions):
+            if group:
+                lines.append("")
+                lines.append(f"### {group}")
+            for a in items:
+                owner = a.owner or "_unassigned_"
+                due = f" - due {a.due}" if a.due else ""
+                box = "[x]" if a.resolved else "[ ]"
+                lines.append(f"- {box} **{owner}**: {a.task}{due}  _(confidence: {a.confidence})_")
         lines.append("")
 
     if s.questions:

@@ -379,11 +379,21 @@ struct AppleIntelligenceSummarizer {
         }
         if !s.actions.isEmpty {
             lines.append("## Action Items")
-            for a in s.actions {
-                let owner = (a.owner?.isEmpty == false) ? a.owner! : "_unassigned_"
-                let due = (a.due?.isEmpty == false) ? " - due \(a.due!)" : ""
-                let box = a.resolved ? "[x]" : "[ ]"
-                lines.append("- \(box) **\(owner)**: \(a.task)\(due)  _(confidence: \(a.confidence))_")
+            // AI10: mirror `markdown._action_runs` - a roll-up across meetings
+            // (the weekly digest) tags each action with its source, and those
+            // runs render under sub-headings. Nothing here tags anything, so
+            // this side always takes the single untagged run.
+            for run in MeetingSummary.actionRuns(s.actions) {
+                if let group = run.group, !group.isEmpty {
+                    lines.append("")
+                    lines.append("### \(group)")
+                }
+                for a in run.actions {
+                    let owner = (a.owner?.isEmpty == false) ? a.owner! : "_unassigned_"
+                    let due = (a.due?.isEmpty == false) ? " - due \(a.due!)" : ""
+                    let box = a.resolved ? "[x]" : "[ ]"
+                    lines.append("- \(box) **\(owner)**: \(a.task)\(due)  _(confidence: \(a.confidence))_")
+                }
             }
             lines.append("")
         }

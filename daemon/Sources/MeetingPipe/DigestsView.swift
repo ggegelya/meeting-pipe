@@ -193,15 +193,29 @@ struct DigestsView: View {
 /// Detail pane: the selected digest, rendered with the standard summary view in the wide reading
 /// column. Gets the full detail width (and full height) instead of the narrow, vertically-split
 /// center column the reader used to share with the list.
+///
+/// AI10: the action list here is a bounded, grouped slice of the review window, not the library's
+/// whole open set, and the digest's own `Action scope` section says what it left out. `onOpenFacts`
+/// is where the rest lives, so the tail stays one click away rather than dumped into the read.
 struct DigestReaderView: View {
     @ObservedObject var model: DigestListModel
+    let onOpenFacts: () -> Void
 
     var body: some View {
         if let sel = model.selected {
             ScrollView {
-                SummaryRenderedView(summary: sel.summary)
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 0) {
+                    SummaryRenderedView(summary: sel.summary)
+                    Button(action: onOpenFacts) {
+                        Label("See every open action in Facts", systemImage: "list.bullet.rectangle")
+                            .font(.mpTextXS)
+                    }
+                    .buttonStyle(.link)
+                    .padding(.horizontal, MPSpace.s5)
+                    .padding(.bottom, MPSpace.s5)
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         } else {
             Text("Select a digest to read it.")

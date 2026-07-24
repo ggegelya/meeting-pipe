@@ -106,6 +106,55 @@
         "detected_language": "en"
       },
       "expected": "# Client call\n\n_Language: en_\n\n## Summary\n- Reviewed Q3 numbers\n\n## Billable follow-ups\n- Invoice Acme\n- Send the SOW\n"
+    },
+    {
+      "name": "action_groups_ai10",
+      "input": {
+        "title": "Weekly review (2026-06-27 to 2026-07-04)",
+        "summary": [
+          "2 commitments are past due in Standup"
+        ],
+        "decisions": [
+          "Ship on Friday (Client sync)"
+        ],
+        "actions": [
+          {
+            "task": "Email the vendor",
+            "owner": "Alice",
+            "due": "2026-06-01",
+            "confidence": "high",
+            "resolved": false,
+            "group": "Standup"
+          },
+          {
+            "task": "Draft the SOW",
+            "owner": null,
+            "due": null,
+            "confidence": "medium",
+            "resolved": false,
+            "group": "Standup"
+          },
+          {
+            "task": "Book the room",
+            "owner": "Bob",
+            "due": "2026-07-05",
+            "confidence": "low",
+            "resolved": false,
+            "group": "Client sync"
+          }
+        ],
+        "extra_sections": [
+          {
+            "name": "Action scope",
+            "content": [
+              "Showing 3 of 40 open action(s) from the last 7 day(s), across 2 of 6 group(s).",
+              "Standup: 2 of 31 shown"
+            ]
+          }
+        ],
+        "detected_language": "en"
+      },
+      "expected": "# Weekly review (2026-06-27 to 2026-07-04)\n\n_Language: en_\n\n## Summary\n- 2 commitments are past due in Standup\n\n## Decisions\n1. Ship on Friday (Client sync)\n\n## Action Items\n\n### Standup\n- [ ] **Alice**: Email the vendor - due 2026-06-01  _(confidence: high)_\n- [ ] **_unassigned_**: Draft the SOW  _(confidence: medium)_\n\n### Client sync\n- [ ] **Bob**: Book the room - due 2026-07-05  _(confidence: low)_\n\n## Action scope\n- Showing 3 of 40 open action(s) from the last 7 day(s), across 2 of 6 group(s).\n- Standup: 2 of 31 shown\n"
     }
   ]
 }
