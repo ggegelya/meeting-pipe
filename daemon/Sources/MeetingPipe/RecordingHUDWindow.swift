@@ -240,6 +240,10 @@ final class RecordingHUDWindow {
         recordingLabel?.textColor = on ? MPColors.pulse600 : MPColors.fgMuted
         offRecordButton?.setActive(on)
         (contentView as? HUDBackgroundView)?.isOffRecord = on
+        // Drop the meter on the click rather than at the next 10 Hz poll, so the toggle reads as
+        // instant. Also the only cover for a stalled mic tap, which leaves the recorder's level
+        // frozen at its last value: without this the meter would sit lit beside the label forever.
+        if on { levelMeter?.level = 0 }
         if degradedBanner == nil {
             resizePanelAnchoringTopRight(width: on ? Self.offRecordPanelWidth : Self.panelWidth, height: Self.panelHeight)
         }

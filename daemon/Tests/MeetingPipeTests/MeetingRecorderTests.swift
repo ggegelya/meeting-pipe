@@ -1,11 +1,12 @@
 import AVFoundation
+import MeetingPipeCore
 import XCTest
 @testable import MeetingPipe
 
 /// Tests for the static helpers on `MeetingRecorder` that don't depend
-/// on AVAudioEngine being live. Today this is the WAV header parser
-/// used by both the post-merge parity check and the pre-merge
-/// intermediate-duration diagnostic (P1.4).
+/// on AVAudioEngine being live: the WAV header parser used by both the
+/// post-merge parity check and the pre-merge intermediate-duration
+/// diagnostic (P1.4), and the HUD meter's level rule.
 final class MeetingRecorderTests: XCTestCase {
 
     // MARK: - audioDurationSec
@@ -380,6 +381,64 @@ final class MeetingRecorderTests: XCTestCase {
         XCTAssertEqual(
             RecordingPostProcessor.mergingTempURL(forFinal: final).lastPathComponent,
             "20260627-101500.merging.wav"
+        )
+    }
+
+    // MARK: - meterLevelDb
+
+    /// The regression: the HUD meter reports the off-the-record toggle, not the mic hardware, so an
+    /// open span reads silent in every capture mode. Capture-first used to keep it live (the mic
+    /// really is still recording, the span is redacted offline), which read as "the button did
+    /// nothing" next to the mic-slash glyph and the "Off the record" label.
+    func test_meterLevelDb_reads_silent_while_off_the_record_in_every_mode() {
+        for mode in [CaptureMode.captureFirst, .captureFirstRedact, .regulatedGate] {
+            XCTAssertEqual(
+                MeetingRecorder.meterLevelDb(
+                    micDb: -12, mode: mode, verdict: .hot(reason: .voiceActivityDetected), offRecord: true
+                ),
+                -120,
+                "\(mode) must read silent while off the record"
+            )
+        }
+    }
+
+    /// On the record, lossless capture shows the live level even when the mute oracle says muted:
+    /// that audio IS written, and the whole point of capture-first is not trusting the oracle.
+    func test_meterLevelDb_capture_first_shows_the_live_level_on_the_record() {
+        XCTAssertEqual(
+            MeetingRecorder.meterLevelDb(
+                micDb: -12, mode: .captureFirst, verdict: .hot(reason: .voiceActivityDetected), offRecord: false
+            ),
+            -12
+        )
+        XCTAssertEqual(
+            MeetingRecorder.meterLevelDb(
+                micDb: -12, mode: .captureFirst, verdict: .mutedByHardware, offRecord: false
+            ),
+            -12
+        )
+    }
+
+    /// Under the regulated gate the meter matches what is written: the writer zeroes anything that
+    /// is not `.hot`, so only `.hot` lights the meter.
+    func test_meterLevelDb_regulated_gate_follows_the_verdict() {
+        XCTAssertEqual(
+            MeetingRecorder.meterLevelDb(
+                micDb: -12, mode: .regulatedGate, verdict: .hot(reason: .voiceActivityDetected), offRecord: false
+            ),
+            -12
+        )
+        XCTAssertEqual(
+            MeetingRecorder.meterLevelDb(
+                micDb: -12, mode: .regulatedGate, verdict: .mutedByHardware, offRecord: false
+            ),
+            -120
+        )
+        XCTAssertEqual(
+            MeetingRecorder.meterLevelDb(
+                micDb: -12, mode: .regulatedGate, verdict: .uncertain(reasons: ["not_started"]), offRecord: false
+            ),
+            -120
         )
     }
 

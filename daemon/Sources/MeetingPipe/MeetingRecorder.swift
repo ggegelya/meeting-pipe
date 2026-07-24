@@ -93,6 +93,23 @@ final class MeetingRecorder {
     /// main, so they share one lock rather than two unsynchronized fields.
     func currentMicLevelDb() -> Float { gateAccess.withLock { $0.levelDb } }
 
+    /// What the HUD meter reads, in dBFS, for a buffer whose live level is `micDb`.
+    ///
+    /// An open off-the-record span reads as silence in EVERY mode. The meter is the feedback for the
+    /// control the user just pressed, and under capture-first the mic keeps recording (the span is
+    /// redacted offline), so the meter used to keep bouncing beside the "Off the record" label. That
+    /// reads as "the button did nothing" (observed 2026-07-24); a `mic.slash` glyph next to a live
+    /// meter is a straight contradiction. Reporting the mute the user asked for beats reporting a
+    /// capture detail they cannot act on, and the retained full recording still carries the truth.
+    ///
+    /// Otherwise the meter follows what is written: the live level under lossless capture, silence
+    /// under the regulated gate whenever the verdict zero-fills the buffer.
+    static func meterLevelDb(micDb: Float, mode: CaptureMode, verdict: MicGateVerdict, offRecord: Bool) -> Float {
+        if offRecord { return -120 }
+        if mode.capturesLosslessly { return micDb }
+        return verdict.passesLiveAudio ? micDb : -120
+    }
+
     /// Applies the current MicGate verdict onto each mic tap buffer. Built
     /// at `start()`, released at `stop()`; render-thread only.
     private(set) var micGateWriter: MicGateWriter?
@@ -783,17 +800,15 @@ final class MeetingRecorder {
             let mode = captureMode
             // TECH-CONC2/UX8: read the gate verdict and stash the HUD VU level
             // under one lock acquisition, so the render thread never tears a
-            // multi-word verdict the main thread is mid-write. Under capture-first
-            // the mic is recorded live regardless of mute, so the meter shows the
-            // live level; under the regulated gate it shows silence when gated,
-            // matching what is actually written. The HUD polls it at 10 Hz.
+            // multi-word verdict the main thread is mid-write. The level rule
+            // itself is pure (`meterLevelDb`), so it is pinned by tests rather
+            // than buried in the tap. The HUD polls it at 10 Hz.
             let (verdict, offRecord) = gateAccess.withLock { access -> (MicGateVerdict, Bool) in
                 let current = access.verdict
                 let off = access.manualOffRecord
-                // Under the regulated gate an off-record buffer is zeroed, so the meter shows
-                // silence; under capture-first the mic is still recorded (offline redaction), so
-                // the meter shows the live level even while off-record.
-                access.levelDb = (mode.capturesLosslessly || (current.passesLiveAudio && !off)) ? db : -120
+                access.levelDb = MeetingRecorder.meterLevelDb(
+                    micDb: db, mode: mode, verdict: current, offRecord: off
+                )
                 return (current, off)
             }
             switch mode {
