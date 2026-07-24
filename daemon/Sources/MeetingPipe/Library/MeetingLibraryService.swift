@@ -115,19 +115,25 @@ final class MeetingLibraryService {
     }
 
     /// Run `work` inside the pipeline lane, or inline when no lane is wired
-    /// (PIPE11). Returns false when the lane coalesced an identical request, in
-    /// which case `work` never runs and the caller answers its own completion.
+    /// (PIPE11). `completion` is answered by whoever ends the run: the lane when
+    /// there is one (so a job dropped from the queue still answers), the token
+    /// directly when there is not. Returns false when the lane coalesced an
+    /// identical request, in which case `work` never runs and the caller answers
+    /// its own completion.
     @discardableResult
     private func serialized(
         _ run: LibraryRun,
         anchor: URL,
+        completion: @escaping (Result<URL?, Error>) -> Void,
         work: @escaping (LibraryRunToken) -> Void
     ) -> Bool {
         guard let lane = libraryRunLane() else {
-            work(LibraryRunToken { _ in })
+            work(LibraryRunToken { completion($0) })
             return true
         }
-        return lane.enqueueLibraryRun(run, anchor: anchor, work: work)
+        return lane.enqueueLibraryRun(
+            run, anchor: anchor, completion: completion, work: work
+        )
     }
 
     /// Whether this meeting is clamped to on-device summarization and local
@@ -205,7 +211,8 @@ final class MeetingLibraryService {
         let startedZeroEgress = Self.isZeroEgress(stem: stem, in: dir)
         let queued = serialized(
             LibraryRun(verb: .regenerate, stem: stem, backend: backend),
-            anchor: transcriptURL
+            anchor: transcriptURL,
+            completion: completion
         ) { [weak self] token in
             guard let self = self else { return token.finish(.success(nil)) }
             Log.writeLine("daemon", "regenerate requested → \(stem)\(backend.map { " (backend=\($0))" } ?? "")")
@@ -227,7 +234,6 @@ final class MeetingLibraryService {
                             self.notifyError(
                                 "Summary regenerated but not published: \(stem) moved into an NDA workflow while it was running. Republish it to send it to that workflow's sinks."
                             )
-                            completion(.success(nil))
                             token.finish(.success(nil))
                             return
                         }
@@ -235,7 +241,6 @@ final class MeetingLibraryService {
                         // directly: re-entering the queue here would wait on a
                         // slot this very job is holding.
                         self.performRepublish(stem: stem, in: dir) { published in
-                            completion(published)
                             token.finish(published)
                         }
                     case .failure(let err):
@@ -244,7 +249,6 @@ final class MeetingLibraryService {
                             "error": err.localizedDescription,
                         ])
                         self.notifyError("Regenerate failed: \(err.localizedDescription)")
-                        completion(.failure(err))
                         token.finish(.failure(err))
                     }
                 }
@@ -975,11 +979,11 @@ final class MeetingLibraryService {
         }
         let queued = serialized(
             LibraryRun(verb: .republish, stem: stem),
-            anchor: dir.appendingPathComponent("\(stem).md")
+            anchor: dir.appendingPathComponent("\(stem).md"),
+            completion: completion
         ) { [weak self] token in
             guard let self = self else { return token.finish(.success(nil)) }
             self.performRepublish(stem: stem, in: dir) { result in
-                completion(result)
                 token.finish(result)
             }
         }

@@ -6,8 +6,10 @@ struct MeetingRow: View, Equatable {
     let meeting: Meeting
     /// Pre-computed by the list; the row never reads `liveRecordingStem` directly.
     let isLiveRecording: Bool
-    /// Live pipeline progress for this row (TECH-UX5); nil unless it is the active job. Pre-matched by the list.
-    let activeProcessing: ActiveProcessing?
+    /// What the pipeline is doing for this meeting (TECH-UX5, UX28): running,
+    /// queued, or nothing. Resolved by the list from the two published surfaces
+    /// so every affordance reads one decision.
+    let processing: ProcessingPresentation
     /// Plain closures so the row neither observes nor retains the library model.
     let onRepublish: () async -> Void
     let onRegenerate: () async -> Void
@@ -15,6 +17,8 @@ struct MeetingRow: View, Equatable {
     let onSoftDelete: () -> Void
     let onExport: (URL) -> Result<Int, Error>
     let onCancelProcessing: () -> Void
+    /// UX28: drop a job that has not started yet.
+    let onDequeueProcessing: (UUID) -> Void
     /// Whether this row is the current list selection. Drives the teal selection
     /// wash that replaces the macOS system-blue highlight (the app `.tint` can't
     /// recolor inset-list selection). Pre-computed by the list against the set.
@@ -24,15 +28,8 @@ struct MeetingRow: View, Equatable {
     static func == (lhs: MeetingRow, rhs: MeetingRow) -> Bool {
         lhs.meeting == rhs.meeting
             && lhs.isLiveRecording == rhs.isLiveRecording
-            && lhs.activeProcessing == rhs.activeProcessing
+            && lhs.processing == rhs.processing
             && lhs.isSelected == rhs.isSelected
-    }
-
-    @State private var inFlight: InFlight? = nil
-
-    enum InFlight: Equatable {
-        case republishing
-        case regenerating
     }
 
     var body: some View {
@@ -116,24 +113,23 @@ struct MeetingRow: View, Equatable {
             .accessibilityLabel("Summary edited locally")
     }
 
-    /// Trailing status cluster (no date): an in-flight badge, or an optional
-    /// inline-fix button plus the status pill / live processing indicator. Shared
-    /// by both layouts; the date is appended separately so the tile can move it to
-    /// line 2 without the one-line width reservation.
+    /// Trailing status cluster (no date): the live processing indicator, the
+    /// queued state, or an optional inline-fix button plus the status pill.
+    /// Shared by both layouts; the date is appended separately so the tile can
+    /// move it to line 2 without the one-line width reservation.
     @ViewBuilder
     private var trailingStatusCluster: some View {
         HStack(spacing: 8) {
-            if let inFlight = inFlight {
-                inFlightBadge(inFlight)
-            } else {
+            switch processing {
+            case .active:
+                processingIndicator
+            case .queued(let job):
+                queuedIndicator(job)
+            case .idle:
                 if let fix = inlineFix {
                     inlineFixButton(fix)
                 }
-                if let progress = activeProcessing {
-                    processingIndicator(progress)
-                } else {
-                    trailingPill
-                }
+                trailingPill
             }
         }
     }
@@ -286,7 +282,7 @@ struct MeetingRow: View, Equatable {
     private func performInlineFix(_ fix: InlineFix) {
         switch fix {
         case .retryRun:                           runRetry()
-        case .retryPublish, .publish, .republish: Task { await republish() }
+        case .retryPublish, .publish, .republish: Task { await onRepublish() }
         case .revealBundle:                       revealBundle()
         case .revealRecording:                    revealRecording()
         }
@@ -334,20 +330,20 @@ struct MeetingRow: View, Equatable {
         }
     }
 
-    /// Live pipeline progress for the active row (TECH-UX5): stage + elapsed, or
-    /// a Stalled pill with a Cancel button when the heartbeat lapses.
+    /// Live pipeline state for the active row: stage + elapsed (or a re-run's own
+    /// label), a Stalled pill when the heartbeat lapses, and Cancel either way.
+    ///
+    /// UX28: Cancel used to appear only under the stalled branch, so a mistaken
+    /// Reprocess could not be stopped for its whole ~110 s run. The stalled pill
+    /// still reads Stalled; the only change is that a healthy job is stoppable.
     @ViewBuilder
-    private func processingIndicator(_ p: ActiveProcessing) -> some View {
-        if p.stalled {
-            HStack(spacing: 6) {
+    private var processingIndicator: some View {
+        HStack(spacing: 6) {
+            if processing.isStalled {
                 MPStatusPill(kind: .failed, label: "Stalled")
-                Button("Cancel") { onCancelProcessing() }
-                    .controlSize(.small)
-            }
-        } else {
-            HStack(spacing: 5) {
+            } else {
                 ProgressView().controlSize(.small)
-                Text("\(Self.stageLabel(p.stage)) \(MeetingRow.formatDuration(Double(p.elapsedSec)))")
+                Text(processing.label)
                     .font(.mpTextXS.monospacedDigit())
                     .foregroundStyle(Color(MPColors.fgSubtle))
                     // Pin to one line like MPStatusPill (TECH-DSN14); at narrow
@@ -355,7 +351,27 @@ struct MeetingRow: View, Equatable {
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
             }
+            Button("Cancel") { onCancelProcessing() }
+                .controlSize(.small)
+                .accessibilityLabel("Cancel processing")
         }
+    }
+
+    /// A job that has not started (UX28). Quiet by design: it is not an error and
+    /// not progress, it is a wait, and before this it looked identical to a
+    /// finished meeting. Remove drops it from the queue; nothing was spawned.
+    private func queuedIndicator(_ job: QueuedJob) -> some View {
+        HStack(spacing: 6) {
+            Text(processing.label)
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgMuted))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+            Button("Remove") { onDequeueProcessing(job.id) }
+                .controlSize(.small)
+                .accessibilityLabel("Remove \(job.label) from the queue")
+        }
+        .help("Waiting for the current job to finish.")
     }
 
     /// Maps a pipeline stage id to a present-tense label.
@@ -429,14 +445,14 @@ struct MeetingRow: View, Equatable {
         let transcriptExists = meeting.hasTranscriptMD
 
         Button("Republish") {
-            Task { await republish() }
+            Task { await onRepublish() }
         }
-        .disabled(!summaryExists || inFlight != nil)
+        .disabled(!summaryExists || processing.isBusy)
 
         Button("Regenerate summary") {
-            Task { await regenerate() }
+            Task { await onRegenerate() }
         }
-        .disabled(!transcriptExists || inFlight != nil)
+        .disabled(!transcriptExists || processing.isBusy)
 
         if meeting.status == .failed {
             Button("Reprocess") {
@@ -449,7 +465,7 @@ struct MeetingRow: View, Equatable {
         Button("Export…") {
             promptExport()
         }
-        .disabled(inFlight != nil)
+        .disabled(processing.isBusy)
 
         Button("Reveal in Finder") {
             NSWorkspace.shared.activateFileViewerSelecting([meeting.revealURL])
@@ -462,33 +478,16 @@ struct MeetingRow: View, Equatable {
         } label: {
             Text("Move to Trash…")
         }
-        .disabled(inFlight != nil)
-    }
-
-    private func inFlightBadge(_ state: InFlight) -> some View {
-        HStack(spacing: 4) {
-            ProgressView().controlSize(.small)
-            Text(state == .republishing ? "Publishing" : "Regenerating")
-                .font(.caption2)
-                .foregroundStyle(Color(MPColors.fgMuted))
-        }
+        .disabled(processing.isBusy)
     }
 
     // MARK: Actions
 
-    @MainActor
-    private func republish() async {
-        inFlight = .republishing
-        await onRepublish()
-        inFlight = nil
-    }
-
-    @MainActor
-    private func regenerate() async {
-        inFlight = .regenerating
-        await onRegenerate()
-        inFlight = nil
-    }
+    // UX28: the per-row `inFlight` @State and its badge are gone. It was set
+    // only by this row's own context-menu actions, so the same regenerate
+    // started from the detail menu or the Summary tab showed nothing anywhere,
+    // and a run started from here vanished the moment the row was recycled. The
+    // published `ProcessingPresentation` replaces it for every affordance.
 
     /// Reveal the manual-paste transcript bundle (`<stem>.READY_FOR_MANUAL.md`)
     /// in Finder (UX15). A paste-pending meeting is too long for an automatic

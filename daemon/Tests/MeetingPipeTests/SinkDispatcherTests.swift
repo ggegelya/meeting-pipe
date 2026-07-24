@@ -639,6 +639,20 @@ final class SinkDispatcherTests: XCTestCase {
         URL(fileURLWithPath: "/tmp/\(stem).md")
     }
 
+    /// Enqueue a re-run with the default anchor and a completion the test can
+    /// ignore, so the bodies below stay about the queueing.
+    @discardableResult
+    private func enqueueRun(
+        _ dispatcher: SinkDispatcher,
+        _ run: LibraryRun,
+        completion: @escaping (Result<URL?, Error>) -> Void = { _ in },
+        work: @escaping (LibraryRunToken) -> Void
+    ) -> Bool {
+        dispatcher.enqueueLibraryRun(
+            run, anchor: anchor(run.stem), completion: completion, work: work
+        )
+    }
+
     /// The headline race: on 2026-07-23 a Reprocess and a regenerate ran on the
     /// same meeting at once and the surviving summary was whichever subprocess
     /// exited last. Sharing one lane is what makes that impossible.
@@ -652,7 +666,7 @@ final class SinkDispatcherTests: XCTestCase {
         waitForPipelineStart(driver)
 
         var started = false
-        let queued = dispatcher.enqueueLibraryRun(regenerate("clip"), anchor: anchor("clip")) { token in
+        let queued = enqueueRun(dispatcher, regenerate("clip")) { token in
             started = true
             token.finish(.success(nil))
         }
@@ -676,7 +690,7 @@ final class SinkDispatcherTests: XCTestCase {
         let dispatcher = SinkDispatcher(launcher: driver, transcriptionRunner: runner)
 
         var started = false
-        dispatcher.enqueueLibraryRun(regenerate("m"), anchor: anchor("m")) { token in
+        enqueueRun(dispatcher, regenerate("m")) { token in
             started = true
             token.finish(.success(nil))
         }
@@ -699,12 +713,14 @@ final class SinkDispatcherTests: XCTestCase {
         waitForPipelineStart(driver)
 
         var starts = 0
-        let first = dispatcher.enqueueLibraryRun(
-            regenerate("m", backend: "anthropic"), anchor: anchor("m")
-        ) { token in starts += 1; token.finish(.success(nil)) }
-        let second = dispatcher.enqueueLibraryRun(
-            regenerate("m", backend: "anthropic"), anchor: anchor("m")
-        ) { token in starts += 1; token.finish(.success(nil)) }
+        let first = enqueueRun(dispatcher, regenerate("m", backend: "anthropic")) { token in
+            starts += 1
+            token.finish(.success(nil))
+        }
+        let second = enqueueRun(dispatcher, regenerate("m", backend: "anthropic")) { token in
+            starts += 1
+            token.finish(.success(nil))
+        }
 
         XCTAssertTrue(first)
         XCTAssertFalse(second, "the same ask twice is one ask")
@@ -727,12 +743,12 @@ final class SinkDispatcherTests: XCTestCase {
         dispatcher.enqueue(file: wav, summaryMode: .auto)
         waitForPipelineStart(driver)
 
-        XCTAssertTrue(dispatcher.enqueueLibraryRun(
-            regenerate("m", backend: "local"), anchor: anchor("m")
-        ) { $0.finish(.success(nil)) })
-        XCTAssertTrue(dispatcher.enqueueLibraryRun(
-            regenerate("m", backend: "anthropic"), anchor: anchor("m")
-        ) { $0.finish(.success(nil)) })
+        XCTAssertTrue(enqueueRun(dispatcher, regenerate("m", backend: "local")) {
+            $0.finish(.success(nil))
+        })
+        XCTAssertTrue(enqueueRun(dispatcher, regenerate("m", backend: "anthropic")) {
+            $0.finish(.success(nil))
+        })
         XCTAssertEqual(dispatcher.queueDepth, 3)
     }
 
@@ -745,11 +761,11 @@ final class SinkDispatcherTests: XCTestCase {
         var order: [String] = []
         var finishers: [LibraryRunToken] = []
 
-        XCTAssertTrue(dispatcher.enqueueLibraryRun(regenerate("a"), anchor: anchor("a")) { token in
+        XCTAssertTrue(enqueueRun(dispatcher, regenerate("a")) { token in
             order.append("a")
             finishers.append(token)
         })
-        XCTAssertTrue(dispatcher.enqueueLibraryRun(regenerate("b"), anchor: anchor("b")) { token in
+        XCTAssertTrue(enqueueRun(dispatcher, regenerate("b")) { token in
             order.append("b")
             finishers.append(token)
         })
@@ -769,7 +785,7 @@ final class SinkDispatcherTests: XCTestCase {
         dispatcher.onJobCompleted = { completed.append(($0, $1)) }
         struct Boom: Error {}
 
-        dispatcher.enqueueLibraryRun(regenerate("m"), anchor: anchor("m")) { token in
+        enqueueRun(dispatcher, regenerate("m")) { token in
             token.finish(.failure(Boom()))
         }
         drainMain()
@@ -778,6 +794,172 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertEqual(completed.first?.0.kind, .libraryRun(regenerate("m")))
         if case .failure = completed.first?.1 {} else { XCTFail("expected .failure") }
         XCTAssertEqual(dispatcher.queueDepth, 0)
+    }
+
+    // MARK: - Queue visibility + dequeue (UX28)
+
+    /// Queued work used to have no state at all: a second Reprocess click
+    /// appended a duplicate that looked identical to a finished meeting.
+    func test_pending_jobs_name_the_waiting_work() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        var published: [[QueuedJob]] = []
+        dispatcher.onQueueChanged = { published.append($0) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        XCTAssertTrue(dispatcher.pendingJobs.isEmpty, "the active job is not pending")
+
+        enqueueRun(dispatcher, regenerate("m", backend: "anthropic")) { $0.finish(.success(nil)) }
+
+        XCTAssertEqual(dispatcher.pendingJobs.count, 1)
+        XCTAssertEqual(dispatcher.pendingJobs.first?.stem, "m")
+        XCTAssertEqual(dispatcher.pendingJobs.first?.label, "Re-summarize")
+        XCTAssertEqual(published.last?.count, 1, "the surface is published, not only readable")
+    }
+
+    /// A not-yet-started job is removable, exactly once.
+    func test_removePending_drops_the_job_once() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        var started = false
+        enqueueRun(dispatcher, regenerate("m")) { token in
+            started = true
+            token.finish(.success(nil))
+        }
+        let id = try XCTUnwrap(dispatcher.pendingJobs.first?.id)
+
+        XCTAssertTrue(dispatcher.removePending(id: id))
+        XCTAssertFalse(dispatcher.removePending(id: id), "a second removal finds nothing")
+        XCTAssertEqual(dispatcher.queueDepth, 1)
+        XCTAssertTrue(dispatcher.pendingJobs.isEmpty)
+
+        // The removed job must not run when the lane frees up.
+        driver.finish(.success(nil))
+        drainMain()
+        XCTAssertFalse(started)
+    }
+
+    /// The active job is Cancel's business, not this one, so it is never offered
+    /// as pending; and an id nobody knows is a no-op rather than a crash.
+    func test_removePending_never_reaches_a_running_job() {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+
+        var token: LibraryRunToken?
+        enqueueRun(dispatcher, regenerate("m")) { token = $0 }
+
+        XCTAssertNotNil(token, "the lane was free, so this one is active")
+        XCTAssertTrue(dispatcher.pendingJobs.isEmpty, "a running job is not dequeuable")
+        XCTAssertFalse(dispatcher.removePending(id: UUID()))
+        XCTAssertEqual(dispatcher.queueDepth, 1, "the running job is untouched")
+    }
+
+    /// The caller of a dequeued run is awaiting an answer; without one its Task
+    /// stays suspended for the life of the app.
+    func test_a_dequeued_library_run_answers_its_caller() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+
+        var answer: Result<URL?, Error>?
+        enqueueRun(dispatcher, regenerate("m"), completion: { answer = $0 }) {
+            $0.finish(.success(nil))
+        }
+        let id = try XCTUnwrap(dispatcher.pendingJobs.first?.id)
+        XCTAssertTrue(dispatcher.removePending(id: id))
+
+        guard case .failure(let err)? = answer else {
+            return XCTFail("a dropped job must answer, and not with a success it never had")
+        }
+        XCTAssertEqual(err as? SinkDispatcher.QueueError, .dequeued)
+    }
+
+    /// A dequeued re-transcribe must not report success either: its caller would
+    /// carry overlays onto a transcript that was never rewritten (ASR3).
+    func test_a_dequeued_retranscribe_answers_with_a_failure() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wavA = try makeTempWav()
+        let wavB = try makeTempWav()
+        defer {
+            try? FileManager.default.removeItem(at: wavA.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: wavB.deletingLastPathComponent())
+        }
+
+        dispatcher.enqueue(file: wavA, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        var landed: Result<Void, Error>?
+        dispatcher.enqueueRetranscribe(file: wavB) { landed = $0 }
+        let id = try XCTUnwrap(dispatcher.pendingJobs.first?.id)
+
+        XCTAssertTrue(dispatcher.removePending(id: id))
+        guard case .failure? = landed else { return XCTFail("expected the caller to be told") }
+    }
+
+    // MARK: - The busy chip's only signal (UX28 leg c)
+
+    func test_a_library_run_publishes_and_clears_its_busy_state() {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        var runs: [LibraryRun?] = []
+        dispatcher.onActiveLibraryRun = { runs.append($0) }
+
+        var token: LibraryRunToken?
+        enqueueRun(dispatcher, regenerate("m", backend: "anthropic")) { token = $0 }
+
+        XCTAssertEqual(runs.count, 1)
+        XCTAssertEqual(runs.first ?? nil, regenerate("m", backend: "anthropic"))
+
+        token?.finish(.success(nil))
+        drainMain()
+        XCTAssertEqual(runs.count, 2)
+        XCTAssertNil(runs.last ?? nil, "the chip clears when the run lands")
+    }
+
+    func test_a_failed_library_run_clears_its_busy_state_too() {
+        // A chip that outlives its job is the same lie as no chip at all.
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        var runs: [LibraryRun?] = []
+        dispatcher.onActiveLibraryRun = { runs.append($0) }
+        struct Boom: Error {}
+
+        enqueueRun(dispatcher, regenerate("m")) { $0.finish(.failure(Boom())) }
+        drainMain()
+
+        XCTAssertEqual(runs.count, 2)
+        XCTAssertNil(runs.last ?? nil)
+    }
+
+    /// Leg (e): the re-run's subprocess is retained now, so the same Cancel path
+    /// run-all uses reaches it. The launcher's termination then completes the job
+    /// as a normal retryable failure.
+    func test_cancel_reaches_an_active_library_run() {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        var token: LibraryRunToken?
+        enqueueRun(dispatcher, regenerate("m")) { token = $0 }
+
+        dispatcher.cancelActiveJob()
+        XCTAssertTrue(driver.cancelCalled)
+
+        struct Cancelled: Error {}
+        token?.finish(.failure(Cancelled()))
+        drainMain()
+        XCTAssertEqual(dispatcher.queueDepth, 0, "a cancelled re-run drains like any failure")
     }
 
     /// A failed finalize reaches the caller rather than being swallowed, and the

@@ -25,13 +25,15 @@ struct LibraryRunToken {
 /// driven by a fake in tests, and so the queue coupling is one named seam rather
 /// than a reach through the Coordinator.
 protocol LibraryRunLane: AnyObject {
-    /// Enqueue `work` behind whatever the lane is already doing. Returns false
-    /// when an identical run is already queued, in which case nothing was
-    /// enqueued and `work` never runs.
+    /// Enqueue `work` behind whatever the lane is already doing, answering
+    /// `completion` with whatever it finishes with (or with a dequeue failure if
+    /// it is dropped before it starts). Returns false when an identical run is
+    /// already queued, in which case nothing was enqueued and `work` never runs.
     @discardableResult
     func enqueueLibraryRun(
         _ run: LibraryRun,
         anchor: URL,
+        completion: @escaping (Result<URL?, Error>) -> Void,
         work: @escaping (LibraryRunToken) -> Void
     ) -> Bool
 }
@@ -45,6 +47,8 @@ final class PipelineJobDispatcher: LibraryRunLane {
     private let onQueueDepth: (Int) -> Void
     private let onProgress: (_ stem: String, _ progress: PipelineProgress) -> Void
     private let onStalled: (_ stem: String) -> Void
+    private let onPending: ([QueuedJob]) -> Void
+    private let onLibraryRun: (LibraryRun?) -> Void
 
     init(
         sinkDispatcher: SinkDispatcher,
@@ -52,7 +56,9 @@ final class PipelineJobDispatcher: LibraryRunLane {
         onError: @escaping (String) -> Void,
         onQueueDepth: @escaping (Int) -> Void,
         onProgress: @escaping (_ stem: String, _ progress: PipelineProgress) -> Void = { _, _ in },
-        onStalled: @escaping (_ stem: String) -> Void = { _ in }
+        onStalled: @escaping (_ stem: String) -> Void = { _ in },
+        onPending: @escaping ([QueuedJob]) -> Void = { _ in },
+        onLibraryRun: @escaping (LibraryRun?) -> Void = { _ in }
     ) {
         self.sinkDispatcher = sinkDispatcher
         self.onDone = onDone
@@ -60,8 +66,16 @@ final class PipelineJobDispatcher: LibraryRunLane {
         self.onQueueDepth = onQueueDepth
         self.onProgress = onProgress
         self.onStalled = onStalled
+        self.onPending = onPending
+        self.onLibraryRun = onLibraryRun
         sinkDispatcher.onQueueDepthChanged = { [weak self] depth in
             self?.onQueueDepth(depth)
+        }
+        sinkDispatcher.onQueueChanged = { [weak self] pending in
+            self?.onPending(pending)
+        }
+        sinkDispatcher.onActiveLibraryRun = { [weak self] run in
+            self?.onLibraryRun(run)
         }
         sinkDispatcher.onJobCompleted = { [weak self] job, result in
             self?.route(job: job, result: result)
@@ -93,14 +107,23 @@ final class PipelineJobDispatcher: LibraryRunLane {
     func enqueueLibraryRun(
         _ run: LibraryRun,
         anchor: URL,
+        completion: @escaping (Result<URL?, Error>) -> Void,
         work: @escaping (LibraryRunToken) -> Void
     ) -> Bool {
-        sinkDispatcher.enqueueLibraryRun(run, anchor: anchor, work: work)
+        sinkDispatcher.enqueueLibraryRun(
+            run, anchor: anchor, completion: completion, work: work
+        )
     }
 
     /// Cancel the active pipeline subprocess (TECH-UX5).
     func cancelActive() {
         sinkDispatcher.cancelActiveJob()
+    }
+
+    /// UX28: drop a job that has not started yet.
+    @discardableResult
+    func removePending(id: UUID) -> Bool {
+        sinkDispatcher.removePending(id: id)
     }
 
     var queueDepth: Int { sinkDispatcher.queueDepth }
@@ -110,13 +133,22 @@ final class PipelineJobDispatcher: LibraryRunLane {
         // is already showing its own progress and result, so it owns its feedback
         // (ASR3). Routing it here would fire "meeting published" per meeting in a
         // batch, over a summary that was never regenerated.
-        guard job.kind == .full else { return }
+        guard job.kind != .retranscribe else { return }
         switch result {
         case .success(let pageURL):
+            // UX28 leg (d): a regenerate / republish lands on the same
+            // done-notification a run-all does, so finishing is visible from
+            // wherever it was started, instead of the only observable being a
+            // republish event in a log 100 s later.
             let stem = job.file.deletingPathExtension().lastPathComponent
             let recordingsDir = job.file.deletingLastPathComponent()
             onDone(stem, recordingsDir, pageURL)
         case .failure(let err):
+            // A library re-run's failure is already surfaced by
+            // `MeetingLibraryService` with the verb the user asked for
+            // ("Regenerate failed: ..."), so routing it here too would say the
+            // same thing twice in less specific words.
+            if case .libraryRun = job.kind { return }
             onError("Pipeline failed: \(err.localizedDescription)")
         }
     }

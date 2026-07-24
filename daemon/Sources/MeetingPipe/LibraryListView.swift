@@ -233,9 +233,14 @@ struct LibraryListView: View {
     /// off the model's live flags, not re-derived from on-disk status.
     private var inProgressMeetings: [Meeting] {
         guard case .allMeetings = scope else { return [] }
+        let queued = Set(libraryModel.pendingProcessing.map(\.stem))
         return derived.filtered.filter {
             $0.stem == libraryModel.liveRecordingStem
                 || $0.stem == libraryModel.activeProcessing?.stem
+                // UX28: a queued meeting is in progress from the user's point of
+                // view; leaving it in its date group is what made a second
+                // Reprocess click look like nothing happened.
+                || queued.contains($0.stem)
         }
     }
 
@@ -279,8 +284,7 @@ struct LibraryListView: View {
         MeetingRow(
             meeting: meeting,
             isLiveRecording: libraryModel.liveRecordingStem == meeting.stem,
-            activeProcessing: libraryModel.activeProcessing?.stem == meeting.stem
-                ? libraryModel.activeProcessing : nil,
+            processing: libraryModel.processing(for: meeting.stem),
             onRepublish: { [weak libraryModel] in
                 _ = await libraryModel?.republishMeeting(stem: meeting.stem)
             },
@@ -300,6 +304,9 @@ struct LibraryListView: View {
             },
             onCancelProcessing: { [weak libraryModel] in
                 libraryModel?.cancelProcessing()
+            },
+            onDequeueProcessing: { [weak libraryModel] id in
+                libraryModel?.dequeueProcessing(id: id)
             },
             isSelected: selection.contains(meeting.id)
         )

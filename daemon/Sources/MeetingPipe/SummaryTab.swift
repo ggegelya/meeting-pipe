@@ -489,19 +489,14 @@ struct SummaryTab: View {
 
     /// PIPE6: re-summarize the existing transcript on a one-shot backend (summarize
     /// + republish), for the failed-state recovery. Does not rewrite the workflow.
+    ///
+    /// UX28: no local alert any more. This was the one affordance of three that
+    /// reported a failure, so the same failure was loud here and silent from the
+    /// detail menu and the row. Every re-run now reports through the shared
+    /// notifier (failure) and the done notification (success), and shows the
+    /// busy chip in the row and the detail header while it runs.
     private func runReSummarize(backend: String) {
-        Task { @MainActor in
-            if case .failure(let err) = await libraryModel.regenerateMeeting(
-                stem: meeting.stem, backend: backend
-            ) {
-                let alert = NSAlert()
-                alert.messageText = "Re-summarize failed"
-                alert.informativeText = err.localizedDescription
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "OK")
-                alert.runModal()
-            }
-        }
+        Task { _ = await libraryModel.regenerateMeeting(stem: meeting.stem, backend: backend) }
     }
 
     private var summaryJsonURL: URL {

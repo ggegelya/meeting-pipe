@@ -116,6 +116,17 @@ enum ProcessingJobKind: Equatable {
         case .libraryRun(let run): return run.verb.rawValue
         }
     }
+
+    /// What this job will do once it reaches the front of the queue (UX28).
+    /// Present tense is deliberately avoided: it has not started.
+    var queuedLabel: String {
+        switch self {
+        case .full: return "Reprocess"
+        case .retranscribe: return "Re-transcribe"
+        case .libraryRun(let run):
+            return run.verb == .regenerate ? "Re-summarize" : "Publish"
+        }
+    }
 }
 
 /// One Library re-run request (PIPE11). Equality is the coalescing key: two
@@ -134,6 +145,31 @@ struct LibraryRun: Equatable {
     let stem: String
     /// PIPE6 one-shot backend override; nil means the workflow's own backend.
     var backend: String? = nil
+
+    /// Present-tense line for the busy chip (UX28). It carries the requested
+    /// engine because "Summarizing" alone cannot tell a local re-run from a
+    /// cloud one, and the owner spent a session unable to tell.
+    var progressLabel: String {
+        switch verb {
+        case .regenerate:
+            switch backend {
+            case "anthropic": return "Summarizing with Anthropic"
+            case "local", "apple_intelligence": return "Summarizing on-device"
+            default: return "Summarizing"
+            }
+        case .republish:
+            return "Publishing"
+        }
+    }
+}
+
+/// A job waiting behind the active one, as the Library renders it (UX28).
+/// Carries its id because the queued state is removable: before this, a second
+/// Reprocess click silently appended a duplicate nothing could take back.
+struct QueuedJob: Equatable, Identifiable {
+    let id: UUID
+    let stem: String
+    let label: String
 }
 
 /// One unit of background pipeline work. Queued sequentially (two concurrent transcription runs would thrash the Neural Engine). Recording is unaffected by queue depth.

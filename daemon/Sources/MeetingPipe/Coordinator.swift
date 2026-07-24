@@ -330,7 +330,29 @@ final class Coordinator: NSObject {
                     stem: stem,
                     stage: prior?.stem == stem ? (prior?.stage ?? "") : "",
                     elapsedSec: prior?.stem == stem ? (prior?.elapsedSec ?? 0) : 0,
-                    stalled: true
+                    stalled: true,
+                    label: prior?.stem == stem ? prior?.label : nil
+                )
+            },
+            // UX28: what is waiting behind the active job, so a queued row can
+            // say so and offer to drop it.
+            onPending: { [weak self] pending in
+                self?.libraryModel.pendingProcessing = pending
+            },
+            // UX28: a Library re-run has no progress heartbeat, so its busy chip
+            // rides this instead. Nil clears it, on success and failure alike.
+            onLibraryRun: { [weak self] run in
+                guard let self = self else { return }
+                guard let run = run else {
+                    self.libraryModel.activeProcessing = nil
+                    return
+                }
+                self.libraryModel.activeProcessing = ActiveProcessing(
+                    stem: run.stem,
+                    stage: run.verb.rawValue,
+                    elapsedSec: 0,
+                    stalled: false,
+                    label: run.progressLabel
                 )
             }
         )

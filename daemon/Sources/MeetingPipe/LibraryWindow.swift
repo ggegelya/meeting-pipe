@@ -74,6 +74,10 @@ struct ActiveProcessing: Equatable {
     let stage: String
     let elapsedSec: Int
     let stalled: Bool
+    /// UX28: a Library re-run's own line ("Summarizing with Anthropic"), because
+    /// `mp summarize` / `mp publish` emit no progress heartbeat to derive a
+    /// stage and an elapsed time from. Nil for a run-all, which has one.
+    var label: String? = nil
 }
 
 final class LibraryWindowModel: ObservableObject {
@@ -92,6 +96,19 @@ final class LibraryWindowModel: ObservableObject {
 
     /// Live pipeline progress for the row being processed (TECH-UX5). Nil when no active pipeline job; the list hands the matching row its snapshot.
     @Published var activeProcessing: ActiveProcessing? = nil
+
+    /// Jobs waiting behind the active one (UX28). Queued work used to be
+    /// invisible and unremovable: a second Reprocess click appended a duplicate
+    /// nothing could take back, and a row waiting its turn looked identical to a
+    /// finished one.
+    @Published var pendingProcessing: [QueuedJob] = []
+
+    /// What this meeting is doing, if anything, and which control to offer.
+    func processing(for stem: String) -> ProcessingPresentation {
+        LibraryProcessing.presentation(
+            stem: stem, active: activeProcessing, pending: pendingProcessing
+        )
+    }
 
     /// Set by the menu-bar Quick Find panel. The root view switches scope to All Meetings, selects the row, then clears this back to nil so the next pick is a fresh edge.
     @Published var pendingSelection: String? = nil
@@ -269,9 +286,16 @@ final class LibraryWindowModel: ObservableObject {
         }
     }
 
-    /// Cancel the active pipeline job (TECH-UX5), e.g. from a stalled row.
+    /// Cancel the active pipeline job (TECH-UX5). Offered for any running job
+    /// since UX28, not only a stalled one.
     func cancelProcessing() {
         coordinator?.cancelActiveJob()
+    }
+
+    /// Drop a job that has not started yet (UX28). Nothing was spawned, so this
+    /// removes it from the queue rather than signalling a subprocess.
+    func dequeueProcessing(id: UUID) {
+        coordinator?.dequeuePendingJob(id: id)
     }
 
     /// AI8: `summarization.user_label`, the display name the pipeline stamps on

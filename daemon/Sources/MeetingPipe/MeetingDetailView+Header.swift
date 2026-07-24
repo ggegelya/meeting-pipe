@@ -18,7 +18,41 @@ extension MeetingDetailView {
             captionRow
             provenanceRow
             if meeting.hasCorrections { editedCaption }
+            processingRow
             publishStateLine
+        }
+    }
+
+    /// What the pipeline is doing for this meeting, and the control for it
+    /// (UX28). The detail pane used to show nothing at all for a re-summarize
+    /// started from its own `...` menu: the only busy state lived in the list
+    /// row's private `@State`, so the surface the user was looking at when they
+    /// clicked was the one surface that could not report it.
+    @ViewBuilder
+    var processingRow: some View {
+        let processing = libraryModel.processing(for: meeting.stem)
+        if processing.isBusy {
+            HStack(spacing: 8) {
+                if processing.isStalled {
+                    MPStatusPill(kind: .failed, label: "Stalled")
+                } else if processing.canCancel {
+                    ProgressView().controlSize(.small)
+                }
+                Text(processing.label)
+                    .font(.mpTextXS)
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+                    .lineLimit(1)
+                if processing.canCancel {
+                    Button("Cancel") { libraryModel.cancelProcessing() }
+                        .controlSize(.small)
+                        .accessibilityLabel("Cancel processing")
+                } else if let job = processing.queuedJob {
+                    Button("Remove") { libraryModel.dequeueProcessing(id: job.id) }
+                        .controlSize(.small)
+                        .accessibilityLabel("Remove \(job.label) from the queue")
+                }
+            }
+            .accessibilityElement(children: .contain)
         }
     }
 

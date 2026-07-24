@@ -90,9 +90,17 @@ extension Coordinator {
     // `StatusBarController` (not the Library window) is their caller and it holds a
     // Coordinator, not a service.
 
-    /// Cancel the active pipeline subprocess (TECH-UX5), e.g. from a stalled row.
+    /// Cancel the active pipeline subprocess (TECH-UX5). Offered for any running
+    /// job since UX28, not only a stalled one.
     func cancelActiveJob() {
         jobDispatcher.cancelActive()
+    }
+
+    /// Drop a queued job that has not started (UX28). Nothing was spawned, so
+    /// this is a queue removal, not a subprocess signal.
+    @discardableResult
+    func dequeuePendingJob(id: UUID) -> Bool {
+        jobDispatcher.removePending(id: id)
     }
 
     /// Configured summarization backend, so the UI can gate the local re-run

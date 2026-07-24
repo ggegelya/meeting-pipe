@@ -517,12 +517,17 @@ final class MeetingLibraryServiceTests: XCTestCase {
         private(set) var accepted: [LibraryRun] = []
         private(set) var coalesced: [LibraryRun] = []
         private(set) var finished: [Result<URL?, Error>] = []
-        private var pending: [(run: LibraryRun, work: (LibraryRunToken) -> Void)] = []
+        private var pending: [(
+            run: LibraryRun,
+            completion: (Result<URL?, Error>) -> Void,
+            work: (LibraryRunToken) -> Void
+        )] = []
 
         @discardableResult
         func enqueueLibraryRun(
             _ run: LibraryRun,
             anchor: URL,
+            completion: @escaping (Result<URL?, Error>) -> Void,
             work: @escaping (LibraryRunToken) -> Void
         ) -> Bool {
             if pending.contains(where: { $0.run == run }) {
@@ -530,17 +535,26 @@ final class MeetingLibraryServiceTests: XCTestCase {
                 return false
             }
             accepted.append(run)
-            pending.append((run, work))
+            pending.append((run, completion, work))
             return true
         }
 
-        /// Start the head of the queue, as the real lane does when it frees up.
+        /// Start the head of the queue, as the real lane does when it frees up,
+        /// answering the caller's completion the way the real one does.
         func startNext() {
             guard !pending.isEmpty else { return }
             let head = pending.removeFirst()
             head.work(LibraryRunToken { [weak self] result in
                 self?.finished.append(result)
+                head.completion(result)
             })
+        }
+
+        /// Drop a queued run the way `removePending` does (UX28): the caller is
+        /// answered even though the work never ran.
+        func dropNext() {
+            guard !pending.isEmpty else { return }
+            pending.removeFirst().completion(.failure(SinkDispatcher.QueueError.dequeued))
         }
     }
 
@@ -590,6 +604,24 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertEqual(lane.accepted, [LibraryRun(verb: .republish, stem: "m")])
         lane.startNext()
         XCTAssertEqual(driver.publishInputs.count, 1)
+    }
+
+    func test_a_dequeued_request_answers_its_caller_with_the_reason() throws {
+        // UX28: the queue owns the answer for a library run, so a job the owner
+        // removes before it starts still resumes the Task awaiting it.
+        try touch("m.md")
+        let lane = FakeLane()
+        let service = makeService(lane: lane)
+
+        var answer: Result<URL?, Error>?
+        service.regenerateMeeting(stem: "m") { answer = $0 }
+        lane.dropNext()
+
+        guard case .failure(let err)? = answer else {
+            return XCTFail("a dropped run must answer, and not with a success it never had")
+        }
+        XCTAssertEqual(err as? SinkDispatcher.QueueError, .dequeued)
+        XCTAssertTrue(driver.summarizeInputs.isEmpty, "nothing was spawned")
     }
 
     func test_a_coalesced_request_still_answers_its_caller() throws {

@@ -379,11 +379,14 @@ final class PipelineLauncher: PipelineDriver {
     /// An all-sinks-failed publish exits `publishFailedExitCode` and surfaces here as a failure, not a nil-success (PIPE1/AUD-30).
     /// Never sets `MP_FORCE_BYO` - publish is identical regardless of how the summary was produced.
     /// Publish is far quicker than transcribe + summarize; 10 min is generous headroom for the sinks on a slow link.
+    /// Retained for cancel like `summarize` (UX28 leg e): a publish to a slow
+    /// sink is the other half of a re-run the user may want to stop.
     func publish(
         summaryJSON: URL,
         completion: @escaping (Result<URL?, Error>) -> Void
     ) {
-        runMP(["publish", summaryJSON.path], timeout: 10 * 60, meeting: summaryJSON) { result in
+        runMP(["publish", summaryJSON.path], timeout: 10 * 60, meeting: summaryJSON,
+              retainForCancel: true) { result in
             switch result {
             case .failure(let error):
                 completion(.failure(error))
@@ -538,6 +541,11 @@ final class PipelineLauncher: PipelineDriver {
     /// and regulated/NDA still force local via `effective_backend`. `runMP` is told
     /// the override so `cloudSecretPolicy` keeps the Anthropic key when the user
     /// picks Anthropic on a meeting whose persisted backend is on-device.
+    /// UX28 leg (e): retained for cancel, like `runAll`. A re-summarize is the
+    /// longest thing the Library can start (a cold local model plus a long
+    /// prompt), and it used to be unstoppable because only run-all retained its
+    /// process. Safe as a single slot because PIPE11 put every Library re-run and
+    /// every run-all in one lane, so at most one of them is ever in flight.
     func summarize(
         transcriptMD: URL,
         backend: String?,
@@ -545,7 +553,8 @@ final class PipelineLauncher: PipelineDriver {
     ) {
         var args = ["summarize", transcriptMD.path]
         if let backend { args += ["--backend", backend] }
-        runMP(args, timeout: 20 * 60, meeting: transcriptMD, backendOverride: backend, completion: completion)
+        runMP(args, timeout: 20 * 60, meeting: transcriptMD, retainForCancel: true,
+              backendOverride: backend, completion: completion)
     }
 
     /// Spawn `mp finalize <wav>` (ASR3): stage 1 of run-all on its own, over the
@@ -734,7 +743,7 @@ final class PipelineLauncher: PipelineDriver {
     /// `summarize` layer their sidecar reads on top of this in their own success
     /// closures, so the four near-identical Process blocks collapse to one.
     ///   - onProgress: scan stdout for the `__MP_PROGRESS__` heartbeat (run-all).
-    ///   - retainForCancel: retain the process so `cancelActiveRun()` can terminate it (run-all).
+    ///   - retainForCancel: retain the process so `cancelActiveRun()` can terminate it (run-all, and since UX28 the Library's summarize / publish re-runs; PIPE11's one lane keeps the single slot unambiguous).
     ///   - extraEnv: overlaid on the resolved env (e.g. `MP_FORCE_BYO` for byo runs).
     private func runMP(
         _ args: [String],

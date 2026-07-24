@@ -64,6 +64,9 @@ const SL_MEETINGS = {
   weekly:   { id: "weekly",   title: "Weekly sync",                  source: "Zoom",  dur: "12:07",   wf: SL_WF.general,  when: "Today 14:30",     status: "recording" },
   standup:  { id: "standup",  title: "Standup",                      source: "Slack", dur: "18:04",   wf: SL_WF.general,  when: "Today 10:00",     status: "processing", stage: "Summarizing", elapsed: "1:24" },
   release:  { id: "release",  title: "Release 3.2 validation review", source: "Zoom", dur: "47:21",   wf: SL_WF.eng,      when: "Today 11:02",     status: "ready", edited: true },
+  // UX28: a re-summarize waiting behind the standup's run. Pinned into "In
+  // progress" with the live and processing rows, because waiting is in progress.
+  design:   { id: "design",   title: "Design review",                 source: "Teams", dur: "26:40",  wf: SL_WF.eng,      when: "Today 10:40",     status: "queued", queuedLabel: "Re-summarize" },
   qms:      { id: "qms",      title: "QMS audit prep",               source: "Teams", dur: "55:00",   wf: SL_WF.client,   when: "Today 09:15",     status: "partial", publishError: "network timeout" },
   helix:    { id: "helix",    title: "Helix Diagnostics call",       source: "Teams", dur: "1:12:48", wf: SL_WF.client,   when: "Yesterday 16:30", status: "local", nda: true },
   backlog:  { id: "backlog",  title: "Backlog refinement",           source: "Meet",  dur: "34:12",   wf: SL_WF.eng,      when: "Yesterday 09:30", status: "ready", edited: true },
@@ -377,6 +380,7 @@ const SLAllList = ({ selectedId, multiSelect, checkedIds }) => {
       </div>
       <SLRow {...rowProps("weekly")}/>
       <SLRow {...rowProps("standup")}/>
+      <SLRow {...rowProps("design")}/>
       {groups.map((g) => (
         <div key={g.header}>
           <SLGroupHeader>{g.header}</SLGroupHeader>
@@ -432,7 +436,9 @@ const SLRow = ({ m, selected, multiSelect, checked, action }) => {
       </div>
       {action && <SLRowAction action={action}/>}
       {m.status === "processing"
-        ? <SLProcessing stage={m.stage} elapsed={m.elapsed}/>
+        ? <SLProcessing stage={m.stage} elapsed={m.elapsed} label={m.progressLabel}/>
+        : m.status === "queued"
+        ? <SLQueued label={m.queuedLabel}/>
         : <SLStatusPill status={m.status}/>}
       <span style={{ minWidth: 92, textAlign: "right", fontFamily: "var(--mp-font-mono)", fontVariantNumeric: "tabular-nums", fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-muted)", whiteSpace: "nowrap" }}>{recording ? "now" : m.when}</span>
     </div>
@@ -499,15 +505,37 @@ const SLRowAction = ({ action }) => {
   );
 };
 
-const SLProcessing = ({ stage, elapsed }) => (
+// UX28: Cancel rides alongside every running job, not only a stalled one. A
+// Library re-run has no progress heartbeat, so it shows its own label
+// ("Summarizing with Anthropic") in place of the stage-plus-elapsed pair.
+const SLProcessing = ({ stage, elapsed, label }) => (
   <div style={{ display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
     <span style={{
       width: 12, height: 12, borderRadius: "var(--mp-radius-full)",
       border: "1.5px solid var(--mp-border-faint)", borderTopColor: "var(--mp-signal-500)",
       animation: "slSpin 0.8s linear infinite",
     }}/>
-    <span style={{ fontFamily: "var(--mp-font-mono)", fontVariantNumeric: "tabular-nums", fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-subtle)" }}>{stage} {elapsed}</span>
+    <span style={{ fontFamily: label ? "inherit" : "var(--mp-font-mono)", fontVariantNumeric: "tabular-nums", fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-subtle)" }}>{label || `${stage} ${elapsed}`}</span>
+    <SLQueueBtn>Cancel</SLQueueBtn>
   </div>
+);
+
+// UX28: a job that has not started. Quiet on purpose: it is not progress and
+// not an error, it is a wait, and it used to look identical to a finished row.
+const SLQueued = ({ label }) => (
+  <div style={{ display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }} title="Waiting for the current job to finish.">
+    <span style={{ fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-muted)" }}>Queued: {label}</span>
+    <SLQueueBtn>Remove</SLQueueBtn>
+  </div>
+);
+
+const SLQueueBtn = ({ children }) => (
+  <button className="mp-pressable" style={{
+    height: 19, padding: "0 8px", borderRadius: "var(--mp-radius-full)",
+    fontFamily: "inherit", fontSize: "var(--mp-text-xs)", cursor: "pointer",
+    border: "0.5px solid var(--mp-border-strong)", background: "var(--mp-bg-raised)",
+    color: "var(--mp-fg)",
+  }}>{children}</button>
 );
 
 const SLStatusPill = ({ status }) => {

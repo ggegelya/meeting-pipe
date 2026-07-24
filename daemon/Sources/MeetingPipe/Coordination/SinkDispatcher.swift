@@ -24,6 +24,18 @@ final class SinkDispatcher: @unchecked Sendable {
     /// Fires when queue depth changes. Status-bar processing badge subscribes.
     var onQueueDepthChanged: ((Int) -> Void)?
 
+    /// Fires with the jobs waiting behind the active one, on every queue change
+    /// (UX28). Separate from the depth counter because the Library needs to name
+    /// them, not count them: a queued row says what it is waiting to do and
+    /// offers to drop it.
+    var onQueueChanged: (([QueuedJob]) -> Void)?
+
+    /// Fires when a `.libraryRun` job starts, and again with nil when it lands
+    /// (UX28). A re-run has no progress heartbeat, so this is the only signal
+    /// the Library gets that one is in flight; before it, a Re-summarize
+    /// produced no visible effect at all.
+    var onActiveLibraryRun: ((LibraryRun?) -> Void)?
+
     /// Fires once per job at completion (success or failure), on main.
     var onJobCompleted: ((ProcessingJob, Result<URL?, Error>) -> Void)?
 
@@ -53,6 +65,11 @@ final class SinkDispatcher: @unchecked Sendable {
     /// `MeetingLibraryService` (it owns the failure sidecars, the events, and
     /// the caller's completion); this queue owns only the lane.
     private var libraryRunWork: [UUID: (LibraryRunToken) -> Void] = [:]
+
+    /// The caller's answer for a `.libraryRun` job, keyed by job id (UX28). The
+    /// queue owns it rather than the work body, so a job removed before it ever
+    /// started still answers whoever is awaiting it.
+    private var libraryRunCompletions: [UUID: (Result<URL?, Error>) -> Void] = [:]
 
     /// Stall tracking for the active pipeline subprocess (TECH-UX5).
     private var lastProgressAt: Date?
@@ -97,8 +114,12 @@ final class SinkDispatcher: @unchecked Sendable {
     /// and the surviving summary was decided by which subprocess exited last.
     ///
     /// `work` is called when the lane is free and must call its token's `finish`
-    /// exactly once. `anchor` is any file named for the meeting (the
-    /// transcript), used for the log lines and the stem.
+    /// exactly once; `completion` is then answered with whatever it finished
+    /// with. Routing the caller's answer through the queue rather than through
+    /// the work body is what lets a job that never starts still be answered
+    /// (UX28's dequeue), instead of leaving an awaiting Task suspended forever.
+    /// `anchor` is any file named for the meeting (the transcript), used for the
+    /// log lines and the stem.
     ///
     /// Returns false when an identical run is already queued or active, in
     /// which case nothing is enqueued and the caller answers its own completion.
@@ -106,6 +127,7 @@ final class SinkDispatcher: @unchecked Sendable {
     func enqueueLibraryRun(
         _ run: LibraryRun,
         anchor: URL,
+        completion: @escaping (Result<URL?, Error>) -> Void,
         work: @escaping (LibraryRunToken) -> Void
     ) -> Bool {
         if processingJobs.contains(where: { $0.kind == .libraryRun(run) }) {
@@ -122,6 +144,7 @@ final class SinkDispatcher: @unchecked Sendable {
             startedAt: Date(), kind: .libraryRun(run)
         )
         libraryRunWork[job.id] = work
+        libraryRunCompletions[job.id] = completion
         enqueue(job: job, completion: nil)
         return true
     }
@@ -129,7 +152,7 @@ final class SinkDispatcher: @unchecked Sendable {
     private func enqueue(job: ProcessingJob, completion: ((Result<Void, Error>) -> Void)?) {
         processingJobs.append(job)
         if let completion { jobCompletions[job.id] = completion }
-        onQueueDepthChanged?(processingJobs.count)
+        publishQueueState()
         Log.writeLine("daemon", "pipeline queued -> \(job.file.lastPathComponent) (queue=\(processingJobs.count))")
         Log.event(category: "coordinator", action: "pipeline_queued", attributes: [
             "file": job.file.lastPathComponent,
@@ -141,6 +164,60 @@ final class SinkDispatcher: @unchecked Sendable {
     }
 
     var queueDepth: Int { processingJobs.count }
+
+    /// The jobs behind the active one, in the order they will run (UX28). The
+    /// active job is `processingJobs.first` for as long as it runs, so it is
+    /// dropped here rather than filtered by id.
+    var pendingJobs: [QueuedJob] {
+        let waiting = activeJob == nil ? processingJobs[...] : processingJobs.dropFirst()
+        return waiting.map {
+            QueuedJob(
+                id: $0.id,
+                stem: $0.file.deletingPathExtension().lastPathComponent,
+                label: $0.kind.queuedLabel
+            )
+        }
+    }
+
+    /// Why a queued job never ran (UX28). A caller that was awaiting it has to
+    /// be told something, and "it succeeded" would be the exact class of lie the
+    /// visible-queue work exists to remove.
+    enum QueueError: Error, LocalizedError {
+        case dequeued
+
+        var errorDescription: String? {
+            "Removed from the queue before it started."
+        }
+    }
+
+    /// Drop a job that has not started (UX28). Returns false when the id is
+    /// unknown or names the active job, which is Cancel's business, not this.
+    /// Idempotent: a second call for the same id finds nothing and says so.
+    @discardableResult
+    func removePending(id: UUID) -> Bool {
+        guard id != activeJob?.id, let index = processingJobs.firstIndex(where: { $0.id == id }) else {
+            return false
+        }
+        let job = processingJobs.remove(at: index)
+        libraryRunWork.removeValue(forKey: id)
+        Log.writeLine("daemon", "pipeline dequeued -> \(job.file.lastPathComponent)")
+        Log.event(category: "coordinator", action: "pipeline_dequeued", attributes: [
+            "file": job.file.lastPathComponent,
+            "kind": job.kind.label,
+            "queue_depth": processingJobs.count,
+        ])
+        jobCompletions.removeValue(forKey: id)?(.failure(QueueError.dequeued))
+        libraryRunCompletions.removeValue(forKey: id)?(.failure(QueueError.dequeued))
+        publishQueueState()
+        return true
+    }
+
+    /// One place to broadcast the queue, so the depth badge and the Library's
+    /// queued rows can never disagree about what is waiting.
+    private func publishQueueState() {
+        onQueueDepthChanged?(processingJobs.count)
+        onQueueChanged?(pendingJobs)
+    }
 
     private func startNextJobIfNeeded() {
         guard activeJob == nil, let next = processingJobs.first else { return }
@@ -155,10 +232,16 @@ final class SinkDispatcher: @unchecked Sendable {
         // it would be both wasteful and destructive (it re-derives the very keys
         // the speaker + text overlays are anchored to, which is why ASR3 gave
         // re-transcribe its own job kind rather than folding it in here).
-        if case .libraryRun = next.kind {
+        if case .libraryRun(let run) = next.kind {
+            // UX28: this is the only in-flight signal a re-run produces, so
+            // publish it before the work starts rather than after.
+            onActiveLibraryRun?(run)
+            publishQueueState()
             runLibraryJob(next)
             return
         }
+        // The job that just became active left the pending list (UX28).
+        publishQueueState()
 
         Task { [weak self] in
             await self?.runDaemonTranscription(job: next)
@@ -166,9 +249,9 @@ final class SinkDispatcher: @unchecked Sendable {
     }
 
     /// Run a `.libraryRun` job's supplied work and hold the lane until it lands
-    /// (PIPE11). Failure sidecars, events, and the caller's completion belong to
-    /// the work; a missing body (only reachable if the job was constructed
-    /// without one) drains rather than wedging the queue behind it.
+    /// (PIPE11). Failure sidecars and events belong to the work; a missing body
+    /// (only reachable if the job was constructed without one) drains rather
+    /// than wedging the queue behind it.
     private func runLibraryJob(_ job: ProcessingJob) {
         guard let work = libraryRunWork.removeValue(forKey: job.id) else {
             completeActiveJob(job, with: .success(nil))
@@ -323,15 +406,21 @@ final class SinkDispatcher: @unchecked Sendable {
 
     private func completeActiveJob(_ job: ProcessingJob, with result: Result<URL?, Error>) {
         stopStallTracking()
+        if case .libraryRun = job.kind {
+            // Clear the busy chip on every path, success and failure alike
+            // (UX28): a chip that outlives its job is the same lie as no chip.
+            onActiveLibraryRun?(nil)
+        }
         if let per = jobCompletions.removeValue(forKey: job.id) {
             per(result.map { _ in () })
         }
+        libraryRunCompletions.removeValue(forKey: job.id)?(result)
         onJobCompleted?(job, result)
         activeJob = nil
         if let head = processingJobs.first, head.id == job.id {
             processingJobs.removeFirst()
         }
-        onQueueDepthChanged?(processingJobs.count)
+        publishQueueState()
         startNextJobIfNeeded()
     }
 
