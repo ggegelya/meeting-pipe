@@ -109,6 +109,13 @@ extension Coordinator {
         configStore?.summarizationBackend ?? "anthropic"
     }
 
+    /// Global regulated mode (UX29): the Library disables the cloud re-summarize
+    /// item under it, because the pipeline clamps every backend to local. Read
+    /// live rather than snapshotted, like `summarizationBackend`.
+    var regulatedMode: Bool {
+        configStore?.regulatedMode ?? false
+    }
+
     /// AI8: `summarization.user_label`, the name stamped on the owner's own
     /// diarized speaker. Empty when unset, and empty is meaningful: without it no
     /// transcript can say which voice is the owner's.

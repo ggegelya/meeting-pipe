@@ -236,10 +236,7 @@ extension MeetingDetailView {
             // PIPE6: re-summarize the existing transcript on a one-shot backend
             // without rewriting the workflow (that stays WF8's Reprocess). Regulated
             // / NDA still force local. Reuses regenerate (summarize + republish).
-            Menu("Re-summarize with\u{2026}") {
-                Button("Local (on-device)") { runReSummarize(backend: "local") }
-                Button("Anthropic (cloud)") { runReSummarize(backend: "anthropic") }
-            }
+            reSummarizeMenu
             // ASR3: the transcript twin of Re-summarize. Re-runs ASR + diarization
             // over the audio so a glossary term or roster name learned since
             // reaches this meeting; the summary is left alone. The batch pane
@@ -250,12 +247,9 @@ extension MeetingDetailView {
             // WF8: re-route a misrouted meeting. Rewrites the meta sidecar's workflow
             // block (context prompt, sinks, DB, NDA posture), then offers Regenerate /
             // Republish. NDA transitions confirm explicitly in `beginReassign`.
-            if let workflows = libraryModel.workflowStore?.workflows, !workflows.isEmpty {
+            if libraryModel.workflowStore?.workflows.isEmpty == false {
                 Menu("Change workflow\u{2026}") {
-                    ForEach(workflows, id: \.id) { wf in
-                        Button(wf.name) { beginReassign(to: wf) }
-                            .disabled(wf.name == meeting.workflowName)
-                    }
+                    workflowChoices
                 }
             }
             // No "Edit transcript" here: there is no transcript-wide edit mode.
@@ -441,6 +435,62 @@ extension MeetingDetailView {
             "stem": meeting.stem,
         ])
         body()
+    }
+
+    /// The engine picker, NDA-aware (UX29). Under an NDA workflow or global
+    /// regulated mode the pipeline clamps to local whatever this passes, so
+    /// offering the cloud item as if it would run in the cloud was a promise the
+    /// product cannot keep: the owner clicked it twice on an NDA meeting, got
+    /// local output both times, and filed a bug against a working guarantee.
+    /// The clamp stays exactly as it is; only the menu learns to say so.
+    @ViewBuilder
+    var reSummarizeMenu: some View {
+        let state = reSummarizeState
+        Menu("Re-summarize with\u{2026}") {
+            Button("Local (on-device)") { runReSummarize(backend: "local") }
+            Button("Anthropic (cloud)") { runReSummarize(backend: "anthropic") }
+                .disabled(!state.cloudEnabled)
+                .accessibilityLabel(state.accessibilityLabel(for: "Anthropic (cloud)"))
+            if let caption = state.caption {
+                // A disabled row explains nothing on its own, so the reason sits
+                // under it in the quiet register rather than in a dialog.
+                Text(caption)
+                    .font(.mpTextXS)
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+            }
+            if state.offersWorkflowChange {
+                Divider()
+                // The reassign flow is the designed escape hatch, and it already
+                // confirms the NDA crossing explicitly, which is exactly the
+                // path the owner ended up taking by hand.
+                Menu("Change workflow\u{2026}") {
+                    workflowChoices
+                }
+            }
+        }
+    }
+
+    /// Whether the cloud engine can honestly be offered for this meeting (UX29).
+    /// Reads the workflow flag off the same meta the row already loaded, plus the
+    /// live global regulated flag; no new state.
+    var reSummarizeState: ReSummarizeMenu {
+        ReSummarizeMenu.resolve(
+            workflowNDA: meeting.workflowNDAMode ?? false,
+            regulatedMode: libraryModel.regulatedMode || (meeting.regulatedMode ?? false)
+        )
+    }
+
+    /// The workflow list, shared by the top-level "Change workflow..." menu and
+    /// UX29's deep link to it, so the two cannot drift on which workflows are
+    /// offered or on the NDA confirmation each pick goes through.
+    @ViewBuilder
+    var workflowChoices: some View {
+        if let workflows = libraryModel.workflowStore?.workflows {
+            ForEach(workflows, id: \.id) { wf in
+                Button(wf.name) { beginReassign(to: wf) }
+                    .disabled(wf.name == meeting.workflowName)
+            }
+        }
     }
 
     /// PIPE6: re-summarize the existing transcript on a one-shot backend (summarize

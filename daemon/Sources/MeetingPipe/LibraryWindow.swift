@@ -307,6 +307,14 @@ final class LibraryWindowModel: ObservableObject {
         coordinator?.summarizationUserLabel ?? ""
     }
 
+    /// UX29: global regulated mode, read live off the config store (the
+    /// `summarizationBackend` idiom) so flipping it in Preferences is reflected
+    /// without a restart. It clamps every workflow to on-device summarization,
+    /// which is why the cloud re-summarize item cannot be offered under it.
+    var regulatedMode: Bool {
+        coordinator?.regulatedMode ?? false
+    }
+
     /// True when the configured backend is on-device (MLX-local or Apple
     /// Intelligence), so the free local re-run preview is offered (TECH-A16).
     var canPreviewLocally: Bool {
