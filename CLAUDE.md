@@ -45,6 +45,7 @@ CI enforces ruff strictly (any F401 unused import fails). Run ruff locally befor
 
 - Commit with the repository's configured git identity (`git config user.name` / `user.email`). Do not hardcode a personal name or email in commits, code, or docs.
 - Work directly on `main`. One logical change per commit. **Do not push** unless asked.
+- Parallel sessions run one git worktree each, under `.claude/worktrees/`, branched from local `main` (`worktree.baseRef: head`). A worktree session still makes its one commit, then lands it itself: rebase onto `main`, `git -C <main checkout> merge --ff-only`, remove the worktree. `/tech-task`, `/file-task`, `/spike`, and `/audit` each carry the exact procedure as their second-to-last step. History stays linear, so no session ever leaves a merge bubble or a stranded branch. Leaving the main checkout on `main` is what keeps this working; uncommitted work there is fine, since a fast-forward refuses by itself rather than clobbering it.
 - Backlog-task commits: subject `<ID>: <short summary>` (e.g. `FEAT3-ROSTER: ...`). Other commits follow `fix(scope): …` / `feat(scope): …` / `chore(scope): …`. Match the existing style for the kind of change.
 - **No em-dashes** in any output (code, commits, docs). Hyphens, commas, or rewrite. Match the existing style of files you don't touch.
 - Don't add dependencies without asking first.

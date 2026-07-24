@@ -1,7 +1,12 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "worktree": {
+    "baseRef": "head"
+  },
   "permissions": {
     "allow": [
+      "Bash(git rev-parse:*)",
+      "Bash(git worktree list:*)",
       "Bash(swift build:*)",
       "Bash(swift test:*)",
       "Bash(cd /Users/userinverita96/Documents/Projects/GIT/meeting-pipe/daemon && swift build:*)",
