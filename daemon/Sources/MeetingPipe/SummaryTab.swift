@@ -104,7 +104,14 @@ struct SummaryTab: View {
                     reprocessPane
                 } else if let summary = loadedSummary {
                     VStack(alignment: .leading, spacing: 0) {
-                        SummaryRenderedView(summary: summary, onCite: onJumpToTranscript)
+                        // UX26: only this render sits over the live summary.json, so
+                        // it is the only one that gets the toggle. The compare pane
+                        // below deliberately passes nothing.
+                        SummaryRenderedView(
+                            summary: summary,
+                            onCite: onJumpToTranscript,
+                            onToggleAction: toggleAction
+                        )
                         reprocessBar
                     }
                 } else if loadedForStem == meeting.stem {
@@ -531,6 +538,37 @@ struct SummaryTab: View {
             loadedSummary = parsed
             loadedForStem = stem
             loadedSummaryMtime = mtime
+        }
+    }
+
+    // MARK: Action items (UX26)
+
+    /// Flip one action's resolved state from the reader.
+    ///
+    /// Optimistic, the FactsView pattern: the row shows the new state now, the
+    /// atomic write lands off-main through the shared writer, and the watcher's
+    /// revision bump re-reads the file (the mtime moved, so `reloadSummary`
+    /// re-parses rather than skipping). The captured task text is what the writer's
+    /// index guard falls back to, so a summary regenerated between render and click
+    /// still resolves the right row instead of whatever now sits at that index.
+    private func toggleAction(_ index: Int, to resolved: Bool) {
+        guard var summary = loadedSummary, index >= 0, index < summary.actions.count else { return }
+        let task = summary.actions[index].task
+        summary.actions[index].resolved = resolved
+        loadedSummary = summary
+        let url = summaryJsonURL
+        Task { @MainActor in
+            let wrote = await Task.detached(priority: .userInitiated) {
+                MeetingLibraryService.setActionResolved(
+                    summaryURL: url, actionIndex: index, taskText: task, resolved: resolved
+                )
+            }.value
+            guard !wrote else { return }
+            // Nothing landed (the file moved out from under the click, or the write
+            // failed), so the optimistic row is claiming a state the summary does
+            // not have. Drop the mtime guard and re-read rather than leave it.
+            loadedSummaryMtime = nil
+            await reloadSummary()
         }
     }
 

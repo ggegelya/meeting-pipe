@@ -763,8 +763,10 @@ const SLSummary = () => (
       ]}/>
     </SLSection>
     <SLSection icon="checklist" title="Action items">
+      {/* UX26: the glyph is a toggle here, and a resolved item stays in place,
+          struck through and dimmed, rather than leaving the list. */}
       <SLActionItem task="Land the runner-clock fix and re-enable the skipped tests." owner="Anya" due="today" confidence="high"/>
-      <SLActionItem task="Send the Notion changelog draft for review." owner="Marko" due="today"/>
+      <SLActionItem task="Send the Notion changelog draft for review." owner="Marko" due="today" resolved/>
     </SLSection>
     <SLSection icon="help-bubble" title="Open questions">
       <SLBullets items={["Does the 3.2 cut need a second validation pass after the runner fix?"]}/>
@@ -806,13 +808,19 @@ const SLBullets = ({ items, numbered }) => (
   </div>
 );
 
-const SLActionItem = ({ task, owner, due, confidence }) => (
+// `resolved` is UX26's done state: same row, same place, struck through and
+// dimmed, reversible with the same click. The glyph is the state (the app draws
+// the filled SF Symbol `checkmark.circle.fill`; the kit has only the outline
+// check-circle), never the colour on its own.
+const SLActionItem = ({ task, owner, due, confidence, resolved }) => (
   <div style={{ marginBottom: 10 }}>
     <div style={{ display: "flex", gap: 8, fontSize: "var(--mp-text-md)", lineHeight: "var(--mp-leading-normal)" }}>
-      <span style={{ color: "var(--mp-fg-faint)", marginTop: 2, display: "flex" }}><Icon name="circle" size={13}/></span>
-      <span>{task}</span>
+      <span style={{ color: resolved ? "var(--mp-fg-muted)" : "var(--mp-fg-faint)", marginTop: 2, display: "flex" }}>
+        <Icon name={resolved ? "check-circle" : "circle"} size={13}/>
+      </span>
+      <span style={resolved ? { textDecoration: "line-through", color: "var(--mp-fg-muted)" } : undefined}>{task}</span>
     </div>
-    <div style={{ display: "flex", gap: 6, marginLeft: 21, marginTop: 4 }}>
+    <div style={{ display: "flex", gap: 6, marginLeft: 21, marginTop: 4, opacity: resolved ? 0.7 : 1 }}>
       {owner && <SLMiniChip icon="user" tint="var(--mp-signal-600)">{owner}</SLMiniChip>}
       {due && <SLMiniChip icon="calendar" tint="var(--mp-warning-600)">{due}</SLMiniChip>}
       {confidence === "high" && <SLMiniChip icon="gauge" tint="var(--mp-success-600)">high</SLMiniChip>}

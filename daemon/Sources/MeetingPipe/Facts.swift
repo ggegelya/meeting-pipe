@@ -217,44 +217,25 @@ enum FactsResolver {
     /// semantics), writing straight into each meeting's `<stem>.summary.json` so the
     /// state round-trips through a later republish as AI1's upsert.
     ///
-    /// Blocking disk I/O: call it off-main. Reuses `MeetingSummary.jsonObject()` (the
-    /// SummaryTab edit-write template, atomic); no correction record, because this is
-    /// a state flip and not a text correction. Returns how many instances were written,
-    /// so the caller can log what the one click actually resolved.
+    /// Blocking disk I/O: call it off-main. The per-instance write, its index guard,
+    /// and its event line all live in `MeetingLibraryService.setActionResolved`
+    /// (UX26), which the Summary tab's row toggle calls too; this is the
+    /// cluster-shaped caller over it. Each call re-reads the file, so two instances
+    /// that happen to live in the same summary both land instead of the second
+    /// overwriting the first. Returns how many instances were written, so the caller
+    /// can report what the one click actually resolved.
     @discardableResult
     static func resolve(_ cluster: ActionCluster) -> Int {
-        // One instance per meeting file at a time, so two instances that happen to
-        // live in the same summary both land instead of the second overwriting the first.
-        var byFile: [URL: [OpenActionFact]] = [:]
-        for instance in cluster.instances { byFile[instance.summaryURL, default: []].append(instance) }
-        var written = 0
-        for (url, instances) in byFile {
-            guard var summary = MeetingSummary.load(from: url) else { continue }
-            var touched = false
-            for instance in instances {
-                // Prefer the captured index; fall back to a task-text match if the
-                // summary changed since aggregation, so we never resolve the wrong row.
-                let idx: Int?
-                if instance.actionIndex < summary.actions.count,
-                   summary.actions[instance.actionIndex].task == instance.task {
-                    idx = instance.actionIndex
-                } else {
-                    idx = summary.actions.firstIndex { $0.task == instance.task && !$0.resolved }
-                }
-                guard let i = idx, !summary.actions[i].resolved else { continue }
-                summary.actions[i].resolved = true
-                touched = true
+        cluster.instances.reduce(into: 0) { written, instance in
+            if MeetingLibraryService.setActionResolved(
+                summaryURL: instance.summaryURL,
+                actionIndex: instance.actionIndex,
+                taskText: instance.task,
+                resolved: true
+            ) {
                 written += 1
             }
-            guard touched else { continue }
-            let dict = summary.jsonObject()
-            guard JSONSerialization.isValidJSONObject(dict),
-                  let data = try? JSONSerialization.data(
-                      withJSONObject: dict, options: [.prettyPrinted, .sortedKeys]
-                  ) else { continue }
-            try? data.write(to: url, options: .atomic)
         }
-        return written
     }
 }
 

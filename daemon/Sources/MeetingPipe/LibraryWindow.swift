@@ -799,17 +799,15 @@ struct LibraryRootView: View {
     /// AI7 resolve-the-cluster: mark every restatement of one commitment done.
     /// Optimistic, matching DV1's single-action behaviour: the row leaves now, the
     /// atomic writes land off-main, and the watcher's revision bump confirms.
+    ///
+    /// The `action_resolved` event moved down into the shared writer with UX26, so a
+    /// cluster now logs one row per summary it actually changed, each naming that
+    /// meeting, rather than a single row naming only the representative.
     private func resolveCommitment(_ cluster: ActionCluster) {
         facts.clusters.removeAll { $0.id == cluster.id }
         facts.overdueCount = ActionClusterBuilder.overdueCount(facts.clusters)
         Task.detached(priority: .userInitiated) {
-            let written = FactsResolver.resolve(cluster)
-            await MainActor.run {
-                Log.event(category: "library", action: "action_resolved", attributes: [
-                    "stem": cluster.representative.stem,
-                    "instances": written,
-                ])
-            }
+            FactsResolver.resolve(cluster)
         }
     }
 

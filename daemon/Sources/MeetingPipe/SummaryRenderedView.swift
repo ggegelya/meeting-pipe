@@ -16,6 +16,12 @@ struct SummaryRenderedView: View {
     /// time. Defaulted to a no-op so surfaces with no transcript behind them (the
     /// digest reader) render the same view without a dead affordance.
     var onCite: ((Double) -> Void)? = nil
+    /// UX26: called with an action's index into `summary.actions` and the state the
+    /// click asks for, when the reader sits over a live `<stem>.summary.json` that
+    /// can be written back. Nil is the default and keeps the static render: the
+    /// digest reader, the A16 candidate / compare panes, and any other surface with
+    /// no writable summary behind the rows show the glyph without a control.
+    var onToggleAction: ((Int, Bool) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: MPSpace.s6) {
@@ -50,7 +56,13 @@ struct SummaryRenderedView: View {
                                     .padding(.top, MPSpace.s2)
                             }
                             ForEach(Array(run.actions.enumerated()), id: \.offset) { _, a in
-                                ActionItemRow(action: a, onCite: onCite)
+                                ActionItemRow(
+                                    action: a,
+                                    onCite: onCite,
+                                    onToggle: onToggleAction.map { toggle in
+                                        { resolved in toggle(a.index, resolved) }
+                                    }
+                                )
                             }
                         }
                     }
@@ -113,15 +125,27 @@ struct SummaryRenderedView: View {
     }
     /// The action rows, split into AI10's named runs. A meeting summary yields at
     /// most one run with a nil group, which renders exactly as the flat list did.
-    private var actionRuns: [(group: String?, actions: [ActionItemRow.Action])] {
-        MeetingSummary.actionRuns(summary.actions).compactMap { run in
-            let rows = run.actions
-                .map { a in
+    ///
+    /// Each row carries its index into `summary.actions`, which is what UX26's
+    /// toggle writes back through: the runs partition the array in order, so a
+    /// cursor over them recovers the original position even though empty-task rows
+    /// are dropped from the render. Internal rather than private so a test can pin
+    /// that mapping; a row that pointed one place and wrote another would resolve
+    /// the wrong commitment.
+    var actionRuns: [(group: String?, actions: [ActionItemRow.Action])] {
+        var cursor = 0
+        return MeetingSummary.actionRuns(summary.actions).compactMap { run in
+            let base = cursor
+            cursor += run.actions.count
+            let rows = run.actions.enumerated()
+                .map { offset, a in
                     ActionItemRow.Action(
+                        index: base + offset,
                         task: a.task,
                         owner: a.owner ?? "",
                         due: a.due ?? "",
                         confidence: a.confidence,
+                        resolved: a.resolved,
                         evidence: a.evidence
                     )
                 }
@@ -255,12 +279,21 @@ struct EvidenceChips: View {
     }
 }
 
-private struct ActionItemRow: View {
+/// One action item. Internal (not private) so UX26's presentation rules are
+/// testable without rasterising the view (the T2 no-snapshots rule).
+struct ActionItemRow: View {
     struct Action {
+        /// Position in the owning summary's `actions`, which is what a toggle
+        /// writes back through. Carried even on the static surfaces so the row
+        /// value has one shape everywhere.
+        var index: Int
         var task: String
         var owner: String
         var due: String
         var confidence: String
+        /// AI1 lifecycle state. UX26 renders it: before that the reader dropped
+        /// the flag and showed a finished commitment exactly like an open one.
+        var resolved: Bool = false
         /// FEAT10: this item's verified anchors, rendered alongside the existing
         /// owner / due / confidence chips.
         var evidence: [MeetingSummary.Evidence] = []
@@ -268,15 +301,25 @@ private struct ActionItemRow: View {
 
     let action: Action
     var onCite: ((Double) -> Void)? = nil
+    /// UX26: nil renders the glyph as a static mark (no control), which is what
+    /// every surface without a writable summary behind it gets.
+    var onToggle: ((Bool) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: MPSpace.s1) {
             HStack(alignment: .firstTextBaseline, spacing: MPSpace.s2) {
-                Image(systemName: "circle")
-                    .foregroundStyle(Color(MPColors.fgSubtle))
-                    .font(.caption)
+                if let onToggle {
+                    Button { onToggle(!action.resolved) } label: { glyph }
+                        .buttonStyle(.plain)
+                        .help(action.resolved ? "Reopen" : "Mark done")
+                        .accessibilityLabel(toggleLabel)
+                } else {
+                    glyph
+                }
                 Text(taskAttributed)
                     .font(.body)
+                    .strikethrough(action.resolved)
+                    .foregroundStyle(Color(action.resolved ? MPColors.fgMuted : MPColors.fg))
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !chipRow.isEmpty || !action.evidence.isEmpty {
@@ -289,9 +332,34 @@ private struct ActionItemRow: View {
                     // metadata stays one band rather than two.
                     EvidenceChips(anchors: action.evidence, onCite: onCite)
                 }
+                // A resolved row recedes rather than leaving: the chips stay
+                // readable but stop competing with the open commitments above.
+                .opacity(action.resolved ? 0.7 : 1)
             }
         }
         .padding(.vertical, MPSpace.s1)
+    }
+
+    /// Circle when open, filled checkmark when resolved. Same SF Symbol family, so
+    /// the two states occupy the same box and the row never shifts on a click.
+    /// Filled is the sanctioned "selected in a toggle" case in the design system's
+    /// no-filled-icons rule; the tint only dims, so the state never rides on colour
+    /// alone (the strikethrough and the glyph shape both carry it).
+    var glyphName: String { action.resolved ? "checkmark.circle.fill" : "circle" }
+
+    /// Whether this row got a writable summary behind it.
+    var isInteractive: Bool { onToggle != nil }
+
+    private var glyph: some View {
+        Image(systemName: glyphName)
+            .foregroundStyle(Color(action.resolved ? MPColors.fgMuted : MPColors.fgSubtle))
+            .font(.caption)
+    }
+
+    /// VoiceOver names the act and the commitment it applies to, since a reader
+    /// arriving on the button has no other way to tell the rows apart.
+    var toggleLabel: String {
+        action.resolved ? "Reopen: \(action.task)" : "Mark done: \(action.task)"
     }
 
     private var taskAttributed: AttributedString {

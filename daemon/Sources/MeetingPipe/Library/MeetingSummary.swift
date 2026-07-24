@@ -29,8 +29,9 @@ struct MeetingSummary: Decodable, Equatable {
     /// `summary[2]`). Actions carry theirs inline on the item instead.
     ///
     /// Modeled here, not just read where it is rendered, because `jsonObject()` is
-    /// the only writer both summary.json write paths use (`FactsView`'s mark-done
-    /// through `FactsResolver.resolve`, and `SummaryTab.persistEdit`) and it
+    /// the only writer both summary.json write paths use (the done/reopen toggle
+    /// through `MeetingLibraryService.setActionResolved`, which the Facts rail and
+    /// the Summary tab's rows share since UX26, and `SummaryTab.persistEdit`) and it
     /// re-serializes exactly the fields this struct knows about. An unmodeled
     /// field is not preserved-by-default here; it is silently deleted the first
     /// time the user ticks an action done.

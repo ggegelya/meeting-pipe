@@ -1024,4 +1024,79 @@ final class MeetingLibraryService {
         }
         return MeetingStore.unrecoveredFailureStems(fileNames: names).count
     }
+
+    // MARK: - Action resolution (UX26)
+
+    /// Flip one action item's AI1 `resolved` flag inside a `<stem>.summary.json`.
+    ///
+    /// The single writer for the whole lifecycle: the Facts rail's "Mark done"
+    /// (through `FactsResolver.resolve`, which calls this once per restatement) and
+    /// the Summary tab's per-row toggle both land here, so the two surfaces cannot
+    /// drift on the index guard, on the file format, or on what gets logged.
+    ///
+    /// Static and dependency-free (the summary URL is the whole input), so it needs
+    /// none of the injected collaborators and a test drives it against a temp file.
+    /// Blocking disk I/O: call it off-main, unlike the instance methods here.
+    ///
+    /// Which row gets flipped: prefer the captured index while its task text still
+    /// matches, else the first text match in the opposite state. A summary can be
+    /// regenerated between the render and the click, so a stale index must never
+    /// resolve whatever now sits at that position.
+    ///
+    /// The rewrite round-trips through `MeetingSummary.jsonObject()` rather than
+    /// reconstructing the file from the fields this call knows about, so every field
+    /// it does not edit (title, extra_sections, and anything the model gains later)
+    /// survives the toggle untouched.
+    ///
+    /// Deliberately writes no correction record: a state flip is not a text
+    /// correction, and feeding one to the LOCAL9 corpus would teach the model that
+    /// finished work should not have been extracted (the DV1 precedent).
+    ///
+    /// Returns whether the file changed. False covers a missing / unreadable
+    /// summary, no matching action, an action already in the requested state, and a
+    /// failed write; every one of those is a no-op the caller reports as "nothing
+    /// written" rather than an error.
+    @discardableResult
+    static func setActionResolved(
+        summaryURL: URL,
+        actionIndex: Int,
+        taskText: String,
+        resolved: Bool
+    ) -> Bool {
+        guard var summary = MeetingSummary.load(from: summaryURL) else { return false }
+        let candidate: Int?
+        if actionIndex >= 0, actionIndex < summary.actions.count,
+           summary.actions[actionIndex].task == taskText {
+            candidate = actionIndex
+        } else {
+            candidate = summary.actions.firstIndex {
+                $0.task == taskText && $0.resolved != resolved
+            }
+        }
+        guard let i = candidate, summary.actions[i].resolved != resolved else { return false }
+        summary.actions[i].resolved = resolved
+
+        let dict = summary.jsonObject()
+        guard JSONSerialization.isValidJSONObject(dict),
+              let data = try? JSONSerialization.data(
+                  withJSONObject: dict, options: [.prettyPrinted, .sortedKeys]
+              ),
+              (try? data.write(to: summaryURL, options: .atomic)) != nil else {
+            return false
+        }
+        Log.event(
+            category: "library",
+            action: resolved ? "action_resolved" : "action_reopened",
+            attributes: ["stem": stem(ofSummary: summaryURL)]
+        )
+        return true
+    }
+
+    /// `20270101-100000.summary.json` -> `20270101-100000`, so the event line names
+    /// the meeting the way every other `library` row does.
+    private static func stem(ofSummary url: URL) -> String {
+        let name = url.lastPathComponent
+        guard name.hasSuffix(".summary.json") else { return url.deletingPathExtension().lastPathComponent }
+        return String(name.dropLast(".summary.json".count))
+    }
 }
