@@ -84,6 +84,12 @@ final class MeetingLibraryService {
     /// (ASR3). Separate from `enqueue` because it needs a per-job answer: the
     /// overlay carry runs against the transcript that job produced.
     private let enqueueRetranscribe: (URL, @escaping (Result<Void, Error>) -> Void) -> Void
+    /// PIPE11: the single execution lane a regenerate / republish runs in.
+    /// Resolved per call (the `outputDir` idiom) because the Coordinator builds
+    /// its job dispatcher after this service. `nil` runs the work inline, which
+    /// is the pre-PIPE11 behaviour and is only reachable headless or from a test
+    /// that does not care about serialization; the Coordinator always wires it.
+    private let libraryRunLane: () -> LibraryRunLane?
 
     init(
         outputDir: @escaping () -> URL,
@@ -94,7 +100,8 @@ final class MeetingLibraryService {
         originalsDir: @escaping () -> URL = { MuteRedactor.originalsDirectory() },
         recordCorrection: @escaping (String, String?, Workflow) -> Bool = { _, _, _ in false },
         enqueueRetranscribe: @escaping (URL, @escaping (Result<Void, Error>) -> Void) -> Void
-            = { _, done in done(.failure(LibraryError.transcriptionUnavailable)) }
+            = { _, done in done(.failure(LibraryError.transcriptionUnavailable)) },
+        libraryRunLane: @escaping () -> LibraryRunLane? = { nil }
     ) {
         self.outputDir = outputDir
         self.originalsDir = originalsDir
@@ -104,6 +111,37 @@ final class MeetingLibraryService {
         self.summarizationBackend = summarizationBackend
         self.recordCorrection = recordCorrection
         self.enqueueRetranscribe = enqueueRetranscribe
+        self.libraryRunLane = libraryRunLane
+    }
+
+    /// Run `work` inside the pipeline lane, or inline when no lane is wired
+    /// (PIPE11). Returns false when the lane coalesced an identical request, in
+    /// which case `work` never runs and the caller answers its own completion.
+    @discardableResult
+    private func serialized(
+        _ run: LibraryRun,
+        anchor: URL,
+        work: @escaping (LibraryRunToken) -> Void
+    ) -> Bool {
+        guard let lane = libraryRunLane() else {
+            work(LibraryRunToken { _ in })
+            return true
+        }
+        return lane.enqueueLibraryRun(run, anchor: anchor, work: work)
+    }
+
+    /// Whether this meeting is clamped to on-device summarization and local
+    /// sinks, read fresh off `<stem>.meta.json` (PIPE11 leg c). Mirrors
+    /// `Meeting.isZeroEgress`, which reads the same two keys off the same file;
+    /// this one exists because a chain has to re-read the sidecar mid-flight
+    /// rather than trust the `Meeting` the UI handed it minutes ago.
+    private static func isZeroEgress(stem: String, in dir: URL) -> Bool {
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent("\(stem).meta.json")),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return (obj["workflow_nda_mode"] as? Bool ?? false)
+            || (obj["regulated_mode"] as? Bool ?? false)
     }
 
     /// Retry a failed meeting, reusing whatever the failed run already produced (PIPE1).
@@ -142,6 +180,12 @@ final class MeetingLibraryService {
     }
 
     /// Re-run `mp summarize` against the existing transcript, then republish. Passing `backend` re-summarizes on a one-shot engine (PIPE6, the Library's "Re-summarize with..."); `nil` uses the configured/workflow backend. The override is request-scoped: it does not rewrite the workflow, and regulated/NDA still force local.
+    ///
+    /// PIPE11: the whole summarize-then-publish chain occupies one slot in the
+    /// pipeline lane, so it can neither overlap a run-all on the same meeting
+    /// nor have another regenerate land on top of its `<stem>.summary.json`.
+    /// An identical request made while one is still queued is dropped rather
+    /// than run twice.
     func regenerateMeeting(
         stem: String,
         backend: String? = nil,
@@ -154,28 +198,64 @@ final class MeetingLibraryService {
                 name: transcriptURL.lastPathComponent, action: "regenerate")))
             return
         }
-        Log.writeLine("daemon", "regenerate requested → \(stem)\(backend.map { " (backend=\($0))" } ?? "")")
-        Log.event(category: "coordinator", action: "regenerate_started", attributes: [
-            "stem": stem,
-            "backend": backend ?? NSNull(),
-        ])
-        launcher.summarize(transcriptMD: transcriptURL, backend: backend) { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                switch result {
-                case .success:
-                    // Drop any stale failure sidecar: a retry clears via the dispatcher, but a regenerate bypasses run-all, so it clears here. Then chain into publish.
-                    PipelineFailureSidecar.clear(stem: stem, in: dir)
-                    self.republishMeeting(stem: stem, completion: completion)
-                case .failure(let err):
-                    Log.event(category: "coordinator", action: "regenerate_failed", attributes: [
-                        "stem": stem,
-                        "error": err.localizedDescription,
-                    ])
-                    self.notifyError("Regenerate failed: \(err.localizedDescription)")
-                    completion(.failure(err))
+        // The privacy posture this chain was started under (PIPE11 leg c). The
+        // publish leg re-checks it: a meeting moved INTO an NDA workflow while
+        // the summarizer was still running must not then be pushed to the sinks
+        // the chain was planned against.
+        let startedZeroEgress = Self.isZeroEgress(stem: stem, in: dir)
+        let queued = serialized(
+            LibraryRun(verb: .regenerate, stem: stem, backend: backend),
+            anchor: transcriptURL
+        ) { [weak self] token in
+            guard let self = self else { return token.finish(.success(nil)) }
+            Log.writeLine("daemon", "regenerate requested → \(stem)\(backend.map { " (backend=\($0))" } ?? "")")
+            Log.event(category: "coordinator", action: "regenerate_started", attributes: [
+                "stem": stem,
+                "backend": backend ?? NSNull(),
+            ])
+            self.launcher.summarize(transcriptMD: transcriptURL, backend: backend) { result in
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success:
+                        // Drop any stale failure sidecar: a retry clears via the dispatcher, but a regenerate bypasses run-all, so it clears here. Then chain into publish.
+                        PipelineFailureSidecar.clear(stem: stem, in: dir)
+                        guard startedZeroEgress || !Self.isZeroEgress(stem: stem, in: dir) else {
+                            Log.event(category: "coordinator", action: "regenerate_publish_skipped", attributes: [
+                                "stem": stem,
+                                "reason": "moved_into_nda",
+                            ])
+                            self.notifyError(
+                                "Summary regenerated but not published: \(stem) moved into an NDA workflow while it was running. Republish it to send it to that workflow's sinks."
+                            )
+                            completion(.success(nil))
+                            token.finish(.success(nil))
+                            return
+                        }
+                        // Already inside the lane, so the publish leg runs
+                        // directly: re-entering the queue here would wait on a
+                        // slot this very job is holding.
+                        self.performRepublish(stem: stem, in: dir) { published in
+                            completion(published)
+                            token.finish(published)
+                        }
+                    case .failure(let err):
+                        Log.event(category: "coordinator", action: "regenerate_failed", attributes: [
+                            "stem": stem,
+                            "error": err.localizedDescription,
+                        ])
+                        self.notifyError("Regenerate failed: \(err.localizedDescription)")
+                        completion(.failure(err))
+                        token.finish(.failure(err))
+                    }
                 }
             }
+        }
+        if !queued {
+            // An identical regenerate is already waiting; that one does the work.
+            // Answering rather than dropping the call matters: every caller
+            // awaits this completion, and a continuation that never resumes
+            // hangs the calling Task forever.
+            completion(.success(nil))
         }
     }
 
@@ -881,11 +961,38 @@ final class MeetingLibraryService {
     /// Re-run the sink fanout (`mp publish`) via the same subprocess the orchestrator uses (TECH-A5). Caller must have already written the corrected summary to `<stem>.summary.json`. Returns the page URL of the first successful page-producing sink, or nil under regulated_mode / for a local-only workflow.
     ///
     /// A failure writes a publish-stage `<stem>.error.json` (PIPE1). Without it a failed republish left the row looking done, so the meeting was never offered a retry and the user's edits sat unpublished.
+    /// PIPE11: rides the same lane as regenerate and run-all, so a republish
+    /// cannot fan out a summary another job is in the middle of rewriting.
     func republishMeeting(
         stem: String,
         completion: @escaping (Result<URL?, Error>) -> Void
     ) {
         let dir = outputDir()
+        let summaryURL = dir.appendingPathComponent("\(stem).summary.json")
+        guard FileManager.default.fileExists(atPath: summaryURL.path) else {
+            completion(.failure(LibraryError.noSummary(stem: stem)))
+            return
+        }
+        let queued = serialized(
+            LibraryRun(verb: .republish, stem: stem),
+            anchor: dir.appendingPathComponent("\(stem).md")
+        ) { [weak self] token in
+            guard let self = self else { return token.finish(.success(nil)) }
+            self.performRepublish(stem: stem, in: dir) { result in
+                completion(result)
+                token.finish(result)
+            }
+        }
+        if !queued { completion(.success(nil)) }
+    }
+
+    /// The republish itself, with no queueing of its own: `regenerateMeeting`
+    /// calls it from inside the lane slot it already holds (PIPE11).
+    private func performRepublish(
+        stem: String,
+        in dir: URL,
+        completion: @escaping (Result<URL?, Error>) -> Void
+    ) {
         let summaryURL = dir.appendingPathComponent("\(stem).summary.json")
         guard FileManager.default.fileExists(atPath: summaryURL.path) else {
             completion(.failure(LibraryError.noSummary(stem: stem)))

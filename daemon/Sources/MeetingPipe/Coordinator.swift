@@ -732,7 +732,11 @@ final class Coordinator: NSObject {
                 return
             }
             self.jobDispatcher.enqueueRetranscribe(file: file, completion: completion)
-        }
+        },
+        // PIPE11: regenerate / republish share the run-all lane. Resolved inside
+        // the closure for the same reason as `enqueue`: `jobDispatcher` is still
+        // nil while this lazy var is being forced in `init`.
+        libraryRunLane: { [weak self] in self?.jobDispatcher }
     )
 
     /// Config-change responses: eager local-model prefetch, model-download

@@ -35,7 +35,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from . import entry, events, evidence, storage, transcript_corrections
+from . import corrections, entry, events, evidence, storage, transcript_corrections
 from .backend_fallback import run_with_local_fallback
 from .config import (
     Config,
@@ -867,8 +867,50 @@ def main(argv: list[str]) -> int:
         print(f"No such file: {md}", file=sys.stderr)
         return 1
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    summarize(md, out_suffix="candidate" if candidate else None, backend=backend_override)
+    out = summarize(md, out_suffix="candidate" if candidate else None, backend=backend_override)
+    if not candidate:
+        rewrite_run_sidecar(md, out)
     return 0
+
+
+def rewrite_run_sidecar(transcript_md: Path, out: SummaryOutput) -> None:
+    """PIPE11: keep `<stem>.run.json` truthful after a standalone `mp summarize`.
+
+    Only `orchestrate.run_all` used to write the run sidecar, so a Library
+    "Re-summarize with Anthropic" left the previous run's backend/model on disk:
+    the detail header badged "On-device (MLX)" over a Sonnet summary, and the
+    corrections corpus attributed the summary to an engine that never saw it.
+    The answering engine is already in `SummaryOutput`, so this just persists it.
+
+    Two rules. A `--candidate` run never gets here (the caller gates it): a
+    preview writes no live summary, so rewriting the sidecar would attribute the
+    live one to a run that did not produce it. And `publish_state` is carried
+    across rather than reset: it describes where the summary reached, which this
+    re-summarize has not changed, and dropping it would blank the Library's
+    partial/failed publish badge until the next publish.
+
+    Best-effort, matching `orchestrate`: attribution metadata is never worth
+    failing a summary that is already safely on disk.
+    """
+    try:
+        sidecar_path = transcript_md.parent / f"{transcript_md.stem}.run.json"
+        prior = corrections.read_run_sidecar(sidecar_path) or {}
+        publish_state = prior.get("publish_state") if isinstance(prior, dict) else None
+        written = corrections.write_run_sidecar(
+            recordings_dir=transcript_md.parent,
+            stem=transcript_md.stem,
+            transcript_path=transcript_md,
+            transcript_chars=len(transcript_md.read_text(encoding="utf-8")),
+            summary_json_path=out["json"],
+            backend=out["backend"],
+            model=out["model"],
+            adapter_path=out.get("adapter_path", ""),
+        )
+        if isinstance(publish_state, str):
+            corrections.set_publish_state(written, publish_state)
+        log.info("Rewrote run sidecar: %s", written)
+    except Exception as e:  # noqa: BLE001
+        log.warning("run sidecar rewrite failed (non-fatal): %s", e)
 
 
 if __name__ == "__main__":  # pragma: no cover

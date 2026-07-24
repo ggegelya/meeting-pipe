@@ -629,6 +629,157 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertEqual(driver.finalizedFiles, [wavB])
     }
 
+    // MARK: - Library re-runs share the lane (PIPE11)
+
+    private func regenerate(_ stem: String, backend: String? = nil) -> LibraryRun {
+        LibraryRun(verb: .regenerate, stem: stem, backend: backend)
+    }
+
+    private func anchor(_ stem: String) -> URL {
+        URL(fileURLWithPath: "/tmp/\(stem).md")
+    }
+
+    /// The headline race: on 2026-07-23 a Reprocess and a regenerate ran on the
+    /// same meeting at once and the surviving summary was whichever subprocess
+    /// exited last. Sharing one lane is what makes that impossible.
+    func test_a_library_run_waits_behind_an_active_recording_job() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+
+        var started = false
+        let queued = dispatcher.enqueueLibraryRun(regenerate("clip"), anchor: anchor("clip")) { token in
+            started = true
+            token.finish(.success(nil))
+        }
+        XCTAssertTrue(queued)
+        XCTAssertFalse(started, "the re-run must wait for the live job to drain")
+        XCTAssertEqual(dispatcher.queueDepth, 2)
+
+        driver.finish(.success(nil))
+        drainMain()
+        XCTAssertTrue(started, "the re-run starts once the lane frees up")
+        drainMain()
+        XCTAssertEqual(dispatcher.queueDepth, 0)
+    }
+
+    /// A library run has a transcript already; re-deriving it would be both
+    /// wasteful and destructive (it re-keys the overlays), so the transcription
+    /// stage is skipped entirely and `mp run-all` is never reached.
+    func test_a_library_run_never_transcribes_or_runs_run_all() {
+        let driver = FakeDriver()
+        let runner = FakeRunner()
+        let dispatcher = SinkDispatcher(launcher: driver, transcriptionRunner: runner)
+
+        var started = false
+        dispatcher.enqueueLibraryRun(regenerate("m"), anchor: anchor("m")) { token in
+            started = true
+            token.finish(.success(nil))
+        }
+
+        XCTAssertTrue(started)
+        XCTAssertTrue(runner.calls.isEmpty, "a re-run must not re-transcribe")
+        XCTAssertTrue(driver.startedFiles.isEmpty, "a re-run must not reach run-all")
+    }
+
+    /// Coalescing: a second identical request while one is still queued is
+    /// dropped rather than run twice, and says so rather than failing silently.
+    func test_an_identical_library_run_is_coalesced() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        // Hold the lane so both requests are pending rather than run instantly.
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+
+        var starts = 0
+        let first = dispatcher.enqueueLibraryRun(
+            regenerate("m", backend: "anthropic"), anchor: anchor("m")
+        ) { token in starts += 1; token.finish(.success(nil)) }
+        let second = dispatcher.enqueueLibraryRun(
+            regenerate("m", backend: "anthropic"), anchor: anchor("m")
+        ) { token in starts += 1; token.finish(.success(nil)) }
+
+        XCTAssertTrue(first)
+        XCTAssertFalse(second, "the same ask twice is one ask")
+        XCTAssertEqual(dispatcher.queueDepth, 2, "the duplicate was not enqueued")
+
+        driver.finish(.success(nil))
+        drainMain()
+        XCTAssertEqual(starts, 1)
+    }
+
+    /// Two engines is two different asks. Coalescing on the stem alone would
+    /// have thrown away the 07:49 Anthropic re-run because a local one was
+    /// still in flight, which is the opposite of what the owner wanted.
+    func test_a_different_backend_is_a_different_ask() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+
+        XCTAssertTrue(dispatcher.enqueueLibraryRun(
+            regenerate("m", backend: "local"), anchor: anchor("m")
+        ) { $0.finish(.success(nil)) })
+        XCTAssertTrue(dispatcher.enqueueLibraryRun(
+            regenerate("m", backend: "anthropic"), anchor: anchor("m")
+        ) { $0.finish(.success(nil)) })
+        XCTAssertEqual(dispatcher.queueDepth, 3)
+    }
+
+    /// Different meetings are separate asks and both run. They serialize rather
+    /// than overlap, which is the cost of routing through the one lane: the
+    /// machine only has one Neural Engine and one local model server anyway.
+    func test_library_runs_for_different_stems_both_run_in_order() {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        var order: [String] = []
+        var finishers: [LibraryRunToken] = []
+
+        XCTAssertTrue(dispatcher.enqueueLibraryRun(regenerate("a"), anchor: anchor("a")) { token in
+            order.append("a")
+            finishers.append(token)
+        })
+        XCTAssertTrue(dispatcher.enqueueLibraryRun(regenerate("b"), anchor: anchor("b")) { token in
+            order.append("b")
+            finishers.append(token)
+        })
+
+        XCTAssertEqual(order, ["a"], "the second waits rather than racing the first")
+        finishers.removeFirst().finish(.success(nil))
+        drainMain()
+        XCTAssertEqual(order, ["a", "b"])
+    }
+
+    /// A failed re-run advances the queue like any other job, so one bad
+    /// regenerate cannot wedge every later meeting behind it.
+    func test_a_failed_library_run_advances_the_queue() {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+        struct Boom: Error {}
+
+        dispatcher.enqueueLibraryRun(regenerate("m"), anchor: anchor("m")) { token in
+            token.finish(.failure(Boom()))
+        }
+        drainMain()
+
+        XCTAssertEqual(completed.count, 1)
+        XCTAssertEqual(completed.first?.0.kind, .libraryRun(regenerate("m")))
+        if case .failure = completed.first?.1 {} else { XCTFail("expected .failure") }
+        XCTAssertEqual(dispatcher.queueDepth, 0)
+    }
+
     /// A failed finalize reaches the caller rather than being swallowed, and the
     /// queue still advances.
     func test_a_failed_finalize_is_reported_to_the_caller() throws {

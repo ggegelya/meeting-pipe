@@ -9,6 +9,7 @@ import anthropic
 import httpx
 import pytest
 
+from mp import corrections, summarize as summarize_mod
 from mp.config import Config, Recording
 from mp.markdown import render_summary_md
 from mp.summarize import (
@@ -596,3 +597,110 @@ def test_feat8_no_markers_leaves_prompt_unflagged(tmp_path: Path):
 
     assert "User-flagged moments" not in (client.transcript or "")
     assert FLAGGED_INSTRUCTION not in (client.system_prompt or "")
+
+
+# ---------------------------------------------------------------------------
+# PIPE11: standalone `mp summarize` keeps the run sidecar truthful
+# ---------------------------------------------------------------------------
+
+
+def _stale_run_sidecar(tmp_path: Path, stem: str, publish_state: str | None = None) -> Path:
+    """A run sidecar left by an earlier local run, as the incident had it."""
+    sidecar = corrections.write_run_sidecar(
+        recordings_dir=tmp_path,
+        stem=stem,
+        transcript_path=tmp_path / f"{stem}.md",
+        transcript_chars=11,
+        summary_json_path=tmp_path / f"{stem}.summary.json",
+        backend="local",
+        model="mlx-community/Qwen2.5-7B-Instruct-4bit",
+    )
+    if publish_state is not None:
+        corrections.set_publish_state(sidecar, publish_state)
+    return sidecar
+
+
+def _fake_summarize(tmp_path: Path, stem: str, monkeypatch, *, backend: str, model: str):
+    """Stand in for the real summarize call: no engine, no network."""
+    def fake(md: Path, out_suffix: str | None = None, **kw):
+        infix = f".{out_suffix}" if out_suffix else ""
+        return {
+            "json": tmp_path / f"{stem}.summary{infix}.json",
+            "md": tmp_path / f"{stem}.summary{infix}.md",
+            "backend": backend,
+            "model": model,
+            "adapter_path": "",
+        }
+
+    monkeypatch.setattr("mp.summarize.summarize", fake)
+
+
+def test_standalone_summarize_rewrites_run_sidecar_with_the_answering_engine(
+    tmp_path: Path, monkeypatch
+):
+    # PIPE11 defect 2: a Library "Re-summarize with Anthropic" left the previous
+    # run's local backend/model on disk, so the detail header badged "On-device
+    # (MLX)" over a Sonnet summary and the corrections corpus inherited the lie.
+    stem = "20260723-103118"
+    transcript = tmp_path / f"{stem}.md"
+    transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+    sidecar = _stale_run_sidecar(tmp_path, stem, publish_state="partial")
+    _fake_summarize(
+        tmp_path, stem, monkeypatch, backend="anthropic", model="claude-sonnet-4-5"
+    )
+
+    assert summarize_mod.main([str(transcript), "--backend", "anthropic"]) == 0
+
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert payload["backend"] == "anthropic"
+    assert payload["model"] == "claude-sonnet-4-5"
+    # The publish outcome describes where the summary reached, which a
+    # re-summarize has not changed; resetting it would blank the Library badge.
+    assert payload["publish_state"] == "partial"
+    assert payload["stem"] == stem
+
+
+def test_candidate_run_leaves_the_run_sidecar_untouched(tmp_path: Path, monkeypatch):
+    # A `--candidate` preview writes no live summary (TECH-A16), so attributing
+    # the live one to it would be the same lie in the other direction.
+    stem = "20260723-103118"
+    transcript = tmp_path / f"{stem}.md"
+    transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+    sidecar = _stale_run_sidecar(tmp_path, stem)
+    before = sidecar.read_text(encoding="utf-8")
+    _fake_summarize(tmp_path, stem, monkeypatch, backend="local", model="qwen-next")
+
+    assert summarize_mod.main([str(transcript), "--candidate"]) == 0
+
+    assert sidecar.read_text(encoding="utf-8") == before
+
+
+def test_run_sidecar_rewrite_creates_one_when_none_exists(tmp_path: Path, monkeypatch):
+    # A meeting whose run-all never reached the sidecar write gains a truthful
+    # one rather than staying unattributed.
+    stem = "20260101-090000"
+    transcript = tmp_path / f"{stem}.md"
+    transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+    _fake_summarize(tmp_path, stem, monkeypatch, backend="local", model="qwen-next")
+
+    assert summarize_mod.main([str(transcript)]) == 0
+
+    payload = json.loads((tmp_path / f"{stem}.run.json").read_text(encoding="utf-8"))
+    assert payload["backend"] == "local"
+    assert "publish_state" not in payload
+
+
+def test_run_sidecar_rewrite_never_fails_the_summary(tmp_path: Path, monkeypatch):
+    # Attribution metadata is best-effort, like orchestrate's own write: the
+    # summary is already on disk and is worth more than the sidecar.
+    stem = "20260101-090001"
+    transcript = tmp_path / f"{stem}.md"
+    transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+    _fake_summarize(tmp_path, stem, monkeypatch, backend="local", model="qwen-next")
+
+    def boom(**kwargs):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr("mp.summarize.corrections.write_run_sidecar", boom)
+
+    assert summarize_mod.main([str(transcript)]) == 0

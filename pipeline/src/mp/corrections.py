@@ -5,9 +5,12 @@ ADR 0015 (corrections tab) is the rationale; this schema is the on-disk contract
 Two artifacts live next to each meeting and feed Phase 3 training:
 
 * ``<recordings>/<stem>.run.json`` (run sidecar): written by
-  ``mp run-all`` at the end of the summarize stage. Snapshots which
-  backend + model produced the original summary so the correction
-  record stays accurate even if the user flips backends afterwards.
+  ``mp run-all`` at the end of the summarize stage, and rewritten by a
+  standalone ``mp summarize`` (PIPE11), which is the Library's
+  "Re-summarize with ..." path. Snapshots which backend + model produced
+  the summary that is on disk now, so the correction record stays
+  accurate even if the user flips backends afterwards. A ``--candidate``
+  preview writes no live summary and so never touches it.
 
 * ``~/Library/Application Support/MeetingPipe/corrections/<stem>.json``
   (correction record): written by the daemon when the user clicks

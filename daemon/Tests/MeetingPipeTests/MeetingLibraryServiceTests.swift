@@ -508,6 +508,167 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertEqual(url?.absoluteString, "https://notion.example/page")
     }
 
+    // MARK: - Serialization + policy snapshot (PIPE11)
+
+    /// Stands in for the pipeline lane: records what it was handed, coalesces an
+    /// identical pending request, and starts a run only when the test says so,
+    /// so a test can hold one open the way a live `mp summarize` does.
+    private final class FakeLane: LibraryRunLane {
+        private(set) var accepted: [LibraryRun] = []
+        private(set) var coalesced: [LibraryRun] = []
+        private(set) var finished: [Result<URL?, Error>] = []
+        private var pending: [(run: LibraryRun, work: (LibraryRunToken) -> Void)] = []
+
+        @discardableResult
+        func enqueueLibraryRun(
+            _ run: LibraryRun,
+            anchor: URL,
+            work: @escaping (LibraryRunToken) -> Void
+        ) -> Bool {
+            if pending.contains(where: { $0.run == run }) {
+                coalesced.append(run)
+                return false
+            }
+            accepted.append(run)
+            pending.append((run, work))
+            return true
+        }
+
+        /// Start the head of the queue, as the real lane does when it frees up.
+        func startNext() {
+            guard !pending.isEmpty else { return }
+            let head = pending.removeFirst()
+            head.work(LibraryRunToken { [weak self] result in
+                self?.finished.append(result)
+            })
+        }
+    }
+
+    private func makeService(lane: FakeLane) -> MeetingLibraryService {
+        MeetingLibraryService(
+            outputDir: { [unowned self] in self.dir },
+            launcher: driver,
+            notifyError: { [unowned self] message in self.errors.append(message) },
+            enqueue: { [unowned self] file, mode in self.enqueued.append((file, mode)) },
+            originalsDir: { [unowned self] in self.originalsDir },
+            enqueueRetranscribe: { _, _ in },
+            libraryRunLane: { lane }
+        )
+    }
+
+    private func writeMeta(nda: Bool) throws {
+        try touch("m.meta.json", contents: """
+        {"schema_version": 1, "workflow_name": "Client work", "workflow_nda_mode": \(nda)}
+        """)
+    }
+
+    func test_regenerate_waits_for_the_lane_instead_of_spawning_immediately() throws {
+        // The 2026-07-23 defect: regenerate spawned `mp summarize` directly, so
+        // it ran alongside an active run-all on the same stem.
+        try touch("m.md")
+        let lane = FakeLane()
+        let service = makeService(lane: lane)
+
+        service.regenerateMeeting(stem: "m", backend: "anthropic") { _ in }
+
+        XCTAssertTrue(driver.summarizeInputs.isEmpty, "nothing spawns until the lane frees up")
+        XCTAssertEqual(lane.accepted, [LibraryRun(verb: .regenerate, stem: "m", backend: "anthropic")])
+
+        lane.startNext()
+        XCTAssertEqual(driver.summarizeInputs.count, 1)
+        XCTAssertEqual(driver.summarizeBackends, ["anthropic"])
+    }
+
+    func test_republish_also_rides_the_lane() throws {
+        try touch("m.summary.json")
+        let lane = FakeLane()
+        let service = makeService(lane: lane)
+
+        service.republishMeeting(stem: "m") { _ in }
+
+        XCTAssertTrue(driver.publishInputs.isEmpty)
+        XCTAssertEqual(lane.accepted, [LibraryRun(verb: .republish, stem: "m")])
+        lane.startNext()
+        XCTAssertEqual(driver.publishInputs.count, 1)
+    }
+
+    func test_a_coalesced_request_still_answers_its_caller() throws {
+        // Every caller awaits this completion; a continuation that never
+        // resumes hangs the calling Task for the life of the app.
+        try touch("m.md")
+        let lane = FakeLane()
+        let service = makeService(lane: lane)
+
+        service.regenerateMeeting(stem: "m", backend: "local") { _ in }
+        var second: Result<URL?, Error>?
+        service.regenerateMeeting(stem: "m", backend: "local") { second = $0 }
+
+        XCTAssertEqual(lane.accepted.count, 1)
+        XCTAssertEqual(lane.coalesced.count, 1)
+        guard case .success? = second else { return XCTFail("the dropped duplicate must still answer") }
+    }
+
+    /// PIPE11 leg (c): a chain planned under one privacy posture must not fan
+    /// out under another. The dangerous direction is the one that egresses a
+    /// meeting the owner has just marked confidential.
+    func test_a_reassign_into_nda_mid_chain_stops_the_publish_leg() throws {
+        try touch("m.md")
+        try touch("m.summary.json")
+        try writeMeta(nda: false)
+        let lane = FakeLane()
+        let service = makeService(lane: lane)
+
+        var captured: Result<URL?, Error>?
+        service.regenerateMeeting(stem: "m") { captured = $0 }
+        lane.startNext()
+        XCTAssertEqual(driver.summarizeInputs.count, 1)
+
+        // The owner moves the meeting into an NDA workflow while the summarizer
+        // is still running (WF8 rewrites the same sidecar this re-reads).
+        try writeMeta(nda: true)
+        driver.finishSummarize(.success(()))
+        drainMain()
+
+        XCTAssertTrue(driver.publishInputs.isEmpty, "the publish leg must not run under the new posture")
+        guard case .success(let url)? = captured else { return XCTFail("expected a terminal success") }
+        XCTAssertNil(url, "nothing was published, so there is no page")
+        XCTAssertEqual(errors.count, 1, "the skip is surfaced, not silent")
+    }
+
+    func test_an_unchanged_workflow_still_chains_into_publish() throws {
+        try touch("m.md")
+        try touch("m.summary.json")
+        try writeMeta(nda: false)
+        let lane = FakeLane()
+        let service = makeService(lane: lane)
+
+        service.regenerateMeeting(stem: "m") { _ in }
+        lane.startNext()
+        driver.finishSummarize(.success(()))
+        drainMain()
+
+        XCTAssertEqual(driver.publishInputs.count, 1)
+        XCTAssertTrue(errors.isEmpty)
+    }
+
+    func test_a_meeting_already_under_nda_still_publishes_to_its_own_sinks() throws {
+        // Started NDA and stayed NDA: nothing changed mid-chain, and the
+        // pipeline clamps the sinks itself. Blocking here would break every
+        // regenerate on an NDA meeting.
+        try touch("m.md")
+        try touch("m.summary.json")
+        try writeMeta(nda: true)
+        let lane = FakeLane()
+        let service = makeService(lane: lane)
+
+        service.regenerateMeeting(stem: "m") { _ in }
+        lane.startNext()
+        driver.finishSummarize(.success(()))
+        drainMain()
+
+        XCTAssertEqual(driver.publishInputs.count, 1)
+    }
+
     func test_regenerate_with_backend_threads_override_to_summarize() throws {
         // PIPE6: "Re-summarize with Local/Anthropic" reuses the transcript and
         // passes the one-shot backend into `mp summarize --backend`.

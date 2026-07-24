@@ -1,7 +1,43 @@
 import Foundation
 
+/// How a `.libraryRun` job's work says it has landed (PIPE11).
+///
+/// A value rather than a bare completion parameter because the queue stores the
+/// work in a dictionary until the lane frees up, and a stored function type
+/// cannot mark its own parameter `@escaping` - while this work always escapes
+/// its finish, into a subprocess completion. Wrapping the callback moves the
+/// `@escaping` to an initializer parameter, where it is legal.
+struct LibraryRunToken {
+    private let onFinish: (Result<URL?, Error>) -> Void
+
+    init(onFinish: @escaping (Result<URL?, Error>) -> Void) {
+        self.onFinish = onFinish
+    }
+
+    /// Call exactly once, when the work is done. Anything else leaves the lane
+    /// held (never calling it) or advances it twice (calling it twice).
+    func finish(_ result: Result<URL?, Error>) { onFinish(result) }
+}
+
+/// The one execution lane a Library re-run shares with run-all (PIPE11).
+///
+/// `MeetingLibraryService` sees this instead of the dispatcher so it can be
+/// driven by a fake in tests, and so the queue coupling is one named seam rather
+/// than a reach through the Coordinator.
+protocol LibraryRunLane: AnyObject {
+    /// Enqueue `work` behind whatever the lane is already doing. Returns false
+    /// when an identical run is already queued, in which case nothing was
+    /// enqueued and `work` never runs.
+    @discardableResult
+    func enqueueLibraryRun(
+        _ run: LibraryRun,
+        anchor: URL,
+        work: @escaping (LibraryRunToken) -> Void
+    ) -> Bool
+}
+
 /// Routes pipeline-job lifecycle to user-facing surfaces (TECH-H1-FINISH). Wraps `SinkDispatcher` and owns completion routing (done notification, error banner) and queue-depth surface. Side effects are injected as closures for testability. `SinkDispatcher` is owned by the caller so `transcription.engine_resolved` keeps its original startup timing. Threading: main queue; per-job completion dispatched back onto main by the underlying dispatcher.
-final class PipelineJobDispatcher {
+final class PipelineJobDispatcher: LibraryRunLane {
 
     private let sinkDispatcher: SinkDispatcher
     private let onDone: (_ stem: String, _ recordingsDir: URL, _ pageURL: URL?) -> Void
@@ -50,6 +86,16 @@ final class PipelineJobDispatcher {
     /// duplicated across a batch.
     func enqueueRetranscribe(file: URL, completion: @escaping (Result<Void, Error>) -> Void) {
         sinkDispatcher.enqueueRetranscribe(file: file, completion: completion)
+    }
+
+    /// PIPE11: queue a Library re-run into the same lane as run-all.
+    @discardableResult
+    func enqueueLibraryRun(
+        _ run: LibraryRun,
+        anchor: URL,
+        work: @escaping (LibraryRunToken) -> Void
+    ) -> Bool {
+        sinkDispatcher.enqueueLibraryRun(run, anchor: anchor, work: work)
     }
 
     /// Cancel the active pipeline subprocess (TECH-UX5).

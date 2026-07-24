@@ -101,6 +101,39 @@ enum ProcessingJobKind: Equatable {
     /// summarize, no publish, no egress; the meeting keeps the summary it has,
     /// and re-summarizing is a separate thing the owner asks for.
     case retranscribe
+    /// PIPE11: a Library-triggered re-run over a meeting already on disk
+    /// (Re-summarize / Republish). It skips the transcription stage entirely;
+    /// it is in this queue so it cannot run alongside a run-all or a second
+    /// re-run for the same meeting, which is how two writers came to race for
+    /// one `<stem>.summary.json` on 2026-07-23.
+    case libraryRun(LibraryRun)
+
+    /// Short label for the event log and the daemon log line.
+    var label: String {
+        switch self {
+        case .full: return "full"
+        case .retranscribe: return "retranscribe"
+        case .libraryRun(let run): return run.verb.rawValue
+        }
+    }
+}
+
+/// One Library re-run request (PIPE11). Equality is the coalescing key: two
+/// "Re-summarize with Anthropic" clicks on one meeting are the same ask and the
+/// second is dropped, while Local-then-Anthropic is two different asks and both
+/// run, in the order they were made.
+struct LibraryRun: Equatable {
+    enum Verb: String, Equatable {
+        /// `mp summarize` over the existing transcript, then publish.
+        case regenerate
+        /// `mp publish` over the existing summary.
+        case republish
+    }
+
+    let verb: Verb
+    let stem: String
+    /// PIPE6 one-shot backend override; nil means the workflow's own backend.
+    var backend: String? = nil
 }
 
 /// One unit of background pipeline work. Queued sequentially (two concurrent transcription runs would thrash the Neural Engine). Recording is unaffected by queue depth.

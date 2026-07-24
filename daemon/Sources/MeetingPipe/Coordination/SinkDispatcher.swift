@@ -46,6 +46,14 @@ final class SinkDispatcher: @unchecked Sendable {
     /// so that stays an `Equatable` value.
     private var jobCompletions: [UUID: (Result<Void, Error>) -> Void] = [:]
 
+    /// The work a `.libraryRun` job performs, keyed by job id (PIPE11). Kept in
+    /// a side table for the same reason as `jobCompletions`: `ProcessingJob`
+    /// stays an `Equatable` value, which is what makes coalescing a comparison
+    /// rather than a second registry. The body itself lives in
+    /// `MeetingLibraryService` (it owns the failure sidecars, the events, and
+    /// the caller's completion); this queue owns only the lane.
+    private var libraryRunWork: [UUID: (LibraryRunToken) -> Void] = [:]
+
     /// Stall tracking for the active pipeline subprocess (TECH-UX5).
     private var lastProgressAt: Date?
     private var stallTimer: Timer?
@@ -82,6 +90,42 @@ final class SinkDispatcher: @unchecked Sendable {
         ), completion: completion)
     }
 
+    /// Queue a Library re-run (regenerate / republish) into this same lane
+    /// (PIPE11). It is here rather than spawned directly because a regenerate
+    /// used to run alongside whatever else was already working on the meeting:
+    /// on 2026-07-23 a Reprocess and three regenerates overlapped on one stem
+    /// and the surviving summary was decided by which subprocess exited last.
+    ///
+    /// `work` is called when the lane is free and must call its token's `finish`
+    /// exactly once. `anchor` is any file named for the meeting (the
+    /// transcript), used for the log lines and the stem.
+    ///
+    /// Returns false when an identical run is already queued or active, in
+    /// which case nothing is enqueued and the caller answers its own completion.
+    @discardableResult
+    func enqueueLibraryRun(
+        _ run: LibraryRun,
+        anchor: URL,
+        work: @escaping (LibraryRunToken) -> Void
+    ) -> Bool {
+        if processingJobs.contains(where: { $0.kind == .libraryRun(run) }) {
+            Log.writeLine("daemon", "library run coalesced -> \(run.verb.rawValue) \(run.stem)")
+            Log.event(category: "coordinator", action: "pipeline_coalesced", attributes: [
+                "stem": run.stem,
+                "verb": run.verb.rawValue,
+                "backend": run.backend ?? NSNull(),
+            ])
+            return false
+        }
+        let job = ProcessingJob(
+            id: UUID(), file: anchor, summaryMode: .auto,
+            startedAt: Date(), kind: .libraryRun(run)
+        )
+        libraryRunWork[job.id] = work
+        enqueue(job: job, completion: nil)
+        return true
+    }
+
     private func enqueue(job: ProcessingJob, completion: ((Result<Void, Error>) -> Void)?) {
         processingJobs.append(job)
         if let completion { jobCompletions[job.id] = completion }
@@ -91,7 +135,7 @@ final class SinkDispatcher: @unchecked Sendable {
             "file": job.file.lastPathComponent,
             "queue_depth": processingJobs.count,
             "summary_mode": job.summaryMode == .byo ? "byo" : "auto",
-            "kind": job.kind == .retranscribe ? "retranscribe" : "full",
+            "kind": job.kind.label,
         ])
         startNextJobIfNeeded()
     }
@@ -104,11 +148,40 @@ final class SinkDispatcher: @unchecked Sendable {
         Log.writeLine("daemon", "pipeline starting -> \(next.file.lastPathComponent)")
         Log.event(category: "coordinator", action: "pipeline_started", attributes: [
             "file": next.file.lastPathComponent,
+            "kind": next.kind.label,
         ])
+
+        // PIPE11: a Library re-run has a transcript already; re-running ASR over
+        // it would be both wasteful and destructive (it re-derives the very keys
+        // the speaker + text overlays are anchored to, which is why ASR3 gave
+        // re-transcribe its own job kind rather than folding it in here).
+        if case .libraryRun = next.kind {
+            runLibraryJob(next)
+            return
+        }
 
         Task { [weak self] in
             await self?.runDaemonTranscription(job: next)
         }
+    }
+
+    /// Run a `.libraryRun` job's supplied work and hold the lane until it lands
+    /// (PIPE11). Failure sidecars, events, and the caller's completion belong to
+    /// the work; a missing body (only reachable if the job was constructed
+    /// without one) drains rather than wedging the queue behind it.
+    private func runLibraryJob(_ job: ProcessingJob) {
+        guard let work = libraryRunWork.removeValue(forKey: job.id) else {
+            completeActiveJob(job, with: .success(nil))
+            return
+        }
+        work(LibraryRunToken { [weak self] result in
+            // Hop to main even when the work answers synchronously (a guard
+            // failure does), so completing never re-enters the queue mutation
+            // that is still on the stack above it.
+            DispatchQueue.main.async {
+                self?.completeActiveJob(job, with: result)
+            }
+        })
     }
 
     /// Run the in-process transcription runner, write `<stem>.json`, then invoke the Python pipeline. Runner failure is a hard job failure: the pipeline no longer carries its own ASR.
@@ -142,6 +215,11 @@ final class SinkDispatcher: @unchecked Sendable {
                 switch job.kind {
                 case .full: self.invokePipeline(for: job)
                 case .retranscribe: self.invokeFinalize(for: job)
+                // Unreachable: `startNextJobIfNeeded` routes a library run
+                // straight to `runLibraryJob` and never into transcription.
+                // Draining rather than trapping keeps a future third caller
+                // from wedging the queue behind a job nothing advances.
+                case .libraryRun: self.completeActiveJob(job, with: .success(nil))
                 }
             }
         } catch {
