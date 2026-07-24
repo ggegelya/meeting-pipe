@@ -39,6 +39,24 @@ struct AskAnswer: Decodable, Equatable {
     }
 }
 
+/// One row of `mp actions --cluster --out <file>` (AI7): an open action item plus
+/// the cluster the pipeline's on-device embedding pass put it in. `cluster` is nil
+/// when clustering did not run for that row (an untagged meeting has no series, and
+/// a failed embedder degrades every row to nil), which the daemon reads as "its own
+/// commitment". The daemon needs only the identity + assignment; the rest of the
+/// row's fields (owner, due, aging) are re-read from the summary sidecars it
+/// already loads, so they are deliberately not mirrored here.
+struct ActionClusterAssignment: Decodable, Equatable {
+    let stem: String
+    let task: String
+    let cluster: Int?
+
+    static func load(from url: URL) -> [ActionClusterAssignment]? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode([ActionClusterAssignment].self, from: data)
+    }
+}
+
 /// Pipeline execution contract. Default implementation is `PipelineLauncher`; tests substitute a fake.
 /// `summaryMode == .byo` skips the Anthropic call and writes a paste bundle; the launcher passes `MP_FORCE_BYO=1` in the subprocess env.
 protocol PipelineDriver: AnyObject {
@@ -63,6 +81,8 @@ protocol PipelineDriver: AnyObject {
     func ask(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void)
     /// Generate the weekly review digest now (AI4): runs `mp digest`, which writes `digest-<date>.summary.json/.md` into the `digests` library sibling. Library-wide, so `cloudSecretPolicy(for: nil)` applies the global egress posture. Defaulted no-op.
     func digest(completion: @escaping (Result<Void, Error>) -> Void)
+    /// Group a recurring series' restatements of one commitment (AI7): runs `mp actions --open --cluster`, which embeds each open action's task on-device and merges near-duplicates within a workflow, and returns the per-action cluster assignment the Facts view groups by. Read-only and fully local. Defaulted no-op.
+    func actionClusters(completion: @escaping (Result<[ActionClusterAssignment], Error>) -> Void)
     /// Enroll a meeting speaker into the named-speaker roster (FEAT3-ROSTER): runs `mp roster enroll`, which reads the speaker's embedding from `<stem>.embeddings.json`, folds it into the named person, and relabels the meeting transcript so the name shows at once. Fully on-device. Defaulted no-op.
     func rosterEnroll(name: String, label: String, wav: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// As `rosterEnroll`, but `noRelabel` passes `--no-relabel` so `<stem>.json` is not rewritten (FEAT3-UNDO: the daemon shows the name through a reversible overlay). Defaulted to forward to the plain form so fakes are unchanged.
@@ -151,6 +171,14 @@ extension PipelineDriver {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "digest unsupported by this driver"]
+        )))
+    }
+
+    /// Default no-op stub; `PipelineLauncher` overrides this.
+    func actionClusters(completion: @escaping (Result<[ActionClusterAssignment], Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "actionClusters unsupported by this driver"]
         )))
     }
 
@@ -458,6 +486,32 @@ final class PipelineLauncher: PipelineDriver {
     /// under regulated. A generous cap covers a cold local model over the whole library.
     func digest(completion: @escaping (Result<Void, Error>) -> Void) {
         runMP(["digest"], timeout: 10 * 60, meeting: nil, completion: completion)
+    }
+
+    /// AI7: group a recurring series' restatements of one commitment. Spawns `mp
+    /// actions --open --cluster --out <tmp>`, which embeds each open action's task
+    /// with the on-device embedder and merges near-duplicates within a workflow,
+    /// then reads the assignment back (the same sidecar-read pattern as `ask`, since
+    /// `runMP` reports only success/failure, not stdout). No engine, no sink, no
+    /// meeting anchor. The only real cost is a cold embedding-model load, so 2 min
+    /// is ample; the caller degrades to ungrouped rows on any failure.
+    func actionClusters(completion: @escaping (Result<[ActionClusterAssignment], Error>) -> Void) {
+        let outURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mp-action-clusters-\(UUID().uuidString).json")
+        runMP(["actions", "--open", "--cluster", "--out", outURL.path], timeout: 2 * 60) { result in
+            defer { try? FileManager.default.removeItem(at: outURL) }
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success:
+                guard let rows = ActionClusterAssignment.load(from: outURL) else {
+                    completion(.failure(NSError(domain: "mp actions", code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "actions --cluster produced no readable result"])))
+                    return
+                }
+                completion(.success(rows))
+            }
+        }
     }
 
     /// Spawn `mp summarize <transcript.md>`. Uses the per-stage entry point (not orchestrate's run-all) so config + secrets are resolved the same way. Overwrites `<stem>.summary.json` and `<stem>.summary.md` in-place.

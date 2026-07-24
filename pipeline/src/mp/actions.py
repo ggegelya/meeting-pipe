@@ -9,6 +9,12 @@ AI1 adds the lifecycle: `ActionItem.resolved` distinguishes open from closed,
 `--open` / `--closed` / `--overdue` filter on it, and a dated open action shows
 its age computed off the ISO `due` date (no stored aging, no date dependency).
 The legacy `done` spelling is tolerated on read (mirrors the pydantic alias).
+
+AI7 adds the series view: each action carries the workflow of the meeting it came
+from, and `--cluster` groups a recurring series' restatements of one commitment
+into a single cluster (`action_clusters`, on-device embeddings) so a standup's
+repeated promise reads once instead of once per occurrence. `--out` writes the
+JSON to a file, which is how the daemon's Facts rail consumes the grouping.
 """
 from __future__ import annotations
 
@@ -18,7 +24,8 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from .config import Config
+from . import entry
+from .workflow import read_meta
 
 _CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
 
@@ -44,6 +51,12 @@ class OpenAction:
     due: str | None
     confidence: str
     resolved: bool = False
+    #: Workflow of the meeting this came from (`<stem>.meta.json`), the series key
+    #: AI7 clusters within. None when the meeting is untagged, which makes the
+    #: action a singleton (a meeting with no series has no restatements).
+    workflow: str | None = None
+    #: Cluster id assigned by `--cluster`; None when clustering did not run.
+    cluster: int | None = None
 
     def age_days(self, today: date) -> int | None:
         """Whole days past `due` for a dated action (negative if still upcoming);
@@ -71,6 +84,9 @@ def discover(root: Path) -> list[OpenAction]:
         if not isinstance(obj, dict):
             continue
         title = str(obj.get("title") or stem)
+        # AI7: the meeting's workflow is the series key. Read once per meeting,
+        # not once per action; an absent / malformed sidecar reads as untagged.
+        workflow = str(read_meta(summary_json).get("workflow_name") or "") or None
         for item in obj.get("actions") or []:
             if not isinstance(item, dict) or not item.get("task"):
                 continue
@@ -82,6 +98,7 @@ def discover(root: Path) -> list[OpenAction]:
                 due=str(item["due"]) if item.get("due") else None,
                 confidence=str(item.get("confidence") or "medium"),
                 resolved=bool(item.get("resolved") or item.get("done")),
+                workflow=workflow,
             ))
     return found
 
@@ -155,26 +172,50 @@ def main(argv: list[str]) -> int:
     lifecycle.add_argument("--overdue", action="store_const", const="overdue", dest="lifecycle",
                            help="only open actions whose ISO due date is in the past")
     ap.add_argument("--dir", type=Path, default=None, help="override the recordings directory")
+    ap.add_argument("--cluster", action="store_true",
+                    help="group a workflow's restatements of one commitment (AI7)")
+    ap.add_argument("--cluster-threshold", dest="cluster_threshold", type=float, default=None,
+                    help="cosine floor for --cluster (default follows the embedder)")
     ap.add_argument("--json", action="store_true", dest="as_json",
                     help="emit JSON instead of text")
+    ap.add_argument("--out", type=Path, default=None,
+                    help="write the JSON to this file instead of stdout (implies --json)")
     args = ap.parse_args(argv)
 
+    # AI7: --cluster loads an on-device embedding model, which on a cold cache
+    # fetches weights, so this is no longer a pure read of files on disk. Arm the
+    # guard for every invocation (no secrets: nothing here touches a token), so a
+    # regulated Mac clamps the fetch rather than relying on the flag not being used.
+    cfg = entry.prepare(secrets=False)
+
     today = date.today()
-    root = args.dir if args.dir is not None else Config.load().recording.output_dir
+    root = args.dir if args.dir is not None else cfg.recording.output_dir
     actions = filter_actions(
         discover(Path(root)), args.owner, args.due_before, args.min_confidence,
         args.lifecycle, today,
     )
+    if args.cluster:
+        from .action_clusters import cluster_actions
+        for action, cluster in zip(actions, cluster_actions(
+            actions, threshold=args.cluster_threshold
+        )):
+            action.cluster = cluster
     actions.sort(key=_sort_key)
 
-    if args.as_json:
-        print(json.dumps([
+    if args.as_json or args.out is not None:
+        payload = json.dumps([
             {"stem": a.stem, "title": a.title, "task": a.task,
              "owner": a.owner, "due": a.due, "confidence": a.confidence,
              "resolved": a.resolved, "age_days": a.age_days(today),
-             "overdue": a.is_overdue(today)}
+             "overdue": a.is_overdue(today),
+             "workflow": a.workflow, "cluster": a.cluster}
             for a in actions
-        ], indent=2))
+        ], indent=2)
+        if args.out is not None:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(payload, encoding="utf-8")
+        else:
+            print(payload)
         return 0
 
     if not actions:
@@ -185,8 +226,12 @@ def main(argv: list[str]) -> int:
     label = {"closed": "closed", "overdue": "overdue"}.get(args.lifecycle, "open")
     if args.lifecycle is None:
         label = "tracked"
-    print(f"{len(actions)} {label} action item(s):\n")
-    for a in actions:
+    # AI7: under --cluster one line stands for the whole series, so count and
+    # print clusters rather than instances; the restatements ride on the tag.
+    shown = _cluster_representatives(actions) if args.cluster else actions
+    print(f"{len(shown)} {label} action item(s):\n")
+    restated = _cluster_sizes(actions) if args.cluster else {}
+    for a in shown:
         # Show the age only for a dated OPEN action: a closed item's deadline is
         # moot, and an undated one has no age to report.
         age = a.age_days(today)
@@ -196,9 +241,33 @@ def main(argv: list[str]) -> int:
             if not a.resolved and age is not None:
                 due_str += f" ({_age_phrase(age)})"
         status = "done" if a.resolved else None
-        meta = [m for m in (a.owner, due_str, a.confidence, status) if m]
+        size = restated.get(a.cluster, 1)
+        repeats = f"restated {size}x" if size > 1 else None
+        meta = [m for m in (a.owner, due_str, a.confidence, status, repeats) if m]
         tag = "  (" + ", ".join(meta) + ")" if meta else ""
         check = "[x]" if a.resolved else "[ ]"
         print(f"- {check} {a.task}{tag}")
         print(f"    {a.title}  [{a.stem}]")
     return 0
+
+
+def _cluster_sizes(actions: list[OpenAction]) -> dict[int | None, int]:
+    """How many instances each cluster holds, so a representative can say so."""
+    sizes: dict[int | None, int] = {}
+    for a in actions:
+        sizes[a.cluster] = sizes.get(a.cluster, 0) + 1
+    return sizes
+
+
+def _cluster_representatives(actions: list[OpenAction]) -> list[OpenAction]:
+    """One action per cluster, in `actions` order: the newest instance (stems are
+    datetime-derived, so the largest stem is the latest restatement), which is the
+    wording the series most recently used. Order is preserved so the caller's sort
+    still holds."""
+    newest: dict[int | None, OpenAction] = {}
+    for a in actions:
+        current = newest.get(a.cluster)
+        if current is None or a.stem > current.stem:
+            newest[a.cluster] = a
+    keep = {id(a) for a in newest.values()}
+    return [a for a in actions if id(a) in keep]

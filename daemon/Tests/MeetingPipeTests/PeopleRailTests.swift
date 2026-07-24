@@ -20,19 +20,32 @@ final class PeopleRailTests: XCTestCase {
     private func meeting(
         _ stem: String,
         day dayOffset: Int,
-        people: [String] = [],
-        actions: [PeopleRail.OpenAction] = []
+        people: [String] = []
     ) -> PeopleRail.MeetingFacts {
         PeopleRail.MeetingFacts(
-            stem: stem, title: "Meeting \(stem)", date: day(dayOffset),
-            people: people, openActions: actions
+            stem: stem, title: "Meeting \(stem)", date: day(dayOffset), people: people
         )
     }
 
-    private func action(
-        _ index: Int, _ task: String, owner: String?, due: String? = nil
-    ) -> PeopleRail.OpenAction {
-        PeopleRail.OpenAction(index: index, task: task, owner: owner, due: due)
+    /// One open action on one meeting, in the shape the Facts projection loads it.
+    private func fact(
+        _ stem: String, day dayOffset: Int, _ task: String,
+        owner: String?, due: String? = nil, index: Int = 0
+    ) -> OpenActionFact {
+        OpenActionFact(
+            stem: stem,
+            summaryURL: URL(fileURLWithPath: "/tmp/raw/\(stem).summary.json"),
+            meetingTitle: "Meeting \(stem)", meetingDate: day(dayOffset),
+            actionIndex: index, task: task, owner: owner, due: due
+        )
+    }
+
+    /// The grouped commitments the host hands the rail. `assignments` maps each
+    /// fact's cluster key to a pipeline cluster id; absent means a singleton.
+    private func commitments(
+        _ facts: [OpenActionFact], grouping assignments: [String: Int] = [:]
+    ) -> [ActionCluster] {
+        ActionClusterBuilder.group(facts, assignments: assignments)
     }
 
     private func overlay(labels: [String: String] = [:], segments: [Int: String] = [:])
@@ -86,19 +99,21 @@ final class PeopleRailTests: XCTestCase {
         // alone would hide a meeting whose action the rail is already showing.
         let rows = PeopleRail.derive(
             roster: [person("Ivan")],
-            meetings: [meeting("a", day: 0, people: ["THEM-A"],
-                               actions: [action(0, "ship it", owner: "Ivan")])]
+            meetings: [meeting("a", day: 0, people: ["THEM-A"])],
+            commitments: commitments([fact("a", day: 0, "ship it", owner: "Ivan")])
         )
         XCTAssertEqual(rows[0].meetings.map(\.stem), ["a"])
-        XCTAssertEqual(rows[0].actions.map(\.task), ["ship it"])
+        XCTAssertEqual(rows[0].actions.map(\.representative.task), ["ship it"])
     }
 
     func test_a_meeting_is_listed_once_even_when_attended_and_owning() {
         let rows = PeopleRail.derive(
             roster: [person("Ivan")],
-            meetings: [meeting("a", day: 0, people: ["Ivan"],
-                               actions: [action(0, "x", owner: "Ivan"),
-                                         action(1, "y", owner: "Ivan")])]
+            meetings: [meeting("a", day: 0, people: ["Ivan"])],
+            commitments: commitments([
+                fact("a", day: 0, "x", owner: "Ivan", index: 0),
+                fact("a", day: 0, "y", owner: "Ivan", index: 1),
+            ])
         )
         XCTAssertEqual(rows[0].meetings.count, 1)
         XCTAssertEqual(rows[0].actions.count, 2)
@@ -120,21 +135,129 @@ final class PeopleRailTests: XCTestCase {
     func test_open_actions_sort_soonest_due_first_then_undated() {
         let rows = PeopleRail.derive(
             roster: [person("Ivan")],
-            meetings: [
-                meeting("a", day: 0, actions: [action(0, "no date", owner: "Ivan")]),
-                meeting("b", day: 1, actions: [action(0, "later", owner: "Ivan", due: "2026-09-01")]),
-                meeting("c", day: 2, actions: [action(0, "sooner", owner: "Ivan", due: "2026-08-01T09:00:00")]),
-            ]
+            meetings: [meeting("a", day: 0), meeting("b", day: 1), meeting("c", day: 2)],
+            commitments: commitments([
+                fact("a", day: 0, "no date", owner: "Ivan"),
+                fact("b", day: 1, "later", owner: "Ivan", due: "2026-09-01"),
+                fact("c", day: 2, "sooner", owner: "Ivan", due: "2026-08-01T09:00:00"),
+            ])
         )
-        XCTAssertEqual(rows[0].actions.map(\.task), ["sooner", "later", "no date"])
+        XCTAssertEqual(rows[0].actions.map(\.representative.task), ["sooner", "later", "no date"])
     }
 
     func test_unowned_actions_belong_to_nobody() {
         let rows = PeopleRail.derive(
             roster: [person("Ivan")],
-            meetings: [meeting("a", day: 0, people: ["Ivan"],
-                               actions: [action(0, "orphan", owner: nil)])]
+            meetings: [meeting("a", day: 0, people: ["Ivan"])],
+            commitments: commitments([fact("a", day: 0, "orphan", owner: nil)])
         )
+        XCTAssertTrue(rows[0].actions.isEmpty)
+    }
+
+    // MARK: - Shared commitments (AI7 / DV3 agreement)
+
+    func test_a_restated_commitment_is_one_row_not_one_per_meeting() {
+        // The bug this fixes: DV3 aggregated actions itself and knew nothing about
+        // AI7's grouping, so a standup promise restated weekly was one row in Facts
+        // and one row per occurrence here.
+        let facts = [
+            fact("a", day: 0, "follow up with legal", owner: "Ivan"),
+            fact("b", day: 7, "follow up with legal", owner: "Ivan"),
+            fact("c", day: 14, "follow up with legal", owner: "Ivan"),
+        ]
+        let grouped = commitments(facts, grouping: Dictionary(
+            uniqueKeysWithValues: facts.map { ($0.clusterKey, 0) }
+        ))
+        let rows = PeopleRail.derive(
+            roster: [person("Ivan")],
+            meetings: [meeting("a", day: 0), meeting("b", day: 7), meeting("c", day: 14)],
+            commitments: grouped
+        )
+
+        XCTAssertEqual(rows[0].actions.count, 1, "one commitment, however often restated")
+        XCTAssertEqual(rows[0].actions[0].count, 3)
+        XCTAssertEqual(rows[0].actions[0].representative.stem, "c", "the newest restatement")
+        XCTAssertEqual(rows[0].meetings.count, 3, "all three meetings are still theirs")
+    }
+
+    func test_the_rail_shows_exactly_the_clusters_the_facts_view_does() {
+        // The two rails must agree by construction, not by two implementations
+        // staying in step: same objects in, same commitment out.
+        let facts = [
+            fact("a", day: 0, "ship it", owner: "Ivan"),
+            fact("b", day: 7, "ship it", owner: "Ivan"),
+        ]
+        let grouped = commitments(facts, grouping: Dictionary(
+            uniqueKeysWithValues: facts.map { ($0.clusterKey, 4) }
+        ))
+        let rows = PeopleRail.derive(
+            roster: [person("Ivan")],
+            meetings: [meeting("a", day: 0), meeting("b", day: 7)],
+            commitments: grouped
+        )
+
+        XCTAssertEqual(rows[0].actions, grouped)
+    }
+
+    func test_a_person_owns_a_commitment_they_own_any_restatement_of() {
+        // The pipeline's owner gate lets an unattributed restatement join a named
+        // owner's cluster, so a series that named Ivan only some weeks still shows
+        // him the whole commitment, and the restatement count matches Facts'.
+        let named = fact("a", day: 0, "ship it", owner: "Ivan")
+        let unattributed = fact("b", day: 7, "ship it", owner: nil)
+        let grouped = commitments([named, unattributed], grouping: [
+            named.clusterKey: 0, unattributed.clusterKey: 0,
+        ])
+        let rows = PeopleRail.derive(
+            roster: [person("Ivan")],
+            meetings: [meeting("a", day: 0), meeting("b", day: 7)],
+            commitments: grouped
+        )
+
+        XCTAssertEqual(rows[0].actions.count, 1)
+        XCTAssertEqual(rows[0].actions[0].count, 2, "the count must not diverge from Facts")
+    }
+
+    func test_an_unattributed_restatement_does_not_put_them_in_that_meeting() {
+        // Owning the commitment is not being in every meeting that restated it:
+        // widening membership here would place them in a meeting no sidecar does.
+        let named = fact("a", day: 0, "ship it", owner: "Ivan")
+        let unattributed = fact("b", day: 7, "ship it", owner: nil)
+        let grouped = commitments([named, unattributed], grouping: [
+            named.clusterKey: 0, unattributed.clusterKey: 0,
+        ])
+        let rows = PeopleRail.derive(
+            roster: [person("Ivan")],
+            meetings: [meeting("a", day: 0), meeting("b", day: 7)],
+            commitments: grouped
+        )
+
+        XCTAssertEqual(rows[0].meetings.map(\.stem), ["a"])
+    }
+
+    func test_two_named_owners_keep_their_own_rows() {
+        let rows = PeopleRail.derive(
+            roster: [person("Ivan"), person("Rana")],
+            meetings: [meeting("a", day: 0), meeting("b", day: 1)],
+            commitments: commitments([
+                fact("a", day: 0, "ship it", owner: "Ivan"),
+                fact("b", day: 1, "ship it", owner: "Rana"),
+            ])
+        )
+
+        XCTAssertEqual(rows[0].actions.map(\.representative.stem), ["a"])
+        XCTAssertEqual(rows[1].actions.map(\.representative.stem), ["b"])
+    }
+
+    func test_no_commitments_yet_leaves_the_rows_intact() {
+        // The clustering pass is async, so the rail renders before it lands (and
+        // stays this way if it never does). People and meetings must still show.
+        let rows = PeopleRail.derive(
+            roster: [person("Ivan")],
+            meetings: [meeting("a", day: 0, people: ["Ivan"])]
+        )
+
+        XCTAssertEqual(rows[0].meetings.map(\.stem), ["a"])
         XCTAssertTrue(rows[0].actions.isEmpty)
     }
 
@@ -240,5 +363,12 @@ final class PeopleRailTests: XCTestCase {
         XCTAssertEqual(PeopleDate.lastSeen(day(9), now: now), "yesterday")
         XCTAssertEqual(PeopleDate.lastSeen(day(7), now: now), "3d ago")
         XCTAssertEqual(PeopleDate.lastSeen(day(0), now: now), PeopleDate.short(day(0)))
+    }
+
+    func test_both_rails_format_a_date_the_same_way() {
+        // DV3 shipped with its own copy of the Facts date helpers; AI7 promoted
+        // that type out of file scope, so the copy is gone and this pins the two
+        // rails to one formatter rather than to two that happen to agree.
+        XCTAssertEqual(PeopleDate.short(day(3)), FactsDate.short(day(3)))
     }
 }

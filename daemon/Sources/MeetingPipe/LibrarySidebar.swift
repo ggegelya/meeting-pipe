@@ -99,8 +99,9 @@ struct LibrarySidebar: View {
             Section {
                 ForEach(LibrarySidebar.insightsSections, id: \.self) { scope in
                     LibraryScopeRow(
+                        // Facts carries AI7's overdue count; People, Ask and Digests resolve to 0.
                         scope: scope,
-                        count: 0,
+                        count: counts.count(for: scope),
                         isSelected: scope == selection
                     )
                     .tag(scope)
@@ -169,6 +170,14 @@ struct ScopeCounts: Equatable {
     /// just-created folder shows immediately.
     let perSaved: [SavedSearch.ID: Int]
 
+    /// AI7: commitments wanting attention today, badged amber on the Facts row so an
+    /// overdue action resurfaces without opening Facts or reading a digest. Unlike
+    /// every other count here this one is derived from the summary sidecars rather
+    /// than the meeting list, so it arrives from the Facts load (`FactsSnapshot`)
+    /// through `with(factsOverdue:)` instead of from `build`. Defaulted, so it stays
+    /// out of the initializer below.
+    var factsOverdue: Int = 0
+
     init(
         total: Int,
         today: Int,
@@ -195,6 +204,14 @@ struct ScopeCounts: Equatable {
         total: 0, today: 0, last7: 0, last30: 0, needsYou: 0, nda: 0, untagged: 0, perWorkflow: [:]
     )
 
+    /// This bag with the Facts attention count overlaid. Kept separate from `build`
+    /// so a changed overdue count never re-runs the O(meetings × scopes) bucketing.
+    func with(factsOverdue: Int) -> ScopeCounts {
+        var copy = self
+        copy.factsOverdue = factsOverdue
+        return copy
+    }
+
     func count(for scope: LibraryScope) -> Int {
         switch scope {
         case .allMeetings: return total
@@ -204,7 +221,8 @@ struct ScopeCounts: Equatable {
         case .needsYou:    return needsYou
         case .ndaOnly:     return nda
         case .untagged:    return untagged
-        case .facts, .ask, .digests, .people: return 0   // views, not counted subsets
+        case .facts:       return factsOverdue   // AI7: the overdue attention count
+        case .ask, .digests, .people: return 0   // views, not counted subsets
         case .workflow(let id): return perWorkflow[id] ?? 0
         case .saved(let id): return perSaved[id] ?? 0
         }
@@ -275,23 +293,42 @@ struct ScopeCounts: Equatable {
 
 // MARK: - Row views
 
+/// VoiceOver text for the rail's amber attention pill (TECH-DSN17 / AI7). Its own
+/// type so a test can pin the wording without reaching into a private view.
+enum ScopeAttentionLabel {
+    static func text(scope: LibraryScope, count: Int) -> String {
+        switch scope {
+        case .facts:
+            return count == 1 ? "1 action overdue" : "\(count) actions overdue"
+        default:
+            return count == 1 ? "1 meeting needs you" : "\(count) meetings need you"
+        }
+    }
+}
+
 private struct LibraryScopeRow: View {
     let scope: LibraryScope
     let count: Int
     let isSelected: Bool
 
     /// "Needs you" badges a non-zero count as a filled amber attention pill so
-    /// unresolved meetings are visible from the rail (TECH-DSN17). Every other
-    /// scope keeps the quiet mono count.
+    /// unresolved meetings are visible from the rail (TECH-DSN17). "Facts" reuses
+    /// the same pill for its overdue-commitment count (AI7), which is the same kind
+    /// of claim on the owner's attention. Every other scope keeps the quiet mono count.
     private var isAttention: Bool {
-        if case .needsYou = scope { return count > 0 }
-        return false
+        switch scope {
+        case .needsYou, .facts: return count > 0
+        default: return false
+        }
     }
 
-    /// `.facts` / `.people` / `.ask` / `.digests` are views, not counted subsets, so they show no trailing count (DV1 / DV3 / AI3 / AI4).
+    /// `.people` / `.ask` / `.digests` are views, not counted subsets, so they show no
+    /// trailing count (DV3 / AI3 / AI4). `.facts` is a view too, so it stays bare until
+    /// something is actually overdue: the badge is an attention cue, not an inventory (AI7).
     private var showsCount: Bool {
         switch scope {
-        case .facts, .ask, .digests, .people: return false
+        case .ask, .digests, .people: return false
+        case .facts: return count > 0
         default: return true
         }
     }
@@ -313,6 +350,8 @@ private struct LibraryScopeRow: View {
                             Capsule(style: .continuous)
                                 .fill(Color(MPColors.warning600))
                         )
+                        // The bare number is meaningless read aloud; say what it counts.
+                        .accessibilityLabel(ScopeAttentionLabel.text(scope: scope, count: count))
                 } else {
                     Text(count.formatted(.number))
                         .font(.mpTextXS.monospacedDigit())

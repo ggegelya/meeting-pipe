@@ -15,11 +15,29 @@ protocol MeetingPromptDelegate: AnyObject {
 final class MeetingPromptWindow {
     weak var delegate: MeetingPromptDelegate?
 
+    /// CAL2: supplies the "Last time" card for the resolved workflow. Weak because
+    /// the Coordinator owns both sides; nil (no provider, or no previous meeting)
+    /// simply means the affordance never appears.
+    weak var prepProvider: (any PrepCardProviding)?
+
     private var panel: NSPanel?
     private var currentSource: AppSource?
     private weak var liveWaveform: LiveWaveformView?
     private weak var dismissProgress: DismissProgressView?
     private weak var workflowChip: WorkflowChipView?
+    private weak var lastTimeButton: PromptGhostButton?
+    /// Constraints the "Last time" button collapses through when there is no card
+    /// (an NSView keeps its constraints while hidden, so the width has to go too).
+    private var lastTimeWidth: NSLayoutConstraint?
+    private var lastTimeGap: NSLayoutConstraint?
+    /// The loaded card, and the view built from it once the user asks. Both nil
+    /// until the off-main scan answers; cleared on every `present`.
+    private var prepCard: PrepCard?
+    private var prepCardView: PrepCardView?
+    private var isExpanded = false
+    /// The fixed-height band the pill occupies, so the card can hang below it
+    /// without re-centering the action row over a taller panel.
+    private var pillGuide: NSLayoutGuide?
     /// Workflows frozen at `present` time so the override popup is stable (a workflow added mid-prompt is fine to miss; it will appear on the next meeting).
     private var availableWorkflows: [Workflow] = []
     /// Workflow displayed on the chip; updated on override pick so the chip reflects the choice without a full panel rebuild.
@@ -48,6 +66,9 @@ final class MeetingPromptWindow {
         currentSource = source
         currentWorkflow = workflow
         self.availableWorkflows = availableWorkflows
+        prepCard = nil
+        prepCardView = nil
+        isExpanded = false
 
         let panel = makePanel(source: source, timeoutSec: seconds)
         self.panel = panel
@@ -66,6 +87,7 @@ final class MeetingPromptWindow {
         }
         dismissProgress?.start(timeoutSec: seconds)
         scheduleAutoDismiss(after: seconds)
+        loadPrepCard()
     }
 
     func dismiss(animated: Bool = true) {
@@ -79,6 +101,9 @@ final class MeetingPromptWindow {
         guard let panel = panel else { return }
         self.panel = nil
         currentSource = nil
+        prepCard = nil
+        prepCardView = nil
+        isExpanded = false
         guard animated else {
             panel.orderOut(nil)
             return
@@ -208,6 +233,20 @@ final class MeetingPromptWindow {
         chevron.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(chevron)
 
+        // "Last time" (CAL2): reveals the previous meeting in this workflow inside
+        // the panel. Starts collapsed to zero width and only widens once the scan
+        // finds something to show, so a first meeting in a workflow looks exactly
+        // as it does today.
+        let lastTime = PromptGhostButton(
+            title: "Last time",
+            target: bg,
+            action: #selector(RoundedBackgroundView.didClickLastTime)
+        )
+        lastTime.translatesAutoresizingMaskIntoConstraints = false
+        lastTime.isHidden = true
+        bg.addSubview(lastTime)
+        self.lastTimeButton = lastTime
+
         // --- Auto-dismiss progress hairline (bottom edge) -----------
         let progress = DismissProgressView(frame: .zero)
         progress.translatesAutoresizingMaskIntoConstraints = false
@@ -220,44 +259,69 @@ final class MeetingPromptWindow {
         let rightEdge: CGFloat = 12
         let textLeading: CGFloat = leftEdge + 32 + 10 // glyph(32) + gap(10)
 
+        // The pill occupies a fixed-height band at the top of the panel rather
+        // than the whole panel, so the prep card (CAL2) can hang below it without
+        // re-centering the action row over a taller panel.
+        let pill = NSLayoutGuide()
+        bg.addLayoutGuide(pill)
+        self.pillGuide = pill
+
+        let lastTimeWidth = lastTimeButton?.widthAnchor.constraint(equalToConstant: 0)
+        lastTimeWidth?.isActive = true
+        self.lastTimeWidth = lastTimeWidth
+        let lastTimeGap = lastTimeButton.map {
+            waveform.leadingAnchor.constraint(equalTo: $0.trailingAnchor, constant: 0)
+        }
+        lastTimeGap?.isActive = true
+        self.lastTimeGap = lastTimeGap
+        let textStop = lastTimeButton?.leadingAnchor ?? waveform.leadingAnchor
+
         NSLayoutConstraint.activate([
+            pill.leadingAnchor.constraint(equalTo: bg.leadingAnchor),
+            pill.trailingAnchor.constraint(equalTo: bg.trailingAnchor),
+            pill.topAnchor.constraint(equalTo: bg.topAnchor),
+            pill.heightAnchor.constraint(equalToConstant: Self.panelHeight),
+
             close.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 6),
-            close.topAnchor.constraint(equalTo: bg.topAnchor, constant: 6),
+            close.topAnchor.constraint(equalTo: pill.topAnchor, constant: 6),
             close.widthAnchor.constraint(equalToConstant: 14),
             close.heightAnchor.constraint(equalToConstant: 14),
 
             glyph.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: leftEdge),
-            glyph.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
+            glyph.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
             glyph.widthAnchor.constraint(equalToConstant: 32),
             glyph.heightAnchor.constraint(equalToConstant: 32),
 
             eyebrow.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: textLeading),
             eyebrow.topAnchor.constraint(equalTo: glyph.topAnchor, constant: 0),
-            eyebrow.trailingAnchor.constraint(lessThanOrEqualTo: waveform.leadingAnchor, constant: -8),
+            // Text stops at the "Last time" button rather than the waveform; when
+            // that button is collapsed the two edges coincide, so this is the
+            // current constraint until a card exists.
+            eyebrow.trailingAnchor.constraint(lessThanOrEqualTo: textStop, constant: -8),
 
             question.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: textLeading),
             question.topAnchor.constraint(equalTo: eyebrow.bottomAnchor, constant: 1),
-            question.trailingAnchor.constraint(lessThanOrEqualTo: waveform.leadingAnchor, constant: -8),
+            question.trailingAnchor.constraint(lessThanOrEqualTo: textStop, constant: -8),
 
             // Waveform sits left of the chip + action cluster; when chip is hidden it falls back to recordBYO via the chip's leading constraint.
             waveform.trailingAnchor.constraint(equalTo: chip.leadingAnchor, constant: -8),
-            waveform.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
+            waveform.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
             waveform.widthAnchor.constraint(equalToConstant: LiveWaveformView.intrinsicWidth),
             waveform.heightAnchor.constraint(equalToConstant: 14),
 
             // Max width prevents a long workflow name from pushing the action cluster off-canvas.
             chip.trailingAnchor.constraint(equalTo: record.leadingAnchor, constant: -10),
-            chip.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
+            chip.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
             chip.widthAnchor.constraint(lessThanOrEqualToConstant: 160),
 
             // Right cluster: chevron flush right, the primary Record button before it.
             chevron.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -rightEdge),
-            chevron.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
+            chevron.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
             chevron.widthAnchor.constraint(equalToConstant: 26),
             chevron.heightAnchor.constraint(equalToConstant: 26),
 
             record.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -8),
-            record.centerYAnchor.constraint(equalTo: bg.centerYAnchor),
+            record.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
 
             // Dismiss progress: 2pt bar flush to the bottom edge, full width.
             progress.leadingAnchor.constraint(equalTo: bg.leadingAnchor),
@@ -265,6 +329,12 @@ final class MeetingPromptWindow {
             progress.bottomAnchor.constraint(equalTo: bg.bottomAnchor),
             progress.heightAnchor.constraint(equalToConstant: 2),
         ])
+        if let lastTime = lastTimeButton {
+            NSLayoutConstraint.activate([
+                lastTime.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
+                lastTime.heightAnchor.constraint(equalToConstant: 22),
+            ])
+        }
         return bg
     }
 
@@ -373,6 +443,94 @@ final class MeetingPromptWindow {
 
     fileprivate func handleClose() { handleSkip() }
 
+    // MARK: - Last time (CAL2)
+
+    /// Ask the provider for this workflow's card. Off-main in the provider, so the
+    /// prompt is on screen the instant detection fires and the affordance appears
+    /// a beat later if there is anything to show. Called again on a workflow
+    /// override, because a card for the workflow you just switched away from would
+    /// be a confident lie.
+    private func loadPrepCard() {
+        if isExpanded { toggleLastTime() }
+        prepCardView?.removeFromSuperview()
+        prepCardView = nil
+        prepCard = nil
+        collapseLastTime()
+        guard let provider = prepProvider, let workflow = currentWorkflow else { return }
+        let requested = workflow.id
+        provider.prepCard(for: workflow) { [weak self] card in
+            guard let self = self, self.panel != nil,
+                  self.currentWorkflow?.id == requested else { return }
+            self.applyPrepCard(card)
+        }
+    }
+
+    private func applyPrepCard(_ card: PrepCard?) {
+        prepCard = card
+        guard let card = card, let button = lastTimeButton else { return }
+        button.toolTip = "What the last \(card.workflowName) meeting covered"
+        button.setAccessibilityLabel("Last time in \(card.workflowName)")
+        lastTimeWidth?.constant = button.fittingWidth
+        lastTimeGap?.constant = 10
+        button.alphaValue = 0
+        button.isHidden = false
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = MPMotion.reduceMotion ? 0 : MPMotion.durBase
+            ctx.timingFunction = MPMotion.easeOut
+            button.animator().alphaValue = 1
+        }
+    }
+
+    private func collapseLastTime() {
+        lastTimeButton?.isHidden = true
+        lastTimeWidth?.constant = 0
+        lastTimeGap?.constant = 0
+    }
+
+    /// Grow the panel downward to reveal the card, or shrink back. The top edge
+    /// stays put so the pill does not jump under the pointer.
+    fileprivate func toggleLastTime() {
+        guard let panel = panel, let bg = panel.contentView, let card = prepCard,
+              let pill = pillGuide else { return }
+
+        if prepCardView == nil {
+            let view = PrepCardView(card: card, now: Date())
+            view.translatesAutoresizingMaskIntoConstraints = false
+            bg.addSubview(view)
+            NSLayoutConstraint.activate([
+                view.leadingAnchor.constraint(equalTo: bg.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: bg.trailingAnchor),
+                view.topAnchor.constraint(equalTo: pill.bottomAnchor),
+                view.heightAnchor.constraint(equalToConstant: PrepCardView.height(for: card)),
+            ])
+            prepCardView = view
+            Log.event(category: "coordinator", action: "prep_card_opened", attributes: [
+                "workflow_name": card.workflowName,
+                "stem": card.stem,
+                "points": card.points.count,
+                "open_actions": card.actions.count + card.moreActions,
+            ])
+        }
+
+        isExpanded.toggle()
+        lastTimeButton?.isOn = isExpanded
+        prepCardView?.isHidden = !isExpanded
+
+        let newHeight = Self.panelHeight + (isExpanded ? PrepCardView.height(for: card) : 0)
+        var frame = panel.frame
+        frame.origin.y += frame.height - newHeight   // keep the top edge fixed
+        frame.size.height = newHeight
+        if MPMotion.reduceMotion {
+            panel.setFrame(frame, display: true)
+        } else {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = MPMotion.durBase
+                ctx.timingFunction = MPMotion.easeOut
+                panel.animator().setFrame(frame, display: true)
+            }
+        }
+    }
+
     // MARK: - Workflow chip (TECH-B5)
 
     private func applyWorkflow(_ wf: Workflow, to chip: WorkflowChipView) {
@@ -415,6 +573,10 @@ final class MeetingPromptWindow {
             if let chip = workflowChip {
                 applyWorkflow(wf, to: chip)
             }
+            // The open card belongs to the workflow just switched away from, so
+            // re-ask rather than leave a confident wrong recap up (loadPrepCard
+            // closes it first).
+            loadPrepCard()
         }
     }
 }
@@ -481,6 +643,7 @@ private final class RoundedBackgroundView: NSView {
     @objc func didClickRecord() { host?.handleRecord() }
     @objc func didClickClose() { host?.handleClose() }
     @objc func didClickChevron(_ sender: NSView) { host?.showChevronMenu(from: sender) }
+    @objc func didClickLastTime() { host?.toggleLastTime() }
 }
 
 // MARK: - Small chrome controls
@@ -662,6 +825,106 @@ final class PromptRecordButton: NSControl {
     override func mouseDown(with event: NSEvent) {
         // Manual tracking so releasing outside cancels, like a real button; a quick
         // opacity dip is the press feedback. Mirrors RecordKey (no NSButtonCell here).
+        layer?.opacity = 0.82
+        var inside = true
+        while true {
+            guard let next = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) else { break }
+            if next.type == .leftMouseDragged {
+                inside = bounds.contains(convert(next.locationInWindow, from: nil))
+                layer?.opacity = inside ? 0.82 : 1.0
+            } else {
+                inside = bounds.contains(convert(next.locationInWindow, from: nil))
+                break
+            }
+        }
+        layer?.opacity = 1.0
+        if inside, isEnabled { sendAction(action, to: target) }
+    }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
+
+/// Quiet ghost capsule with a text label, matching `ChevronMenuButton`'s resting
+/// language (hairline border, fill on hover) rather than `PromptRecordButton`'s
+/// filled teal: the prompt has exactly one primary action and this is not it.
+/// `NSControl` with manual mouse tracking for the same reason `PromptRecordButton`
+/// is: an `NSButtonCell` does not composite on the panel's vibrant material.
+/// Used for "Last time" (CAL2); `isOn` marks the card as open.
+final class PromptGhostButton: NSControl {
+    private let titleLabel: NSTextField
+    private var trackingArea: NSTrackingArea?
+    private var isHovered = false { didSet { needsDisplay = true } }
+
+    /// True while the disclosure it drives is open, so the control reads as a
+    /// state rather than a one-shot action.
+    var isOn = false { didSet { needsDisplay = true } }
+
+    init(title: String, target: AnyObject?, action: Selector?) {
+        titleLabel = NSTextField(labelWithString: title)
+        super.init(frame: .zero)
+        self.target = target
+        self.action = action
+        wantsLayer = true
+
+        titleLabel.font = .systemFont(ofSize: MPType.textSM, weight: MPType.medium)
+        titleLabel.textColor = MPColors.fg
+        titleLabel.alignment = .center
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleLabel)
+        NSLayoutConstraint.activate([
+            titleLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+
+        setAccessibilityElement(true)
+        setAccessibilityRole(.disclosureTriangle)
+        setAccessibilityLabel(title)
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Width the label needs plus its capsule padding. The host pins an explicit
+    /// width so the control can collapse to zero when there is nothing to show.
+    var fittingWidth: CGFloat { ceil(titleLabel.intrinsicContentSize.width) + 22 }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: fittingWidth, height: 22) }
+
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = bounds.height / 2
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea { removeTrackingArea(existing) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+    override func mouseEntered(with event: NSEvent) { isHovered = true }
+    override func mouseExited(with event: NSEvent) { isHovered = false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let dark = effectiveAppearance.mpIsDark
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+                                xRadius: MPRadius.full, yRadius: MPRadius.full)
+        if isOn || isHovered {
+            (dark ? MPColors.bgRaised.withAlphaComponent(0.9) : MPColors.ink100).setFill()
+            path.fill()
+        } else if dark {
+            MPColors.bgRaised.withAlphaComponent(0.55).setFill()
+            path.fill()
+        }
+        (isOn || isHovered || dark ? MPColors.borderStrong : MPColors.border).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+
+    override func mouseDown(with event: NSEvent) {
         layer?.opacity = 0.82
         var inside = true
         while true {

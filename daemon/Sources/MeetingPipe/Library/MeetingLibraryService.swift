@@ -225,6 +225,31 @@ final class MeetingLibraryService {
         }
     }
 
+    /// Group a recurring series' restatements of one commitment (AI7). Spawns `mp
+    /// actions --open --cluster`, which embeds each open action's task on-device and
+    /// merges near-duplicates within a workflow. Read-only and fully local, so unlike
+    /// `askMeetings` a failure is not worth a notification: the Facts view degrades to
+    /// DV1's ungrouped list, which is correct, just less consolidated.
+    func actionClusters(completion: @escaping (Result<[ActionClusterAssignment], Error>) -> Void) {
+        launcher.actionClusters { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let rows):
+                    let clustered = Set(rows.compactMap(\.cluster)).count
+                    Log.event(category: "coordinator", action: "action_clusters_built", attributes: [
+                        "actions": rows.count,
+                        "clusters": clustered,
+                    ])
+                case .failure(let err):
+                    Log.event(category: "coordinator", action: "action_clusters_failed", attributes: [
+                        "error": err.localizedDescription,
+                    ])
+                }
+                completion(result)
+            }
+        }
+    }
+
     /// Name a meeting speaker (FEAT3-ROSTER / FEAT3-UNDO). Folds the speaker's
     /// voiceprint into the named person via `mp roster enroll --no-relabel`, then
     /// records the name in the reversible `SpeakerLabelStore` overlay rather than

@@ -59,8 +59,14 @@ Subcommands:
                               Ask a natural-language question about your meetings;
                               engine-backed, cited answers over the on-device
                               embedding index (honours the backend + egress clamp)
-  actions [--owner N] [--due-before D] [--min-confidence C] [--json]
-                              List open action items across all your meetings
+  actions [--owner N] [--due-before D] [--min-confidence C] [--cluster] [--json] [--out F]
+                              List open action items across all your meetings;
+                              --cluster groups a workflow's restatements of one
+                              commitment into a single entry (AI7)
+  prep <workflow> [--dir P] [--json]
+                              Recap the last meeting recorded under a workflow:
+                              its opening summary points and the actions it
+                              left open (the prompt panel's "Last time" card)
   roster {enroll,list,forget,rename} ...
                               Manage named-speaker voiceprints: name an
                               unknown THEM-A cluster so a recurring person
@@ -151,6 +157,9 @@ def main() -> int:
         return run(rest)
     if cmd == "actions":
         from .actions import main as run
+        return run(rest)
+    if cmd == "prep":
+        from .prep import main as run
         return run(rest)
     if cmd == "digest":
         from .digest import main as run
