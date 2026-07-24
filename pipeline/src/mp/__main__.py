@@ -27,6 +27,10 @@ Subcommands:
                               `<stem>.json`. ASR + diarization live in Swift
                               (FluidAudio) and are NOT invoked here.
                               [--backend ...] as for summarize.
+  finalize <wav>              Re-run only stage 1 of run-all over the daemon's
+                              `<stem>.json`: speaker labels, voiceprint + roster
+                              match, embeddings sidecar, glossary. No summarize,
+                              no publish, no egress (ASR3 re-transcribe ratchet)
   merge-meetings <primary.wav> <fragment.wav> [<fragment.wav>...]
                               Concatenate a dropped-and-rejoined call's stems
                               into one meeting under the primary: merge audio +
@@ -121,6 +125,9 @@ def main() -> int:
         return run(rest)
     if cmd in {"run-all", "run_all"}:
         from .orchestrate import main as run
+        return run(rest)
+    if cmd == "finalize":
+        from .finalize import main as run
         return run(rest)
     if cmd in {"merge-meetings", "merge_meetings"}:
         from .merge_meetings import main as run

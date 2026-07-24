@@ -45,8 +45,11 @@ final class PipelineJobDispatcherTests: XCTestCase {
         )
     }
 
-    private func job(_ path: String) -> ProcessingJob {
-        ProcessingJob(id: UUID(), file: URL(fileURLWithPath: path), summaryMode: .auto, startedAt: Date())
+    private func job(_ path: String, kind: ProcessingJobKind = .full) -> ProcessingJob {
+        ProcessingJob(
+            id: UUID(), file: URL(fileURLWithPath: path),
+            summaryMode: .auto, startedAt: Date(), kind: kind
+        )
     }
 
     func test_success_routes_stem_dir_and_page_to_onDone() {
@@ -77,6 +80,34 @@ final class PipelineJobDispatcherTests: XCTestCase {
     func test_enqueue_forwards_to_sink_and_bumps_depth() {
         dispatcher.enqueue(file: URL(fileURLWithPath: "/tmp/recordings/a.wav"), summaryMode: .auto)
         // enqueue raises queue depth to 1 synchronously.
+        XCTAssertEqual(dispatcher.queueDepth, 1)
+        XCTAssertEqual(depths.first, 1)
+    }
+
+    // MARK: - Re-transcribe jobs (ASR3)
+
+    /// A re-transcribe published nothing, so "meeting published" would be a lie,
+    /// and a 20-meeting batch would fire it 20 times. The Library surface that
+    /// asked for it is already showing progress and owns the result.
+    func test_a_retranscribe_job_does_not_fire_the_published_notification() {
+        sink.onJobCompleted?(job("/tmp/recordings/meeting.wav", kind: .retranscribe), .success(nil))
+        XCTAssertTrue(done.isEmpty)
+        XCTAssertTrue(errors.isEmpty)
+    }
+
+    /// Same for the failure half: the caller gets the error inline, so the
+    /// generic "Pipeline failed" banner would only duplicate it.
+    func test_a_failed_retranscribe_job_does_not_fire_the_error_banner() {
+        let err = NSError(domain: "t", code: 7, userInfo: [NSLocalizedDescriptionKey: "boom"])
+        sink.onJobCompleted?(job("/tmp/recordings/meeting.wav", kind: .retranscribe), .failure(err))
+        XCTAssertTrue(errors.isEmpty)
+        XCTAssertTrue(done.isEmpty)
+    }
+
+    /// The queue-depth surface is shared: the menu-bar processing badge counts a
+    /// re-transcribe like any other job, so a batch is visible from the menu bar.
+    func test_retranscribe_still_counts_toward_queue_depth() {
+        dispatcher.enqueueRetranscribe(file: URL(fileURLWithPath: "/tmp/recordings/a.wav")) { _ in }
         XCTAssertEqual(dispatcher.queueDepth, 1)
         XCTAssertEqual(depths.first, 1)
     }

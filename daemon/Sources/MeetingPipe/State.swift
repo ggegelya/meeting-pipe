@@ -93,10 +93,21 @@ enum AppState: Equatable {
     }
 }
 
+/// What a queued job does after transcription (ASR3).
+enum ProcessingJobKind: Equatable {
+    /// The normal post-recording path: transcribe, then `mp run-all` (summarize + publish).
+    case full
+    /// The re-transcribe ratchet: transcribe, then `mp finalize` and stop. No
+    /// summarize, no publish, no egress; the meeting keeps the summary it has,
+    /// and re-summarizing is a separate thing the owner asks for.
+    case retranscribe
+}
+
 /// One unit of background pipeline work. Queued sequentially (two concurrent transcription runs would thrash the Neural Engine). Recording is unaffected by queue depth.
 struct ProcessingJob: Equatable {
     let id: UUID
     let file: URL
     let summaryMode: SummaryMode
     let startedAt: Date
+    var kind: ProcessingJobKind = .full
 }

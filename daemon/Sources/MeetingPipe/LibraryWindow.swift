@@ -231,6 +231,20 @@ final class LibraryWindowModel: ObservableObject {
         }
     }
 
+    /// ASR3: re-transcribe an existing recording against the current ASR,
+    /// diarization, glossary, and roster, carrying the speaker + text overlays
+    /// across. Same async-wrap pattern as `regenerateMeeting`. Never summarizes
+    /// or publishes, so the meeting keeps the summary it has; the caller offers
+    /// re-summarize as the follow-up.
+    func retranscribeMeeting(stem: String) async -> Result<MeetingLibraryService.RetranscribeOutcome, Error> {
+        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Result<MeetingLibraryService.RetranscribeOutcome, Error>, Never>) in
+            library.retranscribeMeeting(stem: stem) { result in
+                cont.resume(returning: result)
+            }
+        }
+    }
+
     /// FEAT9: merge fragmented recordings into the primary (concatenate + re-summarize
     /// + republish, then soft-delete the fragments). Same async-wrap pattern as
     /// `regenerateMeeting`; returns the primary's page URL.

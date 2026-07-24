@@ -33,6 +33,10 @@ final class MeetingLibraryService {
         case emptyPastedSummary
         /// A workflow reassignment (WF8) could not rewrite `<stem>.meta.json`.
         case metaWriteFailed(stem: String)
+        /// Re-transcribe (ASR3) was called before the Coordinator wired the
+        /// transcription queue. Only reachable headless; the Library is not on
+        /// screen until it is wired.
+        case transcriptionUnavailable
 
         var errorDescription: String? {
             switch self {
@@ -54,6 +58,8 @@ final class MeetingLibraryService {
                 return "Paste a summary before saving."
             case .metaWriteFailed(let stem):
                 return "Could not update the workflow for \(stem)."
+            case .transcriptionUnavailable:
+                return "Transcription is not available yet."
             }
         }
     }
@@ -74,6 +80,10 @@ final class MeetingLibraryService {
     /// Returns whether the pair was stored (a manual recording has no source to key
     /// it to), which is what the event line reports.
     private let recordCorrection: (String, String?, Workflow) -> Bool
+    /// Queues a re-transcribe of an existing recording and answers when it lands
+    /// (ASR3). Separate from `enqueue` because it needs a per-job answer: the
+    /// overlay carry runs against the transcript that job produced.
+    private let enqueueRetranscribe: (URL, @escaping (Result<Void, Error>) -> Void) -> Void
 
     init(
         outputDir: @escaping () -> URL,
@@ -82,7 +92,9 @@ final class MeetingLibraryService {
         enqueue: @escaping (URL, SummaryMode) -> Void,
         summarizationBackend: @escaping () -> String = { "local" },
         originalsDir: @escaping () -> URL = { MuteRedactor.originalsDirectory() },
-        recordCorrection: @escaping (String, String?, Workflow) -> Bool = { _, _, _ in false }
+        recordCorrection: @escaping (String, String?, Workflow) -> Bool = { _, _, _ in false },
+        enqueueRetranscribe: @escaping (URL, @escaping (Result<Void, Error>) -> Void) -> Void
+            = { _, done in done(.failure(LibraryError.transcriptionUnavailable)) }
     ) {
         self.outputDir = outputDir
         self.originalsDir = originalsDir
@@ -91,6 +103,7 @@ final class MeetingLibraryService {
         self.enqueue = enqueue
         self.summarizationBackend = summarizationBackend
         self.recordCorrection = recordCorrection
+        self.enqueueRetranscribe = enqueueRetranscribe
     }
 
     /// Retry a failed meeting, reusing whatever the failed run already produced (PIPE1).
@@ -164,6 +177,140 @@ final class MeetingLibraryService {
                 }
             }
         }
+    }
+
+    // MARK: - Re-transcribe ratchet (ASR3)
+
+    /// What a re-transcribe did, so the caller can report it honestly.
+    struct RetranscribeOutcome: Equatable {
+        let stem: String
+        /// Overlay entries (cluster names, per-segment reassignments, text
+        /// corrections) re-anchored onto the new transcript.
+        let carried: Int
+        /// Overlay entries the new transcript had no home for. Reported rather
+        /// than hidden: an override the carry could not place is work the owner
+        /// did that is now gone.
+        let dropped: Int
+        /// Corrections the new transcript already satisfies, retired instead of
+        /// carried. The glossary + ASR ratchet subsuming a hand fix is the
+        /// feature working, not a loss.
+        let retired: Int
+    }
+
+    /// Re-transcribe an existing recording against the current stack (ASR3).
+    ///
+    /// Transcripts are otherwise frozen at capture-time quality: a glossary
+    /// entry, a roster name, or an ASR / diarization improvement that arrives
+    /// after a meeting was recorded never reaches it, and Reprocess / Regenerate
+    /// only re-run summarize over the transcript already on disk. STOR1 kept the
+    /// audio in FLAC precisely so this stays possible.
+    ///
+    /// Runs the same transcription runner over the same audio, then `mp finalize`
+    /// (speaker labels, voiceprint + roster match, embeddings sidecar, glossary),
+    /// and stops. It deliberately does not summarize or publish: a batch over an
+    /// old library would otherwise pay per meeting for a cloud summary nobody
+    /// asked for and rewrite every Notion page as a side effect. The summary the
+    /// meeting already has survives untouched, and re-summarizing is offered as
+    /// a separate step.
+    ///
+    /// The reversible overlays are carried across by `TranscriptOverlayCarry`,
+    /// because both of them key on things this re-derives from scratch (segment
+    /// index, diarization label). They are written back only when the new
+    /// transcript is actually on disk, so a failed run leaves the originals
+    /// exactly where they were.
+    func retranscribeMeeting(
+        stem: String,
+        completion: @escaping (Result<RetranscribeOutcome, Error>) -> Void
+    ) {
+        let dir = outputDir()
+        guard let audioURL = MeetingStore.finalRecordingURL(stem: stem, in: dir) else {
+            completion(.failure(LibraryError.noAudio(stem: stem)))
+            return
+        }
+        let before = Self.transcriptAnchors(stem: stem, in: dir)
+        let overlay = SpeakerLabelStore.read(stem: stem, in: dir)
+        let corrections = TranscriptCorrectionStore.read(stem: stem, in: dir)
+
+        Log.writeLine("daemon", "re-transcribe requested → \(stem)")
+        Log.event(category: "coordinator", action: "retranscribe_started", attributes: [
+            "stem": stem,
+            "overlay_names": overlay.labels.count,
+            "overlay_segments": overlay.segments.count,
+            "corrections": corrections.count,
+        ])
+        enqueueRetranscribe(audioURL) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result {
+                case .success:
+                    let outcome = self.applyOverlayCarry(
+                        stem: stem, in: dir,
+                        before: before, overlay: overlay, corrections: corrections
+                    )
+                    Log.event(category: "coordinator", action: "retranscribe_done", attributes: [
+                        "stem": stem,
+                        "carried": outcome.carried,
+                        "dropped": outcome.dropped,
+                        "retired": outcome.retired,
+                    ])
+                    completion(.success(outcome))
+                case .failure(let err):
+                    Log.event(category: "coordinator", action: "retranscribe_failed", attributes: [
+                        "stem": stem,
+                        "error": err.localizedDescription,
+                    ])
+                    completion(.failure(err))
+                }
+            }
+        }
+    }
+
+    /// Re-anchor the overlays onto the transcript the run just wrote and persist
+    /// them. A write failure is reported through the notifier but does not fail
+    /// the run: the new transcript landed, which is the thing the owner asked
+    /// for, and the stale sidecar on disk is the recoverable half.
+    private func applyOverlayCarry(
+        stem: String,
+        in dir: URL,
+        before: [TranscriptOverlayCarry.Anchor],
+        overlay: SpeakerLabelStore.Overlay,
+        corrections: [Int: TranscriptCorrectionStore.Correction]
+    ) -> RetranscribeOutcome {
+        guard !overlay.isEmpty || !corrections.isEmpty else {
+            return RetranscribeOutcome(stem: stem, carried: 0, dropped: 0, retired: 0)
+        }
+        let after = Self.transcriptAnchors(stem: stem, in: dir)
+        let carry = TranscriptOverlayCarry.carry(
+            old: before, new: after, speakerOverlay: overlay, corrections: corrections
+        )
+        do {
+            if carry.speakerOverlay != overlay {
+                _ = try SpeakerLabelStore.replace(overlay: carry.speakerOverlay, stem: stem, in: dir)
+            }
+            if carry.corrections != corrections {
+                try TranscriptCorrectionStore.replace(carry.corrections, stem: stem, in: dir)
+            }
+        } catch {
+            notifyError("Re-transcribed \(stem), but couldn't rewrite your edits: \(error.localizedDescription)")
+        }
+        return RetranscribeOutcome(
+            stem: stem,
+            carried: carry.carried,
+            dropped: carry.dropped,
+            retired: carry.retired
+        )
+    }
+
+    /// Parse `<stem>.json` into carry anchors. Deliberately `TranscriptLoader.parse`
+    /// and not `.load`: `.load` overlays the corrections, and the carry needs the
+    /// pipeline's own text to tell an already-satisfied correction from a live one.
+    private static func transcriptAnchors(stem: String, in dir: URL) -> [TranscriptOverlayCarry.Anchor] {
+        let url = dir.appendingPathComponent("\(stem).json")
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return []
+        }
+        return TranscriptOverlayCarry.anchors(from: TranscriptLoader.parse(obj).segments)
     }
 
     /// Post-hoc workflow reassignment (WF8): rewrite `<stem>.meta.json`'s workflow block

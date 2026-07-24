@@ -92,6 +92,20 @@ enum TranscriptCorrectionStore {
         return existing
     }
 
+    /// Replace the whole set in one write. The per-key `upsert` / `remove` above
+    /// are read-modify-write, so a caller that recomputed the set in one pure
+    /// step (ASR3's re-transcribe carry, which re-anchors every correction onto
+    /// a freshly-numbered transcript) would otherwise rewrite the file per entry
+    /// and, worse, read a half-migrated set back on each pass. Mirrors
+    /// `SpeakerLabelStore.replace`; empty deletes the sidecar.
+    static func replace(
+        _ corrections: [Int: Correction],
+        stem: String,
+        in directory: URL
+    ) throws {
+        try write(corrections: corrections, stem: stem, in: directory)
+    }
+
     /// Overlays corrections onto segments in-place. Pure, no I/O.
     static func apply(
         corrections: [Int: Correction],

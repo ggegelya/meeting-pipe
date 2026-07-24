@@ -39,6 +39,13 @@ final class SinkDispatcher: @unchecked Sendable {
     private var processingJobs: [ProcessingJob] = []
     private var activeJob: ProcessingJob?
 
+    /// Per-job completions for `.retranscribe` jobs (ASR3), keyed by job id. The
+    /// broadcast `onJobCompleted` is a fan-out to the notifier and the badge; a
+    /// re-transcribe needs its own answer back so the caller can carry the
+    /// overlays over the transcript that just landed. Kept out of `ProcessingJob`
+    /// so that stays an `Equatable` value.
+    private var jobCompletions: [UUID: (Result<Void, Error>) -> Void] = [:]
+
     /// Stall tracking for the active pipeline subprocess (TECH-UX5).
     private var lastProgressAt: Date?
     private var stallTimer: Timer?
@@ -59,14 +66,32 @@ final class SinkDispatcher: @unchecked Sendable {
     /// Append a freshly-flushed recording to the pipeline queue and
     /// start the runner if nothing is currently being processed.
     func enqueue(file: URL, summaryMode: SummaryMode) {
-        let job = ProcessingJob(id: UUID(), file: file, summaryMode: summaryMode, startedAt: Date())
+        enqueue(job: ProcessingJob(
+            id: UUID(), file: file, summaryMode: summaryMode, startedAt: Date(), kind: .full
+        ), completion: nil)
+    }
+
+    /// Queue a re-transcribe (ASR3): the same transcription runner over the same
+    /// audio, then `mp finalize` instead of `mp run-all`. It goes through this
+    /// queue rather than spawning alongside it so a batch cannot thrash the
+    /// Neural Engine against a live recording's own job, and so the menu-bar
+    /// processing badge counts it like any other work.
+    func enqueueRetranscribe(file: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        enqueue(job: ProcessingJob(
+            id: UUID(), file: file, summaryMode: .auto, startedAt: Date(), kind: .retranscribe
+        ), completion: completion)
+    }
+
+    private func enqueue(job: ProcessingJob, completion: ((Result<Void, Error>) -> Void)?) {
         processingJobs.append(job)
+        if let completion { jobCompletions[job.id] = completion }
         onQueueDepthChanged?(processingJobs.count)
-        Log.writeLine("daemon", "pipeline queued -> \(file.lastPathComponent) (queue=\(processingJobs.count))")
+        Log.writeLine("daemon", "pipeline queued -> \(job.file.lastPathComponent) (queue=\(processingJobs.count))")
         Log.event(category: "coordinator", action: "pipeline_queued", attributes: [
-            "file": file.lastPathComponent,
+            "file": job.file.lastPathComponent,
             "queue_depth": processingJobs.count,
-            "summary_mode": summaryMode == .byo ? "byo" : "auto",
+            "summary_mode": job.summaryMode == .byo ? "byo" : "auto",
+            "kind": job.kind == .retranscribe ? "retranscribe" : "full",
         ])
         startNextJobIfNeeded()
     }
@@ -111,22 +136,68 @@ final class SinkDispatcher: @unchecked Sendable {
                 "engine": transcriptionRunner.backendName,
                 "segments": sidecar.segments.count,
                 "audio_seconds": sidecar.audioSeconds,
+                "kind": job.kind == .retranscribe ? "retranscribe" : "full",
             ])
-            await MainActor.run { self.invokePipeline(for: job) }
+            await MainActor.run {
+                switch job.kind {
+                case .full: self.invokePipeline(for: job)
+                case .retranscribe: self.invokeFinalize(for: job)
+                }
+            }
         } catch {
             Log.main.error("\(self.transcriptionRunner.backendName) transcription failed: \(error.localizedDescription)")
             Log.event(category: "transcription", action: "engine_failed", attributes: [
                 "file": job.file.lastPathComponent,
                 "engine": transcriptionRunner.backendName,
                 "error": error.localizedDescription,
+                "kind": job.kind == .retranscribe ? "retranscribe" : "full",
             ])
             await MainActor.run {
                 let loc = SinkDispatcher.sidecarLocation(for: job)
-                PipelineFailureSidecar.write(
-                    stem: loc.stem, in: loc.dir,
-                    stage: .transcribe, reason: error.localizedDescription
-                )
+                // A failed re-transcribe wrote nothing: the meeting still has the
+                // transcript and summary it had before, so marking the row failed
+                // would be a lie about a healthy meeting. The caller surfaces the
+                // error instead.
+                if job.kind == .full {
+                    PipelineFailureSidecar.write(
+                        stem: loc.stem, in: loc.dir,
+                        stage: .transcribe, reason: error.localizedDescription
+                    )
+                }
                 self.completeActiveJob(job, with: .failure(error))
+            }
+        }
+    }
+
+    /// The `.retranscribe` tail (ASR3): `mp finalize` over the transcript the
+    /// runner just rewrote, then stop. Unlike `invokePipeline` there is no
+    /// stall tracking, because finalize is a bounded local file transform with
+    /// no heartbeat to miss.
+    private func invokeFinalize(for job: ProcessingJob) {
+        launcher.finalize(wav: job.file) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let loc = SinkDispatcher.sidecarLocation(for: job)
+                switch result {
+                case .success:
+                    Log.event(category: "coordinator", action: "retranscribe_finalized", attributes: [
+                        "stem": loc.stem,
+                    ])
+                    self.completeActiveJob(job, with: .success(nil))
+                case .failure(let err):
+                    // Here the transcript on disk IS degraded: the runner replaced
+                    // it with the raw FluidAudio sidecar and finalize never got to
+                    // relabel it. Mark the row so Reprocess is offered.
+                    Log.event(category: "coordinator", action: "retranscribe_failed", attributes: [
+                        "stem": loc.stem,
+                        "error": err.localizedDescription,
+                    ])
+                    PipelineFailureSidecar.write(
+                        stem: loc.stem, in: loc.dir,
+                        stage: .pipeline, reason: err.localizedDescription
+                    )
+                    self.completeActiveJob(job, with: .failure(err))
+                }
             }
         }
     }
@@ -174,6 +245,9 @@ final class SinkDispatcher: @unchecked Sendable {
 
     private func completeActiveJob(_ job: ProcessingJob, with result: Result<URL?, Error>) {
         stopStallTracking()
+        if let per = jobCompletions.removeValue(forKey: job.id) {
+            per(result.map { _ in () })
+        }
         onJobCompleted?(job, result)
         activeJob = nil
         if let head = processingJobs.first, head.id == job.id {

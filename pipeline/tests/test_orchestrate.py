@@ -20,7 +20,7 @@ from mp.config import Config
 from mp.diarize import cosine_similarity
 from mp.orchestrate import (
     _check_too_long,
-    _finalize_streamed_transcript,
+    finalize_streamed_transcript,
     _will_summarize_locally,
     _write_manual_bundle,
     main as orchestrate_main,
@@ -264,7 +264,7 @@ def test_finalize_voiceprint_match_names_me_and_strips_embeddings(
     )
     # Mono, so enrollment no-ops; this exercises match + strip only.
     monkeypatch.setattr("mp.diarize.is_stereo_recording", lambda w: False)
-    out = _finalize_streamed_transcript(
+    out = finalize_streamed_transcript(
         wav, streamed, user_label="Me",
         voiceprint_store=store, roster_store=RosterStore(tmp_path / "roster.json"),
     )
@@ -307,7 +307,7 @@ def test_finalize_names_nobody_me_when_the_user_stayed_silent(tmp_path: Path, mo
         "mp.diarize.assign_speakers_by_channel",
         lambda segments, w: [{**s, "speaker": "speaker_other"} for s in segments],
     )
-    out = _finalize_streamed_transcript(
+    out = finalize_streamed_transcript(
         wav, streamed, user_label="Heorhii",
         voiceprint_store=store, roster_store=RosterStore(tmp_path / "roster.json"),
     )
@@ -350,7 +350,7 @@ def test_finalize_enrolls_voiceprint_from_stereo_mic_channel(tmp_path: Path, mon
             {**segments[1], "speaker": "speaker_other"},
         ],
     )
-    _finalize_streamed_transcript(
+    finalize_streamed_transcript(
         wav, streamed, user_label="Me",
         voiceprint_store=store, roster_store=RosterStore(tmp_path / "roster.json"),
     )
@@ -387,7 +387,7 @@ def test_finalize_roster_names_enrolled_person_and_clusters_unknown(
         {"speaker_0": e0, "speaker_1": e1, "speaker_2": e2},
     )
     monkeypatch.setattr("mp.diarize.is_stereo_recording", lambda w: False)
-    out = _finalize_streamed_transcript(
+    out = finalize_streamed_transcript(
         wav, streamed, user_label="Me",
         voiceprint_store=store, roster_store=roster,
     )

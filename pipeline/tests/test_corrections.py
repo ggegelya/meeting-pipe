@@ -316,7 +316,7 @@ def test_cli_empty_dir_reports_zero(tmp_path: Path):
 
 def _write_daemon_sidecar(tmp_path: Path, stem: str, transcript_text: str = "hello") -> tuple[Path, Path]:
     """Pre-write the FluidAudio sidecar (JSON) and the transcript MD that
-    `_finalize_streamed_transcript` would write. The finalize step
+    `finalize_streamed_transcript` would write. The finalize step
     overwrites both during run_all, but the contents read by the run
     sidecar (transcript_chars) come from the MD on disk after finalize,
     so seeding with a known length lets tests assert deterministically."""

@@ -147,7 +147,7 @@ def test_apply_glossary_rewrites_json_and_md(tmp_path: Path, monkeypatch):
     md_path.write_text("stale", encoding="utf-8")
 
     monkeypatch.setattr(orchestrate, "load_glossary", lambda _wav: Glossary(terms={"acme": "ACME Corp"}))
-    orchestrate._apply_glossary(wav, {"json": json_path, "md": md_path})
+    orchestrate.apply_glossary(wav, {"json": json_path, "md": md_path})
 
     assert "ACME Corp" in json.loads(json_path.read_text(encoding="utf-8"))["segments"][0]["text"]
     assert "ACME Corp" in md_path.read_text(encoding="utf-8")
@@ -164,7 +164,7 @@ def test_apply_glossary_noop_leaves_files_untouched(tmp_path: Path, monkeypatch)
     md_path.write_text("original md", encoding="utf-8")
 
     monkeypatch.setattr(orchestrate, "load_glossary", lambda _wav: Glossary(terms={"acme": "ACME Corp"}))
-    orchestrate._apply_glossary(wav, {"json": json_path, "md": md_path})
+    orchestrate.apply_glossary(wav, {"json": json_path, "md": md_path})
 
     # Nothing matched, so the finalized files are left byte-identical.
     assert md_path.read_text(encoding="utf-8") == "original md"

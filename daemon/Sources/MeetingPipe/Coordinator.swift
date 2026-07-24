@@ -725,6 +725,13 @@ final class Coordinator: NSObject {
             self?.workflowCorrections.record(
                 bundleID: bundleID, meetingTitle: title, workflow: workflow
             ) ?? false
+        },
+        enqueueRetranscribe: { [weak self] file, completion in
+            guard let self = self else {
+                completion(.failure(MeetingLibraryService.LibraryError.transcriptionUnavailable))
+                return
+            }
+            self.jobDispatcher.enqueueRetranscribe(file: file, completion: completion)
         }
     )
 

@@ -43,6 +43,15 @@ final class PipelineJobDispatcher {
         sinkDispatcher.enqueue(file: file, summaryMode: summaryMode)
     }
 
+    /// Queue a re-transcribe of an existing recording (ASR3). The result comes
+    /// back through `completion`, not through the done/error surfaces: the owner
+    /// asked for this from the Library and is watching a progress strip there, so
+    /// a "published" notification would be both wrong (nothing published) and
+    /// duplicated across a batch.
+    func enqueueRetranscribe(file: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        sinkDispatcher.enqueueRetranscribe(file: file, completion: completion)
+    }
+
     /// Cancel the active pipeline subprocess (TECH-UX5).
     func cancelActive() {
         sinkDispatcher.cancelActiveJob()
@@ -51,6 +60,11 @@ final class PipelineJobDispatcher {
     var queueDepth: Int { sinkDispatcher.queueDepth }
 
     private func route(job: ProcessingJob, result: Result<URL?, Error>) {
+        // A re-transcribe published nothing and was requested from a surface that
+        // is already showing its own progress and result, so it owns its feedback
+        // (ASR3). Routing it here would fire "meeting published" per meeting in a
+        // batch, over a summary that was never regenerated.
+        guard job.kind == .full else { return }
         switch result {
         case .success(let pageURL):
             let stem = job.file.deletingPathExtension().lastPathComponent

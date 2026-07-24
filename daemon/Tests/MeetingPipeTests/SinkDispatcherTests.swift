@@ -39,6 +39,21 @@ final class SinkDispatcherTests: XCTestCase {
 
         func cancelActiveRun() { cancelCalled = true }
 
+        /// ASR3: `mp finalize` calls, kept apart from `runAll` so a test can
+        /// assert the re-transcribe tail never reaches summarize or publish.
+        private(set) var finalizedFiles: [URL] = []
+        private var finalizeCompletions: [(Result<Void, Error>) -> Void] = []
+
+        func finalize(wav: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+            finalizedFiles.append(wav)
+            finalizeCompletions.append(completion)
+        }
+
+        func finishFinalize(_ result: Result<Void, Error>) {
+            guard !finalizeCompletions.isEmpty else { return }
+            finalizeCompletions.removeFirst()(result)
+        }
+
         /// Resolve the head of the in-flight queue.
         func finish(_ result: Result<URL?, Error>) {
             guard !completions.isEmpty else { return }
@@ -552,5 +567,83 @@ final class SinkDispatcherTests: XCTestCase {
         waitForPipelineStart(driver)
         XCTAssertEqual(runner.seenHints, ["auto"])
         XCTAssertNil(FluidAudioRunner.resolveLanguage(hint: "auto"))
+    }
+
+    // MARK: - Re-transcribe jobs (ASR3)
+
+    private func waitForFinalize(_ driver: FakeDriver, timeout: TimeInterval = 2.0) {
+        let exp = expectation(description: "finalize launched")
+        let deadline = Date().addingTimeInterval(timeout)
+        func poll() {
+            if !driver.finalizedFiles.isEmpty { exp.fulfill(); return }
+            if Date() >= deadline { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() }
+        }
+        DispatchQueue.main.async { poll() }
+        wait(for: [exp], timeout: timeout + 0.5)
+    }
+
+    /// The whole point of the separate job kind: transcription runs, then
+    /// finalize, and `run-all` (summarize + publish, the part that can cost
+    /// money and rewrite a published page) is never reached.
+    func test_retranscribe_runs_finalize_and_never_run_all() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        var landed: Result<Void, Error>?
+        dispatcher.enqueueRetranscribe(file: wav) { landed = $0 }
+        waitForFinalize(driver)
+
+        XCTAssertEqual(driver.finalizedFiles, [wav])
+        XCTAssertTrue(driver.startedFiles.isEmpty, "a re-transcribe must not run summarize or publish")
+
+        driver.finishFinalize(.success(()))
+        drainMain()
+        guard case .success? = landed else { return XCTFail("expected the caller to be told it landed") }
+        XCTAssertEqual(dispatcher.queueDepth, 0)
+    }
+
+    /// Re-transcribes share the one queue with recordings, so a batch can never
+    /// put two transcription runs on the Neural Engine at once.
+    func test_a_retranscribe_waits_behind_a_recording_job() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wavA = try makeTempWav()
+        let wavB = try makeTempWav()
+        defer {
+            try? FileManager.default.removeItem(at: wavA.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: wavB.deletingLastPathComponent())
+        }
+
+        dispatcher.enqueue(file: wavA, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        dispatcher.enqueueRetranscribe(file: wavB) { _ in }
+
+        XCTAssertTrue(driver.finalizedFiles.isEmpty, "must wait for the live job to drain")
+        XCTAssertEqual(dispatcher.queueDepth, 2)
+
+        driver.finish(.success(nil))
+        waitForFinalize(driver)
+        XCTAssertEqual(driver.finalizedFiles, [wavB])
+    }
+
+    /// A failed finalize reaches the caller rather than being swallowed, and the
+    /// queue still advances.
+    func test_a_failed_finalize_is_reported_to_the_caller() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        var landed: Result<Void, Error>?
+        dispatcher.enqueueRetranscribe(file: wav) { landed = $0 }
+        waitForFinalize(driver)
+        driver.finishFinalize(.failure(NSError(domain: "x", code: 1)))
+        drainMain()
+
+        guard case .failure? = landed else { return XCTFail("expected the failure to surface") }
+        XCTAssertEqual(dispatcher.queueDepth, 0)
     }
 }

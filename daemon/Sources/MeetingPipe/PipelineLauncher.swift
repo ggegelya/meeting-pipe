@@ -71,6 +71,8 @@ protocol PipelineDriver: AnyObject {
     func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// As `summarize`, but with a one-shot backend override for a re-summarize on a chosen engine (PIPE6): `mp summarize --backend <backend>`. `nil` uses the configured backend. Defaulted to ignore the override so fakes need only implement the plain form.
     func summarize(transcriptMD: URL, backend: String?, completion: @escaping (Result<Void, Error>) -> Void)
+    /// Re-run only the finalize stage over the daemon's `<stem>.json` (ASR3): `mp finalize <wav>` re-derives speaker labels, the voiceprint + roster match, the embeddings sidecar, and the glossary normalization. No summarize, no publish, no egress. Defaulted no-op.
+    func finalize(wav: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// Publish a hand-pasted summary (TECH-UX3): runs `mp publish-from-paste <transcript.md>`, which parses the sibling `<stem>.summary.md` the caller wrote and fans out to the sinks.
     func publishFromPaste(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// Re-run summarize into a `<stem>.summary.candidate.json` preview (TECH-A16), no publish. `contextOverride` (TECH-FEAT7) overrides only the CONTEXT block for this run when non-empty. Defaulted no-op.
@@ -132,6 +134,14 @@ extension PipelineDriver {
     /// fakes that implement only the completion form get the PIPE6 variant for free.
     func summarize(transcriptMD: URL, backend: String?, completion: @escaping (Result<Void, Error>) -> Void) {
         summarize(transcriptMD: transcriptMD, completion: completion)
+    }
+
+    /// Default no-op stub; `PipelineLauncher` overrides this.
+    func finalize(wav: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "finalize unsupported by this driver"]
+        )))
     }
 
     /// Default no-op stub; `PipelineLauncher` overrides this.
@@ -536,6 +546,15 @@ final class PipelineLauncher: PipelineDriver {
         var args = ["summarize", transcriptMD.path]
         if let backend { args += ["--backend", backend] }
         runMP(args, timeout: 20 * 60, meeting: transcriptMD, backendOverride: backend, completion: completion)
+    }
+
+    /// Spawn `mp finalize <wav>` (ASR3): stage 1 of run-all on its own, over the
+    /// `<stem>.json` the transcription runner just rewrote. Re-derives the speaker
+    /// labels, the roster match, the embeddings sidecar, and the glossary
+    /// normalization, then stops. Fully local (no engine, no sink, no token), so
+    /// it is bounded like a file transform rather than an LLM round-trip.
+    func finalize(wav: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        runMP(["finalize", wav.path], timeout: 5 * 60, meeting: wav, completion: completion)
     }
 
     /// Publish a hand-pasted summary (TECH-UX3). The caller has already written

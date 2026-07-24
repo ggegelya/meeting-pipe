@@ -190,15 +190,19 @@ after raising `summarization.skip_above_chars` in
     return bundle
 
 
-def _apply_glossary(wav: Path, t: dict[str, Path]) -> None:
+def apply_glossary(wav: Path, t: dict[str, Path]) -> None:
     """ASR1: normalize custom vocabulary in the finalized transcript.
 
     A pure local transform (no engine call, no egress) applied before
     summarize / embed ever see the text, so a recurring proper noun mangled by
     ASR is spelled consistently across the transcript, summary, and embedding
-    index. Runs only on this fresh finalize (transcripts stay write-once); a
+    index. Runs only on a fresh finalize (transcripts stay write-once); a
     no-op when no glossary is configured or nothing matches, in which case the
     finalized files are left byte-identical.
+
+    Public, not module-private, because `mp finalize` is the second caller
+    (ASR3): a re-transcribed old meeting has to pick up glossary entries added
+    since it was recorded, and that is the same transform, not a copy of it.
     """
     glossary = load_glossary(wav)
     if not glossary:
@@ -432,7 +436,7 @@ def _run_all_inner(
     # before invoking us. We finalize it (channel-aware speaker labels
     # fallback if FluidAudio diarization failed) and continue with
     # summarize + publish. No Python-side ASR exists anymore.
-    streamed = _existing_daemon_transcript(wav)
+    streamed = existing_daemon_transcript(wav)
     if streamed is None:
         events.emit("pipeline", "run_failed", wav=str(wav),
                     error="no daemon transcript", error_type="MissingSidecar")
@@ -445,10 +449,10 @@ def _run_all_inner(
     log.info("[1/3] finalize (produced by daemon: %s)", source)
     _stage("finalize")
     events.emit("pipeline", "stage_started", stage="finalize", source=source)
-    t = _finalize_streamed_transcript(wav, streamed, user_label=cfg.summarization.user_label)
+    t = finalize_streamed_transcript(wav, streamed, user_label=cfg.summarization.user_label)
     # ASR1: custom-vocabulary normalization before any downstream stage (BYO /
     # long-meeting bundle, Apple hand-off, summarize, publish) reads the text.
-    _apply_glossary(wav, t)
+    apply_glossary(wav, t)
     events.emit("pipeline", "stage_completed", stage="finalize", md=str(t["md"]))
 
     structured = json.loads(t["json"].read_text(encoding="utf-8"))
@@ -562,12 +566,14 @@ def _run_all_inner(
 _DAEMON_BACKENDS = frozenset({"fluidaudio"})
 
 
-def _existing_daemon_transcript(wav: Path) -> dict | None:
+def existing_daemon_transcript(wav: Path) -> dict | None:
     """Return the structured JSON the daemon wrote, or None if it doesn't
     exist / is unusable. The daemon's FluidAudio runner writes `<stem>.json`
     with `backend: "fluidaudio"`, `streaming: false`, `finalized: true`.
     Empty-segments sidecars are accepted; the no-speech short-circuit in
     `_run_all_inner` handles them.
+
+    Shared with `mp finalize` (ASR3), which reads the same sidecar.
     """
     json_path = wav.parent / f"{wav.stem}.json"
     if not json_path.exists():
@@ -657,7 +663,7 @@ def _write_embeddings_sidecar(
     tmp.replace(path)
 
 
-def _finalize_streamed_transcript(
+def finalize_streamed_transcript(
     wav: Path,
     streamed: dict,
     *,
@@ -669,6 +675,10 @@ def _finalize_streamed_transcript(
     `<stem>.json` + `<stem>.md`. FluidAudio normally provides speaker
     labels; when it didn't (diarization failed), fall back to a channel-
     aware pass over the stereo WAV.
+
+    Public, not module-private, because `mp finalize` runs this stage on its
+    own for the ASR3 re-transcribe ratchet: roster names learned after a
+    meeting was recorded only reach it by re-running the match here.
     """
     json_path = wav.parent / f"{wav.stem}.json"
     md_path = wav.parent / f"{wav.stem}.md"

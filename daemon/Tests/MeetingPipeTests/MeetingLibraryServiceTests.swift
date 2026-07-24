@@ -133,6 +133,10 @@ final class MeetingLibraryServiceTests: XCTestCase {
     /// AI9: the correction pairs `reassignWorkflow` handed out, in order.
     private var corrections: [(bundleID: String, title: String?, workflow: Workflow)] = []
     private var service: MeetingLibraryService!
+    /// ASR3: recordings handed to the re-transcribe queue, with their parked
+    /// completions so a test decides when (and whether) the run lands.
+    private var retranscribed: [URL] = []
+    private var retranscribeCompletions: [(Result<Void, Error>) -> Void] = []
 
     override func setUpWithError() throws {
         dir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -145,6 +149,8 @@ final class MeetingLibraryServiceTests: XCTestCase {
         enqueued = []
         errors = []
         corrections = []
+        retranscribed = []
+        retranscribeCompletions = []
         service = MeetingLibraryService(
             outputDir: { [unowned self] in self.dir },
             launcher: driver,
@@ -154,8 +160,19 @@ final class MeetingLibraryServiceTests: XCTestCase {
             recordCorrection: { [unowned self] bundleID, title, workflow in
                 self.corrections.append((bundleID, title, workflow))
                 return !bundleID.isEmpty
+            },
+            enqueueRetranscribe: { [unowned self] file, done in
+                self.retranscribed.append(file)
+                self.retranscribeCompletions.append(done)
             }
         )
+    }
+
+    /// Land the head of the re-transcribe queue, after the caller has staged
+    /// whatever the run would have written to `<stem>.json`.
+    private func finishRetranscribe(_ result: Result<Void, Error> = .success(())) {
+        guard !retranscribeCompletions.isEmpty else { return }
+        retranscribeCompletions.removeFirst()(result)
     }
 
     override func tearDownWithError() throws {
@@ -775,5 +792,128 @@ final class MeetingLibraryServiceTests: XCTestCase {
         DispatchQueue.main.async { drained.fulfill() }
         wait(for: [drained], timeout: 1.0)
         guard case .failure? = captured else { return XCTFail("expected failure") }
+    }
+
+    // MARK: - re-transcribe (ASR3)
+
+    /// `<stem>.json` in the shape both the daemon runner and finalize write.
+    private func writeTranscript(_ stem: String, segments: [[String: Any]]) throws {
+        let payload: [String: Any] = ["language": "en", "segments": segments]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        try data.write(to: dir.appendingPathComponent("\(stem).json"))
+    }
+
+    private func segment(_ start: Double, _ end: Double, _ text: String, _ speaker: String) -> [String: Any] {
+        ["start": start, "end": end, "text": text, "speaker": speaker]
+    }
+
+    func test_retranscribe_without_audio_fails_before_queueing() {
+        var captured: Result<MeetingLibraryService.RetranscribeOutcome, Error>?
+        service.retranscribeMeeting(stem: "20260101-0900") { captured = $0 }
+        guard case .failure? = captured else { return XCTFail("expected synchronous failure") }
+        XCTAssertTrue(retranscribed.isEmpty)
+    }
+
+    func test_retranscribe_queues_the_recording() throws {
+        let stem = "20260101-0900"
+        try touch("\(stem).wav")
+        service.retranscribeMeeting(stem: stem) { _ in }
+        XCTAssertEqual(retranscribed.map { $0.lastPathComponent }, ["\(stem).wav"])
+        // Never through the run-all queue: a re-transcribe must not summarize or publish.
+        XCTAssertTrue(enqueued.isEmpty)
+    }
+
+    /// The acceptance criterion: an in-app speaker name and a text edit survive
+    /// a re-transcribe that renumbered the segments and relabelled the clusters.
+    func test_retranscribe_carries_the_overlays_onto_the_new_transcript() throws {
+        let stem = "20260101-0900"
+        try touch("\(stem).wav")
+        try writeTranscript(stem, segments: [
+            segment(0, 10, "hi", "ME"),
+            segment(10, 20, "we shipped perfecta", "THEM-A"),
+        ])
+        _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Alice", stem: stem, in: dir)
+        _ = try TranscriptCorrectionStore.upsert(
+            segmentIndex: 1, pipelineOriginal: "we shipped perfecta",
+            edited: "we shipped Perfeqta", stem: stem, in: dir
+        )
+
+        var captured: Result<MeetingLibraryService.RetranscribeOutcome, Error>?
+        service.retranscribeMeeting(stem: stem) { captured = $0 }
+
+        // The run rewrote the transcript: one fewer leading segment, and the
+        // same voice under a different cluster id.
+        try writeTranscript(stem, segments: [
+            segment(0, 20, "hi we shipped perfecta", "THEM-B"),
+        ])
+        finishRetranscribe()
+        drainMain()
+
+        guard case .success(let outcome)? = captured else { return XCTFail("expected success") }
+        XCTAssertEqual(SpeakerLabelStore.read(stem: stem, in: dir).labels, ["THEM-B": "Alice"])
+        let corrections = TranscriptCorrectionStore.read(stem: stem, in: dir)
+        XCTAssertEqual(corrections[0]?.editedText, "we shipped Perfeqta")
+        XCTAssertNil(corrections[1], "the old index must not survive alongside the carried one")
+        XCTAssertEqual(outcome.carried, 2)
+        XCTAssertEqual(outcome.dropped, 0)
+    }
+
+    /// A failed run leaves the sidecars exactly as they were. The transcript on
+    /// disk is the one they were written against, so rewriting them would
+    /// corrupt a meeting nothing happened to.
+    func test_a_failed_retranscribe_leaves_the_overlays_alone() throws {
+        let stem = "20260101-1000"
+        try touch("\(stem).wav")
+        try writeTranscript(stem, segments: [segment(0, 10, "hi", "THEM-A")])
+        _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Alice", stem: stem, in: dir)
+
+        var captured: Result<MeetingLibraryService.RetranscribeOutcome, Error>?
+        service.retranscribeMeeting(stem: stem) { captured = $0 }
+        finishRetranscribe(.failure(NSError(domain: "x", code: 1)))
+        drainMain()
+
+        guard case .failure? = captured else { return XCTFail("expected failure") }
+        XCTAssertEqual(SpeakerLabelStore.read(stem: stem, in: dir).labels, ["THEM-A": "Alice"])
+    }
+
+    /// A meeting with nothing overlaid skips the carry entirely; the outcome
+    /// still reports cleanly so a batch can count it as a success.
+    func test_retranscribe_with_no_overlays_reports_an_empty_carry() throws {
+        let stem = "20260101-1100"
+        try touch("\(stem).wav")
+        try writeTranscript(stem, segments: [segment(0, 10, "hi", "THEM-A")])
+
+        var captured: Result<MeetingLibraryService.RetranscribeOutcome, Error>?
+        service.retranscribeMeeting(stem: stem) { captured = $0 }
+        finishRetranscribe()
+        drainMain()
+
+        guard case .success(let outcome)? = captured else { return XCTFail("expected success") }
+        XCTAssertEqual(outcome.carried, 0)
+        XCTAssertEqual(outcome.dropped, 0)
+        XCTAssertEqual(outcome.retired, 0)
+    }
+
+    /// The overlay sidecar is replaced wholesale, so an override the new
+    /// transcript has no home for is gone from disk, not left behind pointing at
+    /// a segment that no longer means what it did.
+    func test_an_unplaceable_override_is_dropped_from_disk_and_counted() throws {
+        let stem = "20260101-1200"
+        try touch("\(stem).wav")
+        try writeTranscript(stem, segments: [segment(0, 10, "hi", "THEM-A")])
+        _ = try TranscriptCorrectionStore.upsert(
+            segmentIndex: 0, pipelineOriginal: "hi", edited: "hey", stem: stem, in: dir
+        )
+
+        var captured: Result<MeetingLibraryService.RetranscribeOutcome, Error>?
+        service.retranscribeMeeting(stem: stem) { captured = $0 }
+        // The new transcript covers a completely different stretch of audio.
+        try writeTranscript(stem, segments: [segment(100, 110, "later", "THEM-A")])
+        finishRetranscribe()
+        drainMain()
+
+        guard case .success(let outcome)? = captured else { return XCTFail("expected success") }
+        XCTAssertEqual(outcome.dropped, 1)
+        XCTAssertTrue(TranscriptCorrectionStore.read(stem: stem, in: dir).isEmpty)
     }
 }

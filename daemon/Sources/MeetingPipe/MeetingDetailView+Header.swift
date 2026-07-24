@@ -206,6 +206,13 @@ extension MeetingDetailView {
                 Button("Local (on-device)") { runReSummarize(backend: "local") }
                 Button("Anthropic (cloud)") { runReSummarize(backend: "anthropic") }
             }
+            // ASR3: the transcript twin of Re-summarize. Re-runs ASR + diarization
+            // over the audio so a glossary term or roster name learned since
+            // reaches this meeting; the summary is left alone. The batch pane
+            // carries the same action across a multi-selection.
+            Button("Re-transcribe\u{2026}") {
+                toolbarAction("retranscribe") { confirmRetranscribe() }
+            }
             // WF8: re-route a misrouted meeting. Rewrites the meta sidecar's workflow
             // block (context prompt, sinks, DB, NDA posture), then offers Regenerate /
             // Republish. NDA transitions confirm explicitly in `beginReassign`.
@@ -489,6 +496,52 @@ extension MeetingDetailView {
     func copyMeetingID() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(meeting.stem, forType: .string)
+    }
+
+    /// ASR3: confirm, run, then report what happened to the speaker names and
+    /// text edits. A modal result rather than a toast because the interesting
+    /// case is a drop: an override the carry could not re-anchor is work the
+    /// owner did by hand that the new transcript has no home for.
+    func confirmRetranscribe() {
+        let alert = NSAlert()
+        alert.messageText = "Re-transcribe \(meeting.displayTitle)?"
+        alert.informativeText = "The recording is transcribed again from its audio, picking up glossary terms and roster names learned since. Your speaker names and text edits are re-anchored onto the new transcript; anything that no longer lines up is dropped. The summary is left alone; re-summarize afterwards if you want it to reflect the new transcript."
+        alert.addButton(withTitle: "Re-transcribe")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task {
+            let result = await libraryModel.retranscribeMeeting(stem: meeting.stem)
+            await MainActor.run { reportRetranscribe(result) }
+        }
+    }
+
+    private func reportRetranscribe(
+        _ result: Result<MeetingLibraryService.RetranscribeOutcome, Error>
+    ) {
+        let alert = NSAlert()
+        switch result {
+        case .success(let outcome):
+            alert.messageText = "Re-transcribed \(meeting.displayTitle)."
+            var lines = ["The transcript now reflects the current ASR, glossary, and roster."]
+            if outcome.carried > 0 {
+                lines.append("\(outcome.carried) of your edits carried over.")
+            }
+            if outcome.retired > 0 {
+                lines.append("\(outcome.retired) text correction\(outcome.retired == 1 ? " is" : "s are") no longer needed: the new transcript already reads that way.")
+            }
+            if outcome.dropped > 0 {
+                lines.append("\(outcome.dropped) could not be placed on the new transcript and were dropped.")
+            }
+            lines.append("Re-summarize from the ... menu if you want the summary to reflect it.")
+            alert.informativeText = lines.joined(separator: "\n\n")
+            alert.addButton(withTitle: "Done")
+        case .failure(let error):
+            alert.alertStyle = .warning
+            alert.messageText = "Couldn't re-transcribe \(meeting.displayTitle)."
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: "OK")
+        }
+        alert.runModal()
     }
 
     func confirmDelete() {

@@ -18,6 +18,12 @@ struct BatchActionsPane: View {
     @State private var cancelRequested: Bool = false
     /// Where the merged content landed, shown after a successful merge (FEAT9).
     @State private var mergeNote: String?
+    /// ASR3: true while the re-transcribe confirmation is up.
+    @State private var confirmingRetranscribe: Bool = false
+    /// ASR3: what the last re-transcribe did to the speaker names and text edits
+    /// on those meetings. Shown verbatim rather than summarised to "done",
+    /// because a dropped override is work the owner did that is now gone.
+    @State private var retranscribeNote: String?
 
     var body: some View {
         ScrollView {
@@ -25,6 +31,7 @@ struct BatchActionsPane: View {
                 leadRow
                 selectionCard
                 mergeCard
+                transcriptCard
                 republishCard
                 exportCard
                 dangerCard
@@ -45,6 +52,19 @@ struct BatchActionsPane: View {
             },
             message: {
                 Text("Every sidecar (audio, transcript, summary) for these meetings goes to the system Trash. You can restore from there until the Trash is emptied.")
+            }
+        )
+        .alert(
+            "Re-transcribe \(meetings.count) meetings?",
+            isPresented: $confirmingRetranscribe,
+            actions: {
+                Button("Re-transcribe") {
+                    Task { await runRetranscribe() }
+                }
+                Button("Cancel", role: .cancel) { }
+            },
+            message: {
+                Text("Each recording is transcribed again from its audio, so the transcript is replaced. Speaker names and text edits are re-anchored onto the new transcript; anything that no longer lines up is dropped, and the count is reported. Summaries are left alone.")
             }
         )
     }
@@ -166,6 +186,72 @@ struct BatchActionsPane: View {
                             .font(.mpTextXS)
                             .foregroundStyle(Color(MPColors.fgSubtle))
                         Spacer()
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Transcript card (ASR3)
+
+    /// Re-transcribe the selection against the current stack. Transcripts are
+    /// otherwise frozen at the quality they were captured at: a glossary term or
+    /// a roster name added since never reaches an old meeting, and Reprocess /
+    /// Regenerate only re-run summarize over the transcript already on disk.
+    ///
+    /// Runs transcription + finalize only, so it costs nothing and publishes
+    /// nothing. Re-summarize is offered afterwards as its own step, because that
+    /// is the part that can reach a paid engine and rewrite a published page.
+    private var transcriptCard: some View {
+        cardSection(eyebrow: "Transcript") {
+            VStack(spacing: 0) {
+                actionRow(
+                    icon: "waveform",
+                    title: "Re-transcribe with the current stack\u{2026}",
+                    hint: "Transcribes each recording again, picking up glossary terms and roster names learned since. Your speaker names and text edits are carried over. Summaries are untouched."
+                )
+                cardFooter {
+                    if case .running(let label, let done, let total) = state,
+                       label == "Re-transcribing" {
+                        runningFooter(done: done, total: total, onStop: { cancelRequested = true })
+                    } else if case .finished(let label, let succeeded, let failed) = state,
+                              label == "Re-transcribe" {
+                        finishedRow(succeeded: succeeded, failed: failed)
+                            .padding(.trailing, 6)
+                        if let note = retranscribeNote {
+                            Text(note)
+                                .font(.mpTextXS)
+                                .foregroundStyle(Color(MPColors.fgSubtle))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                        Spacer()
+                        // The follow-up the ratchet earns: the new transcript is
+                        // on disk, so a summary generated from it is now worth
+                        // paying for. Never automatic, because this is the step
+                        // that can egress and rewrite a published page.
+                        Button("Re-summarize all") { Task { await runRegenerate() } }
+                            .buttonStyle(MPPrimaryButtonStyle())
+                            .disabled(isRunning)
+                    } else if case .finished(let label, let succeeded, let failed) = state,
+                              label == "Re-summarize" {
+                        finishedRow(succeeded: succeeded, failed: failed)
+                            .padding(.trailing, 6)
+                        Text("Summaries regenerated from the new transcripts.")
+                            .font(.mpTextXS)
+                            .foregroundStyle(Color(MPColors.fgSubtle))
+                        Spacer()
+                    } else if case .running(let label, let done, let total) = state,
+                              label == "Re-summarizing" {
+                        runningFooter(done: done, total: total, onStop: { cancelRequested = true })
+                    } else {
+                        Text("On-device. No engine call, nothing published.")
+                            .font(.mpTextXS)
+                            .foregroundStyle(Color(MPColors.fgSubtle))
+                        Spacer()
+                        Button("Re-transcribe\u{2026}") { confirmingRetranscribe = true }
+                            .buttonStyle(MPSecondaryButtonStyle())
+                            .disabled(isRunning)
                     }
                 }
             }
@@ -388,6 +474,62 @@ struct BatchActionsPane: View {
             state = .running(label: "Republishing", done: i + 1, total: stems.count)
         }
         state = .finished(label: "Republish", succeeded: ok, failed: bad)
+    }
+
+    /// ASR3. Sequential like every other batch action, so a 20-meeting run never
+    /// puts two transcription jobs on the Neural Engine at once; each meeting
+    /// still queues behind any live recording's own job.
+    @MainActor
+    private func runRetranscribe() async {
+        let stems = meetings.map(\.stem)
+        var ok = 0, bad = 0, carried = 0, dropped = 0, retired = 0
+        cancelRequested = false
+        retranscribeNote = nil
+        state = .running(label: "Re-transcribing", done: 0, total: stems.count)
+        for (i, stem) in stems.enumerated() {
+            if cancelRequested { break }
+            switch await libraryModel.retranscribeMeeting(stem: stem) {
+            case .success(let outcome):
+                ok += 1
+                carried += outcome.carried
+                dropped += outcome.dropped
+                retired += outcome.retired
+            case .failure:
+                bad += 1
+            }
+            state = .running(label: "Re-transcribing", done: i + 1, total: stems.count)
+        }
+        retranscribeNote = BatchActionsPane.carryNote(carried: carried, dropped: dropped, retired: retired)
+        state = .finished(label: "Re-transcribe", succeeded: ok, failed: bad)
+    }
+
+    /// One line about what happened to the speaker names and text edits. Nil when
+    /// the selection carried none, so an untouched batch shows no filler.
+    static func carryNote(carried: Int, dropped: Int, retired: Int) -> String? {
+        var parts: [String] = []
+        if carried > 0 { parts.append("\(carried) edit\(carried == 1 ? "" : "s") carried") }
+        if retired > 0 { parts.append("\(retired) already fixed") }
+        if dropped > 0 { parts.append("\(dropped) dropped") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// The re-transcribe follow-up: re-summarize each meeting from its new
+    /// transcript and republish, reusing the single-meeting Regenerate path.
+    @MainActor
+    private func runRegenerate() async {
+        let stems = meetings.map(\.stem)
+        var ok = 0, bad = 0
+        cancelRequested = false
+        state = .running(label: "Re-summarizing", done: 0, total: stems.count)
+        for (i, stem) in stems.enumerated() {
+            if cancelRequested { break }
+            switch await libraryModel.regenerateMeeting(stem: stem) {
+            case .success: ok += 1
+            case .failure: bad += 1
+            }
+            state = .running(label: "Re-summarizing", done: i + 1, total: stems.count)
+        }
+        state = .finished(label: "Re-summarize", succeeded: ok, failed: bad)
     }
 
     @MainActor
