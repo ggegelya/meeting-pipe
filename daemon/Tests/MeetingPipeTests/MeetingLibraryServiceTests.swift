@@ -130,6 +130,8 @@ final class MeetingLibraryServiceTests: XCTestCase {
     private var driver: FakeDriver!
     private var enqueued: [(URL, SummaryMode)] = []
     private var errors: [String] = []
+    /// AI9: the correction pairs `reassignWorkflow` handed out, in order.
+    private var corrections: [(bundleID: String, title: String?, workflow: Workflow)] = []
     private var service: MeetingLibraryService!
 
     override func setUpWithError() throws {
@@ -142,12 +144,17 @@ final class MeetingLibraryServiceTests: XCTestCase {
         driver = FakeDriver()
         enqueued = []
         errors = []
+        corrections = []
         service = MeetingLibraryService(
             outputDir: { [unowned self] in self.dir },
             launcher: driver,
             notifyError: { [unowned self] message in self.errors.append(message) },
             enqueue: { [unowned self] file, mode in self.enqueued.append((file, mode)) },
-            originalsDir: { [unowned self] in self.originalsDir }
+            originalsDir: { [unowned self] in self.originalsDir },
+            recordCorrection: { [unowned self] bundleID, title, workflow in
+                self.corrections.append((bundleID, title, workflow))
+                return !bundleID.isEmpty
+            }
         )
     }
 
@@ -217,6 +224,42 @@ final class MeetingLibraryServiceTests: XCTestCase {
         // The original recording's source + title survive the reassignment.
         XCTAssertEqual(dict["source_bundle_id"] as? String, "com.google.Chrome")
         XCTAssertEqual(dict["meeting_title"] as? String, "Design review")
+
+        // AI9: the same rewrite hands out the labelled pair, read from the
+        // pre-rewrite sidecar so the source half is the one detection saw.
+        XCTAssertEqual(corrections.count, 1)
+        XCTAssertEqual(corrections.first?.bundleID, "com.google.Chrome")
+        XCTAssertEqual(corrections.first?.title, "Design review")
+        XCTAssertEqual(corrections.first?.workflow.id, nda.id)
+    }
+
+    func test_reassignWorkflow_records_no_correction_when_the_write_fails() {
+        // No sidecar on disk and none writable: nothing was reassigned, so nothing
+        // should teach the prompt that it was.
+        let unwritable = MeetingLibraryService(
+            outputDir: { URL(fileURLWithPath: "/dev/null/nope") },
+            launcher: driver,
+            notifyError: { [unowned self] message in self.errors.append(message) },
+            enqueue: { _, _ in },
+            recordCorrection: { [unowned self] bundleID, title, workflow in
+                self.corrections.append((bundleID, title, workflow))
+                return true
+            }
+        )
+        guard case .failure = unwritable.reassignWorkflow(stem: "m1", to: Workflow(name: "Client")) else {
+            return XCTFail("expected the write to fail")
+        }
+        XCTAssertTrue(corrections.isEmpty)
+    }
+
+    func test_reassignWorkflow_of_a_manual_recording_passes_an_empty_bundle_through() throws {
+        // A manual recording has no source, so the store refuses the pair. The
+        // service still calls, and reports what happened on the event.
+        try touch("m2.meta.json", contents: #"{"schema_version": 3, "workflow_name": "General"}"#)
+        XCTAssertNoThrow(try service.reassignWorkflow(stem: "m2", to: Workflow(name: "Personal")).get())
+        XCTAssertEqual(corrections.count, 1)
+        XCTAssertEqual(corrections.first?.bundleID, "")
+        XCTAssertNil(corrections.first?.title)
     }
 
     // MARK: - retry

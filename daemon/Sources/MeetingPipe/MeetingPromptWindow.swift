@@ -25,6 +25,13 @@ final class MeetingPromptWindow {
     private weak var liveWaveform: LiveWaveformView?
     private weak var dismissProgress: DismissProgressView?
     private weak var workflowChip: WorkflowChipView?
+    /// AI9: the caption under the chip explaining a routing suggestion, and the
+    /// state behind it. `hintSuggestion` is the live suggestion; `ruleWorkflow` is
+    /// what the matching rules picked, which is where "Undo" goes back to. Both
+    /// cleared once the user acts, so the caption never outlives its own advice.
+    private weak var routingHintCaption: PromptCaptionButton?
+    private var hintSuggestion: WorkflowRoutingHint.Suggestion?
+    private var ruleWorkflow: Workflow?
     private weak var lastTimeButton: PromptGhostButton?
     /// Constraints the "Last time" button collapses through when there is no card
     /// (an NSView keeps its constraints while hidden, so the width has to go too).
@@ -60,18 +67,31 @@ final class MeetingPromptWindow {
         source: AppSource,
         workflow: Workflow? = nil,
         availableWorkflows: [Workflow] = [],
+        suggestion: WorkflowRoutingHint.Suggestion? = nil,
         autoDismissAfter seconds: TimeInterval
     ) {
         dismiss(animated: false)
         currentSource = source
-        currentWorkflow = workflow
+        // AI9: `workflow` is always what the matching rules resolved. When the
+        // suggestion pre-selects, the chip shows the *suggested* workflow instead
+        // and `ruleWorkflow` keeps the rules' answer for Undo. The session
+        // controller arms the matching pre-selection on the same flag, so the chip
+        // and what actually records cannot disagree.
         self.availableWorkflows = availableWorkflows
+        ruleWorkflow = workflow
+        hintSuggestion = suggestion
+        currentWorkflow = workflow
+        if let suggestion = suggestion, suggestion.preselects,
+           let suggested = availableWorkflows.first(where: { $0.id == suggestion.workflowID }) {
+            currentWorkflow = suggested
+        }
         prepCard = nil
         prepCardView = nil
         isExpanded = false
 
         let panel = makePanel(source: source, timeoutSec: seconds)
         self.panel = panel
+        applyRoutingHint()
         positionPanel(panel)
 
         panel.alphaValue = 0
@@ -103,6 +123,8 @@ final class MeetingPromptWindow {
         currentSource = nil
         prepCard = nil
         prepCardView = nil
+        hintSuggestion = nil
+        ruleWorkflow = nil
         isExpanded = false
         guard animated else {
             panel.orderOut(nil)
@@ -216,6 +238,16 @@ final class MeetingPromptWindow {
         }
         self.workflowChip = chip
 
+        // Routing-hint caption (AI9): one quiet line under the chip, hidden unless
+        // repeated corrections disagree with the rules. Its label and its click
+        // both come from `hintSuggestion`, so there is one control for both
+        // directions (undo a pre-selection, or take a suggestion that was withheld).
+        let hint = PromptCaptionButton(target: bg, action: #selector(RoundedBackgroundView.didClickRoutingHint))
+        hint.translatesAutoresizingMaskIntoConstraints = false
+        hint.isHidden = true
+        bg.addSubview(hint)
+        self.routingHintCaption = hint
+
         // --- Right cluster: [Record] primary + ⌄ menu ---
         // The primary action is a labelled teal capsule. It is a purpose-built control
         // (PromptRecordButton), not the shared MPButton: MPButton fills via its layer
@@ -313,6 +345,18 @@ final class MeetingPromptWindow {
             chip.trailingAnchor.constraint(equalTo: record.leadingAnchor, constant: -10),
             chip.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
             chip.widthAnchor.constraint(lessThanOrEqualToConstant: 160),
+
+            // The hint caption sits in the pill's lower margin, right-aligned under
+            // the chip it annotates. Pinned to the band's bottom rather than hung
+            // off the chip on purpose: the waveform is centred and 14pt tall, so a
+            // caption stacked directly under a centred chip lands 2pt inside the
+            // waveform's box at any width past the chip's own. Down here it clears
+            // it outright, which also means the caption may be wider than the chip
+            // without a horizontal guard. Capped anyway, since it names a workflow
+            // inside a sentence; past that it truncates rather than reflowing.
+            hint.trailingAnchor.constraint(equalTo: chip.trailingAnchor),
+            hint.bottomAnchor.constraint(equalTo: pill.bottomAnchor, constant: -4),
+            hint.widthAnchor.constraint(lessThanOrEqualToConstant: 210),
 
             // Right cluster: chevron flush right, the primary Record button before it.
             chevron.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -rightEdge),
@@ -541,6 +585,66 @@ final class MeetingPromptWindow {
         }
     }
 
+    // MARK: - Routing hint (AI9)
+
+    /// Show or hide the caption under the chip for the current suggestion.
+    ///
+    /// Two shapes, one control:
+    ///
+    /// - **Pre-selected.** The chip already shows the suggested workflow, so the
+    ///   caption says so and offers to put it back. Reverting is an explicit pick
+    ///   of the rule-matched workflow, which is exactly what the chevron menu
+    ///   sends, so the same delegate call carries it and outranks the pre-selection
+    ///   the session controller armed.
+    /// - **Withheld.** The suggestion would have moved this meeting out of an NDA
+    ///   workflow, so nothing was pre-selected. The caption names the suggestion
+    ///   and one click takes it. Visible either way; only the default differs.
+    private func applyRoutingHint() {
+        guard let hint = routingHintCaption else { return }
+        guard let suggestion = hintSuggestion, workflowChip?.isHidden == false else {
+            hint.isHidden = true
+            return
+        }
+        let count = suggestion.corrections
+        let plural = count == 1 ? "correction" : "corrections"
+        if suggestion.preselects {
+            let back = ruleWorkflow?.name ?? "the usual workflow"
+            hint.title = "Suggested · Undo"
+            hint.toolTip = "Suggested from \(count) past \(plural). Undo to record under \(back)."
+            hint.setAccessibilityLabel(
+                "Workflow suggested from \(count) past \(plural). Activate to go back to \(back)."
+            )
+        } else {
+            hint.title = "Use \(suggestion.workflowName)?"
+            hint.toolTip =
+                "You moved \(count) past meetings here. Not pre-selected: this meeting is routed to an NDA workflow."
+            hint.setAccessibilityLabel(
+                "Suggested workflow \(suggestion.workflowName), from \(count) past \(plural). Activate to use it."
+            )
+        }
+        hint.isHidden = false
+    }
+
+    /// The caption's single action, in whichever direction it is offering.
+    fileprivate func handleRoutingHint() {
+        guard let suggestion = hintSuggestion else { return }
+        let target: UUID? = suggestion.preselects ? ruleWorkflow?.id : suggestion.workflowID
+        Log.event(
+            category: "workflow",
+            action: suggestion.preselects ? "routing_hint_undone" : "routing_hint_accepted",
+            attributes: [
+                "suggested_workflow_id": suggestion.workflowID.uuidString,
+                "corrections": suggestion.corrections,
+            ]
+        )
+        // The caption has said its piece; leaving it up would offer to undo an
+        // undo. The chip and its override menu remain the way back.
+        hintSuggestion = nil
+        applyRoutingHint()
+        guard let target = target else { return }
+        selectWorkflow(id: target)
+    }
+
     /// Present the workflow override menu under the chip. Each item carries the workflow id as `representedObject`.
     fileprivate func showWorkflowMenu(from host: NSView) {
         guard let chip = workflowChip, !availableWorkflows.isEmpty else { return }
@@ -567,17 +671,27 @@ final class MeetingPromptWindow {
 
     @objc private func menuPickWorkflow(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID else { return }
+        // An explicit pick settles the question the caption was asking, whichever
+        // workflow it lands on.
+        hintSuggestion = nil
+        applyRoutingHint()
+        selectWorkflow(id: id)
+    }
+
+    /// Commit a workflow choice: tell the delegate (which pins it as the override
+    /// the next `beginRecording` honours) and move the chip to match. Shared by the
+    /// override menu and the AI9 caption so the two cannot drift into two paths.
+    private func selectWorkflow(id: UUID) {
         delegate?.meetingPrompt(self, didChooseWorkflow: id)
-        if let wf = availableWorkflows.first(where: { $0.id == id }) {
-            currentWorkflow = wf
-            if let chip = workflowChip {
-                applyWorkflow(wf, to: chip)
-            }
-            // The open card belongs to the workflow just switched away from, so
-            // re-ask rather than leave a confident wrong recap up (loadPrepCard
-            // closes it first).
-            loadPrepCard()
+        guard let wf = availableWorkflows.first(where: { $0.id == id }) else { return }
+        currentWorkflow = wf
+        if let chip = workflowChip {
+            applyWorkflow(wf, to: chip)
         }
+        // The open card belongs to the workflow just switched away from, so
+        // re-ask rather than leave a confident wrong recap up (loadPrepCard
+        // closes it first).
+        loadPrepCard()
     }
 }
 
@@ -644,6 +758,7 @@ private final class RoundedBackgroundView: NSView {
     @objc func didClickClose() { host?.handleClose() }
     @objc func didClickChevron(_ sender: NSView) { host?.showChevronMenu(from: sender) }
     @objc func didClickLastTime() { host?.toggleLastTime() }
+    @objc func didClickRoutingHint() { host?.handleRoutingHint() }
 }
 
 // MARK: - Small chrome controls
@@ -938,6 +1053,99 @@ final class PromptGhostButton: NSControl {
             }
         }
         layer?.opacity = 1.0
+        if inside, isEnabled { sendAction(action, to: target) }
+    }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
+
+/// Caption-weight text button: an 11pt muted line with no capsule at all, going
+/// quieter than `PromptGhostButton` because it annotates a control rather than
+/// being one. Used for the AI9 routing hint under the workflow chip, where the
+/// prompt already has one primary action and a second capsule beside the chip
+/// would read as a third.
+///
+/// `NSControl` with manual mouse tracking for the reason `PromptRecordButton` is:
+/// an `NSButtonCell` does not composite on the panel's vibrant material. Hover
+/// swaps the label to full-strength foreground and underlines it, which is the
+/// only affordance a borderless caption has.
+final class PromptCaptionButton: NSControl {
+    private let titleLabel = NSTextField(labelWithString: "")
+    private var trackingArea: NSTrackingArea?
+    private var isHovered = false { didSet { refreshTitle() } }
+
+    var title: String = "" {
+        didSet {
+            refreshTitle()
+            invalidateIntrinsicContentSize()
+        }
+    }
+
+    init(target: AnyObject?, action: Selector?) {
+        super.init(frame: .zero)
+        self.target = target
+        self.action = action
+        wantsLayer = true
+
+        titleLabel.alignment = .right
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleLabel)
+        NSLayoutConstraint.activate([
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: ceil(titleLabel.intrinsicContentSize.width), height: 14)
+    }
+
+    /// fgMuted at rest, fg on hover. Not `fgFaint`, which sits near 2.8:1 on this
+    /// material and fails the 4.5:1 floor (DSN3).
+    private func refreshTitle() {
+        titleLabel.attributedStringValue = NSAttributedString(
+            string: title,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: MPType.textXS, weight: MPType.medium),
+                .foregroundColor: isHovered ? MPColors.fg : MPColors.fgMuted,
+                .underlineStyle: isHovered ? NSUnderlineStyle.single.rawValue : 0,
+            ]
+        )
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea { removeTrackingArea(existing) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+    override func mouseEntered(with event: NSEvent) { isHovered = true }
+    override func mouseExited(with event: NSEvent) { isHovered = false }
+
+    override func mouseDown(with event: NSEvent) {
+        var inside = true
+        while true {
+            guard let next = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) else { break }
+            if next.type == .leftMouseDragged {
+                inside = bounds.contains(convert(next.locationInWindow, from: nil))
+            } else {
+                inside = bounds.contains(convert(next.locationInWindow, from: nil))
+                break
+            }
+        }
         if inside, isEnabled { sendAction(action, to: target) }
     }
 

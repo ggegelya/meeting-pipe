@@ -49,6 +49,16 @@ const App = () => (
         <div style={{ display: "flex", justifyContent: "center" }}>
           <MeetingPrompt source={{ displayName: "Zoom" }}/>
         </div>
+        {/* AI9: the same pill once repeated corrections disagree with the rules.
+            The chip carries "Client work" and the caption offers the way back. */}
+        <div style={{ display: "flex", justifyContent: "center" }}>
+          <MeetingPrompt
+            source={{ displayName: "Teams" }}
+            workflow={{ name: "Client work", color: "var(--mp-signal-600)" }}
+            ruleWorkflow={{ name: "General" }}
+            routingHint={{ workflowName: "Client work", corrections: 3, preselects: true }}
+            prepCard={null}/>
+        </div>
       </div>
     </div>
 

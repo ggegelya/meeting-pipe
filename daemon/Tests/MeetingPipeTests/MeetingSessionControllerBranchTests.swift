@@ -227,6 +227,116 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         XCTAssertEqual(host.recorderSpy.lastStartArgs?.voiceProcessing, true)
     }
 
+    // MARK: - AI9: the routing hint on the prompt
+
+    /// Fill the host's correction store with `count` pairs for `bundleID`.
+    private func teach(
+        _ host: FakeSessionHost,
+        _ count: Int,
+        _ workflow: Workflow,
+        bundleID: String = "us.zoom.xos",
+        title: String? = nil
+    ) {
+        for _ in 0..<count {
+            host.workflowCorrections.record(
+                bundleID: bundleID, meetingTitle: title, workflow: workflow
+            )
+        }
+    }
+
+    func test_prompt_carriesNoSuggestionWhenNothingHasBeenCorrected() {
+        let general = Workflow(name: "General", isDefault: true)
+        let (controller, host) = makeController(workflows: [general])
+
+        controller.handleMeetingStarted(source: source())
+
+        XCTAssertEqual(host.promptSpy.presentCount, 1)
+        XCTAssertNil(host.promptSpy.lastSuggestion)
+        XCTAssertNil(controller.preselectedRoutingHint?.workflowID)
+    }
+
+    func test_prompt_carriesTheSuggestionOnceTheThresholdIsReached() {
+        let general = Workflow(name: "General", isDefault: true)
+        let client = Workflow(name: "Client work")
+        let (controller, host) = makeController(workflows: [general, client])
+        teach(host, WorkflowRoutingHint.minimumCorrections, client)
+
+        controller.handleMeetingStarted(source: source())
+
+        // The chip still gets what the rules resolved; the panel applies the
+        // suggestion on top, so the two never disagree about which is which.
+        XCTAssertEqual(host.promptSpy.lastWorkflow?.id, general.id)
+        XCTAssertEqual(host.promptSpy.lastSuggestion?.workflowID, client.id)
+        XCTAssertEqual(controller.preselectedRoutingHint?.workflowID, client.id)
+    }
+
+    /// The acceptance case end to end: three corrections, then Record without
+    /// touching the chip, and the meeting is recorded under the corrected workflow.
+    func test_beginRecording_afterAPreselection_recordsUnderTheSuggestedWorkflow() async {
+        let general = Workflow(name: "General", isDefault: true)
+        let client = Workflow(name: "Client work")
+        let (controller, host) = makeController(workflows: [general, client])
+        teach(host, WorkflowRoutingHint.minimumCorrections, client)
+
+        controller.handleMeetingStarted(source: source())
+        controller.beginRecording(source: source(), summaryMode: .auto)
+        await waitUntil({ !host.statusBarSpy.recordings.isEmpty }, "the recording to be announced")
+
+        XCTAssertEqual(controller.activeWorkflow?.id, client.id)
+        XCTAssertNil(controller.preselectedRoutingHint, "the hint is one-shot, like the override")
+    }
+
+    func test_beginRecording_anExplicitPickOutranksThePreselection() async {
+        let general = Workflow(name: "General", isDefault: true)
+        let client = Workflow(name: "Client work")
+        let (controller, host) = makeController(workflows: [general, client])
+        teach(host, WorkflowRoutingHint.minimumCorrections, client)
+
+        controller.handleMeetingStarted(source: source())
+        // What the panel's Undo sends: an explicit pick of the rule-matched one.
+        controller.setPendingWorkflowOverride(general.id)
+        controller.beginRecording(source: source(), summaryMode: .auto)
+        await waitUntil({ !host.statusBarSpy.recordings.isEmpty }, "the recording to be announced")
+
+        XCTAssertEqual(controller.activeWorkflow?.id, general.id)
+    }
+
+    /// A hint armed for one meeting must not colour the next one. `pendingWorkflowOverride`
+    /// is only cleared by a start, so a prompt that was skipped would otherwise
+    /// leave the pre-selection lying around.
+    func test_preselection_doesNotApplyToADifferentSource() async {
+        let general = Workflow(name: "General", isDefault: true)
+        let client = Workflow(name: "Client work")
+        let (controller, host) = makeController(workflows: [general, client])
+        teach(host, WorkflowRoutingHint.minimumCorrections, client, bundleID: "us.zoom.xos")
+
+        controller.handleMeetingStarted(source: source("us.zoom.xos"))
+        XCTAssertEqual(controller.preselectedRoutingHint?.workflowID, client.id)
+
+        // A different app starts a meeting; the Zoom hint must not follow it.
+        controller.beginRecording(source: source("com.microsoft.teams2"), summaryMode: .auto)
+        await waitUntil({ !host.statusBarSpy.recordings.isEmpty }, "the recording to be announced")
+
+        XCTAssertEqual(controller.activeWorkflow?.id, general.id)
+    }
+
+    /// The privacy direction: the hint is offered but never armed, so a Record
+    /// click on an NDA-routed meeting cannot silently take it out of NDA.
+    func test_ndaRoutedMeeting_isSuggestedButNotPreselected() {
+        var confidential = Workflow(name: "Confidential")
+        confidential.flags.ndaMode = true
+        confidential.matchingRules = [WorkflowMatchingRule(bundleID: "us.zoom.xos")]
+        let client = Workflow(name: "Client work")
+        let (controller, host) = makeController(workflows: [confidential, client])
+        teach(host, WorkflowRoutingHint.minimumCorrections + 1, client)
+
+        controller.handleMeetingStarted(source: source())
+
+        XCTAssertEqual(host.promptSpy.lastSuggestion?.workflowID, client.id)
+        XCTAssertEqual(host.promptSpy.lastSuggestion?.preselects, false)
+        XCTAssertNil(controller.preselectedRoutingHint)
+    }
+
     // MARK: - handleMeetingStarted: prompt vs auto-consent
 
     func test_handleMeetingStarted_promptsWithTheLivePromptTimeout() {

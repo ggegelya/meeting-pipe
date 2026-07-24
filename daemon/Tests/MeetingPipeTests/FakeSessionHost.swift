@@ -25,6 +25,7 @@ final class FakeSessionHost: SessionHost {
     let silenceBackstop = IdleStopBackstop()
     let consent: ConsentStore
     let workflowStore: WorkflowStore
+    let workflowCorrections: WorkflowCorrectionStore
     var configStore: ConfigStore?
     let muteLabels: MuteLabels
 
@@ -66,6 +67,11 @@ final class FakeSessionHost: SessionHost {
         let workflowDir = tempDir.appendingPathComponent("workflows", isDirectory: true)
         try? FileManager.default.createDirectory(at: workflowDir, withIntermediateDirectories: true)
         self.workflowStore = WorkflowStore(directory: workflowDir)
+        // AI9: empty by default and pointed at the temp dir, so a test that does
+        // not care about routing hints never sees one and never writes ~/.config.
+        self.workflowCorrections = WorkflowCorrectionStore(
+            url: tempDir.appendingPathComponent("workflow_corrections.json")
+        )
         self.muteLabels = MuteLabels(entries: [:])
         self.micGate = MicGate(catalogue: muteLabels, halBus: CoreAudioHALBus(), axBus: AXObserverBus())
         // Through the real `upsert`, not a back door: the store owns the TOML
@@ -204,11 +210,22 @@ final class SpyPrompt: SessionPromptPresenting {
     private(set) var dismissCount = 0
     private(set) var lastAutoDismissAfter: TimeInterval?
     private(set) var lastAvailableWorkflows: [Workflow] = []
+    private(set) var lastWorkflow: Workflow?
+    /// AI9: what the controller decided to hint on this prompt, if anything.
+    private(set) var lastSuggestion: WorkflowRoutingHint.Suggestion?
 
-    func present(source: AppSource, workflow: Workflow?, availableWorkflows: [Workflow], autoDismissAfter seconds: TimeInterval) {
+    func present(
+        source: AppSource,
+        workflow: Workflow?,
+        availableWorkflows: [Workflow],
+        suggestion: WorkflowRoutingHint.Suggestion?,
+        autoDismissAfter seconds: TimeInterval
+    ) {
         presentCount += 1
         lastAutoDismissAfter = seconds
         lastAvailableWorkflows = availableWorkflows
+        lastWorkflow = workflow
+        lastSuggestion = suggestion
     }
     func dismiss(animated: Bool) { dismissCount += 1 }
 }

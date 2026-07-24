@@ -308,15 +308,22 @@ Each workflow lives as one TOML file under `~/.config/meeting-pipe/workflows/<uu
 **Matching.** At the start of every recording the daemon resolves a workflow via `WorkflowMatcher`. Precedence, highest specificity first:
 
 1. Explicit override - you picked one from the prompt panel's chip dropdown.
-2. Matching rule - the workflow carries `[[matching_rules]]` entries that compare `bundle_id` and/or a case-insensitive `title_regex` against the detected meeting. Bundle + title wins over bundle-only wins over title-only.
-3. Default - the workflow flagged `is_default`. Always exists.
+2. Learned suggestion - repeated corrections say the rules are wrong here (see below). Always visible on the prompt and always undoable before you record.
+3. Matching rule - the workflow carries `[[matching_rules]]` entries that compare `bundle_id` and/or a case-insensitive `title_regex` against the detected meeting. Bundle + title wins over bundle-only wins over title-only.
+4. Default - the workflow flagged `is_default`. Always exists.
 
 Ties on score break by the workflow's `order` (ascending). Manual recordings (`Ctrl+Opt+M` with no detected source) always fall to the default.
+
+**Learned routing (AI9).** Every time you use **Change workflow…** on a finished meeting you are labelling a routing mistake, so the app keeps the pair: the app the meeting came from, a normalized form of its title, and the workflow you moved it to. Once three corrections agree for one app (or, more specifically, for one recurring meeting title), the next prompt from that app arrives with the corrected workflow already on the chip and a quiet `Suggested · Undo` line under it. Undo puts the rule-matched workflow back for that meeting; nothing is written to the workflow's matching rules either way, so the app never silently rewrites your configuration. Three corrections that disagree with each other stay silent, because a suggestion needs a clear winner and not just a count.
+
+One direction never pre-selects: if the rules routed the meeting to an **NDA** workflow and the suggestion is not one, the hint still appears (`Use <Workflow>?`) but the chip stays on the NDA workflow, so a Record click you did not read can never take a confidential meeting out of NDA. Tightening the other way (suggesting an NDA workflow) pre-selects normally.
+
+The pairs live in `~/.config/meeting-pipe/workflow_corrections.json`, one JSON array, oldest dropped past 500. Delete the file to forget everything the prompt has learned; it is rebuilt from your next corrections. Nothing leaves the machine, and no model is involved: it is a count with a threshold.
 
 **Extra summary sections (WF7).** A workflow can add its own summary sections on top of the standard ones (Summary / Decisions / Action items / Open questions / Attendees). In the workflow editor's *Extra summary sections*, add a row per section: a name (e.g. "Billable follow-ups", "Feedback given / received") and an instruction telling the model what to put there. Those flow to the summarizer for every meeting in the workflow, and the produced sections render everywhere the summary does: the Library detail (read-only), Notion, Obsidian, and the filesystem/LAN Markdown. They also survive the BYO paste round-trip (any non-standard `##` heading in a hand-written `<stem>.summary.md` is kept as an extra section) and a correction edit (read-only there for now, but never dropped). Stored as `[[extra_sections]]` in the workflow TOML; a workflow that adds none keeps the standard shape unchanged.
 
 **Where it shows up.**
-- The **prompt panel** sprouts a chip next to the action buttons with the resolved workflow's color/emoji + name. Click it to pick a different workflow before clicking Record. When that workflow has a previous meeting worth recapping, a **Last time** button appears beside the chip (CAL2); picking a different workflow re-reads the card for it.
+- The **prompt panel** sprouts a chip next to the action buttons with the resolved workflow's color/emoji + name. Click it to pick a different workflow before clicking Record. When repeated corrections disagree with the rules, the chip carries the corrected workflow and a `Suggested · Undo` caption sits under it (AI9, above). When that workflow has a previous meeting worth recapping, a **Last time** button appears beside the chip (CAL2); picking a different workflow re-reads the card for it.
 - The **recording HUD** shows the workflow's name (with an "NDA" tag when applicable) below the elapsed timer. The recording dot itself stays coral - it signals recording, not the workflow (DSN25).
 - The **menu-bar title** reads `Recording - {Workflow}` with a trailing `· NDA` when NDA mode is on.
 

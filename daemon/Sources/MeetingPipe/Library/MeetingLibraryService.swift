@@ -68,6 +68,12 @@ final class MeetingLibraryService {
     private let enqueue: (URL, SummaryMode) -> Void
     /// Resolves the configured summarization backend ("local" / "apple_intelligence" / "anthropic" / "auto") so the local re-run preview (TECH-A16) dispatches correctly. Defaulted for tests.
     private let summarizationBackend: () -> String
+    /// AI9: records a WF8 reassignment as a labelled correction pair. Injected as a
+    /// closure like the other collaborators, so a test drives `reassignWorkflow`
+    /// without a store and the no-op default keeps every existing call site honest.
+    /// Returns whether the pair was stored (a manual recording has no source to key
+    /// it to), which is what the event line reports.
+    private let recordCorrection: (String, String?, Workflow) -> Bool
 
     init(
         outputDir: @escaping () -> URL,
@@ -75,7 +81,8 @@ final class MeetingLibraryService {
         notifyError: @escaping (String) -> Void,
         enqueue: @escaping (URL, SummaryMode) -> Void,
         summarizationBackend: @escaping () -> String = { "local" },
-        originalsDir: @escaping () -> URL = { MuteRedactor.originalsDirectory() }
+        originalsDir: @escaping () -> URL = { MuteRedactor.originalsDirectory() },
+        recordCorrection: @escaping (String, String?, Workflow) -> Bool = { _, _, _ in false }
     ) {
         self.outputDir = outputDir
         self.originalsDir = originalsDir
@@ -83,6 +90,7 @@ final class MeetingLibraryService {
         self.notifyError = notifyError
         self.enqueue = enqueue
         self.summarizationBackend = summarizationBackend
+        self.recordCorrection = recordCorrection
     }
 
     /// Retry a failed meeting, reusing whatever the failed run already produced (PIPE1).
@@ -164,6 +172,11 @@ final class MeetingLibraryService {
     /// write bumps the sidecar mtime, so `MeetingStore`'s directory watcher re-scans the
     /// row (chip + scope membership) on its own. Regenerate / Republish are offered by
     /// the caller, never fired here, so nothing egresses without the user choosing it.
+    ///
+    /// AI9 rides here because this is where the label is: the pre-rewrite sidecar still
+    /// names the source detection saw, and `workflow` is the correction. Recorded only
+    /// after the write succeeds, so a failed rewrite never teaches the prompt something
+    /// the library does not agree with.
     @discardableResult
     func reassignWorkflow(stem: String, to workflow: Workflow) -> Result<Void, Error> {
         let dir = outputDir()
@@ -190,6 +203,18 @@ final class MeetingLibraryService {
             "workflow_id": workflow.id.uuidString,
             "workflow": workflow.name,
             "nda": workflow.flags.ndaMode,
+        ])
+
+        // AI9: keep the pair. Read from `existing`, not `updated`, because the
+        // rewrite drops nothing outside the workflow block but the source is the
+        // half that has to survive.
+        let bundleID = existing["source_bundle_id"] as? String ?? ""
+        let recorded = recordCorrection(bundleID, existing["meeting_title"] as? String, workflow)
+        Log.event(category: "workflow", action: "correction_recorded", attributes: [
+            "stem": stem,
+            "bundle_id": bundleID.isEmpty ? NSNull() : bundleID,
+            "workflow_id": workflow.id.uuidString,
+            "stored": recorded,
         ])
         return .success(())
     }

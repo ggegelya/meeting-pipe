@@ -39,6 +39,9 @@ protocol SessionHost: AnyObject {
     var silenceBackstop: IdleStopBackstop { get }
     var consent: ConsentStore { get }
     var workflowStore: WorkflowStore { get }
+    /// AI9: the WF8 correction pairs behind the prompt's routing hint. Concrete
+    /// for the reason above: a test builds one over a temp URL, or an empty one.
+    var workflowCorrections: WorkflowCorrectionStore { get }
     var configStore: ConfigStore? { get }
     var muteLabels: MuteLabels { get }
 
@@ -130,7 +133,16 @@ protocol SessionHUDPresenting: AnyObject {
 
 /// The "record this meeting?" prompt (`MeetingPromptWindow`).
 protocol SessionPromptPresenting: AnyObject {
-    func present(source: AppSource, workflow: Workflow?, availableWorkflows: [Workflow], autoDismissAfter seconds: TimeInterval)
+    /// `workflow` is what the rules resolve to; `suggestion` (AI9) is what repeated
+    /// corrections say instead, or nil when they say nothing. The panel decides how
+    /// to render the disagreement, not whether there is one.
+    func present(
+        source: AppSource,
+        workflow: Workflow?,
+        availableWorkflows: [Workflow],
+        suggestion: WorkflowRoutingHint.Suggestion?,
+        autoDismissAfter seconds: TimeInterval
+    )
     func dismiss(animated: Bool)
 }
 

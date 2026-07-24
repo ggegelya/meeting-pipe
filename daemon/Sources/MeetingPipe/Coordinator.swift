@@ -28,6 +28,12 @@ final class Coordinator: NSObject {
     let discoveryWatcher = MeetingDiscoveryWatcher()
     let hotkey: HotkeyManager
     let consent: ConsentStore
+    /// AI9: the WF8 correction pairs. Written by `library.reassignWorkflow`, read
+    /// by the session controller when it raises a prompt. Loaded beside the
+    /// workflow store below rather than in its own `init`, matching
+    /// `savedSearches`, so the file is read once at launch and never by a test
+    /// that builds the store directly.
+    let workflowCorrections = WorkflowCorrectionStore()
     let launcher: PipelineDriver
     let preferencesWindow: PreferencesWindow?
     /// Daemon's primary UI for browsing past recordings.
@@ -157,6 +163,9 @@ final class Coordinator: NSObject {
         )
         self.workflowStore = workflowStore
         libraryModel.workflowStore = workflowStore
+        // AI9: the WF8 correction pairs the prompt reads. Same timing as the
+        // workflow store because a suggestion resolves against it by id.
+        workflowCorrections.load()
 
         // PreferencesWindow needs all three stores; without config + secrets
         // (test/headless) the menu item is a no-op instead of a crash. Built after
@@ -711,6 +720,11 @@ final class Coordinator: NSObject {
         },
         summarizationBackend: { [weak self] in
             self?.configStore?.summarizationBackend ?? "anthropic"
+        },
+        recordCorrection: { [weak self] bundleID, title, workflow in
+            self?.workflowCorrections.record(
+                bundleID: bundleID, meetingTitle: title, workflow: workflow
+            ) ?? false
         }
     )
 

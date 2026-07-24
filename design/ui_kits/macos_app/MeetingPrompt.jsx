@@ -20,6 +20,16 @@
 // a focus steal) to recap the last meeting in this workflow. It is absent
 // entirely when there is nothing to show, which is the common case for a
 // workflow's first meeting, so the collapsed pill is unchanged from the above.
+//
+// AI9 adds the routing hint: when repeated "Change workflow..." corrections
+// disagree with the matching rules, the chip carries the corrected workflow and
+// an 11pt caption sits directly under it reading "Suggested . Undo". It is a
+// caption, not a capsule, deliberately: the pill already has exactly one primary
+// action and a third bordered control beside the chip would compete with it. The
+// chip rides up 7pt so the pair stays optically centred in the 64pt band. When
+// the suggestion is shown but NOT pre-selected (the rules routed the meeting to
+// an NDA workflow and the suggestion is not one), the same caption instead reads
+// "Use <Workflow>?" and the chip stays on the NDA workflow.
 
 const APP_GLYPH_MAP = {
   "Zoom":        "../../assets/app-glyphs/zoom.svg",
@@ -35,6 +45,13 @@ const MeetingPrompt = ({
   source = { displayName: "Zoom" },
   workflow = { name: "General", color: "var(--mp-signal-600)" },
   timeoutSec = 30,
+  // AI9. Null (the common case) means no correction pattern exists yet and the
+  // caption is not rendered at all, so the pill is unchanged. `preselects:false`
+  // is the NDA direction: shown, not armed.
+  routingHint = null,
+  // The workflow the matching rules picked, which is where Undo goes back to.
+  // Only meaningful alongside a preselecting `routingHint`.
+  ruleWorkflow = null,
   // CAL2. Null means the workflow has no meeting worth recapping, and then the
   // "Last time" capsule is not rendered at all.
   prepCard = {
@@ -128,6 +145,30 @@ const MeetingPrompt = ({
           </PromptButton>
         </div>
       </div>
+
+      {/* AI9 caption. Absolutely positioned in the pill's lower margin, right
+          -aligned under the chip it annotates, rather than stacked with the chip
+          in the flex row: the waveform is vertically centred and 14pt tall, so a
+          caption hung directly under a centred chip lands 2pt inside the
+          waveform's box as soon as it is wider than the chip. Down here it clears
+          the waveform outright at any width. The Swift pins the same two edges. */}
+      {workflow && routingHint && (
+        <button
+          className="mp-pressable"
+          title={routingHint.preselects
+            ? `Suggested from ${routingHint.corrections} past corrections. Undo to record under ${ruleWorkflow?.name ?? "the usual workflow"}.`
+            : `You moved ${routingHint.corrections} past meetings here. Not pre-selected: this meeting is routed to an NDA workflow.`}
+          style={{
+            // Borderless on purpose: fg-muted clears the 4.5:1 floor where
+            // fg-faint does not, and hover is the only affordance a caption has,
+            // so it takes both full-strength fg and an underline.
+            position: "absolute", top: 46, right: 194, height: 14, lineHeight: "14px",
+            border: "none", background: "transparent", padding: 0, cursor: "pointer",
+            fontFamily: "inherit", fontSize: 11, fontWeight: 500,
+            color: "var(--mp-fg-muted)", whiteSpace: "nowrap",
+          }}
+        >{routingHint.preselects ? "Suggested · Undo" : `Use ${routingHint.workflowName}?`}</button>
+      )}
 
       {showCard && <PrepCard card={prepCard}/>}
 

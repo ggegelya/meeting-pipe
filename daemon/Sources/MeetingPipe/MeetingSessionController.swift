@@ -41,6 +41,14 @@ final class MeetingSessionController: @unchecked Sendable {
     /// so it wins over rule matches.
     var pendingWorkflowOverride: UUID?
 
+    /// AI9: the workflow the prompt currently shows pre-selected from repeated WF8
+    /// corrections, and the source it was computed for. Consumed by
+    /// `beginRecording` only when the source still matches, so an armed hint dies
+    /// with its meeting rather than leaking into the next one (`pendingWorkflowOverride`
+    /// is only cleared by a start, and this deliberately does not inherit that).
+    /// Ranks below an explicit pick: the panel's Undo comes back as one.
+    var preselectedRoutingHint: (source: AppSource, workflowID: UUID)?
+
     /// Observes window-created events so mute buttons that appear after
     /// `beginRecording` (Teams 2 compact view, PIP overlays) get watched
     /// too. Per-meeting (TECH-C14).
@@ -269,6 +277,21 @@ final class MeetingSessionController: @unchecked Sendable {
         )
     }
 
+    /// AI9: what repeated WF8 corrections say the workflow for `source` should be,
+    /// when that disagrees with `matched`. Nil is the normal answer.
+    ///
+    /// Reads the store in memory (it was loaded at launch and only grows on a
+    /// reassignment), so this is a filter over a handful of structs on the main
+    /// queue, not a disk hit in the detection path.
+    func routingHint(source: AppSource?, matched: Workflow?) -> WorkflowRoutingHint.Suggestion? {
+        WorkflowRoutingHint.suggest(
+            source: source,
+            matched: matched,
+            corrections: coordinator.workflowCorrections.corrections,
+            workflows: coordinator.workflowStore.workflows
+        )
+    }
+
     func beginRecording(source: AppSource?, summaryMode: SummaryMode) {
         coordinator.stateMachine.cancelPromptTimeout()
 
@@ -313,14 +336,19 @@ final class MeetingSessionController: @unchecked Sendable {
         }
 
         // Resolve the workflow controlling context/backend/sinks (TECH-B3):
-        // override, then rule matches, then default. Clear the override so
-        // it can't leak into the next meeting.
+        // override, then the AI9 pre-selection, then rule matches, then default.
+        // Both are cleared so neither can leak into the next meeting.
+        var overrideID = pendingWorkflowOverride
+        if overrideID == nil, let hint = preselectedRoutingHint, hint.source == source {
+            overrideID = hint.workflowID
+        }
         let resolvedWorkflow = WorkflowMatcher.resolve(
             source: source,
-            overrideID: pendingWorkflowOverride,
+            overrideID: overrideID,
             workflows: coordinator.workflowStore.workflows
         )
         pendingWorkflowOverride = nil
+        preselectedRoutingHint = nil
 
         // Resolve the capture mode (TECH-MIC4): regulated (global) or NDA
         // (per-workflow) takes the no-audio-at-rest gate; everything else
@@ -785,10 +813,31 @@ final class MeetingSessionController: @unchecked Sendable {
         // Focus modes); the banner stays off by default. Pass the resolved
         // workflow + full set so the chip and override menu render (TECH-B5).
         let promptWorkflow = workflowForPrompt(source: source)
+        // AI9: the pre-selection is armed here and applied in `beginRecording`, so
+        // hitting Record without reading the chip records under the suggested
+        // workflow, and the panel's Undo (which comes back as an explicit
+        // `didChooseWorkflow`) outranks it. Keyed to this source, so it cannot
+        // leak into the next meeting the way a lingering explicit override could.
+        let suggestion = routingHint(source: source, matched: promptWorkflow)
+        preselectedRoutingHint = (suggestion?.preselects ?? false)
+            ? (source: source, workflowID: suggestion!.workflowID)
+            : nil
+        if let suggestion = suggestion {
+            Log.event(category: "workflow", action: "routing_hint_shown", attributes: [
+                "bundle_id": source.bundleID,
+                "suggested_workflow_id": suggestion.workflowID.uuidString,
+                "suggested_workflow": suggestion.workflowName,
+                "matched_workflow": promptWorkflow?.name ?? NSNull(),
+                "corrections": suggestion.corrections,
+                "matched_on": suggestion.matchedOnTitle ? "title" : "bundle",
+                "preselected": suggestion.preselects,
+            ])
+        }
         coordinator.prompt.present(
             source: source,
             workflow: promptWorkflow,
             availableWorkflows: coordinator.workflowStore.workflows,
+            suggestion: suggestion,
             autoDismissAfter: coordinator.livePromptTimeoutSec
         )
         startPromptTimeout(for: source)
