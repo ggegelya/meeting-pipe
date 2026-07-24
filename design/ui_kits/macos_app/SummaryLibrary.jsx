@@ -210,9 +210,10 @@ const SLSidebar = ({ activeScope = "all", firstRun }) => (
   </div>
 );
 
-// INSIGHTS (DSN22 audit #7): Facts and Ask are projections that replace the list,
-// not filters that narrow it, so they get their own group below the filter groups
-// (Library scopes, Workflows). No count -- they are views, not buckets.
+// INSIGHTS (DSN22 audit #7): Facts, People, Ask, and Digests are projections that
+// replace the list, not filters that narrow it, so they get their own group below
+// the filter groups (Library scopes, Smart folders, Workflows). No count: they are
+// views, not buckets.
 const SLInsightRow = ({ icon, label }) => (
   <div style={{
     display: "flex", alignItems: "center", gap: 8, height: 28, padding: "0 8px",
