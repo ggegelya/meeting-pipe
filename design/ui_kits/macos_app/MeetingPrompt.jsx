@@ -14,6 +14,12 @@
 //     is captured to disk yet, only level is read.
 //   - Auto-dismiss: a 2px hairline along the bottom drains over the timeout
 //     (default 30s). Pauses on hover so a reader does not lose the prompt.
+//
+// CAL2 adds the "Last time" disclosure: a quiet ghost capsule left of the
+// workflow chip that expands the panel DOWNWARD in place (never a popup, never
+// a focus steal) to recap the last meeting in this workflow. It is absent
+// entirely when there is nothing to show, which is the common case for a
+// workflow's first meeting, so the collapsed pill is unchanged from the above.
 
 const APP_GLYPH_MAP = {
   "Zoom":        "../../assets/app-glyphs/zoom.svg",
@@ -29,12 +35,26 @@ const MeetingPrompt = ({
   source = { displayName: "Zoom" },
   workflow = { name: "General", color: "var(--mp-signal-600)" },
   timeoutSec = 30,
+  // CAL2. Null means the workflow has no meeting worth recapping, and then the
+  // "Last time" capsule is not rendered at all.
+  prepCard = {
+    title: "Weekly sync with Acme",
+    when: "3 days ago",
+    points: ["Scoped the pilot to two regions", "Agreed pricing lands next week"],
+    actions: [
+      { task: "Send the revised SOW", owner: "Georgy", due: "2026-07-25" },
+      { task: "Confirm the pilot scope" },
+    ],
+    moreActions: 2,
+  },
   onRecord, onSkip, onAlways, onBYO,
 }) => {
   const glyphSrc = APP_GLYPH_MAP[source.displayName] ?? "../../assets/app-glyphs/_fallback.svg";
+  const [expanded, setExpanded] = React.useState(false);
+  const showCard = !!prepCard && expanded;
   return (
     <div style={{
-      position: "relative", width: 600, height: 64,
+      position: "relative", width: 600, height: showCard ? "auto" : 64,
       borderRadius: "var(--mp-radius-lg)",
       background: "var(--mp-hud-bg)",
       backdropFilter: "blur(24px) saturate(180%)",
@@ -50,7 +70,7 @@ const MeetingPrompt = ({
         display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0,
       }}><Icon name="x" size={11}/></button>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 12, height: "100%", padding: "0 12px 0 26px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, height: 64, padding: "0 12px 0 26px" }}>
         <img src={glyphSrc} width={28} height={28} alt="" style={{ display: "block", borderRadius: 6, flexShrink: 0 }}/>
 
         {/* eyebrow + question */}
@@ -65,6 +85,28 @@ const MeetingPrompt = ({
         <div style={{ flex: 1 }}/>
 
         <LiveWaveform/>
+
+        {/* CAL2 "Last time": ghost capsule, resting fill-less like the v chevron
+            so the prompt keeps exactly one primary action. `aria-expanded`
+            because it is a disclosure, not a command. */}
+        {prepCard && (
+          <button
+            className="mp-pressable"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            title={`What the last ${workflow?.name ?? ""} meeting covered`}
+            style={{
+              height: 22, padding: "0 11px", flexShrink: 0, whiteSpace: "nowrap",
+              display: "inline-flex", alignItems: "center", fontFamily: "inherit",
+              fontSize: 12, fontWeight: 500, color: "var(--mp-fg)",
+              borderRadius: "var(--mp-radius-full)", cursor: "pointer",
+              border: "1px solid var(--mp-border)",
+              // Appearance-aware, like the workflow chip beside it: the resting
+              // state is fill-less on paper and faintly raised on the dark HUD.
+              background: expanded ? "var(--mp-bg-raised)" : "transparent",
+            }}
+          >Last time</button>
+        )}
 
         {workflow && (
           <button title="Change workflow" style={{
@@ -87,10 +129,67 @@ const MeetingPrompt = ({
         </div>
       </div>
 
+      {showCard && <PrepCard card={prepCard}/>}
+
       <DismissBar timeoutSec={timeoutSec}/>
     </div>
   );
 };
+
+/* --------------------------------------------------------------------------
+   Prep card (CAL2) - the stratum the panel grows to reveal. Single-line rows
+   with tail truncation: it answers "what was this about" at a glance, and the
+   Library holds the full text one click away. No mark-done control here; the
+   prompt is a read surface and the meeting has not started yet.             */
+const PrepCard = ({ card }) => (
+  <div style={{
+    borderTop: "1px solid var(--mp-border-faint)",
+    padding: "10px 12px 14px 14px", display: "flex", flexDirection: "column", gap: 2,
+  }}>
+    <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+      <div style={{
+        fontSize: "var(--mp-text-base)", fontWeight: 600, minWidth: 0,
+        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+      }}>{card.title}</div>
+      <div style={{ flex: 1 }}/>
+      <div style={{ fontSize: 11, color: "var(--mp-fg-muted)", whiteSpace: "nowrap" }}>{card.when}</div>
+    </div>
+
+    <div style={{ marginTop: 4, display: "flex", flexDirection: "column" }}>
+      {card.points.map((p, i) => (
+        <Row key={i} bullet={<span style={{ color: "var(--mp-fg-muted)" }}>·</span>}>{p}</Row>
+      ))}
+    </div>
+
+    {card.actions?.length > 0 && (
+      <>
+        <div style={{
+          marginTop: 8, marginBottom: 3, fontSize: 11, fontWeight: 600,
+          letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--mp-fg-muted)",
+        }}>Open actions</div>
+        {card.actions.map((a, i) => (
+          <Row key={i} bullet={<Icon name="circle" size={9}/>}>
+            {[a.task, a.owner, a.due && `due ${a.due}`].filter(Boolean).join("  ·  ")}
+          </Row>
+        ))}
+        {card.moreActions > 0 && (
+          <div style={{ marginLeft: 15, fontSize: 11, color: "var(--mp-fg-muted)" }}>
+            {card.moreActions} more in the Library
+          </div>
+        )}
+      </>
+    )}
+  </div>
+);
+
+const Row = ({ bullet, children }) => (
+  <div style={{ display: "flex", alignItems: "baseline", gap: 6, height: 18 }}>
+    <span style={{ width: 9, flexShrink: 0, color: "var(--mp-fg-muted)" }}>{bullet}</span>
+    <span style={{
+      fontSize: 12, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+    }}>{children}</span>
+  </div>
+);
 
 /* --------------------------------------------------------------------------
    Live waveform - 4 bars in on-air (the DSN21 lit-LED capture accent). In Swift
