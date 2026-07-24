@@ -122,10 +122,11 @@ final class ConfigStore: ObservableObject {
         let notion = doc["notion"]?.table
         let summ = doc["summarization"]?.table
 
-        self.outputDirPath = rec?["output_dir"]?.string ?? "~/Documents/Meetings/raw"
-        self.autoConsentApps = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string }) ?? []
-        self.voiceProcessing = rec?["voice_processing"]?.bool ?? false
-        self.honorAppMute = rec?["honor_app_mute"]?.bool ?? true
+        self.outputDirPath = rec?["output_dir"]?.string ?? ConfigDefaults.outputDirPath
+        self.autoConsentApps = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string })
+            ?? ConfigDefaults.autoConsentApps
+        self.voiceProcessing = rec?["voice_processing"]?.bool ?? ConfigDefaults.voiceProcessing
+        self.honorAppMute = rec?["honor_app_mute"]?.bool ?? ConfigDefaults.honorAppMute
 
         // Both literal forms, for the reason spelled out in `Config.load`: TOMLKit
         // does not coerce int to double, and `config.example.toml` writes every
@@ -137,24 +138,20 @@ final class ConfigStore: ObservableObject {
             return fallback
         }
 
-        self.debounceEndSec = seconds("debounce_end_sec", 5)
-        self.manualHotkey = det?["manual_hotkey"]?.string ?? "ctrl+option+m"
-        self.forceStopHotkey = det?["force_stop_hotkey"]?.string ?? "ctrl+option+shift+m"
-        self.flagMomentHotkey = det?["flag_moment_hotkey"]?.string ?? "ctrl+option+f"
-        self.offTheRecordHotkey = det?["off_the_record_hotkey"]?.string ?? "ctrl+option+o"
-        self.promptTimeoutSec = seconds("prompt_timeout_sec", 30)
+        self.debounceEndSec = seconds("debounce_end_sec", ConfigDefaults.debounceEndSec)
+        self.manualHotkey = det?["manual_hotkey"]?.string ?? ConfigDefaults.manualHotkey
+        self.forceStopHotkey = det?["force_stop_hotkey"]?.string ?? ConfigDefaults.forceStopHotkey
+        self.flagMomentHotkey = det?["flag_moment_hotkey"]?.string ?? ConfigDefaults.flagMomentHotkey
+        self.offTheRecordHotkey = det?["off_the_record_hotkey"]?.string ?? ConfigDefaults.offTheRecordHotkey
+        self.promptTimeoutSec = seconds("prompt_timeout_sec", ConfigDefaults.promptTimeoutSec)
         self.defaultPromptAction = det?["default_prompt_action"]?.string ?? "skip"
-        self.repromptCooldownSec = seconds("reprompt_cooldown_sec", 60)
-        self.micOnlySilenceSec = seconds("mic_only_silence_seconds", 900)
+        self.repromptCooldownSec = seconds("reprompt_cooldown_sec", ConfigDefaults.repromptCooldownSec)
+        self.micOnlySilenceSec = seconds("mic_only_silence_seconds", ConfigDefaults.micOnlySilenceSec)
 
-        self.regulatedMode = mod?["regulated_mode"]?.bool ?? false
+        self.regulatedMode = mod?["regulated_mode"]?.bool ?? ConfigDefaults.regulatedMode
 
         self.notionDatabaseId = notion?["database_id"]?.string ?? ""
-        // "auto", not "en": until HYG2 wired this key the transcribe call passed
-        // `languageHint: nil`, i.e. auto-detect. Defaulting to "en" here would have
-        // turned the wiring into a silent behaviour change that pins every meeting
-        // to English on any config that never set the key.
-        self.transcriptionLanguage = trans?["language"]?.string ?? "auto"
+        self.transcriptionLanguage = trans?["language"]?.string ?? ConfigDefaults.transcriptionLanguage
         self.summaryLanguage = summ?["summary_language"]?.string ?? "auto"
         self.summarizationSkipAboveChars = summ?["skip_above_chars"]?.int ?? 80000
         self.summarizationBackend = summ?["backend"]?.string ?? "anthropic"

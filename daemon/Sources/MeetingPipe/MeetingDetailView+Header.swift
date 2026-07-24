@@ -545,13 +545,7 @@ extension MeetingDetailView {
     }
 
     func confirmDelete() {
-        let alert = NSAlert()
-        alert.messageText = "Move \(meeting.displayTitle) to Trash?"
-        alert.informativeText = "Every file for this meeting (audio, transcript, summary, sidecars) goes to the Trash. You can restore from there until the Trash is emptied."
-        alert.addButton(withTitle: "Move to Trash")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .warning
-        if alert.runModal() == .alertFirstButtonReturn {
+        if LibraryDialogs.confirmSoftDelete(meetingTitle: meeting.displayTitle) {
             _ = libraryModel.softDeleteMeeting(stem: meeting.stem)
         }
     }

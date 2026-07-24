@@ -35,7 +35,7 @@ enum AudioTranscoder {
     /// one.
     @discardableResult
     static func compressToFLAC(wav: URL) throws -> URL {
-        guard let ffmpeg = MeetingRecorder.findFFmpeg() else {
+        guard let ffmpeg = RecordingPostProcessor.findFFmpeg() else {
             throw TranscodeError.ffmpegMissing
         }
         let fm = FileManager.default

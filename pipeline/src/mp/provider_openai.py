@@ -22,7 +22,7 @@ import httpx
 from pydantic import ValidationError
 
 from .endpoints import OPENAI_API_BASE, OPENAI_CHAT_PATH
-from .json_extract import largest_balanced_json_object
+from .json_extract import parse_summary
 from .prompt_safety import wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
 
@@ -75,7 +75,11 @@ class OpenAIClient:
         for attempt in (1, 2):
             text = self._chat(messages, max_tokens=max_tokens, json_mode=True)
             try:
-                return _parse_summary(text)
+                return parse_summary(
+                    text,
+                    error=OpenAIError,
+                    message="no schema-valid JSON object in the openai response",
+                )
             except (ValidationError, json.JSONDecodeError, OpenAIError) as e:
                 last_err = e
                 log.warning("openai summarize attempt %d: %s", attempt, e)
@@ -141,16 +145,3 @@ class OpenAIClient:
         except (KeyError, IndexError, TypeError) as e:
             raise OpenAIError(f"unexpected openai response shape: {r.text[:500]}") from e
         return content or ""
-
-
-def _parse_summary(text: str) -> MeetingSummary:
-    """Validate the model's text into a `MeetingSummary`, recovering the JSON
-    object from any surrounding prose with the shared balanced-object scan."""
-    for candidate in (text.strip(), largest_balanced_json_object(text)):
-        if not candidate:
-            continue
-        try:
-            return MeetingSummary.model_validate(json.loads(candidate))
-        except (json.JSONDecodeError, ValidationError):
-            continue
-    raise OpenAIError("no schema-valid JSON object in the openai response")

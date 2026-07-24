@@ -136,7 +136,7 @@ enum MuteRedactor {
         }
         let channels = channelCount(of: wav) ?? 2
         guard let filter = buildFilter(spans: redactSpans, channels: channels) else { return false }
-        guard let ffmpeg = MeetingRecorder.findFFmpeg() else {
+        guard let ffmpeg = RecordingPostProcessor.findFFmpeg() else {
             Log.writeLine("recorder", "WARN: ffmpeg not found - skipping mute redaction for \(wav.lastPathComponent)")
             return false
         }

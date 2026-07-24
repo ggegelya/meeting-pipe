@@ -68,11 +68,11 @@ struct Config {
         let mod = toml["modes"]?.table
         let tra = toml["transcription"]?.table
 
-        let outputDirRaw = rec?["output_dir"]?.string ?? "~/Documents/Meetings/raw"
-        let consent = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string }) ?? []
-        // Default OFF: VPIO's AGC degrades the HAL device gain system-wide while the engine is running, so other mic users (Teams, Zoom, FaceTime) hear the user as extremely quiet. Opt in via TOML when recording in isolation.
-        let voiceProcessing = rec?["voice_processing"]?.bool ?? false
-        let honorAppMute = rec?["honor_app_mute"]?.bool ?? true
+        let outputDirRaw = rec?["output_dir"]?.string ?? ConfigDefaults.outputDirPath
+        let consent = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string })
+            ?? ConfigDefaults.autoConsentApps
+        let voiceProcessing = rec?["voice_processing"]?.bool ?? ConfigDefaults.voiceProcessing
+        let honorAppMute = rec?["honor_app_mute"]?.bool ?? ConfigDefaults.honorAppMute
 
         // TOML distinguishes integer from float literals and TOMLKit does not
         // coerce between them, so reading a seconds knob through `.double` alone
@@ -87,16 +87,16 @@ struct Config {
             return fallback
         }
 
-        let debounceEnd = seconds("debounce_end_sec", 5)
-        let hotkey = det?["manual_hotkey"]?.string ?? "ctrl+option+m"
-        let forceStop = det?["force_stop_hotkey"]?.string ?? "ctrl+option+shift+m"
-        let flagMoment = det?["flag_moment_hotkey"]?.string ?? "ctrl+option+f"
-        let offTheRecord = det?["off_the_record_hotkey"]?.string ?? "ctrl+option+o"
-        let promptTimeout = seconds("prompt_timeout_sec", 30)
-        let repromptCooldown = seconds("reprompt_cooldown_sec", 60)
-        let micOnlySilenceSec = seconds("mic_only_silence_seconds", 900)
+        let debounceEnd = seconds("debounce_end_sec", ConfigDefaults.debounceEndSec)
+        let hotkey = det?["manual_hotkey"]?.string ?? ConfigDefaults.manualHotkey
+        let forceStop = det?["force_stop_hotkey"]?.string ?? ConfigDefaults.forceStopHotkey
+        let flagMoment = det?["flag_moment_hotkey"]?.string ?? ConfigDefaults.flagMomentHotkey
+        let offTheRecord = det?["off_the_record_hotkey"]?.string ?? ConfigDefaults.offTheRecordHotkey
+        let promptTimeout = seconds("prompt_timeout_sec", ConfigDefaults.promptTimeoutSec)
+        let repromptCooldown = seconds("reprompt_cooldown_sec", ConfigDefaults.repromptCooldownSec)
+        let micOnlySilenceSec = seconds("mic_only_silence_seconds", ConfigDefaults.micOnlySilenceSec)
 
-        let regulated = mod?["regulated_mode"]?.bool ?? false
+        let regulated = mod?["regulated_mode"]?.bool ?? ConfigDefaults.regulatedMode
 
         // Accept both double and integer literals; clamp to FluidAudio's documented range.
         let clusteringRaw: Double = {
@@ -105,7 +105,7 @@ struct Config {
             return FluidAudioRunner.defaultClusteringThreshold
         }()
         let clusteringThreshold = min(0.9, max(0.5, clusteringRaw))
-        let language = tra?["language"]?.string ?? "auto"
+        let language = tra?["language"]?.string ?? ConfigDefaults.transcriptionLanguage
 
         return Config(
             recording: Recording(
@@ -136,25 +136,25 @@ struct Config {
     static func defaultFallback() -> Config {
         Config(
             recording: Recording(
-                outputDir: expandTilde("~/Documents/Meetings/raw"),
-                autoConsentApps: [],
-                voiceProcessing: false,
-                honorAppMute: true
+                outputDir: expandTilde(ConfigDefaults.outputDirPath),
+                autoConsentApps: ConfigDefaults.autoConsentApps,
+                voiceProcessing: ConfigDefaults.voiceProcessing,
+                honorAppMute: ConfigDefaults.honorAppMute
             ),
             detection: Detection(
-                debounceEndSec: 5,
-                manualHotkey: "ctrl+option+m",
-                forceStopHotkey: "ctrl+option+shift+m",
-                flagMomentHotkey: "ctrl+option+f",
-                offTheRecordHotkey: "ctrl+option+o",
-                promptTimeoutSec: 30,
-                repromptCooldownSec: 60,
-                micOnlySilenceSec: 900
+                debounceEndSec: ConfigDefaults.debounceEndSec,
+                manualHotkey: ConfigDefaults.manualHotkey,
+                forceStopHotkey: ConfigDefaults.forceStopHotkey,
+                flagMomentHotkey: ConfigDefaults.flagMomentHotkey,
+                offTheRecordHotkey: ConfigDefaults.offTheRecordHotkey,
+                promptTimeoutSec: ConfigDefaults.promptTimeoutSec,
+                repromptCooldownSec: ConfigDefaults.repromptCooldownSec,
+                micOnlySilenceSec: ConfigDefaults.micOnlySilenceSec
             ),
-            modes: Modes(regulatedMode: false),
+            modes: Modes(regulatedMode: ConfigDefaults.regulatedMode),
             transcription: Transcription(
                 diarizationClusteringThreshold: FluidAudioRunner.defaultClusteringThreshold,
-                language: "auto"
+                language: ConfigDefaults.transcriptionLanguage
             )
         )
     }

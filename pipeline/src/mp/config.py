@@ -9,7 +9,7 @@ import os
 import sys
 import tomllib
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, Field
 
@@ -25,6 +25,14 @@ CONFIG_PATH = _expand("~/.config/meeting-pipe/config.toml")
 # service + managed-key names in sync with KeychainSecrets.swift and install.sh.
 KEYCHAIN_SERVICE = "com.meetingpipe.daemon"
 MANAGED_SECRET_KEYS = ("ANTHROPIC_API_KEY", "NOTION_TOKEN", "HF_TOKEN", "OPENAI_API_KEY")
+
+# The `summarization.backend` vocabulary, declared once (ARCH5). `Summarization.backend`
+# annotates with this alias and `BACKENDS` below derives the runtime set from it, so the
+# type and the validation set cannot disagree; they were two hand-maintained lists of the
+# same six strings. Per-value semantics are documented on the field itself.
+BackendName = Literal[
+    "anthropic", "local", "auto", "apple_intelligence", "claude_cli", "openai"
+]
 
 
 class Recording(BaseModel):
@@ -111,9 +119,7 @@ class Summarization(BaseModel):
     #   "openai":    an OpenAI-compatible chat-completions API over httpx (PROV1),
     #                key in the Keychain (OPENAI_API_KEY). Cloud; clamped by the
     #                egress guard exactly like anthropic.
-    backend: Literal[
-        "anthropic", "local", "auto", "apple_intelligence", "claude_cli", "openai"
-    ] = "anthropic"
+    backend: BackendName = "anthropic"
     # Default to the 7B-4bit (~4.3 GB resident): the engine-comparison sweet
     # spot (LOCAL6). On par with the 14B on action/decision capture but with
     # named owners, zero failures over the corpus, ~30% lower latency, and
@@ -292,12 +298,10 @@ def effective_backend(cfg: Config) -> str:
     return backend
 
 
-# The valid `summarization.backend` values; mirror of the Literal on
-# `Summarization.backend`. Kept as a set so the one-shot override (PIPE6) can
-# validate a CLI value without re-deriving it from the Literal type.
-BACKENDS: frozenset[str] = frozenset(
-    {"anthropic", "local", "auto", "apple_intelligence", "claude_cli", "openai"}
-)
+# The valid `summarization.backend` values, as a set the one-shot override (PIPE6)
+# can validate a CLI value against. Derived from `BackendName` rather than restated,
+# so adding a backend to the Literal cannot leave the override rejecting it (ARCH5).
+BACKENDS: frozenset[str] = frozenset(get_args(BackendName))
 
 # Backends that reach the cloud by spawning a child process rather than an
 # in-process httpx call (PROV1). They sit OUTSIDE the egress guard's transport

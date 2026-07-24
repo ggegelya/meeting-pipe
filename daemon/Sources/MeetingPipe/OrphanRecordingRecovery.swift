@@ -131,7 +131,7 @@ enum OrphanRecordingRecovery {
     static func recover(stems: [String], in directory: URL) async -> Recovered {
         var result = Recovered()
         for stem in stems {
-            guard let url = await MeetingRecorder.recoverOrphan(stem: stem, in: directory) else { continue }
+            guard let url = await RecordingPostProcessor.recoverOrphan(stem: stem, in: directory) else { continue }
             // Read the manifest + capture-mode marker BEFORE clearing the
             // start-time markers below: both feed the routing decision.
             let manifest = RecordingManifest.read(forStem: stem, in: directory)

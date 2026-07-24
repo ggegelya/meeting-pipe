@@ -309,7 +309,7 @@ final class MuteRedactorTests: XCTestCase {
     /// WAV) went unverified: a failure to surface, not a skip to swallow. Only a
     /// genuinely local machine without ffmpeg still skips.
     private func requireFFmpeg() throws {
-        if MeetingRecorder.findFFmpeg() != nil { return }
+        if RecordingPostProcessor.findFFmpeg() != nil { return }
         if ProcessInfo.processInfo.environment["CI"] == "true" {
             throw FFmpegUnavailableOnCI()
         }

@@ -10,7 +10,7 @@ final class AudioTranscoderTests: XCTestCase {
     private var dir: URL!
 
     override func setUpWithError() throws {
-        try XCTSkipIf(MeetingRecorder.findFFmpeg() == nil, "ffmpeg not installed")
+        try XCTSkipIf(RecordingPostProcessor.findFFmpeg() == nil, "ffmpeg not installed")
         dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("mp-transcode-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

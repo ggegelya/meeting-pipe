@@ -260,6 +260,7 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 ### Recording - "capture what's playing + what I say"
 
 - `MeetingRecorder.swift` - AVAudioEngine for mic capture + the `SystemAudioCapture` source for everything else, mixed and written to disk. `MicGateWriter` applies the per-buffer mute verdict in place. At start it resolves the bound input device (`MeetingPipeCore/Infra/InputDeviceIdentity`) and snapshots whole-recording mic coverage; `MeetingSessionController` reads both at stop to persist which mic was used (`mic_device_name`) and to fire the dead-mic warning (`MicCoverageWarning`, the mirror of `RemoteAudioWarning`) when the mic stayed silent under a live system channel (MIC15).
+- `RecordingPostProcessor.swift` - everything that happens to a recording's files after capture stops, extracted from `MeetingRecorder` (ARCH5): the ffmpeg merge (mic left / system right) or single-side downmix, the temp-then-promote dance that keeps a truncated merge off the canonical path, the `.recordfail.json` breadcrumb, `recoverOrphan` for intermediates a crash left behind, and the `findFFmpeg` / `audioDurationSec` helpers `MuteRedactor` and `AudioTranscoder` also use. Pure file work with no capture state, which is what made the split a move.
 - `SystemAudioCapture.swift` - ScreenCaptureKit + ProcessTap (macOS 14.2+) capture of every-other-process audio. The `excludesCurrentProcessAudio` API is the macOS 14 hard floor.
 
 ### Mute gating - track mute, redact the notes or gate live
@@ -300,6 +301,7 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 
 ### Storage / persistence
 
+- `ConfigDefaults.swift` - the compile-time default for every knob more than one reader needs (ARCH5). `Config.load`, `Config.defaultFallback`, and `ConfigStore.init` each used to spell the literals, so a changed default meant three edits and a miss showed up as Preferences disagreeing with the running daemon.
 - `Config.swift` — read-only Config snapshot loaded at launch (`~/.config/meeting-pipe/config.toml`).
 - `ConfigStore.swift` — `ObservableObject` wrapper for the same file. Round-trips through TOMLKit, preserves unknown keys (so pipeline-side fields like `transcription.model` survive UI edits). 500 ms debounced writes.
 - `Preferences/UISettings.swift` — singleton over `UserDefaults` for cosmetic flags (theme, menu-bar icon style, regulated badge, verbose logging).
@@ -313,7 +315,7 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 
 ### Plumbing
 
-- `PipelineLauncher.swift` spawns `mp run-all <wav>` as a subprocess. Each job is one `ProcessingJob` (see `State.swift`); the queue runs them serially so two transcription runs don't thrash the Neural Engine. `findMP` resolves the pipeline: an embedded relocatable runtime in the app bundle (`Contents/Resources/pipeline-runtime/`, run as `python3 -m mp`, DIST1) → the prebuilt venv → `uv run` from the repo → bare `mp` on PATH; `MeetingRecorder.findFFmpeg` similarly falls back to a bundled `ffmpeg`, so a drag-installed app runs on a clean Mac.
+- `PipelineLauncher.swift` spawns `mp run-all <wav>` as a subprocess. Each job is one `ProcessingJob` (see `State.swift`); the queue runs them serially so two transcription runs don't thrash the Neural Engine. `findMP` resolves the pipeline: an embedded relocatable runtime in the app bundle (`Contents/Resources/pipeline-runtime/`, run as `python3 -m mp`, DIST1) → the prebuilt venv → `uv run` from the repo → bare `mp` on PATH; `RecordingPostProcessor.findFFmpeg` similarly falls back to a bundled `ffmpeg`, so a drag-installed app runs on a clean Mac.
 - `LocalServerReaper.swift` — kills an `mlx_lm.server` that outlived the `mp` which spawned it (LOCAL10). The server setsid's into its own session, so a watchdog SIGKILL of `mp` leaves it resident; Python's `mlx-server.json` marker names it. Reaps at launch (from `Coordinator.reapStorage()`) and right after the watchdog kills a job.
 - `LocalModelPreloader.swift` — the optional launch-time warm `mlx_lm.server` (TECH-A15), spawned as `mp serve-local` when the user opted in, the backend is `local`, and the model is cached. Off by default: a warm model stays resident. `refresh(...)` restarts it from `ConfigStore.didPersist` when the model or adapter changes (LOCAL11), because `mp` deliberately will not kill a server it did not spawn, and a warm server otherwise pins one model for the daemon's whole lifetime.
 - `PermissionsCenter.swift` — single source of truth for the four TCC permissions (mic, Screen Recording, Accessibility, Notifications). Polls for live-flip detection; publishes a `permissionGranted` PassthroughSubject the Coordinator listens to (so the detector wakes up the moment Accessibility flips on mid-meeting).
@@ -422,7 +424,7 @@ lifecycle verdict .starting (or discovery scan, or manual hotkey)
 
 ```
 lifecycle verdict .ended (or hotkey, or silence backstop)
-  -> MeetingRecorder.stop -> ffmpeg merge -> final WAV closed
+  -> MeetingRecorder.stop -> RecordingPostProcessor ffmpeg merge -> final WAV closed
   -> SinkDispatcher: FluidAudio transcribe + diarize -> <stem>.json / <stem>.md
   -> PipelineLauncher.enqueue(ProcessingJob)
   -> mp run-all <wav>:

@@ -51,7 +51,8 @@ struct BatchActionsPane: View {
                 Button("Cancel", role: .cancel) { }
             },
             message: {
-                Text("Every sidecar (audio, transcript, summary) for these meetings goes to the system Trash. You can restore from there until the Trash is emptied.")
+                Text("Every sidecar (audio, transcript, summary) for these meetings goes to the system Trash. "
+                     + LibraryDialogs.trashRecoveryNote)
             }
         )
         .alert(
@@ -568,14 +569,9 @@ struct BatchActionsPane: View {
     }
 
     private func runExport() async {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Export here"
-        panel.message = "Choose a folder. One markdown file per meeting will be written."
-        guard panel.runModal() == .OK, let dest = panel.url else { return }
+        guard let dest = LibraryDialogs.chooseExportFolder(
+            message: "Choose a folder. One markdown file per meeting will be written."
+        ) else { return }
         let captured = meetings
         cancelRequested = false
         state = .running(label: "Exporting", done: 0, total: captured.count)

@@ -517,14 +517,9 @@ struct MeetingRow: View, Equatable {
     }
 
     private func promptExport() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Export here"
-        panel.message = "Choose a folder for the exported bundle (summary, transcript, audio)."
-        if panel.runModal() == .OK, let dest = panel.url {
+        if let dest = LibraryDialogs.chooseExportFolder(
+            message: "Choose a folder for the exported bundle (summary, transcript, audio)."
+        ) {
             switch onExport(dest) {
             case .success(let n):
                 NSWorkspace.shared.activateFileViewerSelecting([dest])
@@ -539,13 +534,7 @@ struct MeetingRow: View, Equatable {
     }
 
     private func promptDelete() {
-        let alert = NSAlert()
-        alert.messageText = "Move \(meeting.displayTitle) to Trash?"
-        alert.informativeText = "Every file for this meeting (audio, transcript, summary, sidecars) will go to the Trash. You can restore from there until the Trash is emptied."
-        alert.addButton(withTitle: "Move to Trash")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .warning
-        if alert.runModal() == .alertFirstButtonReturn {
+        if LibraryDialogs.confirmSoftDelete(meetingTitle: meeting.displayTitle) {
             onSoftDelete()
         }
     }

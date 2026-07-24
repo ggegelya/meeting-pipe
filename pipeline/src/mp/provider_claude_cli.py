@@ -25,7 +25,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from . import egress_guard
-from .json_extract import largest_balanced_json_object
+from .json_extract import parse_summary
 from .prompt_safety import wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
 
@@ -91,7 +91,11 @@ class ClaudeCLIClient:
         for attempt in (1, 2):
             text = self._run(prompt if attempt == 1 else prompt + _repair_hint(last_err))
             try:
-                return _parse_summary(text)
+                return parse_summary(
+                    text,
+                    error=ClaudeCLIError,
+                    message="no schema-valid JSON object in the claude CLI result",
+                )
             except (ValidationError, json.JSONDecodeError, ClaudeCLIError) as e:
                 last_err = e
                 log.warning("claude_cli summarize attempt %d: %s", attempt, e)
@@ -165,17 +169,6 @@ def _extract_result(stdout: str) -> str:
     if not isinstance(result, str) or not result.strip():
         raise ClaudeCLIError("claude CLI returned no result text")
     return result
-
-
-def _parse_summary(text: str) -> MeetingSummary:
-    for candidate in (text.strip(), largest_balanced_json_object(text)):
-        if not candidate:
-            continue
-        try:
-            return MeetingSummary.model_validate(json.loads(candidate))
-        except (json.JSONDecodeError, ValidationError):
-            continue
-    raise ClaudeCLIError("no schema-valid JSON object in the claude CLI result")
 
 
 def _repair_hint(err: Exception | None) -> str:

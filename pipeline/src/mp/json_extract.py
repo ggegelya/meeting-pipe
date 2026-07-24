@@ -10,8 +10,18 @@ Promoted out of `summarize_local` (PROV1) so the provider modules share one
 implementation rather than each carrying a private copy (the pipeline's
 "promote, don't copy a sibling's helper" rule). Pure stdlib; a Swift mirror
 (`AppleIntelligenceSummarizer.largestJSONObject`) is pinned separately by CI3.
+
+`parse_summary` sits here for the same reason (ARCH5): both PROV1 providers had
+a private copy of the scan-then-validate step, differing only in which provider
+error they raise on exhaustion, so the recovery policy could drift per provider.
 """
 from __future__ import annotations
+
+import json
+
+from pydantic import ValidationError
+
+from .schemas import MeetingSummary
 
 
 def largest_balanced_json_object(text: str) -> str | None:
@@ -56,3 +66,23 @@ def largest_balanced_json_object(text: str) -> str | None:
     if best is None:
         return None
     return text[best[1]:best[2]]
+
+
+def parse_summary(text: str, *, error: type[Exception], message: str) -> MeetingSummary:
+    """Validate a model's text into a `MeetingSummary`, recovering the JSON
+    object from any surrounding prose with the shared balanced-object scan.
+
+    Tries the whole reply first (the common case: the model obeyed and emitted
+    bare JSON), then the largest balanced object (prose or Markdown fences
+    around it). `error` / `message` let each provider raise its own exception
+    type on exhaustion, which is the only thing that differed between the two
+    private copies this replaced; callers catch that type in their repair loop.
+    """
+    for candidate in (text.strip(), largest_balanced_json_object(text)):
+        if not candidate:
+            continue
+        try:
+            return MeetingSummary.model_validate(json.loads(candidate))
+        except (json.JSONDecodeError, ValidationError):
+            continue
+    raise error(message)

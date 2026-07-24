@@ -50,7 +50,7 @@ final class MeetingRecorderTests: XCTestCase {
     func test_audioDurationSec_returns_payload_seconds_for_valid_wav() throws {
         let url = try writeTemp(makeWavData(seconds: 5.0))
         defer { try? FileManager.default.removeItem(at: url) }
-        let duration = MeetingRecorder.audioDurationSec(of: url)
+        let duration = RecordingPostProcessor.audioDurationSec(of: url)
         XCTAssertNotNil(duration)
         XCTAssertEqual(duration!, 5.0, accuracy: 0.001)
     }
@@ -59,25 +59,25 @@ final class MeetingRecorderTests: XCTestCase {
         // 3 s of stereo (channels=2) doubles the byte rate.
         let url = try writeTemp(makeWavData(seconds: 3.0, channels: 2))
         defer { try? FileManager.default.removeItem(at: url) }
-        let duration = MeetingRecorder.audioDurationSec(of: url)
+        let duration = RecordingPostProcessor.audioDurationSec(of: url)
         XCTAssertEqual(duration!, 3.0, accuracy: 0.001)
     }
 
     func test_audioDurationSec_returns_nil_for_missing_file() {
         let url = URL(fileURLWithPath: "/tmp/does-not-exist-\(UUID().uuidString).wav")
-        XCTAssertNil(MeetingRecorder.audioDurationSec(of: url))
+        XCTAssertNil(RecordingPostProcessor.audioDurationSec(of: url))
     }
 
     func test_audioDurationSec_returns_nil_for_non_riff_data() throws {
         let url = try writeTemp(Data(repeating: 0xff, count: 4096))
         defer { try? FileManager.default.removeItem(at: url) }
-        XCTAssertNil(MeetingRecorder.audioDurationSec(of: url))
+        XCTAssertNil(RecordingPostProcessor.audioDurationSec(of: url))
     }
 
     func test_audioDurationSec_returns_nil_for_truncated_header() throws {
         let url = try writeTemp(Data("RIFF1234".utf8))
         defer { try? FileManager.default.removeItem(at: url) }
-        XCTAssertNil(MeetingRecorder.audioDurationSec(of: url))
+        XCTAssertNil(RecordingPostProcessor.audioDurationSec(of: url))
     }
 
     /// AVAudioFile writes Float32 WAV intermediates with a JUNK (or
@@ -117,7 +117,7 @@ final class MeetingRecorderTests: XCTestCase {
 
         let url = try writeTemp(data)
         defer { try? FileManager.default.removeItem(at: url) }
-        let duration = MeetingRecorder.audioDurationSec(of: url)
+        let duration = RecordingPostProcessor.audioDurationSec(of: url)
         XCTAssertNotNil(duration)
         XCTAssertEqual(duration!, 4.0, accuracy: 0.001)
     }
@@ -326,7 +326,7 @@ final class MeetingRecorderTests: XCTestCase {
         try Data(repeating: 0xAB, count: 8192).write(to: mic)
         try Data(repeating: 0xCD, count: 8192).write(to: system)
 
-        let recovered = await MeetingRecorder.recoverOrphan(stem: stem, in: dir)
+        let recovered = await RecordingPostProcessor.recoverOrphan(stem: stem, in: dir)
 
         XCTAssertNil(recovered, "a failed merge must not return a final")
         XCTAssertTrue(FileManager.default.fileExists(atPath: mic.path),
@@ -336,9 +336,9 @@ final class MeetingRecorderTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(stem).wav").path),
                        "no partial final is left behind")
         let final = dir.appendingPathComponent("\(stem).wav")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: MeetingRecorder.recordFailURL(forFinal: final).path),
+        XCTAssertTrue(FileManager.default.fileExists(atPath: RecordingPostProcessor.recordFailURL(forFinal: final).path),
                       "a failure breadcrumb explains the retained intermediates")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: MeetingRecorder.mergingTempURL(forFinal: final).path),
+        XCTAssertFalse(FileManager.default.fileExists(atPath: RecordingPostProcessor.mergingTempURL(forFinal: final).path),
                        "REC7: the <stem>.merging.wav temp is cleaned up after a failed merge")
     }
 
@@ -357,7 +357,7 @@ final class MeetingRecorderTests: XCTestCase {
         try makeWavData(seconds: 2.0).write(to: mic)
         try makeWavData(seconds: 2.0).write(to: system)
 
-        let recovered = await MeetingRecorder.recoverOrphan(stem: stem, in: dir)
+        let recovered = await RecordingPostProcessor.recoverOrphan(stem: stem, in: dir)
 
         let final = dir.appendingPathComponent("\(stem).wav")
         XCTAssertEqual(recovered, final, "a verified merge returns the final URL")
@@ -366,9 +366,9 @@ final class MeetingRecorderTests: XCTestCase {
                        "mic.wav is cleared only after a verified merge")
         XCTAssertFalse(FileManager.default.fileExists(atPath: system.path),
                        "system.wav is cleared only after a verified merge")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: MeetingRecorder.recordFailURL(forFinal: final).path),
+        XCTAssertFalse(FileManager.default.fileExists(atPath: RecordingPostProcessor.recordFailURL(forFinal: final).path),
                        "no failure breadcrumb on success")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: MeetingRecorder.mergingTempURL(forFinal: final).path),
+        XCTAssertFalse(FileManager.default.fileExists(atPath: RecordingPostProcessor.mergingTempURL(forFinal: final).path),
                        "REC7: the temp is promoted (moved) onto the final, not left beside it")
     }
 
@@ -378,7 +378,7 @@ final class MeetingRecorderTests: XCTestCase {
     func test_merging_temp_url_is_stem_merging_wav() {
         let final = URL(fileURLWithPath: "/tmp/meetings/20260627-101500.wav")
         XCTAssertEqual(
-            MeetingRecorder.mergingTempURL(forFinal: final).lastPathComponent,
+            RecordingPostProcessor.mergingTempURL(forFinal: final).lastPathComponent,
             "20260627-101500.merging.wav"
         )
     }
@@ -390,7 +390,7 @@ final class MeetingRecorderTests: XCTestCase {
     /// destructive merge path went unverified (a failure to surface, not a skip
     /// to swallow). Only a genuinely local machine without ffmpeg still skips.
     private func requireFFmpeg() throws {
-        if MeetingRecorder.findFFmpeg() != nil { return }
+        if RecordingPostProcessor.findFFmpeg() != nil { return }
         if ProcessInfo.processInfo.environment["CI"] == "true" {
             throw FFmpegUnavailableOnCI()
         }

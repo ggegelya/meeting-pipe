@@ -211,24 +211,28 @@ final class LibraryWindowModel: ObservableObject {
         coordinator?.menuPreferences()
     }
 
+    /// Bridge one `MeetingLibraryService` completion call into `async` (ARCH5).
+    /// Every Library action below is the same two steps: fail closed when the
+    /// service is not wired yet, then suspend until the completion fires. Twelve
+    /// copies of that each spelled the `CheckedContinuation` generic by hand, so
+    /// a dropped `Unwired` guard was one paste away; this is the single spelling.
+    private func bridge<T>(
+        _ call: (MeetingLibraryService, @escaping (Result<T, Error>) -> Void) -> Void
+    ) async -> Result<T, Error> {
+        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Result<T, Error>, Never>) in
+            call(library) { cont.resume(returning: $0) }
+        }
+    }
+
     /// Republish via `mp publish` (the sink fanout). Async-wraps the service's completion so SwiftUI callers can `await` the result.
     func republishMeeting(stem: String) async -> Result<URL?, Error> {
-        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
-        return await withCheckedContinuation { (cont: CheckedContinuation<Result<URL?, Error>, Never>) in
-            library.republishMeeting(stem: stem) { result in
-                cont.resume(returning: result)
-            }
-        }
+        await bridge { library, done in library.republishMeeting(stem: stem) { done($0) } }
     }
 
     /// Regenerate summary via `mp summarize` then republish. Same async-wrap pattern as `republishMeeting`. `backend` re-summarizes on a one-shot engine (PIPE6, the "Re-summarize with..." affordance); `nil` uses the configured/workflow backend.
     func regenerateMeeting(stem: String, backend: String? = nil) async -> Result<URL?, Error> {
-        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
-        return await withCheckedContinuation { (cont: CheckedContinuation<Result<URL?, Error>, Never>) in
-            library.regenerateMeeting(stem: stem, backend: backend) { result in
-                cont.resume(returning: result)
-            }
-        }
+        await bridge { library, done in library.regenerateMeeting(stem: stem, backend: backend) { done($0) } }
     }
 
     /// ASR3: re-transcribe an existing recording against the current ASR,
@@ -237,23 +241,15 @@ final class LibraryWindowModel: ObservableObject {
     /// or publishes, so the meeting keeps the summary it has; the caller offers
     /// re-summarize as the follow-up.
     func retranscribeMeeting(stem: String) async -> Result<MeetingLibraryService.RetranscribeOutcome, Error> {
-        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
-        return await withCheckedContinuation { (cont: CheckedContinuation<Result<MeetingLibraryService.RetranscribeOutcome, Error>, Never>) in
-            library.retranscribeMeeting(stem: stem) { result in
-                cont.resume(returning: result)
-            }
-        }
+        await bridge { library, done in library.retranscribeMeeting(stem: stem) { done($0) } }
     }
 
     /// FEAT9: merge fragmented recordings into the primary (concatenate + re-summarize
     /// + republish, then soft-delete the fragments). Same async-wrap pattern as
     /// `regenerateMeeting`; returns the primary's page URL.
     func mergeMeetings(primary: String, fragments: [String]) async -> Result<URL?, Error> {
-        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
-        return await withCheckedContinuation { (cont: CheckedContinuation<Result<URL?, Error>, Never>) in
-            library.mergeMeetings(primaryStem: primary, fragmentStems: fragments) { result in
-                cont.resume(returning: result)
-            }
+        await bridge { library, done in
+            library.mergeMeetings(primaryStem: primary, fragmentStems: fragments) { done($0) }
         }
     }
 
@@ -282,9 +278,8 @@ final class LibraryWindowModel: ObservableObject {
     /// `contextOverride` (TECH-FEAT7) feeds an ad-hoc reprocess prompt for that
     /// run only; nil is the plain local re-run.
     func previewSummary(stem: String, contextOverride: String? = nil) async -> Result<Void, Error> {
-        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
-        return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
-            library.previewSummary(stem: stem, contextOverride: contextOverride) { cont.resume(returning: $0) }
+        await bridge { library, done in
+            library.previewSummary(stem: stem, contextOverride: contextOverride) { done($0) }
         }
     }
 
@@ -305,35 +300,22 @@ final class LibraryWindowModel: ObservableObject {
     /// Publish a hand-pasted summary (TECH-UX3): writes `<stem>.summary.md` and
     /// runs `mp publish-from-paste`. Async-wrapped like `republishMeeting`.
     func publishFromPaste(stem: String, summaryText: String) async -> Result<Void, Error> {
-        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
-        return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
-            library.publishFromPaste(stem: stem, summaryText: summaryText) { result in
-                cont.resume(returning: result)
-            }
+        await bridge { library, done in
+            library.publishFromPaste(stem: stem, summaryText: summaryText) { done($0) }
         }
     }
 
     /// Ask a natural-language question across the library (AI3). Async-wrapped like
     /// `republishMeeting`; the AskView shows a spinner while this runs.
     func askMeetings(question: String) async -> Result<AskAnswer, Error> {
-        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
-        return await withCheckedContinuation { (cont: CheckedContinuation<Result<AskAnswer, Error>, Never>) in
-            library.askMeetings(question: question) { result in
-                cont.resume(returning: result)
-            }
-        }
+        await bridge { library, done in library.askMeetings(question: question) { done($0) } }
     }
 
     /// Group a recurring series' restatements of one commitment (AI7). Async-wrapped
     /// like `askMeetings`; the Facts projection regroups when it lands and stays on
     /// DV1's ungrouped list if it does not.
     func actionClusters() async -> Result<[ActionClusterAssignment], Error> {
-        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
-        return await withCheckedContinuation { (cont: CheckedContinuation<Result<[ActionClusterAssignment], Error>, Never>) in
-            library.actionClusters { result in
-                cont.resume(returning: result)
-            }
-        }
+        await bridge { library, done in library.actionClusters { done($0) } }
     }
 
     /// The digests directory (AI4), or nil when the service isn't wired.
@@ -342,43 +324,27 @@ final class LibraryWindowModel: ObservableObject {
     /// Generate the weekly digest now (AI4). Async-wrapped like `askMeetings`; the Digests
     /// view shows a spinner while this runs.
     func generateDigest() async -> Result<Void, Error> {
-        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
-        return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
-            library.generateDigest { result in
-                cont.resume(returning: result)
-            }
-        }
+        await bridge { library, done in library.generateDigest { done($0) } }
     }
 
     /// Name a meeting speaker (FEAT3-ROSTER / FEAT3-UNDO): enrolls the voiceprint and
     /// records the name in the reversible overlay. Async-wrapped like `askMeetings`;
     /// the transcript naming sheet awaits it.
     func nameSpeaker(stem: String, label: String, name: String) async -> Result<Void, Error> {
-        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
-        return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
-            library.nameSpeaker(stem: stem, label: label, name: name) { result in
-                cont.resume(returning: result)
-            }
-        }
+        await bridge { library, done in library.nameSpeaker(stem: stem, label: label, name: name) { done($0) } }
     }
 
     /// Undo a speaker naming (FEAT3-UNDO): revert the label and un-enroll the voice.
     func undoSpeakerNaming(stem: String, label: String, name: String) async -> Result<Void, Error> {
-        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
-        return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
-            library.undoSpeakerNaming(stem: stem, label: label, name: name) { result in
-                cont.resume(returning: result)
-            }
+        await bridge { library, done in
+            library.undoSpeakerNaming(stem: stem, label: label, name: name) { done($0) }
         }
     }
 
     /// Rename an already-named speaker (FEAT3-UNDO): re-enroll under the new name.
     func renameSpeaker(stem: String, label: String, oldName: String, newName: String) async -> Result<Void, Error> {
-        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
-        return await withCheckedContinuation { (cont: CheckedContinuation<Result<Void, Error>, Never>) in
-            library.renameSpeaker(stem: stem, label: label, oldName: oldName, newName: newName) { result in
-                cont.resume(returning: result)
-            }
+        await bridge { library, done in
+            library.renameSpeaker(stem: stem, label: label, oldName: oldName, newName: newName) { done($0) }
         }
     }
 
