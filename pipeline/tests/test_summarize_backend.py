@@ -9,6 +9,7 @@ SDK path and any hidden httpx call inside summarize.py.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 from unittest.mock import patch
 
@@ -330,3 +331,131 @@ def test_auto_falls_back_to_local_on_429_and_5xx(
     )
     assert result.title == "Local"
     assert client.last_used_backend == "local"
+
+
+# ----- Slept-through-it timeout retry (PIPE10) -----
+#
+# httpx's read timeout rides the monotonic clock, which freezes while the Mac is
+# asleep. So a request in flight when the lid closes burns its whole 120 s budget
+# across dark-wake slivers and raises APITimeoutError on wake, having never had
+# 120 s of awake time to answer in. `_create_message` tells that apart from a
+# genuine stall by comparing the two clocks, and re-issues once.
+
+def _timeout_error() -> anthropic.APITimeoutError:
+    return anthropic.APITimeoutError(
+        request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    )
+
+
+class _Clock:
+    """Scripted stand-in for the `time` module.
+
+    `time()` and `monotonic()` each read the next value from their own script.
+    Strict on purpose: over-reading raises IndexError rather than inventing a
+    value, so a change in how often `_create_message` samples the clocks fails
+    the test instead of passing quietly.
+    """
+
+    def __init__(self, *, wall: list[float], monotonic: list[float]) -> None:
+        self._wall = list(wall)
+        self._monotonic = list(monotonic)
+
+    def time(self) -> float:
+        return self._wall.pop(0)
+
+    def monotonic(self) -> float:
+        return self._monotonic.pop(0)
+
+
+class _FakeAnthropic:
+    """Minimal `client.messages.create` surface. Each call pops an outcome:
+    an exception instance is raised, anything else is returned."""
+
+    def __init__(self, outcomes: list[Any]) -> None:
+        self.calls = 0
+        self._outcomes = list(outcomes)
+        self.messages = self
+
+    def create(self, **_: Any) -> Any:
+        self.calls += 1
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+# The 2026-07-16 incident's real numbers: monotonic advanced 123 s while the
+# wall clock advanced 2 h 13 m.
+_SLEPT_WALL = [0.0, 7980.0]
+_SLEPT_MONOTONIC = [0.0, 123.0]
+
+
+def test_slept_through_timeout_retries_once_and_succeeds(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from mp.summarize import _create_message
+
+    client = _FakeAnthropic([_timeout_error(), "answer"])
+    monkeypatch.setattr(
+        "mp.summarize.time", _Clock(wall=_SLEPT_WALL, monotonic=_SLEPT_MONOTONIC)
+    )
+
+    with caplog.at_level(logging.WARNING, logger="mp.summarize"):
+        assert _create_message(client, model="claude-x") == "answer"
+
+    assert client.calls == 2
+    # The whole point of the log line: the next investigation reads the
+    # divergence here instead of going digging in `pmset -g log`.
+    logged = caplog.text
+    assert "system sleep" in logged
+    assert "7980" in logged and "123" in logged and "7857" in logged
+
+
+def test_slept_through_timeout_retries_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A second timeout is terminal whatever the clocks say. Only the first
+    # attempt reads them, so the scripts are the same as the success case.
+    from mp.summarize import _create_message
+
+    client = _FakeAnthropic([_timeout_error(), _timeout_error()])
+    monkeypatch.setattr(
+        "mp.summarize.time", _Clock(wall=_SLEPT_WALL, monotonic=_SLEPT_MONOTONIC)
+    )
+
+    with pytest.raises(anthropic.APITimeoutError):
+        _create_message(client, model="claude-x")
+
+    assert client.calls == 2
+
+
+def test_genuine_stall_timeout_fails_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Clocks agree (the machine stayed awake), so this is a real stalled
+    # connection and keeps failing on the first attempt exactly as before:
+    # tenacity does not retry a timeout, and the sleep path does not fire.
+    from mp.summarize import _create_message
+
+    client = _FakeAnthropic([_timeout_error()])
+    monkeypatch.setattr(
+        "mp.summarize.time", _Clock(wall=[0.0, 120.4], monotonic=[0.0, 120.0])
+    )
+
+    with pytest.raises(anthropic.APITimeoutError):
+        _create_message(client, model="claude-x")
+
+    assert client.calls == 1
+
+
+def test_non_timeout_errors_keep_their_tenacity_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The sleep path must not disturb the transient classes: a 429 is still
+    # retried by tenacity, on the real clock, and still succeeds on a later
+    # attempt. (Real `time` here on purpose: no timeout, so nothing samples it.)
+    from mp.summarize import _create_message
+
+    monkeypatch.setattr("mp.summarize._create_message.retry.wait", lambda *_a, **_k: 0)
+    client = _FakeAnthropic([
+        _anthropic_status_error(anthropic.RateLimitError, 429),
+        _anthropic_status_error(anthropic.InternalServerError, 500),
+        "answer",
+    ])
+
+    assert _create_message(client, model="claude-x") == "answer"
+    assert client.calls == 3

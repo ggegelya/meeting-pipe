@@ -10,7 +10,8 @@ the volatile part and goes after the cache breakpoint.
 
 Two retry layers:
   - `_create_message`: tenacity-wrapped; retries on rate limits, 5xx, and
-    transient connection errors with exponential backoff.
+    transient connection errors with exponential backoff. Inside it, a
+    one-shot retry for a timeout the Mac slept through (PIPE10).
   - `_call_with_retry`: one retry on a schema-violating tool_use response.
 """
 from __future__ import annotations
@@ -18,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from importlib import resources
 from pathlib import Path
 from typing import Any, TypedDict
@@ -91,6 +93,11 @@ def _should_retry_anthropic(exc: BaseException) -> bool:
     limits, 5xx, and connection resets are genuinely transient and worth a
     backed-off retry. (APITimeoutError subclasses APIConnectionError, so the
     explicit exclusion below is load-bearing, not redundant.)
+
+    The one timeout that *is* worth re-issuing, the request the Mac slept
+    through, is handled a layer in, inside `_create_message`, so this predicate
+    keeps its single rule. That matters most for a workflow pinned to
+    `anthropic`, where "drop to the fallback" is not an option that exists.
     """
     if isinstance(exc, anthropic.APITimeoutError):
         return False
@@ -106,6 +113,16 @@ def _should_retry_anthropic(exc: BaseException) -> bool:
 _REQUEST_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 
 
+# How far wall-clock elapsed has to exceed monotonic elapsed before we read a
+# timeout as "the Mac slept through the request" rather than "the connection
+# stalled". httpx's read timeout rides the monotonic clock, which freezes while
+# the machine is asleep, so a slept-through request burns its whole budget
+# across dark-wake slivers and fires on lid-open. The two clocks agree to within
+# scheduler noise on a machine that stayed awake, so 60 s is far above any
+# false-positive margin while still catching the shortest nap that could matter.
+_SLEEP_DIVERGENCE_SEC = 60.0
+
+
 @retry(
     reraise=True,
     stop=stop_after_attempt(4),
@@ -118,7 +135,37 @@ _REQUEST_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
     before_sleep=before_sleep_log(log, logging.WARNING),
 )
 def _create_message(client: anthropic.Anthropic, **kwargs: Any) -> Any:
-    """Anthropic call with tenacity retry on rate limits / 5xx / connection errors."""
+    """Anthropic call with tenacity retry on rate limits / 5xx / connection errors.
+
+    PIPE10: a timeout is normally terminal here (`_should_retry_anthropic`
+    excludes it, so a stall drops to the backend fallback rather than re-hanging
+    the run). But a timeout raised because the Mac *slept* mid-request is not a
+    stall at all: the request never got its 120 s of awake time, and re-issuing
+    it after wake succeeds. The two clocks tell the cases apart, so this retries
+    exactly once on the slept-through shape and leaves genuine stalls to fail as
+    before. A second timeout fails like any other, whatever the clocks say.
+
+    Deliberately inside the tenacity-wrapped function, not around it: the retry
+    predicate and the transient-error backoff classes stay exactly as they were.
+    `diarize_cleanup` calls this same seam, so it inherits the fix.
+    """
+    wall_start = time.time()
+    mono_start = time.monotonic()
+    try:
+        return client.messages.create(**kwargs)
+    except anthropic.APITimeoutError:
+        wall = time.time() - wall_start
+        mono = time.monotonic() - mono_start
+        if wall - mono < _SLEEP_DIVERGENCE_SEC:
+            raise
+        log.warning(
+            "Anthropic request timed out across a system sleep "
+            "(wall %.0fs vs monotonic %.0fs, divergence %.0fs); retrying once",
+            wall,
+            mono,
+            wall - mono,
+        )
+
     return client.messages.create(**kwargs)
 
 
