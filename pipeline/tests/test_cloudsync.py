@@ -16,7 +16,6 @@ from mp.cloudsync import (
     FILE_PROVIDER_XATTR,
     ICLOUD_DESKTOP_XATTR,
     detect_sync_provider,
-    icloud_desktop_sync_enabled,
 )
 
 _XATTR = shutil.which("xattr")
@@ -169,39 +168,3 @@ def test_a_library_symlinked_into_a_sync_folder_is_detected(tmp_path: Path) -> N
     provider = detect_sync_provider(link, home=tmp_path)
     assert provider is not None
     assert provider.name == "Dropbox"
-
-
-# ---------- MobileMeAccounts corroborator ------------------------------------
-
-
-def test_icloud_desktop_sync_enabled_reads_the_clouddesktop_service(tmp_path: Path) -> None:
-    import plistlib
-
-    prefs = tmp_path / "Library" / "Preferences"
-    prefs.mkdir(parents=True)
-    plist = prefs / "MobileMeAccounts.plist"
-
-    # macOS 26 shape: `status: active`. Note MOBILE_DOCUMENTS (iCloud Drive) is on
-    # here too, and must not be what we key on.
-    plist.write_bytes(plistlib.dumps({"Accounts": [{"Services": [
-        {"Name": "MOBILE_DOCUMENTS", "Enabled": True},
-        {"Name": "CLOUDDESKTOP", "status": "active"},
-    ]}]}))
-    assert icloud_desktop_sync_enabled(tmp_path) is True
-
-    # Older shape: `Enabled: True`.
-    plist.write_bytes(plistlib.dumps({"Accounts": [{"Services": [
-        {"Name": "CLOUDDESKTOP", "Enabled": True},
-    ]}]}))
-    assert icloud_desktop_sync_enabled(tmp_path) is True
-
-    # Desktop & Documents off, iCloud Drive on. The false-positive we must avoid.
-    plist.write_bytes(plistlib.dumps({"Accounts": [{"Services": [
-        {"Name": "MOBILE_DOCUMENTS", "Enabled": True},
-        {"Name": "CLOUDDESKTOP", "status": "inactive"},
-    ]}]}))
-    assert icloud_desktop_sync_enabled(tmp_path) is False
-
-
-def test_icloud_desktop_sync_enabled_is_false_without_a_plist(tmp_path: Path) -> None:
-    assert icloud_desktop_sync_enabled(tmp_path) is False

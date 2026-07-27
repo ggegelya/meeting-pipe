@@ -332,20 +332,3 @@ def orphaned_server(home: Path | None = None) -> dict[str, Any] | None:
     if is_owner_alive(owner):
         return None  # a live `mp` is mid-summarize; its own close() will reap this
     return marker
-
-
-def reap_orphan(home: Path | None = None) -> dict[str, Any] | None:
-    """Kill an orphaned server and clear its marker. Returns the reaped marker,
-    or None when there was nothing to reap.
-
-    `orphaned_server` decides *whether* it is ours to kill (live server, dead
-    owner); `terminate_server` does the killing, shared with the LOCAL11
-    identity-mismatch replacement.
-    """
-    marker = orphaned_server(home)
-    if marker is None:
-        return None
-    pid = int(marker["pid"])
-    log.warning("reaping orphaned mlx_lm.server (pid=%s, model=%s)", pid, marker.get("model"))
-    terminate_server(pid, home)
-    return marker

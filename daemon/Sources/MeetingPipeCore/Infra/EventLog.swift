@@ -12,6 +12,13 @@ public final class NoopEventLog: EventLog {
 }
 
 /// Thread-safe in-memory recorder for tests that assert lifecycle/gate events.
+///
+/// It ships in Core, a production target, on purpose: both test targets use it
+/// (`MeetingPipeCoreTests` throughout the signal and gate suites, `MeetingPipeTests`
+/// in `MeetingAXWindowWatcherTests`), and two SPM test targets cannot share a source
+/// file. Moving it into one tree would mean either a copy that drifts or a third
+/// target existing only to hold this class. It is a deliberate cross-target test
+/// seam, not something a dead-code sweep should reclaim.
 public final class RecordingEventLog: EventLog {
     public struct Entry: Equatable {
         public let category: String

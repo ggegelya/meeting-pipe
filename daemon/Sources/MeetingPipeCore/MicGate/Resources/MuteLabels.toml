@@ -13,9 +13,13 @@
 # Coverage: Teams, Zoom, Slack, Webex in en, de, es, fr, ja, pt, ru, uk.
 # (en/de/es/fr/ja/pt/ru shipped 2026-05-17 alongside MicGate; uk added
 # 2026-05-18 to cover the primary dogfood user's locale.) Best-effort
-# labels from public documentation and live AX scrapes;
-# MuteLabelsValidator runs in CI against installed apps in each locale
-# and flags drift for TOML updates.
+# labels from public documentation and live AX scrapes.
+#
+# Guard: this file is loaded and checked by the unit tests
+# (MuteLabelsValidatorTests, MuteLabelsLoaderTests), which run on every CI
+# push. Nothing scrapes installed apps automatically, so a vendor renaming
+# a button is found by a dogfood meeting, not by CI; the fix is a label
+# added here.
 
 # ===== Teams =====
 

@@ -1,6 +1,11 @@
 import XCTest
 @testable import MeetingPipeCore
 
+/// The drift guard for `MuteLabels.toml`, run by `swift test` on every CI push.
+/// `MuteLabelsLoader.loadDefault()` is deliberate in three of the four cases: it
+/// reads the catalogue that actually ships in the `MeetingPipeCore` bundle, so an
+/// emptied, malformed, or Teams-en-less TOML fails here. Swap it for a fixture and
+/// the file this suite exists to protect stops being checked at all.
 final class MuteLabelsValidatorTests: XCTestCase {
 
     func test_clean_report_when_every_probe_finds_a_known_label() throws {

@@ -25,18 +25,18 @@ descending confidence:
 Two dead ends, recorded so nobody re-walks them. `Path.resolve()` does not reveal
 Desktop & Documents sync: macOS leaves `~/Documents` at its own path and symlinks
 `~/Library/Mobile Documents/com~apple~CloudDocs/Documents` *back to it*, so the
-resolution goes the wrong way. And `MobileMeAccounts.plist`'s `MOBILE_DOCUMENTS`
-service being enabled means iCloud *Drive* is on, not Desktop & Documents; keying
-on it flags every Mac with iCloud Drive. The service that governs Desktop &
-Documents is `CLOUDDESKTOP`, which is consulted only as a last-resort corroborator
-because its shape has changed across macOS releases (`Enabled: True` on older
-systems, `status: "active"` on macOS 26).
+resolution goes the wrong way. And `MobileMeAccounts.plist` is not consulted at
+all: its `MOBILE_DOCUMENTS` service being enabled means iCloud *Drive* is on, not
+Desktop & Documents, so keying on it flags every Mac with iCloud Drive, and the
+service that does govern Desktop & Documents, `CLOUDDESKTOP`, has changed shape
+across macOS releases (`Enabled: True` on older systems, `status: "active"` on
+macOS 26). Signal 3 above, the `com.apple.icloud.desktop` xattr, answers the same
+question off the filesystem, which is where the library actually lives.
 """
 from __future__ import annotations
 
 import ctypes
 import ctypes.util
-import plistlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -104,27 +104,6 @@ def _listxattr(path: Path) -> set[str]:
         return {name.decode() for name in buf.raw[:size].split(b"\0") if name}
     except Exception:  # noqa: BLE001 - a detector must never be the thing that crashes doctor
         return set()
-
-
-def icloud_desktop_sync_enabled(home: Path | None = None) -> bool:
-    """Does `MobileMeAccounts.plist` say Desktop & Documents sync is on?
-
-    Corroboration only. `CLOUDDESKTOP` reports `Enabled: True` on older macOS and
-    `status: "active"` on macOS 26, so both shapes are accepted; an absent or
-    unreadable plist reads as off.
-    """
-    plist = (home or Path.home()) / "Library" / "Preferences" / "MobileMeAccounts.plist"
-    try:
-        data = plistlib.loads(plist.read_bytes())
-    except Exception:  # noqa: BLE001 - missing, unreadable, or a shape we don't know
-        return False
-    for account in data.get("Accounts", []):
-        for service in account.get("Services", []):
-            if service.get("Name") != "CLOUDDESKTOP":
-                continue
-            if service.get("Enabled") is True or service.get("status") == "active":
-                return True
-    return False
 
 
 def _cloud_storage_provider(directory: Path) -> str | None:

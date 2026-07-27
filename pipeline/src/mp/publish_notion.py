@@ -557,22 +557,6 @@ def _bullet(text: str) -> dict:
     }
 
 
-def _numbered(text: str) -> dict:
-    return {
-        "object": "block",
-        "type": "numbered_list_item",
-        "numbered_list_item": {"rich_text": [_text(text)]},
-    }
-
-
-def _todo(text: str) -> dict:
-    return {
-        "object": "block",
-        "type": "to_do",
-        "to_do": {"rich_text": [_text(text)], "checked": False},
-    }
-
-
 def _text(content: str, *, bold: bool = False, color: str = "default") -> dict:
     # Notion caps a single rich_text run at 2000 chars. We rely on the caller
     # to feed short bullets; long transcripts go through _transcript_toggle.

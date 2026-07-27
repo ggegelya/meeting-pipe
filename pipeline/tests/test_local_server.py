@@ -52,7 +52,6 @@ def test_write_marker_round_trips_and_is_owner_readable_only(tmp_path: Path) -> 
 
 def test_no_marker_is_not_an_orphan(tmp_path: Path) -> None:
     assert local_server.orphaned_server(tmp_path) is None
-    assert local_server.reap_orphan(tmp_path) is None
 
 
 def test_live_owner_means_not_an_orphan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -118,7 +117,7 @@ def test_marker_without_pids_is_cleared(tmp_path: Path) -> None:
     assert not local_server.marker_path(tmp_path).exists()
 
 
-def test_reap_orphan_signals_the_group_then_clears_the_marker(
+def test_terminate_server_signals_the_group_then_clears_the_marker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write(tmp_path)
@@ -135,13 +134,12 @@ def test_reap_orphan_signals_the_group_then_clears_the_marker(
     monkeypatch.setattr(local_server.os, "killpg", _killpg)
     monkeypatch.setattr(local_server.time, "sleep", lambda _s: None)
 
-    reaped = local_server.reap_orphan(tmp_path)
-    assert reaped is not None and reaped["pid"] == 4242
+    assert local_server.terminate_server(4242, tmp_path) is True
     assert signalled == [(4242, local_server.signal.SIGTERM)]
     assert not local_server.marker_path(tmp_path).exists()
 
 
-def test_reap_orphan_escalates_to_sigkill_when_sigterm_is_ignored(
+def test_terminate_server_escalates_to_sigkill_when_sigterm_is_ignored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write(tmp_path)
@@ -151,7 +149,7 @@ def test_reap_orphan_escalates_to_sigkill_when_sigterm_is_ignored(
     monkeypatch.setattr(local_server.os, "killpg", lambda pgid, sig: signalled.append(sig))
     monkeypatch.setattr(local_server.time, "sleep", lambda _s: None)
 
-    local_server.reap_orphan(tmp_path)
+    local_server.terminate_server(4242, tmp_path)
     assert signalled == [local_server.signal.SIGTERM, local_server.signal.SIGKILL]
     assert not local_server.marker_path(tmp_path).exists()
 

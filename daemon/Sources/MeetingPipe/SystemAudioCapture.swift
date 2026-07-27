@@ -224,13 +224,10 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
 
     enum CaptureError: Error, LocalizedError {
         case noDisplay
-        case bufferConversionFailed
         var errorDescription: String? {
             switch self {
             case .noDisplay:
                 return "No display available for system-audio capture (impossible on a Mac, but not crashing)"
-            case .bufferConversionFailed:
-                return "Could not convert CMSampleBuffer to AVAudioPCMBuffer"
             }
         }
     }

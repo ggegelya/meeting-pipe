@@ -1,6 +1,9 @@
 import Foundation
+import MeetingPipeCore
 
-/// CI validator for `MuteLabels.toml`. Scrapes each app's AX subtree per locale and asserts at least one TOML label per category resolves; label drift (vendor renames a button) fails the job. Probe is injected for unit-testability without live AX. API surface landed in step 2; CI driver with remaining locales lands in step 6.
+/// Drift checker for `MuteLabels.toml`, and the engine of `MuteLabelsValidatorTests`. Given a set of probes (one per app + locale, each returning that app's recognised AX labels), it asserts at least one TOML label resolves, so a vendor renaming a button surfaces as a finding rather than as a mic gate that silently stops recognising mute.
+///
+/// It lives in the test target because that is the only thing that runs it. There is no live-AX driver and never has been: the real guard is `swift test` on every CI push, where the tests feed synthetic scrapes against the *bundled* catalogue (`MuteLabelsLoader.loadDefault()`), which is what makes a malformed or emptied `MuteLabels.toml` fail the suite. Scraping installed apps in eight locales would need a machine with Teams, Zoom, Webex, and Slack installed in each; that is not something this repo has.
 public final class MuteLabelsValidator {
 
     public struct Probe {
