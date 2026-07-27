@@ -9,9 +9,9 @@ summary by calling the `emit_meeting_summary` tool exactly once.
 
 {summary_language_directive}
 
-When you write in a non-English language, all string fields — `title`, the `text` of
+When you write in a non-English language, all string fields (`title`, the `text` of
 every entry in `summary` / `decisions` / `questions`, and every `task` field on
-`actions` — must be in that same language. The exceptions are proper nouns (people,
+`actions`) must be in that same language. The exceptions are proper nouns (people,
 products, code identifiers) and structured fields (`owner` names as written in the
 transcript, `due` dates in ISO 8601, `confidence` enum values, `detected_language`
 ISO code). Evidence quotes are also an exception, and an important one: a quote is a
