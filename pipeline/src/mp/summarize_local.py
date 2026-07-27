@@ -52,7 +52,7 @@ from pydantic import ValidationError
 
 from . import egress_guard, local_server
 from .chunking import chunked_windows
-from .json_extract import largest_balanced_json_object
+from .json_extract import largest_balanced_json_object, repair_missing_commas
 from .prefetch_model import model_is_cached
 from .prompt_safety import wrap_untrusted
 from .schemas import MeetingSummary, SUMMARY_TOOL
@@ -96,6 +96,10 @@ _MAP_OVERLAP_CHARS = 200
 # Partial summaries merged per reduce call, so the reduce input also stays under the
 # budget. Bounded below at 2 so the reduce always makes progress toward one summary.
 _REDUCE_BATCH = 4
+# Candidate layers `_extract_summary` walks: raw, de-fenced, balanced scan, and the
+# lenient comma repair. Named so the error message and the docstring cannot drift
+# from the list (the message read "3 layers" for the whole life of layer 4's absence).
+_EXTRACT_LAYERS = 4
 
 
 def scaled_request_timeout(base_sec: float, max_tokens: int) -> float:
@@ -201,6 +205,41 @@ def compose_user_message(transcript: str) -> str:
         "Summarize this meeting. Reply with ONLY the JSON object described "
         "in the system message.\n\n" + wrap_untrusted(transcript)
     )
+
+
+def repair_messages(prior_text: str, error_detail: str) -> list[dict[str, str]]:
+    """A FRESH two-turn conversation asking the model to repair its own reply.
+
+    Deliberately not the failed conversation with the bad reply and a correction
+    appended, which is the obvious shape and does not work here: mlx-lm 0.31.3
+    reuses the cached prompt prefix, so the replay came back byte-identical on
+    every one of six measured runs, burning a ~40s generation to change nothing.
+    A conversation that shares no prefix with the failed one generates afresh and
+    repairs the JSON (measured 2026-07-27, the run that lost a meeting).
+
+    Module-level for the same reason as `augment_with_schema`: the exact turns
+    the server sees are worth being able to build and inspect from outside the
+    client. `error_detail` carries the real parser or validator complaint, which
+    is what makes the ask actionable rather than "it did not work".
+    """
+    schema = json.dumps(SUMMARY_TOOL["input_schema"], indent=2)
+    system = (
+        "You repair a malformed JSON object so that it parses and validates"
+        " against the schema below. Preserve the content you are given and change"
+        " only what it takes to make it valid: do not re-summarize, do not"
+        " editorialize, do not drop sections. Reply with ONLY the corrected JSON"
+        " object: no prose, no Markdown fences, no commentary.\n\n"
+        f"```json-schema\n{schema}\n```"
+    )
+    # The reply is transcript-derived, so it stays inside the untrusted fence
+    # (TECH-SEC6) exactly like the transcript that produced it.
+    user = (
+        "This was meant to be a single JSON object matching the schema, but it"
+        f" could not be read:\n\n{error_detail}\n\nHere is the text to repair."
+        " Return the corrected object and nothing else.\n\n"
+        + wrap_untrusted(prior_text)
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 def build_server_command(
@@ -461,23 +500,9 @@ class LocalSummaryClient:
         try:
             return self._extract_summary(first_text), first_text
         except LocalSummaryError as e:
-            log.warning("attempt 1 failed schema validation; replaying with correction")
-            correction_messages = messages + [
-                {"role": "assistant", "content": first_text},
-                {
-                    "role": "user",
-                    "content": (
-                        "Your previous reply did not parse as a JSON object that"
-                        " validates against the schema. Error:\n\n"
-                        f"{e}\n\n"
-                        "Reply with ONLY a valid JSON object that matches the"
-                        " schema in the system message. No prose, no Markdown"
-                        " fences, no commentary."
-                    ),
-                },
-            ]
+            log.warning("attempt 1 failed schema validation; replaying with correction: %s", e)
             second_text = self._chat_completion(
-                messages=correction_messages, max_tokens=max_tokens
+                messages=repair_messages(first_text, str(e)), max_tokens=max_tokens
             )
             return self._extract_summary(second_text), second_text
 
@@ -503,6 +528,13 @@ class LocalSummaryClient:
             "replaying with a language directive",
             diverging, target,
         )
+        # KNOWN WEAK, left as-is deliberately: this is the same append-to-the-failed
+        # conversation shape that `repair_messages` had to abandon, because mlx-lm
+        # 0.31.3 replays the cached prefix and returns the identical reply. That was
+        # measured for the schema repair (6/6 byte-identical), NOT for this path, and
+        # a language correction genuinely needs the transcript in context, so the
+        # rewrite is not the same one-liner. Flagged here rather than guessed at;
+        # it wants its own measurement before anyone changes it.
         retry_messages = base_messages + [
             {"role": "assistant", "content": prior_text},
             {"role": "user", "content": language_correction_message(target)},
@@ -868,24 +900,37 @@ class LocalSummaryClient:
     # ----- Output extraction -----
 
     def _extract_summary(self, text: str) -> MeetingSummary:
-        """3-layer fallback. Each layer returns a MeetingSummary or
-        raises; only the final layer's failure propagates out."""
-        # Layer 1: parse the response body verbatim as JSON.
+        """4-layer fallback. Each layer returns a MeetingSummary or
+        raises; only the final layer's failure propagates out.
+
+        The raised error names the layer that got furthest and quotes the real
+        parser or validator complaint, because that string is what the repair
+        replay hands the model. It used to say only "did not contain a
+        schema-valid JSON object", which told the model nothing it could act on.
+        """
+        best: str = "no JSON object found in the reply"
         for layer, candidate in self._candidates(text):
             try:
                 obj = json.loads(candidate)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as je:
+                # A syntax error beats "no JSON found" as a diagnosis, but a
+                # schema violation (below) beats both: it means we got as far as
+                # a parsed object.
+                if best.startswith("no JSON"):
+                    best = f"layer {layer}: invalid JSON: {je}"
                 continue
             try:
                 summary = MeetingSummary.model_validate(obj)
             except ValidationError as ve:
                 log.warning("layer %d schema violation: %s", layer, ve)
+                best = f"layer {layer}: parsed as JSON but failed the schema: {ve}"
                 continue
             if layer > 1:
                 log.info("recovered MeetingSummary via layer %d fallback", layer)
             return summary
         raise LocalSummaryError(
-            "local model output did not contain a schema-valid JSON object after 3 layers"
+            f"local model output did not contain a schema-valid JSON object "
+            f"after {_EXTRACT_LAYERS} layers ({best})"
         )
 
     def _candidates(self, text: str) -> list[tuple[int, str]]:
@@ -904,6 +949,14 @@ class LocalSummaryClient:
         biggest = largest_balanced_json_object(text)
         if biggest is not None:
             out.append((3, biggest))
+        # Layer 4: lenient repair of the best-formed candidate so far. Layers 1-3
+        # all end in a strict `json.loads`, and layer 3 counts braces only, so a
+        # single comma the model forgot between two members defeats all three and
+        # loses the meeting (2026-07-27). Runs last: a reply that parses strictly
+        # is never rewritten.
+        repaired = repair_missing_commas(out[-1][1])
+        if repaired is not None:
+            out.append((4, repaired))
         return out
 
 

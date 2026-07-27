@@ -14,6 +14,14 @@ implementation rather than each carrying a private copy (the pipeline's
 `parse_summary` sits here for the same reason (ARCH5): both PROV1 providers had
 a private copy of the scan-then-validate step, differing only in which provider
 error they raise on exhaustion, so the recovery policy could drift per provider.
+
+`repair_missing_commas` is the lenient last resort, and it is load-bearing for
+the local backend specifically: mlx-lm 0.31.3 parses no `response_format` at all
+(measured under LOCAL13), so the model decodes unconstrained and nothing but
+prompt discipline keeps its output parseable. A 7B dropping one comma between
+`"text"` and `"evidence"` cost a whole meeting on 2026-07-27, because every
+recovery step above it ends in a strict `json.loads` and the balanced scan
+counts braces only, so it returns a span that is balanced but not parseable.
 """
 from __future__ import annotations
 
@@ -66,6 +74,81 @@ def largest_balanced_json_object(text: str) -> str | None:
     if best is None:
         return None
     return text[best[1]:best[2]]
+
+
+# Chars that can end a JSON value: a closing quote/brace/bracket, a digit, or the
+# last letter of `true` / `false` / `null`.
+_VALUE_END = set('"}]0123456789elu')
+# Chars that can start the next member of an object or array.
+_MEMBER_START = set('"{[-0123456789tfn')
+
+
+def repair_missing_commas(text: str) -> str | None:
+    """Insert commas a model forgot between members, or None if none were missing.
+
+    Walks `text` with the same string/escape awareness as the balanced scan, so
+    punctuation inside a string literal is never touched. At depth >= 1, a member
+    can only start where the last significant character was a separator (`,` `:`)
+    or an opener (`{` `[`); when it instead follows the end of a value, the model
+    dropped a comma and one goes in.
+
+    Deliberately narrow. It fires only after a strict parse has already failed,
+    so the worst case is a candidate that still does not parse, never a mangled
+    object that does. Trailing commas are the mirror defect and are NOT handled;
+    add them the same way if one ever shows up in a real reply.
+    """
+    out: list[str] = []
+    last = ""  # last significant char seen outside a string
+    depth = 0
+    in_str = False
+    escape = False
+    # Inside a bare literal (number / true / false / null). Load-bearing: without
+    # it the `-` of an exponent like `1e-5` reads as a member start following the
+    # value-ending `e`, and the repair would corrupt a number that parsed fine.
+    in_literal = False
+    inserted = 0
+    for ch in text:
+        if in_str:
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+                last = '"'
+            continue
+        if ch.isspace():
+            in_literal = False
+            out.append(ch)
+            continue
+        if in_literal and ch not in '{}[],:"':
+            out.append(ch)
+            last = ch
+            continue
+        if depth >= 1 and ch in _MEMBER_START and last in _VALUE_END:
+            # `last` is the end of a value and this starts another member with no
+            # separator between them: exactly the comma the model dropped.
+            out.append(",")
+            inserted += 1
+        out.append(ch)
+        if ch == '"':
+            in_str = True
+            in_literal = False
+        elif ch in "{[":
+            depth += 1
+            in_literal = False
+        elif ch in "}]":
+            depth = max(0, depth - 1)
+            in_literal = False
+        elif ch in ",:":
+            in_literal = False
+        else:
+            in_literal = True
+        last = ch
+    if not inserted:
+        return None
+    return "".join(out)
 
 
 def parse_summary(text: str, *, error: type[Exception], message: str) -> MeetingSummary:

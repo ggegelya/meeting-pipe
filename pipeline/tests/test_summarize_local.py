@@ -20,12 +20,14 @@ from typing import Callable
 import pytest
 
 from mp import egress_guard
+from mp.prompt_safety import wrap_untrusted
 from mp.summarize_local import (
     DEFAULT_REQUEST_TIMEOUT_SEC,
     LocalSummaryClient,
     LocalSummaryError,
     _largest_balanced_json_object,
     build_server_command,
+    repair_messages,
     scaled_request_timeout,
 )
 
@@ -230,6 +232,104 @@ def test_summarize_corrective_retry_recovers(
         )
     assert s.title == "Standup"
     assert call_count["n"] == 2, "expected exactly one corrective retry"
+
+
+def test_summarize_layer4_repairs_a_dropped_comma(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    """The 2026-07-27 failure: the local model emits a well-formed summary except
+    for one missing comma between two members. Layers 1-3 all end in a strict
+    `json.loads` and layer 3 counts braces only, so before layer 4 existed this
+    cost the whole meeting. It must now recover on the FIRST attempt, without
+    spending a repair generation."""
+    host, port, server = fake_server
+    good = json.dumps(_valid_summary_obj(), indent=2)
+    # Drop exactly one comma, the way the model did: after the `summary` array,
+    # right before the next key.
+    broken = good.replace('],\n  "decisions"', ']\n  "decisions"', 1)
+    assert broken != good, "the fixture did not actually drop a comma"
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(broken)  # the whole point: strict parsing must fail on this
+    calls = {"n": 0}
+
+    def builder(_: dict) -> dict:
+        calls["n"] += 1
+        return {"choices": [{"message": {"content": "```json\n" + broken + "\n```"}}]}
+
+    server.builder = builder  # type: ignore[attr-defined]
+    with LocalSummaryClient(host=host, port=port, manage_subprocess=False) as c:
+        s = c.summarize(
+            system_prompt="Summarize.",
+            transcript="A: hello.",
+            model="ignored",
+            max_tokens=512,
+        )
+    assert s.title == "Standup"
+    assert calls["n"] == 1, "layer 4 should recover without a repair generation"
+
+
+def test_extract_error_carries_the_real_parser_complaint(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    """The message is what the repair replay hands the model, so "it did not work"
+    is not good enough: it has to name what actually broke."""
+    host, port, server = fake_server
+    with LocalSummaryClient(host=host, port=port, manage_subprocess=False) as c:
+        with pytest.raises(LocalSummaryError) as syntax:
+            c._extract_summary('{"title": "x" "summary": [}')
+        with pytest.raises(LocalSummaryError) as schema:
+            c._extract_summary(json.dumps({"title": "only a title"}))
+    assert "invalid JSON" in str(syntax.value)
+    assert "failed the schema" in str(schema.value)
+    # The schema case must not be reported as a syntax error: it parsed.
+    assert "invalid JSON" not in str(schema.value)
+
+
+def test_repair_replay_does_not_reuse_the_failed_conversation(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    """mlx-lm 0.31.3 reuses the cached prompt prefix, so appending a correction to
+    the failed conversation returned byte-identical output on 6/6 measured runs.
+    The repair has to be a fresh conversation that shares no prefix with it."""
+    host, port, server = fake_server
+    payloads: list[dict] = []
+
+    def builder(payload: dict) -> dict:
+        payloads.append(payload)
+        if len(payloads) == 1:
+            # Unrepairable by layer 4: parses, but the schema rejects it.
+            return {"choices": [{"message": {"content": json.dumps({"title": "bad"})}}]}
+        return {"choices": [{"message": {"content": json.dumps(_valid_summary_obj())}}]}
+
+    server.builder = builder  # type: ignore[attr-defined]
+    with LocalSummaryClient(host=host, port=port, manage_subprocess=False) as c:
+        s = c.summarize(
+            system_prompt="MARKER-SYSTEM-PROMPT.",
+            transcript="A: hello.",
+            model="ignored",
+            max_tokens=512,
+        )
+    assert s.title == "Standup"
+    assert len(payloads) == 2, "expected exactly one repair generation"
+    repair = payloads[1]["messages"]
+    assert [m["role"] for m in repair] == ["system", "user"], (
+        "the repair must be a fresh conversation, not the failed one with turns appended"
+    )
+    assert "MARKER-SYSTEM-PROMPT" not in repair[0]["content"], (
+        "sharing the original system turn re-creates the cached prefix this avoids"
+    )
+    # It must still tell the model what was wrong, and hand it the text to fix.
+    assert "failed the schema" in repair[1]["content"]
+    assert '"title": "bad"' in repair[1]["content"]
+
+
+def test_repair_replay_fences_the_prior_reply_as_untrusted(
+    fake_server: tuple[str, int, ThreadingHTTPServer]
+) -> None:
+    """The reply is transcript-derived, so it stays inside the TECH-SEC6 fence
+    exactly like the transcript that produced it."""
+    msgs = repair_messages('{"title": "x"}', "layer 1: invalid JSON: whatever")
+    assert wrap_untrusted('{"title": "x"}') in msgs[1]["content"]
 
 
 def test_summarize_sends_response_format_hint(
