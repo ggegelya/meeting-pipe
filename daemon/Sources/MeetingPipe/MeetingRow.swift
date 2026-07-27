@@ -63,7 +63,10 @@ struct MeetingRow: View, Equatable {
                     if meeting.hasCorrections { editedMarker }
                 }
                 Spacer(minLength: 8)
+                // The cluster carries the row's only controls, so it wins the
+                // width contest: the title truncates before a button does.
                 trailingStatusCluster
+                    .layoutPriority(1)
             }
             HStack(spacing: 6) {
                 captionContent
@@ -343,16 +346,23 @@ struct MeetingRow: View, Equatable {
                 MPStatusPill(kind: .failed, label: "Stalled")
             } else {
                 ProgressView().controlSize(.small)
+                // `lineLimit` is what pins this to one line like MPStatusPill
+                // (TECH-DSN14); at narrow widths "Summarizing ..." otherwise
+                // wraps to ~3 lines. It used to carry `fixedSize` as well, which
+                // held the label at its full width and left the Cancel button as
+                // the only thing the HStack could compress, so a narrow list
+                // column rendered Cancel as an empty capsule. Prose truncates,
+                // controls do not; the full line stays reachable on hover.
                 Text(processing.label)
                     .font(.mpTextXS.monospacedDigit())
                     .foregroundStyle(Color(MPColors.fgSubtle))
-                    // Pin to one line like MPStatusPill (TECH-DSN14); at narrow
-                    // widths "Summarizing ..." otherwise wraps to ~3 lines.
                     .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+                    .truncationMode(.tail)
+                    .help(processing.label)
             }
             Button("Cancel") { onCancelProcessing() }
                 .controlSize(.small)
+                .fixedSize()
                 .accessibilityLabel("Cancel processing")
         }
     }
@@ -362,13 +372,18 @@ struct MeetingRow: View, Equatable {
     /// finished meeting. Remove drops it from the queue; nothing was spawned.
     private func queuedIndicator(_ job: QueuedJob) -> some View {
         HStack(spacing: 6) {
+            // Same width contract as `processingIndicator`: the label yields,
+            // the control does not. This one truncates sooner, since "Queued: "
+            // prefixes a job label that already names an engine.
             Text(processing.label)
                 .font(.mpTextXS)
                 .foregroundStyle(Color(MPColors.fgMuted))
                 .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+                .truncationMode(.tail)
+                .help(processing.label)
             Button("Remove") { onDequeueProcessing(job.id) }
                 .controlSize(.small)
+                .fixedSize()
                 .accessibilityLabel("Remove \(job.label) from the queue")
         }
         .help("Waiting for the current job to finish.")

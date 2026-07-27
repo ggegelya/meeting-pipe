@@ -38,17 +38,25 @@ extension MeetingDetailView {
                 } else if processing.canCancel {
                     ProgressView().controlSize(.small)
                 }
+                // The label yields width, the control does not (same contract as
+                // MeetingRow's processing cluster). Without `fixedSize` on the
+                // button, a narrow detail pane compresses its title instead of
+                // the prose and the control renders unlabelled.
                 Text(processing.label)
                     .font(.mpTextXS)
                     .foregroundStyle(Color(MPColors.fgSubtle))
                     .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(processing.label)
                 if processing.canCancel {
                     Button("Cancel") { libraryModel.cancelProcessing() }
                         .controlSize(.small)
+                        .fixedSize()
                         .accessibilityLabel("Cancel processing")
                 } else if let job = processing.queuedJob {
                     Button("Remove") { libraryModel.dequeueProcessing(id: job.id) }
                         .controlSize(.small)
+                        .fixedSize()
                         .accessibilityLabel("Remove \(job.label) from the queue")
                 }
             }
