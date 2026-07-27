@@ -183,6 +183,16 @@ jobs:
         run: uv python install 3.11
 
       - name: Install dev deps + editable package (no project deps)
+        # The two linters are pinned to the exact versions uv.lock resolves, so
+        # this job and the local `uv run --extra dev ruff/pyright` commands in
+        # CLAUDE.md run identical tooling. They were ranges (`ruff>=0.5.0`,
+        # `pyright>=1.1.400`), which meant CI floated to latest while the lock
+        # held a older version: ruff 0.16.0 shipped a wider default rule set and
+        # turned CI red with no repo change, and pyright can do the same with a
+        # new check. Upgrading a linter is now a deliberate commit that bumps
+        # both the lock and this pin, and lands its findings under review.
+        # The runtime deps stay ranges on purpose; they are exercised by the
+        # tests, not enforcing style on unrelated code.
         run: |
           uv venv --python 3.11
           uv pip install \
@@ -193,8 +203,8 @@ jobs:
             "numpy>=1.26" \
             "soundfile>=0.12.1" \
             "pytest>=8.0.0" \
-            "ruff>=0.5.0" \
-            "pyright>=1.1.400"
+            "ruff==0.15.12" \
+            "pyright==1.1.411"
           uv pip install -e . --no-deps
 
       - name: Lint

@@ -63,6 +63,22 @@ packages = ["src/mp"]
 line-length = 100
 target-version = "py311"
 
+# Spell the rule set out rather than inheriting ruff's default. These four are
+# what ruff defaulted to for its whole 0.x line, so this codifies the set this
+# repo has actually been enforcing, and changes nothing about what fails today.
+#
+# Made explicit because the implicit form broke CI with no change on our side:
+# ruff 0.16.0 widened its defaults to pull in UP / I / B / BLE / DTZ / SIM / PL
+# / ISC / FURB / ARG / TRY / RUF / PYI / N / C / S, and the `ruff>=0.5.0` the CI
+# job installs resolves to latest, so a push in 2026-07 hit 148 findings across
+# 30 rule families in code that had not been touched. uv.lock pins 0.15.12, so
+# `uv run --extra dev ruff` stayed green locally the whole time and the two
+# silently disagreed. Adopting a wider set is a deliberate commit, not something
+# an upstream release gets to do for us: several of those families (DTZ naive
+# datetimes, BLE blind excepts, S) are behaviour questions, not formatting.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 # TYPE1. Basic mode over src/ only: tests/ is full of deliberately-partial fakes
 # and would need its own pass. Ratcheting to strict is a later decision.
 #
