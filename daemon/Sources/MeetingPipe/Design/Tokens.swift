@@ -352,7 +352,25 @@ enum MPRadius {
     static let md: CGFloat = 14    // cards
     static let lg: CGFloat = 18    // panels / sheets, windows
     static let xl: CGFloat = 22    // large hero cards
-    static let full: CGFloat = 999 // pills, dots, capsule buttons
+    /// Pills, dots, capsule buttons. Safe as a `CALayer.cornerRadius`, which clamps
+    /// to half the SHORTER side. NOT safe as an `NSBezierPath` corner radius: see
+    /// `NSBezierPath.mpCapsule(in:)` for why, and use that instead.
+    static let full: CGFloat = 999
+}
+
+extension NSBezierPath {
+    /// Capsule path for `rect`: both radii at half the shorter side.
+    ///
+    /// `NSBezierPath(roundedRect:xRadius:yRadius:)` clamps xRadius to half the
+    /// WIDTH and yRadius to half the HEIGHT, independently. Handing it
+    /// `MPRadius.full` therefore draws an ellipse on any rect that is not square,
+    /// not a capsule: the prompt's 70x22 "Last time" button shipped with corners
+    /// reaching 15.7pt across and 4.9pt up. It only looked right on the chevron
+    /// beside it because that one happens to be 26x26.
+    static func mpCapsule(in rect: NSRect) -> NSBezierPath {
+        let radius = min(rect.width, rect.height) / 2
+        return NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+    }
 }
 
 /// Motion durations and easing, mirrors `--mp-dur-*` and `--mp-ease-out`.

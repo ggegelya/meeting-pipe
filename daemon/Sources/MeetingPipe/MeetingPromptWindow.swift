@@ -225,9 +225,8 @@ final class MeetingPromptWindow {
 
         // Workflow chip (TECH-B5): tap opens the override menu. Hidden when no workflow exists (rare: fresh install before migration, or store deleted by hand) so there is no noisy "(none)" pill.
         let chip = WorkflowChipView()
-        chip.onClick = { [weak self, weak bg] in
-            guard let self = self, let host = bg else { return }
-            self.showWorkflowMenu(from: host)
+        chip.onClick = { [weak self] in
+            self?.showWorkflowMenu()
         }
         bg.addSubview(chip)
         if let wf = currentWorkflow {
@@ -646,7 +645,7 @@ final class MeetingPromptWindow {
     }
 
     /// Present the workflow override menu under the chip. Each item carries the workflow id as `representedObject`.
-    fileprivate func showWorkflowMenu(from host: NSView) {
+    fileprivate func showWorkflowMenu() {
         guard let chip = workflowChip, !availableWorkflows.isEmpty else { return }
         let menu = NSMenu()
         for wf in availableWorkflows.sorted(by: { lhs, rhs in
@@ -665,8 +664,12 @@ final class MeetingPromptWindow {
             }
             menu.addItem(item)
         }
+        // Anchored on the chip, not on the panel behind it. The point is read in the
+        // coordinate space of the view passed as `in:`, so measuring it off the chip
+        // and then popping up in the panel put the menu at the panel's own left edge,
+        // over the app glyph, a long way from the control that opened it.
         let origin = NSPoint(x: 0, y: chip.bounds.height + 4)
-        menu.popUp(positioning: nil, at: origin, in: host)
+        menu.popUp(positioning: nil, at: origin, in: chip)
     }
 
     @objc private func menuPickWorkflow(_ sender: NSMenuItem) {
@@ -863,9 +866,9 @@ private final class ChevronMenuButton: NSButton {
         // Light HUD rests fill-less with a faint border so it stops reading as a box beside
         // Record; the filled box returns on hover. Dark HUD keeps the resting tint.
         let dark = effectiveAppearance.mpIsDark
-        // Capsule (DSN25): full radius clamps to half-height at 26pt, matching the
-        // ghost-capsule button language of Record (BYO) beside it.
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: MPRadius.full, yRadius: MPRadius.full)
+        // Capsule (DSN25), matching the ghost-capsule button language of Record (BYO)
+        // beside it. Correct here even at 26x26 square, where a capsule is a circle.
+        let path = NSBezierPath.mpCapsule(in: bounds.insetBy(dx: 1, dy: 1))
         if isHovered {
             MPColors.ink50.setFill()
             path.fill()
@@ -1025,8 +1028,7 @@ final class PromptGhostButton: NSControl {
 
     override func draw(_ dirtyRect: NSRect) {
         let dark = effectiveAppearance.mpIsDark
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
-                                xRadius: MPRadius.full, yRadius: MPRadius.full)
+        let path = NSBezierPath.mpCapsule(in: bounds.insetBy(dx: 0.5, dy: 0.5))
         if isOn || isHovered {
             (dark ? MPColors.bgRaised.withAlphaComponent(0.9) : MPColors.ink100).setFill()
             path.fill()

@@ -90,6 +90,64 @@ final class ControlKitTests: XCTestCase {
         XCTAssertEqual(button.layer?.cornerRadius, MPRadius.full) // capsule, not the old sm bezel
     }
 
+    // MARK: - Capsule path geometry
+
+    /// Corner extent of `path` measured from the rect's own corner, as (x, y).
+    /// A capsule's two are equal; an ellipse's are not.
+    private func cornerExtent(_ path: NSBezierPath, in rect: NSRect) -> (CGFloat, CGFloat) {
+        var pts = [NSPoint](repeating: .zero, count: 3)
+        var xs: [CGFloat] = [], ys: [CGFloat] = []
+        for i in 0..<path.elementCount {
+            let kind = path.element(at: i, associatedPoints: &pts)
+            for j in 0..<((kind == .curveTo) ? 3 : 1) {
+                xs.append(pts[j].x)
+                ys.append(pts[j].y)
+            }
+        }
+        let x = (xs.filter { $0 > rect.minX + 0.01 }.min() ?? rect.minX) - rect.minX
+        let y = (ys.filter { $0 > rect.minY + 0.01 }.min() ?? rect.minY) - rect.minY
+        return (x, y)
+    }
+
+    func test_mpCapsule_is_symmetric_on_a_wide_short_rect() {
+        // Regression: the prompt's "Last time" button drew via
+        // NSBezierPath(roundedRect:xRadius:yRadius:) with MPRadius.full. That
+        // initializer clamps xRadius to half the width and yRadius to half the
+        // height INDEPENDENTLY, so a 70x22 pill came out an ellipse.
+        let rect = NSRect(x: 0, y: 0, width: 70, height: 22)
+        let (x, y) = cornerExtent(.mpCapsule(in: rect), in: rect)
+        XCTAssertEqual(x, y, accuracy: 0.01, "a capsule's corner must be symmetric")
+
+        let (bx, by) = cornerExtent(
+            NSBezierPath(roundedRect: rect, xRadius: MPRadius.full, yRadius: MPRadius.full),
+            in: rect
+        )
+        XCTAssertGreaterThan(bx, by + 1, "the token-as-path form is the ellipse this replaces")
+    }
+
+    func test_mpCapsule_on_a_square_is_a_circle() {
+        // The chevron beside it is 26x26, where the buggy form happened to be right.
+        // Pin that the helper does not regress that case.
+        let rect = NSRect(x: 0, y: 0, width: 26, height: 26)
+        let (x, y) = cornerExtent(.mpCapsule(in: rect), in: rect)
+        XCTAssertEqual(x, y, accuracy: 0.01)
+    }
+
+    func test_promptGhostButton_draws_a_capsule_not_an_ellipse() {
+        // The user-visible half: the control's own bounds must produce a symmetric
+        // corner at the size it actually renders at in the prompt.
+        let button = PromptGhostButton(title: "Last time", target: nil, action: nil)
+        button.frame = NSRect(x: 0, y: 0, width: button.fittingWidth, height: 22)
+        button.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(button.bounds.width, button.bounds.height,
+                             "fixture must be wider than tall or it cannot catch the bug")
+        let inset = button.bounds.insetBy(dx: 0.5, dy: 0.5)
+        let (x, y) = cornerExtent(.mpCapsule(in: inset), in: inset)
+        XCTAssertEqual(x, y, accuracy: 0.01)
+        // And the layer radius it pairs with stays half-height.
+        XCTAssertEqual(button.layer?.cornerRadius, button.bounds.height / 2)
+    }
+
     // MARK: - SwiftUI capsule/icon button geometry (DSN28 Preferences port)
 
     func test_mpButtonMetrics_match_the_locked_small_buttons() {
