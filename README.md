@@ -319,6 +319,8 @@ The daemon ships with one **General** workflow seeded from your existing `summar
 
 Each workflow lives as one TOML file under `~/.config/meeting-pipe/workflows/<uuid>.toml`. Edit through the UI or hand-edit on disk; the file format is small enough to read.
 
+**Two workflows with the same name.** Nothing stops you, and renaming stays free, but a recorded meeting remembers its workflow by name rather than by id (so a library survives a move between Macs). Same-named workflows therefore share one rail scope: one of them collects every meeting and the others read zero however many they recorded. Both places you would notice say so, quietly and without blocking anything: the rail row picks up a `· duplicate name` caption whose tooltip spells out the consequence, and the editor shows the same sentence under the Name field as you type a name that is already taken. Nothing is ever merged or deleted for you, since duplicates usually differ in fields worth comparing before you pick one to keep.
+
 **Matching.** At the start of every recording the daemon resolves a workflow via `WorkflowMatcher`. Precedence, highest specificity first:
 
 1. Explicit override - you picked one from the prompt panel's chip dropdown.

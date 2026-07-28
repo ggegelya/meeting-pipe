@@ -84,6 +84,11 @@ struct OnboardingRootView: View {
     let onComplete: () -> Void
 
     @State private var step = 0
+    /// WF9: the workflow step's pick and the row it created, held here because the
+    /// `switch step` below rebuilds that step on every Back/Continue. Held in the step's
+    /// own `@State`, the created id died on each round trip and the next pick appended a
+    /// second workflow instead of swapping the first.
+    @State private var workflowChoice = OnboardingWorkflowChoice()
     private static let stepCount = 5
 
     var body: some View {
@@ -107,7 +112,8 @@ struct OnboardingRootView: View {
                 case 1: OnboardingStepPermissions()
                 case 2: OnboardingStepWorkflow(
                     workflowStore: deps.workflowStore,
-                    localModelPreflight: deps.localModelPreflight
+                    localModelPreflight: deps.localModelPreflight,
+                    choice: $workflowChoice
                 )
                 case 3: OnboardingStepPublishTarget(
                     store: deps.configStore,

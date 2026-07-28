@@ -2,6 +2,53 @@ import Combine
 import Foundation
 import TOMLKit
 
+/// WF9: which workflow names more than one workflow carries, and the copy the two
+/// surfaces that say so share.
+///
+/// Collisions matter because a meeting remembers its workflow by **name**, not by id
+/// (the meta sidecar persists the name for cross-machine portability, TECH-B4), so
+/// `LibraryScope.resolveWorkflow` and `ScopeCounts.build` both resolve with
+/// `first(where: { $0.name == name })`. Four workflows called "Client work" therefore
+/// collapse into one rail scope: one of them collects every meeting and the other
+/// three read zero however many they recorded, which no UI can explain.
+///
+/// Exact match, deliberately: that is what the two resolvers compare with, so a
+/// case-different name is genuinely a different scope and claiming otherwise would be
+/// the cue lying.
+enum WorkflowNameCollision {
+
+    /// Names carried by more than one workflow, sorted. Empty in the normal case.
+    static func duplicateNames(in workflows: [Workflow]) -> [String] {
+        var counts: [String: Int] = [:]
+        for w in workflows { counts[w.name, default: 0] += 1 }
+        return counts.filter { $0.value > 1 }.keys.sorted()
+    }
+
+    /// How many *other* workflows already answer to `name`. `excluding` is the row
+    /// being rendered or edited, so a workflow never collides with itself. Trims the
+    /// way `WorkflowEditor.save` trims, so the cue matches what a save would write.
+    static func others(named name: String, excluding id: UUID?, in workflows: [Workflow]) -> Int {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return 0 }
+        return workflows.filter { $0.name == trimmed && $0.id != id }.count
+    }
+
+    /// The rail row's inline caption, or nil when the name is unique.
+    static func railCaption(others: Int) -> String? {
+        others > 0 ? "· duplicate name" : nil
+    }
+
+    /// The one sentence both the rail tooltip and the editor's hint row use. Nil when
+    /// the name is unique, so a caller can render nothing rather than empty chrome.
+    static func explanation(name: String, others: Int) -> String? {
+        guard others > 0 else { return nil }
+        let lead = others == 1
+            ? "Another workflow is also called \"\(name)\"."
+            : "\(others) other workflows are also called \"\(name)\"."
+        return lead + " A meeting remembers its workflow by name, so they share one scope in the Library: one row collects every meeting and the rest read zero."
+    }
+}
+
 /// Observable owner of the on-disk workflows directory. One TOML file per workflow at `~/.config/meeting-pipe/workflows/<id>.toml`; UUID is stable across renames so override pins survive retitles. Saves write through a `.writing` sibling then `replaceItemAt` for crash safety. Mutations run on the main queue; disk writes hop to a private queue so the UI never blocks.
 final class WorkflowStore: ObservableObject {
 
@@ -46,6 +93,21 @@ final class WorkflowStore: ObservableObject {
         }
         loaded.sort(by: Self.orderComparator)
         workflows = loaded
+        reportDuplicateNames(loaded)
+    }
+
+    /// WF9: one event per load when the store holds same-named workflows. The store is
+    /// loaded once per launch, so this is a fingerprint of the debris on disk rather
+    /// than a stream. It never deletes or rewrites anything: which duplicate to keep is
+    /// a judgement about fields the owner may want to compare first.
+    private func reportDuplicateNames(_ loaded: [Workflow]) {
+        let duplicates = WorkflowNameCollision.duplicateNames(in: loaded)
+        guard !duplicates.isEmpty else { return }
+        Log.main.warning("WorkflowStore: duplicate workflow names on disk: \(duplicates.joined(separator: ", "))")
+        Log.event(category: "workflow", action: "duplicate_names", attributes: [
+            "names": duplicates,
+            "workflows": loaded.count,
+        ])
     }
 
     /// Insert or replace a workflow and persist to disk.
@@ -69,10 +131,21 @@ final class WorkflowStore: ObservableObject {
     }
 
     /// Remove the workflow with the given id. Returns false (no-op) when not found or when the workflow is the default.
+    ///
+    /// The default guard is real (the matcher has nothing to fall back to without one),
+    /// but the refusal used to be silent, and every caller wrote `_ = try? delete(...)`.
+    /// That is how onboarding's preset swap leaked a row per re-pick (WF9): it deleted
+    /// the workflow it had just created, which was by construction the default, then
+    /// created a replacement anyway. A caller that replaces something must reuse its id,
+    /// not lean on this returning true.
     @discardableResult
     func delete(id: UUID) throws -> Bool {
         guard let idx = workflows.firstIndex(where: { $0.id == id }) else { return false }
-        if workflows[idx].isDefault { return false }
+        if workflows[idx].isDefault {
+            let name = workflows[idx].name
+            Log.main.warning("WorkflowStore: refusing to delete the default workflow '\(name)'")
+            return false
+        }
         let url = directory.appendingPathComponent("\(id.uuidString).toml")
         workflows.remove(at: idx)
         let fm = FileManager.default

@@ -157,6 +157,14 @@ struct WorkflowEditor: View {
                     .frame(maxWidth: .infinity)
                     .onSubmit(save)
             }
+            // WF9: a quiet hint row under the field it is about, never a block.
+            // Renaming a workflow is common and refusing the save would be hostile, but
+            // the Library resolves a meeting's workflow by name, so a collision costs
+            // the owner a scope whose counts nothing in the UI can explain. Say so while
+            // it is still free to change.
+            if let hint = nameCollisionHint {
+                note(hint, color: .mpWarning)
+            }
             SettingsRow("Color") {
                 // Curated swatches only (TECH-DSN11): the popover is the sole
                 // colour control so workflows stay a tonal family. No free-hex
@@ -180,6 +188,19 @@ struct WorkflowEditor: View {
                     }
             }
         }
+    }
+
+    /// WF9: the live name field against every other workflow in the store. Reads the
+    /// typed value, not the saved one, so the hint appears as the collision is typed and
+    /// clears the moment it is edited away.
+    private var nameCollisionHint: String? {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        return WorkflowNameCollision.explanation(
+            name: trimmed,
+            others: WorkflowNameCollision.others(
+                named: trimmed, excluding: workflow.id, in: store.workflows
+            )
+        )
     }
 
     /// Keep the Emoji field to a single grapheme (TECH-WF2): the system palette

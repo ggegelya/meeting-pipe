@@ -73,7 +73,12 @@ struct LibrarySidebar: View {
                 ForEach(workflowStore.workflows.sorted(by: workflowOrder)) { wf in
                     WorkflowScopeRow(
                         workflow: wf,
-                        count: counts.workflowCount(for: wf.id)
+                        count: counts.workflowCount(for: wf.id),
+                        // WF9: how many other workflows answer to this name. Non-zero
+                        // means this row's count is not this workflow's meetings.
+                        sameNamed: WorkflowNameCollision.others(
+                            named: wf.name, excluding: wf.id, in: workflowStore.workflows
+                        )
                     )
                     .tag(LibraryScope.workflow(wf.id))
                     .listRowBackground(LibraryScope.workflow(wf.id) == selection ? Color.mpSelectionWash : Color.clear)
@@ -404,6 +409,8 @@ private struct SavedSearchScopeRow: View {
 private struct WorkflowScopeRow: View {
     let workflow: Workflow
     let count: Int
+    /// WF9: other workflows carrying this exact name. Zero in the normal case.
+    var sameNamed: Int = 0
 
     var body: some View {
         Label {
@@ -415,6 +422,15 @@ private struct WorkflowScopeRow: View {
                     Text(workflow.name)
                     if workflow.isDefault {
                         Text("· default")
+                            .font(.mpTextXS)
+                            .foregroundStyle(Color(MPColors.fgSubtle))
+                    }
+                    // WF9: a quiet fact, not an alarm. The row's count is resolved by
+                    // name, so a duplicate name means the number beside it belongs to
+                    // whichever same-named row won, and cleaning that up is the owner's
+                    // call (the duplicates may differ in fields worth comparing first).
+                    if let caption = WorkflowNameCollision.railCaption(others: sameNamed) {
+                        Text(caption)
                             .font(.mpTextXS)
                             .foregroundStyle(Color(MPColors.fgSubtle))
                     }
@@ -432,6 +448,15 @@ private struct WorkflowScopeRow: View {
                 .fill(swiftUIColor(forHex: workflow.color))
                 .frame(width: 8, height: 8)
         }
+        // WF9: the caption is two words, so the sentence explaining what a collision
+        // costs lives in the tooltip and, for VoiceOver, in the hint. Both resolve to
+        // an empty string when the name is unique, which reads as no tooltip / no hint.
+        .help(collisionExplanation ?? "")
+        .accessibilityHint(collisionExplanation ?? "")
+    }
+
+    private var collisionExplanation: String? {
+        WorkflowNameCollision.explanation(name: workflow.name, others: sameNamed)
     }
 }
 

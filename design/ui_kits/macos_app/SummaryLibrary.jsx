@@ -278,7 +278,11 @@ const SLScopeRow = ({ icon, label, count, active, attention }) => {
   );
 };
 
-const SLWorkflowRow = ({ dot, name, count = 0, isDefault }) => (
+// `duplicateName` marks a row whose name another workflow also carries (WF9). A
+// meeting remembers its workflow by name, so those rows share one scope and only one
+// of them collects the meetings. Deliberately a caption, not a colour or a badge: it
+// is a fact the owner should notice, not a failure, and nothing auto-resolves it.
+const SLWorkflowRow = ({ dot, name, count = 0, isDefault, duplicateName }) => (
   <div style={{
     display: "flex", alignItems: "center", gap: 8, height: 28, padding: "0 8px",
     borderRadius: "var(--mp-radius-sm)", cursor: "pointer", fontSize: "var(--mp-text-base)", color: "var(--mp-fg)",
@@ -286,6 +290,7 @@ const SLWorkflowRow = ({ dot, name, count = 0, isDefault }) => (
     <span style={{ width: 8, height: 8, borderRadius: "var(--mp-radius-full)", background: dot, flexShrink: 0 }}/>
     <span>{name}</span>
     {isDefault && <span style={{ fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-faint)" }}>· default</span>}
+    {duplicateName && <span style={{ fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-subtle)" }}>· duplicate name</span>}
     <span style={{ flex: 1 }}/>
     <span style={{ fontFamily: "var(--mp-font-mono)", fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-subtle)" }}>{count || ""}</span>
   </div>

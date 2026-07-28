@@ -1,5 +1,18 @@
 import SwiftUI
 
+/// What this step has done to the store so far: which preset is selected, and the id
+/// of the workflow it created for that pick (WF9).
+///
+/// It lives on `OnboardingRootView` rather than in this view's own `@State` because the
+/// navigator is a `switch step`, so stepping Back and Continue destroys and rebuilds the
+/// step. When the id died with it, the next pick created a *second* workflow with
+/// nothing even attempting to remove the first, which is one of the two ways the owner's
+/// store came to hold four "Client work" rows.
+struct OnboardingWorkflowChoice: Equatable {
+    var selected: OnboardingStepWorkflow.Preset?
+    var createdID: Workflow.ID?
+}
+
 /// Step 3 (TECH-UX1): pick a starting workflow. Choosing a preset creates a
 /// default workflow; re-choosing swaps it; "set up later" leaves none.
 struct OnboardingStepWorkflow: View {
@@ -8,8 +21,9 @@ struct OnboardingStepWorkflow: View {
     /// the first NDA meeting needs the MLX model cached. This lets the step offer
     /// the download inline instead of letting that meeting fail after the fact.
     var localModelPreflight: LocalModelPreflight? = nil
-    @State private var selected: Preset?
-    @State private var createdID: Workflow.ID?
+    /// WF9: owned by the navigator so a Back/Continue round trip cannot orphan the
+    /// workflow this step already created.
+    @Binding var choice: OnboardingWorkflowChoice
     /// UX21: the picked preset resolves to the local backend and the model is not
     /// cached. Cached in state (the probe is a filesystem scan) and refreshed when
     /// the selection changes.
@@ -59,7 +73,10 @@ struct OnboardingStepWorkflow: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onChange(of: selected) { _, _ in refreshLocalModelMissing() }
+        .onChange(of: choice.selected) { _, _ in refreshLocalModelMissing() }
+        // The step is rebuilt on every Back/Continue, so re-derive the download
+        // affordance from the choice the navigator kept rather than from a reset flag.
+        .onAppear(perform: refreshLocalModelMissing)
     }
 
     /// UX21: the inline model-download note under the preset cards. Shown when the
@@ -98,7 +115,7 @@ struct OnboardingStepWorkflow: View {
     /// UX21: recompute whether the download should be offered for the current
     /// selection. Only the on-device preset (Client work / NDA) resolves to local.
     private func refreshLocalModelMissing() {
-        let resolvesLocal = (selected == .client)
+        let resolvesLocal = (choice.selected == .client)
         localModelMissing = resolvesLocal && (localModelPreflight?.isModelMissing() ?? false)
     }
 
@@ -107,8 +124,8 @@ struct OnboardingStepWorkflow: View {
             choose(p)
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: selected == p ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(selected == p ? Color(MPColors.signal600) : Color(MPColors.fgMuted))
+                Image(systemName: choice.selected == p ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(choice.selected == p ? Color(MPColors.signal600) : Color(MPColors.fgMuted))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(p.title).font(.mpTextBase.weight(.medium))
                     Text(p.subtitle)
@@ -122,36 +139,59 @@ struct OnboardingStepWorkflow: View {
             .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(selected == p ? Color(MPColors.signal600) : Color(MPColors.border))
+                    .stroke(choice.selected == p ? Color(MPColors.signal600) : Color(MPColors.border))
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 
+    /// WF9: re-picking a preset now rewrites the row this step already created instead
+    /// of deleting it and making a new one. The old shape leaked a workflow on every
+    /// re-pick: each preset is created `isDefault: true`, and `WorkflowStore.delete`
+    /// refuses to remove the default, so the delete silently no-opped and the
+    /// replacement was appended beside its predecessor. Reusing the id makes the swap
+    /// an update, which cannot leak whatever `delete` decides.
     private func choose(_ p: Preset) {
-        selected = p
-        if let id = createdID {
-            _ = try? workflowStore.delete(id: id)
-            createdID = nil
+        choice.selected = p
+        guard p.isReal else {
+            // "I'll set up later": drop what this step made, if the store lets it go.
+            // Unchanged behaviour, including the refusal when it is the only default.
+            if let id = choice.createdID, (try? workflowStore.delete(id: id)) == true {
+                choice.createdID = nil
+            }
+            return
         }
-        guard p.isReal else { return }
+        let existing = choice.createdID.flatMap { workflowStore.workflow(id: $0) }
+        let workflow = Self.presetWorkflow(
+            p,
+            reusing: existing,
+            orderIfNew: workflowStore.workflows.count
+        )
+        try? workflowStore.upsert(workflow)
+        choice.createdID = workflow.id
+    }
+
+    /// The workflow a preset stands for. Pure and non-private so the leak that produced
+    /// the owner's four "Client work" rows is pinned by a test rather than by clicking
+    /// through onboarding. `reusing` is the row an earlier pick in this run created:
+    /// its id and its place in the rail are kept so a re-pick swaps rather than adds.
+    static func presetWorkflow(_ p: Preset, reusing existing: Workflow?, orderIfNew: Int) -> Workflow {
         var flags = WorkflowFlags()
         flags.ndaMode = (p == .client)
-        let workflow = Workflow(
+        return Workflow(
+            id: existing?.id ?? UUID(),
             name: p == .client ? "Client work" : p.title,
             color: color(p),
             sinks: [.filesystem],
             backend: p == .client ? .local : .anthropic,
             flags: flags,
             isDefault: true,
-            order: workflowStore.workflows.count
+            order: existing?.order ?? orderIfNew
         )
-        try? workflowStore.upsert(workflow)
-        createdID = workflow.id
     }
 
-    private func color(_ p: Preset) -> String {
+    private static func color(_ p: Preset) -> String {
         // Curated swatches (TECH-DSN11): Client moves off Pulse-coral (#E5484D,
         // reserved for the recording dot) to amber; the rest map onto the
         // on-brand tonal family instead of the old confetti seeds.

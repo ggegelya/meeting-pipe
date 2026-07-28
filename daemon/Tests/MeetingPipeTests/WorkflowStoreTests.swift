@@ -307,6 +307,109 @@ final class WorkflowStoreTests: XCTestCase {
         XCTAssertEqual(store.workflows[0].retention.policy, .keep)
     }
 
+    // MARK: WF9 duplicate names
+
+    func test_duplicate_names_are_derived_exactly_and_sorted() {
+        let workflows = [
+            Workflow(name: "Client work", order: 0),
+            Workflow(name: "Personal", order: 1),
+            Workflow(name: "Client work", order: 2),
+            Workflow(name: "client work", order: 3),   // different scope, not a collision
+            Workflow(name: "Personal", order: 4),
+        ]
+        // Sorted, and the case-different row is its own name: the two resolvers this
+        // cue speaks for (`LibraryScope.resolveWorkflow`, `ScopeCounts.build`) compare
+        // with ==, so claiming a case-different name collides would be a lie.
+        XCTAssertEqual(
+            WorkflowNameCollision.duplicateNames(in: workflows),
+            ["Client work", "Personal"]
+        )
+    }
+
+    func test_no_duplicate_names_reports_nothing() {
+        let workflows = [Workflow(name: "General", order: 0), Workflow(name: "Client work", order: 1)]
+        XCTAssertTrue(WorkflowNameCollision.duplicateNames(in: workflows).isEmpty)
+        XCTAssertNil(WorkflowNameCollision.railCaption(others: 0))
+        XCTAssertNil(WorkflowNameCollision.explanation(name: "General", others: 0))
+    }
+
+    func test_others_named_excludes_the_row_being_edited_and_trims() {
+        let mine = Workflow(name: "Client work", order: 0)
+        let theirs = Workflow(name: "Client work", order: 1)
+        let store = [mine, theirs]
+
+        // A workflow never collides with itself, so opening the editor on an existing
+        // row and saving it unchanged must not accuse it of anything.
+        XCTAssertEqual(WorkflowNameCollision.others(named: "Client work", excluding: mine.id, in: store), 1)
+        // A new row (no id yet) sees both.
+        XCTAssertEqual(WorkflowNameCollision.others(named: "Client work", excluding: nil, in: store), 2)
+        // Trimmed the way `WorkflowEditor.save` trims, so the hint matches what a save
+        // would actually write.
+        XCTAssertEqual(WorkflowNameCollision.others(named: "  Client work  ", excluding: mine.id, in: store), 1)
+        // An empty field is not a collision; it is an unfinished name.
+        XCTAssertEqual(WorkflowNameCollision.others(named: "   ", excluding: nil, in: store), 0)
+    }
+
+    func test_collision_copy_is_singular_and_plural_and_names_the_cost() {
+        XCTAssertEqual(
+            WorkflowNameCollision.explanation(name: "Client work", others: 1),
+            "Another workflow is also called \"Client work\". A meeting remembers its workflow by name, so they share one scope in the Library: one row collects every meeting and the rest read zero."
+        )
+        XCTAssertEqual(
+            WorkflowNameCollision.explanation(name: "Client work", others: 3),
+            "3 other workflows are also called \"Client work\". A meeting remembers its workflow by name, so they share one scope in the Library: one row collects every meeting and the rest read zero."
+        )
+        XCTAssertEqual(WorkflowNameCollision.railCaption(others: 1), "· duplicate name")
+    }
+
+    func test_load_emits_one_duplicate_names_event_for_a_colliding_store() throws {
+        // The acceptance fixture: a store holding two same-named workflows. The
+        // diagnostic is the only thing WF9 does automatically; nothing is deleted or
+        // rewritten, because which duplicate to keep is the owner's call.
+        let dir = try makeTempDir()
+        let logs = try makeTempDir()
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+
+        let store = WorkflowStore(directory: dir)
+        try store.upsert(Workflow(name: "Client work", isDefault: true, order: 0))
+        try store.upsert(Workflow(name: "Client work", order: 1))
+        try store.upsert(Workflow(name: "Personal", order: 2))
+
+        let reloaded = WorkflowStore(directory: dir)
+        reloaded.load()
+        XCTAssertEqual(reloaded.workflows.count, 3, "the diagnostic must not delete anything")
+
+        let rows = try eventRows(in: logs).filter { $0["action"] as? String == "duplicate_names" }
+        XCTAssertEqual(rows.count, 1, "one row per load, not one per duplicate")
+        XCTAssertEqual(rows[0]["category"] as? String, "workflow")
+        XCTAssertEqual(rows[0]["names"] as? [String], ["Client work"])
+        XCTAssertEqual(rows[0]["workflows"] as? Int, 3)
+    }
+
+    func test_load_stays_silent_when_every_name_is_unique() throws {
+        let dir = try makeTempDir()
+        let logs = try makeTempDir()
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+
+        let store = WorkflowStore(directory: dir)
+        try store.upsert(Workflow(name: "General", isDefault: true, order: 0))
+        try store.upsert(Workflow(name: "Client work", order: 1))
+
+        WorkflowStore(directory: dir).load()
+        let rows = try eventRows(in: logs).filter { $0["action"] as? String == "duplicate_names" }
+        XCTAssertTrue(rows.isEmpty)
+    }
+
+    private func eventRows(in logs: URL) throws -> [[String: Any]] {
+        let url = logs.appendingPathComponent("events.jsonl")
+        guard let raw = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return raw.split(separator: "\n").compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }
+    }
+
     func test_unreadable_workflow_file_is_skipped() throws {
         // A malformed TOML file under the workflows dir should not block
         // loading the rest of the set.
