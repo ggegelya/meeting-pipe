@@ -27,6 +27,16 @@ Failures from all three layers raise. The constrained-generation
 layer (outlines / lm-format-enforcer) is added in a separate change
 (see Roadmap P2.2).
 
+Shapes
+------
+The default shape is one call per meeting (windowed and reduced above
+``map_reduce_above_chars``). LOCAL14 adds a second, staged shape in
+``summarize_staged``: extract fact rows, compose each section from those rows,
+verify deterministically, one critic pass. It is reached only when the
+``MP_STAGED_LOCAL`` bake-off toggle is set, and it declines back to this module's
+single-pass path on a degenerate transcript. Which one becomes the default is an
+owner decision gated on the `mp dogfood` thresholds LOCAL14 pre-registers.
+
 Why a subprocess and not a library import: ``mlx_lm`` keeps the
 loaded model in process memory for the life of the interpreter. A
 short-lived CLI invocation pays a 10-30 s warm-up per call and a
@@ -50,7 +60,7 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
-from . import egress_guard, local_server
+from . import egress_guard, local_server, summarize_staged
 from .chunking import chunked_windows
 from .json_extract import largest_balanced_json_object, repair_missing_commas
 from .prefetch_model import model_is_cached
@@ -380,12 +390,28 @@ class LocalSummaryClient:
         summary's language disagrees with the expected one we reinforce the
         target and replay once. Each attempt's body still passes through the
         3-layer extraction fallback in ``_extract_summary``.
+
+        LOCAL14's staged pipeline sits in front of all of that, and only when its
+        bake-off toggle is set. It is checked before the map-reduce routing
+        because extraction *is* the map there, so a long transcript composes from
+        fact rows rather than from summaries of summaries. When it declines, the
+        routing below runs exactly as it always has.
         """
         with self._lock:
             self._ensure_running()
             self._reset_idle_timer()
 
             target = expected_summary_language(self._summary_language, transcript)
+            if summarize_staged.staged_enabled():
+                staged = summarize_staged.run_staged(
+                    chat=self._chat_completion,
+                    transcript=transcript,
+                    target=target,
+                    max_tokens=max_tokens,
+                    keep_warm=self._reset_idle_timer,
+                )
+                if staged is not None:
+                    return staged
             if self._map_reduce_above_chars and len(transcript) > self._map_reduce_above_chars:
                 # PIPE4: too long for one context; window -> map -> reduce.
                 return self._summarize_map_reduce(

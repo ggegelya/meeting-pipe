@@ -19,9 +19,16 @@ visible rather than merely quiet.
 This is `mp ask`'s `rag.verify_citations` applied one level down: same shape (the
 model cites, we check it against ground truth, unverifiable citations are
 dropped), different unit (a transcript segment instead of a meeting stem).
+
+`segments_from_timestamped_markdown` (LOCAL14) is the same check run one step
+earlier. The staged local pipeline verifies its anchors *before* it assembles a
+summary, and at that point it holds the timestamped transcript render rather than
+the `<stem>.json` segments, so it recovers segments from the render and calls the
+verifier below. One rule, one implementation, two call sites.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -91,6 +98,44 @@ def _prepare(segments: list[dict[str, Any]]) -> list[_Segment]:
         out.append(_Segment(start=start, end=end if end is not None else start, norm=normalize(text)))
     out.sort(key=lambda s: s.start)
     return out
+
+
+# One turn of `markdown.render_markdown(timestamps=True)`:
+# `[mm:ss] **Speaker**: text`, or `[h:mm:ss]` past the hour. The speaker block is
+# optional so a turn rendered without one still contributes its text.
+_TURN = re.compile(r"^\[(?P<t>\d+(?::\d{1,2})*)\]\s*(?:\*\*[^*]*\*\*:\s*)?(?P<text>.*)$")
+
+
+def segments_from_timestamped_markdown(markdown: str) -> list[dict[str, Any]]:
+    """Recover `verify`-shaped segments from a timestamped transcript render.
+
+    The staged local pipeline (LOCAL14) has the render, not the `<stem>.json` it
+    came from, so this reverses just enough of `render_markdown(timestamps=True)`
+    to let the same verifier run: one segment per marked turn, spanning until the
+    next one starts. Non-turn lines (the header, the language note, a recording-gap
+    divider) carry no marker and are skipped, so nothing anyone did not say ever
+    becomes a segment to match a quote against.
+
+    The `[mm:ss]` marker decodes through `Evidence`, which already accepts the
+    `mm:ss`, `h:mm:ss`, and bare-seconds forms, rather than a second parser here.
+    `model_validate` rather than the constructor because that tolerance lives in a
+    `mode="before"` validator, while the field itself is typed `float`.
+    """
+    rows: list[dict[str, Any]] = []
+    for line in markdown.splitlines():
+        m = _TURN.match(line.strip())
+        if m is None:
+            continue
+        text = m.group("text").strip()
+        if not text:
+            continue
+        start = Evidence.model_validate({"quote": "", "t": m.group("t")}).t
+        rows.append({"start": start, "text": text})
+    for i, row in enumerate(rows[:-1]):
+        # A turn runs until the next one begins; the last one is a point, which
+        # `_prepare` already handles by treating a missing end as the start.
+        row["end"] = rows[i + 1]["start"]
+    return rows
 
 
 def _as_float(value: Any) -> float | None:
