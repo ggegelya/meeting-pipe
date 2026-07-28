@@ -1,4 +1,9 @@
-# Copy to ~/.config/meeting-pipe/glossary.toml and edit.
+# Reference copy. The app edits the real file for you: Preferences > Pipeline >
+# Vocabulary lists the same term pairs, with a scope picker for the global table
+# and each workflow's own, and writes ~/.config/meeting-pipe/glossary.toml
+# preserving anything it does not model (including [fuzzy] below). Copy this file
+# there instead if you would rather hand-edit; both work, and the app leaves your
+# hand-written entries alone.
 #
 # Custom vocabulary (ASR1). The pipeline reads this at transcript finalize and
 # normalizes recurring proper nouns / code-switched terms BEFORE summarize and

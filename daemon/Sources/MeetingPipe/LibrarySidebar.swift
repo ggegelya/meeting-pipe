@@ -434,7 +434,20 @@ private struct WorkflowScopeRow: View {
                             .font(.mpTextXS)
                             .foregroundStyle(Color(MPColors.fgSubtle))
                     }
+                    // FEAT11: a workflow with no team context summarizes blind, and
+                    // nothing said so. Same subtle style as `default` on purpose: it is
+                    // an observation about the workflow, not a warning about the app.
+                    // Its tooltip is on the Text, not the row, so it does not fight the
+                    // row-level collision tooltip WF9 attaches below.
+                    if WorkflowContextHint.needsContext(workflow) {
+                        Text("· \(WorkflowContextHint.listMarker)")
+                            .font(.mpTextXS)
+                            .foregroundStyle(Color(MPColors.fgSubtle))
+                            .help(WorkflowContextHint.listMarkerHelp)
+                            .accessibilityLabel(WorkflowContextHint.listMarkerHelp)
+                    }
                 }
+                .lineLimit(1)
                 Spacer(minLength: 0)
                 Text(count.formatted(.number))
                     .font(.mpTextXS.monospacedDigit())

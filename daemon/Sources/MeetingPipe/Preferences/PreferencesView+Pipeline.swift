@@ -3,6 +3,15 @@ import SwiftUI
 
 struct PipelineSectionView: View {
     @ObservedObject var store: ConfigStore
+    /// FEAT11: the workflow names the Vocabulary editor offers as per-workflow scopes.
+    /// Passed as names rather than the store because `@ObservedObject` cannot be
+    /// optional, and the host (`PreferencesView`) already observes the store; empty in
+    /// headless hosts, which then get the global table only.
+    var workflowNames: [String] = []
+    /// FEAT11: the custom-vocabulary editor's backing store. Owned here rather than by
+    /// the Coordinator because nothing outside Preferences reads it; the pipeline reads
+    /// the file itself at finalize.
+    @StateObject private var glossary = GlossaryStore()
     @ObservedObject private var ui = UISettings.shared
     @State private var promptText: String?
     @State private var promptLoading = false
@@ -136,6 +145,12 @@ struct PipelineSectionView: View {
                     Text("Named voices are matched across meetings so a recurring person surfaces by name; the Library's People view lists each one's meetings and open actions. Renaming carries the new name into past meetings (reversibly, through the speaker-label overlay). Removing one stops it being auto-named; it does not change past transcripts.")
                 }
             }
+
+            // FEAT11: sits next to People deliberately. The two groups are the same
+            // idea a level apart, teaching the pipeline who this team is and what its
+            // words are, and both turn something the model has to guess into something
+            // written in the transcript.
+            VocabularySection(glossary: glossary, workflowNames: workflowNames)
 
             SettingsGroup("Summarization prompt") {
                 SettingsRow("System prompt", alignTop: true, showsDivider: false) {

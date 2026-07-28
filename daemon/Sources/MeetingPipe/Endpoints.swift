@@ -27,6 +27,12 @@ enum Endpoints {
         /// read-only for the Preferences ▸ Pipeline "People" list (FEAT3-MANAGE);
         /// every mutation goes through `mp roster`, so the matching logic keeps one owner.
         static let rosterRelative = ".config/meeting-pipe/roster.json"
+        /// Custom ASR vocabulary (ASR1), read by `mp.glossary` at finalize and edited
+        /// in-app by Preferences ▸ Pipeline ▸ Vocabulary (FEAT11). Unlike the roster
+        /// and the voiceprint the daemon writes this one, through `GlossaryStore`'s
+        /// TOML round-trip; the pipeline only reads it. `glossary.example.toml` at the
+        /// repo root stays the documented reference.
+        static let glossaryRelative = ".config/meeting-pipe/glossary.toml"
         /// Pipeline-owned last-backup marker (STOR2). The daemon reads it read-only
         /// for the Preferences ▸ Storage "last backup N days ago" line (STOR3);
         /// `mp backup` owns writing it.

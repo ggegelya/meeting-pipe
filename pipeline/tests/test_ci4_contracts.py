@@ -74,6 +74,15 @@ def test_overlay_fixture_matches_the_live_resolver(tmp_path: Path) -> None:
     )
 
 
+def test_glossary_fixture_matches_the_live_reader(tmp_path: Path) -> None:
+    assert _generator().gen_glossary(tmp_path) == _committed("glossary-golden.json"), (
+        "glossary.load_glossary changed; regenerate with "
+        "`cd pipeline && uv run python ../scripts/gen_contract_fixtures.py` and "
+        "mirror the change in Swift's GlossaryStore.resolvedTerms, which is what "
+        "the in-app Vocabulary editor writes against"
+    )
+
+
 # --------------------------------------------------------------------------
 # Guard the guards: a vacuously-empty fixture must not read as agreement
 # --------------------------------------------------------------------------

@@ -409,9 +409,24 @@ struct WorkflowEditor: View {
                         RoundedRectangle(cornerRadius: MPRadius.sm, style: .continuous)
                             .strokeBorder(Color(MPColors.border), lineWidth: 1)
                     )
+                    // FEAT11: TextEditor has no prompt, so an empty one used to be a
+                    // blank box next to a one-line footer, and both of the owner's NDA
+                    // workflows stayed empty. Overlay the guidance instead, hit-testing
+                    // off so a click still lands in the editor beneath it.
+                    .overlay(alignment: .topLeading) {
+                        if WorkflowContextHint.needsContext(prompt: contextPrompt) {
+                            Text(WorkflowContextHint.placeholder)
+                                .font(.mpTextXS.monospaced())
+                                .foregroundStyle(Color(MPColors.fgSubtle))
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 12)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
             }
         } footer: {
-            Text("Seasoning the LLM sees for every meeting matched by this workflow. Example: \"Confidential client meeting; redact names; FDA 21 CFR Part 11 context.\"")
+            Text("Seasoning the LLM sees for every meeting matched by this workflow. It costs the model nothing to be told what it would otherwise have to guess, and the smaller the backend, the more this is worth.")
         }
     }
 

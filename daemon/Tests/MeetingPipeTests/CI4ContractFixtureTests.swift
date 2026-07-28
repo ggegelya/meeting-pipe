@@ -176,6 +176,60 @@ final class CI4ContractFixtureTests: XCTestCase {
         }
     }
 
+    // MARK: - glossary.toml resolution (FEAT11)
+
+    /// The one fixture here whose Swift side also WRITES the file. `mp.glossary`
+    /// decides what a vocabulary entry actually does; the Vocabulary editor has to
+    /// agree with it exactly, or Preferences shows a substitution the pipeline never
+    /// makes and the user concludes the feature is broken rather than the merge rule.
+    func test_glossary_resolution_golden() throws {
+        let all = try cases("glossary-golden")
+        XCTAssertGreaterThanOrEqual(all.count, 10, "fixture went vacuous")
+
+        for c in all {
+            let name = c["name"] as? String ?? "?"
+            let toml = try XCTUnwrap(c["toml"] as? String, name)
+            let workflow = c["workflow"] as? String
+            let expected = try XCTUnwrap(c["terms"] as? [String: String], name)
+
+            let dir = try tempDir()
+            let url = dir.appendingPathComponent("glossary.toml")
+            try toml.write(to: url, atomically: true, encoding: .utf8)
+
+            let resolved = GlossaryStore.resolvedTerms(at: url, workflowName: workflow)
+            XCTAssertEqual(resolved, expected, "\(name): resolved terms")
+        }
+    }
+
+    /// A round-trip through the editor must not disturb what it does not model. The
+    /// fixture case carrying `[fuzzy]` and an unknown `[future]` table is the one that
+    /// matters: `[fuzzy]` is a live pipeline knob with no UI, so silently dropping it
+    /// on the first term the user adds would turn fuzzy matching off behind their back.
+    func test_glossary_editor_preserves_sections_it_does_not_model() throws {
+        let all = try cases("glossary-golden")
+        let c = try XCTUnwrap(
+            all.first { $0["name"] as? String == "unknown_sections_are_ignored_by_the_reader" },
+            "fixture case went missing"
+        )
+        let dir = try tempDir()
+        let url = dir.appendingPathComponent("glossary.toml")
+        try XCTUnwrap(c["toml"] as? String).write(to: url, atomically: true, encoding: .utf8)
+
+        let store = GlossaryStore(fileURL: url)
+        store.globalTerms.append(GlossaryTerm(heard: "venusaur", canonical: "Vinicius"))
+        try store.saveNow()
+
+        let rewritten = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(rewritten.contains("[fuzzy]"), "[fuzzy] lost on write:\n\(rewritten)")
+        XCTAssertTrue(rewritten.contains("enabled = true"), "[fuzzy] lost on write:\n\(rewritten)")
+        XCTAssertTrue(rewritten.contains("max_distance = 2"), "[fuzzy] lost on write:\n\(rewritten)")
+        XCTAssertTrue(rewritten.contains("keep me"), "unknown table lost:\n\(rewritten)")
+        XCTAssertEqual(
+            GlossaryStore.resolvedTerms(at: url, workflowName: nil),
+            ["acme": "ACME", "venusaur": "Vinicius"]
+        )
+    }
+
     // MARK: - <stem>.speaker_labels.json resolution
 
     func test_speaker_overlay_golden() throws {

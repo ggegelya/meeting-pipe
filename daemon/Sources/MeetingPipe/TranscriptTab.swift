@@ -238,6 +238,10 @@ struct TranscriptTab: View {
     /// menu's content and stopped the "Assign to..." submenu from opening at all
     /// while audio was playing.
     @State private var cast: [CastMember] = []
+    /// FEAT11: the cast classified into resolved names vs unresolved clusters, plus the
+    /// roster-match count. Derived alongside `cast` in `reload` for the same reason it
+    /// is: it reads the roster off disk, which has no business happening per render.
+    @State private var voices: VoiceResolution.Outcome = .empty
     /// Pauses playback on a right-click so the context menu opens against a still
     /// list (see `installRightClickPause`).
     @State private var rightClickMonitor: Any? = nil
@@ -252,6 +256,12 @@ struct TranscriptTab: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if !voices.voices.isEmpty {
+                VoiceResolutionBar(outcome: voices) { label in
+                    namingTarget = NamingTarget(label: label)
+                }
+                Divider().overlay(Color(MPColors.borderFaint))
+            }
             content
             Divider()
             PlaybackBar(playback: playback)
@@ -484,15 +494,24 @@ struct TranscriptTab: View {
         let stem = meeting.stem
         let dir = meeting.recordingsDir
         loading = true
-        let result = await Task.detached(priority: .userInitiated) {
-            TranscriptLoader.load(stem: stem, in: dir)
+        let owner = libraryModel.ownerLabel
+        let loaded = await Task.detached(priority: .userInitiated) {
+            (transcript: TranscriptLoader.load(stem: stem, in: dir),
+             roster: RosterProfile.people().map(\.name))
         }.value
+        let result = loaded.transcript
         guard meeting.stem == stem else { return }
         segments = result?.segments ?? []
         language = result?.language
         speakerOverlay = result?.speakerOverlay ?? .empty
         voiceprintLabels = result?.voiceprintLabels ?? []
         cast = MeetingCast.members(segments: segments, overlay: speakerOverlay)
+        voices = VoiceResolution.derive(
+            cast: cast,
+            voiceprintLabels: voiceprintLabels,
+            rosterNames: loaded.roster,
+            userLabel: owner
+        )
         // Small sidecar; a synchronous read on main is fine, like the corrections overlay.
         markers = MarkerFile.read(stem: stem, in: dir)?.markers.map(\.tSeconds) ?? []
         loadedForStem = stem

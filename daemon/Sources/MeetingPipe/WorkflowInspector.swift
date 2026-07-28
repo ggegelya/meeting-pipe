@@ -56,7 +56,16 @@ struct WorkflowInspector: View {
                         )
                 }
             }
-            if !workflow.contextPrompt.isEmpty {
+            if WorkflowContextHint.needsContext(workflow) {
+                // FEAT11: the absent case used to render nothing at all, so the pane
+                // read the same whether the workflow had context or not. Edit workflow
+                // is right below, which is why the nudge belongs here and not only in
+                // the rail.
+                Text(WorkflowContextHint.listMarkerHelp)
+                    .font(.mpTextXS)
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
                 Text(workflow.contextPrompt)
                     .font(.mpTextXS)
                     .foregroundStyle(Color(MPColors.fgMuted))

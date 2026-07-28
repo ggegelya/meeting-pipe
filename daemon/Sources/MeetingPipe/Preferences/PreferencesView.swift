@@ -84,7 +84,12 @@ struct PreferencesView: View {
         case .prompt:
             PromptSectionView(store: store)
         case .pipeline:
-            PipelineSectionView(store: store)
+            PipelineSectionView(
+                store: store,
+                workflowNames: workflows.workflows.map(\.name).sorted {
+                    $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+                }
+            )
         case .storage:
             StorageSectionView(store: store, workflowStore: workflows)
         case .integrations:
