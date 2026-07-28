@@ -21,11 +21,23 @@ meetings on those clients exist. Three engine paths are represented, all seen in
 real sessions: `rewalk_end` (ax-leave-led end confirmed by the AX re-walk, the
 dominant real ending), `debounce_end` (a shareable-window-gone end promoted on the
 debounce), and `flicker_rewalk_end` (a share re-render flickers the end signals
-before the real leave, the END6/END8 fragmentation path). One real ending is
-**not** represented: a lone ax-leave `.ended` with empty `confirmed_by` (the
-idle-stop backstop, ~a third of real sessions) is promoted by `IdleStopBackstop`,
-not `PromotionEngine`, so it is out of this corpus's scope; covering it needs a
-backstop-level harness, filed as a follow-on rather than faked here.
+before the real leave, the END6/END8 fragmentation path).
+
+The extractor also reports a skipped bucket, and C7 measured what it actually is,
+because the first reading of it was wrong. A lone ax-leave `.ended` with empty
+`confirmed_by` (23 of 100 armed sessions) is **pre-END2 history, not the idle-stop
+backstop**: every one of those sessions ended on or before 2026-06-09, and END2
+landed on 2026-06-10 and made the engine refuse that promotion. Replaying one
+would assert the exact behaviour END2 removed, so the corpus deliberately does not.
+
+The idle-stop backstop is not in that bucket and cannot be: it force-stops the
+recording, not the lifecycle, so it emits `coordinator.auto_stop_silence` then
+`lifecycle.idle` and never a `lifecycle.ended` verdict for a trace to assert on.
+The shipped `IdleStopBackstop` (END3, 2026-06-10) has also never auto-stopped a
+real recording; the log's two `auto_stop_silence` events both predate it and came
+from the retired `MicOnlySilenceBackstop`. Its logic is covered directly by
+`IdleStopBackstopTests` and `SilenceAutoStopPolicyTests` instead. Full measurement
+in C7's entry in `docs/backlog/q6-final.md`.
 
 ### Deriving more real traces
 

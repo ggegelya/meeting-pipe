@@ -27,9 +27,23 @@ It reproduces two ending families (see PromotionEngine):
   - tick-path: `confirmed_by == []` and a leading signal that does not require
     corroboration (shareable-window-gone, workspace-terminated, ...). Modelled
     with a `tick` past the debounce.
-An ending it cannot reproduce with the pure engine (a lone ax-leave ended with
-empty confirmed_by, i.e. the idle-stop backstop, or a same-class confirmed_by) is
-REPORTED and SKIPPED, never faked.
+An ending it cannot reproduce with the pure engine is REPORTED and SKIPPED, never
+faked. Two shapes land there, and neither is a corpus coverage gap (C7):
+  - a lone ax-leave ended with empty confirmed_by is PRE-END2 HISTORY. Until END2
+    landed (2026-06-10) the engine promoted a lone ax-leave on the debounce alone;
+    it now refuses to (`requiresCorroboration` with no cross-class corroborator,
+    pinned by `test_lone_ax_leave_invalid_does_not_promote_to_ended_after_debounce`),
+    so replaying such a session would assert the exact behaviour END2 removed. Every
+    session in this bucket in the owner's log ended on or before 2026-06-09.
+  - a same-class confirmed_by (ax-leave plus window-gone) is correlated evidence,
+    not independent corroboration, so it is not a promotion path either (END6/AUD-10).
+
+The idle-stop backstop does NOT appear in this inventory at all, in any shape. It
+force-stops the RECORDING, not the lifecycle: `IdleStopBackstop.onAutoStop` reaches
+`MeetingSessionController.handleIdleAutoStop`, which stops the recorder and
+disengages, so the log shows `coordinator.auto_stop_silence` then `lifecycle.idle`
+and never a `lifecycle.ended`. `sessionize` closes a session on `lifecycle.ended`,
+so a backstop-ended meeting is never even a session here.
 
 Output carries no titles and pid 1234, so it is redaction-clean by construction;
 still run every emitted file through `redact_detection_trace.py --check` before
@@ -182,9 +196,13 @@ def synthesize(s: Session, scenario: str) -> tuple[dict | None, str]:
         family = "confirm"  # the AX re-walk (confirmProvisionalEnd) promoted the end
     elif confirmed == [] and s.leading not in REQUIRES_CORROBORATION:
         family = "tick"  # a no-corroboration lead promoted on the debounce
+    elif confirmed == [] and s.leading in REQUIRES_CORROBORATION:
+        # Pre-END2 history, reported under its own reason so an inventory run cannot read it
+        # as a coverage gap (C7). See the module docstring for why replaying one would be wrong.
+        return None, f"pre-END2 lone {s.leading} end; the engine no longer promotes this"
     else:
-        # A lone ax-leave ended with empty confirmed_by is the idle-stop backstop, and a
-        # same-class confirmed_by is not a pure-engine promotion path. Never faked.
+        # A same-class confirmed_by is correlated evidence, not a pure-engine promotion path
+        # (END6/AUD-10). Never faked.
         return None, f"ending not pure-engine reproducible (leading={s.leading}, confirmed_by={confirmed})"
 
     # The ended verdict promotes the LAST provisional, so its leading must match; if the
