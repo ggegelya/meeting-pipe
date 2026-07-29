@@ -237,6 +237,94 @@ final class PrepCardTests: XCTestCase {
         XCTAssertEqual(PrepCardView.height(for: card), layout.height)
     }
 
+    // MARK: - Panel height clamp (UX34)
+
+    /// The pill band the card hangs under. Passed in explicitly so the decision
+    /// stays checkable without a panel; it mirrors `MeetingPromptWindow.panelHeight`.
+    private let pillHeight: CGFloat = 64
+
+    private func sizedCard(points: Int, actions: Int, more: Int = 0) -> PrepCard {
+        PrepCard(
+            workflowName: "Client work", stem: "20260720-143000", startedAt: started,
+            title: "Weekly sync",
+            points: (0..<points).map { "point \($0)" },
+            actions: (0..<actions).map { PrepCard.Action(task: "task \($0)", owner: nil, due: nil) },
+            moreActions: more
+        )
+    }
+
+    func test_no_card_leaves_the_panel_at_the_pill() {
+        // The "Last time" button is collapsed to zero width in this state, so the
+        // disclosure is unreachable and the panel must never leave 64pt.
+        let out = PrepDisclosure.decide(card: nil, expanded: true, pillHeight: pillHeight,
+                                        maxCardHeight: PrepCardView.maxCardHeight)
+        XCTAssertEqual(out.panelHeight, pillHeight)
+        XCTAssertEqual(out.cardHeight, 0)
+        XCTAssertEqual(out.contentHeight, 0)
+        XCTAssertFalse(out.scrolls)
+    }
+
+    func test_collapsing_returns_to_the_pill_however_tall_the_card_is() {
+        let full = sizedCard(points: PrepCard.maxPoints, actions: PrepCard.maxActions, more: 2)
+        let out = PrepDisclosure.decide(card: full, expanded: false, pillHeight: pillHeight,
+                                        maxCardHeight: PrepCardView.maxCardHeight)
+        XCTAssertEqual(out.panelHeight, pillHeight)
+        XCTAssertEqual(out.cardHeight, 0)
+        XCTAssertFalse(out.scrolls, "a collapsed card is not a scrolling one")
+    }
+
+    func test_a_partial_card_under_the_cap_gets_what_it_needs_and_does_not_scroll() {
+        let small = sizedCard(points: 2, actions: 0)
+        let content = PrepCardView.height(for: small)
+        XCTAssertLessThan(content, PrepCardView.maxCardHeight)
+
+        let out = PrepDisclosure.decide(card: small, expanded: true, pillHeight: pillHeight,
+                                        maxCardHeight: PrepCardView.maxCardHeight)
+        XCTAssertEqual(out.cardHeight, content)
+        XCTAssertEqual(out.panelHeight, pillHeight + content)
+        XCTAssertFalse(out.scrolls)
+    }
+
+    func test_a_full_card_is_clamped_and_scrolls() {
+        let full = sizedCard(points: PrepCard.maxPoints, actions: PrepCard.maxActions, more: 2)
+        let content = PrepCardView.height(for: full)
+        XCTAssertGreaterThan(content, PrepCardView.maxCardHeight)
+
+        let out = PrepDisclosure.decide(card: full, expanded: true, pillHeight: pillHeight,
+                                        maxCardHeight: PrepCardView.maxCardHeight)
+        XCTAssertEqual(out.cardHeight, PrepCardView.maxCardHeight)
+        XCTAssertEqual(out.contentHeight, content, "the document keeps its full height")
+        XCTAssertEqual(out.panelHeight, pillHeight + PrepCardView.maxCardHeight)
+        XCTAssertTrue(out.scrolls)
+        // The 4x jump this task exists to remove: unclamped this panel was ~260pt.
+        XCTAssertLessThan(out.panelHeight, pillHeight + content)
+    }
+
+    func test_the_cap_shows_the_head_and_slices_the_first_action_row() throws {
+        // A tripwire on the derivation rather than a magic number: `maxCardHeight`
+        // is built out of the row metrics, so a chrome change moves it and this
+        // fails, which is the moment to re-check the panel's budget.
+        XCTAssertEqual(PrepCardView.maxCardHeight, 123)
+
+        let full = sizedCard(points: PrepCard.maxPoints, actions: PrepCard.maxActions, more: 2)
+        let out = PrepDisclosure.decide(card: full, expanded: true, pillHeight: pillHeight,
+                                        maxCardHeight: PrepCardView.maxCardHeight)
+        XCTAssertLessThanOrEqual(out.panelHeight, 190, "the expanded panel stays small")
+
+        let layout = PrepCardView.layout(for: full)
+        // Everything the cap was sized around is visible without scrolling: the
+        // title, every recap point, and the eyebrow that says actions follow.
+        XCTAssertEqual(layout.pointTops.count, PrepCard.maxPoints)
+        XCTAssertLessThan(layout.pointTops.last!, out.cardHeight)
+        XCTAssertLessThan(try XCTUnwrap(layout.eyebrowTop), out.cardHeight)
+        // The first action row starts inside the viewport and the second does not,
+        // so the cut lands mid-row. That slice is the scroll affordance: overlay
+        // scrollers are invisible at rest, and a cut on a row boundary would read
+        // as the end of the card.
+        XCTAssertLessThan(layout.actionTops[0], out.cardHeight)
+        XCTAssertGreaterThan(layout.actionTops[1], out.cardHeight)
+    }
+
     func test_action_line_degrades_as_fields_go_missing() {
         XCTAssertEqual(
             PrepCardView.actionLine(PrepCard.Action(task: "Send SOW", owner: "Georgy",

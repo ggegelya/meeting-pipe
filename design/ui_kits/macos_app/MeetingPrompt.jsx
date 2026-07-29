@@ -21,6 +21,15 @@
 // entirely when there is nothing to show, which is the common case for a
 // workflow's first meeting, so the collapsed pill is unchanged from the above.
 //
+// UX34 caps that growth at CARD_MAX_H and scrolls the overflow. Uncapped, a full
+// 3-point + 3-action card is ~196pt on top of the 64pt pill, so the panel
+// quadrupled and sat over the top of the meeting window it is meant to hover
+// above. The cap comes from the card's own row metrics rather than a round
+// number: title + the full recap + the OPEN ACTIONS eyebrow + HALF an action
+// row. The half row is deliberate. macOS overlay scrollers are invisible at
+// rest, so a viewport ending on a row boundary reads as the end of the card
+// while a sliced row tells the eye to scroll.
+//
 // AI9 adds the routing hint: when repeated "Change workflow..." corrections
 // disagree with the matching rules, the chip carries the corrected workflow and
 // an 11pt caption sits directly under it reading "Suggested . Undo". It is a
@@ -40,6 +49,10 @@ const APP_GLYPH_MAP = {
   "Slack":       "../../assets/app-glyphs/slack.svg",
   "Slack huddle":"../../assets/app-glyphs/slack.svg",
 };
+
+// UX34: PrepCardView.maxCardHeight in the Swift, derived there from the same row
+// metrics this file lays out by hand.
+const CARD_MAX_H = 123;
 
 const MeetingPrompt = ({
   source = { displayName: "Zoom" },
@@ -181,8 +194,14 @@ const MeetingPrompt = ({
    Prep card (CAL2) - the stratum the panel grows to reveal. Single-line rows
    with tail truncation: it answers "what was this about" at a glance, and the
    Library holds the full text one click away. No mark-done control here; the
-   prompt is a read surface and the meeting has not started yet.             */
+   prompt is a read surface and the meeting has not started yet.
+
+   UX34 makes it a scroll viewport: the outer div is the clamped window and the
+   inner one is the document at its natural height. In the Swift these are an
+   NSScrollView with overlay scrollers and a flipped PrepCardView document view,
+   flipped so the card opens on its title rather than its last row.          */
 const PrepCard = ({ card }) => (
+  <div style={{ maxHeight: CARD_MAX_H, overflowY: "auto", overflowX: "hidden" }}>
   <div style={{
     borderTop: "1px solid var(--mp-border-faint)",
     padding: "10px 12px 14px 14px", display: "flex", flexDirection: "column", gap: 2,
@@ -220,6 +239,7 @@ const PrepCard = ({ card }) => (
         )}
       </>
     )}
+  </div>
   </div>
 );
 

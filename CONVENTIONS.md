@@ -117,6 +117,7 @@ Pure logic lives in its own type with explicit inputs (a `Date`, a `Bool`, a fun
 - `StatusBarModel.derive(_:)` - the menu-bar title, icon, header, and conditional rows from a snapshot of state + permissions + download + counts, no `NSStatusItem` (T3).
 - `NotificationRouter.route(id:action:isDefault:doneEntry:)` - which delegate calls a notification response makes, no `UNUserNotificationCenter` (T3).
 - `SearchIndexReconciler.decide(indexed:live:)` - the FTS upsert/delete diff, no SQLite and no filesystem (T3).
+- `PrepDisclosure.decide(card:expanded:pillHeight:maxCardHeight:)` - how tall the detection prompt stands with the "Last time" card open and whether that card scrolls, from the card's fixed row metrics and two constants, no `NSPanel` (UX34).
 
 When a subsystem grows non-trivial conditional logic, lift the decision into a `decide(…)`-style entry point on its own type before adding the next branch.
 

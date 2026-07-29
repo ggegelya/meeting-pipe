@@ -11,6 +11,49 @@ protocol MeetingPromptDelegate: AnyObject {
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseWorkflow id: UUID?)
 }
 
+/// UX34: how tall the detection prompt stands with the CAL2 "Last time" card
+/// open, and whether the card has to scroll inside that height.
+///
+/// A pure `decide` in the repo's usual shape: everything it needs is the card's
+/// own fixed row metrics plus the two panel constants, so the clamp is checkable
+/// without raising a panel. It exists because the disclosure had no ceiling. A
+/// full 3+3 card is ~196pt of content, so the panel went from 64pt to ~260pt and
+/// sat over the top of the meeting window it is supposed to hover above. The
+/// panel now grows to at most `pillHeight + maxCardHeight`, and the remainder
+/// scrolls inside the card.
+struct PrepDisclosure: Equatable {
+    /// Total panel height, the pill band included.
+    let panelHeight: CGFloat
+    /// Viewport the card gets under the pill. Zero while collapsed, and zero when
+    /// there is no card at all, which is also when the "Last time" button is
+    /// collapsed to zero width and the disclosure is unreachable.
+    let cardHeight: CGFloat
+    /// Height the card's content needs, which is what the document view is sized
+    /// to. Known before the view exists because every row is a fixed height.
+    let contentHeight: CGFloat
+
+    /// True when the content does not fit its viewport, so the card scrolls.
+    var scrolls: Bool { cardHeight > 0 && contentHeight > cardHeight }
+
+    static func decide(
+        card: PrepCard?,
+        expanded: Bool,
+        pillHeight: CGFloat,
+        maxCardHeight: CGFloat
+    ) -> PrepDisclosure {
+        guard let card = card else {
+            return PrepDisclosure(panelHeight: pillHeight, cardHeight: 0, contentHeight: 0)
+        }
+        let content = PrepCardView.height(for: card)
+        guard expanded else {
+            return PrepDisclosure(panelHeight: pillHeight, cardHeight: 0, contentHeight: content)
+        }
+        let viewport = min(content, max(0, maxCardHeight))
+        return PrepDisclosure(panelHeight: pillHeight + viewport,
+                              cardHeight: viewport, contentHeight: content)
+    }
+}
+
 /// Threading: every public method must run on the main queue.
 final class MeetingPromptWindow {
     weak var delegate: MeetingPromptDelegate?
@@ -37,10 +80,12 @@ final class MeetingPromptWindow {
     /// (an NSView keeps its constraints while hidden, so the width has to go too).
     private var lastTimeWidth: NSLayoutConstraint?
     private var lastTimeGap: NSLayoutConstraint?
-    /// The loaded card, and the view built from it once the user asks. Both nil
-    /// until the off-main scan answers; cleared on every `present`.
+    /// The loaded card, and the scroll view built around it once the user asks.
+    /// Both nil until the off-main scan answers; cleared on every `present`. The
+    /// card itself is the scroll view's document view (UX34), so the panel holds
+    /// the wrapper: that is what has to hide, and what carries the clamped height.
     private var prepCard: PrepCard?
-    private var prepCardView: PrepCardView?
+    private var prepCardScroll: NSScrollView?
     private var isExpanded = false
     /// The fixed-height band the pill occupies, so the card can hang below it
     /// without re-centering the action row over a taller panel.
@@ -86,7 +131,7 @@ final class MeetingPromptWindow {
             currentWorkflow = suggested
         }
         prepCard = nil
-        prepCardView = nil
+        prepCardScroll = nil
         isExpanded = false
 
         let panel = makePanel(source: source, timeoutSec: seconds)
@@ -122,7 +167,7 @@ final class MeetingPromptWindow {
         self.panel = nil
         currentSource = nil
         prepCard = nil
-        prepCardView = nil
+        prepCardScroll = nil
         hintSuggestion = nil
         ruleWorkflow = nil
         isExpanded = false
@@ -495,8 +540,8 @@ final class MeetingPromptWindow {
     /// be a confident lie.
     private func loadPrepCard() {
         if isExpanded { toggleLastTime() }
-        prepCardView?.removeFromSuperview()
-        prepCardView = nil
+        prepCardScroll?.removeFromSuperview()
+        prepCardScroll = nil
         prepCard = nil
         collapseLastTime()
         guard let provider = prepProvider, let workflow = currentWorkflow else { return }
@@ -532,21 +577,56 @@ final class MeetingPromptWindow {
 
     /// Grow the panel downward to reveal the card, or shrink back. The top edge
     /// stays put so the pill does not jump under the pointer.
+    ///
+    /// UX34: the growth is clamped. `PrepDisclosure.decide` owns the arithmetic
+    /// both here and at the build site, and anything past the cap scrolls inside
+    /// the card rather than pushing the panel further down the screen.
     fileprivate func toggleLastTime() {
         guard let panel = panel, let bg = panel.contentView, let card = prepCard,
               let pill = pillGuide else { return }
 
-        if prepCardView == nil {
+        if prepCardScroll == nil {
+            let open = PrepDisclosure.decide(card: card, expanded: true,
+                                             pillHeight: Self.panelHeight,
+                                             maxCardHeight: PrepCardView.maxCardHeight)
+            // Document view: the panel's width and its own exact content height.
+            // Frame-sized rather than constrained, because that height is known
+            // before the view exists and a clip view would otherwise have to solve
+            // for a document whose size nobody was ever unsure about.
             let view = PrepCardView(card: card, now: Date())
-            view.translatesAutoresizingMaskIntoConstraints = false
-            bg.addSubview(view)
+            view.frame = NSRect(x: 0, y: 0, width: Self.panelWidth, height: open.contentHeight)
+            view.autoresizingMask = [.width]
+
+            // Built here rather than at `present`, so it survives every later
+            // toggle the way the bare card used to: the panel hides the wrapper
+            // instead of rebuilding it.
+            let scroll = NSScrollView()
+            scroll.translatesAutoresizingMaskIntoConstraints = false
+            scroll.borderType = .noBorder
+            // Both halves, or the scroll view paints an opaque rectangle over the
+            // panel's vibrant material where the card used to show through it.
+            scroll.drawsBackground = false
+            scroll.contentView.drawsBackground = false
+            scroll.hasVerticalScroller = true
+            scroll.hasHorizontalScroller = false
+            scroll.autohidesScrollers = true
+            // Overlay so nothing is visible until the user scrolls. A legacy
+            // scroller would sit there permanently and inset the card's width.
+            scroll.scrollerStyle = .overlay
+            scroll.verticalScrollElasticity = .allowed
+            scroll.horizontalScrollElasticity = .none
+            scroll.documentView = view
+            bg.addSubview(scroll)
             NSLayoutConstraint.activate([
-                view.leadingAnchor.constraint(equalTo: bg.leadingAnchor),
-                view.trailingAnchor.constraint(equalTo: bg.trailingAnchor),
-                view.topAnchor.constraint(equalTo: pill.bottomAnchor),
-                view.heightAnchor.constraint(equalToConstant: PrepCardView.height(for: card)),
+                scroll.leadingAnchor.constraint(equalTo: bg.leadingAnchor),
+                scroll.trailingAnchor.constraint(equalTo: bg.trailingAnchor),
+                scroll.topAnchor.constraint(equalTo: pill.bottomAnchor),
+                scroll.heightAnchor.constraint(equalToConstant: open.cardHeight),
             ])
-            prepCardView = view
+            prepCardScroll = scroll
+            // Logged from the first-build branch on purpose, so the event counts
+            // prompts whose card was opened at least once rather than opens: every
+            // later toggle of this same prompt reuses the view and logs nothing.
             Log.event(category: "coordinator", action: "prep_card_opened", attributes: [
                 "workflow_name": card.workflowName,
                 "stem": card.stem,
@@ -557,12 +637,14 @@ final class MeetingPromptWindow {
 
         isExpanded.toggle()
         lastTimeButton?.isOn = isExpanded
-        prepCardView?.isHidden = !isExpanded
+        prepCardScroll?.isHidden = !isExpanded
 
-        let newHeight = Self.panelHeight + (isExpanded ? PrepCardView.height(for: card) : 0)
+        let metrics = PrepDisclosure.decide(card: card, expanded: isExpanded,
+                                            pillHeight: Self.panelHeight,
+                                            maxCardHeight: PrepCardView.maxCardHeight)
         var frame = panel.frame
-        frame.origin.y += frame.height - newHeight   // keep the top edge fixed
-        frame.size.height = newHeight
+        frame.origin.y += frame.height - metrics.panelHeight   // keep the top edge fixed
+        frame.size.height = metrics.panelHeight
         if MPMotion.reduceMotion {
             panel.setFrame(frame, display: true)
         } else {

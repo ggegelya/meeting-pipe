@@ -76,6 +76,29 @@ final class PrepCardView: NSView {
     /// Exact height this card needs, callable before the view is built.
     static func height(for card: PrepCard) -> CGFloat { layout(for: card).height }
 
+    /// UX34: the tallest viewport the prompt panel hands this card. Content past
+    /// it scrolls instead of the panel growing, so the prompt stays a fixed size
+    /// rather than quadrupling: a full 3+3 card is ~196pt on top of the 64pt pill,
+    /// which is the ~260pt panel the owner reported covering the meeting window.
+    ///
+    /// Derived from the row metrics above rather than picked as a round number. It
+    /// is the card's head, one title row plus a full `PrepCard.maxPoints` recap,
+    /// then the OPEN ACTIONS eyebrow and *half* an action row. The half row is the
+    /// point: overlay scrollers are invisible at rest, so a viewport ending on a
+    /// row boundary reads as the end of the card, while one that slices a row
+    /// tells the eye to scroll. Works out to 123pt, so an expanded panel is 187pt
+    /// against a full card's 196pt of content.
+    static let maxCardHeight: CGFloat =
+        Metric.separator + Metric.padTop + Metric.titleRow + Metric.titleGap
+        + CGFloat(PrepCard.maxPoints) * Metric.row
+        + Metric.sectionGap + Metric.eyebrow + Metric.eyebrowGap
+        + Metric.row / 2
+
+    /// Top-left origin, because the card is an `NSScrollView` document view now
+    /// (UX34) and an unflipped one opens showing its *last* row. Auto Layout
+    /// anchors are orientation-independent, so the rows below land unchanged.
+    override var isFlipped: Bool { true }
+
     /// One action on one line: the task, then whoever owns it and when it is due.
     /// Middle dots rather than parentheses so the line still reads when
     /// truncation eats the tail.
