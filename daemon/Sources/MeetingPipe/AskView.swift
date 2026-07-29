@@ -141,8 +141,8 @@ struct AskView: View {
                     }
                 }
 
-                if let backend = a.backend {
-                    Text(backendFooter(backend))
+                if let footer = AskView.backendFooter(a.backend) {
+                    Text(footer)
                         .font(.mpTextXS)
                         .foregroundStyle(Color(MPColors.fgSubtle))
                 }
@@ -154,12 +154,14 @@ struct AskView: View {
 
     /// Quiet provenance line. On-device is the reassuring default; naming the
     /// cloud backend is honest when a non-regulated workflow used it.
-    private func backendFooter(_ backend: String) -> String {
-        switch backend {
-        case "local", "apple_intelligence": return "Answered on-device"
-        case "anthropic": return "Answered via Anthropic"
-        default: return "Answered via \(backend)"
-        }
+    ///
+    /// UX31: nil rather than a fallback for an engine this build cannot name.
+    /// The old `default` interpolated the raw config id, so a Claude Code answer
+    /// read "Answered via claude_cli"; a line the reader has to decode is worse
+    /// than no line, and the provenance row in the detail header already hides
+    /// itself for the same reason.
+    static func backendFooter(_ backend: String?) -> String? {
+        SummarizationEngine.resolve(backend).map { "Answered \($0.runPhrase)" }
     }
 
     private func errorState(_ message: String) -> some View {

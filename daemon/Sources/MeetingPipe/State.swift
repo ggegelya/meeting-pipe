@@ -152,11 +152,12 @@ struct LibraryRun: Equatable {
     var progressLabel: String {
         switch verb {
         case .regenerate:
-            switch backend {
-            case "anthropic": return "Summarizing with Anthropic"
-            case "local", "apple_intelligence": return "Summarizing on-device"
-            default: return "Summarizing"
-            }
+            // UX31: the shared vocabulary, so the engine this names is the one
+            // the detail header names when the run lands. A nil backend means
+            // "whatever the workflow resolves to", which is genuinely not known
+            // at request time, so it stays unqualified rather than guessing.
+            guard let engine = SummarizationEngine.resolve(backend) else { return "Summarizing" }
+            return "Summarizing \(engine.runPhrase)"
         case .republish:
             return "Publishing"
         }

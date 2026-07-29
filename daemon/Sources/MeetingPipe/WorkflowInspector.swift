@@ -151,14 +151,11 @@ struct WorkflowInspector: View {
         }.joined(separator: ", ")
     }
 
-    private var backendLine: String {
-        switch workflow.effectiveBackend {
-        case .anthropic:         return "Anthropic (cloud)"
-        case .local:             return "Local (on-device)"
-        case .auto:              return "Auto"
-        case .appleIntelligence: return "Apple Intelligence (on-device)"
-        case nil:                return "Global default"
-        }
+    /// UX31: the shared vocabulary, not a fifth restatement of it. A workflow
+    /// that pins nothing inherits, which is a routing fact rather than an engine,
+    /// so it keeps its own line.
+    var backendLine: String {
+        workflow.effectiveBackend?.engine.qualified ?? "Global default"
     }
 }
 

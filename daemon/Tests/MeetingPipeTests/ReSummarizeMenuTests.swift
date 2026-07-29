@@ -18,9 +18,11 @@ final class ReSummarizeMenuTests: XCTestCase {
         XCTAssertTrue(state.cloudEnabled)
         XCTAssertNil(state.caption)
         XCTAssertFalse(state.offersWorkflowChange, "nothing to escape from")
+        // UX31: the title comes from the shared vocabulary, so this pins the
+        // label's behaviour rather than a second copy of the engine's name.
         XCTAssertEqual(
-            state.accessibilityLabel(for: "Anthropic (cloud)"),
-            "Anthropic (cloud)",
+            state.accessibilityLabel(for: SummarizationEngine.anthropic.qualified),
+            SummarizationEngine.anthropic.qualified,
             "an enabled item announces itself and nothing else"
         )
     }
@@ -46,7 +48,7 @@ final class ReSummarizeMenuTests: XCTestCase {
         // A disabled control announces no reason on its own, so a caption the
         // sighted user reads next to it has to be in the label too.
         let state = ReSummarizeMenu.resolve(workflowNDA: true, regulatedMode: false)
-        let label = state.accessibilityLabel(for: "Anthropic (cloud)")
+        let label = state.accessibilityLabel(for: SummarizationEngine.anthropic.qualified)
         XCTAssertEqual(
             label,
             "Anthropic (cloud), unavailable. NDA workflow: summaries stay on this Mac"

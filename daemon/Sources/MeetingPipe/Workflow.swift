@@ -3,11 +3,15 @@ import Foundation
 /// Per-context routing rules: LLM context prompt, publish sinks, summarisation backend, and behavioural toggles (NDA mode). One TOML file per workflow under `~/.config/meeting-pipe/workflows/`; UUID is the filename so renames don't move the file. Exactly one workflow is flagged default; `WorkflowStore` enforces single-default on every save.
 
 /// A pinnable summarisation backend. The raw values match `summarization.backend` in `config.toml` and the `workflow_backend` sidecar key, so a pin maps straight through to the pipeline. A workflow that does not pin one (`Workflow.backend == nil`) inherits the global default: the sidecar omits the key and the pipeline keeps `summarization.backend`, which is how a global Apple Intelligence setting stays reachable for normal meetings.
+///
+/// `claudeCLI` and `openai` joined in UX31. They were pinnable through the pipeline all along (`mp.workflow.apply_overrides` accepts any id in `config.BACKENDS`, and `summarize._build_client` dispatches both), so their absence here was a gap in the daemon's vocabulary rather than a missing capability: the global setting offered them and no workflow could. Both are cloud backends, so `effective_backend` forces local for them under a regulated or NDA run exactly as it does for `anthropic`.
 enum WorkflowBackend: String, Codable, Equatable, CaseIterable {
     case anthropic
     case local
     case auto
     case appleIntelligence = "apple_intelligence"
+    case claudeCLI = "claude_cli"
+    case openai
 }
 
 /// One publish destination, workflow-scoped. Empty strings fall back to the global config field.

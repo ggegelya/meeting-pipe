@@ -344,16 +344,19 @@ extension MeetingDetailView {
         }
     }
 
-    /// Backend -> short, quiet label. Nil for an unknown backend so the row
-    /// disappears entirely rather than showing an empty provenance line.
-    var provenanceLabel: String? {
-        switch meeting.backend {
-        case "anthropic":          return "Claude (cloud)"
-        case "local":              return "On-device (MLX)"
-        case "apple_intelligence": return "Apple Intelligence"
-        default:                   return nil
-        }
+    /// The engine that produced this summary, or nil for a backend this build
+    /// does not know (a legacy / paste / skipped meeting with none recorded, or
+    /// a run `mp summarize` could not attribute).
+    var provenanceEngine: SummarizationEngine? {
+        SummarizationEngine.resolve(meeting.backend)
     }
+
+    /// Backend -> short, quiet label (UX31: the shared vocabulary, so this line
+    /// and the `...` menu over it cannot name the same engine differently). Nil
+    /// for an unknown backend so the row disappears entirely rather than showing
+    /// an empty provenance line; a *known* backend always has a name now, which
+    /// is what used to drop the row for an OpenAI meeting.
+    var provenanceLabel: String? { provenanceEngine?.qualified }
 
     /// The model id rides only in the tooltip; the visible label stays readable.
     var provenanceTooltip: String? {
@@ -361,10 +364,12 @@ extension MeetingDetailView {
         return model
     }
 
-    /// Quiet monochrome glyph: a cloud for the hosted call, an on-device chip for
-    /// the two local backends.
+    /// Quiet monochrome glyph: a cloud for a hosted call, an on-device chip for
+    /// the local backends. Keyed off the engine's locality rather than a single
+    /// id, so the cloud providers added in UX31 get the cloud glyph instead of
+    /// being drawn as if they ran on this Mac.
     private var provenanceIcon: String {
-        meeting.backend == "anthropic" ? "cloud" : "cpu"
+        provenanceEngine?.locality == .onDevice ? "cpu" : "cloud"
     }
 
     /// Uppercased 2-letter language code for the caption chip (TECH-UI-4); nil when unknown so the chip is hidden entirely.
@@ -455,10 +460,18 @@ extension MeetingDetailView {
     var reSummarizeMenu: some View {
         let state = reSummarizeState
         Menu("Re-summarize with\u{2026}") {
-            Button("Local (on-device)") { runReSummarize(backend: "local") }
-            Button("Anthropic (cloud)") { runReSummarize(backend: "anthropic") }
+            // UX31: the same two engines as before, named out of the shared
+            // vocabulary so this menu and the provenance line under it agree.
+            // Which engines a one-shot re-run may offer is UX29's question, not
+            // a labelling one, so the pair is unchanged.
+            Button(SummarizationEngine.local.qualified) {
+                runReSummarize(backend: SummarizationEngine.local.id)
+            }
+            Button(SummarizationEngine.anthropic.qualified) {
+                runReSummarize(backend: SummarizationEngine.anthropic.id)
+            }
                 .disabled(!state.cloudEnabled)
-                .accessibilityLabel(state.accessibilityLabel(for: "Anthropic (cloud)"))
+                .accessibilityLabel(state.accessibilityLabel(for: SummarizationEngine.anthropic.qualified))
             if let caption = state.caption {
                 // A disabled row explains nothing on its own, so the reason sits
                 // under it in the quiet register rather than in a dialog.

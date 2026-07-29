@@ -35,16 +35,13 @@ struct PipelineSectionView: View {
                     // Dropdown (not segmented): several backends in a segmented
                     // control stretched the window off-screen; a menu stays a
                     // fixed width regardless of how many backends exist.
+                    // 260pt (not the 200 default) so `auto`'s behaviour gloss
+                    // fits, the same width and the same reason as the workflow
+                    // editor's picker (UX31: the two used to disagree here).
                     SettingsMenuPicker(
                         selection: $store.summarizationBackend,
-                        options: [
-                            ("anthropic",          "Anthropic"),
-                            ("local",              "Local MLX"),
-                            ("auto",               "Auto"),
-                            ("apple_intelligence", "Apple (experimental)"),
-                            ("claude_cli",         "Claude CLI"),
-                            ("openai",             "OpenAI"),
-                        ]
+                        options: Self.backendOptions,
+                        width: 260
                     )
                 }
                 if store.summarizationBackend == "local" || store.summarizationBackend == "auto" {
@@ -260,6 +257,13 @@ struct PipelineSectionView: View {
             }
         }
     }
+
+    /// The global backend picker's rows (UX31). Derived from the one vocabulary
+    /// rather than restated, so a backend cannot be offered here under a name no
+    /// other surface uses. Internal so `SummarizationEngineTests` can fence that
+    /// every id it offers is named in every register.
+    static let backendOptions: [(value: String, label: String)] =
+        SummarizationEngine.all.map { (value: $0.id, label: $0.pickerLabel) }
 
     // MARK: - Digest schedule (AI4)
 

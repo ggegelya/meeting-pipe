@@ -138,8 +138,10 @@ Other columns are optional. If you add any of `Workflow`, `Source`, `Attendees` 
 Transcription always happens on your Mac. Summarization is the one step with a choice, and it is a real one. Pick a backend in **Preferences ▸ Pipeline**:
 
 - **Anthropic (the default).** Best quality. Costs a few cents per meeting and needs an API key from [console.anthropic.com](https://console.anthropic.com), which requires adding credit. Paste the key into **Preferences ▸ Integrations**. The transcript is sent to Anthropic; nothing else leaves your Mac.
-- **Claude Code.** Free if you already pay for a Claude subscription: it drives your existing login rather than an API key. Still a cloud backend, so the transcript leaves your Mac.
-- **Local.** Fully on-device, no network, no cost. Quality is lower than Anthropic's. It needs a 4.3 GB model; the Welcome flow's workflow step, the workflow editor, and the menu bar's **Finish setup** row all offer a **Download now** button when you pick an on-device backend, so it downloads in the background instead of stalling your first meeting. No terminal involved.
+- **Claude CLI.** Free if you already pay for a Claude subscription: it drives your existing Claude Code login rather than an API key. Still a cloud backend, so the transcript leaves your Mac.
+- **Local MLX.** Fully on-device, no network, no cost. Quality is lower than Anthropic's. It needs a 4.3 GB model; the Welcome flow's workflow step, the workflow editor, and the menu bar's **Finish setup** row all offer a **Download now** button when you pick an on-device backend, so it downloads in the background instead of stalling your first meeting. No terminal involved.
+
+The names above are what the picker shows, and the same name follows that engine everywhere else in the app: the line under a meeting's title saying what produced its summary, the **Re-summarize with…** menu, and a workflow's own Backend row all say **Anthropic**, **Local MLX**, or **Claude CLI**, with `(cloud)` or `(on-device)` after it so you can always tell whether a summary left your Mac.
 
 You can change this later at any time, and switch a single meeting's backend after the fact from the Library.
 

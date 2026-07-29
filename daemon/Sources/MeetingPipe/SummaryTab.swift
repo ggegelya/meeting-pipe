@@ -451,7 +451,13 @@ struct SummaryTab: View {
                 // retry just fails again, so lead with a local re-summarize that
                 // works and keep the plain retry as the small fallback.
                 VStack(spacing: 6) {
-                    Button("Re-summarize with Local") { runReSummarize(backend: "local") }
+                    // UX31: named out of the shared vocabulary. This button and
+                    // the header's Re-summarize menu start the same run, and
+                    // used to call the same engine "Local" and "Local
+                    // (on-device)" respectively.
+                    Button("Re-summarize with \(SummarizationEngine.local.qualified)") {
+                        runReSummarize(backend: SummarizationEngine.local.id)
+                    }
                         .controlSize(.large)
                     Button("Retry on the same backend anyway") { runRetry() }
                         .controlSize(.small)

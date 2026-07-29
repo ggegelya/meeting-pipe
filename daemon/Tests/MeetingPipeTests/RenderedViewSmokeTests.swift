@@ -52,15 +52,38 @@ final class RenderedViewSmokeTests: XCTestCase {
         XCTAssertNotNil(SummaryRenderedView(summary: MeetingSummary()).body)
     }
 
-    // TECH-FEAT6: the backend -> provenance-label map is a contract. The strings
+    // TECH-FEAT6: the backend -> provenance-label map is a contract. The ids
     // "anthropic" / "local" / "apple_intelligence" must match what MeetingStore
     // reads from <stem>.run.json["backend"]; an unknown / nil backend hides the row.
+    // UX31 moved the strings into `SummarizationEngine`, so this asserts against
+    // the vocabulary rather than a second copy of it.
     func test_provenanceLabel_maps_each_backend() {
-        XCTAssertEqual(detailView(backend: "anthropic").provenanceLabel, "Claude (cloud)")
-        XCTAssertEqual(detailView(backend: "local").provenanceLabel, "On-device (MLX)")
-        XCTAssertEqual(detailView(backend: "apple_intelligence").provenanceLabel, "Apple Intelligence")
+        XCTAssertEqual(detailView(backend: "anthropic").provenanceLabel, "Anthropic (cloud)")
+        XCTAssertEqual(detailView(backend: "local").provenanceLabel, "Local MLX (on-device)")
+        XCTAssertEqual(
+            detailView(backend: "apple_intelligence").provenanceLabel, "Apple Intelligence (on-device)"
+        )
         XCTAssertNil(detailView(backend: nil).provenanceLabel)
         XCTAssertNil(detailView(backend: "something_new").provenanceLabel)
+    }
+
+    /// UX31, the reported defect: the header's provenance line and the `...`
+    /// menu's cloud item are on screen together over the same meeting, and
+    /// named the same backend differently ("Claude (cloud)" against "Anthropic
+    /// (cloud)"). They read one register now, so they cannot drift apart again.
+    func test_the_provenance_line_and_the_re_summarize_menu_render_one_string() {
+        XCTAssertEqual(
+            detailView(backend: "anthropic").provenanceLabel,
+            SummarizationEngine.anthropic.qualified
+        )
+    }
+
+    /// UX31, the worse half: both backends ship and are selectable, and a
+    /// meeting summarized by either used to display no engine at all, because
+    /// `provenanceLabel` returned nil and the caller drops the whole row on nil.
+    func test_the_two_backends_that_had_no_label_render_an_engine_row() {
+        XCTAssertEqual(detailView(backend: "openai").provenanceLabel, "OpenAI (cloud)")
+        XCTAssertEqual(detailView(backend: "claude_cli").provenanceLabel, "Claude CLI (cloud)")
     }
 
     func test_provenanceTooltip_is_the_model_id_or_nil() {

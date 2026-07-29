@@ -471,19 +471,13 @@ struct WorkflowEditor: View {
 
     private var backendSection: some View {
         SettingsGroup("Backend") {
-            // Menu (not segmented): five options overflow a segmented control,
+            // Menu (not segmented): the options overflow a segmented control,
             // the same reason Preferences uses a menu picker here (TECH-WF1). 260pt
             // so the longest label ("Auto (cloud, fall back to local)") fits.
             SettingsRow("Backend", showsDivider: false) {
                 SettingsMenuPicker(
                     selection: $backend,
-                    options: [
-                        (WorkflowBackend?.none,      "Use global default"),
-                        (.some(.anthropic),          "Anthropic (cloud)"),
-                        (.some(.local),              "Local MLX"),
-                        (.some(.auto),               "Auto (cloud, fall back to local)"),
-                        (.some(.appleIntelligence),  "Apple Intelligence (on-device)"),
-                    ],
+                    options: Self.backendOptions,
                     width: 260
                 )
                 .disabled(ndaMode)
@@ -500,6 +494,15 @@ struct WorkflowEditor: View {
             }
         }
     }
+
+    /// The workflow backend picker's rows (UX31). Every pinnable backend, named
+    /// out of the one vocabulary, plus the inherit row. `claude_cli` and `openai`
+    /// were missing here while the global setting offered them, so a workflow
+    /// could not pin an engine the product already shipped; the pipeline accepted
+    /// both all along (see `WorkflowBackend`).
+    static let backendOptions: [(value: WorkflowBackend?, label: String)] =
+        [(value: WorkflowBackend?.none, label: "Use global default")]
+            + WorkflowBackend.allCases.map { (value: .some($0), label: $0.engine.pickerLabel) }
 
     /// UX21: the inline "model not downloaded" affordance. Shown when this
     /// workflow resolves to the on-device backend but the MLX model is not cached,
