@@ -83,6 +83,22 @@ enum LibraryScope: Hashable {
         return nil
     }
 
+    /// True when entering this scope drops whatever meeting was selected (UX33).
+    ///
+    /// A workflow scope is the only one that needs it, and it needs it because
+    /// the detail column puts a selected meeting ahead of the workflow
+    /// inspector: with any selection alive, picking a workflow in the rail
+    /// showed the meeting and the inspector was unreachable, which made a whole
+    /// pane an accident of selection state. Clearing is safe here in a way it is
+    /// not elsewhere: a workflow scope filters the very list the selection came
+    /// from, so the row is usually still on screen, one click away.
+    ///
+    /// Every other scope keeps the selection deliberately. `.allMeetings` in
+    /// particular is what a Facts / People / Ask / Quick Find / deeplink jump
+    /// switches to *before* selecting its target, so clearing there would undo
+    /// the navigation those surfaces just performed.
+    var clearsMeetingSelection: Bool { isWorkflow }
+
     var savedSearchID: SavedSearch.ID? {
         if case .saved(let id) = self { return id }
         return nil

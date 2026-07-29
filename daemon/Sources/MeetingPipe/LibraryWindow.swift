@@ -462,6 +462,11 @@ struct LibraryRootView: View {
     @State private var filter: MeetingFilter = MeetingFilter()
     /// UX24: true while the "Save as smart folder" naming sheet is up.
     @State private var isSavingSmartFolder: Bool = false
+    /// UX33: the Notion DB picker's cache, read-only here, so the workflow
+    /// inspector can name a workflow's Notion target. Never refreshed from this
+    /// window: `init` loads the cache the editor / Preferences / onboarding
+    /// already populate, and no Library action makes a network call.
+    @StateObject private var notionDBs = NotionDatabaseList()
     /// UX24: drives the rename sheet.
     @State private var renamingSavedSearch: SavedSearch? = nil
     /// The cross-meeting facts aggregate (DV1 + AI7). Owned here rather than inside
@@ -550,6 +555,13 @@ struct LibraryRootView: View {
             model.pendingScope = nil
         }
         .onChange(of: model.pendingTranscriptJump) { _, _ in resolveTranscriptJump() }
+        // UX33: entering a workflow scope drops the meeting selection, so the
+        // workflow inspector is what the detail column shows. The rule itself is
+        // `LibraryScope.clearsMeetingSelection`, which is why the jumps above can
+        // set `.allMeetings` and then a selection without this undoing them.
+        .onChange(of: scope) { _, newScope in
+            if newScope.clearsMeetingSelection { meetingSelection = [] }
+        }
         .sheet(item: $editingWorkflow, onDismiss: { editingWorkflow = nil }) { wf in
             if let store = model.workflowStore {
                 WorkflowEditorSheet(workflow: wf, store: store, localModelPreflight: model.coordinator?.localModelPreflight) {
@@ -978,9 +990,16 @@ struct LibraryRootView: View {
             MeetingDetailView(meeting: only)
         } else if case .workflow(let id) = scope, let wf = store.workflow(id: id) {
             WorkflowInspector(
-                workflow: wf,
-                recentMeetings: recentMeetings(for: wf, workflows: store.workflows),
-                onEdit: { editingWorkflow = wf }
+                presentation: WorkflowInspectorPresentation.make(
+                    workflow: wf,
+                    meetings: meetings(for: wf),
+                    sourceNames: sourceDisplayNames,
+                    notionNames: notionDatabaseNames
+                ),
+                onEdit: { editingWorkflow = wf },
+                // UX33: the recents are buttons now, and the selection they set
+                // lives here, not in the pane.
+                onSelectMeeting: { meetingSelection = [$0] }
             )
         } else {
             VStack(spacing: 8) {
@@ -994,12 +1013,23 @@ struct LibraryRootView: View {
         }
     }
 
-    /// Newest five meetings for this workflow, so the inspector doesn't duplicate MeetingStore's filter logic.
-    private func recentMeetings(for workflow: Workflow, workflows: [Workflow]) -> [Meeting] {
-        model.meetingStore.meetings
-            .filter { ($0.workflowName == workflow.name) }
-            .prefix(5)
-            .map { $0 }
+    /// This workflow's meetings, newest first, so the inspector doesn't duplicate
+    /// `MeetingStore`'s filter logic. Name-based, matching how `LibraryScope` and
+    /// the rail counts resolve a meeting to a workflow (TECH-B4), so the count
+    /// this feeds the inspector and the rail's own badge cannot disagree. UX33
+    /// hands over the whole scope rather than a pre-cut five: the count and the
+    /// last-meeting date come off the same list, and the cap belongs to the
+    /// presentation, where it is testable.
+    private func meetings(for workflow: Workflow) -> [Meeting] {
+        model.meetingStore.meetings.filter { $0.workflowName == workflow.name }
+    }
+
+    /// Notion database id to its title, from the picker's on-disk cache (UX22).
+    /// The inspector names a workflow's Notion target when the cache knows it
+    /// and says a plain "Notion" when it doesn't, rather than rendering eight
+    /// characters of a database id at the owner.
+    private var notionDatabaseNames: [String: String] {
+        Dictionary(uniqueKeysWithValues: notionDBs.entries.map { ($0.id, $0.title) })
     }
 
 }

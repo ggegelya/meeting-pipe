@@ -179,15 +179,27 @@ final class SummarizationEngineTests: XCTestCase {
         XCTAssertEqual(SummarizationEngine.anthropic.qualified, "Anthropic (cloud)")
     }
 
+    /// UX33 moved the row derivation onto `WorkflowInspectorPresentation`; the
+    /// fence follows the line rather than the view it used to live in.
     func test_the_workflow_inspector_reads_the_shared_vocabulary() {
-        XCTAssertEqual(inspector(pinning: .anthropic).backendLine, "Anthropic (cloud)")
-        XCTAssertEqual(inspector(pinning: .openai).backendLine, "OpenAI (cloud)")
-        XCTAssertEqual(inspector(pinning: .claudeCLI).backendLine, "Claude CLI (cloud)")
-        XCTAssertEqual(inspector(pinning: .local).backendLine, "Local MLX (on-device)")
-        XCTAssertEqual(inspector(pinning: nil).backendLine, "Global default")
+        XCTAssertEqual(backendLine(pinning: .anthropic), "Anthropic (cloud)")
+        XCTAssertEqual(backendLine(pinning: .openai), "OpenAI (cloud)")
+        XCTAssertEqual(backendLine(pinning: .claudeCLI), "Claude CLI (cloud)")
+        XCTAssertEqual(backendLine(pinning: .local), "Local MLX (on-device)")
+        XCTAssertEqual(backendLine(pinning: nil), "Global default")
         // NDA forces local whatever the pin says, and the row has to report the
         // engine that will actually run.
-        XCTAssertEqual(inspector(pinning: .anthropic, nda: true).backendLine, "Local MLX (on-device)")
+        XCTAssertEqual(backendLine(pinning: .anthropic, nda: true), "Local MLX (on-device)")
+    }
+
+    /// And the pane really renders that line: a `backendLine` nobody puts in a
+    /// row would pass the assertions above and show nothing.
+    func test_the_inspector_pane_carries_the_backend_row() {
+        let pane = WorkflowInspectorPresentation.make(
+            workflow: Workflow(name: "Client work", backend: .openai),
+            meetings: []
+        )
+        XCTAssertEqual(pane.row("Backend")?.value, "OpenAI (cloud)")
     }
 
     func test_the_busy_line_names_every_engine_a_re_run_can_request() {
@@ -220,15 +232,13 @@ final class SummarizationEngineTests: XCTestCase {
 
     // MARK: - helpers
 
-    private func inspector(pinning backend: WorkflowBackend?, nda: Bool = false) -> WorkflowInspector {
-        WorkflowInspector(
-            workflow: Workflow(
+    private func backendLine(pinning backend: WorkflowBackend?, nda: Bool = false) -> String {
+        WorkflowInspectorPresentation.backendLine(
+            for: Workflow(
                 name: "Client work",
                 backend: backend,
                 flags: WorkflowFlags(ndaMode: nda)
-            ),
-            recentMeetings: [],
-            onEdit: {}
+            )
         )
     }
 }
