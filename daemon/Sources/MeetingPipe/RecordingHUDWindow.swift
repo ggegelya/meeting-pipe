@@ -10,6 +10,49 @@ protocol RecordingHUDDelegate: AnyObject {
     func recordingHUDDidRequestToggleOffTheRecord(_ hud: RecordingHUDWindow)
 }
 
+/// Pure panel geometry for the recording HUD (UX35), in the house `decide` style: explicit
+/// inputs, nothing read off AppKit inside. Lifted off `RecordingHUDWindow` so the invariant that
+/// matters is pinned by a test instead of by re-reading `setOffTheRecord`.
+///
+/// The HUD has exactly two shapes, the compact pill and the degraded card. `offRecord` is a
+/// deliberate input that changes nothing: recording and off-the-record share one pill width, so
+/// toggling can never resize the panel. `HUDPanelGeometryTests` asserts exactly that, which is
+/// what stops a per-state width coming back.
+enum HUDPanelGeometry {
+    /// Shared pill width for the recording and off-the-record states.
+    ///
+    /// 76 -> 96 (UX35). The pill's widest content is the dot row (dot 8 + gap 5 + the state label
+    /// at 10pt medium), which lays out at 64pt for "Recording" and 83pt for "Off the record". 76
+    /// fit only the first, so off-the-record used to resize to a hand-picked 150 and carry ~67pt
+    /// of dead space, while the resting pill could not have shown the longer label at all. 96 is
+    /// 83 plus the same 12pt of side margin 76 gave "Recording", rounded onto the 4pt grid. Every
+    /// element in the pill is centred on its centerX or pinned to both edges, so one width is
+    /// layout-safe and the truncating workflow name only gains room (68pt of text width -> 88pt).
+    ///
+    /// This is the single place to resize the pill. UX46 adds a third control (flag a moment)
+    /// beside Stop and the off-record toggle, taking that row from 34 + 8 + 26 = 68pt to
+    /// 34 + 8 + 26 + 8 + 26 = 102pt, so it widens this constant rather than adding a second one.
+    static let pillWidth: CGFloat = 96
+
+    /// Degraded mode (TECH-UX4): the pill widens into a card so the banner text and retry button fit.
+    static let cardWidth: CGFloat = 232
+
+    // 132 -> 146 for the workflow attribution line (TECH-B9), 146 -> 162 for the TECH-UX8 voice-activity meter row, 162 -> 192 for the DSN25 Instrument port (the 22pt timer anchor, the record key, and the "Recording" label are all taller than what they replaced). Sized for the tallest (NDA two-row) case and allocated unconditionally so the HUD geometry doesn't shift between workflowed and un-workflowed meetings.
+    static let height: CGFloat = 192
+
+    static let bannerHeight: CGFloat = 60
+
+    /// The panel size for a HUD state. Degraded dominates: that card owns the geometry for as long
+    /// as the banner is up. Off-the-record never moves it, in either state, which is the UX35
+    /// contract and also what keeps clearing the banner mid-span from shrinking the pill under a
+    /// label it can no longer fit.
+    static func size(offRecord: Bool, degraded: Bool) -> CGSize {
+        degraded
+            ? CGSize(width: cardWidth, height: height + bannerHeight)
+            : CGSize(width: pillWidth, height: height)
+    }
+}
+
 /// Threading: every public method must run on the main queue. Same contract
 /// as `MeetingPromptWindow`.
 final class RecordingHUDWindow {
@@ -45,18 +88,12 @@ final class RecordingHUDWindow {
     /// can flip its glyph + tint to reflect the live state.
     private weak var offRecordButton: HUDOffRecordButton?
 
-    // 60 → 76: at 60 the "Recording" label (8pt dot + 5pt gap + 50pt text = 63pt) and
-    // workflow names past ~9 chars overflowed the pill and were sliced by the rounded
-    // mask. 76 gives the label margin and lets names up to "Engineering" fit.
-    private static let panelWidth: CGFloat = 76
-    // 132 → 146 for the workflow attribution line (TECH-B9), 146 → 162 for the TECH-UX8 voice-activity meter row, 162 → 192 for the DSN25 Instrument port (the 22pt timer anchor, the record key, and the "Recording" label are all taller than what they replaced). Sized for the tallest (NDA two-row) case and allocated unconditionally so the HUD geometry doesn't shift between workflowed and un-workflowed meetings.
-    private static let panelHeight: CGFloat = 192
     private static let edgeInset: CGFloat = 16
-    // Degraded mode (TECH-UX4): the pill widens into a card so the banner text and retry button fit.
-    private static let degradedPanelWidth: CGFloat = 232
-    private static let bannerHeight: CGFloat = 60
-    // Off-the-record (MIC14): widen the pill just enough for the longer "Off the record" label.
-    private static let offRecordPanelWidth: CGFloat = 150
+
+    /// The live off-the-record flag, mirrored onto the background view by `setOffTheRecord` for the
+    /// right-click menu's label. Read back here so the geometry decision gets the real state rather
+    /// than an assumption.
+    private var isOffTheRecord: Bool { (contentView as? HUDBackgroundView)?.isOffRecord ?? false }
 
     func present(source: AppSource?, workflow: Workflow? = nil, startedAt: Date, levelProvider: (() -> Float)? = nil) {
         dismiss(animated: false)
@@ -212,10 +249,10 @@ final class RecordingHUDWindow {
             banner.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 8),
             banner.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -8),
             banner.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -8),
-            banner.heightAnchor.constraint(equalToConstant: Self.bannerHeight),
+            banner.heightAnchor.constraint(equalToConstant: HUDPanelGeometry.bannerHeight),
             stopToBanner,
         ])
-        resizePanelAnchoringTopRight(width: Self.degradedPanelWidth, height: Self.panelHeight + Self.bannerHeight)
+        resizePanelAnchoringTopRight(to: HUDPanelGeometry.size(offRecord: isOffTheRecord, degraded: true))
     }
 
     /// Remove the degraded banner and shrink the HUD back to the compact pill.
@@ -226,15 +263,16 @@ final class RecordingHUDWindow {
         degradedBanner = nil
         stopBottomToBanner = nil
         stopBottomNormal?.isActive = true
-        resizePanelAnchoringTopRight(width: Self.panelWidth, height: Self.panelHeight)
+        resizePanelAnchoringTopRight(to: HUDPanelGeometry.size(offRecord: isOffTheRecord, degraded: false))
     }
 
     // MARK: Off the record (MIC14)
 
     /// Show or clear the persistent "Off the record" state: retitle + retint the state label so it
-    /// cannot be forgotten, and widen the pill just enough to fit the longer text. Idempotent.
-    /// Skips the resize while the degraded card owns the geometry (that rarer state dominates).
-    /// Main-queue only.
+    /// cannot be forgotten, flip the toggle's glyph, and drop the meter. Idempotent. Main-queue only.
+    ///
+    /// Deliberately does not resize (UX35): `HUDPanelGeometry.pillWidth` is sized for the longer
+    /// label, so both states share one width and the pill never jumps under the user's cursor.
     func setOffTheRecord(_ on: Bool) {
         recordingLabel?.stringValue = on ? "Off the record" : "Recording"
         recordingLabel?.textColor = on ? MPColors.pulse600 : MPColors.fgMuted
@@ -244,24 +282,21 @@ final class RecordingHUDWindow {
         // instant. Also the only cover for a stalled mic tap, which leaves the recorder's level
         // frozen at its last value: without this the meter would sit lit beside the label forever.
         if on { levelMeter?.level = 0 }
-        if degradedBanner == nil {
-            resizePanelAnchoringTopRight(width: on ? Self.offRecordPanelWidth : Self.panelWidth, height: Self.panelHeight)
-        }
     }
 
     /// Resize keeping the panel's top-right corner fixed, so growing the
     /// degraded card doesn't yank a HUD the user dragged elsewhere.
-    private func resizePanelAnchoringTopRight(width: CGFloat, height: CGFloat) {
+    private func resizePanelAnchoringTopRight(to size: CGSize) {
         guard let panel = panel else { return }
         let frame = panel.frame
-        let origin = NSPoint(x: frame.maxX - width, y: frame.maxY - height)
-        panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: true, animate: true)
+        let origin = NSPoint(x: frame.maxX - size.width, y: frame.maxY - size.height)
+        panel.setFrame(NSRect(origin: origin, size: size), display: true, animate: true)
     }
 
     // MARK: Panel construction
 
     private func makePanel(source: AppSource?, workflow: Workflow?) -> NSPanel {
-        let rect = NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight)
+        let rect = NSRect(origin: .zero, size: HUDPanelGeometry.size(offRecord: false, degraded: false))
         let panel = NSPanel(
             contentRect: rect,
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
@@ -283,7 +318,7 @@ final class RecordingHUDWindow {
     }
 
     private func makeContentView(source: AppSource?, workflow: Workflow?) -> NSView {
-        let bg = HUDBackgroundView(frame: NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight))
+        let bg = HUDBackgroundView(frame: NSRect(origin: .zero, size: HUDPanelGeometry.size(offRecord: false, degraded: false)))
         bg.cornerRadius = MPRadius.lg
         bg.host = self
 
@@ -310,9 +345,10 @@ final class RecordingHUDWindow {
         bg.addSubview(dot)
         self.pulseDot = dot
 
-        // "Recording" label beside the dot so the state is never colour-only. The
-        // dot + label sit as a centred row; 10pt matches the workflow line below and
-        // the pair fits the 76pt pill (it was clipped at the old 60pt width).
+        // "Recording" label beside the dot so the state is never colour-only. The dot + label sit
+        // as a centred row; 10pt matches the workflow line below. This row is what sizes the pill:
+        // 64pt here, 83pt once `setOffTheRecord` swaps in "Off the record", and
+        // `HUDPanelGeometry.pillWidth` is sized for the longer of the two (UX35).
         let recordingLabel = NSTextField(labelWithString: "Recording")
         recordingLabel.font = .systemFont(ofSize: 10, weight: MPType.medium)
         recordingLabel.textColor = MPColors.fgMuted
@@ -361,7 +397,7 @@ final class RecordingHUDWindow {
         // sensitive stretch to keep out of the notes; the glyph + tint flip to coral while the span
         // is open, mirroring the "Off the record" state label. Also reachable from the HUD's
         // right-click menu. The [Stop + toggle] pair is centred (Stop shifted left by half the
-        // toggle+gap), so it still fits the 76pt pill.
+        // toggle+gap), so it fits any pill width.
         let offRecord = HUDOffRecordButton(target: bg, action: #selector(HUDBackgroundView.didClickOffRecord))
         offRecord.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(offRecord)
@@ -405,7 +441,8 @@ final class RecordingHUDWindow {
             // The record key sits at the foot, pinned to the bottom; the top-anchored stack above
             // and this pin leave a flexible gap between, which absorbs the taller (NDA two-row)
             // workflow label. Shifted left by 17pt so [Stop + off-record toggle] reads as a centred
-            // pair (34 + 8 + 26 = 68pt within the 76pt pill).
+            // pair (34 + 8 + 26 = 68pt within the 96pt pill). UX46's third control changes both
+            // this offset and `HUDPanelGeometry.pillWidth`.
             stop.centerXAnchor.constraint(equalTo: bg.centerXAnchor, constant: -17),
             stopBottom,
             stop.widthAnchor.constraint(equalToConstant: RecordKey.Geometry.side),
@@ -423,8 +460,8 @@ final class RecordingHUDWindow {
         guard let screen = NSScreen.main else { return }
         let visible = screen.visibleFrame
         let origin = NSPoint(
-            x: visible.maxX - Self.panelWidth - Self.edgeInset,
-            y: visible.maxY - Self.panelHeight - Self.edgeInset
+            x: visible.maxX - HUDPanelGeometry.pillWidth - Self.edgeInset,
+            y: visible.maxY - HUDPanelGeometry.height - Self.edgeInset
         )
         panel.setFrameOrigin(origin)
     }
@@ -597,9 +634,11 @@ private final class PulseDotView: NSView {
 /// its own row; when NDA mode is on, a small uppercase coral "NDA" eyebrow
 /// stacks below it. Laid out as two real rows that collapse to just the name
 /// row when not NDA - the old fixed-height box pinned the name to the top and
-/// the badge to the bottom of a 14pt frame, so they overlapped ~10pt. The 76pt
-/// panel is still too narrow for an inline name + badge row, so the name keeps the
-/// full width (truncating tail) and NDA drops to its own line.
+/// the badge to the bottom of a 14pt frame, so they overlapped ~10pt. The name keeps
+/// the full width (truncating tail) and NDA drops to its own line, which holds at any
+/// pill width: an inline row would have to truncate the name against the badge, and a
+/// name is not bounded the way "NDA" is. UX35's extra room (68pt of text width -> 88pt)
+/// buys longer names before the tail truncates; it does not revisit the two-row shape.
 private final class HUDWorkflowLabel: NSView {
     private let nameLabel = NSTextField(labelWithString: "")
     private let ndaLabel = NSTextField(labelWithString: "NDA")
@@ -620,7 +659,7 @@ private final class HUDWorkflowLabel: NSView {
         nameLabel.lineBreakMode = .byTruncatingTail
         nameLabel.maximumNumberOfLines = 1
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
-        // Truncate the name rather than widen the fixed 76pt panel.
+        // Truncate the name rather than widen the fixed-width panel.
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addSubview(nameLabel)
 

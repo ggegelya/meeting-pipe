@@ -1,8 +1,14 @@
 // RecordingHUD - faithful recreation of RecordingHUDWindow.swift.
-// Shipped: a compact vertical floating pill, 60x162, top-right (16pt inset),
+// Shipped: a compact vertical floating pill, 96 wide, top-right (16pt inset),
 // always-on-top, hudWindow translucency, draggable. Exists because the menu-bar
 // coral dot is easy to miss, and one-click Stop is essential for a "this got
 // sensitive, kill it" moment.
+//
+// The 96 is one shared width for the recording and off-the-record states (UX35,
+// `HUDPanelGeometry.pillWidth`): it is sized for the longer "Off the record" label
+// so toggling never resizes the pill. This recreation does not model the
+// off-the-record state or its mic-slash toggle beside Stop, nor the shipped 192
+// height; both predate UX35 and are drift this file still owes.
 //
 // Layout (top to bottom): app glyph (24), the pulsing coral recording dot with
 // its "Recording" label, the elapsed timer (the 24px anchor, mono tabular, grown
@@ -35,7 +41,7 @@ const RecordingHUD = ({
   return (
     <div style={{
       position: "relative", boxSizing: "border-box",
-      width: degraded ? 232 : 60, minHeight: 162,
+      width: degraded ? 232 : 96, minHeight: 162,
       paddingTop: 12, paddingBottom: degraded ? 8 : 10,
       display: "flex", flexDirection: "column", alignItems: "center",
       borderRadius: "var(--mp-radius-lg)",
