@@ -1,6 +1,7 @@
 import AppKit
 
-/// Shared copy and presentation for the Library's Trash and export dialogs (ARCH5).
+/// Shared copy and presentation for the Library's Trash, export, and workflow-delete
+/// dialogs (ARCH5, extended by UX32).
 ///
 /// The same two dialogs shipped from three call sites (a row's context menu, the
 /// meeting detail header, and the batch actions pane) and the copy had already
@@ -27,6 +28,40 @@ enum LibraryDialogs {
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
         return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// Confirm deleting one workflow from a rail row (UX32). Returns true when the user
+    /// chose Delete.
+    ///
+    /// Every string is `WorkflowDeletion`'s, unmodified: the rail row and the editor sheet
+    /// are the same decision about the same workflow, so they have to ask the same question
+    /// (including the half the old copy omitted, that past meetings drop out of the
+    /// WORKFLOWS rail). The row is not a sheet and has no error slot of its own, so this is
+    /// an `NSAlert` like the Trash confirm above rather than a SwiftUI `.alert` needing
+    /// state in the root; the delete itself still goes through `WorkflowDeletion.run`.
+    static func confirmWorkflowDelete() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = WorkflowDeletion.confirmTitle
+        alert.informativeText = WorkflowDeletion.confirmMessage
+        alert.addButton(withTitle: WorkflowDeletion.confirmButton)
+        alert.addButton(withTitle: "Cancel")
+        // The same promotion UX30 made to the editor's button: a destructive action reads
+        // destructive, here in the one place the row's Delete is still reversible.
+        alert.buttons.first?.hasDestructiveAction = true
+        alert.alertStyle = .warning
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// Say why a workflow delete did not happen (UX32). The editor sheet lands its reason in
+    /// the field under the form; a rail row has nowhere to put one, and a refusal that says
+    /// nothing is exactly the defect UX30 fixed, so it gets a dialog.
+    static func reportWorkflowDeleteProblem(_ reason: String) {
+        let alert = NSAlert()
+        alert.messageText = "This workflow was not deleted"
+        alert.informativeText = reason
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     /// Folder picker for an export, returning the chosen directory or nil on cancel.

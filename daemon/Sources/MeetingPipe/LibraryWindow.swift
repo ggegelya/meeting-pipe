@@ -673,6 +673,27 @@ struct LibraryRootView: View {
         )
     }
 
+    // MARK: - Workflow rail rows (UX32)
+
+    /// The rail row's Delete: confirm with the copy the editor sheet confirms with, then
+    /// hand the delete to `WorkflowDeletion.run` (UX30). One flow, so a refusal is surfaced
+    /// here exactly as it is there rather than a second path re-deriving what a `false`
+    /// return meant.
+    private func deleteWorkflowFromRail(_ workflow: Workflow) {
+        guard let store = model.workflowStore else { return }
+        guard LibraryDialogs.confirmWorkflowDelete() else { return }
+        WorkflowDeletion.run(
+            id: workflow.id,
+            store: store,
+            // The rail's equivalent of the editor sheet closing, and the reason `dismiss`
+            // is not a no-op here: a scope still pointed at a deleted workflow renders an
+            // empty list with nothing on screen explaining it. Runs on success only, so a
+            // refused delete leaves the selection where it was.
+            dismiss: { if scope == .workflow(workflow.id) { scope = .allMeetings } },
+            report: { LibraryDialogs.reportWorkflowDeleteProblem($0) }
+        )
+    }
+
     @ViewBuilder
     private var saveSmartFolderSheet: some View {
         // Preview the folder that would actually be written, so the sheet shows the real
@@ -711,7 +732,11 @@ struct LibraryRootView: View {
                     // on the meeting-list bucketing, so it is overlaid here rather
                     // than folded into the memoized `build`.
                     counts: cachedCounts.with(factsOverdue: facts.overdueCount),
-                    onCreateWorkflow: { isCreatingWorkflow = true }
+                    onCreateWorkflow: { isCreatingWorkflow = true },
+                    // UX32: the row's own Edit and Delete. Edit reuses the sheet the
+                    // toolbar and the inspector already open; Delete is below.
+                    onEditWorkflow: { editingWorkflow = $0 },
+                    onDeleteWorkflow: deleteWorkflowFromRail
                 )
             } content: {
                 Group {

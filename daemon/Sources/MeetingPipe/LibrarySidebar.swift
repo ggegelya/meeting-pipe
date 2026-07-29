@@ -17,6 +17,16 @@ struct LibrarySidebar: View {
     /// Called on "+ New workflow". The root hosts the editor sheet so the sidebar needs no modal state.
     let onCreateWorkflow: () -> Void
 
+    /// UX32: the row's own "Edit workflow…", from the context menu or the swipe. Same host
+    /// hook the toolbar and inspector buttons use, so the sidebar stays free of modal state
+    /// here too. Reaching the editor used to mean selecting the row *and* having no meeting
+    /// selected, so that the inspector's Edit button was on screen at all.
+    let onEditWorkflow: (Workflow) -> Void
+    /// UX32: the row's own "Delete workflow…". The root confirms and runs
+    /// `WorkflowDeletion.run` (UX30), the one flow the editor sheet's Delete also goes
+    /// through, rather than the rail growing a second delete path.
+    let onDeleteWorkflow: (Workflow) -> Void
+
     var body: some View {
         List(selection: $selection) {
             Section {
@@ -82,6 +92,13 @@ struct LibrarySidebar: View {
                     )
                     .tag(LibraryScope.workflow(wf.id))
                     .listRowBackground(LibraryScope.workflow(wf.id) == selection ? Color.mpSelectionWash : Color.clear)
+                    // UX32: the two row entry points, both over the same pre-flighted
+                    // pair. Deleting a workflow used to be a five-step walk through the
+                    // editor sheet, which is paid once per row when cleaning duplicates.
+                    .contextMenu { workflowRowMenu(for: wf) }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        workflowRowSwipeActions(for: wf)
+                    }
                 }
                 Button(action: onCreateWorkflow) {
                     Label {
@@ -130,6 +147,52 @@ struct LibrarySidebar: View {
             ideal: LibraryLayout.sidebarIdealWidth,
             max: LibraryLayout.sidebarMaxWidth
         )
+    }
+
+    /// UX32: right-click on a workflow row. Mirrors the saved-folder menu one section up,
+    /// with the disabled-Delete caption UX29 uses for its clamped cloud engine: a disabled
+    /// row explains nothing on its own, so the reason sits under it in the quiet register
+    /// rather than in a dialog the user has to provoke.
+    @ViewBuilder
+    private func workflowRowMenu(for workflow: Workflow) -> some View {
+        let actions = WorkflowRowActions.resolve(workflowID: workflow.id, in: workflowStore.workflows)
+        Button(WorkflowRowActions.editTitle) { onEditWorkflow(workflow) }
+        Divider()
+        Button(WorkflowRowActions.deleteTitle, role: .destructive) { onDeleteWorkflow(workflow) }
+            .disabled(!actions.canDelete)
+            .accessibilityLabel(actions.deleteAccessibilityLabel)
+        if let reason = actions.deleteDisabledReason {
+            Text(reason)
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgSubtle))
+        }
+    }
+
+    /// UX32: trailing swipe on a workflow row, the same pair as the context menu.
+    ///
+    /// `allowsFullSwipe: false` on purpose: a full swipe fires its first action on momentum
+    /// alone, and the first action here destroys a workflow. Delete sits closest to the
+    /// trailing edge, as in every other trailing-swipe list, and still opens the same
+    /// confirmation.
+    ///
+    /// A swipe action has no caption slot, so on the default workflow the disabled Delete
+    /// carries its reason in the accessibility label only; the context menu above is where
+    /// that sentence is legible.
+    @ViewBuilder
+    private func workflowRowSwipeActions(for workflow: Workflow) -> some View {
+        let actions = WorkflowRowActions.resolve(workflowID: workflow.id, in: workflowStore.workflows)
+        Button(role: .destructive) { onDeleteWorkflow(workflow) } label: {
+            Label(WorkflowRowActions.deleteTitle, systemImage: "trash")
+        }
+        .disabled(!actions.canDelete)
+        .accessibilityLabel(actions.deleteAccessibilityLabel)
+        // The app's danger token, not the system red: No-System-Blue (DSN10) is the same
+        // rule for every native control colour the app can name.
+        .tint(.mpDanger)
+
+        Button { onEditWorkflow(workflow) } label: {
+            Label(WorkflowRowActions.editTitle, systemImage: "pencil")
+        }
     }
 
     /// Date/status filter scopes shown in the Library section, in display order.
