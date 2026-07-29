@@ -305,16 +305,55 @@ final class WorkflowInspectorTests: XCTestCase {
 
     // MARK: - Layout
 
-    /// The card is capped so it reads as a card; the cap is derived from the
-    /// detail column's floor rather than picked, so raising that floor cannot
-    /// silently leave the card full-bleed at the window minimum.
-    func test_the_card_still_has_side_margins_at_the_detail_column_floor() {
-        XCTAssertLessThanOrEqual(
-            WorkflowInspectorLayout.cardMeasure + 2 * WorkflowInspectorLayout.padding,
-            LibraryLayout.detailMinWidth
+    /// The cap is a ceiling, not a width. The first pass derived it from the
+    /// detail column's floor (`450 - 2 * padding` = 418, rounded to 416), which
+    /// sized the card for the narrowest window the app allows and then froze it
+    /// at every width: on a 1230pt pane that left 812pt of background, which is
+    /// the ribbon this task was filed to remove, only centred. What has to hold
+    /// now is the opposite relation, that the card grows past the floor-derived
+    /// figure, since `.frame(maxWidth:)` already shrinks it back at the floor.
+    func test_the_card_grows_past_the_width_the_narrowest_window_would_dictate() {
+        let floorDerived = LibraryLayout.detailMinWidth - 2 * WorkflowInspectorLayout.padding
+        XCTAssertGreaterThan(
+            WorkflowInspectorLayout.cardMaxWidth, floorDerived,
+            "a cap at the floor-derived width is a ribbon on every window wider than the minimum"
         )
-        // And it is a card, not the old 320pt ribbon.
-        XCTAssertGreaterThan(WorkflowInspectorLayout.cardMeasure, 320)
+    }
+
+    /// `design/README.md` ("Layout rules") puts the reading column at 640-720.
+    /// The card sits at the top of that band because a label/value grid is not
+    /// prose; the summary's own measure is deliberately lower (680) for the same
+    /// reason inverted. Pinned so a later widening has to argue with the design
+    /// system rather than drift past it.
+    func test_the_card_cap_stays_inside_the_design_systems_reading_band() {
+        XCTAssertGreaterThanOrEqual(WorkflowInspectorLayout.cardMaxWidth, 640)
+        XCTAssertLessThanOrEqual(WorkflowInspectorLayout.cardMaxWidth, 720)
+        XCTAssertGreaterThan(WorkflowInspectorLayout.cardMaxWidth, SummaryLayout.readingMeasure,
+                             "the grid earns more width than prose does; if these converge, say why")
+    }
+
+    /// The footer is the card's, not the pane's. It shipped as a full-pane
+    /// `bgRaised` plinth holding one control at the card's leading edge, three
+    /// times wider than the card above it, which is what made it read as a
+    /// different surface. Not observable at runtime, so pinned in the source the
+    /// way `WorkflowDeletionTests` pins a button style.
+    func test_the_footer_belongs_to_the_card_and_not_to_the_pane() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Sources/MeetingPipe/WorkflowInspector.swift"),
+            encoding: .utf8
+        )
+        guard let footer = source.range(of: "private var footer: some View") else {
+            return XCTFail("footer no longer exists under that name; re-point this fence")
+        }
+        let body = String(source[footer.lowerBound...].prefix(700))
+        XCTAssertFalse(body.contains("Color(MPColors.bgRaised)"),
+                       "a filled band under a narrower card reads as a separate surface, not as its footer")
+        XCTAssertTrue(body.contains("alignment: .trailing"),
+                      "Edit sits at the card's trailing edge so content-left and action-right bound the card")
     }
 
     // MARK: - Reachability (UX33 decision (a))

@@ -8,17 +8,23 @@ enum WorkflowInspectorLayout {
 
     /// Widest the card grows before it stops growing and centres instead.
     ///
-    /// Derived rather than picked: the detail column's floor is
-    /// `LibraryLayout.detailMinWidth` (450), so a card wider than
-    /// `450 - 2 * padding` = 418 has no side margin left at the window minimum
-    /// and reads as a full-bleed pane rather than a card at exactly the size the
-    /// window is most cramped. 416 is that number on the 4pt grid, and it sits
-    /// inside the 400-480 the task asked for. `WorkflowInspectorTests` pins the
-    /// relation, so raising the column floor cannot silently widen the card.
+    /// This was 416, derived as `LibraryLayout.detailMinWidth (450) - 2 * padding`
+    /// so the card would still carry a side margin at the window's narrowest.
+    /// That derivation was sound and answered the wrong question: it sizes the
+    /// card for the **narrowest window the app allows** and then freezes it at
+    /// every width, so on a 1230pt pane 812pt was background. This task was filed
+    /// to kill "a 320pt ribbon in an unbounded pane" and shipped a 416pt ribbon
+    /// in an unbounded pane; the spec's own "widen to fill the detail column with
+    /// a centered max around 400-480pt" asked for two things that cannot both be
+    /// true at that width. Owner picked 720 on 2026-07-29 after a mocked review.
     ///
-    /// The visual half is still an eyeball: this fixes the *ceiling*, not
-    /// whether 416 reads well on a 1600pt-wide window.
-    static let cardMeasure: CGFloat = 416
+    /// 720 is a *ceiling*, not a width: the cap sits inside the padding, so at
+    /// the 450pt floor the card is still `450 - 2 * padding` and shrinks with the
+    /// window exactly as before. It matches the top of the 640-720 reading column
+    /// `design/README.md` asks for. The summary's prose measure is 680 rather
+    /// than 720 on purpose (see `SummaryLayout.readingMeasure`): a label/value
+    /// grid is not prose, so the two numbers differ because the content does.
+    static let cardMaxWidth: CGFloat = 720
 }
 
 /// Inspector pane for a workflow rail scope. A header (identity, how many
@@ -57,7 +63,7 @@ struct WorkflowInspector: View {
                         recentSection
                     }
                 }
-                .frame(maxWidth: WorkflowInspectorLayout.cardMeasure, alignment: .leading)
+                .frame(maxWidth: WorkflowInspectorLayout.cardMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity)
                 .padding(WorkflowInspectorLayout.padding)
             }
@@ -172,18 +178,30 @@ struct WorkflowInspector: View {
 
     /// Outside the `ScrollView`, so the one action in the pane sits where it
     /// says it does whether the content is two rows or twenty.
+    ///
+    /// The footer belongs to the **card**, not to the pane. It used to be a
+    /// full-pane `bgRaised` plinth: a filled band running the whole 1230pt to
+    /// hold one ~140pt control, three times wider than the card above it, which
+    /// is why it read as a different surface rather than as this card's footer
+    /// (the owner's words were "something from another world"). Now it is the
+    /// card's width, carries a hairline instead of a fill, and puts Edit at the
+    /// card's trailing edge, so content-left and action-right bound the card.
+    /// `design/README.md` is explicit that resting surfaces get a hairline and no
+    /// fill; the capsule and `.mpGhost` were never the problem and are unchanged.
     private var footer: some View {
-        VStack(spacing: 0) {
-            Divider()
-            Button(action: onEdit) {
-                Label("Edit workflow", systemImage: "pencil")
-            }
-            .buttonStyle(.mpGhost)
-            .frame(maxWidth: WorkflowInspectorLayout.cardMeasure, alignment: .leading)
-            .frame(maxWidth: .infinity)
-            .padding(WorkflowInspectorLayout.padding)
+        Button(action: onEdit) {
+            Label("Edit workflow", systemImage: "pencil")
         }
-        .background(Color(MPColors.bgRaised))
+        .buttonStyle(.mpGhost)
+        .frame(maxWidth: WorkflowInspectorLayout.cardMaxWidth, alignment: .trailing)
+        .frame(maxWidth: .infinity)
+        .padding(WorkflowInspectorLayout.padding)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color(MPColors.border))
+                .frame(height: 1)
+                .frame(maxWidth: WorkflowInspectorLayout.cardMaxWidth)
+        }
     }
 
     private func sectionLabel(_ text: String) -> some View {
@@ -198,13 +216,55 @@ struct WorkflowInspector: View {
 private struct InspectorRow: View {
     let row: WorkflowInspectorPresentation.Row
 
+    /// Width of the label column in the grid form. Sized for the longest label
+    /// the presentation can emit ("Retention") at the uppercase tracked size,
+    /// with room to spare; the value column takes the rest.
+    static let labelWidth: CGFloat = 132
+
+    /// Below this the label column stops earning its keep and the row stacks, so
+    /// a narrow detail pane does not squeeze values into two-word ribbons. The
+    /// floor is `LibraryLayout.detailMinWidth`, where the card is ~418 wide.
+    static let gridFloor: CGFloat = 520
+
     var body: some View {
+        // A stacked eyebrow-over-value column is what made widening the card
+        // pointless on its own: extra width bought whitespace, not information.
+        // As a label/value grid the width is used, which is the difference
+        // between a card that fills its column and a ribbon that merely sits in
+        // a wider one (UX33, second pass).
+        ViewThatFits(in: .horizontal) {
+            grid
+            stacked
+        }
+    }
+
+    private var grid: some View {
+        HStack(alignment: .firstTextBaseline, spacing: MPSpace.s4) {
+            label
+                .frame(width: InspectorRow.labelWidth, alignment: .leading)
+            value
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minWidth: InspectorRow.gridFloor, alignment: .leading)
+    }
+
+    private var stacked: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(row.label)
-                .font(.mpTextXS.weight(.semibold))
-                .tracking(0.08 * 10)
-                .textCase(.uppercase)
-                .foregroundStyle(Color(MPColors.fgMuted))
+            label
+            value
+        }
+    }
+
+    private var label: some View {
+        Text(row.label)
+            .font(.mpTextXS.weight(.semibold))
+            .tracking(0.08 * 10)
+            .textCase(.uppercase)
+            .foregroundStyle(Color(MPColors.fgMuted))
+    }
+
+    private var value: some View {
+        VStack(alignment: .leading, spacing: 3) {
             Text(row.value)
                 .font(.mpTextSM)
                 .foregroundStyle(.primary)
