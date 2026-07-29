@@ -10,6 +10,57 @@ import XCTest
 /// the owner check the spec reserves, since rasterising is what T2 took away.
 final class SummaryLayoutTests: XCTestCase {
 
+    // MARK: - Detail-pane chrome (UX36, second pass)
+
+    /// Source of a file in the daemon target. SwiftUI layout is not observable at
+    /// runtime, so the two fences below pin their claims where they are actually
+    /// decided, the way `WorkflowDeletionTests` pins a button style.
+    private func daemonSource(_ relativePath: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // MeetingPipeTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // daemon
+        return try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
+    /// The regression this fence exists for: the tab underline was a bare
+    /// `Rectangle` sibling inside the button's `VStack`. A `Rectangle` is a greedy
+    /// shape, so with no width constraint it consumed every point offered, made
+    /// each tab button greedy, and let three buttons divide the whole pane while
+    /// the trailing `Spacer` got nothing. The strip read as left-aligned in source
+    /// and shipped as three tabs spread across 1230pt. Re-introducing the sibling
+    /// form is the only way to get that back, so that is what is pinned.
+    func test_the_tab_underline_sizes_to_its_label_and_not_to_the_pane() throws {
+        let view = try daemonSource("Sources/MeetingPipe/MeetingDetailView.swift")
+        XCTAssertTrue(view.contains(".overlay(alignment: .bottom)"),
+                      "the active-tab underline must be an overlay on the label, which sizes to the text")
+        guard let start = view.range(of: "private func tabButton"),
+              let end = view.range(of: "@ViewBuilder", range: start.upperBound ..< view.endIndex) else {
+            return XCTFail("tabButton no longer exists under that name; re-point this fence")
+        }
+        let body = String(view[start.lowerBound ..< end.lowerBound])
+        guard let overlay = body.range(of: ".overlay("),
+              let rect = body.range(of: "Rectangle()") else {
+            return XCTFail("tabButton no longer draws an underline the way this fence assumes")
+        }
+        XCTAssertLessThan(overlay.lowerBound, rect.lowerBound,
+                          "the Rectangle must sit inside the overlay; as a VStack sibling it is greedy and spreads the tabs")
+    }
+
+    /// The header and tab strip are chrome, banded on the raised surface, and
+    /// deliberately NOT on the summary's centred reading column: `TranscriptTab`
+    /// and `AudioTab` are full-width and uncapped, so a header indented to the
+    /// summary measure is misaligned against them the moment the tab changes.
+    func test_the_header_and_tabs_are_a_chrome_band_not_a_reading_column() throws {
+        let view = try daemonSource("Sources/MeetingPipe/MeetingDetailView.swift")
+        XCTAssertTrue(view.contains("private var chromeBand: some View"),
+                      "header and tab strip are banded together, so the divider under them reads as the band's edge")
+        XCTAssertTrue(view.contains(".background(Color(MPColors.bgRaised))"),
+                      "the band needs a surface, or it reads as the pane's first content rather than its chrome")
+        XCTAssertFalse(view.contains("SummaryLayout.readingMeasure"),
+                       "the chrome must not adopt the summary's measure; that misaligns the other two tabs")
+    }
+
     // MARK: The measure
 
     /// `design/README.md` ("Layout rules") puts the reading column at 640-720.

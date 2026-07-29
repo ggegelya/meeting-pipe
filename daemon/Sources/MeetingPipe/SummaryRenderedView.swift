@@ -11,7 +11,17 @@ enum SummaryLayout {
     /// name. It used to sit inside, which quietly made the real column
     /// 640 - 2 * 20 = 600pt: narrower than the 640-720 reading column
     /// `design/README.md` asks for, and the width the owner read as "cut off".
-    static let readingMeasure: CGFloat = 640
+    ///
+    /// Moved 640 to 680 on 2026-07-29, the nudge this task's spec pre-registered
+    /// and reserved for the owner's eye. It sits inside the 640-720 reading
+    /// column `design/README.md` asks for, and the extra 40pt lets the action
+    /// metadata band (owner, due, confidence, anchors) hold one line more often
+    /// before `ViewThatFits` drops it to two. Not taken further: at the body size
+    /// 720 puts a prose line near 100 characters, past where the eye reliably
+    /// finds the start of the next one, which is the whole reason a measure
+    /// exists. The inspector's card is 720 because a label/value grid is not
+    /// prose; matching the two numbers would be a consistency that isn't real.
+    static let readingMeasure: CGFloat = 680
 
     /// The gutter between the reading column and the pane edge. Applied outside
     /// `readingMeasure`, so a surface's whole block is measure + 2 * this.

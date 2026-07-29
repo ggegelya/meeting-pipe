@@ -61,11 +61,7 @@ struct MeetingDetailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                .padding(.bottom, 12)
-            tabStrip
+            chromeBand
             Divider().overlay(Color(MPColors.borderFaint))
             tabContent
         }
@@ -119,6 +115,32 @@ struct MeetingDetailView: View {
         .frame(width: 720, height: 560)
     }
 
+    // MARK: Chrome band
+
+    /// Title, metadata, provenance and the tab strip, banded together on the
+    /// raised surface so they read as the pane's chrome rather than as its first
+    /// content (UX36).
+    ///
+    /// The alternative, putting them on the Summary body's centred reading
+    /// column, was rejected after tracing the other two tabs: `TranscriptTab` and
+    /// `AudioTab` are full-width and uncapped, so a header indented to the
+    /// summary's measure would be misaligned against them the moment the tab
+    /// changed. Chrome spans, content centres beneath it, which is what the mac
+    /// does everywhere and what stops the eye expecting a shared left edge in the
+    /// first place. The band's bottom hairline is the `Divider` that already sat
+    /// under the tabs.
+    private var chromeBand: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 12)
+            tabStrip
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(MPColors.bgRaised))
+    }
+
     // MARK: Tab strip
 
     private var tabStrip: some View {
@@ -136,19 +158,26 @@ struct MeetingDetailView: View {
         return Button {
             selectedTab = tab.rawValue
         } label: {
-            VStack(spacing: 0) {
-                Text(tab.label)
-                    .font(.mpTextSM.weight(.medium))
-                    .foregroundStyle(isActive ? Color(MPColors.fg) : Color(MPColors.fgMuted))
-                    .padding(.vertical, 9)
-                Rectangle()
-                    .fill(isActive ? Color(MPColors.signal600) : Color.clear)
-                    .frame(height: 1.5)
-                    .cornerRadius(0.75)
-            }
-            .padding(.horizontal, 0)
-            .padding(.trailing, 16)
-            .contentShape(Rectangle())
+            // The underline is an overlay on the label, not a sibling in a
+            // `VStack`. As a sibling it was a bare `Rectangle`, which is a greedy
+            // shape: with no width constraint it took every point offered, which
+            // made each tab button greedy, which let the three of them divide the
+            // whole pane and starved the trailing `Spacer`. The strip read as
+            // left-aligned in source and rendered as three tabs spread across
+            // 1230pt with an underline far wider than its word (UX36). As an
+            // overlay it sizes to the text, which is what a tab underline means.
+            Text(tab.label)
+                .font(.mpTextSM.weight(.medium))
+                .foregroundStyle(isActive ? Color(MPColors.fg) : Color(MPColors.fgMuted))
+                .padding(.vertical, 9)
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(isActive ? Color(MPColors.signal600) : Color.clear)
+                        .frame(height: 1.5)
+                        .cornerRadius(0.75)
+                }
+                .padding(.trailing, 16)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
