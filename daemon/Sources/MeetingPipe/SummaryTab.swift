@@ -130,18 +130,27 @@ struct SummaryTab: View {
     /// Current vs candidate, stacked, reusing the structured renderer (TECH-A16).
     private func comparePane(current: MeetingSummary, candidate: MeetingSummary) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Current", systemImage: "doc.text")
-                .font(.headline)
-                .foregroundStyle(Color(MPColors.fgMuted))
+            compareHeading("Current", systemImage: "doc.text", tint: Color(MPColors.fgMuted))
             SummaryRenderedView(summary: current, onCite: onJumpToTranscript)
             Divider()
             // PRODUCT "no sparkle" rule: a plain inspect glyph, label "Candidate".
-            Label("Candidate", systemImage: "doc.text.magnifyingglass")
-                .font(.headline)
-                .foregroundStyle(.mpSignal)
+            compareHeading("Candidate", systemImage: "doc.text.magnifyingglass", tint: .mpSignal)
             SummaryRenderedView(summary: candidate, onCite: onJumpToTranscript)
         }
         .padding(.bottom, 8)
+    }
+
+    /// UX36: the headings ride the same centered reading column as the summaries
+    /// they label. They used to sit flush at the pane's leading edge, which was
+    /// only 20pt off the summary text below them; once that block is centered, a
+    /// left-parked heading is a whole margin away from the column it names.
+    private func compareHeading(_ title: String, systemImage: String, tint: Color) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.headline)
+            .foregroundStyle(tint)
+            .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
+            .padding(.horizontal, SummaryLayout.contentPadding)
+            .frame(maxWidth: .infinity, alignment: .top)
     }
 
     /// Footer: re-run/keep/discard for the local preview (TECH-A16). Republish
@@ -240,9 +249,10 @@ struct SummaryTab: View {
                 .strokeBorder(Color(MPColors.border), lineWidth: 0.5)
         )
         .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
-        .padding(.horizontal, MPSpace.s5)
-        .padding(.bottom, MPSpace.s5)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, SummaryLayout.contentPadding)
+        .padding(.bottom, SummaryLayout.contentPadding)
+        // UX36: centered under the reader it follows, not parked left.
+        .frame(maxWidth: .infinity, alignment: .top)
     }
 
     /// Prompt editor: edit the context, generate a candidate, never auto-publish.
@@ -283,9 +293,11 @@ struct SummaryTab: View {
                 }
             }
         }
-        .padding(MPSpace.s5)
+        // UX36: same shape as the reader this pane replaces, gutter outside the
+        // measure and the block centered.
         .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(SummaryLayout.contentPadding)
+        .frame(maxWidth: .infinity, alignment: .top)
     }
 
     private func beginReprocess() {
@@ -418,7 +430,7 @@ struct SummaryTab: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: 460, maxHeight: 150)
+                .frame(maxWidth: SummaryLayout.noticeMeasure, maxHeight: 150)
             }
             if meeting.failureSuggestsModelDownload {
                 // UX21: the on-device model was not downloaded, so a regulated / NDA
@@ -432,7 +444,7 @@ struct SummaryTab: View {
                             .font(.mpTextSM)
                             .foregroundStyle(Color(MPColors.fgMuted))
                             .multilineTextAlignment(.center)
-                            .frame(maxWidth: 460)
+                            .frame(maxWidth: SummaryLayout.noticeMeasure)
                         Button("Retry pipeline") { runRetry() }
                             .controlSize(.large)
                     } else {
@@ -593,7 +605,7 @@ struct SummaryTab: View {
 
     private func editorBody(model: CorrectionViewModel) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            CorrectionEditorBody(model: model, contentPadding: 16, showsNotesField: true)
+            CorrectionEditorBody(model: model, showsNotesField: true)
             Divider()
             footer(model: model)
                 .padding(.horizontal, 16)

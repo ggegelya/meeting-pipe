@@ -4,8 +4,12 @@ import SwiftUI
 /// Shared editor form driving a `CorrectionViewModel`. Used by `CorrectionWindow` (standalone) and the Summary tab (TECH-A5 inline). No header, footer, or buttons - call sites compose those.
 struct CorrectionEditorBody: View {
     @ObservedObject var model: CorrectionViewModel
-    /// Inline pane (Library ~480px) passes a smaller value to avoid squeezing the fields further; standalone window uses the default 20pt.
-    var contentPadding: CGFloat = 20
+    /// Gutter outside the reading measure. The inline pane used to pass a smaller
+    /// 16pt to avoid squeezing the fields, back when the padding sat *inside* the
+    /// cap and so ate into the measure; UX36 moved it outside, the fields get the
+    /// full measure either way, and both call sites now pass the same gutter as
+    /// the reader so the crossfade does not shift the column by 4pt a side.
+    var contentPadding: CGFloat = SummaryLayout.contentPadding
     /// Library inline form hides the Notes field to reduce visual weight (the header chip already shows backend/model). Standalone window shows it.
     var showsNotesField: Bool = true
 
@@ -35,11 +39,13 @@ struct CorrectionEditorBody: View {
                     notesField
                 }
             }
-            .padding(contentPadding)
             // UX13: cap to the read view's reading column so the edit form lines
-            // up with the summary it replaces instead of running wider.
+            // up with the summary it replaces instead of running wider. UX36: the
+            // gutter moved outside that cap and the block is centered, matching
+            // the reader modifier for modifier.
             .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(contentPadding)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
     }
 

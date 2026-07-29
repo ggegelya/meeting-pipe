@@ -6,7 +6,23 @@ import SwiftUI
 /// (`CorrectionEditorBody`) both cap to it, so the summary reads like paper and
 /// the edit form lines up with the reader it replaces rather than drifting wider.
 enum SummaryLayout {
+    /// The text column itself, glyph edge to glyph edge. UX36 moved the gutter
+    /// *outside* this cap, so the number is now the measure a typographer would
+    /// name. It used to sit inside, which quietly made the real column
+    /// 640 - 2 * 20 = 600pt: narrower than the 640-720 reading column
+    /// `design/README.md` asks for, and the width the owner read as "cut off".
     static let readingMeasure: CGFloat = 640
+
+    /// The gutter between the reading column and the pane edge. Applied outside
+    /// `readingMeasure`, so a surface's whole block is measure + 2 * this.
+    static let contentPadding: CGFloat = MPSpace.s5
+
+    /// The narrower measure for the centered state panels (the failed state's
+    /// reason dump and its model-download notice). These were two loose `460`
+    /// literals that shadowed the shared constant and would not have tracked any
+    /// change to it. Deliberately tighter than `readingMeasure`: this text is
+    /// centered rather than left-aligned, and centered prose reads worse long.
+    static let noticeMeasure: CGFloat = 460
 }
 
 /// Renders a typed `MeetingSummary` as SwiftUI sections. Inline emphasis/code/links inside bullets use per-bullet `AttributedString` parsing.
@@ -88,9 +104,16 @@ struct SummaryRenderedView: View {
             }
             // TECH-UI-4: the detected-language indicator moved to the detail header caption row.
         }
-        .padding(MPSpace.s5)
+        // UX36: the cap sits on the text, the gutter outside it, so 640 is the
+        // real measure rather than 640 minus two paddings.
         .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(SummaryLayout.contentPadding)
+        // Centered, not parked left. The detail column has a floor and no ceiling
+        // (LibraryLayout), so every pt past the measure used to become dead space
+        // on the right; framing the column like a page keeps the margins even.
+        // `.top` is `Alignment(horizontal: .center, vertical: .top)`, which is the
+        // pairing this wants: centered across, pinned to the top of the scroller.
+        .frame(maxWidth: .infinity, alignment: .top)
         .textSelection(.enabled)
     }
 
@@ -322,19 +345,11 @@ struct ActionItemRow: View {
                     .foregroundStyle(Color(action.resolved ? MPColors.fgMuted : MPColors.fg))
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if !chipRow.isEmpty || !action.evidence.isEmpty {
-                HStack(spacing: 6) {
-                    Spacer().frame(width: 16)
-                    ForEach(chipRow, id: \.text) { chip in
-                        Self.chip(chip)
-                    }
-                    // Same row as owner / due / confidence, so an action's
-                    // metadata stays one band rather than two.
-                    EvidenceChips(anchors: action.evidence, onCite: onCite)
-                }
-                // A resolved row recedes rather than leaving: the chips stay
-                // readable but stop competing with the open commitments above.
-                .opacity(action.resolved ? 0.7 : 1)
+            if hasMetadataBand {
+                metadataBand
+                    // A resolved row recedes rather than leaving: the chips stay
+                    // readable but stop competing with the open commitments above.
+                    .opacity(action.resolved ? 0.7 : 1)
             }
         }
         .padding(.vertical, MPSpace.s1)
@@ -378,7 +393,78 @@ struct ActionItemRow: View {
         let tint: Color
     }
 
-    private var chipRow: [Chip] {
+    // MARK: The metadata band (UX36)
+
+    /// Indents the band under the task text, past the glyph column (the caption
+    /// glyph plus `MPSpace.s2`). Was an inline `Spacer().frame(width: 16)`; a
+    /// leading pad states the same thing once for both wrap variants.
+    private static let metadataIndent: CGFloat = 16
+
+    /// The anchors this row can actually show. `EvidenceChips` draws nothing
+    /// without a jump handler, so a static surface (the digest reader, the A16
+    /// compare pane) has none whatever the summary carries, and the band must not
+    /// reserve a line, or a whole band, for chips that will not appear.
+    var shownEvidence: [MeetingSummary.Evidence] {
+        onCite == nil ? [] : action.evidence
+    }
+
+    /// Whether this row has a metadata band at all.
+    var hasMetadataBand: Bool { !chipRow.isEmpty || !shownEvidence.isEmpty }
+
+    /// Owner / due / confidence plus FEAT10's anchors: one line while the column
+    /// is wide enough, wrapped to two when it is not. Before UX36 this was a
+    /// single non-wrapping `HStack`, so a long owner name plus a few anchors
+    /// squeezed every chip's text at the narrow end of the detail column.
+    ///
+    /// The pick was `ViewThatFits` over the trailing-truncation policy the spec
+    /// also offered. Truncation has to choose something to sacrifice and both
+    /// candidates here are bad: the owner is the most load-bearing fact on an
+    /// action item (who owes it) and a clipped "Alex Nov..." can name two people,
+    /// while the anchors are the row's only route back to the recording. In a pane
+    /// that already scrolls vertically a second line costs nothing, so paying
+    /// width with height is the cheaper trade. It also converges on the shape the
+    /// bullet rows already use, where anchors sit on their own line under the
+    /// point rather than interrupting it.
+    ///
+    /// `MeetingRow` deliberately dropped `ViewThatFits`, but that was a `List`
+    /// problem: NSTableView caches row heights, so the branch picked at first
+    /// measure outlived the width that picked it. These rows sit in a `LazyVStack`
+    /// inside a `ScrollView`, which caches no height and re-measures on a width
+    /// change like any other view.
+    ///
+    /// Both variants read the same `chipRow` / `shownEvidence`, so the wrap cannot
+    /// drop content the flat line showed.
+    private var metadataBand: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) {
+                chipViews
+                if !shownEvidence.isEmpty { evidenceView }
+            }
+            VStack(alignment: .leading, spacing: MPSpace.s1) {
+                if !chipRow.isEmpty {
+                    HStack(spacing: 6) { chipViews }
+                }
+                if !shownEvidence.isEmpty { evidenceView }
+            }
+        }
+        .padding(.leading, ActionItemRow.metadataIndent)
+    }
+
+    @ViewBuilder
+    private var chipViews: some View {
+        ForEach(chipRow, id: \.text) { chip in
+            Self.chip(chip)
+        }
+    }
+
+    private var evidenceView: some View {
+        EvidenceChips(anchors: shownEvidence, onCite: onCite)
+    }
+
+    /// The owner / due / confidence chips, in reading order. Internal rather than
+    /// private for the same reason `glyphName` and `toggleLabel` are: it is the
+    /// seam a test can pin without rasterising the row (the T2 no-snapshots rule).
+    var chipRow: [Chip] {
         var chips: [Chip] = []
         if !action.owner.isEmpty {
             chips.append(Chip(text: action.owner, systemImage: "person", tint: .mpSignal))
