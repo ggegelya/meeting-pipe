@@ -340,7 +340,7 @@ struct BatchActionsPane: View {
                             .foregroundStyle(Color(MPColors.fgSubtle))
                         Spacer()
                         Button("Move to Trash") { confirmingDelete = true }
-                            .buttonStyle(MPDangerButtonStyle())
+                            .buttonStyle(.mpDanger)
                             .disabled(isRunning)
                     }
                 }
@@ -638,23 +638,7 @@ private struct MPSecondaryButtonStyle: ButtonStyle {
     }
 }
 
-/// Pulse-tinted outline button, no fill at rest (matches the recording HUD's Stop button).
-private struct MPDangerButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.mpTextSM.weight(.medium))
-            .foregroundStyle(Color(MPColors.pulse500))
-            .padding(.horizontal, 10)
-            .frame(height: 24)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(configuration.isPressed
-                          ? Color(MPColors.pulse600).opacity(0.18)
-                          : Color(MPColors.pulse600).opacity(0.08))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(Color(MPColors.pulse600).opacity(0.32), lineWidth: 0.5)
-            )
-    }
-}
+// The destructive button style used by the Danger card lives in
+// `Preferences/PreferencesControls.swift` as `MPDangerButtonStyle` / `.mpDanger` (UX30).
+// It was declared private here, so the workflow editor could not see it and concluded
+// the app had no destructive button at all.

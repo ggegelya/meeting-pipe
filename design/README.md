@@ -154,8 +154,12 @@ The design system is built on three motifs:
   surfaces) for the primary action and live capture indicator. Used as a fill,
   or as a 4 to 10% tint (selected row, mention). The display tone flips bright
   in dark so teal still reads as lit.
-- **Pulse** (`#E5484D`) is reserved exclusively for the recording dot and the
-  destructive confirm in dialogs.
+- **Pulse** (`#E5484D`) is reserved for capture and destruction: the recording
+  dot, the destructive confirm in dialogs, and the tinted-outline destructive
+  button (`.mpDanger`, which speaks the recording HUD's Stop-button language).
+  That button is worn by the Library's *Move to Trash* and the workflow
+  editor's *Delete*; a third destructive control reaches for the same style
+  rather than inventing one. Nothing decorative uses pulse.
 - **On-air** (`#0FBFAC`) is the Instrument LED accent, capture surfaces only:
   meter segments, level dots, the record-key ring, the live mic waveform. Part
   of the one-signal budget, not a second accent.
@@ -240,7 +244,10 @@ The design system is built on three motifs:
 
 ### Corner radii (highly intentional, mac-native)
 - 4px tags / chips / checkbox
-- 8px inputs, menus, nav rows; **buttons are capsules** (full-rounded, macOS 26)
+- 8px inputs, menus, nav rows; **buttons are capsules** (full-rounded, macOS 26).
+  One exception, deliberate: the destructive `.mpDanger` button keeps the HUD
+  Stop button's 6px rounded rect, so a delete never reads as an ordinary capsule
+  action sitting next to one.
 - 14px cards
 - **18px panels / sheets** (matches `NSPanel cornerRadius`)
 - 22px hero / marketing cards

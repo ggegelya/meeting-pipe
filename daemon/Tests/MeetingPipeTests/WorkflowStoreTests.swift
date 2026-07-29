@@ -174,6 +174,37 @@ final class WorkflowStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
     }
 
+    func test_update_replaces_an_existing_workflow_and_keeps_the_single_default() throws {
+        let dir = try makeTempDir()
+        let store = WorkflowStore(directory: dir)
+        let def = Workflow(name: "General", isDefault: true, order: 0)
+        var other = Workflow(name: "Client", isDefault: false, order: 1)
+        try store.upsert(def)
+        try store.upsert(other)
+
+        other.name = "Client work"
+        other.isDefault = true
+        XCTAssertTrue(try store.update(other))
+        XCTAssertEqual(store.workflows.count, 2, "update replaces, never appends")
+        XCTAssertEqual(store.workflows.first { $0.id == other.id }?.name, "Client work")
+        XCTAssertEqual(store.workflows.filter(\.isDefault).map(\.id), [other.id])
+    }
+
+    func test_update_refuses_an_unknown_id_and_writes_nothing() throws {
+        // UX30's belt: the editor's Save goes through `update`, so a sheet left open over
+        // a deleted workflow cannot append it back the way `upsert` would.
+        let dir = try makeTempDir()
+        let store = WorkflowStore(directory: dir)
+        let def = Workflow(name: "General", isDefault: true, order: 0)
+        try store.upsert(def)
+
+        let stranger = Workflow(name: "Ghost", isDefault: false, order: 1)
+        XCTAssertFalse(try store.update(stranger))
+        XCTAssertEqual(store.workflows.map(\.name), ["General"])
+        let file = dir.appendingPathComponent("\(stranger.id.uuidString).toml")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
     func test_reorder_assigns_order_indexes() throws {
         let dir = try makeTempDir()
         let store = WorkflowStore(directory: dir)

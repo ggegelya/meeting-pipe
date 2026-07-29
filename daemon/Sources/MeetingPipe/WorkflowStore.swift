@@ -130,6 +130,22 @@ final class WorkflowStore: ObservableObject {
         try persistAll()
     }
 
+    /// Replace an existing workflow. Returns false, changing nothing, when no workflow
+    /// carries this id.
+    ///
+    /// UX30's belt against the silent undo. An editor only ever edits something that is
+    /// already in the store (even the "New workflow" sheet persists its stub on open), so
+    /// its Save is an update by definition and `upsert`'s append branch is unreachable
+    /// except by accident. The accident was real: after a confirmed delete left the sheet
+    /// open, one Return hit `.defaultAction` Save and appended the deleted workflow back
+    /// with no message either way. An editor Save that finds nothing to update says so.
+    @discardableResult
+    func update(_ workflow: Workflow) throws -> Bool {
+        guard workflows.contains(where: { $0.id == workflow.id }) else { return false }
+        try upsert(workflow)
+        return true
+    }
+
     /// Remove the workflow with the given id. Returns false (no-op) when not found or when the workflow is the default.
     ///
     /// The default guard is real (the matcher has nothing to fall back to without one),

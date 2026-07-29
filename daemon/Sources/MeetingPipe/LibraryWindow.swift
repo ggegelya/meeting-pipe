@@ -1054,8 +1054,11 @@ private struct NewWorkflowSheet: View {
                     .padding(.horizontal, 18)
                     .padding(.vertical, 12)
                     Divider()
-                    // Save commits (keeping the stub, renamed) and closes.
-                    WorkflowEditor(workflow: s, store: store, startsBlank: true, onNameChange: { liveName = $0 }, onCommit: { onClose(s.id) }, localModelPreflight: localModelPreflight)
+                    // Save commits (keeping the stub, renamed) and closes on the new id so
+                    // the rail routes to it. Delete closes on nil instead (UX30): the
+                    // stub is gone, and routing the rail to a workflow scope whose id no
+                    // longer exists is the same stranding in a different place.
+                    WorkflowEditor(workflow: s, store: store, startsBlank: true, onNameChange: { liveName = $0 }, onCommit: { onClose(s.id) }, onDelete: { onClose(nil) }, localModelPreflight: localModelPreflight)
                         .padding(20)
                 }
             } else {

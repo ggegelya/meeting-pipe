@@ -597,3 +597,62 @@ struct SettingsSecretField: View {
         }
     }
 }
+
+// MARK: - Danger button
+
+/// Pulse-tinted outline button for a destructive action (matches the recording HUD's
+/// Stop button). No fill at rest, so it carries weight without becoming the one filled
+/// primary on its surface, which is what DSN28 moved inline buttons off.
+///
+/// UX30 promoted this out of `BatchActionsPane`'s private scope. It shipped there for the
+/// Library's "Move to Trash" and was invisible to everything else, so the workflow editor
+/// re-derived from its absence that the app had no destructive button and rendered Delete
+/// as a neutral ghost capsule with the same weight as Save beside it. Two consumers now,
+/// one declaration; a third destructive control reaches for `.mpDanger` rather than a
+/// third copy.
+struct MPDangerButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Rendered(configuration: configuration)
+    }
+
+    /// A nested View for the same reason `MPGhostButtonStyle` has one: a ButtonStyle
+    /// struct is built once and does not re-read the environment, so `isEnabled` and
+    /// reduce-motion have to be read by a view SwiftUI re-evaluates. The disabled dimming
+    /// is not cosmetic here: this style is worn by controls that disable themselves (the
+    /// editor's Delete on the default workflow, "Move to Trash" mid-batch), and a
+    /// destructive button that reads live while it is inert is the same class of untruth
+    /// UX30 exists to fix.
+    struct Rendered: View {
+        let configuration: ButtonStyleConfiguration
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            configuration.label
+                .font(.mpTextSM.weight(.medium))
+                .foregroundStyle(Color(MPColors.pulse500))
+                .padding(.horizontal, 10)
+                .frame(height: MPButtonMetrics.height)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(configuration.isPressed
+                              ? Color(MPColors.pulse600).opacity(0.18)
+                              : Color(MPColors.pulse600).opacity(0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(Color(MPColors.pulse600).opacity(0.32), lineWidth: 0.5)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .opacity(isEnabled ? 1 : 0.45)
+                .scaleEffect(configuration.isPressed ? MPButtonMetrics.pressScale : 1)
+                .animation(reduceMotion ? nil : .easeOut(duration: MPMotion.durPress),
+                           value: configuration.isPressed)
+        }
+    }
+}
+
+extension ButtonStyle where Self == MPDangerButtonStyle {
+    /// The design-system destructive button, the sibling of `.mpGhost` / `.mpIcon`.
+    static var mpDanger: MPDangerButtonStyle { MPDangerButtonStyle() }
+}

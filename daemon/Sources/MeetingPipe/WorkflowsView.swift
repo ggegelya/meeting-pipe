@@ -49,6 +49,12 @@ struct WorkflowEditor: View {
     /// Called after a successful Save so the host sheet can dismiss; Save now
     /// commits *and* closes instead of silently persisting with no visible change.
     var onCommit: (() -> Void)? = nil
+    /// Called after a *successful* delete, for the same reason (UX30): a confirmed delete
+    /// used to leave the sheet open over a workflow that no longer existed. Defaults to
+    /// `onCommit`, which is the right close path for the edit sheet. The new-workflow
+    /// sheet overrides it because its commit hook routes the rail to the id it just
+    /// created, and after a delete that id names nothing.
+    var onDelete: (() -> Void)? = nil
     /// UX21: lets the editor offer an inline model download when this workflow
     /// resolves to the on-device backend but the MLX model is not yet cached. Nil
     /// in headless tests and any host that has no daemon behind it.
@@ -112,11 +118,11 @@ struct WorkflowEditor: View {
         .onChange(of: name) { _, newName in onNameChange?(newName) }
         .onChange(of: ndaMode) { _, _ in refreshLocalModelMissing() }
         .onChange(of: backend) { _, _ in refreshLocalModelMissing() }
-        .alert("Delete this workflow?", isPresented: $pendingDeleteAlert) {
+        .alert(WorkflowDeletion.confirmTitle, isPresented: $pendingDeleteAlert) {
             Button("Cancel", role: .cancel) {}
-            Button("Delete", role: .destructive, action: deleteSelf)
+            Button(WorkflowDeletion.confirmButton, role: .destructive, action: deleteSelf)
         } message: {
-            Text("Meetings already recorded keep their workflow metadata; only future meetings stop matching this workflow.")
+            Text(WorkflowDeletion.confirmMessage)
         }
     }
 
@@ -600,16 +606,32 @@ struct WorkflowEditor: View {
                 .buttonStyle(.mpGhost)
                 .keyboardShortcut(.defaultAction)
             Spacer()
-            // Neutral ghost capsule + trash glyph; the destructive emphasis lives
-            // in the confirmation alert's `.destructive` Delete, matching DSN28's
-            // move off colored inline buttons (there is no `.mpDanger` capsule).
+            // UX30: the shared destructive style, not a neutral ghost capsule. The comment
+            // that used to sit here justified the ghost with "there is no `.mpDanger`
+            // capsule", which was never true: the style shipped for the Library's own
+            // "Move to Trash", just declared private inside `BatchActionsPane`. It is now
+            // `.mpDanger` in `Preferences/PreferencesControls.swift` and both use it, so
+            // this control carries the same weight as every other delete in the app
+            // instead of reading like a peer of Save.
+            if workflow.isDefault {
+                Text(WorkflowDeletion.defaultDisabledReason)
+                    .font(.mpTextXS)
+                    .foregroundStyle(Color(MPColors.fgMuted))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.trailing, 8)
+            }
             Button(role: .destructive) {
                 pendingDeleteAlert = true
             } label: {
                 Label("Delete", systemImage: "trash")
             }
-            .buttonStyle(.mpGhost)
+            .buttonStyle(.mpDanger)
             .disabled(workflow.isDefault)
+            // The disabled control used to give no reason for being disabled. The caption
+            // above is the visible half; these carry it to the tooltip and to VoiceOver,
+            // which the caption alone would not reach in reading order.
+            .help(workflow.isDefault ? WorkflowDeletion.defaultDisabledReason : "")
+            .accessibilityHint(workflow.isDefault ? WorkflowDeletion.defaultDisabledReason : "")
         }
         .padding(.top, 4)
     }
@@ -669,7 +691,15 @@ struct WorkflowEditor: View {
         clone.flags.redactMutedSpans = redactMutedSpans
         clone.retention = WorkflowRetention(policy: retentionPolicy, afterDays: retentionAfterDays)
         do {
-            try store.upsert(clone)
+            // `update`, not `upsert` (UX30): the editor always edits something the store
+            // already holds, even in the New workflow sheet, whose stub is persisted on
+            // open. Routing Save through the update-only door is the belt against the
+            // silent undo, so a Return aimed at a workflow that was deleted out from under
+            // this sheet says so instead of appending it back.
+            guard try store.update(clone) else {
+                saveError = WorkflowDeletion.saveAfterDeleteReason
+                return
+            }
             saveError = nil
             onCommit?()
         } catch {
@@ -677,11 +707,16 @@ struct WorkflowEditor: View {
         }
     }
 
+    /// UX30: the whole delete path is `WorkflowDeletion.run`, so the rail row's own Delete
+    /// (UX32) shares this flow rather than re-deriving it. On success the host sheet
+    /// dismisses, exactly once; a refusal or a failure lands its reason in the same
+    /// `saveError` slot a failed Save uses, instead of closing as if it had worked.
     private func deleteSelf() {
-        do {
-            _ = try store.delete(id: workflow.id)
-        } catch {
-            saveError = error.localizedDescription
-        }
+        WorkflowDeletion.run(
+            id: workflow.id,
+            store: store,
+            dismiss: { (onDelete ?? onCommit)?() },
+            report: { saveError = $0 }
+        )
     }
 }
