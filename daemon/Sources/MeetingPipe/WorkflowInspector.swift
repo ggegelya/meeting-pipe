@@ -54,20 +54,17 @@ struct WorkflowInspector: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: MPSpace.s5) {
-                    header
-                    rows
-                    if !presentation.recents.isEmpty {
-                        recentSection
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: MPSpace.s5) {
+                header
+                rows
+                if !presentation.recents.isEmpty {
+                    recentSection
                 }
-                .frame(maxWidth: WorkflowInspectorLayout.cardMaxWidth, alignment: .leading)
-                .frame(maxWidth: .infinity)
-                .padding(WorkflowInspectorLayout.padding)
             }
-            footer
+            .frame(maxWidth: WorkflowInspectorLayout.cardMaxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity)
+            .padding(WorkflowInspectorLayout.padding)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(MPColors.bg))
@@ -87,6 +84,10 @@ struct WorkflowInspector: View {
                 }
                 Text(presentation.name)
                     .font(.mpTextMD.weight(.semibold))
+                    // One line, so a long name truncates rather than shoving the
+                    // Edit action beside it off the card's edge.
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 if presentation.isDefault {
                     Text("Default")
                         .font(.mpTextXS.weight(.semibold))
@@ -100,6 +101,8 @@ struct WorkflowInspector: View {
                                 .stroke(Color(MPColors.borderFaint), lineWidth: 0.5)
                         )
                 }
+                Spacer(minLength: MPSpace.s3)
+                editButton
             }
             Text(presentation.activity)
                 .font(.mpTextXS)
@@ -176,32 +179,27 @@ struct WorkflowInspector: View {
         }
     }
 
-    /// Outside the `ScrollView`, so the one action in the pane sits where it
-    /// says it does whether the content is two rows or twenty.
+    /// Top right of the identity row, beside the workflow whose name it edits.
     ///
-    /// The footer belongs to the **card**, not to the pane. It used to be a
+    /// This has moved twice, and the trail is worth keeping. It shipped inside a
     /// full-pane `bgRaised` plinth: a filled band running the whole 1230pt to
     /// hold one ~140pt control, three times wider than the card above it, which
-    /// is why it read as a different surface rather than as this card's footer
-    /// (the owner's words were "something from another world"). Now it is the
-    /// card's width, carries a hairline instead of a fill, and puts Edit at the
-    /// card's trailing edge, so content-left and action-right bound the card.
-    /// `design/README.md` is explicit that resting surfaces get a hairline and no
-    /// fill; the capsule and `.mpGhost` were never the problem and are unchanged.
-    private var footer: some View {
+    /// read as a different surface entirely (the owner's words: "something from
+    /// another world"). The second pass made the footer the card's width with a
+    /// hairline instead of a fill and moved Edit to its trailing edge, which was
+    /// correct about the surface and still left the button alone at the bottom of
+    /// a band that existed only to hold it. So the band is gone: the spec offered
+    /// both routes ("give the pane a non-scrolling footer **or** accept
+    /// content-flow placement"), and an inspector's edit action at the top right
+    /// is the mac convention, adjacent to the thing it acts on. Nothing scrolls
+    /// away in practice, because the action now rides the identity row that is
+    /// the first thing in the pane.
+    private var editButton: some View {
         Button(action: onEdit) {
             Label("Edit workflow", systemImage: "pencil")
         }
         .buttonStyle(.mpGhost)
-        .frame(maxWidth: WorkflowInspectorLayout.cardMaxWidth, alignment: .trailing)
-        .frame(maxWidth: .infinity)
-        .padding(WorkflowInspectorLayout.padding)
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(Color(MPColors.border))
-                .frame(height: 1)
-                .frame(maxWidth: WorkflowInspectorLayout.cardMaxWidth)
-        }
+        .help("Edit \(presentation.name)")
     }
 
     private func sectionLabel(_ text: String) -> some View {

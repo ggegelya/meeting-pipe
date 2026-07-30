@@ -336,28 +336,58 @@ final class WorkflowInspectorTests: XCTestCase {
                                     "a card narrower than the prose measure has the two content types backwards")
     }
 
-    /// The footer is the card's, not the pane's. It shipped as a full-pane
-    /// `bgRaised` plinth holding one control at the card's leading edge, three
-    /// times wider than the card above it, which is what made it read as a
-    /// different surface. Not observable at runtime, so pinned in the source the
-    /// way `WorkflowDeletionTests` pins a button style.
-    func test_the_footer_belongs_to_the_card_and_not_to_the_pane() throws {
+    /// Edit rides the identity row's trailing edge, and the footer band is gone.
+    /// It shipped twice in a footer: first a full-pane `bgRaised` plinth three
+    /// times wider than its own card (which read as a separate surface), then the
+    /// card's own width with a hairline, which fixed the surface and still left
+    /// the button alone in a band that existed only to hold it. Placement is not
+    /// observable at runtime, so it is pinned in the source the way
+    /// `WorkflowDeletionTests` pins a button style. Comments are stripped first:
+    /// the code's own history note names the plinth this fence bans.
+    func test_edit_rides_the_identity_row_and_no_footer_band_survives() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let source = try String(
+        let raw = try String(
             contentsOf: root.appendingPathComponent("Sources/MeetingPipe/WorkflowInspector.swift"),
             encoding: .utf8
         )
-        guard let footer = source.range(of: "private var footer: some View") else {
-            return XCTFail("footer no longer exists under that name; re-point this fence")
+        let source = raw
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> String in
+                guard let slashes = line.range(of: "///") ?? line.range(of: "//") else {
+                    return String(line)
+                }
+                return String(line[line.startIndex ..< slashes.lowerBound])
+            }
+            .joined(separator: "\n")
+
+        XCTAssertFalse(source.contains("private var footer"),
+                       "the footer band is retired; Edit belongs to the identity row now")
+        XCTAssertFalse(source.contains("Color(MPColors.bgRaised)"),
+                       "a filled band under a narrower card reads as a separate surface")
+        XCTAssertTrue(source.contains("private var editButton: some View"),
+                      "the action is its own named piece so the header row stays readable")
+
+        // It is placed by the header's HStack, after a Spacer, which is what puts
+        // it at the card's trailing edge without a frame of its own.
+        guard let header = source.range(of: "private var header: some View"),
+              let activity = source.range(of: "presentation.activity",
+                                          range: header.upperBound ..< source.endIndex) else {
+            return XCTFail("the header no longer opens with the identity row; re-point this fence")
         }
-        let body = String(source[footer.lowerBound...].prefix(700))
-        XCTAssertFalse(body.contains("Color(MPColors.bgRaised)"),
-                       "a filled band under a narrower card reads as a separate surface, not as its footer")
-        XCTAssertTrue(body.contains("alignment: .trailing"),
-                      "Edit sits at the card's trailing edge so content-left and action-right bound the card")
+        let identityRow = String(source[header.upperBound ..< activity.lowerBound])
+        XCTAssertTrue(identityRow.contains("Spacer(minLength:"),
+                      "a Spacer is what pushes Edit to the trailing edge of the identity row")
+        XCTAssertTrue(identityRow.contains("editButton"),
+                      "Edit is in the identity row, top right, beside the name it edits")
+        guard let spacer = identityRow.range(of: "Spacer(minLength:"),
+              let edit = identityRow.range(of: "editButton") else {
+            return XCTFail("unreachable: both were just asserted present")
+        }
+        XCTAssertLessThan(spacer.lowerBound, edit.lowerBound,
+                          "the Spacer must precede Edit, or the button sits beside the name instead of at the edge")
     }
 
     // MARK: - Reachability (UX33 decision (a))
