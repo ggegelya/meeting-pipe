@@ -63,6 +63,15 @@ struct PrepDisclosure: Equatable {
                             offsetY: CGFloat) -> Bool {
         viewport > 0 && contentHeight - viewport - offsetY > 2
     }
+
+    /// Gradient stop positions for that fade: fully opaque down to the last
+    /// `fadeHeight` of the viewport, clear at its bottom edge. Pure so the band
+    /// stays a fixed number of points rather than a fraction that would grow
+    /// with the viewport.
+    static func fadeLocations(viewport: CGFloat, fadeHeight: CGFloat) -> [CGFloat] {
+        let solid = max(0, min(1, 1 - fadeHeight / max(1, viewport)))
+        return [0, solid, 1]
+    }
 }
 
 /// Threading: every public method must run on the main queue.
@@ -730,9 +739,17 @@ final class MeetingPromptWindow {
         // trailing fade-chase reads as lag, not motion design.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        grad.frame = CGRect(origin: .zero, size: clip.bounds.size)
-        let solidUntil = max(0, 1 - Self.prepFadeHeight / max(1, clip.bounds.height))
-        grad.locations = [0, NSNumber(value: Double(solidUntil)), 1]
+        // `clip.bounds`, NOT a rect at `origin: .zero`. A mask is positioned in
+        // its layer's coordinate space, and a clip view's bounds *origin* is
+        // exactly what moves when the card scrolls. Anchored at zero, the mask
+        // stayed over the document's first screenful while the viewport moved
+        // down, so everything past that had no mask coverage and rendered fully
+        // transparent: the card looked empty below the second bullet, with the
+        // eyebrow and actions invisible however far you scrolled.
+        grad.frame = clip.bounds
+        grad.locations = PrepDisclosure
+            .fadeLocations(viewport: clip.bounds.height, fadeHeight: Self.prepFadeHeight)
+            .map { NSNumber(value: Double($0)) }
         CATransaction.commit()
     }
 

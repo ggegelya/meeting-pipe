@@ -443,6 +443,68 @@ final class PrepCardTests: XCTestCase {
         XCTAssertFalse(PrepDisclosure.fadeVisible(contentHeight: 0, viewport: 0, offsetY: 0))
     }
 
+    func test_the_fade_band_is_a_fixed_height_not_a_fraction() {
+        // 26 of 123 leaves the top 79% opaque; the band must stay 26pt whatever
+        // the viewport, so a taller card does not fade a taller slab.
+        let at123 = PrepDisclosure.fadeLocations(viewport: 123, fadeHeight: 26)
+        XCTAssertEqual(at123.count, 3)
+        XCTAssertEqual(at123[0], 0)
+        XCTAssertEqual(at123[2], 1)
+        XCTAssertEqual((1 - at123[1]) * 123, 26, accuracy: 0.01)
+
+        let at246 = PrepDisclosure.fadeLocations(viewport: 246, fadeHeight: 26)
+        XCTAssertEqual((1 - at246[1]) * 246, 26, accuracy: 0.01,
+                       "the band is points, not a proportion of the viewport")
+
+        // Degenerate inputs stay inside [0, 1] rather than producing a negative
+        // stop, which Core Animation rejects.
+        for loc in PrepDisclosure.fadeLocations(viewport: 10, fadeHeight: 26) {
+            XCTAssertTrue((0...1).contains(loc), "stop \(loc) escapes [0,1]")
+        }
+        XCTAssertEqual(PrepDisclosure.fadeLocations(viewport: 0, fadeHeight: 26)[1], 0)
+    }
+
+    /// The 2026-07-30 regression, and the reason this fence is source-level: a
+    /// mask is positioned in its layer's coordinate space, and a clip view's
+    /// bounds *origin* is what moves when the card scrolls. Anchored at
+    /// `origin: .zero` the mask stayed over the document's first screenful while
+    /// the viewport moved down, so everything past it had no mask coverage and
+    /// rendered fully transparent: the owner saw an empty card below the second
+    /// bullet, with the eyebrow and actions unreachable however far they
+    /// scrolled. Not observable without a live panel, so it is pinned here.
+    func test_the_fade_mask_follows_the_scrolled_bounds_origin() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Sources/MeetingPipe/MeetingPromptWindow.swift"),
+            encoding: .utf8
+        )
+        guard let fade = source.range(of: "private func updatePrepFade") else {
+            return XCTFail("updatePrepFade no longer exists under that name; re-point this fence")
+        }
+        guard let end = source.range(of: "private func teardownPrepFade",
+                                     range: fade.upperBound ..< source.endIndex) else {
+            return XCTFail("teardownPrepFade no longer follows it; re-point this fence")
+        }
+        // Comments stripped first: the body explains the regression in prose that
+        // quotes the very literal being banned, and a fence that reads its own
+        // commentary is no fence at all.
+        let body = source[fade.lowerBound ..< end.lowerBound]
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> String in
+                guard let slashes = line.range(of: "//") else { return String(line) }
+                return String(line[line.startIndex ..< slashes.lowerBound])
+            }
+            .joined(separator: "\n")
+
+        XCTAssertTrue(body.contains("grad.frame = clip.bounds"),
+                      "the mask must take the clip's full bounds, origin included")
+        XCTAssertFalse(body.contains("origin: .zero"),
+                       "a zero-origin mask stops covering the viewport the moment the card scrolls")
+    }
+
     func test_action_line_degrades_as_fields_go_missing() {
         XCTAssertEqual(
             PrepCardView.actionLine(PrepCard.Action(task: "Send SOW", owner: "Georgy",
