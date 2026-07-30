@@ -14,6 +14,12 @@
 // wrapper, a heavy aggregate subsystem, or a close. See
 // docs/spikes/det2-process-tap-attribution.md for the decision tree.
 //
+// REFUTED 2026-07-30 (DET8): the A/B/C answer below measured the wrong PID. The
+// MSTeams shell never registers as a HAL audio client; the media stack is the
+// ModuleHost/SlimCore helper, whose PID translates fine. Enumerating
+// kAudioHardwarePropertyProcessObjectList (see det8-process-object-probe.swift)
+// is the correct read. This probe is kept as the historical instrument only.
+//
 // ANSWERED 2026-07-20: none of A / B / C. The owner ran this on a real Mac against
 // a live Teams call with the grant line reading `granted`, and all three mechanisms
 // returned object 0 (OSStatus noErr) with tap and aggregate construction both

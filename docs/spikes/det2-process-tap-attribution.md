@@ -2,6 +2,10 @@
 
 Spike, 2026-07-12. Probe: [`daemon/scripts/det2-process-tap-probe.swift`](../../daemon/scripts/det2-process-tap-probe.swift) (owner-run on a real Mac during a live call, read-only). This spike ships the mechanism analysis + a measuring instrument; the empirical verdict (which mechanism, if any, revives the read) is owner-owed because it can only be answered on real hardware with a live meeting client holding the mic, not in this harness.
 
+## Refuted 2026-07-30: the close measured the wrong process. See DET8.
+
+The verdict below is accurate about what it measured and wrong in what it concluded. All three mechanisms translated the **MSTeams shell PID**, and `object 0, OSStatus 0` is the HAL truthfully reporting that this particular process has no audio object, because Teams runs its media stack in a separate helper: `Microsoft Teams ModuleHost --module_name=SlimCore` (a direct child of the shell; the same SlimCore whose log MIC8 measured). A 2026-07-30 enumeration of `kAudioHardwarePropertyProcessObjectList`, run headless with **no** Screen Recording grant, listed 33 live process objects including ModuleHost (`com.microsoft.teams2.modulehost`) and the WebView audio helpers, and translating ModuleHost's PID resolved to its object with `OSStatus 0`. So "adopting a tap does not revive the read" stands, and "the read does not resolve on this macOS" does not: the read resolves for the process that actually does the audio, needs no tap and no TCC, and neither this probe nor `ProcessAudioSignal` ever enumerated the list to notice. Revival (enumerate-and-match by bundle prefix, with the corroboration rail this doc pre-registered) is filed as [DET8](../backlog/tasks/DET8.md) with its own owner-run live-call probe, `daemon/scripts/det8-process-object-probe.swift`. The sections below are retained unchanged as the trail.
+
 ## Measured verdict (2026-07-20): none of A / B / C. Close the leg.
 
 The owner ran the probe on a real Mac against a live Teams call (PID 667), with the probe's own grant line reading `screen-recording grant: granted`. All three mechanisms returned the identical failure:
