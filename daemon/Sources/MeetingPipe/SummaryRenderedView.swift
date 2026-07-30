@@ -114,16 +114,21 @@ struct SummaryRenderedView: View {
             }
             // TECH-UI-4: the detected-language indicator moved to the detail header caption row.
         }
-        // UX36: the cap sits on the text, the gutter outside it, so 640 is the
-        // real measure rather than 640 minus two paddings.
+        // UX36: the cap sits on the text, the gutter outside it, so the constant
+        // is the real measure rather than the measure minus two paddings.
         .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
         .padding(SummaryLayout.contentPadding)
-        // Centered, not parked left. The detail column has a floor and no ceiling
-        // (LibraryLayout), so every pt past the measure used to become dead space
-        // on the right; framing the column like a page keeps the margins even.
-        // `.top` is `Alignment(horizontal: .center, vertical: .top)`, which is the
-        // pairing this wants: centered across, pinned to the top of the scroller.
-        .frame(maxWidth: .infinity, alignment: .top)
+        // Left-aligned, deliberately, and this flipped twice before settling.
+        // Parked left under an uncapped detail column (the original shape), every
+        // pt past the measure was dead space on the right, so the second pass
+        // centered the block; centered, the summary started 200+ pt right of the
+        // header and transcript, so the content axis jumped on every tab change,
+        // which the owner rejected on sight. The fix that holds is in
+        // `LibraryLayout.detailMaxWidth`: the column itself is capped, so the
+        // slack goes to the meeting list and left alignment costs nothing. All
+        // three readers of this pane (header, transcript, summary) now share one
+        // left edge; do not re-center this without also uncapping the column.
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .textSelection(.enabled)
     }
 

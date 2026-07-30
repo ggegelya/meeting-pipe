@@ -25,6 +25,23 @@ enum LibraryLayout {
     static let detailMinWidth: CGFloat = 450
     static let detailIdealWidth: CGFloat = 520
 
+    /// Ceiling on the detail column (UX36, third pass, owner-picked). Without
+    /// one, the detail column absorbs every pt of window growth, and the reading
+    /// surfaces inside it were left choosing between parking their measured
+    /// column beside a growing void (the pre-UX36 shape) and centering it
+    /// between two voids (the second-pass shape the owner rejected on sight).
+    /// Capping the column spends the slack on the meeting list instead, where
+    /// titles truncate today, and lets the summary left-align against the same
+    /// edge as the header, tabs, and transcript, so the content axis no longer
+    /// jumps when the tab changes.
+    ///
+    /// 1040 fits the widest measured content plus its gutters with room for the
+    /// transcript to breathe (`LibraryLayoutTests` pins the arithmetic): the
+    /// summary column is 680 + 2 * 20, the inspector card 720 + 2 * 16. Past the
+    /// cap the split view gives further width to the list column, which has no
+    /// max, so nothing is ever left unclaimed.
+    static let detailMaxWidth: CGFloat = 1040
+
     // Sum of the floors (200 + 400 + 450 = 1050) stays <= windowMinWidth, the
     // invariant LibraryLayoutTests pins. The row itself degrades to a two-line
     // tile (MeetingRow ViewThatFits) when the list column nears its floor, so the

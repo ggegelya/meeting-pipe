@@ -62,7 +62,7 @@ struct MeetingDetailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             chromeBand
-            Divider().overlay(Color(MPColors.borderFaint))
+            Divider().overlay(Color(MPColors.borderStrong))
             tabContent
         }
         .frame(minWidth: LibraryLayout.detailMinWidth)
@@ -117,18 +117,23 @@ struct MeetingDetailView: View {
 
     // MARK: Chrome band
 
-    /// Title, metadata, provenance and the tab strip, banded together on the
-    /// raised surface so they read as the pane's chrome rather than as its first
-    /// content (UX36).
+    /// Title, metadata, provenance and the tab strip, banded together as the
+    /// pane's chrome rather than as its first content (UX36).
     ///
-    /// The alternative, putting them on the Summary body's centred reading
-    /// column, was rejected after tracing the other two tabs: `TranscriptTab` and
-    /// `AudioTab` are full-width and uncapped, so a header indented to the
-    /// summary's measure would be misaligned against them the moment the tab
-    /// changed. Chrome spans, content centres beneath it, which is what the mac
-    /// does everywhere and what stops the eye expecting a shared left edge in the
-    /// first place. The band's bottom hairline is the `Divider` that already sat
-    /// under the tabs.
+    /// The band is *recessed* (`bgSunk`), not raised. It shipped on `bgRaised`
+    /// first, an 11-of-255 step off the dark canvas that could not be found in
+    /// the owner's screenshot, and a band nobody can see licenses nothing. A
+    /// toolbar that sinks is also the direction the mac's own chrome takes, and
+    /// it leaves `bgRaised` free to mean content surfaces. Its bottom hairline
+    /// is the `Divider` under the tabs, drawn `borderStrong` so the step reads
+    /// as an edge rather than a smudge.
+    ///
+    /// The alternative, putting the header on the Summary body's reading column,
+    /// was rejected after tracing the other two tabs: `TranscriptTab` and
+    /// `AudioTab` are full-width, so a header indented to the summary's measure
+    /// would be misaligned against them the moment the tab changed. Instead the
+    /// chrome spans, and the *content* now shares one left edge on every tab,
+    /// which `LibraryLayout.detailMaxWidth` is what makes affordable.
     private var chromeBand: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -138,7 +143,7 @@ struct MeetingDetailView: View {
             tabStrip
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(MPColors.bgRaised))
+        .background(Color(MPColors.bgSunk))
     }
 
     // MARK: Tab strip

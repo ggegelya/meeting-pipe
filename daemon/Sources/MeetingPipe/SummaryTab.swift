@@ -140,17 +140,17 @@ struct SummaryTab: View {
         .padding(.bottom, 8)
     }
 
-    /// UX36: the headings ride the same centered reading column as the summaries
-    /// they label. They used to sit flush at the pane's leading edge, which was
-    /// only 20pt off the summary text below them; once that block is centered, a
-    /// left-parked heading is a whole margin away from the column it names.
+    /// UX36: the headings ride the same reading column as the summaries they
+    /// label, modifier for modifier, so wherever that column sits (it has been
+    /// parked, centered, and is now left-aligned under a capped detail column)
+    /// the heading stays 20pt off its own text rather than a margin away.
     private func compareHeading(_ title: String, systemImage: String, tint: Color) -> some View {
         Label(title, systemImage: systemImage)
             .font(.headline)
             .foregroundStyle(tint)
             .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
             .padding(.horizontal, SummaryLayout.contentPadding)
-            .frame(maxWidth: .infinity, alignment: .top)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     /// Footer: re-run/keep/discard for the local preview (TECH-A16). Republish
@@ -251,8 +251,8 @@ struct SummaryTab: View {
         .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
         .padding(.horizontal, SummaryLayout.contentPadding)
         .padding(.bottom, SummaryLayout.contentPadding)
-        // UX36: centered under the reader it follows, not parked left.
-        .frame(maxWidth: .infinity, alignment: .top)
+        // UX36: on the same column as the reader it follows, wherever it sits.
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     /// Prompt editor: edit the context, generate a candidate, never auto-publish.
@@ -294,10 +294,10 @@ struct SummaryTab: View {
             }
         }
         // UX36: same shape as the reader this pane replaces, gutter outside the
-        // measure and the block centered.
+        // measure, on the shared left edge.
         .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
         .padding(SummaryLayout.contentPadding)
-        .frame(maxWidth: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private func beginReprocess() {

@@ -47,18 +47,61 @@ final class SummaryLayoutTests: XCTestCase {
                           "the Rectangle must sit inside the overlay; as a VStack sibling it is greedy and spreads the tabs")
     }
 
-    /// The header and tab strip are chrome, banded on the raised surface, and
-    /// deliberately NOT on the summary's centred reading column: `TranscriptTab`
-    /// and `AudioTab` are full-width and uncapped, so a header indented to the
-    /// summary measure is misaligned against them the moment the tab changes.
+    /// The header and tab strip are chrome, banded on the *sunk* surface, and
+    /// deliberately NOT on the summary's reading column: `TranscriptTab` and
+    /// `AudioTab` are full-width, so a header indented to the summary measure is
+    /// misaligned against them the moment the tab changes. Sunk, not raised: the
+    /// band shipped on `bgRaised` first, an 11-of-255 step off the dark canvas
+    /// that vanished in the owner's screenshot, and an invisible band reads as a
+    /// stray offset rather than as chrome. Recessing is also the direction the
+    /// mac's own toolbars take, and it leaves `bgRaised` meaning content.
     func test_the_header_and_tabs_are_a_chrome_band_not_a_reading_column() throws {
         let view = try daemonSource("Sources/MeetingPipe/MeetingDetailView.swift")
         XCTAssertTrue(view.contains("private var chromeBand: some View"),
                       "header and tab strip are banded together, so the divider under them reads as the band's edge")
-        XCTAssertTrue(view.contains(".background(Color(MPColors.bgRaised))"),
-                      "the band needs a surface, or it reads as the pane's first content rather than its chrome")
+        XCTAssertTrue(view.contains(".background(Color(MPColors.bgSunk))"),
+                      "the band recesses; raised was invisible against the dark canvas and read as a stray offset")
+        XCTAssertFalse(view.contains(".background(Color(MPColors.bgRaised))"),
+                       "bgRaised on the band is the shipped-and-rejected form; raised means content, not chrome")
         XCTAssertFalse(view.contains("SummaryLayout.readingMeasure"),
                        "the chrome must not adopt the summary's measure; that misaligns the other two tabs")
+    }
+
+    /// The reading column is left-aligned, not centered, and the two are only
+    /// interchangeable because `LibraryLayout.detailMaxWidth` exists: capped, the
+    /// column's slack goes to the meeting list and every tab's content shares one
+    /// left edge; centered, the summary started 200+ pt right of the header and
+    /// transcript and the axis jumped on every tab change (the owner rejected
+    /// that on sight). Alignment is not observable at runtime, so the source is
+    /// pinned: no cap site in the three summary surfaces may center its block.
+    /// Anchored on the next placement frame after each cap rather than on a
+    /// character window. The window form was written first and was **vacuous**: a
+    /// long explanatory comment sits between the cap and its placement in
+    /// `SummaryRenderedView`, so 320 characters never reached the alignment and
+    /// the assertion ran zero times. Caught by mutating a site back to `.top` and
+    /// watching the test still pass, which is why `checked` is asserted below.
+    func test_the_measured_column_left_aligns_under_the_capped_detail_column() throws {
+        for file in ["SummaryRenderedView.swift", "SummaryTab.swift", "CorrectionEditor.swift"] {
+            let source = try daemonSource("Sources/MeetingPipe/\(file)")
+            var rest = Substring(source)
+            var checked = 0
+            while let cap = rest.range(of: ".frame(maxWidth: SummaryLayout.readingMeasure") {
+                let after = rest[cap.upperBound...]
+                guard let placement = after.range(of: ".frame(maxWidth: .infinity, alignment: ") else {
+                    rest = after
+                    continue
+                }
+                let token = after[placement.upperBound...].prefix(16)
+                XCTAssertTrue(
+                    token.hasPrefix(".topLeading"),
+                    "\(file): a measured block is placed with \(token.prefix(12)); `.top` centers "
+                    + "horizontally, which puts the summary 200+ pt right of the header and transcript"
+                )
+                checked += 1
+                rest = after[placement.upperBound...]
+            }
+            XCTAssertGreaterThan(checked, 0, "\(file): fence found no measured block to check; re-point it")
+        }
     }
 
     // MARK: The measure

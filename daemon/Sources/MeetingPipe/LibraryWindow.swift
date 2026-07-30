@@ -815,8 +815,15 @@ struct LibraryRootView: View {
                 detailPane(workflowStore: store)
                     // Floor the detail column so it clears the Audio tab footer
                     // instead of sliding its leading content under the divider
-                    // at the window minimum (TECH-UX11).
-                    .navigationSplitViewColumnWidth(min: LibraryLayout.detailMinWidth, ideal: LibraryLayout.detailIdealWidth)
+                    // at the window minimum (TECH-UX11). Ceiling it (UX36) so a
+                    // wide window widens the meeting list rather than inflating
+                    // the reading pane past its own measures; the list column has
+                    // no max, so it absorbs whatever the cap declines.
+                    .navigationSplitViewColumnWidth(
+                        min: LibraryLayout.detailMinWidth,
+                        ideal: LibraryLayout.detailIdealWidth,
+                        max: LibraryLayout.detailMaxWidth
+                    )
             }
         } else {
             // WorkflowStore not yet wired; fall back to a sidebar-less list. No rail

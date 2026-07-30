@@ -41,11 +41,11 @@ struct CorrectionEditorBody: View {
             }
             // UX13: cap to the read view's reading column so the edit form lines
             // up with the summary it replaces instead of running wider. UX36: the
-            // gutter moved outside that cap and the block is centered, matching
+            // gutter moved outside that cap and the block left-aligns, matching
             // the reader modifier for modifier.
             .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
             .padding(contentPadding)
-            .frame(maxWidth: .infinity, alignment: .top)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 

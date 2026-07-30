@@ -33,4 +33,27 @@ final class LibraryLayoutTests: XCTestCase {
     func test_sidebar_ideal_stays_within_its_max() {
         XCTAssertLessThanOrEqual(LibraryLayout.sidebarIdealWidth, LibraryLayout.sidebarMaxWidth)
     }
+
+    // MARK: - Detail ceiling (UX36)
+
+    func test_detail_ideal_stays_within_its_max() {
+        XCTAssertLessThanOrEqual(LibraryLayout.detailIdealWidth, LibraryLayout.detailMaxWidth)
+    }
+
+    /// The cap exists so the reading surfaces can left-align without a void
+    /// beside them, which only works if the capped column still *fits* those
+    /// surfaces. Both measured blocks must clear the ceiling with their gutters,
+    /// or the cap re-introduces the squeeze the floor exists to prevent.
+    func test_detail_ceiling_clears_every_measured_block_inside_it() {
+        XCTAssertGreaterThanOrEqual(
+            LibraryLayout.detailMaxWidth,
+            SummaryLayout.readingMeasure + 2 * SummaryLayout.contentPadding,
+            "the summary column plus gutters no longer fits the capped detail column"
+        )
+        XCTAssertGreaterThanOrEqual(
+            LibraryLayout.detailMaxWidth,
+            WorkflowInspectorLayout.cardMaxWidth + 2 * WorkflowInspectorLayout.padding,
+            "the inspector card plus padding no longer fits the capped detail column"
+        )
+    }
 }
