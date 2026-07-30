@@ -132,6 +132,16 @@ struct Meeting: Identifiable, Hashable {
     /// cache rather than inside it. Defaulted so test constructors need not supply it.
     var hasCorrections: Bool = false
 
+    /// True when the speaker-label overlay was written after the run that
+    /// produced this summary (UX41), i.e. the names the summary was generated
+    /// with are behind the ones every display surface now resolves. The
+    /// transcript, the cast strip, and the People rail all re-resolve
+    /// `<stem>.speaker_labels.json` at display time; the summary is prose the
+    /// model wrote with whatever names existed at generation, and nothing
+    /// re-resolves it. Drives the detail header's "Speaker names changed after
+    /// this summary" cue. Defaulted so test constructors need not supply it.
+    var namesChangedSinceSummary: Bool = false
+
     var id: String { stem } // stems are unique per recording (datetime-derived)
 
     /// A file to select in Finder for "Reveal" / "Open folder". Prefers the
@@ -515,6 +525,10 @@ final class MeetingStore: ObservableObject {
         let summaryURL = files.first { $0.lastPathComponent.hasSuffix(".summary.json") }
         let pasteReadyURL = files.first { $0.lastPathComponent.hasSuffix(".READY_FOR_MANUAL.md") }
         let emptyURL = files.first { $0.lastPathComponent.hasSuffix(".empty.json") }
+        // UX41: only its mtime is read, never its contents. The overlay lives in
+        // this directory, so it is inside the per-stem signature and a rename
+        // invalidates the cached row on its own.
+        let speakerLabelsURL = files.first { $0.lastPathComponent.hasSuffix(".speaker_labels.json") }
         let errorURL = files.first {
             $0.lastPathComponent.hasSuffix(PipelineFailureSidecar.suffix)
         }
@@ -647,7 +661,11 @@ final class MeetingStore: ObservableObject {
             publishState: (run?["publish_state"] as? String),
             emptyReason: emptyReason,
             hasSummaryJSON: summaryURL != nil,
-            hasTranscriptMD: files.contains { $0.lastPathComponent == "\(stem).md" }
+            hasTranscriptMD: files.contains { $0.lastPathComponent == "\(stem).md" },
+            namesChangedSinceSummary: MeetingStore.namesChangedSinceSummary(
+                overlayModified: speakerLabelsURL.map { mtime(of: $0) },
+                runTimestamp: run?["ts"] as? String
+            )
         )
         return (meeting, cacheable)
     }
@@ -673,6 +691,62 @@ final class MeetingStore: ObservableObject {
         let latestPublish = publishURLs.map { mtime(of: $0) }.max() ?? .distantPast
         return mtime(of: summaryURL) > latestPublish
     }
+
+    /// True when `<stem>.speaker_labels.json` was written after the run that
+    /// produced the current summary (UX41): the summary's baked-in speaker names
+    /// are behind the ones the transcript and the cast strip resolve.
+    ///
+    /// The comparison is deliberately against `<stem>.run.json`'s `ts` and NOT
+    /// against `<stem>.summary.json`'s mtime, which is booby-trapped. Two flows
+    /// re-serialize that file in place *without* regenerating anything:
+    /// `MeetingLibraryService.setActionResolved` (the action done / reopen
+    /// toggle) and `SummaryTab.persistEdit` (a correction save). Either one
+    /// after a rename makes an mtime comparison read "the summary is newer than
+    /// the rename" for a summary still carrying the old names, so the cue would
+    /// vanish exactly when the owner ticked something off. `ts` is stamped by the
+    /// run that actually wrote the prose (`corrections.write_run_sidecar`) and
+    /// PIPE11 keeps it truthful for a standalone `mp summarize`, so it is the
+    /// only timestamp that answers the question being asked. The run sidecar's
+    /// own mtime would be wrong for a second reason: `corrections
+    /// .set_publish_state` rewrites the file after a publish.
+    ///
+    /// Either side missing is a no. No run sidecar means no summary for names to
+    /// be stale against; no overlay means nothing was ever renamed. Conservative
+    /// on purpose, since a cue that fires without a rename teaches the owner to
+    /// stop reading it.
+    ///
+    /// `ts` is second-resolution, so a rename inside the same second as the run
+    /// that consumed it can round to "not after" and stay quiet. Renames are
+    /// hand-made minutes or days later, and the alternative (a tolerance window)
+    /// would silence real renames made seconds after a run to buy nothing.
+    static func namesChangedSinceSummary(overlayModified: Date?, runTimestamp: String?) -> Bool {
+        guard let overlayModified = overlayModified,
+              let raw = runTimestamp,
+              let summarizedAt = parseRunTimestamp(raw) else {
+            return false
+        }
+        return overlayModified > summarizedAt
+    }
+
+    /// `run.json`'s `ts`: tz-aware, second-resolution ISO 8601 with `+00:00`
+    /// spelled `Z` (`corrections._now_utc_iso`). The fractional pass is a
+    /// fallback rather than the contract, since `write_run_sidecar` also accepts
+    /// a caller-supplied `ts` that is only promised to be ISO 8601.
+    private static func parseRunTimestamp(_ raw: String) -> Date? {
+        runTimestampParser.date(from: raw) ?? runTimestampParserWithFraction.date(from: raw)
+    }
+
+    private static let runTimestampParser: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    private static let runTimestampParserWithFraction: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
 
     /// Build the lowercased filter haystack from user-visible fields (titles, source app, summary bullets, decisions, action tasks). Internal so tests can drive it directly.
     static func buildSearchableText(

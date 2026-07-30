@@ -18,6 +18,7 @@ extension MeetingDetailView {
             captionRow
             provenanceRow
             if meeting.hasCorrections { editedCaption }
+            if meeting.namesChangedSinceSummary { namesChangedCaption }
             processingRow
             publishStateLine
         }
@@ -103,6 +104,50 @@ extension MeetingDetailView {
                 .foregroundStyle(Color(MPColors.fgFaint))
         }
         .accessibilityElement(children: .combine)
+    }
+
+    /// Names-changed cue (UX41): the speaker overlay was written after the run
+    /// that produced this summary, so the transcript says Anisha while the
+    /// summary still says THEM-3. Nothing else says why, because display
+    /// surfaces re-resolve the overlay and generated prose cannot: rewriting
+    /// names inside the model's sentences would be unreliable (this library is
+    /// half Ukrainian, where names decline by case) and would falsify what the
+    /// summary claims to be. So the cue is truthful and the fix is one click,
+    /// through the same menu the `...` menu offers, which means an NDA meeting's
+    /// cue leads to the local-only offering rather than to a cloud call the
+    /// clamp would silently substitute (UX29).
+    ///
+    /// Register: the caption slot beside "Summary edited locally", one line, no
+    /// pill and no tint. `fgSubtle` rather than the neighbour's `fgFaint`,
+    /// because this line is actionable and `fgFaint` sits near 2.8:1 (the same
+    /// reason the provenance row above it moved off the mockup's fainter token).
+    /// It clears itself: a re-summarize rewrites `run.json`'s `ts` (PIPE11), so
+    /// the comparison behind it flips back on the next scan.
+    var namesChangedCaption: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "person.crop.circle")
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgSubtle))
+            Text("Speaker names changed after this summary.")
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgSubtle))
+                .fixedSize(horizontal: false, vertical: true)
+            // The menu indicator stays visible here, unlike `actionsMenu`: that
+            // label is an ellipsis glyph that already reads as a menu, and a
+            // bare word in a caption row would read as more caption.
+            Menu {
+                reSummarizeItems
+            } label: {
+                Text("Re-summarize")
+            }
+            .menuStyle(.borderlessButton)
+            .controlSize(.small)
+            .fixedSize()
+            .help("Re-summarize this meeting so the summary uses the current speaker names")
+            .accessibilityLabel("Re-summarize with the current speaker names")
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .contain)
     }
 
     /// Publish-state line (DSN22 #4): a boxed status row that explains failures and
@@ -458,35 +503,44 @@ extension MeetingDetailView {
     /// The clamp stays exactly as it is; only the menu learns to say so.
     @ViewBuilder
     var reSummarizeMenu: some View {
-        let state = reSummarizeState
         Menu("Re-summarize with\u{2026}") {
-            // UX31: the same two engines as before, named out of the shared
-            // vocabulary so this menu and the provenance line under it agree.
-            // Which engines a one-shot re-run may offer is UX29's question, not
-            // a labelling one, so the pair is unchanged.
-            Button(SummarizationEngine.local.qualified) {
-                runReSummarize(backend: SummarizationEngine.local.id)
-            }
-            Button(SummarizationEngine.anthropic.qualified) {
-                runReSummarize(backend: SummarizationEngine.anthropic.id)
-            }
-                .disabled(!state.cloudEnabled)
-                .accessibilityLabel(state.accessibilityLabel(for: SummarizationEngine.anthropic.qualified))
-            if let caption = state.caption {
-                // A disabled row explains nothing on its own, so the reason sits
-                // under it in the quiet register rather than in a dialog.
-                Text(caption)
-                    .font(.mpTextXS)
-                    .foregroundStyle(Color(MPColors.fgSubtle))
-            }
-            if state.offersWorkflowChange {
-                Divider()
-                // The reassign flow is the designed escape hatch, and it already
-                // confirms the NDA crossing explicitly, which is exactly the
-                // path the owner ended up taking by hand.
-                Menu("Change workflow\u{2026}") {
-                    workflowChoices
-                }
+            reSummarizeItems
+        }
+    }
+
+    /// The rows themselves, so the `...` menu's submenu and UX41's inline cue in
+    /// the header open one list rather than two copies that could drift on which
+    /// engine is honest for this meeting. Same seam, and same reason, as
+    /// `workflowChoices` one level down.
+    @ViewBuilder
+    var reSummarizeItems: some View {
+        let state = reSummarizeState
+        // UX31: the same two engines as before, named out of the shared
+        // vocabulary so this menu and the provenance line under it agree.
+        // Which engines a one-shot re-run may offer is UX29's question, not
+        // a labelling one, so the pair is unchanged.
+        Button(SummarizationEngine.local.qualified) {
+            runReSummarize(backend: SummarizationEngine.local.id)
+        }
+        Button(SummarizationEngine.anthropic.qualified) {
+            runReSummarize(backend: SummarizationEngine.anthropic.id)
+        }
+            .disabled(!state.cloudEnabled)
+            .accessibilityLabel(state.accessibilityLabel(for: SummarizationEngine.anthropic.qualified))
+        if let caption = state.caption {
+            // A disabled row explains nothing on its own, so the reason sits
+            // under it in the quiet register rather than in a dialog.
+            Text(caption)
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgSubtle))
+        }
+        if state.offersWorkflowChange {
+            Divider()
+            // The reassign flow is the designed escape hatch, and it already
+            // confirms the NDA crossing explicitly, which is exactly the
+            // path the owner ended up taking by hand.
+            Menu("Change workflow\u{2026}") {
+                workflowChoices
             }
         }
     }

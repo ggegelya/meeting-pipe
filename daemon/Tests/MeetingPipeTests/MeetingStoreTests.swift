@@ -790,6 +790,141 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertFalse(failedMeeting(reason: nil).failureSuggestsModelDownload)
     }
 
+    // MARK: - UX41 names-changed-since-summary
+
+    /// The plain case the cue exists for: seven voices named after the meeting
+    /// was summarized, so the transcript reads Anisha while the summary still
+    /// reads THEM-3.
+    func test_a_rename_after_the_summarize_run_is_stale() {
+        XCTAssertTrue(MeetingStore.namesChangedSinceSummary(
+            overlayModified: Date(timeIntervalSince1970: 2_000),
+            runTimestamp: "1970-01-01T00:16:39Z"   // 999 s
+        ))
+    }
+
+    func test_a_rename_before_the_summarize_run_is_not_stale() {
+        // The ordinary shape of a fresh meeting: names were already known when
+        // the summary was written, so the prose carries them.
+        XCTAssertFalse(MeetingStore.namesChangedSinceSummary(
+            overlayModified: Date(timeIntervalSince1970: 500),
+            runTimestamp: "1970-01-01T00:16:39Z"
+        ))
+    }
+
+    func test_a_re_summarize_clears_the_flag() {
+        // PIPE11 rewrites `ts` on a standalone `mp summarize` too, which is what
+        // makes the cue self-clearing rather than something to dismiss.
+        let renamedAt = Date(timeIntervalSince1970: 1_000)
+        XCTAssertTrue(MeetingStore.namesChangedSinceSummary(
+            overlayModified: renamedAt, runTimestamp: "1970-01-01T00:00:10Z"
+        ))
+        XCTAssertFalse(MeetingStore.namesChangedSinceSummary(
+            overlayModified: renamedAt, runTimestamp: "1970-01-01T00:33:20Z"   // 2000 s
+        ))
+    }
+
+    func test_either_side_missing_is_never_stale() {
+        // No run sidecar: no summary for the names to be stale against. No
+        // overlay: nothing was ever renamed. Both are the conservative no.
+        XCTAssertFalse(MeetingStore.namesChangedSinceSummary(
+            overlayModified: Date(), runTimestamp: nil
+        ))
+        XCTAssertFalse(MeetingStore.namesChangedSinceSummary(
+            overlayModified: nil, runTimestamp: "1970-01-01T00:00:10Z"
+        ))
+        XCTAssertFalse(MeetingStore.namesChangedSinceSummary(
+            overlayModified: nil, runTimestamp: nil
+        ))
+    }
+
+    func test_an_unparseable_run_timestamp_is_never_stale() {
+        // A hand-edited or pre-`ts` sidecar must not manufacture a cue.
+        XCTAssertFalse(MeetingStore.namesChangedSinceSummary(
+            overlayModified: Date(), runTimestamp: "yesterday"
+        ))
+        XCTAssertFalse(MeetingStore.namesChangedSinceSummary(
+            overlayModified: Date(), runTimestamp: ""
+        ))
+    }
+
+    func test_a_fractional_seconds_timestamp_still_parses() {
+        // `corrections._now_utc_iso` writes second resolution, but a caller may
+        // pass its own `ts`; a shape we cannot parse would silence the cue.
+        XCTAssertTrue(MeetingStore.namesChangedSinceSummary(
+            overlayModified: Date(timeIntervalSince1970: 2_000),
+            runTimestamp: "1970-01-01T00:16:39.250Z"
+        ))
+    }
+
+    /// Parse the `ts` shape `corrections._now_utc_iso` writes, so the scan tests
+    /// below read as wall-clock order rather than as epoch arithmetic.
+    private func iso(_ text: String) throws -> Date {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return try XCTUnwrap(f.date(from: text))
+    }
+
+    func test_scan_flags_a_rename_that_postdates_the_run_sidecar() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        let summary = dir.appendingPathComponent("\(stem).summary.json")
+        try writeFile(summary, "{\"title\":\"x\"}")
+        try setMtime(summary, try iso("2026-05-11T15:00:00Z"))
+        try writeFile(dir.appendingPathComponent("\(stem).run.json"),
+                      "{\"stem\":\"\(stem)\",\"ts\":\"2026-05-11T15:00:00Z\"}")
+        let overlay = dir.appendingPathComponent("\(stem).speaker_labels.json")
+        try writeFile(overlay, "{\"schema_version\":1,\"labels\":{\"THEM-A\":\"Anisha\"}}")
+        try setMtime(overlay, try iso("2026-05-12T09:00:00Z"))   // named the next morning
+
+        let store = MeetingStore(recordingsDir: dir)
+        let row = try XCTUnwrap(store.performScan(directory: dir).first)
+        XCTAssertTrue(row.namesChangedSinceSummary)
+    }
+
+    func test_an_in_place_summary_rewrite_after_a_rename_does_not_clear_the_flag() throws {
+        // The trap this derivation exists to avoid. `MeetingLibraryService
+        // .setActionResolved` (ticking an action done) and `SummaryTab
+        // .persistEdit` (saving a correction) both re-serialize summary.json
+        // without regenerating a word of it. A naive
+        // `mtime(speaker_labels) > mtime(summary)` check reads that rewrite as a
+        // newer summary and drops the cue, on a summary that still carries the
+        // old names.
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        try writeFile(dir.appendingPathComponent("\(stem).run.json"),
+                      "{\"stem\":\"\(stem)\",\"ts\":\"2026-05-11T15:00:00Z\"}")
+        let overlay = dir.appendingPathComponent("\(stem).speaker_labels.json")
+        try writeFile(overlay, "{\"schema_version\":1,\"labels\":{\"THEM-A\":\"Anisha\"}}")
+        try setMtime(overlay, try iso("2026-05-12T09:00:00Z"))
+        // The done-toggle: same file, same prose, a brand new mtime.
+        let summary = dir.appendingPathComponent("\(stem).summary.json")
+        try writeFile(summary, "{\"title\":\"x\",\"actions\":[]}")
+        try setMtime(summary, try iso("2026-05-13T11:00:00Z"))
+
+        let store = MeetingStore(recordingsDir: dir)
+        let row = try XCTUnwrap(store.performScan(directory: dir).first)
+        XCTAssertTrue(row.namesChangedSinceSummary,
+                      "an in-place summary.json rewrite does not regenerate, so it must not clear the cue")
+    }
+
+    func test_scan_leaves_a_never_renamed_meeting_alone() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{\"title\":\"x\"}")
+        try writeFile(dir.appendingPathComponent("\(stem).run.json"),
+                      "{\"stem\":\"\(stem)\",\"ts\":\"2026-05-11T15:00:00Z\"}")
+
+        let store = MeetingStore(recordingsDir: dir)
+        let row = try XCTUnwrap(store.performScan(directory: dir).first)
+        XCTAssertFalse(row.namesChangedSinceSummary)
+    }
+
     private func failedMeeting(reason: String?) -> Meeting {
         Meeting(
             stem: "20260721-1500",
