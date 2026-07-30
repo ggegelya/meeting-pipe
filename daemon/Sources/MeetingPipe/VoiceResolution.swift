@@ -73,6 +73,13 @@ enum VoiceResolution {
         var others: Int { rosterMatched + namedHere + unresolved }
 
         /// The one-line honest statement of what roster matching did for this meeting.
+        ///
+        /// "other" is load-bearing (UX40). The strip renders a chip for every classified
+        /// voice, the owner's and the `speaker_unknown` bucket included, and neither is
+        /// counted here. Without the word, the owner's own 9-chip meeting read "7 of 7
+        /// voices named" and looked like a miscount of what was on screen rather than an
+        /// exact count of the people matching could have applied to. The counts are
+        /// right; the sentence just had to say what it was counting.
         var headline: String {
             if others == 0 {
                 return "No other voices in this meeting."
@@ -81,7 +88,12 @@ enum VoiceResolution {
                 return "No named voices yet, so nothing could be matched. Name a voice below to start."
             }
             let matched = rosterMatched + namedHere
-            return "\(matched) of \(others) \(others == 1 ? "voice" : "voices") named."
+            if matched == others {
+                // A 1:1 is the most common shape there is, and "All 1 other voice named"
+                // is not a sentence anyone writes.
+                return others == 1 ? "The other voice is named." : "All \(others) other voices named."
+            }
+            return "\(matched) of \(others) other \(others == 1 ? "voice" : "voices") named."
         }
 
         /// The follow-up clause, or nil when there is nothing left to do.

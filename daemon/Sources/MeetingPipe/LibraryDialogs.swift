@@ -64,6 +64,20 @@ enum LibraryDialogs {
         alert.runModal()
     }
 
+    /// Say why a roster rename did not happen (UX40). Same shape and same reasoning as
+    /// the workflow refusal above: a cast-strip chip has no error slot, and a rename that
+    /// asked for a new name in a modal and then changed nothing is exactly the silence
+    /// worth a dialog. Only the strip needs this; Preferences ▸ Pipeline ▸ People and the
+    /// People rail both land the same failure in a field of their own.
+    static func reportRosterRenameProblem(_ reason: String) {
+        let alert = NSAlert()
+        alert.messageText = "This voice was not renamed"
+        alert.informativeText = reason
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     /// Folder picker for an export, returning the chosen directory or nil on cancel.
     /// `message` says what lands there, the only thing that differs between the
     /// single-meeting bundle and the batch's one-file-per-meeting run.

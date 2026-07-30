@@ -194,6 +194,13 @@ struct NamingTarget: Identifiable {
     let label: String
     var currentName: String? = nil
     var id: String { label }
+
+    /// Which sheet this target opens. Carrying a current name is what makes it a rename;
+    /// without one it is a first naming. The rule lives here rather than inline in the
+    /// sheet's `mode:` argument because the cast strip could only ever build the second
+    /// kind (UX40), so a chip that was already named had no way to reach the rename the
+    /// sheet had supported since FEAT3-UNDO.
+    var mode: SpeakerNamingMode { currentName == nil ? .enroll : .rename }
 }
 
 /// A batch of segments the "New person..." label-only sheet is open for
@@ -253,6 +260,10 @@ struct TranscriptTab: View {
     @State private var namingTarget: NamingTarget? = nil
     /// Segments being assigned to a typed-in new person (FEAT3-SEGMENT); nil when closed.
     @State private var assignNewTarget: AssignNewTarget? = nil
+    /// Drives the cast strip's roster rename (UX40), the one call here that is not a
+    /// per-meeting overlay write. Owned the way `PeopleView` owns its own, since
+    /// `RosterRename` needs a driver and the library model does not expose one.
+    @State private var launcher = PipelineLauncher()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -260,9 +271,18 @@ struct TranscriptTab: View {
                 // UX36: the cast strip is reading content, so it rides the shared
                 // measure like the rows under it; its divider stays full-bleed
                 // (chrome spans, content measures).
-                VoiceResolutionBar(outcome: voices) { label in
-                    namingTarget = NamingTarget(label: label)
-                }
+                // UX40: the chips route into the same three handlers the row menu uses,
+                // so a rename or an un-name started from a chip is the same operation on
+                // the same files as one started from a line.
+                VoiceResolutionBar(
+                    outcome: voices,
+                    onName: { label in namingTarget = NamingTarget(label: label) },
+                    onRename: { label, current in
+                        namingTarget = NamingTarget(label: label, currentName: current)
+                    },
+                    onUnname: { label, current in undoNaming(label: label, name: current) },
+                    onRenameEverywhere: { current in renameEverywhere(currentName: current) }
+                )
                 .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
                 .padding(.horizontal, SummaryLayout.contentPadding)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -293,7 +313,7 @@ struct TranscriptTab: View {
         .sheet(item: $namingTarget) { target in
             SpeakerNamingSheet(
                 currentDisplay: target.currentName ?? TranscriptDisplay.displayName(for: target.label),
-                mode: target.currentName != nil ? .rename : .enroll,
+                mode: target.mode,
                 initialName: target.currentName ?? "",
                 onSave: { name in
                     if let old = target.currentName {
@@ -385,6 +405,31 @@ struct TranscriptTab: View {
                 stem: meeting.stem, label: label, oldName: oldName, newName: newName
             )
             await reload()
+        }
+    }
+
+    /// Rename a roster-matched voice from the cast strip (UX40), through `RosterRename`:
+    /// the same path Preferences ▸ Pipeline ▸ People and the Library's People rail take,
+    /// so all three do the same thing to the same files.
+    ///
+    /// Global by nature, not by choice. A roster name is baked into `<stem>.json` by the
+    /// pipeline's finalize, so there is no per-meeting overlay entry for a local rename
+    /// to rewrite; the roster entry plus the carry across every meeting is the only edit
+    /// that reaches it. The prompt says as much before it runs, and the menu item says it
+    /// before the prompt.
+    private func renameEverywhere(currentName: String) {
+        guard let newName = RosterRename.prompt(currentName: currentName) else { return }
+        RosterRename.run(from: currentName, to: newName, launcher: launcher) { result in
+            switch result {
+            case .success:
+                // The carry rewrites this meeting's overlay too, so the reload is what
+                // makes the chip and the rows follow.
+                Task { await reload() }
+            case .failure(let error):
+                // A chip has no error slot, and a rename that changed nothing after a
+                // modal prompt has to say so (the UX32 rail-row precedent).
+                LibraryDialogs.reportRosterRenameProblem(error.localizedDescription)
+            }
         }
     }
 
