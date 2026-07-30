@@ -47,6 +47,12 @@ DEFAULT_LORA_LAYERS = 16
 # Raising it is the owner's call (it is what keeps long meetings in the corpus) but
 # it is also what makes the machine swap, so the default stays where it is safe.
 DEFAULT_MAX_SEQ_LENGTH = 4096
+# mlx_lm.lora's own default. What the machine actually pays per step scales with
+# batch * max-seq-length (activations), so raising one usually means lowering the
+# other: the 2026-07-30 run at 12288 x batch 4 drove a 32 GB Mac to 4% free before
+# the watchdog killed it, while 12288 x batch 1 is fewer step-tokens than the safe
+# default 4096 x 4.
+DEFAULT_BATCH_SIZE = 4
 # Pessimistic chars-per-token for this corpus: English runs ~3.5, Cyrillic closer to
 # 2, and a mixed transcript should not be estimated as if it were pure English.
 CHARS_PER_TOKEN = 2.5
@@ -384,6 +390,7 @@ def build_lora_command(
     iters: int = DEFAULT_ITERS,
     num_layers: int = DEFAULT_LORA_LAYERS,
     max_seq_length: int = DEFAULT_MAX_SEQ_LENGTH,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> list[str]:
     """Argv for ``mlx_lm.lora --train``. Prefers the standalone entry point, else
     ``python -m`` (mirrors ``summarize_local.build_server_command``).
@@ -404,6 +411,7 @@ def build_lora_command(
         "--fine-tune-type", "lora",
         "--num-layers", str(num_layers),
         "--iters", str(iters),
+        "--batch-size", str(batch_size),
         "--max-seq-length", str(max_seq_length),
         "--mask-prompt",
         "--grad-checkpoint",
@@ -434,6 +442,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--max-seq-length", type=int, default=DEFAULT_MAX_SEQ_LENGTH,
                         help="training context budget; meetings that do not fit are "
                              f"dropped rather than truncated (default: {DEFAULT_MAX_SEQ_LENGTH})")
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE,
+                        help="examples per step; memory scales with batch * max-seq-length, "
+                             f"so raise one only by lowering the other (default: {DEFAULT_BATCH_SIZE})")
     parser.add_argument("--force", action="store_true",
                         help="train even when the corpus is below the readiness bar")
     parser.add_argument("--dry-run", action="store_true",
@@ -495,7 +506,7 @@ def main(argv: list[str]) -> int:
     )
 
     cmd = build_lora_command(model, data_dir, args.adapter_path, args.iters,
-                             args.num_layers, args.max_seq_length)
+                             args.num_layers, args.max_seq_length, args.batch_size)
     if args.dry_run:
         print(" ".join(cmd))
         return 0

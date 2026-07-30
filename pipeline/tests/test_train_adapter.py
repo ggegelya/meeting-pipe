@@ -236,3 +236,12 @@ def test_build_lora_command_targets_train_and_adapter(tmp_path: Path):
     assert cmd[cmd.index("--adapter-path") + 1] == str(tmp_path / "adapter")
     assert cmd[cmd.index("--iters") + 1] == "50"
     assert cmd[cmd.index("--num-layers") + 1] == "8"
+    assert cmd[cmd.index("--batch-size") + 1] == "4", "default stays mlx_lm.lora's own"
+
+
+def test_build_lora_command_batch_size_override(tmp_path: Path):
+    cmd = build_lora_command(
+        "mlx-community/Qwen2.5-7B-Instruct-4bit",
+        tmp_path / "data", tmp_path / "adapter", batch_size=1,
+    )
+    assert cmd[cmd.index("--batch-size") + 1] == "1"
