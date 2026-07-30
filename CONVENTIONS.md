@@ -359,6 +359,8 @@ Absent whenever the pipeline short-circuited before publish (no speech, suspect 
 
 **All-sinks-failed is an exit code, not just a file.** `mp run-all`, `mp publish`, and `mp publish-from-paste` exit `3` (`publish_router.EXIT_PUBLISH_FAILED`, mirrored by `PipelineLauncher.publishFailedExitCode`) when every configured sink failed. `SinkDispatcher.stage(for:)` maps that exit to `PipelineFailureSidecar.Stage.publish`, which is the one stage whose retry republishes the existing `<stem>.summary.json` instead of paying the summarizer twice. Zero sinks configured is a clean success, not a failure: see `publish_router.all_sinks_failed`, which is deliberately narrower than `publish_state(...) == "none"`.
 
+**A memory failure is a phrase, not an exit code (LOCAL16).** The other stage `SinkDispatcher.stage(for:)` recognises is `memory`, and it has no exit code of its own: `mp.resource_guard` raises with a message that starts `Not enough memory`, and Swift matches that substring (`PipelineFailureSidecar.lowMemoryMarker`, case-insensitively) to stamp the sidecar. Same arrangement as UX21's `not in the local HuggingFace cache` (`Meeting.modelNotCachedMarker`): there is no shared constant across the language boundary, so the phrase itself is the contract and both messages have to keep carrying it. It exists because "Summarize and publish failed" hides the one fact the user can act on, and both producers are things the user can fix (pick a smaller preset; close memory-heavy apps). The exit-3 publish mapping deliberately wins over it, since a completed summary on disk is still retryable-from-summary whatever the tail says.
+
 ---
 
 ## Model prefetch progress stream (`mp prefetch-model` stdout)

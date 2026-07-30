@@ -13,13 +13,14 @@ The 3-layer extraction fallback is unit-tested directly via
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
 import pytest
 
-from mp import egress_guard
+from mp import egress_guard, resource_guard
 from mp.prompt_safety import wrap_untrusted
 from mp.summarize_local import (
     DEFAULT_REQUEST_TIMEOUT_SEC,
@@ -702,6 +703,144 @@ def test_spawn_allows_an_uncached_model_when_egress_is_permitted(
 
     LocalSummaryClient(host="127.0.0.1", port=8765)._spawn()
     assert captured["cmd"][0].endswith("mlx_lm.server")
+
+
+# ----- LOCAL16: the machine's memory budget is a spawn-time gate -----
+
+
+def _machine(monkeypatch: pytest.MonkeyPatch, ram_gb: float) -> None:
+    """Pretend this is a `ram_gb` Mac with the guard live. The suite pins the
+    guard off (conftest) precisely so a test has to opt in like this."""
+    monkeypatch.delenv(resource_guard.OVERRIDE_ENV, raising=False)
+    monkeypatch.setattr("mp.resource_guard.physical_ram_gb", lambda: ram_gb)
+
+
+def test_spawn_refuses_a_model_over_this_machines_tier(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The refusal has to land BEFORE Popen: a 14B that starts loading on a
+    16 GB Mac is already the failure this guard exists to prevent."""
+    captured = _fake_spawn(monkeypatch)
+    _machine(monkeypatch, 16.0)
+
+    client = LocalSummaryClient(
+        host="127.0.0.1", port=8765, model="mlx-community/Qwen2.5-14B-Instruct-4bit"
+    )
+    with pytest.raises(resource_guard.ModelTooLargeError) as exc:
+        client._spawn()
+    message = str(exc.value)
+    assert resource_guard.LOW_MEMORY_MARKER in message   # Swift stamps stage=memory off this
+    assert "Recommended (Qwen 7B-4bit)" in message       # names where to go instead
+    assert captured == {}                                # nothing was launched
+
+
+def test_spawn_allows_a_model_within_tier(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _fake_spawn(monkeypatch)
+    _machine(monkeypatch, 32.0)
+
+    LocalSummaryClient(
+        host="127.0.0.1", port=8765, model="mlx-community/Qwen2.5-14B-Instruct-4bit"
+    )._spawn()
+    assert captured["cmd"][0].endswith("mlx_lm.server")
+
+
+def test_ram_guard_override_bypasses_the_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owner-dev escape hatch: the LOCAL13 bench has to be able to run the model
+    that the guard would refuse, because measuring that boundary is its job."""
+    captured = _fake_spawn(monkeypatch)
+    _machine(monkeypatch, 16.0)
+    monkeypatch.setenv(resource_guard.OVERRIDE_ENV, "0")
+
+    LocalSummaryClient(
+        host="127.0.0.1", port=8765, model="mlx-community/Qwen2.5-14B-Instruct-4bit"
+    )._spawn()
+    assert captured["cmd"][0].endswith("mlx_lm.server")
+
+
+def test_spawn_does_not_judge_a_custom_model_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A repo id with no parameter count is the one escape hatch a user has;
+    refusing what we cannot size would close it. The watchdog covers this case."""
+    captured = _fake_spawn(monkeypatch)
+    _machine(monkeypatch, 8.0)
+
+    LocalSummaryClient(
+        host="127.0.0.1", port=8765, model="mlx-community/some-instruct-4bit"
+    )._spawn()
+    assert captured["cmd"][0].endswith("mlx_lm.server")
+
+
+def test_the_request_loop_aborts_when_free_ram_crosses_the_floor(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The watchdog sits on `_chat_completion`, so one check covers the single
+    call, every map window, every reduce batch, and both repair replays."""
+    monkeypatch.delenv(resource_guard.OVERRIDE_ENV, raising=False)
+    host, port, _ = fake_server
+    client = LocalSummaryClient(host=host, port=port, manage_subprocess=False)
+    total = 32 * 1024 ** 3
+    client.watchdog = resource_guard.MemoryWatchdog(
+        floor_pct=10.0,
+        sampler=lambda: resource_guard.MemorySample(
+            free_bytes=int(total * 0.04), total_bytes=total
+        ),
+    )
+    with pytest.raises(resource_guard.LowMemoryError) as exc:
+        client.summarize(
+            system_prompt="sys", transcript="hello", model="ignored", max_tokens=256
+        )
+    assert resource_guard.LOW_MEMORY_MARKER in str(exc.value)
+
+
+def test_the_request_loop_proceeds_with_headroom(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(resource_guard.OVERRIDE_ENV, raising=False)
+    host, port, server = fake_server
+    server.builder = lambda _: {  # type: ignore[attr-defined]
+        "choices": [{"message": {"content": json.dumps(_valid_summary_obj())}}]
+    }
+    client = LocalSummaryClient(host=host, port=port, manage_subprocess=False)
+    total = 32 * 1024 ** 3
+    client.watchdog = resource_guard.MemoryWatchdog(
+        floor_pct=10.0,
+        sampler=lambda: resource_guard.MemorySample(
+            free_bytes=int(total * 0.4), total_bytes=total
+        ),
+    )
+    summary = client.summarize(
+            system_prompt="sys", transcript="hello", model="ignored", max_tokens=256
+        )
+    assert summary.title == "Standup"
+
+
+# ----- LOCAL16: the server's death note is kept, not discarded -----
+
+
+def test_a_failing_server_lands_its_stderr_in_the_log(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """`stdout=DEVNULL` discarded exactly the message an OOM postmortem needs,
+    and left the failure reading as a generic "exited during startup" guess."""
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(tmp_path))
+    monkeypatch.setattr("mp.summarize_local.model_is_cached", lambda repo: True)
+    monkeypatch.setattr(
+        "mp.summarize_local.build_server_command",
+        lambda *a, **k: [
+            sys.executable, "-c",
+            "import sys; sys.stderr.write('mlx_lm: metal OOM allocating 8.4 GB\\n'); "
+            "sys.exit(9)",
+        ],
+    )
+    client = LocalSummaryClient(host="127.0.0.1", port=8765)
+    client._spawn()
+    assert client._proc is not None
+    client._proc.wait(timeout=10)
+
+    with pytest.raises(LocalSummaryError) as exc:
+        client._wait_for_health(timeout_sec=5.0)
+    message = str(exc.value)
+    assert "rc=9" in message
+    assert "metal OOM allocating 8.4 GB" in message           # quoted back to the user
+    log_text = (tmp_path / "mlx-server.log").read_text(encoding="utf-8")
+    assert "metal OOM allocating 8.4 GB" in log_text          # and kept on disk
 
 
 # ----- PIPE4: hierarchical map-reduce for long transcripts -----

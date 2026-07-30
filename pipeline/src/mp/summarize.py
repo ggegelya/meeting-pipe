@@ -740,6 +740,9 @@ def _select_backend(cfg: Config) -> SummaryClient:
             map_reduce_above_chars=cfg.summarization.skip_above_chars,
             # LOCAL9: opt-in fine-tuned adapter; empty config keeps the base model.
             adapter_path=cfg.summarization.local_adapter_path or None,
+            # LOCAL16: the free-RAM floor this run aborts under, rather than
+            # letting a long meeting push the Mac into swapping.
+            memory_floor_pct=cfg.summarization.local_memory_floor_pct,
         )
     if backend == "anthropic":
         api_key = require_env("ANTHROPIC_API_KEY")

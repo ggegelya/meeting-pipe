@@ -113,7 +113,8 @@ struct LocalModelPreset {
             modelId: "mlx-community/Qwen2.5-14B-Instruct-4bit",
             diskHint: "~8 GB",
             speedHint: "~45-130s per meeting",
-            qualityHint: "Highest quality of the curated presets, but heavy: wants 24 GB+ RAM (can OOM on 16 GB)."
+            // The RAM claim that used to live in this string ("wants 24 GB+ RAM (can OOM on 16 GB)") is now derived per machine by `LocalModelTier` and rendered beside the row (LOCAL16), so the picker states the limit for the Mac in front of the user rather than for a generic one.
+            qualityHint: "Highest quality of the curated presets, but the heaviest to run."
         ),
     ]
 }

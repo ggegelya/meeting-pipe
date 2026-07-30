@@ -185,6 +185,14 @@ openai_model = "gpt-4o"
 # hard backstop, so raising these only avoids premature cutoffs on slow models.
 local_startup_timeout_sec = 120
 local_request_timeout_sec = 120
+# Free-RAM floor for on-device runs, as a percentage of physical RAM (LOCAL16).
+# Sampled between requests while summarizing locally and between batches while
+# `mp ask` builds its index; crossing it stops the run with a named error
+# instead of letting the Mac swap. 0 turns the watchdog off. Separate from the
+# model-size refusal, which compares the configured model against this Mac's RAM
+# tier before the server is spawned and stays on regardless. Owner-dev escape
+# hatch for bench runs: MP_RAM_GUARD=0 in the environment disables both.
+local_memory_floor_pct = 10
 # LLM diarization cleanup (TECH-DIAR1). When true, run-all runs an extra
 # LLM pass after transcription that merges same-speaker labels and
 # reattributes obvious mistakes before summarizing. Off by default: it

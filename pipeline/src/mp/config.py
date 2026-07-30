@@ -137,6 +137,13 @@ class Summarization(BaseModel):
     # backstop, so generous values here only avoid premature cutoffs.
     local_startup_timeout_sec: float = 120.0
     local_request_timeout_sec: float = 120.0
+    # LOCAL16: free-RAM floor, as a percentage of physical RAM, under which an
+    # on-device run aborts with a named error instead of letting the Mac swap.
+    # Sampled between requests on the local summarize path and between batches on
+    # the `mp ask` embed path (mp.resource_guard). 10% is LOCAL13's bench figure,
+    # measured against this Mac reading ~18% free while idle. 0 disables the
+    # watchdog (the tier refusal at spawn time is separate and stays on).
+    local_memory_floor_pct: float = 10.0
     # LOCAL9: path to a locally-trained LoRA adapter (`mp train-adapter`). Empty
     # (the default) serves the base model; set it to opt a fine-tuned adapter into
     # the local backend. Never applied unless explicitly set, and fully on-device,

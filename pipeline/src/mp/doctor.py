@@ -23,7 +23,7 @@ from pathlib import Path
 
 import httpx
 
-from . import cloudsync, storage, workflows
+from . import cloudsync, resource_guard, storage, workflows
 from .config import CONFIG_PATH, KEYCHAIN_SERVICE, Config, load_secrets
 from .endpoints import (
     ANTHROPIC_API_BASE,
@@ -284,37 +284,9 @@ def check_ml_runtimes() -> None:
 
 # ---------- local summarization stack (LOCAL4) ------------------------------
 
-def _estimate_model_gb(model_id: str) -> float | None:
-    """Rough resident-memory / download estimate for a 4-bit MLX chat model,
-    parsed from the parameter count in its repo id (`...-7B-...` -> 7B).
-    ~0.62 GB per billion params covers 4-bit weights plus runtime overhead and
-    matches the measured ~4.3 GB for the 7B. None when the size is unparseable.
-    """
-    m = re.search(r"(\d+(?:\.\d+)?)\s*[bB]\b", model_id)
-    if not m:
-        return None
-    try:
-        params_b = float(m.group(1))
-    except ValueError:
-        return None
-    return round(params_b * 0.62, 1)
-
-
-def _physical_ram_gb() -> float | None:
-    """Total physical RAM in GB. `sysctl hw.memsize` on macOS, os.sysconf fallback."""
-    try:
-        out = subprocess.run(
-            ["/usr/sbin/sysctl", "-n", "hw.memsize"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if out.returncode == 0 and out.stdout.strip().isdigit():
-            return round(int(out.stdout.strip()) / (1024 ** 3), 1)
-    except (OSError, subprocess.SubprocessError):
-        pass
-    try:
-        return round(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / (1024 ** 3), 1)
-    except (ValueError, OSError):
-        return None
+# The model-size estimate and the physical-RAM read moved to `resource_guard`
+# (LOCAL16), which is where the tier policy and the watchdog that share them
+# live. Doctor is no longer the only reader, so they are no longer doctor's.
 
 
 def _free_disk_gb(path: Path) -> float | None:
@@ -361,7 +333,7 @@ def check_local_stack(cfg: Config | None, workflows_dir: Path | None = None) -> 
 
     model_id = cfg.summarization.local_model
     _info(f"model = {model_id}")
-    need_gb = _estimate_model_gb(model_id)
+    need_gb = resource_guard.estimate_model_gb(model_id)
 
     from .prefetch_model import _bytes_on_disk, hf_cache_dir
     cache_dir = hf_cache_dir(model_id)
@@ -372,7 +344,7 @@ def check_local_stack(cfg: Config | None, workflows_dir: Path | None = None) -> 
         est = f"~{need_gb} GB" if need_gb else "several GB"
         _info(f"model not cached yet; first local run downloads {est} (resumable, prefetched by the daemon)")
 
-    ram_gb = _physical_ram_gb()
+    ram_gb = resource_guard.physical_ram_gb()
     if ram_gb is None:
         _warn("could not determine physical RAM")
     elif need_gb is None:
@@ -386,6 +358,12 @@ def check_local_stack(cfg: Config | None, workflows_dir: Path | None = None) -> 
     else:
         _ok(f"physical RAM {ram_gb} GB comfortably fits the model's ~{need_gb} GB")
 
+    # LOCAL16: the deep check above compares one model against total RAM; this
+    # line reports the tier the RUN-TIME guard will actually enforce, so doctor
+    # and the thing that refuses a spawn cannot tell the user different stories.
+    if ram_gb is not None:
+        _report_memory_tier(model_id, ram_gb)
+
     if need_gb is not None and cached_gb == 0:
         probe = cache_dir.parent if cache_dir.parent.exists() else Path.home()
         free_gb = _free_disk_gb(probe)
@@ -397,6 +375,34 @@ def check_local_stack(cfg: Config | None, workflows_dir: Path | None = None) -> 
             _warn(f"free disk {free_gb} GB is tight for the ~{need_gb} GB download plus extraction headroom")
         else:
             _ok(f"free disk {free_gb} GB fits the ~{need_gb} GB download")
+
+
+def _report_memory_tier(model_id: str, ram_gb: float) -> None:
+    """LOCAL16: what the RAM tier admits on this machine, and where the free-RAM
+    watchdog currently sits. Advisory like the rest of doctor, but it reads the
+    same policy the spawn refusal enforces, so a green line here means a run
+    will actually start."""
+    a = resource_guard.assess(model_id, ram_gb)
+    tier = a.tier
+    _info(
+        f"memory tier: {ram_gb:g} GB RAM admits a model up to ~{tier.max_model_gb:g} GB "
+        f"(~{tier.context_token_ceiling} tokens per request)"
+    )
+    if a.fit == "over":
+        _fail(resource_guard.refusal_message(a))
+    elif a.fit == "tight":
+        _warn(f"{model_id} (~{a.model_gb:g} GB) sits near the top of this tier; OOM risk on a long meeting")
+    elif a.fit == "fits":
+        _ok(f"{model_id} (~{a.model_gb:g} GB) is within this Mac's tier")
+    else:
+        _info("model size is unparseable, so the tier check is skipped; the free-RAM watchdog still applies")
+    sample = resource_guard.sample_memory()
+    if sample is None:
+        _warn("could not sample free memory; the watchdog will not be able to fire")
+    else:
+        _info(f"free memory now: {sample.free_pct:.0f}% of {ram_gb:g} GB")
+    if not resource_guard.guard_enabled():
+        _warn(f"{resource_guard.OVERRIDE_ENV}=0 is set: the memory guard is OFF for runs in this environment")
 
 
 def check_local_server(cfg: Config | None = None, home: Path | None = None) -> None:

@@ -517,6 +517,41 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertEqual(SinkDispatcher.stage(for: err), .pipeline)
     }
 
+    // MARK: - LOCAL16: a memory failure is not "summarize and publish failed"
+
+    /// The pipeline's memory refusal and its free-RAM abort share a marker phrase (`mp.resource_guard.LOW_MEMORY_MARKER`) because there is no shared constant across the language boundary. Without this mapping the Library row would say "Summarize and publish", hiding the one fact the user can act on.
+    func test_a_memory_refusal_maps_to_the_memory_stage() {
+        let err = PipelineLauncher.LaunchError.nonZeroExit(1, """
+        Not enough memory for this model: this Mac has 16 GB of RAM and Large \
+        (Qwen 14B-4bit) needs about 24 GB. Pick Recommended (Qwen 7B-4bit) in \
+        Preferences > Pipeline.
+        """)
+        XCTAssertEqual(SinkDispatcher.stage(for: err), .memory)
+        XCTAssertFalse(SinkDispatcher.stage(for: err).retriesFromSummary)
+    }
+
+    func test_a_watchdog_abort_maps_to_the_memory_stage() {
+        let err = PipelineLauncher.LaunchError.nonZeroExit(1, """
+        Not enough memory: free RAM fell to 7% during local summarize (floor 10%), \
+        so the run stopped before this Mac started swapping.
+        """)
+        XCTAssertEqual(SinkDispatcher.stage(for: err), .memory)
+    }
+
+    func test_the_publish_exit_code_still_wins_over_the_memory_marker() {
+        // Exit 3 means every sink failed and a paid-for summary is on disk, so it
+        // stays retryable-from-summary even if the tail happens to mention memory.
+        let err = PipelineLauncher.LaunchError.nonZeroExit(
+            PipelineLauncher.publishFailedExitCode, "Not enough memory on the share host"
+        )
+        XCTAssertEqual(SinkDispatcher.stage(for: err), .publish)
+    }
+
+    func test_an_ordinary_failure_is_not_read_as_memory() {
+        let err = PipelineLauncher.LaunchError.nonZeroExit(1, "summarize blew up")
+        XCTAssertEqual(SinkDispatcher.stage(for: err), .pipeline)
+    }
+
     // MARK: - transcription.language reaches the runner (HYG2)
 
     /// Records the `languageHint` it was handed. The knob was parsed, persisted,

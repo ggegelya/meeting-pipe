@@ -61,8 +61,14 @@ final class LocalModelPreloader {
     /// - the model is already on disk (`modelCached`) - otherwise the server
     ///   would block on or trigger a multi-GB download at launch; that download
     ///   stays owned by `ModelDownloadSupervisor`.
-    static func shouldPreload(enabled: Bool, backend: String, modelCached: Bool) -> Bool {
-        enabled && backend == "local" && modelCached
+    /// - the model fits this Mac's memory tier (`fitsMemory`, LOCAL16) - the
+    ///   warm server holds the model resident from launch, so preloading an
+    ///   over-tier model spends the machine's headroom before a meeting even
+    ///   starts, and `mp serve-local` would refuse the spawn anyway.
+    static func shouldPreload(
+        enabled: Bool, backend: String, modelCached: Bool, fitsMemory: Bool
+    ) -> Bool {
+        enabled && backend == "local" && modelCached && fitsMemory
     }
 
     /// Pure: what to do when the desired identity meets the running one (LOCAL11).
@@ -84,7 +90,10 @@ final class LocalModelPreloader {
         guard Self.shouldPreload(
             enabled: enabled,
             backend: backend,
-            modelCached: ModelDownloadSupervisor.isCached(modelId: localModel)
+            modelCached: ModelDownloadSupervisor.isCached(modelId: localModel),
+            fitsMemory: LocalModelTier.isRunnable(
+                modelId: localModel, ramGB: LocalModelTier.physicalRamGB()
+            )
         ) else { return }
         guard let mp = PipelineLauncher.findMP() else {
             Log.main.warning("local model preload: no `mp` binary found; skipping")
@@ -129,7 +138,10 @@ final class LocalModelPreloader {
         let desired: Identity? = Self.shouldPreload(
             enabled: enabled,
             backend: backend,
-            modelCached: ModelDownloadSupervisor.isCached(modelId: localModel)
+            modelCached: ModelDownloadSupervisor.isCached(modelId: localModel),
+            fitsMemory: LocalModelTier.isRunnable(
+                modelId: localModel, ramGB: LocalModelTier.physicalRamGB()
+            )
         ) ? Identity(backend: backend, model: localModel, adapterPath: adapterPath) : nil
 
         switch Self.decide(running: runningIdentity, desired: desired) {

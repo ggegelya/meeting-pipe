@@ -303,12 +303,12 @@ const PWPipelinePane = () => (
     <PWGroup label="Summarization" footer="Tries Anthropic first; falls back to local if the API fails or the key is missing.">
       <PWRow first label="Backend"><PWMenuPicker value="Auto"/></PWRow>
       <PWDisclosure label="Configure local model" sublabel="Model preset, endpoint, active model, and preload.">
-        <PWRow first label="Local model" sublabel="~9 GB on disk, ~30s per meeting. Best quality for the size.">
-          <PWMenuPicker value="Recommended (Qwen 14B-4bit)"/>
+        <PWRow first label="Local model" sublabel="~4.3 GB on disk, ~30-90s per meeting. The engine-comparison sweet spot: on par with the 14B on capture, names owners, zero failures. Fits comfortably on this Mac (32 GB).">
+          <PWMenuPicker value="Recommended (Qwen 7B-4bit)"/>
         </PWRow>
         <PWStackRow label="Endpoint URL" sublabel="Local mlx_lm.server target."><PWField value="http://127.0.0.1:8765" mono/></PWStackRow>
         <PWStackRow label="Active model" sublabel="Resident model on the local server.">
-          <span style={{ fontFamily: "var(--mp-font-mono)", fontSize: 12, color: "var(--mp-fg-muted)" }}>mlx-community/Qwen2.5-14B-Instruct-4bit</span>
+          <span style={{ fontFamily: "var(--mp-font-mono)", fontSize: 12, color: "var(--mp-fg-muted)" }}>mlx-community/Qwen2.5-7B-Instruct-4bit</span>
         </PWStackRow>
         <PWToggleRow on={false} label="Preload at launch" sublabel="Warm the model when the app starts so the first summary skips the cold-start. Holds the model in RAM while idle."/>
       </PWDisclosure>

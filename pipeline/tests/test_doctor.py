@@ -12,12 +12,9 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pytest
-
 from mp import storage
 from mp.config import Config
 from mp.doctor import (
-    _estimate_model_gb,
     _report_local_server_identity,
     _scan_recorder_log_for_tcc,
     check_last_backup,
@@ -96,20 +93,8 @@ def test_handles_unreadable_log_gracefully(tmp_path: Path, monkeypatch) -> None:
 # ---------- local-stack preflight (LOCAL4) ----------------------------------
 
 
-@pytest.mark.parametrize("model_id,expected", [
-    ("mlx-community/Qwen2.5-3B-Instruct-4bit", 1.9),
-    ("mlx-community/Qwen2.5-7B-Instruct-4bit", 4.3),
-    ("mlx-community/Qwen2.5-14B-Instruct-4bit", 8.7),
-    ("mlx-community/Qwen2.5-32B-Instruct-4bit", 19.8),
-    ("mlx-community/gemma-2-9b-it-4bit", 5.6),
-])
-def test_estimate_model_gb_parses_param_count(model_id: str, expected: float) -> None:
-    assert _estimate_model_gb(model_id) == expected
-
-
-def test_estimate_model_gb_ignores_the_quant_suffix() -> None:
-    # "4bit" must not be read as a 4B parameter count.
-    assert _estimate_model_gb("mlx-community/some-instruct-4bit") is None
+# The model-size estimate moved to `mp.resource_guard` with LOCAL16 (doctor is
+# no longer its only reader); its table lives in `test_resource_guard.py`.
 
 
 def test_check_local_stack_skips_for_cloud_backend(capsys, tmp_path) -> None:
@@ -129,7 +114,7 @@ def test_check_local_stack_runs_when_a_workflow_forces_local(capsys, tmp_path, m
     cfg = Config.model_validate({
         "summarization": {"backend": "anthropic", "local_model": "mlx-community/Qwen2.5-7B-Instruct-4bit"},
     })
-    monkeypatch.setattr("mp.doctor._physical_ram_gb", lambda: 64.0)
+    monkeypatch.setattr("mp.resource_guard.physical_ram_gb", lambda: 64.0)
     monkeypatch.setattr("mp.doctor._free_disk_gb", lambda _p: 500.0)
     monkeypatch.setattr("mp.prefetch_model._bytes_on_disk", lambda _p: 0)
     check_local_stack(cfg, workflows_dir=workflows_dir)
@@ -145,7 +130,7 @@ def test_check_local_stack_fails_when_ram_below_model(capsys, monkeypatch) -> No
             "local_model": "mlx-community/Qwen2.5-14B-Instruct-4bit",
         },
     })
-    monkeypatch.setattr("mp.doctor._physical_ram_gb", lambda: 4.0)
+    monkeypatch.setattr("mp.resource_guard.physical_ram_gb", lambda: 4.0)
     monkeypatch.setattr("mp.doctor._free_disk_gb", lambda _p: 500.0)
     monkeypatch.setattr("mp.prefetch_model._bytes_on_disk", lambda _p: 0)
     check_local_stack(cfg)
@@ -161,7 +146,7 @@ def test_check_local_stack_ok_when_ram_and_disk_ample(capsys, monkeypatch) -> No
             "local_model": "mlx-community/Qwen2.5-7B-Instruct-4bit",
         },
     })
-    monkeypatch.setattr("mp.doctor._physical_ram_gb", lambda: 64.0)
+    monkeypatch.setattr("mp.resource_guard.physical_ram_gb", lambda: 64.0)
     monkeypatch.setattr("mp.doctor._free_disk_gb", lambda _p: 500.0)
     monkeypatch.setattr("mp.prefetch_model._bytes_on_disk", lambda _p: 0)
     check_local_stack(cfg)

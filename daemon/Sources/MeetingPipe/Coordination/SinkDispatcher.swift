@@ -461,7 +461,7 @@ final class SinkDispatcher: @unchecked Sendable {
          job.file.deletingLastPathComponent())
     }
 
-    /// Attribute a pipeline failure to the stage that produced it. A missing executable is the only launch-stage failure. `mp` exits `publishFailedExitCode` when every configured sink failed (PIPE1), which leaves a complete summary on disk, so the Library can retry publish alone. Everything else faults somewhere inside summarize/publish and gets the coarse `.pipeline` label. Internal for `SinkDispatcherTests`.
+    /// Attribute a pipeline failure to the stage that produced it. A missing executable is the only launch-stage failure. `mp` exits `publishFailedExitCode` when every configured sink failed (PIPE1), which leaves a complete summary on disk, so the Library can retry publish alone. A memory refusal or watchdog abort (LOCAL16) is recognised by the marker its message carries, because it has no exit code of its own and "Summarize and publish failed" would hide the one fact the user can act on. Everything else faults somewhere inside summarize/publish and gets the coarse `.pipeline` label. Internal for `SinkDispatcherTests`.
     static func stage(for error: Error) -> PipelineFailureSidecar.Stage {
         switch error {
         case PipelineLauncher.LaunchError.mpNotFound:
@@ -469,6 +469,12 @@ final class SinkDispatcher: @unchecked Sendable {
         case PipelineLauncher.LaunchError.nonZeroExit(PipelineLauncher.publishFailedExitCode, _):
             return .publish
         default:
+            let reason = error.localizedDescription
+            if reason.range(
+                of: PipelineFailureSidecar.lowMemoryMarker, options: .caseInsensitive
+            ) != nil {
+                return .memory
+            }
             return .pipeline
         }
     }

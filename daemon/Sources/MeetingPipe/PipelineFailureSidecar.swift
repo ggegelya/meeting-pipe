@@ -11,6 +11,7 @@ enum PipelineFailureSidecar {
         case publish      // every configured sink failed; the summary is on disk (PIPE1)
         case launch       // mp executable missing or could not spawn
         case interrupted  // daemon restart stranded a queued/in-flight job (PIPE3)
+        case memory       // the on-device model did not fit, or free RAM crossed the floor (LOCAL16)
 
         var displayName: String {
             switch self {
@@ -19,6 +20,7 @@ enum PipelineFailureSidecar {
             case .publish:     return "Publishing"
             case .launch:      return "Pipeline launch"
             case .interrupted: return "Interrupted"
+            case .memory:      return "Not enough memory"
             }
         }
 
@@ -31,6 +33,9 @@ enum PipelineFailureSidecar {
         let reason: String
         let ts: String
     }
+
+    /// LOCAL16: substring every memory refusal and watchdog abort carries (`mp.resource_guard.LOW_MEMORY_MARKER`). There is no shared constant across the language boundary, so the phrase itself is the contract, the same arrangement as UX21's `not in the local HuggingFace cache`. Matching it is what turns a generic "Summarize and publish" failure into a row that says the Mac ran out of memory.
+    static let lowMemoryMarker = "not enough memory"
 
     /// Suffix appended to the meeting stem. `MeetingStore.stem(of:)` splits on the first dot, so the stem still resolves cleanly.
     static let suffix = ".error.json"

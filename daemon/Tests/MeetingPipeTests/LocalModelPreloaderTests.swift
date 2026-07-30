@@ -7,13 +7,17 @@ final class LocalModelPreloaderTests: XCTestCase {
 
     func test_shouldPreload_requires_opt_in_local_backend_and_cached_model() {
         XCTAssertTrue(
-            LocalModelPreloader.shouldPreload(enabled: true, backend: "local", modelCached: true)
+            LocalModelPreloader.shouldPreload(
+                enabled: true, backend: "local", modelCached: true, fitsMemory: true
+            )
         )
     }
 
     func test_shouldPreload_false_when_opted_out() {
         XCTAssertFalse(
-            LocalModelPreloader.shouldPreload(enabled: false, backend: "local", modelCached: true)
+            LocalModelPreloader.shouldPreload(
+                enabled: false, backend: "local", modelCached: true, fitsMemory: true
+            )
         )
     }
 
@@ -21,10 +25,14 @@ final class LocalModelPreloaderTests: XCTestCase {
         // `auto` may answer the first summary via Anthropic; `anthropic` never
         // uses the local model. Warming it in either case wastes RAM.
         XCTAssertFalse(
-            LocalModelPreloader.shouldPreload(enabled: true, backend: "auto", modelCached: true)
+            LocalModelPreloader.shouldPreload(
+                enabled: true, backend: "auto", modelCached: true, fitsMemory: true
+            )
         )
         XCTAssertFalse(
-            LocalModelPreloader.shouldPreload(enabled: true, backend: "anthropic", modelCached: true)
+            LocalModelPreloader.shouldPreload(
+                enabled: true, backend: "anthropic", modelCached: true, fitsMemory: true
+            )
         )
     }
 
@@ -32,7 +40,20 @@ final class LocalModelPreloaderTests: XCTestCase {
         // Starting the server before the model is downloaded would block on (or
         // trigger) a multi-GB download at launch; that stays with ModelDownloadSupervisor.
         XCTAssertFalse(
-            LocalModelPreloader.shouldPreload(enabled: true, backend: "local", modelCached: false)
+            LocalModelPreloader.shouldPreload(
+                enabled: true, backend: "local", modelCached: false, fitsMemory: true
+            )
+        )
+    }
+
+    func test_shouldPreload_false_when_the_model_is_over_this_machines_tier() {
+        // LOCAL16: the warm server holds the model resident from launch, so
+        // preloading an over-tier one spends the machine's headroom before a
+        // meeting even starts, and `mp serve-local` would refuse it anyway.
+        XCTAssertFalse(
+            LocalModelPreloader.shouldPreload(
+                enabled: true, backend: "local", modelCached: true, fitsMemory: false
+            )
         )
     }
 

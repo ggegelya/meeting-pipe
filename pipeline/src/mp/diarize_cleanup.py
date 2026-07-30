@@ -406,7 +406,12 @@ def _select_cleanup_backend(cfg: Config) -> CleanupClient:
 
         host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
         return LocalCleanupClient(
-            LocalSummaryClient(model=cfg.summarization.local_model, host=host, port=port),
+            LocalSummaryClient(
+                model=cfg.summarization.local_model, host=host, port=port,
+                # LOCAL16: the configured floor, not the default, so turning the
+                # watchdog down (or off) means the same thing on every local path.
+                memory_floor_pct=cfg.summarization.local_memory_floor_pct,
+            ),
             max_tokens=cfg.summarization.max_tokens,
         )
     if backend == "anthropic":

@@ -56,12 +56,20 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
+
+from . import events
 
 log = logging.getLogger("mp.local_server")
 
 SCHEMA_VERSION = 1
 MARKER_NAME = "mlx-server.json"
+
+# LOCAL16: where the model server's own stdout/stderr goes. It used to go to
+# DEVNULL, so an OOM message from mlx_lm.server was discarded and the failure
+# surfaced as the generic "exited during startup (rc=...)" guess. Sized and
+# rotated by the same helper as the event log, so it self-bounds.
+SERVER_LOG_NAME = "mlx-server.log"
 
 # Substring that identifies an `mlx_lm.server` in a `ps` command line. Guards
 # against pid reuse: a recycled pid pointing at some unrelated process must
@@ -77,6 +85,43 @@ def marker_path(home: Path | None = None) -> Path:
     """`~/Library/Logs/MeetingPipe/mlx-server.json`, beside the logs."""
     base = (home or Path.home()) / "Library" / "Logs" / "MeetingPipe"
     return base / MARKER_NAME
+
+
+def server_log_path() -> Path:
+    """`~/Library/Logs/MeetingPipe/mlx-server.log`. Routed through
+    `events.logs_dir`, so `MEETINGPIPE_LOGS_DIR` and the pytest redirect apply
+    here exactly as they do to the event log."""
+    return events.logs_dir() / SERVER_LOG_NAME
+
+
+def open_server_log() -> IO[bytes] | None:
+    """A rotated append handle for the model server's output, or None when the
+    file cannot be opened. Best-effort: losing the log must never stop a
+    summarize, so the caller falls back to DEVNULL."""
+    path = server_log_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        events.rotate_if_needed(path)
+        handle = path.open("ab")
+    except OSError as e:
+        log.warning("could not open the model-server log %s: %s", path, e)
+        return None
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return handle
+
+
+def tail_server_log(max_chars: int = 800) -> str:
+    """The last `max_chars` of the model server's log, for a failure message.
+    Empty string when there is nothing readable, so a caller can append it
+    unconditionally."""
+    try:
+        text = server_log_path().read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return text[-max_chars:].strip()
 
 
 def write_marker(

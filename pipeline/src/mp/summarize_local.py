@@ -60,7 +60,7 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
-from . import egress_guard, local_server, summarize_staged
+from . import egress_guard, local_server, resource_guard, summarize_staged
 from .chunking import chunked_windows
 from .json_extract import largest_balanced_json_object, repair_missing_commas
 from .prefetch_model import model_is_cached
@@ -310,6 +310,7 @@ class LocalSummaryClient:
         manage_subprocess: bool = True,
         map_reduce_above_chars: int = DEFAULT_MAP_REDUCE_ABOVE_CHARS,
         adapter_path: str | None = None,
+        memory_floor_pct: float = resource_guard.DEFAULT_FLOOR_PCT,
     ) -> None:
         self._model = model
         self._host = _loopback_only(host)
@@ -328,6 +329,10 @@ class LocalSummaryClient:
         self._manage_subprocess = manage_subprocess
         # LOCAL9: optional LoRA adapter path served on top of the base model.
         self._adapter_path = adapter_path
+        # LOCAL16: sampled before every request, so a run that would push this Mac
+        # into swapping ends with a named error instead of a beachball. Public so a
+        # caller driving its own loop (a bench harness) can share the one instance.
+        self.watchdog = resource_guard.MemoryWatchdog(floor_pct=memory_floor_pct)
 
         self._proc: subprocess.Popen[bytes] | None = None
         self._lock = threading.Lock()
@@ -729,11 +734,21 @@ class LocalSummaryClient:
                 f"outside a zero-egress meeting first:\n"
                 f"    mp prefetch-model {self._model}"
             )
+        # LOCAL16: refuse a model this Mac cannot hold, before a multi-GB load
+        # starts. Same shape and the same seam as the SEC13 refusal above: the
+        # machine is the thing that cannot satisfy the request, so say so and
+        # name the preset to pick instead. Fails open when the size or the RAM
+        # cannot be read; the watchdog covers what the table cannot see.
+        resource_guard.require_model_fits(self._model)
         cmd = build_server_command(self._model, self._host, self._port, self._adapter_path)
         log.info("spawning mlx_lm.server: %s", " ".join(cmd))
+        # LOCAL16: the server's own output goes to a rotated log rather than
+        # DEVNULL. Discarding it is what made every OOM read as an opaque
+        # "exited during startup", and left the postmortem with nothing.
+        server_log = local_server.open_server_log()
         proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.DEVNULL,
+            stdout=server_log or subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
             # SEC13: the guard patches httpx in *this* process; the child speaks
             # its own stack. Hand it an environment with the cloud tokens gone
@@ -754,6 +769,11 @@ class LocalSummaryClient:
             pid=proc.pid, port=self._port, model=self._model,
             adapter_path=self._adapter_path,
         )
+        # Popen duplicated the fd into the child, so this handle has done its
+        # job. Holding it open would keep a second reference to a log the
+        # rotation then renames out from under us.
+        if server_log is not None:
+            server_log.close()
 
     def _wait_for_health(self, timeout_sec: float) -> None:
         deadline = time.monotonic() + timeout_sec
@@ -762,9 +782,16 @@ class LocalSummaryClient:
             if self._proc is not None and self._proc.poll() is not None:
                 rc = self._proc.returncode
                 self._proc = None
+                # LOCAL16: quote the server's own last words rather than
+                # guessing at them. Before the log capture this message was a
+                # two-cause guess ("the model name, or RAM"), which is exactly
+                # what a postmortem cannot work with.
+                tail = local_server.tail_server_log()
                 raise LocalSummaryError(
-                    f"mlx_lm.server exited during startup (rc={rc}). "
-                    "Check that the model name resolves and you have enough RAM."
+                    f"mlx_lm.server exited during startup (rc={rc})."
+                    + (f" Its last output was:\n{tail}" if tail else
+                       " It logged nothing; check that the model name resolves"
+                       " and you have enough RAM.")
                 )
             if self._is_healthy():
                 log.info("mlx_lm.server is ready at %s", self.base_url)
@@ -848,6 +875,13 @@ class LocalSummaryClient:
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
     ) -> str:
+        # LOCAL16: the one chokepoint every local request passes through, so a
+        # single check here covers the single-pass call, each map window, each
+        # reduce batch, and both repair replays. Checked BEFORE the request:
+        # the point is to stop while the machine still has room, not to notice
+        # afterwards. Throttled internally, so the map loop does not pay for a
+        # `vm_stat` per window.
+        self.watchdog.check(stage="local summarize")
         if response_format is None:
             # Default to the MeetingSummary schema so the existing
             # summarize() call site (which passes no response_format) is
@@ -992,6 +1026,23 @@ class LocalSummaryClient:
 _largest_balanced_json_object = largest_balanced_json_object
 
 
+def _redirect_output_to_server_log() -> None:
+    """Point this process's stdout and stderr at the model-server log before
+    `execvpe` (LOCAL16). Best-effort: a warm server that cannot log is still a
+    working warm server, and the daemon nulls both streams today, so the only
+    thing at stake is whether the next OOM leaves a message behind."""
+    handle = local_server.open_server_log()
+    if handle is None:
+        return
+    try:
+        os.dup2(handle.fileno(), 1)
+        os.dup2(handle.fileno(), 2)
+    except OSError as e:
+        log.warning("serve-local: could not redirect output to the server log: %s", e)
+    finally:
+        handle.close()
+
+
 def main(argv: list[str]) -> int:
     """``mp serve-local``: start a persistent ``mlx_lm.server`` for the
     configured local model and stay in the foreground so the parent process
@@ -1037,10 +1088,24 @@ def main(argv: list[str]) -> int:
             model, model,
         )
         return 1
+    # LOCAL16: the warm path refuses an over-tier model for the same reason the
+    # lazy spawn does, and one step earlier in the day: a preloaded server holds
+    # the model resident from launch, so getting this wrong costs the machine
+    # its headroom before a meeting even starts.
+    try:
+        resource_guard.require_model_fits(model)
+    except resource_guard.ModelTooLargeError as e:
+        log.error("serve-local: %s", e)
+        return 1
     # LOCAL9: the warm server serves the configured adapter too, so it matches the
     # lazy per-call spawn (LocalSummaryClient) and the daemon reuses one server.
     cmd = build_server_command(model, host, port, cfg.summarization.local_adapter_path or None)
     log.info("serve-local: exec %s", " ".join(cmd))
+    # LOCAL16: point the exec'd server's own stdout/stderr at the same rotated
+    # log the lazy spawn uses. `execvpe` replaces this process, so the redirect
+    # has to happen here, on the fds the child inherits (dup2's result is
+    # inheritable, which is what carries it across the exec).
+    _redirect_output_to_server_log()
     try:
         # execvpe (not execvp): hand the child a token-stripped, offline-pinned
         # environment under a zero-egress run so it cannot egress even though it

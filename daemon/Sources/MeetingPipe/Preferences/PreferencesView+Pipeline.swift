@@ -55,7 +55,17 @@ struct PipelineSectionView: View {
                             sublabel: localModelHint) {
                             Picker("", selection: localModelPresetBinding) {
                                 ForEach(LocalModelPreset.all, id: \.id) { preset in
-                                    Text(preset.label).tag(preset.id)
+                                    // LOCAL16: the row reads the machine. An over-tier
+                                    // preset is disabled AND says why in its own text,
+                                    // since a grayed row with no reason is the shape
+                                    // UX30 exists to prevent.
+                                    Text(LocalModelTier.rowLabel(
+                                        preset.label, modelId: preset.modelId, ramGB: machineRamGB
+                                    ))
+                                    .tag(preset.id)
+                                    .disabled(!LocalModelTier.isRunnable(
+                                        modelId: preset.modelId, ramGB: machineRamGB
+                                    ))
                                 }
                                 Text("Custom").tag(LocalModelPreset.customId)
                             }
@@ -316,12 +326,19 @@ struct PipelineSectionView: View {
             : "Learned from \(voiceprintMeetings) meeting\(voiceprintMeetings == 1 ? "" : "s"). Used to label you on mono or merged calls."
     }
 
+    /// LOCAL16: this Mac's physical RAM, read once per render pass. The presets used to state their limits as fixed prose, so a 16 GB Mac and a 64 GB Mac were told the same thing and the 16 GB one found out by hanging.
+    private var machineRamGB: Double { LocalModelTier.physicalRamGB() }
+
     private var localModelHint: String {
         let id = currentLocalModelPresetId
         if let p = LocalModelPreset.all.first(where: { $0.id == id }) {
-            return "\(p.diskHint) on disk, \(p.speedHint). \(p.qualityHint)"
+            let tier = LocalModelTier.annotation(modelId: p.modelId, ramGB: machineRamGB)
+            return "\(p.diskHint) on disk, \(p.speedHint). \(p.qualityHint) \(tier)"
         }
-        return "Any HuggingFace MLX-quantised model id."
+        return "Any HuggingFace MLX-quantised model id. "
+            + LocalModelTier.annotation(
+                modelId: store.summarizationLocalModel, ramGB: machineRamGB
+            )
     }
 
     @ViewBuilder

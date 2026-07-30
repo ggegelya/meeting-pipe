@@ -97,6 +97,10 @@ def _local_client(cfg: Config, model: str | None):
         port=port,
         startup_timeout_sec=cfg.summarization.local_startup_timeout_sec,
         request_timeout_sec=cfg.summarization.local_request_timeout_sec,
+        # LOCAL16: `mp ask` answers through here, and the 2026-07-29 incident
+        # that hard-rebooted this Mac started on exactly this path, so the same
+        # floor applies to an answer as to a summary.
+        memory_floor_pct=cfg.summarization.local_memory_floor_pct,
     )
 
 

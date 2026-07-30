@@ -5,8 +5,22 @@ import os
 
 import pytest
 
-from mp import egress_guard
+from mp import egress_guard, resource_guard
 from mp.config import MANAGED_SECRET_KEYS
+
+
+@pytest.fixture(autouse=True)
+def _disable_memory_guard(monkeypatch):
+    """LOCAL16: the memory guard reads the REAL machine (physical RAM, and free
+    RAM via `vm_stat`), so leaving it live would let an unrelated local-client
+    test fail because the developer's Mac happened to be under pressure, or
+    because a CI runner is smaller than the model the fixture names.
+
+    Off for the suite by default, and the two files that exist to test it
+    (`test_resource_guard.py`, the LOCAL16 cases in `test_summarize_local.py`)
+    turn it back on deliberately and pass an explicit `ram_gb`.
+    """
+    monkeypatch.setenv(resource_guard.OVERRIDE_ENV, "0")
 
 
 @pytest.fixture(autouse=True)
