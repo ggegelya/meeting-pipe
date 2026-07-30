@@ -13,8 +13,48 @@ import Foundation
 protocol AskRunning: AnyObject {
     /// Run one `mp ask` across the library and return its parsed answer (AI3).
     func askMeetings(question: String) async -> Result<AskAnswer, Error>
+    /// As above, reporting the run's phase as AI11's heartbeat lands (UX38), so
+    /// a first build over a large library shows real counts instead of a
+    /// spinner. Defaulted to the silent form, so a fake that only cares about
+    /// the answer implements nothing extra.
+    func askMeetings(
+        question: String,
+        onPhase: @escaping (AskRunPhase) -> Void
+    ) async -> Result<AskAnswer, Error>
     /// Terminate the in-flight `mp ask` subprocess, if any (UX37).
     func cancelAsk()
+}
+
+extension AskRunning {
+    func askMeetings(
+        question: String,
+        onPhase: @escaping (AskRunPhase) -> Void
+    ) async -> Result<AskAnswer, Error> {
+        await askMeetings(question: question)
+    }
+}
+
+/// AI11's index-rebuild counts, off the `mp ask` progress heartbeat.
+///
+/// `done` is how many meetings the index covers so far this pass, which
+/// includes the ones it reused untouched, and `total` is the library. A
+/// one-new-meeting refresh therefore opens near the top rather than at zero,
+/// and that is the truth: nothing else had to be read again.
+struct AskIndexProgress: Equatable {
+    let done: Int
+    let total: Int
+}
+
+/// What `mp ask` says it is doing right now (UX38).
+///
+/// Two cases because the heartbeat has two shapes: the index beats carry
+/// counters, and the answer beat carries none. Modelling the second one
+/// explicitly is what lets the pane fall back from a count to the thinking
+/// state when the engine moves on, instead of freezing on the last number it
+/// saw.
+enum AskRunPhase: Equatable {
+    case indexing(AskIndexProgress)
+    case answering
 }
 
 /// One question asked this session and what came back for it.
@@ -49,12 +89,16 @@ struct AskEntry: Identifiable, Equatable {
 }
 
 /// The run currently in flight (UX37). Carries `startedAt` so a surface can show
-/// how long it has been going; AI11's stdout heartbeat lands as another field
-/// here when it ships, without moving where the running state lives.
+/// how long it has been going, and (UX38) AI11's index counts, which landed here
+/// as the extra field UX37 left room for rather than moving where the running
+/// state lives.
 struct AskInFlight: Equatable {
     let id: UUID
     let question: String
     let startedAt: Date
+    /// Where the index pass has got to, nil before the first beat and again
+    /// once the engine moves on to answering. Nil is the thinking state.
+    var indexing: AskIndexProgress? = nil
 }
 
 /// UX37: the Ask rail's state, owned by the Library root instead of the view.
@@ -72,7 +116,8 @@ struct AskInFlight: Equatable {
 /// session history so coming back shows what was already asked.
 ///
 /// `AskView` is a pure renderer over this type and holds no run state of its
-/// own. UX38 rewrites that renderer against this same surface.
+/// own. UX38 rewrote that renderer without changing this surface: what the pane
+/// shows is decided by `AskPane.derive`, over exactly the properties below.
 @MainActor
 final class AskModel: ObservableObject {
 
@@ -186,10 +231,24 @@ final class AskModel: ObservableObject {
         onRunFinished = onFinished
         Task { [weak self] in
             guard let self else { return }
-            let result = await self.runner.askMeetings(question: q)
+            let result = await self.runner.askMeetings(question: q) { [weak self] phase in
+                self?.note(phase, for: run.id)
+            }
             self.finish(run: run, result: result)
         }
         return true
+    }
+
+    /// Land one heartbeat. Guarded by the run id for the same reason `finish` is:
+    /// a cancelled run's last beat must not repaint the pane the user has
+    /// already moved on from.
+    private func note(_ phase: AskRunPhase, for id: UUID) {
+        guard var run = inFlight, run.id == id else { return }
+        switch phase {
+        case .indexing(let progress): run.indexing = progress
+        case .answering: run.indexing = nil
+        }
+        inFlight = run
     }
 
     /// Land a completion. The run-id guard is what makes an abandoned or

@@ -358,6 +358,18 @@ final class LibraryWindowModel: ObservableObject {
         await bridge { library, done in library.askMeetings(question: question) { done($0) } }
     }
 
+    /// As above, forwarding AI11's index heartbeat to the pane (UX38). The
+    /// launcher already hops each beat to main, so `onPhase` runs where
+    /// `AskModel` lives and needs no hop of its own.
+    func askMeetings(
+        question: String,
+        onPhase: @escaping (AskRunPhase) -> Void
+    ) async -> Result<AskAnswer, Error> {
+        await bridge { library, done in
+            library.askMeetings(question: question, onPhase: onPhase) { done($0) }
+        }
+    }
+
     /// Stop the in-flight `mp ask` (UX37). `AskModel`'s half of `AskRunning`;
     /// unwired (headless) is a no-op, since nothing was spawned.
     func cancelAsk() {

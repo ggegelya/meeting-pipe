@@ -194,6 +194,38 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertNil(PipelineLauncher.parseProgress(#"__MP_PROGRESS__ {"elapsed_s":1}"#))
     }
 
+    /// AI11 carries the ask index's counters on the same heartbeat (UX38).
+    func test_parseProgress_reads_the_ask_index_counters() {
+        let p = PipelineLauncher.parseProgress(
+            #"__MP_PROGRESS__ {"stage":"indexing","elapsed_s":3,"stems_done":12,"stems_total":87,"chunks_done":940}"#
+        )
+        XCTAssertEqual(p?.stemsDone, 12)
+        XCTAssertEqual(p?.stemsTotal, 87)
+        // A run-all beat carries none, and nil has to stay distinguishable from
+        // zero: "no counters on this beat" is not "nothing indexed yet".
+        let runAll = PipelineLauncher.parseProgress(#"__MP_PROGRESS__ {"stage":"summarize","elapsed_s":42}"#)
+        XCTAssertNil(runAll?.stemsDone)
+        XCTAssertNil(runAll?.stemsTotal)
+    }
+
+    /// The stage strings are a cross-language contract with `mp.ask`; getting one
+    /// wrong shows up as a progress line that silently never appears.
+    func test_askPhase_maps_the_ask_stages_and_ignores_the_rest() {
+        XCTAssertEqual(
+            PipelineLauncher.askPhase(PipelineProgress(
+                stage: "indexing", elapsedSec: 3, stemsDone: 12, stemsTotal: 87
+            )),
+            .indexing(AskIndexProgress(done: 12, total: 87))
+        )
+        XCTAssertEqual(
+            PipelineLauncher.askPhase(PipelineProgress(stage: "answering", elapsedSec: 9)),
+            .answering
+        )
+        // An index beat without counters says nothing renderable.
+        XCTAssertNil(PipelineLauncher.askPhase(PipelineProgress(stage: "indexing", elapsedSec: 1)))
+        XCTAssertNil(PipelineLauncher.askPhase(PipelineProgress(stage: "summarize", elapsedSec: 42)))
+    }
+
     // MARK: - PublishResult (PIPE1)
 
     private func writePublishSidecar(_ json: String, stem: String, in dir: URL) throws {

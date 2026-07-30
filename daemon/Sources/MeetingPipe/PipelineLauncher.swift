@@ -1,10 +1,17 @@
 import Foundation
 import TOMLKit
 
-/// One live progress sample from a running `mp run-all` (TECH-UX5).
+/// One live progress sample from a running pipeline subprocess (TECH-UX5).
+///
+/// `stage` + `elapsedSec` are what every beat carries. The two stem counters are
+/// AI11's, present only on the `mp ask` index beats, and optional here rather
+/// than zero-defaulted so a reader can tell "no counters on this beat" from
+/// "nothing indexed yet".
 struct PipelineProgress: Equatable {
     let stage: String
     let elapsedSec: Int
+    var stemsDone: Int? = nil
+    var stemsTotal: Int? = nil
 }
 
 /// A verified `[stem]` citation on an ask answer (AI3): resolves to a real meeting on disk.
@@ -83,6 +90,8 @@ protocol PipelineDriver: AnyObject {
     func summarizePreviewViaApple(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void)
     /// Ask a natural-language question across the whole library (AI3): runs `mp ask`, which retrieves + synthesizes an engine-backed answer with verified `[stem]` citations on-device (honouring the backend + egress clamp), and returns the parsed answer. Defaulted no-op.
     func ask(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void)
+    /// As `ask`, reporting AI11's index-rebuild heartbeat as it lands (UX38), so the Ask pane can show real counts during a first build instead of a spinner. Defaulted to forward to the silent form so fakes are unchanged.
+    func ask(question: String, onPhase: ((AskRunPhase) -> Void)?, completion: @escaping (Result<AskAnswer, Error>) -> Void)
     /// Generate the weekly review digest now (AI4): runs `mp digest`, which writes `digest-<date>.summary.json/.md` into the `digests` library sibling. Library-wide, so `cloudSecretPolicy(for: nil)` applies the global egress posture. Defaulted no-op.
     func digest(completion: @escaping (Result<Void, Error>) -> Void)
     /// Group a recurring series' restatements of one commitment (AI7): runs `mp actions --open --cluster`, which embeds each open action's task on-device and merges near-duplicates within a workflow, and returns the per-action cluster assignment the Facts view groups by. Read-only and fully local. Defaulted no-op.
@@ -179,6 +188,12 @@ extension PipelineDriver {
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "ask unsupported by this driver"]
         )))
+    }
+
+    /// Default: ignore the heartbeat and defer to the plain `ask`. Fakes that
+    /// only implement the completion form get this for free.
+    func ask(question: String, onPhase: ((AskRunPhase) -> Void)?, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
+        ask(question: question, completion: completion)
     }
 
     /// Default no-op stub; `PipelineLauncher` overrides this.
@@ -368,7 +383,30 @@ final class PipelineLauncher: PipelineDriver {
             return nil
         }
         let elapsed = (obj["elapsed_s"] as? Int) ?? Int((obj["elapsed_s"] as? Double) ?? 0)
-        return PipelineProgress(stage: stage, elapsedSec: elapsed)
+        return PipelineProgress(
+            stage: stage,
+            elapsedSec: elapsed,
+            stemsDone: obj["stems_done"] as? Int,
+            stemsTotal: obj["stems_total"] as? Int
+        )
+    }
+
+    /// AI11's `mp ask` beats, in the vocabulary the Ask pane renders (UX38).
+    ///
+    /// Pure and named here rather than inside the spawn closure so the stage
+    /// strings this depends on are pinned by a test: they are a cross-language
+    /// contract with `mp.ask`, and the failure mode of getting one wrong is a
+    /// progress line that silently never appears.
+    static func askPhase(_ p: PipelineProgress) -> AskRunPhase? {
+        switch p.stage {
+        case "indexing":
+            guard let done = p.stemsDone, let total = p.stemsTotal else { return nil }
+            return .indexing(AskIndexProgress(done: done, total: total))
+        case "answering":
+            return .answering
+        default:
+            return nil
+        }
     }
 
     func runAll(
@@ -472,9 +510,25 @@ final class PipelineLauncher: PipelineDriver {
     /// `effective_backend()` forces local under regulated. Async per AI2's verdict,
     /// so a generous 10-min cap covers a cold local model + long-context prefill.
     func ask(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
+        ask(question: question, onPhase: nil, completion: completion)
+    }
+
+    /// As `ask`, reporting AI11's index heartbeat while it runs (UX38). The
+    /// beats are the ones `mp ask` already prints on stdout, so this is the same
+    /// channel `run-all` uses, read for a second subcommand rather than a new
+    /// one. `onPhase` is called on main, like every other `runMP` progress hop.
+    func ask(
+        question: String,
+        onPhase: ((AskRunPhase) -> Void)?,
+        completion: @escaping (Result<AskAnswer, Error>) -> Void
+    ) {
         let outURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("mp-ask-\(UUID().uuidString).json")
-        runMP(["ask", question, "--out", outURL.path], timeout: 10 * 60, retain: .ask) { result in
+        let progress: ((PipelineProgress) -> Void)? = onPhase.map { report in
+            { beat in Self.askPhase(beat).map(report) }
+        }
+        runMP(["ask", question, "--out", outURL.path], timeout: 10 * 60,
+              onProgress: progress, retain: .ask) { result in
             defer { try? FileManager.default.removeItem(at: outURL) }
             // Prefer the structured error the Python side wrote (a clean, single
             // line) over the noisy stderr tail on a non-zero exit.

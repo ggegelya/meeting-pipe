@@ -17,16 +17,30 @@ final class AskModelTests: XCTestCase {
         private(set) var questions: [String] = []
         private(set) var cancelCalls = 0
         private var parked: [CheckedContinuation<Result<AskAnswer, Error>, Never>] = []
+        /// The live run's heartbeat sink (UX38), retained so a test can play a
+        /// beat the way `mp ask` would.
+        private var phaseSink: ((AskRunPhase) -> Void)?
 
         /// True once a spawn has reached this runner and is waiting on an answer.
         var isRunning: Bool { !parked.isEmpty }
 
         func askMeetings(question: String) async -> Result<AskAnswer, Error> {
+            await askMeetings(question: question, onPhase: { _ in })
+        }
+
+        func askMeetings(
+            question: String,
+            onPhase: @escaping (AskRunPhase) -> Void
+        ) async -> Result<AskAnswer, Error> {
             questions.append(question)
+            phaseSink = onPhase
             return await withCheckedContinuation { parked.append($0) }
         }
 
         func cancelAsk() { cancelCalls += 1 }
+
+        /// Play one heartbeat at the model, as the launcher would.
+        func beat(_ phase: AskRunPhase) { phaseSink?(phase) }
 
         /// Land the oldest parked run.
         func deliver(_ result: Result<AskAnswer, Error>) {
@@ -255,6 +269,47 @@ final class AskModelTests: XCTestCase {
         XCTAssertTrue(runner.questions.isEmpty)
         XCTAssertFalse(consumed)
         XCTAssertFalse(model.isAsking)
+    }
+
+    // MARK: - Heartbeat (UX38 over AI11)
+
+    func testIndexBeatsLandOnTheRunInFlight() async {
+        XCTAssertTrue(model.ask("what did we decide?"))
+        await pump { runner.isRunning }
+        XCTAssertNil(model.inFlight?.indexing, "nothing to show until the first beat")
+
+        runner.beat(.indexing(AskIndexProgress(done: 12, total: 87)))
+        XCTAssertEqual(model.inFlight?.indexing, AskIndexProgress(done: 12, total: 87))
+
+        runner.beat(.indexing(AskIndexProgress(done: 40, total: 87)))
+        XCTAssertEqual(model.inFlight?.indexing, AskIndexProgress(done: 40, total: 87))
+    }
+
+    /// The counts describe the index pass, so they have to go when the engine
+    /// moves on. Freezing on the last number would leave the pane claiming an
+    /// index build during the minutes the model is actually answering.
+    func testTheAnsweringBeatDropsBackToTheThinkingState() async {
+        XCTAssertTrue(model.ask("what did we decide?"))
+        await pump { runner.isRunning }
+        runner.beat(.indexing(AskIndexProgress(done: 87, total: 87)))
+        XCTAssertNotNil(model.inFlight?.indexing)
+
+        runner.beat(.answering)
+
+        XCTAssertNil(model.inFlight?.indexing)
+    }
+
+    func testABeatAfterCancelIsDropped() async {
+        XCTAssertTrue(model.ask("something slow"))
+        await pump { runner.isRunning }
+        model.cancel()
+
+        // The subprocess is being terminated, and a beat already in flight must
+        // not resurrect a run the pane has already reported as stopped.
+        runner.beat(.indexing(AskIndexProgress(done: 3, total: 9)))
+
+        XCTAssertNil(model.inFlight)
+        XCTAssertEqual(model.latest?.wasCancelled, true)
     }
 
     // MARK: - History

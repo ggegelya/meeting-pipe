@@ -456,13 +456,24 @@ final class MeetingLibraryService {
     /// one-shot (AI2 found live synthesis too slow, so the caller shows a spinner).
     /// Errors flow back through `completion` for inline display, not a notification.
     func askMeetings(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
+        askMeetings(question: question, onPhase: nil, completion: completion)
+    }
+
+    /// As `askMeetings`, reporting AI11's index heartbeat while the run works
+    /// (UX38), which is what lets the Ask pane say how much of the library the
+    /// index covers instead of showing an unmoving spinner through a first build.
+    func askMeetings(
+        question: String,
+        onPhase: ((AskRunPhase) -> Void)?,
+        completion: @escaping (Result<AskAnswer, Error>) -> Void
+    ) {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             completion(.failure(LibraryError.emptyQuestion))
             return
         }
         Log.event(category: "coordinator", action: "ask_requested", attributes: ["chars": trimmed.count])
-        launcher.ask(question: trimmed) { result in
+        launcher.ask(question: trimmed, onPhase: onPhase) { result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let ans):
