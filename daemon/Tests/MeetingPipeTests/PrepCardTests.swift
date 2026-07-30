@@ -214,10 +214,10 @@ final class PrepCardTests: XCTestCase {
             points: ["a"], actions: [PrepCard.Action(task: "x", owner: nil, due: nil)],
             moreActions: 2
         )
-        XCTAssertGreaterThan(PrepCardView.height(for: withPoints), PrepCardView.height(for: base))
-        XCTAssertGreaterThan(PrepCardView.height(for: withActions), PrepCardView.height(for: base))
-        XCTAssertGreaterThan(PrepCardView.height(for: withMore),
-                             PrepCardView.height(for: withActions))
+        XCTAssertGreaterThan(PrepCardView.height(for: withPoints, width: cardWidth), PrepCardView.height(for: base, width: cardWidth))
+        XCTAssertGreaterThan(PrepCardView.height(for: withActions, width: cardWidth), PrepCardView.height(for: base, width: cardWidth))
+        XCTAssertGreaterThan(PrepCardView.height(for: withMore, width: cardWidth),
+                             PrepCardView.height(for: withActions, width: cardWidth))
     }
 
     func test_card_height_covers_the_lowest_row() throws {
@@ -228,13 +228,13 @@ final class PrepCardTests: XCTestCase {
                       PrepCard.Action(task: "y", owner: nil, due: nil)],
             moreActions: 2
         )
-        let layout = PrepCardView.layout(for: card)
+        let layout = PrepCardView.layout(for: card, width: cardWidth)
         let lowest = layout.moreTop ?? layout.actionTops.last ?? layout.titleTop
         XCTAssertGreaterThan(layout.height, lowest,
                              "the card must be taller than the top of its last row")
         XCTAssertEqual(layout.pointTops.count, 3)
         XCTAssertEqual(layout.actionTops.count, 2)
-        XCTAssertEqual(PrepCardView.height(for: card), layout.height)
+        XCTAssertEqual(PrepCardView.height(for: card, width: cardWidth), layout.height)
     }
 
     // MARK: - Panel height clamp (UX34)
@@ -242,6 +242,10 @@ final class PrepCardTests: XCTestCase {
     /// The pill band the card hangs under. Passed in explicitly so the decision
     /// stays checkable without a panel; it mirrors `MeetingPromptWindow.panelHeight`.
     private let pillHeight: CGFloat = 64
+
+    /// The panel width the card wraps at (UX47), mirroring
+    /// `MeetingPromptWindow.panelWidth` the same way.
+    private let cardWidth: CGFloat = 600
 
     private func sizedCard(points: Int, actions: Int, more: Int = 0) -> PrepCard {
         PrepCard(
@@ -257,7 +261,7 @@ final class PrepCardTests: XCTestCase {
         // The "Last time" button is collapsed to zero width in this state, so the
         // disclosure is unreachable and the panel must never leave 64pt.
         let out = PrepDisclosure.decide(card: nil, expanded: true, pillHeight: pillHeight,
-                                        maxCardHeight: PrepCardView.maxCardHeight)
+                                        maxCardHeight: PrepCardView.maxCardHeight, width: cardWidth)
         XCTAssertEqual(out.panelHeight, pillHeight)
         XCTAssertEqual(out.cardHeight, 0)
         XCTAssertEqual(out.contentHeight, 0)
@@ -267,7 +271,7 @@ final class PrepCardTests: XCTestCase {
     func test_collapsing_returns_to_the_pill_however_tall_the_card_is() {
         let full = sizedCard(points: PrepCard.maxPoints, actions: PrepCard.maxActions, more: 2)
         let out = PrepDisclosure.decide(card: full, expanded: false, pillHeight: pillHeight,
-                                        maxCardHeight: PrepCardView.maxCardHeight)
+                                        maxCardHeight: PrepCardView.maxCardHeight, width: cardWidth)
         XCTAssertEqual(out.panelHeight, pillHeight)
         XCTAssertEqual(out.cardHeight, 0)
         XCTAssertFalse(out.scrolls, "a collapsed card is not a scrolling one")
@@ -275,11 +279,11 @@ final class PrepCardTests: XCTestCase {
 
     func test_a_partial_card_under_the_cap_gets_what_it_needs_and_does_not_scroll() {
         let small = sizedCard(points: 2, actions: 0)
-        let content = PrepCardView.height(for: small)
+        let content = PrepCardView.height(for: small, width: cardWidth)
         XCTAssertLessThan(content, PrepCardView.maxCardHeight)
 
         let out = PrepDisclosure.decide(card: small, expanded: true, pillHeight: pillHeight,
-                                        maxCardHeight: PrepCardView.maxCardHeight)
+                                        maxCardHeight: PrepCardView.maxCardHeight, width: cardWidth)
         XCTAssertEqual(out.cardHeight, content)
         XCTAssertEqual(out.panelHeight, pillHeight + content)
         XCTAssertFalse(out.scrolls)
@@ -287,11 +291,11 @@ final class PrepCardTests: XCTestCase {
 
     func test_a_full_card_is_clamped_and_scrolls() {
         let full = sizedCard(points: PrepCard.maxPoints, actions: PrepCard.maxActions, more: 2)
-        let content = PrepCardView.height(for: full)
+        let content = PrepCardView.height(for: full, width: cardWidth)
         XCTAssertGreaterThan(content, PrepCardView.maxCardHeight)
 
         let out = PrepDisclosure.decide(card: full, expanded: true, pillHeight: pillHeight,
-                                        maxCardHeight: PrepCardView.maxCardHeight)
+                                        maxCardHeight: PrepCardView.maxCardHeight, width: cardWidth)
         XCTAssertEqual(out.cardHeight, PrepCardView.maxCardHeight)
         XCTAssertEqual(out.contentHeight, content, "the document keeps its full height")
         XCTAssertEqual(out.panelHeight, pillHeight + PrepCardView.maxCardHeight)
@@ -308,21 +312,135 @@ final class PrepCardTests: XCTestCase {
 
         let full = sizedCard(points: PrepCard.maxPoints, actions: PrepCard.maxActions, more: 2)
         let out = PrepDisclosure.decide(card: full, expanded: true, pillHeight: pillHeight,
-                                        maxCardHeight: PrepCardView.maxCardHeight)
+                                        maxCardHeight: PrepCardView.maxCardHeight, width: cardWidth)
         XCTAssertLessThanOrEqual(out.panelHeight, 190, "the expanded panel stays small")
 
-        let layout = PrepCardView.layout(for: full)
+        let layout = PrepCardView.layout(for: full, width: cardWidth)
         // Everything the cap was sized around is visible without scrolling: the
         // title, every recap point, and the eyebrow that says actions follow.
         XCTAssertEqual(layout.pointTops.count, PrepCard.maxPoints)
         XCTAssertLessThan(layout.pointTops.last!, out.cardHeight)
         XCTAssertLessThan(try XCTUnwrap(layout.eyebrowTop), out.cardHeight)
         // The first action row starts inside the viewport and the second does not,
-        // so the cut lands mid-row. That slice is the scroll affordance: overlay
-        // scrollers are invisible at rest, and a cut on a row boundary would read
-        // as the end of the card.
+        // so the cut lands mid-row. UX34 leaned on that slice as the scroll cue;
+        // the owner read it as broken (UX47), so the cue is the bottom fade now
+        // and this assertion only pins the viewport geometry for short rows.
         XCTAssertLessThan(layout.actionTops[0], out.cardHeight)
         XCTAssertGreaterThan(layout.actionTops[1], out.cardHeight)
+    }
+
+    // MARK: - Wrapped rows (UX47)
+
+    private var longPoint: String {
+        "Maharsh's local environment fails to redirect to the dashboard after "
+        + "FusionAuth callback, it redirects to the local login page instead, and "
+        + "the second attempt prompted for email and password as expected."
+    }
+
+    func test_a_long_point_wraps_and_grows_the_card_while_short_cards_are_unchanged() {
+        let short = sizedCard(points: 2, actions: 1)
+        // Short strings never wrap, so the measured layout must equal the layout
+        // at a width where wrapping is impossible: the self-calibrating row gap
+        // is what keeps every pre-wrap height byte-identical.
+        XCTAssertEqual(PrepCardView.height(for: short, width: cardWidth),
+                       PrepCardView.height(for: short, width: 10_000))
+
+        let long = PrepCard(workflowName: "W", stem: "20260730-120000", startedAt: started,
+                            title: "T", points: [longPoint], actions: [], moreActions: 0)
+        XCTAssertGreaterThan(PrepCardView.height(for: long, width: cardWidth),
+                             PrepCardView.height(for: long, width: 10_000),
+                             "a long point must wrap taller at the panel width")
+    }
+
+    func test_wrapped_tops_stay_ordered_and_inside_the_height() {
+        let card = PrepCard(
+            workflowName: "W", stem: "20260730-120000", startedAt: started, title: "T",
+            points: [longPoint, "short", longPoint],
+            actions: [PrepCard.Action(task: longPoint, owner: "THEM-A", due: nil)],
+            moreActions: 1
+        )
+        let layout = PrepCardView.layout(for: card, width: cardWidth)
+        let tops = layout.pointTops + [layout.eyebrowTop!] + layout.actionTops + [layout.moreTop!]
+        XCTAssertEqual(tops, tops.sorted(), "wrapped rows must not overlap")
+        XCTAssertEqual(Set(tops).count, tops.count, "no two rows share a top")
+        XCTAssertGreaterThan(layout.height, layout.moreTop!,
+                             "the card is taller than the top of its last row")
+        // The first long point pushes the second row further down than a
+        // single-line row ever could.
+        XCTAssertGreaterThan(layout.pointTops[1] - layout.pointTops[0], 18)
+    }
+
+    /// The promoted 2026-07-30 probe, kept as the regression fence. Before the
+    /// width was anchored, this exact card laid out 879pt wide in a 600pt panel:
+    /// bullets at maxX 773/867/823 against the 588 inset and the right-aligned
+    /// date off-panel at 867. Layout is real AppKit here, no window needed.
+    @MainActor
+    func test_labels_stay_inside_the_panel_width() {
+        let card = PrepCard(
+            workflowName: "Personal", stem: "20260729-160013", startedAt: started,
+            title: "FusionAuth Local Login Redirect Issue Debugging",
+            points: [
+                longPoint,
+                "THEM-A identified a likely misconfiguration: valid audiences not set for the module CPI, and back-office FusionAuth auth left enabled unnecessarily.",
+                "Dhanisa's machine reportedly works fine, making the issue specific to Maharsh's local setup.",
+            ],
+            actions: [PrepCard.Action(
+                task: "Investigate why the FusionAuth callback token cannot be stored locally, causing redirect to local login page instead of dashboard",
+                owner: "THEM-A", due: nil
+            )],
+            moreActions: 2
+        )
+        let view = PrepCardView(card: card, now: started, width: 600)
+        view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            view.widthAnchor.constraint(equalToConstant: 600),
+            view.heightAnchor.constraint(
+                equalToConstant: PrepCardView.height(for: card, width: 600)
+            ),
+        ])
+        view.layoutSubtreeIfNeeded()
+
+        var wrapped = 0
+        var rightAligned: NSTextField?
+        for case let field as NSTextField in view.subviews {
+            // Constraints position the ALIGNMENT rect; an NSTextField's frame
+            // extends ~2pt past it on each side, so measure the rect the layout
+            // actually controls. (The broken numbers were frames too, at 773,
+            // 867 and 823, so the fence catches the regression either way.)
+            let aligned = field.alignmentRect(forFrame: field.frame)
+            XCTAssertLessThanOrEqual(
+                aligned.maxX, 600 - 12 + 0.5,
+                "'\(field.stringValue.prefix(30))' escapes the inset; the 879pt regression is back"
+            )
+            if field.frame.height > 22 { wrapped += 1 }
+            if field.alignment == .right { rightAligned = field }
+        }
+        XCTAssertGreaterThanOrEqual(wrapped, 3, "the long bullets and the action must actually wrap")
+        let date = rightAligned
+        XCTAssertNotNil(date, "the relative-day label exists")
+        if let date {
+            let aligned = date.alignmentRect(forFrame: date.frame)
+            XCTAssertGreaterThan(aligned.minX, 300, "the date sits at the card's top right")
+            XCTAssertLessThanOrEqual(aligned.maxX, 600 - 12 + 0.5,
+                                     "the date is on-panel, which it was not under UX34")
+        }
+    }
+
+    // MARK: - Fade rule (UX47)
+
+    func test_the_fade_shows_only_while_content_remains_below() {
+        // Fits its viewport: nothing to reveal, no fade.
+        XCTAssertFalse(PrepDisclosure.fadeVisible(contentHeight: 100, viewport: 123, offsetY: 0))
+        // Scrolled to the top of an overflowing card: fade.
+        XCTAssertTrue(PrepDisclosure.fadeVisible(contentHeight: 196, viewport: 123, offsetY: 0))
+        // Mid-scroll: still more below.
+        XCTAssertTrue(PrepDisclosure.fadeVisible(contentHeight: 196, viewport: 123, offsetY: 60))
+        // At the bottom: the last row reads complete.
+        XCTAssertFalse(PrepDisclosure.fadeVisible(contentHeight: 196, viewport: 123, offsetY: 73))
+        // Within the 2pt slop of the bottom: same.
+        XCTAssertFalse(PrepDisclosure.fadeVisible(contentHeight: 196, viewport: 123, offsetY: 71.5))
+        // No card at all.
+        XCTAssertFalse(PrepDisclosure.fadeVisible(contentHeight: 0, viewport: 0, offsetY: 0))
     }
 
     func test_action_line_degrades_as_fields_go_missing() {

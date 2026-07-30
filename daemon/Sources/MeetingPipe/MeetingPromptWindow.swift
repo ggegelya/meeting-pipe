@@ -39,18 +39,29 @@ struct PrepDisclosure: Equatable {
         card: PrepCard?,
         expanded: Bool,
         pillHeight: CGFloat,
-        maxCardHeight: CGFloat
+        maxCardHeight: CGFloat,
+        width: CGFloat
     ) -> PrepDisclosure {
         guard let card = card else {
             return PrepDisclosure(panelHeight: pillHeight, cardHeight: 0, contentHeight: 0)
         }
-        let content = PrepCardView.height(for: card)
+        let content = PrepCardView.height(for: card, width: width)
         guard expanded else {
             return PrepDisclosure(panelHeight: pillHeight, cardHeight: 0, contentHeight: content)
         }
         let viewport = min(content, max(0, maxCardHeight))
         return PrepDisclosure(panelHeight: pillHeight + viewport,
                               cardHeight: viewport, contentHeight: content)
+    }
+
+    /// UX47: whether the bottom fade shows. True only while there is content
+    /// below the viewport that scrolling can still reveal; at (or within a 2pt
+    /// slop of) the bottom the last row deserves to read complete. The fade is
+    /// the scroll cue that replaced UX34's half-row slice, which the owner read
+    /// as broken rather than as an invitation.
+    static func fadeVisible(contentHeight: CGFloat, viewport: CGFloat,
+                            offsetY: CGFloat) -> Bool {
+        viewport > 0 && contentHeight - viewport - offsetY > 2
     }
 }
 
@@ -86,6 +97,10 @@ final class MeetingPromptWindow {
     /// the wrapper: that is what has to hide, and what carries the clamped height.
     private var prepCard: PrepCard?
     private var prepCardScroll: NSScrollView?
+    /// UX47: watches the card clip's bounds so the bottom fade tracks scrolling.
+    private var prepFadeObserver: NSObjectProtocol?
+    /// Height of the bottom fade band the clip's mask dissolves content into.
+    private static let prepFadeHeight: CGFloat = 26
     private var isExpanded = false
     /// The fixed-height band the pill occupies, so the card can hang below it
     /// without re-centering the action row over a taller panel.
@@ -132,6 +147,7 @@ final class MeetingPromptWindow {
         }
         prepCard = nil
         prepCardScroll = nil
+        teardownPrepFade()
         isExpanded = false
 
         let panel = makePanel(source: source, timeoutSec: seconds)
@@ -168,6 +184,7 @@ final class MeetingPromptWindow {
         currentSource = nil
         prepCard = nil
         prepCardScroll = nil
+        teardownPrepFade()
         hintSuggestion = nil
         ruleWorkflow = nil
         isExpanded = false
@@ -542,6 +559,7 @@ final class MeetingPromptWindow {
         if isExpanded { toggleLastTime() }
         prepCardScroll?.removeFromSuperview()
         prepCardScroll = nil
+        teardownPrepFade()
         prepCard = nil
         collapseLastTime()
         guard let provider = prepProvider, let workflow = currentWorkflow else { return }
@@ -588,14 +606,20 @@ final class MeetingPromptWindow {
         if prepCardScroll == nil {
             let open = PrepDisclosure.decide(card: card, expanded: true,
                                              pillHeight: Self.panelHeight,
-                                             maxCardHeight: PrepCardView.maxCardHeight)
-            // Document view: the panel's width and its own exact content height.
-            // Frame-sized rather than constrained, because that height is known
-            // before the view exists and a clip view would otherwise have to solve
-            // for a document whose size nobody was ever unsure about.
-            let view = PrepCardView(card: card, now: Date())
-            view.frame = NSRect(x: 0, y: 0, width: Self.panelWidth, height: open.contentHeight)
-            view.autoresizingMask = [.width]
+                                             maxCardHeight: PrepCardView.maxCardHeight,
+                                             width: Self.panelWidth)
+            // Document view: constraint-hosted, width pinned to the clip (UX47).
+            // UX34 frame-sized it instead, and that shipped a real regression:
+            // a document with translated autoresizing constraints and Auto Layout
+            // content takes its width from the CONTENT under the layout engine,
+            // not from the frame it was handed, so this card laid itself out
+            // 879pt wide in a 600pt panel. Every trailing constraint held,
+            // against a right edge 279pt past the glass: no ellipsis ever fired,
+            // bullets sliced mid-glyph at the clip, and the right-aligned date
+            // rendered off-panel. The height is still known before the view
+            // exists; only the width was ever lying.
+            let view = PrepCardView(card: card, now: Date(), width: Self.panelWidth)
+            view.translatesAutoresizingMaskIntoConstraints = false
 
             // Built here rather than at `present`, so it survives every later
             // toggle the way the bare card used to: the panel hides the wrapper
@@ -622,8 +646,21 @@ final class MeetingPromptWindow {
                 scroll.trailingAnchor.constraint(equalTo: bg.trailingAnchor),
                 scroll.topAnchor.constraint(equalTo: pill.bottomAnchor),
                 scroll.heightAnchor.constraint(equalToConstant: open.cardHeight),
+                view.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+                view.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+                view.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+                view.heightAnchor.constraint(equalToConstant: open.contentHeight),
             ])
             prepCardScroll = scroll
+            // The fade tracks the scroll position, so watch the clip. Removed
+            // wherever prepCardScroll is torn down.
+            scroll.contentView.postsBoundsChangedNotifications = true
+            prepFadeObserver = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: scroll.contentView, queue: .main
+            ) { [weak self] _ in
+                self?.updatePrepFade()
+            }
             // Logged from the first-build branch on purpose, so the event counts
             // prompts whose card was opened at least once rather than opens: every
             // later toggle of this same prompt reuses the view and logs nothing.
@@ -638,10 +675,17 @@ final class MeetingPromptWindow {
         isExpanded.toggle()
         lastTimeButton?.isOn = isExpanded
         prepCardScroll?.isHidden = !isExpanded
+        if isExpanded {
+            // Teach the scroll once (the overlay scroller is invisible at rest),
+            // then keep the fade honest for however the card sits.
+            prepCardScroll?.flashScrollers()
+        }
+        updatePrepFade()
 
         let metrics = PrepDisclosure.decide(card: card, expanded: isExpanded,
                                             pillHeight: Self.panelHeight,
-                                            maxCardHeight: PrepCardView.maxCardHeight)
+                                            maxCardHeight: PrepCardView.maxCardHeight,
+                                            width: Self.panelWidth)
         var frame = panel.frame
         frame.origin.y += frame.height - metrics.panelHeight   // keep the top edge fixed
         frame.size.height = metrics.panelHeight
@@ -653,6 +697,49 @@ final class MeetingPromptWindow {
                 ctx.timingFunction = MPMotion.easeOut
                 panel.animator().setFrame(frame, display: true)
             }
+        }
+    }
+
+    /// UX47: the scroll cue. A gradient mask on the card's clip view dissolves
+    /// the last ~26pt of content while more remains below, and releases it at
+    /// the bottom so the final row reads complete. A mask rather than an overlay
+    /// because the panel is vibrant `.hudWindow` material: there is no flat
+    /// color an overlay could paint without looking like a sticker.
+    private func updatePrepFade() {
+        guard let scroll = prepCardScroll, !scroll.isHidden else { return }
+        let clip = scroll.contentView
+        let contentHeight = scroll.documentView?.frame.height ?? 0
+        let visible = PrepDisclosure.fadeVisible(contentHeight: contentHeight,
+                                                 viewport: clip.bounds.height,
+                                                 offsetY: clip.bounds.origin.y)
+        guard visible else {
+            clip.layer?.mask = nil
+            return
+        }
+        clip.wantsLayer = true
+        let grad: CAGradientLayer
+        if let existing = clip.layer?.mask as? CAGradientLayer {
+            grad = existing
+        } else {
+            grad = CAGradientLayer()
+            grad.colors = [NSColor.white.cgColor, NSColor.white.cgColor,
+                           NSColor.clear.cgColor]
+            clip.layer?.mask = grad
+        }
+        // No implicit animation: the mask must track scrolling exactly, and a
+        // trailing fade-chase reads as lag, not motion design.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        grad.frame = CGRect(origin: .zero, size: clip.bounds.size)
+        let solidUntil = max(0, 1 - Self.prepFadeHeight / max(1, clip.bounds.height))
+        grad.locations = [0, NSNumber(value: Double(solidUntil)), 1]
+        CATransaction.commit()
+    }
+
+    private func teardownPrepFade() {
+        if let observer = prepFadeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            prepFadeObserver = nil
         }
     }
 

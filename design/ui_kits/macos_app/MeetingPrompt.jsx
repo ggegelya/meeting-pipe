@@ -26,9 +26,13 @@
 // quadrupled and sat over the top of the meeting window it is meant to hover
 // above. The cap comes from the card's own row metrics rather than a round
 // number: title + the full recap + the OPEN ACTIONS eyebrow + HALF an action
-// row. The half row is deliberate. macOS overlay scrollers are invisible at
-// rest, so a viewport ending on a row boundary reads as the end of the card
-// while a sliced row tells the eye to scroll.
+// row. UX34 leaned on that half-row slice as the scroll cue; the owner read the
+// slice as broken (2026-07-30), so UX47 retired the bet: rows now WRAP to
+// complete sentences at the panel's width (title stays one line with its date
+// beside it), and the scroll cue is a ~26pt fade dissolving the card's bottom
+// edge while more content sits below, lifting at the bottom so the last row
+// reads complete, plus a one-time scroller flash on expand. This mock is not
+// yet re-drawn for the wrap + fade; the shipped app is ahead of it here.
 //
 // AI9 adds the routing hint: when repeated "Change workflow..." corrections
 // disagree with the matching rules, the chip carries the corrected workflow and

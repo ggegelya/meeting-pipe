@@ -5,10 +5,12 @@ import AppKit
 /// a popup: nothing appears unless the user asks for it, and asking for it does
 /// not steal focus or cover the meeting they are joining.
 ///
-/// Fixed row metrics and single-line truncation, so the exact height is known
-/// before the view exists and the panel can animate to a frame the content then
-/// fills. Truncation is the right trade here: the card answers "what was this
-/// about", and the Library holds the full text one click away.
+/// Rows measure and wrap (UX47), and the exact height is still known before the
+/// view exists, so the panel can animate to a frame the content then fills. The
+/// original CAL2 trade here was single-line truncation ("the Library holds the
+/// full text one click away"); the owner overruled it from a live prompt on
+/// 2026-07-30, and the UX34 cap is what makes wrapping affordable: complete
+/// sentences spend height, and the viewport contains the spend.
 final class PrepCardView: NSView {
 
     /// Row geometry. The card is chrome, so these are fixed mac-native sizes
@@ -44,25 +46,56 @@ final class PrepCardView: NSView {
         var height: CGFloat = 0
     }
 
-    static func layout(for card: PrepCard) -> Layout {
+    /// The width the body text wraps at inside a card of `width`: everything
+    /// left of it (inset + bullet column) and right of it (inset) removed.
+    static func textWidth(cardWidth: CGFloat) -> CGFloat {
+        max(1, cardWidth - Metric.leftInset - Metric.bulletColumn - Metric.rightInset)
+    }
+
+    /// Wrapped height of one body string at the card's text width, with the
+    /// same font the label renders in, so the arithmetic and the view agree.
+    private static func measuredHeight(_ text: String, textWidth: CGFloat) -> CGFloat {
+        let bounds = NSAttributedString(
+            string: text,
+            attributes: [.font: NSFont.systemFont(ofSize: MPType.textSM)]
+        ).boundingRect(
+            with: NSSize(width: textWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin]
+        )
+        return ceil(bounds.height)
+    }
+
+    static func layout(for card: PrepCard, width: CGFloat) -> Layout {
+        let textWidth = Self.textWidth(cardWidth: width)
+        // Self-calibrating row gap (UX47): a single-line row must advance exactly
+        // the old fixed `Metric.row`, so every pre-wrap card height, and the
+        // `PrepDisclosure` clamp arithmetic pinned against it, stays byte-identical.
+        // Measuring a one-line probe here instead of hardcoding the font's line
+        // height keeps that true across font-metric changes.
+        let singleLine = measuredHeight("x", textWidth: textWidth)
+        let gap = Metric.row - singleLine
+        func advance(_ text: String) -> CGFloat {
+            max(Metric.row, measuredHeight(text, textWidth: textWidth) + gap)
+        }
+
         var out = Layout()
         var y = Metric.separator + Metric.padTop
         out.titleTop = y
         y += Metric.titleRow
         if !card.points.isEmpty {
             y += Metric.titleGap
-            for _ in card.points {
+            for point in card.points {
                 out.pointTops.append(y)
-                y += Metric.row
+                y += advance(point)
             }
         }
         if !card.actions.isEmpty {
             y += Metric.sectionGap
             out.eyebrowTop = y
             y += Metric.eyebrow + Metric.eyebrowGap
-            for _ in card.actions {
+            for action in card.actions {
                 out.actionTops.append(y)
-                y += Metric.row
+                y += advance(Self.actionLine(action))
             }
             if card.moreActions > 0 {
                 out.moreTop = y
@@ -73,21 +106,23 @@ final class PrepCardView: NSView {
         return out
     }
 
-    /// Exact height this card needs, callable before the view is built.
-    static func height(for card: PrepCard) -> CGFloat { layout(for: card).height }
+    /// Exact height this card needs at this width, callable before the view is built.
+    static func height(for card: PrepCard, width: CGFloat) -> CGFloat {
+        layout(for: card, width: width).height
+    }
 
     /// UX34: the tallest viewport the prompt panel hands this card. Content past
     /// it scrolls instead of the panel growing, so the prompt stays a fixed size
     /// rather than quadrupling: a full 3+3 card is ~196pt on top of the 64pt pill,
     /// which is the ~260pt panel the owner reported covering the meeting window.
     ///
-    /// Derived from the row metrics above rather than picked as a round number. It
-    /// is the card's head, one title row plus a full `PrepCard.maxPoints` recap,
-    /// then the OPEN ACTIONS eyebrow and *half* an action row. The half row is the
-    /// point: overlay scrollers are invisible at rest, so a viewport ending on a
-    /// row boundary reads as the end of the card, while one that slices a row
-    /// tells the eye to scroll. Works out to 123pt, so an expanded panel is 187pt
-    /// against a full card's 196pt of content.
+    /// Derived from the single-line row metrics UX34 shipped against: the card's
+    /// head, a full `PrepCard.maxPoints` recap, the eyebrow, and half an action
+    /// row, 123pt. The half-row slice was UX34's scroll cue, on the theory that a
+    /// beheaded row tells the eye to scroll; the owner's 2026-07-30 read of it
+    /// ("this is not okay") settled that theory, so under UX47 the cue is the
+    /// bottom fade instead and this constant is simply the panel's fixed card
+    /// budget, which wrapped rows spend faster than single lines did.
     static let maxCardHeight: CGFloat =
         Metric.separator + Metric.padTop + Metric.titleRow + Metric.titleGap
         + CGFloat(PrepCard.maxPoints) * Metric.row
@@ -109,10 +144,11 @@ final class PrepCardView: NSView {
         return parts.joined(separator: "  ·  ")
     }
 
-    init(card: PrepCard, now: Date) {
+    init(card: PrepCard, now: Date, width: CGFloat) {
         super.init(frame: .zero)
         wantsLayer = true
-        let metrics = Self.layout(for: card)
+        let metrics = Self.layout(for: card, width: width)
+        let textWidth = Self.textWidth(cardWidth: width)
         var constraints: [NSLayoutConstraint] = []
 
         let separator = NSBox()
@@ -147,8 +183,7 @@ final class PrepCardView: NSView {
             let bullet = Self.label("·", size: MPType.textSM,
                                     weight: MPType.regular, color: MPColors.fgMuted)
             addSubview(bullet)
-            let text = Self.label(point, size: MPType.textSM,
-                                  weight: MPType.regular, color: MPColors.fg)
+            let text = Self.wrappingLabel(point, textWidth: textWidth, color: MPColors.fg)
             addSubview(text)
             constraints += [
                 bullet.leadingAnchor.constraint(equalTo: leadingAnchor,
@@ -156,7 +191,9 @@ final class PrepCardView: NSView {
                 bullet.firstBaselineAnchor.constraint(equalTo: text.firstBaselineAnchor),
                 text.leadingAnchor.constraint(equalTo: leadingAnchor,
                                               constant: Metric.leftInset + Metric.bulletColumn),
-                text.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor,
+                // Equality, not the old <=: a wrapping label needs the exact edge
+                // to wrap at, and the measured layout above assumed it.
+                text.trailingAnchor.constraint(equalTo: trailingAnchor,
                                                constant: -Metric.rightInset),
                 text.topAnchor.constraint(equalTo: topAnchor, constant: top),
             ]
@@ -190,16 +227,19 @@ final class PrepCardView: NSView {
             bullet.contentTintColor = MPColors.fgMuted
             bullet.translatesAutoresizingMaskIntoConstraints = false
             addSubview(bullet)
-            let text = Self.label(Self.actionLine(action), size: MPType.textSM,
-                                  weight: MPType.regular, color: MPColors.fg)
+            let text = Self.wrappingLabel(Self.actionLine(action), textWidth: textWidth,
+                                          color: MPColors.fg)
             addSubview(text)
             constraints += [
                 bullet.leadingAnchor.constraint(equalTo: leadingAnchor,
                                                 constant: Metric.leftInset),
-                bullet.centerYAnchor.constraint(equalTo: text.centerYAnchor),
+                // On the first line, not the block's centre: a wrapped action
+                // would otherwise float its ring between lines.
+                bullet.centerYAnchor.constraint(equalTo: text.firstBaselineAnchor,
+                                                constant: -4),
                 text.leadingAnchor.constraint(equalTo: leadingAnchor,
                                               constant: Metric.leftInset + Metric.bulletColumn),
-                text.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor,
+                text.trailingAnchor.constraint(equalTo: trailingAnchor,
                                                constant: -Metric.rightInset),
                 text.topAnchor.constraint(equalTo: topAnchor, constant: top),
             ]
@@ -233,6 +273,20 @@ final class PrepCardView: NSView {
         field.textColor = color
         field.lineBreakMode = .byTruncatingTail
         field.maximumNumberOfLines = 1
+        field.translatesAutoresizingMaskIntoConstraints = false
+        return field
+    }
+
+    /// Body text wraps (UX47); chrome labels above stay single-line. The
+    /// preferred width matches what `layout(for:width:)` measured against, so
+    /// the label's intrinsic height and the precomputed row top agree.
+    private static func wrappingLabel(_ text: String, textWidth: CGFloat,
+                                      color: NSColor) -> NSTextField {
+        let field = NSTextField(wrappingLabelWithString: text)
+        field.font = .systemFont(ofSize: MPType.textSM)
+        field.textColor = color
+        field.preferredMaxLayoutWidth = textWidth
+        field.isSelectable = false
         field.translatesAutoresizingMaskIntoConstraints = false
         return field
     }
