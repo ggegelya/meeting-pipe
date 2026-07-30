@@ -47,4 +47,13 @@ enum ConfigDefaults {
     /// wiring into a silent behaviour change pinning every meeting to English on any
     /// config that never set the key.
     static let transcriptionLanguage = "auto"
+
+    /// FluidAudio's speaker-embedding clustering threshold (DIAR2's dial, DIAR3's
+    /// Preferences control). 0.65 sits below FluidAudio's own 0.7 on purpose: merging
+    /// several people into one voice puts a confidently wrong name on the summary's
+    /// attendees and action owners, while over-splitting only shows one person as two
+    /// unnamed clusters you can merge in-app. Moved here once `ConfigStore` became a
+    /// third reader; `FluidAudioRunner.defaultClusteringThreshold` is the alias the
+    /// transcription default arguments use, so there is still one literal.
+    static let diarizationClusteringThreshold: Double = 0.65
 }

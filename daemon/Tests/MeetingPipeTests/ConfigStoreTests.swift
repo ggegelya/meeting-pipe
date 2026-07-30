@@ -173,6 +173,107 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertTrue(raw.contains("regulated_mode = true"))
     }
 
+    // MARK: - Speaker-accuracy keys (DIAR3)
+
+    func test_speaker_accuracy_keys_default_when_absent() throws {
+        let url = try makeTempConfigURL()
+        let store = try ConfigStore(configURL: url)
+        XCTAssertEqual(store.diarizationClusteringThreshold,
+                       ConfigDefaults.diarizationClusteringThreshold)
+        XCTAssertFalse(store.summarizationDiarizeCleanup,
+                       "diarize_cleanup is opt-in: it costs an extra model call per meeting")
+    }
+
+    func test_speaker_accuracy_keys_round_trip() throws {
+        let url = try makeTempConfigURL()
+        try """
+        [transcription]
+        diarization_clustering_threshold = 0.75
+
+        [summarization]
+        diarize_cleanup = true
+        """.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        XCTAssertEqual(store.diarizationClusteringThreshold, 0.75)
+        XCTAssertTrue(store.summarizationDiarizeCleanup)
+
+        // What the Preferences controls do: the segmented control writes a pinned
+        // value, the toggle writes a bool.
+        store.diarizationClusteringThreshold = 0.55
+        store.summarizationDiarizeCleanup = false
+        try store.saveNow()
+
+        let reloaded = try ConfigStore(configURL: url)
+        XCTAssertEqual(reloaded.diarizationClusteringThreshold, 0.55)
+        XCTAssertFalse(reloaded.summarizationDiarizeCleanup)
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(raw.contains("diarization_clustering_threshold = 0.55"))
+        XCTAssertTrue(raw.contains("diarize_cleanup = false"))
+    }
+
+    func test_out_of_range_threshold_is_clamped_to_what_the_daemon_would_use() throws {
+        // A hand-edited 0.2 is clamped to 0.5 by `Config.load`, so a store that showed
+        // 0.2 would have Preferences reporting a value the runner never sees.
+        let url = try makeTempConfigURL()
+        try """
+        [transcription]
+        diarization_clustering_threshold = 0.2
+        """.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        XCTAssertEqual(store.diarizationClusteringThreshold, 0.5)
+        XCTAssertEqual(store.diarizationClusteringThreshold,
+                       try Config.load(from: url).transcription.diarizationClusteringThreshold)
+    }
+
+    func test_integer_threshold_literal_survives_a_load_and_save() throws {
+        // TOMLKit will not coerce int to double, so a `= 1` read `.double`-only would
+        // be dropped and then overwritten with the default on the next save.
+        let url = try makeTempConfigURL()
+        try """
+        [transcription]
+        diarization_clustering_threshold = 1
+        """.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        XCTAssertEqual(store.diarizationClusteringThreshold, 0.9, "1 clamps to the range ceiling")
+    }
+
+    func test_speaker_accuracy_writes_preserve_unmodelled_siblings() throws {
+        // The FEAT11 lesson in miniature: the two sections these keys live in carry
+        // live pipeline knobs with no UI, and a write that dropped them would change
+        // pipeline behaviour behind the user's back.
+        let url = try makeTempConfigURL()
+        try """
+        [transcription]
+        language = "uk"
+
+        [summarization]
+        backend = "local"
+        team_context = "Custom team context"
+        local_adapter_path = "~/adapters/meetings"
+        max_tokens = 4000
+
+        [output]
+        sinks = ["obsidian", "filesystem"]
+        """.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        store.diarizationClusteringThreshold = 0.55
+        store.summarizationDiarizeCleanup = true
+        try store.saveNow()
+
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(raw.contains("language = \"uk\""))
+        XCTAssertTrue(raw.contains("Custom team context"))
+        XCTAssertTrue(raw.contains("~/adapters/meetings"))
+        XCTAssertTrue(raw.contains("max_tokens = 4000"))
+        XCTAssertTrue(raw.contains("obsidian"), "an unmodelled top-level table survives too")
+        XCTAssertTrue(raw.contains("diarization_clustering_threshold = 0.55"))
+        XCTAssertTrue(raw.contains("diarize_cleanup = true"))
+    }
+
     func test_loads_pipeline_side_fields_surfaced_in_ui() throws {
         let url = try makeTempConfigURL()
         try """

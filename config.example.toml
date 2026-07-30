@@ -110,8 +110,12 @@ language = "auto"
 # confidently wrong name on the summary, while the opposite failure only shows
 # one person as two unnamed THEM-* clusters you can merge in the Library. Tune it
 # against meetings you have hand-labelled with `scripts/valid1_check.py --der`
-# (its "MERGED CLUSTERS" line flags a regression); a change takes effect on the
-# next recording, no rebuild needed.
+# (its "MERGED CLUSTERS" line flags a regression). Also editable without a text
+# editor: Preferences > Pipeline > Speaker labels > "Speaker separation" offers
+# More distinct (0.55) / Balanced (0.65) / Merge more (0.75), and shows a Custom
+# position when this key holds anything else, so a value you swept to by hand is
+# left alone. Read once at daemon startup, so a change takes effect on the next
+# launch (Quit from the menu bar; it relaunches), no rebuild needed.
 diarization_clustering_threshold = 0.65
 
 [summarization]
@@ -196,9 +200,12 @@ local_memory_floor_pct = 10
 # LLM diarization cleanup (TECH-DIAR1). When true, run-all runs an extra
 # LLM pass after transcription that merges same-speaker labels and
 # reattributes obvious mistakes before summarizing. Off by default: it
-# adds one LLM round-trip per multi-speaker meeting. Honours `backend`
-# above and stays on-device under regulated_mode. Run on demand any time
-# with `mp cleanup-diarization <stem>.json`.
+# adds one LLM round-trip per multi-speaker meeting (a transcript with
+# fewer than two speakers skips it without a call). Honours `backend`
+# above and stays on-device under regulated_mode / an NDA workflow.
+# Toggle it in Preferences > Pipeline > Speaker labels. Only run-all runs
+# it, so Re-transcribe and Re-summarize do not replay it over an existing
+# meeting; do that on demand with `mp cleanup-diarization <stem>.json`.
 diarize_cleanup = false
 
 [output]

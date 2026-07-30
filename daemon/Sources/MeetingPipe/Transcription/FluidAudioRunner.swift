@@ -21,7 +21,7 @@ final class FluidAudioRunner: TranscriptionRunner {
     /// hand-labelled corpus with `scripts/valid1_check.py --der` (its "MERGED
     /// CLUSTERS" line is the regression detector); the config knob makes that
     /// sweep possible without a rebuild.
-    static let defaultClusteringThreshold: Double = 0.65
+    static let defaultClusteringThreshold: Double = ConfigDefaults.diarizationClusteringThreshold
 
     /// Parakeet variant. v3 is multilingual (25 European + JA + ZH); v2 is English-only
     /// with slightly lower WER on English. User archive is en/uk/es/ru, so v3 is default.

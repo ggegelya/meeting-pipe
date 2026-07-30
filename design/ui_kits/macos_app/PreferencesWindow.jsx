@@ -320,6 +320,12 @@ const PWPipelinePane = () => (
       <PWRow first label="Transcription" sublabel="On-device ASR (FluidAudio Parakeet TDT). Auto-detect chooses per meeting; a fixed code skips detection. Applies on the next daemon launch."><PWMenuPicker value="Auto-detect"/></PWRow>
       <PWRow label="Summary" sublabel="Output language for the Notion summary."><PWMenuPicker value="Match transcript"/></PWRow>
     </PWGroup>
+    <PWGroup label="Speaker labels" footer="These change how voices are told apart, not what they are called. If a speaker is simply named wrong, fix that meeting in its Transcript tab (right-click a speaker); reach for these when two different people keep sharing one label, or one person is split across several.">
+      <PWRow first alignTop label="Speaker separation" sublabel="If two different people keep getting one name, choose More distinct; if one person is split across several, choose Merge more. Read at startup, so it applies once the daemon relaunches (Quit from the menu bar), to new recordings and to Re-transcribe… on a meeting you already have.">
+        <PWSegmented options={["More distinct", "Balanced", "Merge more"]} selected={1}/>
+      </PWRow>
+      <PWToggleRow on={false} label="Clean up speaker labels after transcription" sublabel="An extra model call per multi-speaker meeting: after transcription the model merges labels that are one person and fixes obvious mis-attributions. Applies to meetings recorded from now on; neither Re-transcribe… nor Re-summarize runs it over a meeting you already have. It follows your summarization backend, so a regulated or NDA meeting runs it on this Mac instead."/>
+    </PWGroup>
     <PWGroup label="Long meetings" footer="When the transcript exceeds this size, the pipeline writes a paste-into-Claude bundle instead of calling the Anthropic API. 0 disables the guard. ~80,000 chars ≈ 1 hour of speech.">
       <PWStackRow first label="Chunking threshold"><PWSlider value={80000} max={300000} format="80.0k chars" valueWidth={100}/></PWStackRow>
     </PWGroup>

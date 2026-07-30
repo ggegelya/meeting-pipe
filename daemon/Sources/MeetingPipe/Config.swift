@@ -98,13 +98,15 @@ struct Config {
 
         let regulated = mod?["regulated_mode"]?.bool ?? ConfigDefaults.regulatedMode
 
-        // Accept both double and integer literals; clamp to FluidAudio's documented range.
+        // Accept both double and integer literals; clamp to FluidAudio's documented
+        // range through the shared helper, so this and `ConfigStore` cannot drift
+        // into showing Preferences one value while the runner uses another (DIAR3).
         let clusteringRaw: Double = {
             if let d = tra?["diarization_clustering_threshold"]?.double { return d }
             if let i = tra?["diarization_clustering_threshold"]?.int { return Double(i) }
-            return FluidAudioRunner.defaultClusteringThreshold
+            return ConfigDefaults.diarizationClusteringThreshold
         }()
-        let clusteringThreshold = min(0.9, max(0.5, clusteringRaw))
+        let clusteringThreshold = SpeakerSeparation.clamp(clusteringRaw)
         let language = tra?["language"]?.string ?? ConfigDefaults.transcriptionLanguage
 
         return Config(
@@ -153,7 +155,7 @@ struct Config {
             ),
             modes: Modes(regulatedMode: ConfigDefaults.regulatedMode),
             transcription: Transcription(
-                diarizationClusteringThreshold: FluidAudioRunner.defaultClusteringThreshold,
+                diarizationClusteringThreshold: ConfigDefaults.diarizationClusteringThreshold,
                 language: ConfigDefaults.transcriptionLanguage
             )
         )

@@ -59,7 +59,17 @@ final class ConfigStore: ObservableObject {
     /// Mirrors `transcription.language`; read once at Coordinator init and passed
     /// to `SinkDispatcher`, so a change applies on the next daemon launch.
     @Published var transcriptionLanguage: String { didSet { scheduleSave() } }
+    /// FluidAudio's speaker-embedding clustering threshold (DIAR2's dial, surfaced by
+    /// DIAR3 as the "Speaker separation" control). Clamped on read with the same
+    /// helper `Config.load` uses, so Preferences can never show a value the daemon
+    /// would not use. Read once at `Coordinator` init and baked into the transcription
+    /// runner, so a change applies on the next daemon launch, like `transcriptionLanguage`.
+    @Published var diarizationClusteringThreshold: Double { didSet { scheduleSave() } }
     @Published var summaryLanguage: String { didSet { scheduleSave() } }
+    /// The opt-in LLM pass that merges same-speaker labels after transcription
+    /// (`summarization.diarize_cleanup`, TECH-DIAR1). Read by `mp run-all` at spawn
+    /// time, so a change applies from the next meeting with no relaunch.
+    @Published var summarizationDiarizeCleanup: Bool { didSet { scheduleSave() } }
     @Published var summarizationSkipAboveChars: Int { didSet { scheduleSave() } }
     /// Summarize backend: "anthropic" | "local" | "auto". Mirrors
     /// `summarization.backend`.
@@ -152,7 +162,17 @@ final class ConfigStore: ObservableObject {
 
         self.notionDatabaseId = notion?["database_id"]?.string ?? ""
         self.transcriptionLanguage = trans?["language"]?.string ?? ConfigDefaults.transcriptionLanguage
+        // Both literal forms, for the same reason as `seconds` above, and clamped
+        // through the helper `Config.load` uses so the control reflects the value the
+        // runner would actually get from a hand-edited out-of-range config (DIAR3).
+        let clusteringRaw: Double = {
+            if let d = trans?["diarization_clustering_threshold"]?.double { return d }
+            if let i = trans?["diarization_clustering_threshold"]?.int { return Double(i) }
+            return ConfigDefaults.diarizationClusteringThreshold
+        }()
+        self.diarizationClusteringThreshold = SpeakerSeparation.clamp(clusteringRaw)
         self.summaryLanguage = summ?["summary_language"]?.string ?? "auto"
+        self.summarizationDiarizeCleanup = summ?["diarize_cleanup"]?.bool ?? false
         self.summarizationSkipAboveChars = summ?["skip_above_chars"]?.int ?? 80000
         self.summarizationBackend = summ?["backend"]?.string ?? "anthropic"
         self.summarizationLocalModel = summ?["local_model"]?.string
@@ -218,9 +238,11 @@ final class ConfigStore: ObservableObject {
         ensureTable("modes")["regulated_mode"] = regulatedMode
 
         ensureTable("transcription")["language"] = transcriptionLanguage
+        ensureTable("transcription")["diarization_clustering_threshold"] = diarizationClusteringThreshold
 
         ensureTable("notion")["database_id"] = notionDatabaseId
         ensureTable("summarization")["summary_language"] = summaryLanguage
+        ensureTable("summarization")["diarize_cleanup"] = summarizationDiarizeCleanup
         ensureTable("summarization")["skip_above_chars"] = summarizationSkipAboveChars
         ensureTable("summarization")["backend"] = summarizationBackend
         ensureTable("summarization")["local_model"] = summarizationLocalModel

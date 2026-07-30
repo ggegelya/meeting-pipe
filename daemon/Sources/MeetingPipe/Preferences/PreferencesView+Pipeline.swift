@@ -179,6 +179,29 @@ struct PipelineSectionView: View {
                 }
             }
 
+            // DIAR3: beside the transcription-language row, because both are read at
+            // the same moment for the same recording. The two knobs here are the only
+            // two that change how voices are SEPARATED; everything above is about what
+            // they are called once they have been.
+            SettingsGroup("Speaker labels") {
+                SettingsRow("Speaker separation",
+                    sublabel: speakerSeparationSublabel,
+                    alignTop: true) {
+                    SettingsSegmented(
+                        selection: speakerSeparationBinding,
+                        options: SpeakerSeparation.options(
+                            forValue: store.diarizationClusteringThreshold
+                        )
+                    )
+                }
+                SettingsToggleRow("Clean up speaker labels after transcription",
+                    sublabel: DiarizeCleanup.sublabel(backendID: store.summarizationBackend),
+                    isOn: $store.summarizationDiarizeCleanup,
+                    showsDivider: false)
+            } footer: {
+                Text("These change how voices are told apart, not what they are called. If a speaker is simply named wrong, fix that meeting in its Transcript tab (right-click a speaker); reach for these when two different people keep sharing one label, or one person is split across several.")
+            }
+
             SettingsGroup("Long meetings") {
                 SettingsStackRow("Chunking threshold", showsDivider: false) {
                     SettingsSlider(
@@ -378,6 +401,45 @@ struct PipelineSectionView: View {
                 }
             }
         )
+    }
+
+    // MARK: - Speaker labels (DIAR3)
+
+    /// The stored threshold as a position id. Custom falls through the same way the
+    /// local-model picker's does, so a value the owner's DER sweep chose is shown
+    /// rather than rounded to the nearest named position.
+    private var speakerSeparationBinding: Binding<String> {
+        Binding<String>(
+            get: { SpeakerSeparation.id(forValue: store.diarizationClusteringThreshold) },
+            set: { newID in
+                // Custom is only ever offered while it is already the selection, and
+                // `value(forID:)` returns nil for it, so this guard cannot swallow a
+                // selection the user could actually make. That is the difference from
+                // the local-model picker's setter, which drops a Custom the picker
+                // always offers, leaving a dead option (UX43).
+                guard let value = SpeakerSeparation.value(forID: newID) else { return }
+                store.diarizationClusteringThreshold = value
+            }
+        )
+    }
+
+    /// Plain-language guidance plus the honest apply step. The threshold is read once
+    /// at `Coordinator` init and baked into the transcription runner, so it applies on
+    /// the next daemon launch, exactly like the transcription-language row above; a
+    /// Re-transcribe before the relaunch would re-run on the old value.
+    private var speakerSeparationSublabel: String {
+        let base = "If two different people keep getting one name, choose More distinct; "
+            + "if one person is split across several, choose Merge more. Read at startup, "
+            + "so it applies once the daemon relaunches (Quit from the menu bar), to new "
+            + "recordings and to Re-transcribe… on a meeting you already have."
+        let value = store.diarizationClusteringThreshold
+        guard SpeakerSeparation.id(forValue: value) == SpeakerSeparation.customId else {
+            return base
+        }
+        return String(
+            format: "config.toml holds %.2f, which none of these positions pins; "
+                + "picking one replaces it. ", value
+        ) + base
     }
 
     @ViewBuilder
