@@ -65,6 +65,8 @@ protocol PipelineDriver: AnyObject {
     func runAll(wav: URL, summaryMode: SummaryMode, onProgress: ((PipelineProgress) -> Void)?, completion: @escaping (Result<URL?, Error>) -> Void)
     /// Terminate the in-flight `run-all` subprocess, if any (TECH-UX5 Cancel). Defaulted no-op.
     func cancelActiveRun()
+    /// Terminate the in-flight `mp ask` subprocess, if any (UX37 Cancel). Separate from `cancelActiveRun()` because an ask is not in PIPE11's job lane: it can overlap a run-all or a re-summarize, so one shared retained slot would have the Library's Cancel kill a question and an ask's Cancel kill a pipeline run. Defaulted no-op.
+    func cancelAsk()
     /// Re-run the publish step against an existing `<stem>.summary.json`. Returns the page URL of the first successful page-producing sink, nil when there is none (regulated_mode, or a local-only workflow). An all-sinks-failed publish is a failure, not a nil-success (PIPE1).
     func publish(summaryJSON: URL, completion: @escaping (Result<URL?, Error>) -> Void)
     /// Re-run only the summarize step against an existing transcript (Library "Regenerate summary" action).
@@ -113,6 +115,9 @@ extension PipelineDriver {
 
     /// Default no-op; `PipelineLauncher` overrides.
     func cancelActiveRun() {}
+
+    /// Default no-op; `PipelineLauncher` overrides.
+    func cancelAsk() {}
 
     /// Default no-op stub; `PipelineLauncher` overrides this.
     func publish(summaryJSON: URL, completion: @escaping (Result<URL?, Error>) -> Void) {
@@ -301,20 +306,52 @@ final class PipelineLauncher: PipelineDriver {
     /// Sentinel prefix the pipeline prints for live progress (TECH-UX5); mirrors `orchestrate.PROGRESS_SENTINEL`.
     private static let progressSentinel = "__MP_PROGRESS__"
 
+    /// Which Cancel a spawn answers to (UX37). Two slots, not one: PIPE11's job
+    /// lane keeps `run` unambiguous across run-all / summarize / publish, but an
+    /// `mp ask` runs outside that lane and can overlap any of them. Sharing one
+    /// slot would mean the last spawn wins, so the Library's Cancel would kill a
+    /// question and Ask's Cancel would kill a pipeline run.
+    private enum RetainSlot {
+        case none
+        case run
+        case ask
+    }
+
     /// The in-flight `run-all` process, retained so a user Cancel can terminate it (TECH-UX5). Guarded by `processLock` (set on main, cleared on the termination queue, read on main).
     private var activeRunProcess: Process?
+    /// The in-flight `mp ask` process, retained for Ask's own Cancel (UX37). Same locking contract as `activeRunProcess`.
+    private var activeAskProcess: Process?
     private let processLock = NSLock()
 
-    private func setActiveRunProcess(_ proc: Process?) {
-        processLock.lock(); activeRunProcess = proc; processLock.unlock()
+    private func setRetained(_ proc: Process?, slot: RetainSlot) {
+        processLock.lock()
+        switch slot {
+        case .none: break
+        case .run: activeRunProcess = proc
+        case .ask: activeAskProcess = proc
+        }
+        processLock.unlock()
     }
 
     /// Terminate the in-flight run-all (TECH-UX5 Cancel). The termination
     /// handler then reports a non-zero exit, so the row flips to failed/retryable.
     func cancelActiveRun() {
         processLock.lock(); let proc = activeRunProcess; processLock.unlock()
+        terminate(proc, what: "pipeline run")
+    }
+
+    /// Terminate the in-flight `mp ask` (UX37 Cancel). The termination handler
+    /// reports a non-zero exit, which `AskModel` has already closed the run out
+    /// ahead of, so the pane says "stopped" rather than showing a kill's stderr.
+    func cancelAsk() {
+        processLock.lock(); let proc = activeAskProcess; processLock.unlock()
+        terminate(proc, what: "ask")
+    }
+
+    /// SIGTERM now, SIGKILL if it is still alive after the grace period.
+    private func terminate(_ proc: Process?, what: String) {
         guard let proc = proc, proc.isRunning else { return }
-        Log.main.warning("pipeline run cancelled by user")
+        Log.main.warning("\(what) cancelled by user")
         proc.terminate()
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10) {
             if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
@@ -347,7 +384,7 @@ final class PipelineLauncher: PipelineDriver {
             timeout: maxRuntime,
             meeting: wav,
             onProgress: onProgress,
-            retainForCancel: true,
+            retain: .run,
             extraEnv: extraEnv
         ) { result in
             switch result {
@@ -386,7 +423,7 @@ final class PipelineLauncher: PipelineDriver {
         completion: @escaping (Result<URL?, Error>) -> Void
     ) {
         runMP(["publish", summaryJSON.path], timeout: 10 * 60, meeting: summaryJSON,
-              retainForCancel: true) { result in
+              retain: .run) { result in
             switch result {
             case .failure(let error):
                 completion(.failure(error))
@@ -437,7 +474,7 @@ final class PipelineLauncher: PipelineDriver {
     func ask(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
         let outURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("mp-ask-\(UUID().uuidString).json")
-        runMP(["ask", question, "--out", outURL.path], timeout: 10 * 60) { result in
+        runMP(["ask", question, "--out", outURL.path], timeout: 10 * 60, retain: .ask) { result in
             defer { try? FileManager.default.removeItem(at: outURL) }
             // Prefer the structured error the Python side wrote (a clean, single
             // line) over the noisy stderr tail on a non-zero exit.
@@ -553,7 +590,7 @@ final class PipelineLauncher: PipelineDriver {
     ) {
         var args = ["summarize", transcriptMD.path]
         if let backend { args += ["--backend", backend] }
-        runMP(args, timeout: 20 * 60, meeting: transcriptMD, retainForCancel: true,
+        runMP(args, timeout: 20 * 60, meeting: transcriptMD, retain: .run,
               backendOverride: backend, completion: completion)
     }
 
@@ -743,14 +780,14 @@ final class PipelineLauncher: PipelineDriver {
     /// `summarize` layer their sidecar reads on top of this in their own success
     /// closures, so the four near-identical Process blocks collapse to one.
     ///   - onProgress: scan stdout for the `__MP_PROGRESS__` heartbeat (run-all).
-    ///   - retainForCancel: retain the process so `cancelActiveRun()` can terminate it (run-all, and since UX28 the Library's summarize / publish re-runs; PIPE11's one lane keeps the single slot unambiguous).
+    ///   - retain: which Cancel this spawn answers to. `.run` retains it for `cancelActiveRun()` (run-all, and since UX28 the Library's summarize / publish re-runs; PIPE11's one lane keeps that slot unambiguous); `.ask` retains it for `cancelAsk()` (UX37), which is a second slot because an ask runs outside that lane and overlaps it freely.
     ///   - extraEnv: overlaid on the resolved env (e.g. `MP_FORCE_BYO` for byo runs).
     private func runMP(
         _ args: [String],
         timeout: TimeInterval,
         meeting: URL? = nil,
         onProgress: ((PipelineProgress) -> Void)? = nil,
-        retainForCancel: Bool = false,
+        retain: RetainSlot = .none,
         extraEnv: [String: String] = [:],
         backendOverride: String? = nil,
         completion: @escaping (Result<Void, Error>) -> Void
@@ -773,7 +810,7 @@ final class PipelineLauncher: PipelineDriver {
         )
         for (k, v) in extraEnv { env[k] = v }
         p.environment = env
-        if retainForCancel { setActiveRunProcess(p) }   // TECH-UX5: retained so Cancel can terminate it
+        setRetained(p, slot: retain)   // TECH-UX5 / UX37: retained so Cancel can terminate it
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -838,7 +875,7 @@ final class PipelineLauncher: PipelineDriver {
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
             try? logHandle?.close()
-            if retainForCancel { self.setActiveRunProcess(nil) }   // TECH-UX5: run finished/killed
+            self.setRetained(nil, slot: retain)   // TECH-UX5 / UX37: run finished/killed
             if timedOut.isSet {
                 // LOCAL10: we just killed an `mp` that may have been mid-summarize on
                 // the local backend. Neither SIGTERM nor SIGKILL runs its `finally`, so

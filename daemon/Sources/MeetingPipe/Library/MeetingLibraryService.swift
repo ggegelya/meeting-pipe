@@ -481,6 +481,16 @@ final class MeetingLibraryService {
         }
     }
 
+    /// Stop the in-flight `mp ask` (UX37). An ask is the one library-wide spawn a
+    /// user can start casually and then be stuck with: it holds a pipeline process
+    /// for up to ten minutes and, until this, nothing could reach it. Its own
+    /// launcher slot, not `cancelActiveRun`'s, because an ask overlaps the job lane
+    /// rather than queueing behind it.
+    func cancelAsk() {
+        Log.event(category: "coordinator", action: "ask_cancelled")
+        launcher.cancelAsk()
+    }
+
     /// Group a recurring series' restatements of one commitment (AI7). Spawns `mp
     /// actions --open --cluster`, which embeds each open action's task on-device and
     /// merges near-duplicates within a workflow. Read-only and fully local, so unlike

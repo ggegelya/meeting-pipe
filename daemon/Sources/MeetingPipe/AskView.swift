@@ -7,19 +7,24 @@ import SwiftUI
 /// rows use. Async by design (AI2 found live synthesis too slow), so a question
 /// shows a spinner, then the answer. Rendered in the Library center column when
 /// the `.ask` rail scope is active. Quiet register, no sparkle (PRODUCT.md).
+///
+/// UX37: a renderer, with no run state of its own. Everything that has to
+/// outlive a rail switch (the question, the run in flight, this session's
+/// answers) lives on `AskModel`, held by the Library root, so leaving Ask
+/// mid-question and coming back finds the spinner still turning and the answer
+/// landing in place.
 struct AskView: View {
     @ObservedObject var model: LibraryWindowModel
+    /// The surviving run state (UX37), owned by `LibraryRootView`.
+    @ObservedObject var askModel: AskModel
     /// Navigate to a citation's source meeting (host: All Meetings + selected row).
     let onOpenMeeting: (String) -> Void
 
-    @State private var question = ""
-    @State private var asking = false
-    @State private var answer: AskAnswer?
-    @State private var errorText: String?
     @FocusState private var fieldFocused: Bool
 
-    init(model: LibraryWindowModel, onOpenMeeting: @escaping (String) -> Void) {
+    init(model: LibraryWindowModel, askModel: AskModel, onOpenMeeting: @escaping (String) -> Void) {
         self.model = model
+        self.askModel = askModel
         self.onOpenMeeting = onOpenMeeting
     }
 
@@ -38,18 +43,11 @@ struct AskView: View {
         .onChange(of: model.pendingAskQuestion) { _, _ in consumePendingQuestion() }
     }
 
-    /// AUTO1: prefill and run a deeplinked question once, then clear it so a later
-    /// manual edit isn't re-run.
+    /// AUTO1 + UX37: hand a deeplinked question to the model, which runs it and
+    /// clears the pending question when that run *finishes*. Clearing it here on
+    /// render is what used to lose the question on a mid-run scope switch.
     private func consumePendingQuestion() {
-        guard let q = model.pendingAskQuestion,
-              !q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        model.pendingAskQuestion = nil
-        question = q
-        ask()
-    }
-
-    private var trimmedQuestion: String {
-        question.trimmingCharacters(in: .whitespacesAndNewlines)
+        askModel.acceptDeeplink(model.pendingAskQuestion) { model.pendingAskQuestion = nil }
     }
 
     // MARK: - Ask bar
@@ -59,21 +57,21 @@ struct AskView: View {
             Image(systemName: "bubble.left.and.text.bubble.right")
                 .font(.system(size: 13))
                 .foregroundStyle(Color(MPColors.fgSubtle))
-            TextField("Ask about your meetings…", text: $question)
+            TextField("Ask about your meetings…", text: $askModel.question)
                 .textFieldStyle(.plain)
                 .font(.mpTextBase)
                 .foregroundStyle(Color(MPColors.fg))
                 .focused($fieldFocused)
-                .onSubmit(ask)
-                .disabled(asking)
-            if asking {
+                .onSubmit { askModel.ask() }
+                .disabled(askModel.isAsking)
+            if askModel.isAsking {
                 ProgressView().controlSize(.small)
             } else {
-                Button("Ask", action: ask)
+                Button("Ask") { askModel.ask() }
                     .buttonStyle(.plain)
                     .font(.mpTextSM.weight(.medium))
-                    .foregroundStyle(trimmedQuestion.isEmpty ? Color(MPColors.fgSubtle) : Color.mpSignal)
-                    .disabled(trimmedQuestion.isEmpty)
+                    .foregroundStyle(askModel.trimmedQuestion.isEmpty ? Color(MPColors.fgSubtle) : Color.mpSignal)
+                    .disabled(askModel.trimmedQuestion.isEmpty)
                     .accessibilityLabel("Ask")
             }
         }
@@ -84,27 +82,44 @@ struct AskView: View {
 
     @ViewBuilder
     private var content: some View {
-        if asking {
+        if askModel.isAsking {
             working
-        } else if let errorText {
-            errorState(errorText)
-        } else if let answer {
-            if answer.empty {
-                emptyCorpus
-            } else {
-                answerView(answer)
-            }
+        } else if let latest = askModel.latest {
+            outcomeView(latest)
         } else {
             prompt
         }
     }
 
+    /// The newest question's outcome. The rest of the session's history lives on
+    /// the model; rendering it as a list is UX38's redesign, not this task's.
+    @ViewBuilder
+    private func outcomeView(_ entry: AskEntry) -> some View {
+        if entry.wasCancelled {
+            cancelledState(entry.question)
+        } else if let message = entry.errorText {
+            errorState(message)
+        } else if let answer = entry.answer {
+            if answer.empty {
+                emptyCorpus
+            } else {
+                answerView(answer)
+            }
+        }
+    }
+
+    /// Running, with a way out (UX28's idiom: a long run is cancellable, and the
+    /// cancel surfaces as a named outcome rather than a silent blank).
     private var working: some View {
         VStack(spacing: 8) {
             ProgressView()
             Text("Reading your meetings…")
                 .font(.mpTextSM)
                 .foregroundStyle(Color(MPColors.fgMuted))
+            Button("Cancel") { askModel.cancel() }
+                .controlSize(.small)
+                .fixedSize()
+                .accessibilityLabel("Cancel this question")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -179,6 +194,27 @@ struct AskView: View {
         .padding(24)
     }
 
+    /// UX37: a cancelled run is a named outcome, not a blank pane. It says which
+    /// question was stopped so the field's text is not the only clue, and it is
+    /// deliberately not an error: nothing went wrong, the user stopped it.
+    private func cancelledState(_ question: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: "stop.circle")
+                .font(.mpText2XL)
+                .foregroundStyle(Color(MPColors.fgSubtle))
+            Text("Stopped.")
+                .font(.mpTextSM)
+                .foregroundStyle(Color(MPColors.fgMuted))
+            Text(question)
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgSubtle))
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+    }
+
     private var emptyCorpus: some View {
         VStack(spacing: 8) {
             Image(systemName: "tray")
@@ -207,45 +243,12 @@ struct AskView: View {
     }
 
     private func exampleRow(_ text: String) -> some View {
-        Button { fillAndAsk(text) } label: {
+        Button { askModel.ask(text) } label: {
             Text(text)
                 .font(.mpTextSM)
                 .foregroundStyle(Color.mpSignal)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Ask: \(text)")
-    }
-
-    // MARK: - Actions
-
-    private func fillAndAsk(_ text: String) {
-        question = text
-        ask()
-    }
-
-    private func ask() {
-        let q = trimmedQuestion
-        guard !q.isEmpty, !asking else { return }
-        asking = true
-        errorText = nil
-        Task {
-            let result = await model.askMeetings(question: q)
-            await MainActor.run {
-                asking = false
-                switch result {
-                case .success(let a):
-                    if let e = a.error, !e.isEmpty {
-                        errorText = e
-                        answer = nil
-                    } else {
-                        answer = a
-                        errorText = nil
-                    }
-                case .failure(let err):
-                    errorText = err.localizedDescription
-                    answer = nil
-                }
-            }
-        }
     }
 }

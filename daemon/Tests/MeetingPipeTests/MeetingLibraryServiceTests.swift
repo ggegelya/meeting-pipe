@@ -93,11 +93,15 @@ final class MeetingLibraryServiceTests: XCTestCase {
 
         private(set) var askInputs: [String] = []
         private var askCompletions: [(Result<AskAnswer, Error>) -> Void] = []
+        /// UX37: how many times Ask's Cancel reached the driver.
+        private(set) var cancelAskCalls = 0
 
         func ask(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
             askInputs.append(question)
             askCompletions.append(completion)
         }
+
+        func cancelAsk() { cancelAskCalls += 1 }
 
         func finishAsk(_ result: Result<AskAnswer, Error>) {
             guard !askCompletions.isEmpty else { return }
@@ -985,6 +989,16 @@ final class MeetingLibraryServiceTests: XCTestCase {
         DispatchQueue.main.async { drained.fulfill() }
         wait(for: [drained], timeout: 1.0)
         guard case .failure? = captured else { return XCTFail("expected failure") }
+    }
+
+    /// UX37: Ask's Cancel has to reach the launcher, which retains the `mp ask`
+    /// process in its own slot. Before this an abandoned question held a pipeline
+    /// process for up to ten minutes with nothing able to stop it.
+    func test_cancelAsk_reaches_the_driver() {
+        service.askMeetings(question: "budget?") { _ in }
+        XCTAssertEqual(driver.cancelAskCalls, 0)
+        service.cancelAsk()
+        XCTAssertEqual(driver.cancelAskCalls, 1)
     }
 
     // MARK: - re-transcribe (ASR3)

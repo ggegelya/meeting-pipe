@@ -359,6 +359,12 @@ final class LibraryWindowModel: ObservableObject {
         await bridge { library, done in library.askMeetings(question: question) { done($0) } }
     }
 
+    /// Stop the in-flight `mp ask` (UX37). `AskModel`'s half of `AskRunning`;
+    /// unwired (headless) is a no-op, since nothing was spawned.
+    func cancelAsk() {
+        library?.cancelAsk()
+    }
+
     /// Group a recurring series' restatements of one commitment (AI7). Async-wrapped
     /// like `askMeetings`; the Facts projection regroups when it lands and stays on
     /// DV1's ungrouped list if it does not.
@@ -434,6 +440,11 @@ final class LibraryWindowModel: ObservableObject {
     }
 }
 
+/// UX37: the seam `AskModel` runs its questions over. Declared in an extension,
+/// not on the class, so the `@MainActor` protocol does not retroactively isolate
+/// a type the Coordinator already drives on main by its own contract.
+extension LibraryWindowModel: AskRunning {}
+
 // MARK: - Root view
 
 /// Library window root: smart-folder rail, scoped list, and context-aware detail pane. Workflows are filter scopes (not destinations); the toolbar hosts the state pill, record button, and preferences gear; a workflow-scope selection promotes a third inspector column.
@@ -448,6 +459,11 @@ struct LibraryRootView: View {
     /// Digest list + selection, shared by the center list (`DigestsView`) and the detail reader
     /// (`DigestReaderView`) so both see the same selected digest across the split.
     @StateObject private var digestList = DigestListModel()
+    /// Ask's question, its run in flight, and this session's answers (UX37). Held
+    /// here for the same reason `digestList` is: the scope chain below destroys
+    /// `AskView` on every rail switch, and a question already running has to
+    /// survive that and land its answer somewhere the view can find again.
+    @StateObject private var askModel: AskModel
     /// Drives the workflow editor sheet. Set non-nil to edit.
     @State private var editingWorkflow: Workflow? = nil
     /// Drives the "+ New workflow" sheet. Separate from `editingWorkflow` so the sheet can initialise a stub lazily, keeping the rail's button stateless.
@@ -486,6 +502,7 @@ struct LibraryRootView: View {
         self.model = model
         self.meetingStore = model.meetingStore
         self.savedSearches = model.savedSearches
+        _askModel = StateObject(wrappedValue: AskModel(runner: model))
     }
 
     var body: some View {
@@ -785,7 +802,7 @@ struct LibraryRootView: View {
                         // Ask-AI (AI3) also takes the center column: a question box
                         // over a cited answer, each citation navigating back to its
                         // source meeting like a Facts row does.
-                        AskView(model: model) { stem in
+                        AskView(model: model, askModel: askModel) { stem in
                             model.openedFromInsight = .init(stem: stem, source: "Ask")
                             scope = .allMeetings
                             meetingSelection = [stem]
