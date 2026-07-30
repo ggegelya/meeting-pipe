@@ -23,3 +23,11 @@ Two things did close, both worth keeping. **The URL scheme is now verified on re
 Status returns to `partial` (not `owner-owed`): the owner has nothing left to look at, the block is a missing Developer ID.
 
 **Re-banded (2026-07-20, owner decision): moved to the bottom of the ToC, `deferred` / P3.** The owner's Developer ID plan slipped, and the only remaining work here cannot start without one, so AUTO1 stops occupying the active P2 band. Nothing about the analysis changed: the `meetingpipe://` layer is done, hardware-verified, and meets the task's acceptance, so this deferral costs no working functionality; it parks the native App Intents leg, which is fully built but not invocable until the app has a real signing identity. The dependency is recorded on both sides (D8's ToW row now names AUTO1 as a dependent), so whoever picks up D8 sees that a Developer ID buys working Shortcuts / Spotlight / Siri actions on top of the TCC-churn fix it was already parked for. Promotion is cheap and mechanical: get the Developer ID, run `MP_APP_INTENTS=1 ./scripts/install.sh`, and re-check that the six actions both list and run in Shortcuts. If that still fails once properly signed, the signing inference in the 2026-07-20 note is wrong and the next suspect is the hand-rolled `@main` / `NSApplication.run()` lifecycle, which was the one hypothesis never tested.
+
+## Owner walkthrough (for the session that picks this up)
+
+Added 2026-07-30 at the owner's request: every task gated on an owner action carries one. Walk the owner through it step by step; the owner does not read code. Steps are tagged [owner] / [session] by who acts.
+
+1. Parked until a real Developer ID exists (the owner's signing plan; D8 is its home). There is nothing to test or eyeball meanwhile; the URL-scheme half is done and hardware-verified since 2026-07-20.
+2. [owner, once the ID exists] Run `MP_APP_INTENTS=1 ./scripts/install.sh` on the properly signed build, open Shortcuts, and run one MeetingPipe action. Pass: all six actions list AND execute.
+3. [session] If a signed build still fails the handoff, the 2026-07-20 signing inference is wrong, and the next suspect (the one hypothesis never tested) is the hand-rolled `@main` / `NSApplication.run()` lifecycle.

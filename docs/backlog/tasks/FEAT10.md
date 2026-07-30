@@ -33,3 +33,11 @@ Owner-owed remainder:
 
 1. The eyeball the spec reserves: click a chip on a live meeting and confirm the Transcript tab lands on the cited row.
 2. Confirm real yield. Every path here is exercised by fakes, so what is unmeasured is how often a real cloud model produces anchors that survive verification. The prompt's rule 10 is the tuning surface if the answer is "rarely"; the verifier's thresholds are deliberately not the first thing to loosen, since letting a wrong anchor through is the one outcome the feature cannot afford.
+
+## Owner walkthrough (for the session that picks this up)
+
+Added 2026-07-30 at the owner's request: every task gated on an owner action carries one. Walk the owner through it step by step; the owner does not read code. Steps are tagged [owner] / [session] by who acts.
+
+1. [owner] Open a meeting summarized after 2026-07-24 (or Re-summarize any meeting first) and click a [mm:ss] chip in the Summary tab. Pass: the Transcript tab opens, scrolls to the cited row, briefly highlights it, and the row's text matches the phrase shown when hovering the chip.
+2. [session] Measure real yield, the second reserved leg: count anchors surviving verification across recent real-model runs (the `evidence_verified` event and `summary.json` contents). If real cloud runs rarely produce surviving anchors, the tuning surface is the prompt's rule 10; the verifier's thresholds are deliberately not the first thing to loosen.
+3. Both good: [session] moves FEAT10 to done per the archive process.

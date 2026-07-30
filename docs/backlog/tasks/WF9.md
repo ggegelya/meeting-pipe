@@ -44,3 +44,11 @@ Candidates as the task filed them:
 **Still owner-owed:** the four "Client work" rows, the "Untitled workflow" stub, and the duplicate "Personal" are all still on disk, by design. Deleting a workflow is destructive and the duplicates differ in fields worth comparing first. The default is still an NDA "Client work", so every unmatched meeting summarizes on-device with filesystem-only sinks; flip it in the workflow editor's Default toggle if that is not intended. The rail now says which rows collide, which is the surface to do the cleanup from.
 
 **Not done, and worth naming:** `NewWorkflowSheet`'s stub-on-open is the same "delete may refuse" shape as leak 1 and can still orphan a row on an empty store. It is out of WF9's scope (its own surface, its own decision about whether a stub should be persisted before the first save at all) and is unreachable while the migrator guarantees a default exists. If the collision cue proves insufficient, the bigger move behind it is switching scope resolution from name-keyed to id-keyed, which is a WF-band change touching the sidecar contract, not this task.
+
+## Owner walkthrough (for the session that picks this up)
+
+Added 2026-07-30 at the owner's request: every task gated on an owner action carries one. Walk the owner through it step by step; the owner does not read code. Steps are tagged [owner] / [session] by who acts.
+
+1. [session] Verify the state on disk first, because as of 2026-07-30 both owner-owed items appear already done: `~/.config/meeting-pipe/workflows/` holds exactly three rows (Client work, General, Personal), no duplicates, no "Untitled workflow" stub, and the default decision is taken (Personal carries `is_default = true`, so the NDA Client work is no longer the silent default for unmatched meetings).
+2. [owner] Confirm that matches intent, in the app: the rail shows three workflows with no `· duplicate name` caption anywhere, and you are happy that unmatched meetings default to Personal (cloud-capable) rather than the NDA clamp.
+3. Confirmed: [session] moves WF9 to done per the archive process. If the rail still shows a duplicate caption after a rebuild, the UI disagrees with the store on disk; that is a new finding to file, not a WF9 reopen.

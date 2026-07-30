@@ -15,3 +15,11 @@ Scope. (a) Per-stem serialization: route Library regenerate/republish through th
 Explicitly not: no changes to `config.effective_backend` or the PIPE6 one-shot override semantics (the NDA clamp is deliberate and stays); no cross-stem global lock; no UI work (UX28 owns surfaces; this task is correctness even if UX28 never lands); no rewrite of `publish_router` idempotency (it already upserts correctly once ordering is fixed).
 
 Acceptance. Pipeline: a test pins that `mp summarize` on success rewrites run.json with the answering backend/model and leaves `publish_state` intact, and that `--candidate` leaves run.json untouched; ruff + pyright + pytest green. Daemon: a test pins that a regenerate requested while a same-stem job is active does not spawn concurrently (queued or coalesced, with the event emitted), and that requests for different stems still overlap; a scenario test pins that a chain started before a reassign INTO an NDA workflow cannot publish to a cloud sink after the reassign (fake launcher + meta rewrite mid-chain). Events: reuse the existing coordinator category for the queued/coalesced action; CONVENTIONS table row in the same commit if a new action name is added. Full daemon suite green. Owner eyeball: after an Anthropic re-summarize of an NDA-turned-General meeting, the detail header badge reads Anthropic, and run.json matches.
+
+## Owner walkthrough (for the session that picks this up)
+
+Added 2026-07-30 at the owner's request: every task gated on an owner action carries one. Walk the owner through it step by step; the owner does not read code. Steps are tagged [owner] / [session] by who acts.
+
+1. [owner] Take an NDA meeting (Client work workflow), reassign it to General through the existing confirm flow, then Re-summarize with Anthropic from the detail menu.
+2. [owner] Pass: when it completes, the detail header engine badge reads Anthropic, not On-device (MLX), and still does after closing and reopening the Library.
+3. [session] Verify `<stem>.run.json` now records the answering backend/model and that `publish_state` survived the rewrite; then move PIPE11 to done.

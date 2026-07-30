@@ -44,3 +44,13 @@ Owner-owed, and this is the whole remainder:
 4. The eyeball: a regenerated `20260723-103118` staged summary whose FEAT10 chips check out against the transcript.
 
 Also unmeasured and worth knowing before the bench: whether the installed server reuses a KV prefix across requests at all. The stage prompts are ordered for it (Stage 1 sends a byte-identical system turn for every window, and the five compose prompts share a leading block), but nothing here confirms it bites. If it does not, the staged path pays its preamble per call, which is exactly the cost the per-stage minimal schemas exist to keep small.
+
+## Owner walkthrough (for the session that picks this up)
+
+Added 2026-07-30 at the owner's request: every task gated on an owner action carries one. Walk the owner through it step by step; the owner does not read code. Steps are tagged [owner] / [session] by who acts.
+
+1. Gated behind LOCAL13's verdict; run that bench first so the model lever and the pipeline-shape lever stay separately attributable. Same protocol, same stems, same Mac.
+2. [session] BEFORE any scoring, pre-register the staged-vs-single thresholds in the doc per this spec's Gate paragraph: the two capture margins, the hallucination ceiling, the wall-clock ceiling per 15-minute meeting. They must not be chosen after a number exists.
+3. [owner] Run the A/B on the same model with and without `MP_STAGED_LOCAL=1`, over the fixed stem set, under the caffeinate + free-RAM-watchdog protocol; hand-score both sides.
+4. [session] Name the verdict. A flip retires the `MP_STAGED_LOCAL` toggle and updates ARCHITECTURE.md and CONVENTIONS.md in the same commit (both currently say the staged path is not the default). A keep records why.
+5. [owner] The eyeball either way: a staged summary of `20260723-103118` whose FEAT10 chips check out against the transcript.

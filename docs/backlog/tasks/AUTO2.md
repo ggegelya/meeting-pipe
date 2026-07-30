@@ -19,3 +19,11 @@ One thing the spec assumed was not true, and it is the important one: **the Obsi
 **Owner-owed:** the leg the acceptance reserves, click a `[mm:ss]` in a real Obsidian note on this Mac and land on the cited transcript row. Not exercisable here (Launch Services URL delivery is not drivable in this harness and the menu-bar app is not screenshotable). It needs one `./scripts/rebuild.sh`, since the new verb is code, not Info.plist, plus a republish of a meeting that actually has anchors, since existing notes carry the old plain suffixes until they are rewritten.
 
 Acceptance: parse tests pin the happy path, percent-encoded stems, missing and malformed t, and no regression on the shipped verbs (the MeetingPipeAppIntentsTests vocabulary fence stays green). A router-level test pins known-stem to Transcript-tab-with-seek-pending and unknown-stem to Library-without-seek. A republished Obsidian note carries the links and the Notion output is unchanged, both fixture-pinned; CI3 golden regenerated; both suites and truth fences green. Owner-owed: click a link in a real Obsidian note on this Mac and land on the cited transcript row.
+
+## Owner walkthrough (for the session that picks this up)
+
+Added 2026-07-30 at the owner's request: every task gated on an owner action carries one. Walk the owner through it step by step; the owner does not read code. Steps are tagged [owner] / [session] by who acts.
+
+1. Preconditions: any `./scripts/rebuild.sh` after 2026-07-24 (the deeplink verb is code, not Info.plist), and one republished meeting, because notes published before then carry plain [mm:ss] suffixes without links. [owner] Right-click a meeting with a summary and Republish (or ask the session to trigger it).
+2. [owner] In Obsidian, open that meeting's note and click one of its [mm:ss] links. Pass: the Library opens on that meeting's Transcript tab landed on the cited row (landing one row above the cited one is a fail; the millisecond `t=` exists precisely to prevent it).
+3. Pass: [session] moves AUTO2 to done.

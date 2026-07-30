@@ -18,3 +18,12 @@ Explicitly not: cross-meeting frequency mining ("this unnamed voice appeared in 
 - Not built: the optional "add to vocabulary" pre-fill off PIPE9. Reason in the ToC row. If it is ever picked up, the constraint that decides its shape is the spec's own "keep it a pre-fill, not an auto-write", which the current store cannot express (every row it holds is written on the debounce).
 
 Acceptance. Daemon tests pin: glossary TOML round-trip (unknown keys + `[fuzzy]` survive; per-workflow table wins on a clash exactly as `mp.glossary` resolves it, pinned against the Python reader with a shared fixture in the CI4 idiom if practical, otherwise a mirrored unit pair); the voice-resolution presentation model (resolved vs unresolved rows, deep-link target); the empty-context hint logic. Suites + `scripts/truth_fences.py config` green (glossary keys stay documented). Owner eyeball: define "Venusaur" -> the intended term in-app, Reprocess `20260723-103118`, and the garble is gone from transcript and summary; name one `THEM-*` voice from the detail surface and see the cast row flip to the name.
+
+## Owner walkthrough (for the session that picks this up)
+
+Added 2026-07-30 at the owner's request: every task gated on an owner action carries one. Walk the owner through it step by step; the owner does not read code. Steps are tagged [owner] / [session] by who acts.
+
+1. Precondition: any rebuild after 2026-07-28.
+2. [owner] Vocabulary half: Preferences, Pipeline pane, Vocabulary. Add the Venusaur garble as the misheard term and the intended term as the correction (Applies to: global). Then on meeting `20260723-103118` run **Re-transcribe...** specifically (not Reprocess and not Re-summarize: both re-run over the transcript already on disk, which still carries the garble). Pass: the garble is gone from both transcript and summary.
+3. [owner] Cast half: open a meeting with unresolved voices and click Name on a `THEM-*` chip in the strip above the Transcript tab, pick or type the person. Pass: the chip flips to the name without a reload.
+4. Both pass: [session] moves FEAT11 to done. (The strip's "n of m" header wording is UX40's scope, filed separately; do not hold FEAT11 on it.)
