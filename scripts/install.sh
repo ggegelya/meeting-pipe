@@ -75,6 +75,10 @@ die()  { printf "\033[1;31mxx\033[0m %s\n" "$*" >&2; exit 1; }
 
 # Shared two-pass app-bundle signing (also used by rebuild.sh).
 source "$REPO_ROOT/scripts/lib/sign-app.sh"
+# Shared launch-at-login guard (also used by rebuild.sh): UX42's rule that an
+# install must not re-arm a login-start the owner turned off in Preferences.
+# shellcheck source=scripts/lib/login-agent.sh
+source "$REPO_ROOT/scripts/lib/login-agent.sh"
 
 # 1. Prereqs ---------------------------------------------------------------
 
@@ -528,20 +532,32 @@ if (( RESET_TCC )); then
     say "TCC permissions reset. Next launch re-prompts for Mic / Screen Recording / Accessibility."
 fi
 
-launchctl load -w "$PLIST" 2>/dev/null || true
-# `load -w` is a no-op when the job is already loaded, and the `unload` above is
-# swallowed by `|| true` when it fails, so a reinstall used to leave the PREVIOUS
-# binary running: install.sh reported success while the old build stayed live
-# (found 2026-07-19, a daemon from 22:50 surviving a 23:14 install). kickstart -k
-# force-restarts the job onto the freshly installed bundle, so "install finished"
-# actually means "the new build is running". Confirm via the `app_rebuild` event,
-# which logs the cdhash change.
-launchctl kickstart -k "gui/$(id -u)/${LAUNCHD_LABEL}" 2>/dev/null || true
+# UX42: this used to be `launchctl load -w`, and the `-w` is precisely a write of
+# an *enabled* override into launchd's disabled-overrides database. That is what
+# re-armed a login-start the Preferences toggle had turned off, on every install.
+# `bootstrap` loads the job without touching that database, and a disabled agent
+# is left alone entirely, so the toggle stays the one owner of login-start.
+INSTALL_DONE_LINE="✓ Install complete. MeetingPipe is running in your menu bar (〰️)."
+if login_agent_disabled "$LAUNCHD_LABEL"; then
+    say "Launch at login is off (Preferences → General), so the agent is left disabled."
+    say "Open ~/Applications/MeetingPipe.app to run MeetingPipe now, or turn that toggle on."
+    INSTALL_DONE_LINE="✓ Install complete. Launch at login is off, so nothing started MeetingPipe: open ~/Applications/MeetingPipe.app, or turn the toggle on in Preferences → General."
+else
+    launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || true
+    # bootstrap is a no-op when the job is already loaded, and the `unload` above
+    # is swallowed by `|| true` when it fails, so a reinstall used to leave the
+    # PREVIOUS binary running: install.sh reported success while the old build
+    # stayed live (found 2026-07-19, a daemon from 22:50 surviving a 23:14
+    # install). kickstart -k force-restarts the job onto the freshly installed
+    # bundle, so "install finished" actually means "the new build is running".
+    # Confirm via the `app_rebuild` event, which logs the cdhash change.
+    launchctl kickstart -k "gui/$(id -u)/${LAUNCHD_LABEL}" 2>/dev/null || true
+fi
 say "LaunchAgent installed → $PLIST"
 
 cat <<EOF
 
-✓ Install complete. MeetingPipe is running in your menu bar (〰️).
+$INSTALL_DONE_LINE
 
 On first launch a Welcome window walks you through setup, in the order the app
 actually does it. No config file to edit:

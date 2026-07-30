@@ -107,6 +107,8 @@ The menu bar also shows a **Finish setup** row for as long as anything is still 
 
 (If you prefer the terminal, the same report is `~/.local/share/meeting-pipe/venv/bin/mp doctor`, or just `mp doctor` once `~/.local/bin` is on your PATH.)
 
+**Starting at login, and quitting.** The installer set up a small background helper (a launch agent) that starts MeetingPipe when you log in. The same helper is what brings the app back a few seconds after you choose **Quit MeetingPipe**, which is why **Quit (do not relaunch)** is the menu item that really closes it. Both behaviours are the one switch at **Preferences ▸ General ▸ Startup ▸ Launch at login**. Turn it off and the copy you are using stays open, it just does not come back at your next login, and from then on quitting really does close it, because the helper is no longer the thing starting it. Turn it back on whenever you like; re-running the installer will not undo your choice either way. One thing worth knowing so you do not go looking: MeetingPipe deliberately does not appear in **System Settings ▸ General ▸ Login Items**, so this switch is the only place it lives.
+
 ## Step 6: Connect Notion
 
 Skip this step if you would rather write summaries to Obsidian or a plain folder; [step 8](#step-8-advanced-configuration-optional) shows how to point them somewhere else instead.

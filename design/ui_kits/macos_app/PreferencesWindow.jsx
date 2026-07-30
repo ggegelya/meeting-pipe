@@ -229,7 +229,7 @@ const PWGeneralPane = () => (
         <PWSegmented options={["Light", "System", "Dark"]} selected={1}/>
       </PWRow>
     </PWGroup>
-    <PWGroup label="Startup" footer="Registers MeetingPipe with macOS via SMAppService. The relaunch-after-quit behaviour takes effect after the launch agent is reinstalled (re-run scripts/install.sh).">
+    <PWGroup label="Startup" footer="Launch at login enables or disables the com.meetingpipe.daemon launch agent, the one thing that actually starts MeetingPipe when you log in. Turning it off leaves the app you are using alone; it just does not come back at the next login. Relaunch after quitting is that same agent's work, so with launch at login off, a MeetingPipe you opened yourself stays closed when you quit it.">
       <PWToggleRow first on label="Launch at login" sublabel="MeetingPipe will start automatically when you log in."/>
       <PWToggleRow on={false} label="Relaunch after quitting" sublabel="On: Quit restarts MeetingPipe in the menu bar. Off: Quit fully closes it. Either way a crash still auto-recovers."/>
     </PWGroup>

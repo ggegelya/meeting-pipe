@@ -26,6 +26,10 @@ die()  { printf "\033[1;31mxx\033[0m %s\n" "$*" >&2; exit 1; }
 
 # Shared two-pass app-bundle signing (also used by install.sh).
 source "$REPO_ROOT/scripts/lib/sign-app.sh"
+# Shared launch-at-login guard (also used by install.sh): UX42's rule that a
+# rebuild must not fight a login-start the owner turned off in Preferences.
+# shellcheck source=scripts/lib/login-agent.sh
+source "$REPO_ROOT/scripts/lib/login-agent.sh"
 
 if [[ ! -d "$APP" ]]; then
     die "$APP missing. Run scripts/install.sh first for the cold-install path."
@@ -74,18 +78,31 @@ sign_app_with_resources "$APP"
 say "Relaunching daemon"
 PLIST="$HOME/Library/LaunchAgents/${LAUNCHD_LABEL}.plist"
 [[ -f "$PLIST" ]] || die "LaunchAgent plist missing at $PLIST — run scripts/install.sh"
-launchctl bootout "gui/$UID/$LAUNCHD_LABEL" 2>/dev/null || true
-# bootout returns before the old instance is fully reaped, so bootstrap can lose a
-# race with the teardown; retry briefly until launchd accepts the fresh job.
-bootstrapped=false
-for _ in 1 2 3 4 5; do
-    if launchctl bootstrap "gui/$UID" "$PLIST" 2>/dev/null; then
-        bootstrapped=true
-        break
-    fi
+# UX42: the Preferences ▸ General toggle owns login-start now, and it expresses
+# "off" as a launchd disabled override. Bootstrapping a disabled service fails,
+# so without this branch a rebuild would die on a state the owner chose on
+# purpose, and re-enabling to get past it would silently undo the toggle.
+# Relaunch the app directly instead, which is exactly what "off" means: launchd
+# does not start MeetingPipe, you do. The verification below covers both paths.
+if login_agent_disabled "$LAUNCHD_LABEL"; then
+    say "Launch at login is off, so launchd is not starting the daemon; relaunching the app directly."
+    pkill -f "$APP/Contents/MacOS/MeetingPipe" 2>/dev/null || true
     sleep 1
-done
-[[ "$bootstrapped" == true ]] || die "launchctl bootstrap failed for $PLIST — see 'launchctl print gui/$UID/$LAUNCHD_LABEL'"
+    open "$APP"
+else
+    launchctl bootout "gui/$UID/$LAUNCHD_LABEL" 2>/dev/null || true
+    # bootout returns before the old instance is fully reaped, so bootstrap can lose a
+    # race with the teardown; retry briefly until launchd accepts the fresh job.
+    bootstrapped=false
+    for _ in 1 2 3 4 5; do
+        if launchctl bootstrap "gui/$UID" "$PLIST" 2>/dev/null; then
+            bootstrapped=true
+            break
+        fi
+        sleep 1
+    done
+    [[ "$bootstrapped" == true ]] || die "launchctl bootstrap failed for $PLIST. See 'launchctl print gui/$UID/$LAUNCHD_LABEL'"
+fi
 
 # Verify the daemon actually came up. Without this the script reports success
 # even when the spawn failed (the very bug this rewrite fixes), so a dead relaunch

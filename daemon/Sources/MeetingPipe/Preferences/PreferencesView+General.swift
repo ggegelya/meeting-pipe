@@ -1,10 +1,34 @@
 import AppKit
+import Combine
 import SwiftUI
+
+/// The General pane's live view of what launchd will do at the next login (UX42).
+///
+/// A `@StateObject` rather than `@State`, because reading the truth means shelling
+/// out to `launchctl` and a `@State` initial-value expression is re-evaluated on
+/// every re-render of the enclosing view. `ConfigStore` publishes on every
+/// keystroke in this pane's hotkey fields, so `@State` would have meant one
+/// subprocess per character typed; `@StateObject` takes an autoclosure SwiftUI
+/// calls once per view identity.
+final class LaunchAtLoginModel: ObservableObject {
+    @Published private(set) var status: LaunchAtLoginStatus
+
+    private let service: LaunchAtLoginService
+
+    init(service: LaunchAtLoginService = LaunchAtLoginService()) {
+        self.service = service
+        self.status = service.status()
+    }
+
+    func set(enabled: Bool) {
+        status = service.set(enabled: enabled)
+    }
+}
 
 struct GeneralSectionView: View {
     @ObservedObject var store: ConfigStore
     @ObservedObject private var ui = UISettings.shared
-    @State private var launchAtLogin: Bool = LaunchAtLoginService.isEnabled
+    @StateObject private var launchAtLogin = LaunchAtLoginModel()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -41,10 +65,10 @@ struct GeneralSectionView: View {
                     ),
                     showsDivider: false)
             } footer: {
-                if LaunchAtLoginService.requiresApproval {
-                    Text("macOS has marked this login item as needing approval. Open System Settings → General → Login Items and re-enable MeetingPipe.")
+                if let error = launchAtLogin.status.error {
+                    Text(error)
                 } else {
-                    Text("Registers MeetingPipe with macOS via SMAppService. The relaunch-after-quit behaviour takes effect after the launch agent is reinstalled (re-run scripts/install.sh).")
+                    Text("Launch at login enables or disables the com.meetingpipe.daemon launch agent, the one thing that actually starts MeetingPipe when you log in. Turning it off leaves the app you are using alone; it just does not come back at the next login. Relaunch after quitting is that same agent's work, so with launch at login off, a MeetingPipe you opened yourself stays closed when you quit it.")
                 }
             }
 
@@ -81,22 +105,21 @@ struct GeneralSectionView: View {
     }
 
     private var launchAtLoginSublabel: String {
-        if LaunchAtLoginService.requiresApproval {
-            return "Needs approval in System Settings → Login Items."
+        switch launchAtLogin.status.state {
+        case .enabled:      return "MeetingPipe will start automatically when you log in."
+        case .disabled:     return "MeetingPipe only starts when you launch it manually."
+        case .notInstalled: return "No launch agent is installed, so nothing starts MeetingPipe at login. Run scripts/install.sh."
         }
-        return launchAtLogin
-            ? "MeetingPipe will start automatically when you log in."
-            : "MeetingPipe only starts when you launch it manually."
     }
 
-    /// Re-reads SMAppService status after each set so a `requiresApproval` state doesn't leave the toggle wedged "on" visually.
+    /// The switch renders whatever launchd is left holding after the write, not
+    /// what was asked for, so a refused `launchctl` cannot leave the control
+    /// showing a state the machine does not have (UX42). The reason lands in the
+    /// group footer.
     private var launchAtLoginBinding: Binding<Bool> {
         Binding(
-            get: { launchAtLogin },
-            set: { newValue in
-                LaunchAtLoginService.set(enabled: newValue)
-                launchAtLogin = LaunchAtLoginService.isEnabled
-            }
+            get: { launchAtLogin.status.isOn },
+            set: { launchAtLogin.set(enabled: $0) }
         )
     }
 }
