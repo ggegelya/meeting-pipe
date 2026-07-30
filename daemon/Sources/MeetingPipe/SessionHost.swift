@@ -92,7 +92,7 @@ protocol SessionNotifying: AnyObject {
     func notifyRecordingStarted(file: URL)
     func notifyProcessing(file: URL)
     func notifyError(_ message: String)
-    func notifySkippedMeeting(source: AppSource)
+    func notifySkippedMeeting(source: AppSource, origin: SkipOrigin)
     func notifyStillMeeting()
     func notifyMicOnlyRecording(file: URL, permissionState: SystemAudioCapture.PermissionState)
     func notifyRemoteAudioInterrupted(file: URL)

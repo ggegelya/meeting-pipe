@@ -146,6 +146,46 @@ final class DetectionStateMachineTests: XCTestCase {
         XCTAssertFalse(m.isSkipLatched(bundleID: Self.teams.bundleID))
     }
 
+    // MARK: - DET7: the suppressed-meeting candidate
+
+    func test_suppressed_candidate_is_returned_while_the_latch_holds() {
+        let m = DetectionStateMachine()
+        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        m.noteSuppressedCandidate(Self.teams)
+        XCTAssertEqual(m.liveSuppressedCandidate(), Self.teams)
+    }
+
+    func test_suppressed_candidate_lapses_with_its_latch_and_is_dropped() {
+        let m = DetectionStateMachine()
+        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        m.noteSuppressedCandidate(Self.teams)
+        // Discovery stopped refreshing the latch: past the grace, the meeting is over and
+        // the candidate is not something a start should attribute itself to.
+        let afterGrace = Date().addingTimeInterval(DetectionStateMachine.skipLatchGraceSec + 1)
+        XCTAssertNil(m.liveSuppressedCandidate(now: afterGrace))
+        // The lapsed read drops it, so nothing has to run a timer to expire it.
+        XCTAssertNil(m.liveSuppressedCandidate())
+    }
+
+    func test_clearSuppression_also_drops_the_candidate() {
+        let m = DetectionStateMachine()
+        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        m.noteSuppressedCandidate(Self.teams)
+        // An explicit start consumed it; leaving it cached would let a *second* start
+        // minutes later re-attach to a meeting nothing is watching any more.
+        m.clearSuppression(bundleID: Self.teams.bundleID)
+        XCTAssertNil(m.liveSuppressedCandidate())
+    }
+
+    func test_clearSuppression_for_another_bundle_leaves_the_candidate() {
+        let m = DetectionStateMachine()
+        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        m.noteSuppressedCandidate(Self.teams)
+        m.clearSuppression(bundleID: "us.zoom.xos")
+        XCTAssertEqual(m.liveSuppressedCandidate(), Self.teams,
+                       "suppression is per-bundle; clearing Zoom must not forget the Teams call")
+    }
+
     // MARK: - Pending config refresh
 
     func test_pending_refresh_is_idempotent_and_idle_gated() {

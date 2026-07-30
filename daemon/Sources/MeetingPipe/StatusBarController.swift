@@ -508,9 +508,20 @@ final class StatusBarController {
         // `.suppressed` is the skip-latch display over an idle state machine (see
         // `setSuppressed`), so a manual start still works; keep offering it or a
         // skipped meeting has no menu route to record for the rest of the call.
+        //
+        // DET7: read the live candidate here rather than caching it, because this runs on
+        // `menuNeedsUpdate` (the menu is repopulated in place every time it opens), so the
+        // row is correct at the instant the user looks at it. Caching it would need a
+        // rebuild on the 3 s discovery cadence for a row nobody is looking at.
         switch state {
         case .idle, .suppressed:
-            let start = NSMenuItem(title: "Start Recording", action: #selector(Coordinator.menuStart), keyEquivalent: "")
+            let start = NSMenuItem(
+                title: StatusBarModel.startRecordingTitle(
+                    suppressedCandidateAppName: coordinator?.stateMachine.liveSuppressedCandidate()?.displayName
+                ),
+                action: #selector(Coordinator.menuStart),
+                keyEquivalent: ""
+            )
             start.target = coordinator
             menu.addItem(start)
         case .recording(let file, _, _):

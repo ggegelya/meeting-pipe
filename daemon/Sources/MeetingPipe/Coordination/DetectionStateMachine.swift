@@ -54,8 +54,11 @@ final class DetectionStateMachine {
         skipLatch.refresh(bundleID: bundleID)
     }
 
-    func isSkipLatched(bundleID: String) -> Bool {
-        skipLatch.isLatched(bundleID: bundleID, graceSec: Self.skipLatchGraceSec)
+    /// `now` is injectable because `SkippedMeetingLatch.isLatched` already takes it and
+    /// this facade was the only thing dropping it: a test asking "has this lapsed 60 s
+    /// from now?" would otherwise have to sleep through the 15 s grace.
+    func isSkipLatched(bundleID: String, now: Date = Date()) -> Bool {
+        skipLatch.isLatched(bundleID: bundleID, graceSec: Self.skipLatchGraceSec, now: now)
     }
 
     /// Clear every re-prompt suppression for `bundleID` (the latch and the cooldown) so an
@@ -64,6 +67,40 @@ final class DetectionStateMachine {
     func clearSuppression(bundleID: String) {
         skipLatch.clear(bundleID: bundleID)
         cooldown.clear(bundleID: bundleID)
+        if suppressedCandidate?.source.bundleID == bundleID { suppressedCandidate = nil }
+    }
+
+    // MARK: - Suppressed-meeting candidate (DET7)
+
+    /// The last discovery sighting of a meeting whose skip latch is still held, i.e. the
+    /// meeting the user dismissed and which is still running right now. Written by
+    /// `MeetingSessionController.handleDiscovery` at the ~3 s discovery cadence, where
+    /// the source used to be discarded.
+    ///
+    /// It lives here, beside the latch, because its lifetime *is* the latch's: a candidate
+    /// is meaningful exactly while `isSkipLatched` holds for its bundle, so the read below
+    /// self-expires rather than needing a timer. Everything that can start a recording
+    /// (the menu row, `toggleManual`, the `meetingpipe://` router) reaches the state
+    /// machine already, so nothing has to grow a second seam to see it.
+    private var suppressedCandidate: (source: AppSource, seenAt: Date)?
+
+    /// Remember this sighting as the attachable candidate. Only called while the bundle's
+    /// latch holds, so an ordinary discovery scan never populates it.
+    func noteSuppressedCandidate(_ source: AppSource, at: Date = Date()) {
+        suppressedCandidate = (source: source, seenAt: at)
+    }
+
+    /// The still-live skipped meeting to attach a manual start to, or nil when there is
+    /// none. Lapses with the latch: once discovery stops seeing the meeting the latch
+    /// expires (~15 s later) and the stale candidate is dropped here, so a start after the
+    /// call really ended records generic rather than attributing itself to a dead meeting.
+    func liveSuppressedCandidate(now: Date = Date()) -> AppSource? {
+        guard let candidate = suppressedCandidate else { return nil }
+        guard isSkipLatched(bundleID: candidate.source.bundleID, now: now) else {
+            suppressedCandidate = nil
+            return nil
+        }
+        return candidate.source
     }
 
     // MARK: - Transitions

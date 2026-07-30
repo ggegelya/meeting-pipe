@@ -36,6 +36,11 @@ enum StatusBarModel {
         case accessibilityDegraded
         case failedMeetings(count: Int, title: String)
         case startRecording
+        /// DET7: `startRecording` when a meeting the user skipped is still running, so
+        /// the row names what a click will attach to. Same action, honest label: the
+        /// start paths prefer the cached candidate, so the generic row would have been
+        /// lying about what it does.
+        case recordSuppressedMeeting(appName: String, title: String)
         case stopRecording(stem: String)
         case quitWithoutRelaunch
     }
@@ -63,6 +68,13 @@ enum StatusBarModel {
         var screenRecordingCaptureDenied: Bool
         var failedMeetingCount: Int
         var disableAutoRestart: Bool
+        /// DET7: the display name of a skipped-but-still-running meeting's app, from
+        /// `DetectionStateMachine.liveSuppressedCandidate`, or nil when there is none.
+        /// Deliberately independent of `state`: an explicit Skip leaves the *presentation*
+        /// state at `.suppressed` but a timeout-skip that has since lapsed does not, and a
+        /// candidate can outlive either, so keying the row off the state would miss the
+        /// case the owner actually reported.
+        var suppressedCandidateAppName: String?
 
         init(
             state: AppState = .idle,
@@ -78,7 +90,8 @@ enum StatusBarModel {
             accessibility: PermissionsCenter.Status = .granted,
             screenRecordingCaptureDenied: Bool = false,
             failedMeetingCount: Int = 0,
-            disableAutoRestart: Bool = false
+            disableAutoRestart: Bool = false,
+            suppressedCandidateAppName: String? = nil
         ) {
             self.state = state
             self.workflowName = workflowName
@@ -94,6 +107,7 @@ enum StatusBarModel {
             self.screenRecordingCaptureDenied = screenRecordingCaptureDenied
             self.failedMeetingCount = failedMeetingCount
             self.disableAutoRestart = disableAutoRestart
+            self.suppressedCandidateAppName = suppressedCandidateAppName
         }
     }
 
@@ -224,9 +238,20 @@ enum StatusBarModel {
         // Dropping it here left a skipped meeting with no way to record from the
         // menu for the rest of the call. `.prompting` keeps the prompt window as its
         // record affordance; `.stopping` is a genuine no-op mid-flush.
+        //
+        // DET7: keeping the affordance was only half the fix. The row it kept offering
+        // recorded `source: nil`, so the skipped meeting was recordable but not
+        // *attachable*. With a live candidate the same row names it instead.
         switch i.state {
         case .idle, .suppressed:
-            rows.append(.startRecording)
+            if let appName = i.suppressedCandidateAppName {
+                rows.append(.recordSuppressedMeeting(
+                    appName: appName,
+                    title: startRecordingTitle(suppressedCandidateAppName: appName)
+                ))
+            } else {
+                rows.append(.startRecording)
+            }
         case .recording(let file, _, _):
             rows.append(.stopRecording(stem: file.deletingPathExtension().lastPathComponent))
         default:
@@ -240,6 +265,20 @@ enum StatusBarModel {
         }
 
         return rows
+    }
+
+    /// The start row's title (DET7). `StatusBarController.populateMenu` builds its
+    /// `NSMenuItem`s by hand rather than from `rows`, so the copy lives here and both
+    /// read it; otherwise the tested model and the shipped menu drift on wording and
+    /// only the model is ever checked.
+    ///
+    /// Sentence case after the verb is deliberate, against the Title Case rule
+    /// `design/README.md` sets for menu commands: "Record This Microsoft Teams Meeting"
+    /// shouts, and the app name is a proper noun sitting inside a sentence, not a command
+    /// word. This is the string DET7's owner-eyeball step names verbatim.
+    static func startRecordingTitle(suppressedCandidateAppName: String?) -> String {
+        guard let appName = suppressedCandidateAppName else { return "Start Recording" }
+        return "Record this \(appName) meeting"
     }
 
     /// The failed-pipeline row's title, or nil when there is nothing to show.

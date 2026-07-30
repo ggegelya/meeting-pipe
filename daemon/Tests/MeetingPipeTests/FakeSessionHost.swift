@@ -109,7 +109,7 @@ final class SpyNotifier: SessionNotifying {
     private(set) var errors: [String] = []
     private(set) var recordingStarted: [URL] = []
     private(set) var processing: [URL] = []
-    private(set) var skipped: [AppSource] = []
+    private(set) var skipped: [(source: AppSource, origin: SkipOrigin)] = []
     private(set) var stillMeetingCount = 0
     private(set) var micOnly: [URL] = []
     private(set) var remoteInterrupted: [URL] = []
@@ -119,7 +119,9 @@ final class SpyNotifier: SessionNotifying {
     func notifyRecordingStarted(file: URL) { recordingStarted.append(file) }
     func notifyProcessing(file: URL) { processing.append(file) }
     func notifyError(_ message: String) { errors.append(message) }
-    func notifySkippedMeeting(source: AppSource) { skipped.append(source) }
+    func notifySkippedMeeting(source: AppSource, origin: SkipOrigin) {
+        skipped.append((source: source, origin: origin))
+    }
     func notifyStillMeeting() { stillMeetingCount += 1 }
     func notifyMicOnlyRecording(file: URL, permissionState: SystemAudioCapture.PermissionState) {
         micOnly.append(file)

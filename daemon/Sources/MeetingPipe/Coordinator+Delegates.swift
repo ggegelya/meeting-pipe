@@ -13,11 +13,22 @@ extension Coordinator: NotifierDelegate {
 
     func notifier(_ notifier: Notifier, didChooseSkip source: AppSource) {
         guard case .prompting(let pending) = stateMachine.current, pending == source else { return }
-        // Skip = don't record this meeting. Return to idle (so meetings in other
-        // apps are still detected) and cool down this bundle so a post-call mic
-        // flicker - or the same still-live meeting - can't re-prompt immediately.
+        // Skip (and the prompt's × close, which routes here) = don't record this meeting.
+        // Return to idle (so meetings in other apps are still detected) and cool down this
+        // bundle so a post-call mic flicker - or the same still-live meeting - can't
+        // re-prompt immediately.
         stateMachine.abandonPrompt(source: source)
-        statusBar.setIdle()
+        // DET7: an explicit skip now gets the same two quiet surfaces a timeout-skip has
+        // had since UX10, because the way back in is the whole point of this task and the
+        // owner's report was about an explicit skip. The menu-bar label reads the skip
+        // latch and collapses to Idle on its own once the meeting ends (~15 s), and it is
+        // what makes the "Record this <app> meeting" row legible in context. The banner is
+        // silent here: the user chose this, so it is an undo affordance, not an alert.
+        let bundleID = source.bundleID
+        statusBar.setSuppressed(source) { [weak self] in
+            self?.stateMachine.isSkipLatched(bundleID: bundleID) ?? false
+        }
+        notifier.notifySkippedMeeting(source: source, origin: .dismissed)
         Log.writeLine("daemon", "user skipped (\(source.bundleID))")
         Log.event(category: "coordinator", action: "user_skipped", attributes: [
             "bundle_id": source.bundleID,
@@ -119,17 +130,11 @@ extension Coordinator: NotifierDelegate {
     }
 
     func notifier(_ notifier: Notifier, didRequestStartLate source: AppSource) {
-        // UX10: start-late from a timeout-skip notification. Only when nothing is
-        // already recording (a later meeting takes precedence); clear every
-        // suppression the skip armed (cooldown + latch) so this explicit intent
-        // isn't held off, mirroring the manual hotkey / "Always" paths.
-        guard stateMachine.isAcceptingPrompts else { return }
-        stateMachine.clearSuppression(bundleID: source.bundleID)
-        session.beginRecording(source: source, summaryMode: .auto)
-        Log.writeLine("daemon", "start-late from skip notification (\(source.bundleID))")
-        Log.event(category: "coordinator", action: "start_late", attributes: [
-            "bundle_id": source.bundleID,
-        ])
+        // UX10: start-late from a skip notification. DET7 lifted this sequence (accepting-
+        // state guard, clear the suppression the skip armed, record *with* the source) into
+        // `recordAttached`, so the notification, the menu row, the hotkey, and the URL
+        // scheme all take one path rather than four copies that can drift apart.
+        session.recordAttached(to: source, trigger: "notification")
     }
 }
 

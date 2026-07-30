@@ -171,7 +171,7 @@ final class MeetingSessionController: @unchecked Sendable {
     func toggleManual() {
         switch coordinator.stateMachine.current {
         case .idle:
-            beginRecording(source: nil, summaryMode: .auto)
+            startManual(summaryMode: .auto, trigger: "manual")
         case .prompting(let src), .suppressed(let src):
             // Keep the source so "Always for {App}" still attributes; clear every
             // suppression (cooldown + skip latch) so this explicit start isn't held off.
@@ -184,6 +184,56 @@ final class MeetingSessionController: @unchecked Sendable {
             // Mid-flush; a new start would race the await.
             break
         }
+    }
+
+    /// DET7: the one rule for an explicit start with no prompt in front of it, shared by
+    /// the hotkey / menu row (`toggleManual` from `.idle`) and the `meetingpipe://record`
+    /// verb. `.idle` is also the state a skipped-but-still-running meeting leaves behind
+    /// (`abandonPrompt` returns here; `toggleManual`'s `.suppressed` branch is legacy and
+    /// unreachable). If discovery still sees that meeting, an explicit start means "record
+    /// *this*", so attach to it. There is no competing reading: the alternative is a generic
+    /// recording of the same audio with no workflow, no source chip in the Library, and no
+    /// AX end anchor, which in this dogfood is what actually stops a recording. Generic
+    /// stays the truly-idle case.
+    ///
+    /// It lives here rather than at each caller so both paths cannot drift; the callers
+    /// keep their own state guards (automation refuses anything but `.idle`).
+    func startManual(summaryMode: SummaryMode, trigger: String) {
+        if let candidate = coordinator.stateMachine.liveSuppressedCandidate() {
+            recordAttached(to: candidate, summaryMode: summaryMode, trigger: trigger)
+        } else {
+            beginRecording(source: nil, summaryMode: summaryMode)
+        }
+    }
+
+    /// DET7: start a recording attached to `source` from outside a prompt, i.e. the way
+    /// back into a meeting the user already dismissed. The sequence is the one
+    /// `didRequestStartLate` (UX10's start-late notification action) has always run, lifted
+    /// here so every entry point shares it: only from a state that accepts a start, clear
+    /// the suppression the skip armed, drop any prompt remnant, then record *with* the
+    /// source, so the workflow rules see the app, the meta sidecar carries its identity, and
+    /// `armLifecycleLeaveButton` has something to arm on.
+    ///
+    /// `trigger` names who asked, so the event log can tell a menu click from the hotkey,
+    /// the URL scheme, or the notification; it does not change behaviour.
+    func recordAttached(to source: AppSource, summaryMode: SummaryMode = .auto, trigger: String) {
+        guard coordinator.stateMachine.isAcceptingPrompts else {
+            Log.event(category: "coordinator", action: "record_attached_ignored", attributes: [
+                "bundle_id": source.bundleID,
+                "trigger": trigger,
+                "state": DetectionStateMachine.label(coordinator.stateMachine.current),
+            ])
+            return
+        }
+        coordinator.prompt.dismiss()
+        coordinator.stateMachine.clearSuppression(bundleID: source.bundleID)
+        Log.writeLine("daemon", "record attached (\(source.bundleID)) via \(trigger)")
+        Log.event(category: "coordinator", action: "record_attached", attributes: [
+            "bundle_id": source.bundleID,
+            "display_name": source.displayName,
+            "trigger": trigger,
+        ])
+        beginRecording(source: source, summaryMode: summaryMode)
     }
 
     /// Stop-only entry (TECH-C5): never starts a recording from `.idle`, so
@@ -724,7 +774,7 @@ final class MeetingSessionController: @unchecked Sendable {
                 self.coordinator.statusUI.setSuppressed(source) { [weak self] in
                     self?.coordinator.stateMachine.isSkipLatched(bundleID: bundleID) ?? false
                 }
-                self.coordinator.notifications.notifySkippedMeeting(source: source)
+                self.coordinator.notifications.notifySkippedMeeting(source: source, origin: .timedOut)
             }
         }
     }
@@ -1057,6 +1107,12 @@ final class MeetingSessionController: @unchecked Sendable {
         // there's no Leave-button poll to leak.
         if coordinator.stateMachine.isSkipLatched(bundleID: source.bundleID) {
             coordinator.stateMachine.refreshSkipLatch(bundleID: source.bundleID)
+            // DET7: this sighting is also proof of *what* is running, and it is the only
+            // live handle on it once the prompt is gone. Keep it so a manual start (menu
+            // row, hotkey, `meetingpipe://record`) can attach to the meeting the user
+            // skipped instead of recording `source: nil`, which resolves the default
+            // workflow, writes no source into the sidecar, and arms no AX end detection.
+            coordinator.stateMachine.noteSuppressedCandidate(source)
             return
         }
 

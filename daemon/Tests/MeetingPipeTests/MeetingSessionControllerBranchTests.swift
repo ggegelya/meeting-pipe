@@ -419,6 +419,158 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
                       "a whitelist recording must not be mis-tagged as DET1 and mic-release-stopped")
     }
 
+    // MARK: - DET7: attach to the meeting the user skipped
+
+    /// The whole task in one arrangement: a prompt was dismissed, discovery still sees the
+    /// meeting, and the state machine is back at `.idle` (which is why `toggleManual`'s
+    /// `.suppressed` branch never fires).
+    private func skipThenSight(
+        _ controller: MeetingSessionController,
+        _ host: FakeSessionHost,
+        _ src: AppSource
+    ) {
+        host.stateMachine.setPrompting(source: src)
+        host.stateMachine.abandonPrompt(source: src)
+        controller.handleDiscovery(src)
+    }
+
+    func test_latchedDiscoverySighting_cachesTheCandidateAndRefreshesIt() {
+        let (controller, host) = makeController()
+        let teams = source("com.microsoft.teams2")
+
+        // Before the skip, a sighting engages the lifecycle and caches nothing: an
+        // unlatched meeting is not a candidate for anything.
+        controller.handleDiscovery(teams)
+        XCTAssertNil(host.stateMachine.liveSuppressedCandidate())
+
+        skipThenSight(controller, host, teams)
+        XCTAssertEqual(host.stateMachine.liveSuppressedCandidate(), teams)
+
+        // Every later sighting refreshes it, which is what keeps it alive for the call:
+        // the display name of the newest sighting is the one that ends up on the menu row.
+        let renamed = AppSource(bundleID: "com.microsoft.teams2", displayName: "Microsoft Teams")
+        controller.handleDiscovery(renamed)
+        XCTAssertEqual(host.stateMachine.liveSuppressedCandidate()?.displayName, "Microsoft Teams")
+    }
+
+    func test_cachedCandidate_clearsWhenTheLatchLapses() {
+        let (controller, host) = makeController()
+        let teams = source("com.microsoft.teams2")
+        skipThenSight(controller, host, teams)
+        XCTAssertNotNil(host.stateMachine.liveSuppressedCandidate())
+
+        // Discovery stops seeing the meeting: the latch lapses ~15 s later, and the stale
+        // candidate goes with it. Otherwise a start hours later would attribute itself to a
+        // meeting that ended, which is worse than recording generic.
+        let afterGrace = Date().addingTimeInterval(DetectionStateMachine.skipLatchGraceSec + 1)
+        XCTAssertNil(host.stateMachine.liveSuppressedCandidate(now: afterGrace))
+        // And the drop is durable, not just a filtered read.
+        XCTAssertNil(host.stateMachine.liveSuppressedCandidate())
+    }
+
+    func test_recordAttached_clearsSuppressionAndRecordsWithTheSource() async {
+        let (controller, host) = makeController()
+        let teams = AppSource(bundleID: "com.microsoft.teams2", displayName: "Microsoft Teams")
+        skipThenSight(controller, host, teams)
+
+        controller.recordAttached(to: teams, trigger: "manual")
+        await waitUntil({ host.stateMachine.current.isRecording }, "the attached recording to start")
+
+        // The suppression the skip armed is gone (both halves), so nothing holds this start
+        // off and a later `.starting` for the same meeting is not silently swallowed.
+        XCTAssertFalse(host.stateMachine.isSkipLatched(bundleID: teams.bundleID))
+        XCTAssertFalse(host.stateMachine.isCoolingDown(bundleID: teams.bundleID, cooldownSec: 60))
+        XCTAssertEqual(host.promptSpy.dismissCount, 1, "any prompt remnant is dismissed")
+
+        // It records *with* the source: that is what gives the meta sidecar an identity and
+        // `armLifecycleLeaveButton` something to arm on.
+        XCTAssertEqual(host.statusBarSpy.recordings.last?.source, teams)
+        let meta = MeetingMetaSidecar.build(source: host.statusBarSpy.recordings.last?.source, workflow: nil)
+        XCTAssertEqual(meta["source_bundle_id"] as? String, "com.microsoft.teams2")
+        XCTAssertEqual(meta["source_display_name"] as? String, "Microsoft Teams")
+    }
+
+    func test_recordAttached_isIgnoredWhileAlreadyRecording() async {
+        let (controller, host) = makeController()
+        controller.beginRecording(source: source(), summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current.isRecording }, "the first recording to start")
+
+        controller.recordAttached(to: source("com.microsoft.teams2"), trigger: "notification")
+        await settle()
+
+        XCTAssertEqual(host.recorderSpy.startCallCount, 1, "a later meeting must not stack a start")
+    }
+
+    func test_toggleManual_fromIdle_attachesToALiveCandidate() async {
+        let (controller, host) = makeController()
+        let teams = AppSource(bundleID: "com.microsoft.teams2", displayName: "Microsoft Teams")
+        skipThenSight(controller, host, teams)
+
+        controller.toggleManual()
+        await waitUntil({ host.stateMachine.current.isRecording }, "the manual recording to start")
+
+        // The bug DET7 fixes: this used to be `beginRecording(source: nil)`, so the meeting
+        // the user was sitting in recorded as an anonymous one.
+        XCTAssertEqual(host.statusBarSpy.recordings.last?.source, teams)
+    }
+
+    func test_toggleManual_fromIdle_withoutACandidate_recordsGeneric() async {
+        let (controller, host) = makeController()
+
+        controller.toggleManual()
+        await waitUntil({ host.stateMachine.current.isRecording }, "the manual recording to start")
+
+        XCTAssertNil(host.statusBarSpy.recordings.last?.source,
+                     "a truly idle manual start has nothing to attach to and stays generic")
+    }
+
+    func test_toggleManual_afterTheLatchLapses_recordsGeneric() async {
+        let (controller, host) = makeController()
+        let teams = source("com.microsoft.teams2")
+        skipThenSight(controller, host, teams)
+        // Read once past the grace so the stale candidate is dropped, exactly as the menu
+        // row's read would have done when the user next opened it.
+        _ = host.stateMachine.liveSuppressedCandidate(
+            now: Date().addingTimeInterval(DetectionStateMachine.skipLatchGraceSec + 1)
+        )
+
+        controller.toggleManual()
+        await waitUntil({ host.stateMachine.current.isRecording }, "the manual recording to start")
+
+        XCTAssertNil(host.statusBarSpy.recordings.last?.source)
+    }
+
+    /// The `meetingpipe://record` verb's rule. `Coordinator.startRecordingViaAutomation`
+    /// owns only the `.idle` guard (a Coordinator is not constructible in a test, ARCH4);
+    /// the attach-or-generic decision it delegates to is this, shared with the hotkey.
+    func test_startManual_fromAutomation_attachesToALiveCandidate() async {
+        let (controller, host) = makeController()
+        let teams = AppSource(bundleID: "com.microsoft.teams2", displayName: "Microsoft Teams")
+        skipThenSight(controller, host, teams)
+
+        controller.startManual(summaryMode: .byo, trigger: "automation")
+        await waitUntil({ host.stateMachine.current.isRecording }, "the automation recording to start")
+
+        XCTAssertEqual(host.statusBarSpy.recordings.last?.source, teams)
+        XCTAssertEqual(host.statusBarSpy.recordings.last?.summaryMode, .byo,
+                       "attaching must not quietly rewrite the requested summary mode")
+    }
+
+    /// UX10's timeout-skip keeps its loud banner; DET7 only added the silent one for an
+    /// explicit dismissal, which is a different surface for a different event.
+    func test_promptTimeout_notifiesWithTheTimedOutOrigin() async {
+        let (controller, host) = makeController()
+        host.livePromptTimeoutSec = 0.01
+        let teams = source("com.microsoft.teams2")
+
+        host.stateMachine.setPrompting(source: teams)
+        controller.startPromptTimeout(for: teams)
+        await waitUntil({ !host.notifierSpy.skipped.isEmpty }, "the timeout-skip notification")
+
+        XCTAssertEqual(host.notifierSpy.skipped.last?.origin, .timedOut)
+        XCTAssertEqual(host.statusBarSpy.suppressedSources.last, teams)
+    }
+
     // MARK: - The invariant ARCHITECTURE.md declares
 
     func test_neverTwoRecordings_aSecondBeginWhileRecordingIsIgnored() async {

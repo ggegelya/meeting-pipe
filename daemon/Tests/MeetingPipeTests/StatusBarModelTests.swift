@@ -229,6 +229,56 @@ final class StatusBarModelTests: XCTestCase {
         )
     }
 
+    // MARK: - DET7: the attach row
+
+    /// Keeping the Start row while suppressed (above) was only half the fix: the row it
+    /// kept offering recorded `source: nil`. With a live candidate the same row names the
+    /// meeting a click will attach to, so the label matches what the action now does.
+    func test_suppressed_with_a_live_candidate_names_the_meeting() {
+        XCTAssertEqual(
+            M.rows(.init(state: .suppressed(source: source()), suppressedCandidateAppName: "Microsoft Teams")),
+            [.recordSuppressedMeeting(appName: "Microsoft Teams",
+                                      title: "Record this Microsoft Teams meeting"),
+             .quitWithoutRelaunch]
+        )
+    }
+
+    /// The row is keyed off the candidate, not off `.suppressed`. An explicit Skip and a
+    /// timeout-skip put the menu bar in different presentation states, and the owner's
+    /// report was about the explicit one, so keying it off the state would miss it.
+    func test_idle_with_a_live_candidate_still_names_the_meeting() {
+        XCTAssertEqual(
+            M.rows(.init(state: .idle, suppressedCandidateAppName: "Microsoft Teams")),
+            [.recordSuppressedMeeting(appName: "Microsoft Teams",
+                                      title: "Record this Microsoft Teams meeting"),
+             .quitWithoutRelaunch]
+        )
+    }
+
+    /// No candidate (nothing skipped, or the latch lapsed when the call ended) is the
+    /// plain row: there is nothing to attach to and the generic label is the honest one.
+    func test_no_candidate_keeps_plain_start_recording() {
+        XCTAssertEqual(M.rows(.init(state: .idle)), [.startRecording, .quitWithoutRelaunch])
+        XCTAssertEqual(M.startRecordingTitle(suppressedCandidateAppName: nil), "Start Recording")
+    }
+
+    /// `StatusBarController.populateMenu` builds its `NSMenuItem` from this helper rather
+    /// than from `rows`, so the copy is pinned here once for both.
+    func test_attach_row_title_is_the_shipped_copy() {
+        XCTAssertEqual(
+            M.startRecordingTitle(suppressedCandidateAppName: "Zoom"),
+            "Record this Zoom meeting"
+        )
+    }
+
+    /// A candidate never turns a live recording's Stop row into a start affordance.
+    func test_candidate_does_not_leak_into_the_recording_menu() {
+        XCTAssertEqual(
+            M.rows(.init(state: recording("20260730-101500"), suppressedCandidateAppName: "Microsoft Teams")),
+            [.stopRecording(stem: "20260730-101500"), .quitWithoutRelaunch]
+        )
+    }
+
     func test_quit_without_relaunch_is_hidden_when_auto_restart_is_off() {
         XCTAssertEqual(M.rows(.init(state: .idle, disableAutoRestart: true)), [.startRecording])
     }

@@ -31,6 +31,17 @@ protocol NotifierDelegate: AnyObject {
     )
 }
 
+/// Why a detected meeting was not recorded, which decides how loudly the skip banner
+/// asks about it (UX10 + DET7).
+enum SkipOrigin: Equatable {
+    /// The prompt timed out with the skip default. The user may never have seen the
+    /// prompt at all, so the banner is the first surface and it makes a sound.
+    case timedOut
+    /// The user pressed Skip, or the prompt's × close. That is a decision, not a miss,
+    /// so the banner is a silent undo affordance rather than an alert.
+    case dismissed
+}
+
 /// Wraps UNUserNotificationCenter for informational banners (started / processing / done / error). The "Record this meeting?" prompt lives in `MeetingPromptWindow` - banners are silenced by Focus mode and are the secondary surface.
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     weak var delegate: NotifierDelegate?
@@ -151,19 +162,29 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         post(title: "MeetingPipe error", body: message)
     }
 
-    /// Posted when a detection prompt times out and the meeting is skipped (UX10 /
-    /// AUD-12). The timeout-skip otherwise discards a detected meeting with no
-    /// surface at all (every other failure branch notifies). "Start recording"
-    /// begins a late recording, bypassing the reprompt cooldown + skip latch the
-    /// skip armed; the app identity rides in `userInfo` so the action still works
-    /// minutes later. A stable per-bundle id coalesces repeat skips of one app.
-    func notifySkippedMeeting(source: AppSource) {
+    /// Posted when a detected meeting is not recorded (UX10 / AUD-12, extended by DET7).
+    /// The skip otherwise discards a detected meeting with no surface at all (every other
+    /// failure branch notifies). "Start recording" begins a late recording, bypassing the
+    /// reprompt cooldown + skip latch the skip armed; the app identity rides in `userInfo`
+    /// so the action still works minutes later. A stable per-bundle id coalesces repeat
+    /// skips of one app.
+    ///
+    /// DET7 added the `.dismissed` origin: an explicit Skip or × is exactly the regret case
+    /// the owner reported, and the plumbing behind this banner was already end to end, so
+    /// it gets the same offer. It stays silent and says something different, because the
+    /// user made that call deliberately and does not need to be alerted to their own click.
+    func notifySkippedMeeting(source: AppSource, origin: SkipOrigin) {
         let content = UNMutableNotificationContent()
         content.title = "Skipped \(source.displayName)"
-        content.body = "Meeting prompt timed out. Start recording?"
+        switch origin {
+        case .timedOut:
+            content.body = "Meeting prompt timed out. Start recording?"
+            content.sound = .default
+        case .dismissed:
+            content.body = "Meeting is still running. Start recording?"
+        }
         content.categoryIdentifier = Self.skipLateCategory
         content.userInfo = source.notificationUserInfo
-        content.sound = .default
         let req = UNNotificationRequest(
             identifier: "\(Self.skipLateIDPrefix)\(source.bundleID)",
             content: content,

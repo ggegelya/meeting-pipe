@@ -36,12 +36,17 @@ extension Coordinator {
     /// never stack a second `recorder.start()` on a live meeting (a guard
     /// `beginRecording` itself does not enforce, since its usual callers already
     /// checked state). `toggle` stays the command that also stops.
+    ///
+    /// DET7: a Raycast / Stream Deck start fired *during* a meeting the user skipped
+    /// attaches to it, like the menu row and the hotkey. Without the candidate this was
+    /// unconditionally `source: nil`, so the most common way to trigger it (mid-call,
+    /// having just dismissed the prompt) was also the one that lost the attribution.
     private func startRecordingViaAutomation(byo: Bool) {
         guard case .idle = stateMachine.current else {
             Log.event(category: "automation", action: "record_ignored", attributes: ["reason": "not_idle"])
             return
         }
-        session.beginRecording(source: nil, summaryMode: byo ? .byo : .auto)
+        session.startManual(summaryMode: byo ? .byo : .auto, trigger: "automation")
     }
 
     /// AUTO2: a citation link clicked in a published note. The request is handed
