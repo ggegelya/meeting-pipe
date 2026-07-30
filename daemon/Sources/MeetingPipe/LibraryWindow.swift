@@ -13,11 +13,8 @@ final class LibraryWindow {
 
     func show() {
         if let w = window {
-            // Guard: only count as a fresh open if the window was hidden. A second click while already visible would bump the counter past the real open count.
-            let wasHidden = !w.isVisible
-            w.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            if wasHidden { WindowActivationManager.shared.didShowWindow() }
+            // The manager owns the whole dance (policy flip, deferred front + activate, deminiaturize) and counts by window identity, so a second click while the window is already up, or a click while it is minimized, cannot drift the count (UX39).
+            WindowActivationManager.shared.showWindow(w)
             return
         }
 
@@ -37,27 +34,29 @@ final class LibraryWindow {
             w.center()
         }
 
-        let delegate = LibraryWindowDelegate { [weak self] in
+        let delegate = LibraryWindowDelegate { [weak self] closing in
             // Keep the reference so re-open restores the same frame and scroll/selection state.
             _ = self
-            WindowActivationManager.shared.didCloseWindow()
+            WindowActivationManager.shared.didCloseWindow(closing)
         }
         objc_setAssociatedObject(w, &Self.delegateKey, delegate, .OBJC_ASSOCIATION_RETAIN)
         w.delegate = delegate
 
         self.window = w
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        WindowActivationManager.shared.didShowWindow()
+        WindowActivationManager.shared.showWindow(w)
     }
 
     private static var delegateKey: UInt8 = 0
 }
 
 private final class LibraryWindowDelegate: NSObject, NSWindowDelegate {
-    private let onClose: () -> Void
-    init(onClose: @escaping () -> Void) { self.onClose = onClose }
-    func windowWillClose(_ notification: Notification) { onClose() }
+    private let onClose: (NSWindow) -> Void
+    init(onClose: @escaping (NSWindow) -> Void) { self.onClose = onClose }
+    // The closing window comes off the notification rather than being captured: the delegate is retained by that same window, so capturing it here would be a cycle.
+    func windowWillClose(_ notification: Notification) {
+        guard let closing = notification.object as? NSWindow else { return }
+        onClose(closing)
+    }
 }
 
 // MARK: - Observable bridge

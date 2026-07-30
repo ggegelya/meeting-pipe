@@ -10,10 +10,8 @@ final class DiagnosticsWindow {
 
     func show() {
         if let w = window {
-            let wasHidden = !w.isVisible
-            w.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            if wasHidden { WindowActivationManager.shared.didShowWindow() }
+            // The manager owns the policy flip, the deferred front + activate, and the deminiaturize, and counts by window identity (UX39).
+            WindowActivationManager.shared.showWindow(w)
             return
         }
 
@@ -27,24 +25,26 @@ final class DiagnosticsWindow {
         if w.frame.origin == .zero { w.center() }
         w.isReleasedWhenClosed = false
 
-        let delegate = DiagnosticsWindowDelegate { [weak self] in
+        let delegate = DiagnosticsWindowDelegate { [weak self] closing in
             self?.window = nil
-            WindowActivationManager.shared.didCloseWindow()
+            WindowActivationManager.shared.didCloseWindow(closing)
         }
         objc_setAssociatedObject(w, &Self.delegateKey, delegate, .OBJC_ASSOCIATION_RETAIN)
         w.delegate = delegate
 
         self.window = w
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        WindowActivationManager.shared.didShowWindow()
+        WindowActivationManager.shared.showWindow(w)
     }
 
     private static var delegateKey: UInt8 = 0
 }
 
 private final class DiagnosticsWindowDelegate: NSObject, NSWindowDelegate {
-    private let onClose: () -> Void
-    init(onClose: @escaping () -> Void) { self.onClose = onClose }
-    func windowWillClose(_ notification: Notification) { onClose() }
+    private let onClose: (NSWindow) -> Void
+    init(onClose: @escaping (NSWindow) -> Void) { self.onClose = onClose }
+    // The window is read off the notification because it retains this delegate; capturing it would be a cycle.
+    func windowWillClose(_ notification: Notification) {
+        guard let closing = notification.object as? NSWindow else { return }
+        onClose(closing)
+    }
 }

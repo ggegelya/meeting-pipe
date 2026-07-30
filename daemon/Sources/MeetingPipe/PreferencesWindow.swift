@@ -24,10 +24,8 @@ final class PreferencesWindow {
         }
 
         if let w = window {
-            let wasHidden = !w.isVisible
-            w.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            if wasHidden { WindowActivationManager.shared.didShowWindow() }
+            // Policy flip, deferred front + activate, and deminiaturize all live in the manager, which counts by window identity so a re-open of a minimized window cannot drift the count (UX39).
+            WindowActivationManager.shared.showWindow(w)
             return
         }
 
@@ -53,26 +51,28 @@ final class PreferencesWindow {
         w.isReleasedWhenClosed = false
         w.center()
 
-        let delegate = PreferencesWindowDelegate { [weak self] in
+        let delegate = PreferencesWindowDelegate { [weak self] closing in
             self?.window = nil
-            WindowActivationManager.shared.didCloseWindow()
+            WindowActivationManager.shared.didCloseWindow(closing)
         }
         objc_setAssociatedObject(w, &Self.delegateKey, delegate, .OBJC_ASSOCIATION_RETAIN)
         w.delegate = delegate
 
         self.window = w
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        WindowActivationManager.shared.didShowWindow()
+        WindowActivationManager.shared.showWindow(w)
     }
 
     private static var delegateKey: UInt8 = 0
 }
 
 private final class PreferencesWindowDelegate: NSObject, NSWindowDelegate {
-    private let onClose: () -> Void
-    init(onClose: @escaping () -> Void) { self.onClose = onClose }
-    func windowWillClose(_ notification: Notification) { onClose() }
+    private let onClose: (NSWindow) -> Void
+    init(onClose: @escaping (NSWindow) -> Void) { self.onClose = onClose }
+    // Read the closing window off the notification: this delegate is retained by that window, so capturing it in the closure would be a cycle.
+    func windowWillClose(_ notification: Notification) {
+        guard let closing = notification.object as? NSWindow else { return }
+        onClose(closing)
+    }
 }
 
 /// Curated MLX model presets for the Pipeline picker. Three sizes covering the practical range on M-series; "Custom" accepts any HuggingFace MLX repo id.

@@ -119,6 +119,8 @@ Pure logic lives in its own type with explicit inputs (a `Date`, a `Bool`, a fun
 - `SearchIndexReconciler.decide(indexed:live:)` - the FTS upsert/delete diff, no SQLite and no filesystem (T3).
 - `PrepDisclosure.decide(card:expanded:pillHeight:maxCardHeight:width:)` - how tall the detection prompt stands with the "Last time" card open and whether that card scrolls, from the card's measured-at-width row layout and two constants, no `NSPanel` (UX34, width-threaded by UX47). Its sibling `PrepDisclosure.fadeVisible(contentHeight:viewport:offsetY:)` is the scroll cue's rule: the card's bottom fade shows only while content remains below the viewport, and lifts within 2pt of the bottom so the last row reads complete.
 
+- `WindowActivationManager` (UX39) - the same seam where the logic is a *sequence* rather than a verdict, so there is nothing pure to extract: the four AppKit effects (set the activation policy, activate, hand activation off, hop to the next run-loop turn) are injected as closures, and the window arrives as an `ActivatableWindow` that `NSWindow` satisfies unchanged. The test records every effect and every window call in one ordered log and drains the run-loop hop by hand, which is what lets it assert that the policy flip precedes the fronting and that the fronting is deferred at all. Both defects it fixes are invisible to a "was it called" assertion.
+
 When a subsystem grows non-trivial conditional logic, lift the decision into a `decide(…)`-style entry point on its own type before adding the next branch.
 
 ### Lazy properties and `Self.`

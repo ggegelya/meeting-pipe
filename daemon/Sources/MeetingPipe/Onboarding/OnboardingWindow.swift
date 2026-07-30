@@ -46,7 +46,8 @@ final class OnboardingWindowController {
     func show() {
         if let window = window {
             window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            // Deliberately no `WindowActivationManager` handshake: first run happens once, before there is anything to Cmd+Tab between (UX39).
+            NSApp.activate()
             return
         }
         let root = OnboardingRootView(deps: deps) { [weak self] in
@@ -67,7 +68,7 @@ final class OnboardingWindowController {
         w.center()
         window = w
         w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
     }
 
     func close() {

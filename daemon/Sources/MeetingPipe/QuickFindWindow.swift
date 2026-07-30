@@ -32,7 +32,8 @@ final class QuickFindWindow {
         if let p = panel {
             p.center()
             p.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            // Deliberately no `WindowActivationManager` handshake: this is a floating panel, and a Dock icon plus a Cmd+Tab slot for a Cmd+K overlay would be noise (UX39).
+            NSApp.activate()
             model.refresh()
             return
         }
@@ -53,7 +54,7 @@ final class QuickFindWindow {
         p.center()
         self.panel = p
         p.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         model.refresh()
     }
 

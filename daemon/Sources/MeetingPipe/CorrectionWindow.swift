@@ -47,7 +47,8 @@ final class CorrectionWindow {
             host.rootView = MPControlAccent(view)
             win.title = "Edit summary, \(model.headerTitle)"
             win.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            // Deliberately no `WindowActivationManager` handshake: this is a one-shot grading window off a notification, not a place the user Cmd+Tabs to (UX39).
+            NSApp.activate()
             return
         }
 
@@ -72,7 +73,7 @@ final class CorrectionWindow {
         self.window = win
         self.hosting = host
         win.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
     }
 
     private func handleOutcome(_ outcome: CorrectionOutcome) {
