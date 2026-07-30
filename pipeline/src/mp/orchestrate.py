@@ -56,8 +56,10 @@ log = logging.getLogger("mp.run_all")
 
 # Sentinel prefix for the live progress channel the Swift daemon parses off our
 # stdout (TECH-UX5). The durable record is the `pipeline.stage_progress` event;
-# this line is ephemeral and stripped from the daemon's pipeline.log.
-PROGRESS_SENTINEL = "__MP_PROGRESS__"
+# this line is ephemeral and stripped from the daemon's pipeline.log. AI11 moved
+# the constant and the emit to `events` once `mp ask` needed the same channel;
+# this alias keeps the name run-all's readers already know.
+PROGRESS_SENTINEL = events.PROGRESS_SENTINEL
 
 
 class _ProgressHeartbeat:
@@ -93,12 +95,7 @@ class _ProgressHeartbeat:
             with self._lock:
                 stage = self._stage
             elapsed = int(time.monotonic() - self._started_at)
-            events.emit("pipeline", "stage_progress", stage=stage, elapsed_s=elapsed, beat=beat)
-            try:
-                payload = json.dumps({"stage": stage, "elapsed_s": elapsed, "beat": beat})
-                print(f"{PROGRESS_SENTINEL} {payload}", flush=True)
-            except Exception:  # noqa: BLE001 - progress is best-effort
-                pass
+            events.emit_progress(stage, elapsed_s=elapsed, beat=beat)
 
 
 def _configure_logging() -> None:

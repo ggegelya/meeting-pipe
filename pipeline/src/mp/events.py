@@ -161,6 +161,34 @@ def _events_path() -> Path:
     return base / "pipeline_events.jsonl"
 
 
+#: Sentinel prefix for the live progress channel the Swift daemon parses off a
+#: pipeline subprocess's stdout (TECH-UX5). Mirrored by
+#: `PipelineLauncher.progressSentinel`; the printed line is ephemeral (and
+#: stripped from the daemon's view of `pipeline.log`), while the durable record
+#: is the `pipeline.stage_progress` event `emit_progress` writes alongside it.
+PROGRESS_SENTINEL = "__MP_PROGRESS__"
+
+
+def emit_progress(stage: str, *, elapsed_s: int, **extra: Any) -> None:
+    """One progress beat: the durable event AND the stdout line the daemon reads.
+
+    Promoted out of `orchestrate`'s heartbeat by AI11, which needed the same
+    channel for the `mp ask` index build, and a second private copy of a
+    cross-language contract is exactly the drift `pipeline/CLAUDE.md` warns
+    about. Extra attributes ride both halves; the daemon's `parseProgress` reads
+    `stage` + `elapsed_s` and ignores the rest, so a caller can carry its own
+    counters (`stems_done` / `stems_total`) with no Swift change.
+
+    Printing is best-effort: a closed stdout must never be what fails a run.
+    """
+    emit("pipeline", "stage_progress", stage=stage, elapsed_s=elapsed_s, **extra)
+    try:
+        payload = json.dumps({"stage": stage, "elapsed_s": elapsed_s, **extra}, default=str)
+        print(f"{PROGRESS_SENTINEL} {payload}", flush=True)
+    except Exception:  # noqa: BLE001 - progress is best-effort
+        pass
+
+
 def emit(category: str, action: str, **attrs: Any) -> None:
     """Append one JSON event line. Attribute values must be JSON-serializable.
 
