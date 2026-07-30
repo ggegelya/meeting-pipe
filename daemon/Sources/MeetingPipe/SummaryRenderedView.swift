@@ -12,16 +12,25 @@ enum SummaryLayout {
     /// 640 - 2 * 20 = 600pt: narrower than the 640-720 reading column
     /// `design/README.md` asks for, and the width the owner read as "cut off".
     ///
-    /// Moved 640 to 680 on 2026-07-29, the nudge this task's spec pre-registered
-    /// and reserved for the owner's eye. It sits inside the 640-720 reading
-    /// column `design/README.md` asks for, and the extra 40pt lets the action
-    /// metadata band (owner, due, confidence, anchors) hold one line more often
-    /// before `ViewThatFits` drops it to two. Not taken further: at the body size
-    /// 720 puts a prose line near 100 characters, past where the eye reliably
-    /// finds the start of the next one, which is the whole reason a measure
-    /// exists. The inspector's card is 720 because a label/value grid is not
-    /// prose; matching the two numbers would be a consistency that isn't real.
-    static let readingMeasure: CGFloat = 680
+    /// One reading measure for every reading tab, not just the summary: the
+    /// transcript adopts it too (option A of the 2026-07-29 reading-width run),
+    /// because its wrapped monologue turns at ~1024pt were the longest lines in
+    /// the app while the summary sat protected at 680, and the right edge
+    /// jumping 300pt per tab change is what the owner kept seeing as "not ok".
+    /// Audio stays full-bleed on purpose: a waveform is an instrument, not
+    /// prose. The playback transport and the chrome band span the pane for the
+    /// same reason.
+    ///
+    /// 720 is the owner's pick (2026-07-29), the top of the 640-720 reading
+    /// column `design/README.md` allows. The 680 shipped before it was my
+    /// argument that ~100 characters a line is past comfortable; the owner
+    /// judged 720 by eye on their own screen, which is the design system
+    /// working as intended: the band is the law, and inside the band the eye
+    /// decides. It also happens to equal `WorkflowInspectorLayout.cardMaxWidth`;
+    /// that convergence is deliberate and `WorkflowInspectorTests` records it,
+    /// so if prose ever needs to exceed the card, re-argue there rather than
+    /// silently passing it.
+    static let readingMeasure: CGFloat = 720
 
     /// The gutter between the reading column and the pane edge. Applied outside
     /// `readingMeasure`, so a surface's whole block is measure + 2 * this.

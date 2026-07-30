@@ -34,7 +34,10 @@ struct VoiceResolutionBar: View {
                 .padding(.bottom, 2)
             }
         }
-        .padding(.horizontal, 16)
+        // Horizontal inset comes from the caller: TranscriptTab (the single
+        // consumer) puts this bar on the shared reading measure with the gutter
+        // outside, so an internal 16 here would double-pad and shift the chips
+        // off the rows' text edge (UX36).
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)

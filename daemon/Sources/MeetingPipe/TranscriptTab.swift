@@ -257,9 +257,15 @@ struct TranscriptTab: View {
     var body: some View {
         VStack(spacing: 0) {
             if !voices.voices.isEmpty {
+                // UX36: the cast strip is reading content, so it rides the shared
+                // measure like the rows under it; its divider stays full-bleed
+                // (chrome spans, content measures).
                 VoiceResolutionBar(outcome: voices) { label in
                     namingTarget = NamingTarget(label: label)
                 }
+                .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
+                .padding(.horizontal, SummaryLayout.contentPadding)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
                 Divider().overlay(Color(MPColors.borderFaint))
             }
             content
@@ -578,7 +584,6 @@ private struct TranscriptList: View {
                         Text("Language: \(lang)")
                             .font(.caption)
                             .foregroundStyle(Color(MPColors.fgSubtle))
-                            .padding(.horizontal, 16)
                             .padding(.top, 12)
                     }
                     // Discoverability caption (DSN22 #10): the rows are clickable to
@@ -586,7 +591,6 @@ private struct TranscriptList: View {
                     Text("Click a line to edit or seek.")
                         .font(.mpTextXS)
                         .foregroundStyle(Color(MPColors.fgSubtle))
-                        .padding(.horizontal, 16)
                         .padding(.top, language == nil ? 12 : 2)
                         .padding(.bottom, 4)
                     ForEach(segments) { seg in
@@ -642,6 +646,18 @@ private struct TranscriptList: View {
                     }
                 }
                 .padding(.bottom, 12)
+                // UX36: the transcript is a document, so it reads on the same
+                // measure as the summary, modifier for modifier. Before this it
+                // filled the pane, which made its wrapped monologue turns the
+                // longest lines in the app (~1024pt at the column cap) and left
+                // the right edge jumping ~300pt between the two reading tabs.
+                // The captions and rows above dropped their own horizontal 16s
+                // so this stack's gutter is the only inset; the playback bar and
+                // the empty state stay full-bleed (instrument and state, not
+                // reading content).
+                .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
+                .padding(.horizontal, SummaryLayout.contentPadding)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
             .onChange(of: playback.currentTime) { _, t in
                 let newIdx = TranscriptSegmentLookup.index(at: t, in: segments)
@@ -726,7 +742,6 @@ private struct MarkerChipsRow: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 16)
         .padding(.top, 4)
     }
 }
@@ -804,7 +819,9 @@ private struct TranscriptRow: View {
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 16)
+            // Horizontal inset lives on the list's shared measure stack (UX36);
+            // a row that padded itself again would start its text 16pt off the
+            // summary's, re-opening the per-tab edge disagreement in miniature.
             .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 6)

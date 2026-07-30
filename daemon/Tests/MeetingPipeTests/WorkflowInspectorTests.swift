@@ -322,14 +322,18 @@ final class WorkflowInspectorTests: XCTestCase {
 
     /// `design/README.md` ("Layout rules") puts the reading column at 640-720.
     /// The card sits at the top of that band because a label/value grid is not
-    /// prose; the summary's own measure is deliberately lower (680) for the same
-    /// reason inverted. Pinned so a later widening has to argue with the design
-    /// system rather than drift past it.
+    /// prose. The prose measure sat below it (680) until 2026-07-29, when the
+    /// owner picked the band's top for the shared reading measure too (option A
+    /// of the reading-width run), so the two constants now coincide at 720. The
+    /// convergence is deliberate and recorded here, which is what the old
+    /// strictly-greater assertion asked for ("if these converge, say why"); the
+    /// invariant that survives is that the card is never *narrower* than prose,
+    /// since a grid that fits less than a sentence does has it backwards.
     func test_the_card_cap_stays_inside_the_design_systems_reading_band() {
         XCTAssertGreaterThanOrEqual(WorkflowInspectorLayout.cardMaxWidth, 640)
         XCTAssertLessThanOrEqual(WorkflowInspectorLayout.cardMaxWidth, 720)
-        XCTAssertGreaterThan(WorkflowInspectorLayout.cardMaxWidth, SummaryLayout.readingMeasure,
-                             "the grid earns more width than prose does; if these converge, say why")
+        XCTAssertGreaterThanOrEqual(WorkflowInspectorLayout.cardMaxWidth, SummaryLayout.readingMeasure,
+                                    "a card narrower than the prose measure has the two content types backwards")
     }
 
     /// The footer is the card's, not the pane's. It shipped as a full-pane

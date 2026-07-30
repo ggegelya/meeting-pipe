@@ -81,7 +81,7 @@ final class SummaryLayoutTests: XCTestCase {
     /// the assertion ran zero times. Caught by mutating a site back to `.top` and
     /// watching the test still pass, which is why `checked` is asserted below.
     func test_the_measured_column_left_aligns_under_the_capped_detail_column() throws {
-        for file in ["SummaryRenderedView.swift", "SummaryTab.swift", "CorrectionEditor.swift"] {
+        for file in ["SummaryRenderedView.swift", "SummaryTab.swift", "CorrectionEditor.swift", "TranscriptTab.swift"] {
             let source = try daemonSource("Sources/MeetingPipe/\(file)")
             var rest = Substring(source)
             var checked = 0
