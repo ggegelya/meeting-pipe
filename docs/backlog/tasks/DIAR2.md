@@ -29,3 +29,13 @@ Added 2026-07-30 at the owner's request: every task gated on an owner action car
 3. [session] After a few corrected meetings at the new value, run `scripts/valid1_check.py --der` from the repo root and read its MERGED CLUSTERS line. Baseline for comparison: the 2026-07-16 merge scored 49% corrected on `20260716-103024` against under 1% on healthy meetings.
 4. Iterate. Merge still present: step the threshold down again. Over-splitting appears (the owner keeps having to merge `THEM-A`/`THEM-B` fragments that are one person): step back up half a step.
 5. Done when one value holds the merge closed without over-splitting across a few meetings: [session] moves DIAR2 to done. If no value in 0.5-0.9 works, open `/spike` for the offline-diarizer migration (the stepRatio lever) instead of forcing it.
+
+## Sweep data point, 2026-07-31 (from DIAR3's owner pass)
+
+The first real reading on the leg (a) threshold, contributed by DIAR3's walkthrough rather than by this task's own procedure, and it is a partial success with one clear limit.
+
+**0.55 ("More distinct") does break the merge this sweep was opened for.** On the 2026-07-27 meeting where Anisha had been labelled as Sudip, a Re-transcribe at 0.55 after a daemon relaunch separated the two into different clusters. Anisha's cluster came back unnamed, which is the safe direction this task predicted (an over-split shows an extra unnamed `THEM-*` chip and is fixable in-app; a merge names the wrong person and is not).
+
+**The owner reverted to Balanced (0.65) immediately afterwards, and why is not recorded.** Ask before reading the revert as a verdict on 0.55: it is equally consistent with restoring a default after a test and with 0.55 over-splitting elsewhere in the same meeting. Step 4 of the procedure below (over-splitting appears, step back up half a step) needs that answer before it can be applied.
+
+**A second failure mode showed up that the threshold cannot reach, and it is the more interesting finding.** At 2:01 in the same meeting a single phrase starts in Sudip's voice and continues in Yash's, and it stays one undivided turn at 0.55. That is a speaker change *inside* one segment, so no clustering threshold can split it: clustering decides which cluster a segment belongs to, never where a segment ends. This is direct evidence for the offline-diarizer migration this task's step 5 names as the fallback (`stepRatio` is an `OfflineDiarizerManager` lever and the daemon runs the online `DiarizerManager`), and it is evidence that arrives before the 0.5-0.9 range has been exhausted. Weigh it accordingly: the range sweep and the migration spike are answering different halves of the problem, and this meeting shows both halves are real.

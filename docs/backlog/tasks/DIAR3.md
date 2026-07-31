@@ -75,3 +75,13 @@ Every task gated on an owner action carries one (2026-07-30 rule). Walk the owne
 7. [session] Record the outcome against DIAR2, whichever way it goes, since this is a data point in its owner-owed sweep. Split: 0.55 is a candidate value, and the next round is watching for over-splitting on normal meetings. Still merged: 0.55 is not enough for this meeting, which is evidence for the offline-diarizer spike DIAR2 names rather than for stepping lower again.
 8. [owner] Second half, independent of the first: turn **Clean up speaker labels after transcription** on and leave it on for a few meetings. It only affects meetings recorded from then on, so there is nothing to re-run; judge it on whether new transcripts stop showing one person under two labels. Turn it back off if the extra per-meeting model call is not paying for itself.
 9. [session] Once both halves have been judged, DIAR3 moves to done. Nothing is owed on the engineering side.
+
+## Owner pass, 2026-07-31: first half done, second half outstanding
+
+**Steps 1 to 7 are done and the control works.** The owner set Speaker separation to More distinct, quit MeetingPipe so the daemon reloaded the value, and Re-transcribed the 2026-07-27 meeting. Sudip and Anisha came apart into separate clusters, with Anisha's left unnamed. That is the safe direction the spec named, and step 7's obligation is discharged: the reading is recorded against DIAR2 under "Sweep data point, 2026-07-31", together with a second failure mode the owner found at 2:01 (one phrase starting in Sudip's voice and continuing in Yash's stays a single undivided turn, which no clustering threshold can split because it is a segment-boundary problem rather than a clustering one).
+
+**The owner then switched back to Balanced, and did not say why.** That is the one thing this task should not guess at when it closes: a revert after a successful test reads equally as "restoring the default" and as "0.55 over-split elsewhere in the meeting", and DIAR2's next step depends on which. Ask.
+
+**Step 8 is untouched and is what keeps this task open.** The "Clean up speaker labels after transcription" toggle has not been turned on, and it can only be judged over a few meetings recorded after it is enabled, since it does not apply retroactively. Nothing is owed on the engineering side; this is dwell time.
+
+**One UI finding from the pass, unfiled at the owner's discretion:** the popup that tells the owner they can Re-transcribe via the `...` button renders that button unlike the equivalent control in the detail header's top right, and the owner asked for the two to match in look and feel.
