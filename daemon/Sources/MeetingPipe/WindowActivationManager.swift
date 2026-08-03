@@ -43,6 +43,16 @@ extension NSWindow: ActivatableWindow {}
 /// of one is why Cmd+C, Cmd+A and Cmd+W beeped in the Library. The menu is installed in the same
 /// step that raises the policy and removed in the same step that drops it, because those are
 /// exactly the moments this app does and does not own a menu bar.
+///
+/// UX56 sharpened rule 1 rather than reversing it: **the wait is for the policy transition, not for
+/// the window.** The deferral was unconditional, so a window opened while the app was already
+/// `.regular` waited too, with nothing to wait for. That is the second Preferences window opening
+/// over the Library (the toolbar gear, Cmd+, from the main menu, the Vocabulary and permission
+/// cross-links), and the owner's report was that it landed behind the Library rather than over it.
+/// The flag below is what says whether a raise is actually in flight, so a window opened during one
+/// still waits (two windows opened in the same turn are one transition, and the second must not
+/// activate ahead of it) while a window opened with no raise pending is fronted in the same turn
+/// that asked for it.
 final class WindowActivationManager {
     static let shared = WindowActivationManager()
 
@@ -88,6 +98,14 @@ final class WindowActivationManager {
     /// while its window is still alive; a window deallocated without closing would leave a stale
     /// identifier that a later allocation at the same address could match.
     private var shown: Set<ObjectIdentifier> = []
+
+    /// True from the moment the policy is raised to `.regular` until the run-loop turn that fronts
+    /// the window, which is exactly the span over which `setActivationPolicy` may not have landed
+    /// yet. Any window shown inside that span waits with it: the transition is app-wide, so a
+    /// second window fronting immediately would issue its `activate` against the still-accessory
+    /// app, which is the Cmd+Tab MRU tail UX39 exists to prevent.
+    private var policyRaiseInFlight = false
+
     private let effects: Effects
 
     init(effects: Effects = .appKit) {
@@ -97,18 +115,34 @@ final class WindowActivationManager {
     /// Open, re-front, or deminiaturize `window`, raising the app to `.regular` and installing the
     /// menu bar on the first one. Idempotent per window: calling it again for a window already
     /// counted brings that window forward without touching the count.
+    ///
+    /// The fronting waits a run-loop turn only while a policy raise is in flight (UX39's rule 1,
+    /// narrowed by UX56). With the app already `.regular` there is no asynchronous transition to
+    /// outlive, so the wait bought nothing and cost the thing it looks like it should cost: a turn
+    /// in which the app the user came from can keep or reclaim focus, and on macOS 14 an activation
+    /// this app asks for cooperatively rather than takes.
     func showWindow(_ window: ActivatableWindow) {
         if shown.insert(ObjectIdentifier(window)).inserted, shown.count == 1 {
             effects.setPolicy(.regular)
             effects.installMainMenu()
+            policyRaiseInFlight = true
         }
-        // Deferred so the policy transition above has landed before this app claims frontmost.
         let effects = self.effects
-        effects.onNextRunLoopTurn { [weak window] in
-            guard let window else { return }
+        // One spelling for both branches, so "wait a turn" can never drift into doing something
+        // different from "do it now".
+        let frontAndActivate: (ActivatableWindow) -> Void = { window in
             if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)
             effects.activateApp()
+        }
+        guard policyRaiseInFlight else {
+            frontAndActivate(window)
+            return
+        }
+        effects.onNextRunLoopTurn { [weak self, weak window] in
+            self?.policyRaiseInFlight = false
+            guard let window else { return }
+            frontAndActivate(window)
         }
     }
 

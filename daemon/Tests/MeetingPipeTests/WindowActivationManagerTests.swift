@@ -282,6 +282,95 @@ final class WindowActivationManagerTests: XCTestCase {
         XCTAssertEqual(recorder.calls.filter { $0 == "menu:install" }.count, 1)
     }
 
+    // MARK: - Waiting only for a policy raise (UX56)
+
+    /// The UX56 fix. With the app already `.regular` there is no asynchronous policy transition to
+    /// outlive, so the window is fronted in the turn that asked for it rather than a turn later.
+    /// The turn was not free: it is one in which the app the user came from can keep or reclaim
+    /// focus, and the report was a Preferences window landing behind the Library that opened it.
+    func test_show_while_the_app_is_already_regular_fronts_in_the_same_turn() {
+        let manager = makeManager()
+        let library = FakeWindow("library", recorder: recorder)
+        let prefs = FakeWindow("prefs", recorder: recorder)
+
+        manager.showWindow(library)
+        recorder.runNextRunLoopTurn()
+
+        manager.showWindow(prefs)
+
+        XCTAssertEqual(
+            recorder.calls.suffix(2), ["front:prefs", "activate"],
+            "A second window has no policy transition to wait for, so waiting only costs."
+        )
+        XCTAssertEqual(
+            recorder.calls.filter { $0.hasPrefix("policy:") }, ["policy:regular"],
+            "Fronting in the same turn must not have re-raised a policy that was already up."
+        )
+    }
+
+    /// The same rule on the re-show path: a window already counted cannot have raised the policy,
+    /// so the Dock-icon and menu-bar reopens come forward immediately too.
+    func test_reshowing_a_counted_window_fronts_in_the_same_turn() {
+        let manager = makeManager()
+        let window = FakeWindow("library", recorder: recorder)
+
+        manager.showWindow(window)
+        recorder.runNextRunLoopTurn()
+        window.isMiniaturized = true
+        manager.showWindow(window)
+
+        XCTAssertEqual(recorder.calls.suffix(3), ["deminiaturize:library", "front:library", "activate"])
+    }
+
+    /// The guard on the narrowing: the wait is for the *transition*, not for the first window, so a
+    /// second window opened before the deferred turn drains waits with it. Fronting it immediately
+    /// would issue its `activate` against the still-accessory app, which is exactly the Cmd+Tab MRU
+    /// tail UX39 exists to prevent, and it would put the window opened second underneath.
+    func test_a_window_shown_during_a_pending_raise_waits_with_it() {
+        let manager = makeManager()
+        let library = FakeWindow("library", recorder: recorder)
+        let prefs = FakeWindow("prefs", recorder: recorder)
+
+        manager.showWindow(library)
+        manager.showWindow(prefs)
+
+        XCTAssertEqual(
+            recorder.calls, ["policy:regular", "menu:install"],
+            "Neither window may front while the policy raise is still in flight."
+        )
+
+        recorder.runNextRunLoopTurn()
+        XCTAssertEqual(
+            recorder.calls,
+            [
+                "policy:regular", "menu:install",
+                "front:library", "activate", "front:prefs", "activate"
+            ],
+            "Order follows the asks, so the window opened second ends up on top."
+        )
+    }
+
+    /// The other half of that guard, and the one a naive "front it immediately" fix would break:
+    /// the last close drops the policy, so the next open raises it again and therefore waits again.
+    /// Every open of Preferences from the status-bar menu with no other window up is this case.
+    func test_show_after_the_last_close_defers_again_because_the_policy_is_raised_again() {
+        let manager = makeManager()
+        let window = FakeWindow("prefs", recorder: recorder)
+
+        manager.showWindow(window)
+        recorder.runNextRunLoopTurn()
+        manager.didCloseWindow(window)
+        manager.showWindow(window)
+
+        XCTAssertEqual(
+            recorder.calls.suffix(2), ["policy:regular", "menu:install"],
+            "A re-raised policy has to land before this app claims frontmost, or it lands at the MRU tail."
+        )
+
+        recorder.runNextRunLoopTurn()
+        XCTAssertEqual(recorder.calls.suffix(2), ["front:prefs", "activate"])
+    }
+
     /// The way back: the menu comes down with the policy, before the handoff, so this app is never
     /// the one whose menu bar is drawn once another app is frontmost.
     func test_last_close_removes_the_menu_before_handing_activation_off() {
