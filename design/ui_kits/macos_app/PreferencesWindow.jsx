@@ -406,6 +406,19 @@ const PWPermissionsPane = () => (
   </div>
 );
 
+// AUTO4: the read-only meetingpipe:// reference. Mirrors AutomationReference.rows
+// in the Swift target, which is the fenced side; this is the recreation.
+const PW_AUTOMATION_VERBS = [
+  { template: "meetingpipe://toggle", purpose: "Start recording, or stop the recording that is running. Same as the record hotkey." },
+  { template: "meetingpipe://record", purpose: "Start recording. Does nothing if a recording is already running." },
+  { template: "meetingpipe://record?byo=1", purpose: "Start recording, without writing the summary for you. You paste your own notes after it stops." },
+  { template: "meetingpipe://stop", purpose: "Stop the recording that is running. Does nothing when nothing is recording." },
+  { template: "meetingpipe://library", purpose: "Open the Library. Add ?scope=facts, people, time, ask, or digests to land on that rail." },
+  { template: "meetingpipe://open?stem=<stem>&t=<seconds>", purpose: "Open one meeting's transcript at that second. The value for stem comes from Copy meeting ID in a meeting's menu." },
+  { template: "meetingpipe://ask?q=<question>", purpose: "Ask a question across every meeting, and open the answer as it arrives." },
+  { template: "meetingpipe://digest", purpose: "Build this week's review of open actions and recent decisions, and open it." },
+];
+
 const PWAdvancedPane = () => (
   <div>
     <PWSectionHeader title="Advanced" caption="Plumbing for power users. Most people never come here."/>
@@ -420,6 +433,19 @@ const PWAdvancedPane = () => (
     </PWGroup>
     <PWGroup label="Diagnostics" footer="Takes effect after restarting MeetingPipe - the env var is set at daemon launch and inherited by every subprocess spawned afterwards.">
       <PWToggleRow first on={false} label="Verbose logging" sublabel="Emit extra detail to the unified log and pass MP_VERBOSE=1 to pipeline subprocesses."/>
+    </PWGroup>
+    <PWGroup label="Automation" footer={'Paste one into a Shortcuts "Open URL" action, or into Raycast, Stream Deck, or a terminal. MeetingPipe\'s own Shortcuts actions are the other route, and they stay off until the app is signed with an Apple Developer ID.'}>
+      {PW_AUTOMATION_VERBS.map((v, i) => (
+        <PWFullRow key={v.template} first={i === 0}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontFamily: "var(--mp-font-mono)", fontSize: 12, color: "var(--mp-fg)" }}>{v.template}</div>
+              <div style={{ fontSize: 11, color: "var(--mp-fg-muted)", lineHeight: 1.5, marginTop: 2 }}>{v.purpose}</div>
+            </div>
+            <PWSmallButton>Copy</PWSmallButton>
+          </div>
+        </PWFullRow>
+      ))}
     </PWGroup>
     <div style={{ fontSize: 11, color: "var(--mp-fg-faint)", textAlign: "center", marginTop: 4, lineHeight: 1.5 }}>
       MeetingPipe - config lives in ~/.config/meeting-pipe/. Workflows live in ~/.config/meeting-pipe/workflows/. Both are plain TOML, safe to edit by hand if you know what you're doing.
