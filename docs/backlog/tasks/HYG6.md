@@ -51,10 +51,27 @@ UX43, UX45, UX46 and AUTO3 each cite the exact line of the code they exist to ch
 
 Fix: re-resolve all four by symbol rather than by line, and prefer citing a symbol name plus a short quoted snippet over a bare line number, so the citation survives the next band. Record that preference in `.claude/commands/file-task.md` beside HYG5's absolute-total rule, since it is the same failure with a different unit.
 
+## 5. Every archived spec's link back to the active backlog is broken, and each new archival copies it
+
+Added 2026-08-03, found by SEC15's pickup read and re-verified after the nine-task band landed.
+
+`docs/backlog/q6-final.md` carries **20** links spelled `[meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md)` against **1** spelled `./`. The archive is a sibling of the active backlog, both directly under `docs/backlog/`, so `../` resolves to `docs/meetingpipe-q6-backlog.md`, which does not exist. Every one of those 20 is dead in a Markdown viewer and in any link checker.
+
+The mis-spelling is inherited, not invented per task. An archived spec is the task's `tasks/<ID>.md` body moved up one directory, and from `tasks/` the `../` form is **correct**; nothing in the move rewrites it. That is why the count grows on its own: this band alone added two (SEC15 and PIPE12), and each of the seven owner-owed rows will add one more when its eyeball closes. `q4-final.md` and `q5-final.md` are clean at 1 and 2 correct links respectively, so the defect entered with the per-task-file split, and the single correct link in `q6-final.md` shows the right form was known.
+
+Why it belongs in this row rather than DOC12's: the reader is a session opening an archived spec to learn how something shipped, which is this task's stated audience, not a human reading product documentation.
+
+Fix, both halves, because the sweep alone regrows:
+
+- Rewrite the 20 in `q6-final.md` to `./meetingpipe-q6-backlog.md`. Mechanical: `sed -i '' 's|](\.\./meetingpipe-q6-backlog\.md)|](./meetingpipe-q6-backlog.md)|g' docs/backlog/q6-final.md`, then confirm `grep -c '](\.\./meetingpipe-q6-backlog\.md)'` is 0 and the `./` count is 21.
+- Record the rewrite in the archival step itself, so the next task to close does not re-add one. `.claude/commands/tech-task.md` step 8's done-done branch is where a session is told to move the spec text into the archive; it should say that the Band-origin line's `../` becomes `./` on the way up. `.claude/commands/file-task.md` is the mirror for anything it templates. This is the same fix-the-source pairing as item 4's cite-by-symbol rule.
+
+Optional and cheap while in there: a `scripts/truth_fences.py`-style check, or one line in the existing dash-guard hook, asserting no `](../meetingpipe-q` survives in any `q*-final.md`. Worth it only if the two-line procedure change looks likely to be forgotten; the sweep plus the procedure note is the minimum.
+
 ## Scope
 
-Items 2, 3 and 4. Item 1 is already fixed and is recorded here for the trail.
+Items 2, 3, 4 and 5. Item 1 is already fixed and is recorded here for the trail.
 
 ## Acceptance
 
-UX48's step 7 and acceptance clause describe something the scope can deliver. The CAL3 probe cannot emit an `expected` it did not compute, and VALOWN1's paste step says what to do with a `reject`. The four stale citations resolve. `.claude/commands/file-task.md` records the cite-by-symbol rule. No code behaviour change beyond the probe, so both suites stay green.
+UX48's step 7 and acceptance clause describe something the scope can deliver. The CAL3 probe cannot emit an `expected` it did not compute, and VALOWN1's paste step says what to do with a `reject`. The four stale citations resolve. `.claude/commands/file-task.md` records the cite-by-symbol rule. `docs/backlog/q6-final.md` has zero `](../meetingpipe-q6-backlog.md)` links and 21 `./` ones, and the archival step in `.claude/commands/tech-task.md` says to rewrite the path on the way up, so the count cannot regrow. No code behaviour change beyond the probe, so both suites stay green.

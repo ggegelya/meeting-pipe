@@ -28,9 +28,11 @@ The 2026-07-31 owner-owed pass established that documentation asserting behaviou
 
 **10. The `fgFaint` contrast floor, one instance.** `daemon/Sources/MeetingPipe/MeetingDetailView+Header.swift:101` and `:104` render the "Summary edited locally" glyph and caption in `MPColors.fgFaint` at the smallest type step, while the caption twenty lines below explicitly moved off `fgFaint` because it sits near 2.8:1 against a 4.5:1 floor. Fix: use `fgSubtle`, which clears the floor.
 
+**11. ARCHITECTURE credits the retrieval stack to a consumer that does not import it.** Added 2026-08-03, found by SEC15's pickup read while fencing `rag.py` and re-verified after the nine-task band landed. `ARCHITECTURE.md:395` closes its `embed_index.py` / `rag.py` paragraph with "Both back `ask.py` and `digest.py`". Only the first half is true: `ask.py:36` is `from . import embed_index, engine, entry, events, rag, resource_guard`, while `digest.py` imports neither, and its actual inputs are `actions`, `engine`, `entry`, `events`, `config`, `schemas`, `markdown`, and `prompt_safety`. `mp digest` reads `<stem>.summary.json` and narrates it; it does no retrieval at all. The two other real consumers go unnamed by that sentence: `rag.py:23` itself imports `Chunk` from `embed_index`, and `action_clusters.py:96` pulls `default_embedder` (the paragraph does credit `action_clusters.py` as "the third consumer of that embedder" two sentences later, which is what makes the earlier claim look deliberate rather than loose). Consequence is the ordinary one for this class: a session asked to change retrieval reads this line and goes looking for a digest call path that has never existed. Fix: say both back `ask.py`, and name `rag.py` and `action_clusters.py` as `embed_index`'s other readers. Cheap cross-check for whoever picks this up, since the sentence is about imports: `grep -rnE "^(from|import).*(embed_index|rag)" pipeline/src/mp/*.py`.
+
 ## Scope
 
-Fix all ten. They are independent one-liners to one-paragraph edits, and none needs a decision except item 3's cross-reference to UX45 and item 9's ordering against DET11.
+Fix all eleven. They are independent one-liners to one-paragraph edits, and none needs a decision except item 3's cross-reference to UX45 and item 9's ordering against DET11.
 
 ## Acceptance
 
