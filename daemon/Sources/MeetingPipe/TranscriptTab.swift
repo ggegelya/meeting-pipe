@@ -302,6 +302,8 @@ struct TranscriptTab: View {
     @State private var pendingVocabularyOffer: VocabularyOffer? = nil
     /// FEAT12: the offer whose confirm sheet is open; nil when none is showing.
     @State private var vocabularyOffer: VocabularyOffer? = nil
+    /// FEAT13: the line whose Clarify sheet is open; nil when none is showing.
+    @State private var clarifyTarget: ClarifyTarget? = nil
     /// Raw speaker label being named (FEAT3-ROSTER); nil when the sheet is closed.
     @State private var namingTarget: NamingTarget? = nil
     /// Segments being assigned to a typed-in new person (FEAT3-SEGMENT); nil when closed.
@@ -372,10 +374,21 @@ struct TranscriptTab: View {
             VocabularyOfferSheet(
                 offer: offer,
                 onAdd: { heard, canonical, scope in
-                    addVocabularyTerm(heard: heard, canonical: canonical, workflow: scope)
+                    let message = addVocabularyTerm(heard: heard, canonical: canonical, workflow: scope)
+                    if message == nil { vocabularyOffer = nil }
+                    return message
                 },
                 // FEAT12: Cancel is the outcome of walking away, and it writes nothing.
                 onCancel: { vocabularyOffer = nil }
+            )
+        }
+        .sheet(item: $clarifyTarget) { target in
+            ClarifySheet(
+                target: target,
+                onConfirm: { plan in applyClarify(plan) },
+                // FEAT13: dismissing is walking away, and it writes neither file. The
+                // Venusaur case is precisely this button.
+                onCancel: { clarifyTarget = nil }
             )
         }
         .sheet(item: $namingTarget) { target in
@@ -409,7 +422,8 @@ struct TranscriptTab: View {
         // a line while playback keeps scrolling the list out from under the cursor
         // is the friction that forced a manual pause every time.
         .onChange(of: editingSegment != nil || namingTarget != nil
-                  || assignNewTarget != nil || vocabularyOffer != nil) { _, open in
+                  || assignNewTarget != nil || vocabularyOffer != nil
+                  || clarifyTarget != nil) { _, open in
             if open { playback.pause() }
         }
         .onAppear { installRightClickPause() }
@@ -521,6 +535,15 @@ struct TranscriptTab: View {
                 pendingSeek: pendingSeek,
                 onSeekHandled: { pendingSeek = nil },
                 onEdit: { seg in editingSegment = seg },
+                onClarify: { seg in
+                    clarifyTarget = ClarifyTarget(
+                        segmentIndex: seg.index,
+                        line: seg.text,
+                        speakerID: seg.speakerID,
+                        start: seg.start,
+                        workflowName: meeting.workflowName
+                    )
+                },
                 onName: { label in namingTarget = NamingTarget(label: label) },
                 onRename: { label, current in
                     namingTarget = NamingTarget(label: label, currentName: current)
@@ -547,7 +570,22 @@ struct TranscriptTab: View {
     }
 
     /// Persists the edit and patches the in-memory segment so the row updates without a full reload.
-    private func saveCorrection(for segment: TranscriptSegment, newText: String) {
+    ///
+    /// Returns nil on success, or a message the caller can render. The edit sheet
+    /// discards it (it closes on save either way, and the failure is logged); FEAT13's
+    /// Clarify sheet stays open and shows it.
+    ///
+    /// `offerVocabulary` is what keeps the two entry points from stacking sheets.
+    /// Clarify passes false because it has *already* asked the vocabulary question, in
+    /// its own picker, and the user answered it by choosing "Fix this line only";
+    /// following that with an "Add to Vocabulary" offer would re-ask the question they
+    /// just declined.
+    @discardableResult
+    private func saveCorrection(
+        for segment: TranscriptSegment,
+        newText: String,
+        offerVocabulary: Bool = true
+    ) -> String? {
         let edited = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         let pipelineOriginal = segment.text
         do {
@@ -565,7 +603,7 @@ struct TranscriptTab: View {
                         "segment_index": segment.index,
                         "error": error.localizedDescription,
                       ])
-            return
+            return error.localizedDescription
         }
         // SEC14: the event log is grepped and shared in diagnostics, so it carries lengths by
         // default, not the verbatim transcript sentences. The full text lands only under verbose.
@@ -593,16 +631,74 @@ struct TranscriptTab: View {
         // FEAT12: the only moment both sides of a vocabulary pair are known. `make` is
         // pure, so this decides whether to *offer*, never whether to write; on a nil it
         // says nothing at all rather than nagging with an empty sheet.
-        pendingVocabularyOffer = VocabularyOffer.make(
-            original: pipelineOriginal,
-            edited: edited,
-            workflowName: meeting.workflowName
-        )
+        if offerVocabulary {
+            pendingVocabularyOffer = VocabularyOffer.make(
+                original: pipelineOriginal,
+                edited: edited,
+                workflowName: meeting.workflowName
+            )
+        }
+        return nil
     }
 
-    /// FEAT12: the confirmed half of "Add to Vocabulary". Reached only from the sheet's
-    /// Add button, and it goes through `GlossaryStore.addTerm`, the same append the
-    /// Preferences editor's rows ride, so there is no second writer of `glossary.toml`.
+    /// FEAT13: run a confirmed clarification, and nothing else.
+    ///
+    /// The two cases are one-to-one with the two destinations the sheet offered, which is
+    /// the whole design: choosing "Fix this line only" writes the correction overlay and
+    /// never `glossary.toml`, and choosing "Always fix this" writes the term and never
+    /// the overlay. Writing both on the rule path was considered and rejected: an overlay
+    /// laid over a term makes a rule that never matched look like it worked, so the owner
+    /// would have no way to tell a live term from a dead one.
+    ///
+    /// Returns nil on success, or a message the sheet renders inline while staying open.
+    private func applyClarify(_ plan: Clarify.Plan) -> String? {
+        switch plan {
+        case .correctLine(let index, let newText):
+            guard let segment = segments.first(where: { $0.index == index }) else {
+                return "That line is no longer on screen. Close this and try again."
+            }
+            if let message = saveCorrection(for: segment, newText: newText, offerVocabulary: false) {
+                return message
+            }
+            clarifyTarget = nil
+            return nil
+        case .addTerm(let heard, let canonical, let workflow, let retranscribe):
+            if let message = addVocabularyTerm(heard: heard, canonical: canonical, workflow: workflow) {
+                return message
+            }
+            clarifyTarget = nil
+            // No second confirmation: the tick box in the sheet was the ask, and the
+            // sheet said what a rebuild does. Re-asking is the friction this task exists
+            // to remove.
+            if retranscribe { runRetranscribe() }
+            return nil
+        }
+    }
+
+    /// FEAT13: the rule path's optional rebuild. Reports through the shared dialog the
+    /// detail header uses, so a carry that dropped an override says so in the same words
+    /// wherever the re-transcribe was started from.
+    ///
+    /// Deliberately does **not** call `reload()` afterwards. `retranscribeMeeting`
+    /// publishes the store revision itself on both outcomes (UX52), after the overlay
+    /// carry, and this pane's `.task` is keyed on that revision, so the refresh is
+    /// already owned. A `reload()` here would be the second signal beside the store's
+    /// that `daemon/CLAUDE.md` warns against, and it would re-read the same bytes twice
+    /// for one rebuild.
+    private func runRetranscribe() {
+        let title = meeting.displayTitle
+        Task {
+            let result = await libraryModel.retranscribeMeeting(stem: meeting.stem)
+            await MainActor.run {
+                LibraryDialogs.reportRetranscribe(meetingTitle: title, result: result)
+            }
+        }
+    }
+
+    /// FEAT12: the confirmed half of "Add to Vocabulary". Reached only from a confirm
+    /// button (FEAT12's Add, or FEAT13's rule path), and it goes through
+    /// `GlossaryStore.addTerm`, the same append the Preferences editor's rows ride, so
+    /// there is no second writer of `glossary.toml`.
     ///
     /// The store is built here rather than held for the tab's lifetime so the document it
     /// merges into is read at confirm time, not at meeting-open time. It leaves one
@@ -639,7 +735,9 @@ struct TranscriptTab: View {
             attributes["canonical"] = canonical
         }
         Log.event(category: "correction", action: "vocabulary_term_added", attributes: attributes)
-        vocabularyOffer = nil
+        // Deliberately not closing a sheet here: this is the writer, and the two callers
+        // own their own presentation. It closed `vocabularyOffer` when FEAT12 was the
+        // only caller, which would have made FEAT13's rule path dismiss the wrong sheet.
         return nil
     }
 
@@ -731,6 +829,8 @@ private struct TranscriptList: View {
     let onSeekHandled: () -> Void
     /// Called on "Edit text" context-menu action; the host owns sheet presentation.
     let onEdit: (TranscriptSegment) -> Void
+    /// Called on "Clarify a word…" (FEAT13); the host owns sheet presentation.
+    let onClarify: (TranscriptSegment) -> Void
     /// Called on "Name this speaker" (FEAT3-ROSTER) with the raw speaker label.
     let onName: (String) -> Void
     /// Called on "Rename…" (FEAT3-UNDO) with the raw label and its current name.
@@ -808,6 +908,7 @@ private struct TranscriptList: View {
                                 }
                             },
                             onEdit: { onEdit(seg) },
+                            onClarify: { onClarify(seg) },
                             onName: onName,
                             onRename: onRename,
                             onUndoName: onUndoName,
@@ -951,6 +1052,8 @@ private struct TranscriptRow: View {
     /// A modifier-classified click: plain seeks, Cmd toggles, Shift range-selects.
     let onSelect: (SegmentClick) -> Void
     let onEdit: () -> Void
+    /// FEAT13: open the Clarify sheet for this line.
+    let onClarify: () -> Void
     let onName: (String) -> Void
     let onRename: (String, String) -> Void
     let onUndoName: (String, String) -> Void
@@ -1047,6 +1150,14 @@ private struct TranscriptRow: View {
         }
         .contextMenu {
             Button("Edit text…", action: onEdit)
+            // FEAT13. The row's own menu, and not a menu over the selected text, because
+            // there is no such menu to extend: SwiftUI's `.textSelection(.enabled)` is
+            // backed by a `SelectionTextField` that refuses first responder, engages no
+            // field editor, and answers nil to `validRequestor(forSendType: .string,…)`,
+            // so nothing in this process can be handed the words under the pointer
+            // (measured 2026-08-04, extending UX48's probe). The full reasoning, and the
+            // pasteboard hack that was rejected, are in `docs/backlog/tasks/FEAT13.md`.
+            Button("Clarify a word…", action: onClarify)
             if let raw = segment.speakerID {
                 if let name = clusterName {
                     // FEAT3-UNDO: an in-app-named cluster is reversible.

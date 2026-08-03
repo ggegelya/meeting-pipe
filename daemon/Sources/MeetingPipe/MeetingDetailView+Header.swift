@@ -682,30 +682,10 @@ extension MeetingDetailView {
     private func reportRetranscribe(
         _ result: Result<MeetingLibraryService.RetranscribeOutcome, Error>
     ) {
-        let alert = NSAlert()
-        switch result {
-        case .success(let outcome):
-            alert.messageText = "Re-transcribed \(meeting.displayTitle)."
-            var lines = ["The transcript now reflects the current ASR, glossary, and roster."]
-            if outcome.carried > 0 {
-                lines.append("\(outcome.carried) of your edits carried over.")
-            }
-            if outcome.retired > 0 {
-                lines.append("\(outcome.retired) text correction\(outcome.retired == 1 ? " is" : "s are") no longer needed: the new transcript already reads that way.")
-            }
-            if outcome.dropped > 0 {
-                lines.append("\(outcome.dropped) could not be placed on the new transcript and were dropped.")
-            }
-            lines.append("Re-summarize from the ... menu if you want the summary to reflect it.")
-            alert.informativeText = lines.joined(separator: "\n\n")
-            alert.addButton(withTitle: "Done")
-        case .failure(let error):
-            alert.alertStyle = .warning
-            alert.messageText = "Couldn't re-transcribe \(meeting.displayTitle)."
-            alert.informativeText = error.localizedDescription
-            alert.addButton(withTitle: "OK")
-        }
-        alert.runModal()
+        // The copy lives in `LibraryDialogs` since FEAT13 gave this report a second
+        // caller (the Clarify sheet's rule path, which can rebuild the meeting so a term
+        // just added reaches it).
+        LibraryDialogs.reportRetranscribe(meetingTitle: meeting.displayTitle, result: result)
     }
 
     func confirmDelete() {

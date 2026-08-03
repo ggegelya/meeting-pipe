@@ -93,7 +93,13 @@ enum VocabularyCandidate {
 
     /// Leading and trailing punctuation only. An apostrophe or hyphen inside a word
     /// ("let's", "e-mail") is part of the term and survives.
-    private static func trimPunctuation(_ text: String) -> String {
+    ///
+    /// Internal rather than private since FEAT13: `Clarify` normalises a hand-typed "as
+    /// heard" side the same way, so a term added from the Clarify sheet and one derived
+    /// from a line edit become the same key in `glossary.toml`. A second copy of this
+    /// would be free to drift, and the drift would show up as a term the pipeline never
+    /// matches.
+    static func trimPunctuation(_ text: String) -> String {
         text.trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.whitespaces))
     }
 }

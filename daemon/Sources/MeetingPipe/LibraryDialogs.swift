@@ -78,6 +78,46 @@ enum LibraryDialogs {
         alert.runModal()
     }
 
+    /// Report what a re-transcribe did to the overlays (ASR3), from wherever it was
+    /// started.
+    ///
+    /// Promoted out of `MeetingDetailView+Header` by FEAT13, which gained a second entry
+    /// point: the Clarify sheet's rule path can rebuild the meeting so a term just added
+    /// reaches it. A modal rather than a toast because the interesting case is a drop: an
+    /// override the carry could not re-anchor is work the owner did by hand that the new
+    /// transcript has no home for, and that has to read the same however the rebuild was
+    /// started. A private copy in each caller is how the Trash confirm came to be worded
+    /// two different ways for the same action.
+    static func reportRetranscribe(
+        meetingTitle: String,
+        result: Result<MeetingLibraryService.RetranscribeOutcome, Error>
+    ) {
+        let alert = NSAlert()
+        switch result {
+        case .success(let outcome):
+            alert.messageText = "Re-transcribed \(meetingTitle)."
+            var lines = ["The transcript now reflects the current ASR, glossary, and roster."]
+            if outcome.carried > 0 {
+                lines.append("\(outcome.carried) of your edits carried over.")
+            }
+            if outcome.retired > 0 {
+                lines.append("\(outcome.retired) text correction\(outcome.retired == 1 ? " is" : "s are") no longer needed: the new transcript already reads that way.")
+            }
+            if outcome.dropped > 0 {
+                lines.append("\(outcome.dropped) could not be placed on the new transcript and were dropped.")
+            }
+            lines.append("Re-summarize from the ... menu if you want the summary to reflect it.")
+            alert.informativeText = lines.joined(separator: "\n\n")
+            alert.addButton(withTitle: "Done")
+        case .failure(let error):
+            alert.alertStyle = .warning
+            alert.messageText = "Couldn't re-transcribe \(meetingTitle)."
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: "OK")
+        }
+        alert.runModal()
+    }
+
     /// Folder picker for an export, returning the chosen directory or nil on cancel.
     /// `message` says what lands there, the only thing that differs between the
     /// single-meeting bundle and the batch's one-file-per-meeting run.

@@ -46,14 +46,48 @@ A term added through Clarify resolves identically to one typed in Preferences, s
 
 `cd daemon && swift build` and `swift test` green. `python3 scripts/truth_fences.py both` green. No em-dashes in changed lines.
 
+## Shipped 2026-08-04
+
+Everything above the owner walkthrough is done. `cd daemon && swift build` clean, `swift test` green with 22 new tests (`ClarifyTests`), `python3 scripts/truth_fences.py both` green, no em-dash in any changed line. The CI4 `glossary-golden.json` fixture was **not** regenerated and did not need to be: the glossary writer is untouched, this task's rule path calls FEAT12's existing `GlossaryStore.addTerm`, and `CI4ContractFixtureTests` passes as it stood.
+
+**What landed.** `daemon/Sources/MeetingPipe/Clarify.swift` is the pure half: `Clarify.Destination` (the two blast radii plus their copy), `Clarify.Plan` (one case per destination), `Clarify.plan(…)`, and `Clarify.substitute`. `ClarifySheet.swift` renders it. `TranscriptTab`'s row context menu gained **Clarify a word…** directly under **Edit text…**, and the host gained a `clarifyTarget` sheet plus `applyClarify`, which routes each plan to exactly one writer.
+
+### The entry point is not the one the spec asked for, because that one cannot fire
+
+The spec's shape was "select words with the mouse, get a Clarify option". **Measured first, per the pickup instruction, and it is not available on this stack.** An on-screen `NSWindow` probe hosting `Text(…).textSelection(.enabled)` (extending UX48's offscreen one) reports that SwiftUI's `SelectionTextField`:
+
+- answers `acceptsFirstResponder` **false**, and `makeFirstResponder(field)` leaves the **window** as first responder;
+- engages **no field editor** (`window.fieldEditor(false, for:)` is nil);
+- returns **nil** from `validRequestor(forSendType: .string, returnType: nil)`, before and after a `selectAll`.
+
+That closes UX48's own hedge from the other side. Its escape route was that a selectable `NSTextField` conventionally engages the window's field editor, which *is* an `NSTextView` with the standard text menu, so a right-click after selecting might find what a right-click before selecting does not. No field editor is ever engaged, so there is nothing to find, and there is no `NSServicesMenuRequestor` to hand the selection over either. SwiftUI owns the selection privately in a `PlatformViewRepresentableAdaptor<SelectionOverlay>` and exposes no accessor on the macOS 14 floor.
+
+**One workaround was considered and rejected rather than shipped.** Since UX48 installed a main menu whose Copy has a nil target, `NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)` plausibly *would* put the live selection on the general pasteboard, and the sheet could read it, verify it occurs in this line, and restore the pasteboard afterwards. It was turned down: it puts the owner's clipboard at risk (a restore cannot faithfully rebuild lazily-provided or custom types) to save typing one word, it is untestable, and it depends on private behaviour that an OS update can change silently. If the owner wants it after living with the shipped shape, it is a small follow-up with a stated cost, not a thing to have guessed at now.
+
+So the affordance is the transcript row's own `.contextMenu`, which is proven to open over transcript text (it is where **Edit text…** and **Assign to…** already live). Walkthrough steps 2 and 3 below are rewritten to match; the durable measurement is recorded in `daemon/CLAUDE.md` so no later session re-derives it.
+
+### The three calls the spec left open
+
+1. **The per-meeting fix is the default.** The spec's own starting position, adopted rather than overturned: it is the reversible, one-meeting option, and promoting to a rule should cost a deliberate second click.
+2. **"Always" does not imply "here".** The rule path writes the term and **only** the term. Writing the overlay alongside was rejected for a reason worth keeping: an overlay laid over a term makes a rule that never matched look like it worked, so the owner would have no way to tell a live term from a dead one. It also keeps each choice one-to-one with one write, which is the honesty the whole task is about, and keeps FEAT12's shipped sheet copy true rather than contradicted.
+3. **Re-transcribe is a tick box inside the sheet, on the rule path only, defaulting off.** The owner asked to "save it with options to re-transcribe", and pre-registering the choice beats a second modal after the fact. Its presence is itself the visible discriminator between the two paths. Off by default because a rebuild spends minutes of the Mac's time, and a sheet that starts a job nobody asked for is the same class of surprise as a rule written without a confirm. There is no second confirmation once it is ticked: the tick was the ask, and re-asking is the friction this task exists to remove.
+
+### Two smaller decisions
+
+`Clarify.substitute` deliberately mirrors `mp.glossary`'s `\b(<key>)\b` case-insensitive, every-occurrence substitution (`glossary.py:70`), **including its limitation** that a term ending in punctuation ("c++") anchors nowhere and matches nothing. `test_wording_ending_in_punctuation_matches_nothing_here_or_in_the_pipeline` pins that on purpose: making the line path cleverer than the rule path would mean "Fix this line only" fixing a line that "Always fix this" could never fix, which is exactly the confusion between the two blast radii the task exists to prevent. The line path also refuses a substitution that would not change the line, so Clarify cannot write a no-op overlay entry that later shows up in a re-transcribe's carry report as work to preserve.
+
+`LibraryDialogs.reportRetranscribe` is the re-transcribe result dialog, promoted out of `MeetingDetailView+Header`'s private scope because this task gave it a second caller. A carry that dropped an override has to read the same wherever the rebuild was started from, and a private copy per caller is how the Trash confirm came to be worded two different ways for the same action.
+
+**One thing deliberately not done:** no new event action. A Clarify-driven write emits the same `transcript_correction` / `vocabulary_term_added` events the other surfaces do, because it is literally the same write through the same store; a Clarify-specific action would have been a second name for one thing.
+
 ## Owner walkthrough (for the session that picks this up)
 
 Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who acts.
 
 1. [session] `./scripts/rebuild.sh`, then tell the owner it is ready.
-2. [owner] Open a transcript, select a misheard word or phrase with the mouse. Pass: a Clarify option appears without hunting for it.
-3. [owner] Open it and read what it offers. Pass: it is pre-filled with what you selected, and it is obvious which choice changes only this meeting and which changes every future transcript. **Judge that wording as writing**: it is the only thing standing between a one-line fix and a permanent rule.
+2. [owner] Open a transcript and **right-click** a line with a misheard word in it. Pass: **Clarify a word…** is there, directly under **Edit text…**. (It is a right-click and not a mouse selection, and that is not a shortcut taken: the app cannot see what you selected. The measurement is above.)
+3. [owner] Open it and read what it offers. Pass: the line you right-clicked is shown at the top so you can read the wrong words straight off it, and it is obvious which choice changes only this meeting and which changes every future transcript. **Judge that wording as writing**: it is the only thing standing between a one-line fix and a permanent rule.
 4. [owner] Dismiss it without confirming, then check Preferences ▸ Pipeline ▸ Vocabulary. Pass: nothing was added. This is the step that matters most, and the reason it exists is Venusaur: a garble you cannot decode must be walk-away-able.
 5. [owner] Now do it for real on a word you are sure about, choosing the per-meeting fix. Pass: that line reads correctly and no vocabulary entry appeared.
-6. [owner] Do it again choosing the rule, and accept the Re-transcribe it offers. Pass: the term is in Preferences ▸ Pipeline ▸ Vocabulary and the meeting comes back corrected.
+6. [owner] Do it again, this time choosing **Always fix this**, and tick **Re-transcribe this meeting afterwards** before pressing the button (it starts off, on purpose). Pass: the term is in Preferences ▸ Pipeline ▸ Vocabulary, the rebuild runs on its own without asking a second time, and the meeting comes back corrected. If a text edit of yours could not be re-anchored the report says how many were dropped, which is expected behaviour rather than a fault.
 7. [owner] Say "FEAT13 good to close" (or what is wrong); [session] moves the row and the spec into `q6-final.md` and deletes this file.

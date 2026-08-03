@@ -120,14 +120,25 @@ Two things to know. It applies from the moment you turn it on; it cannot un-publ
 
 Transcription is good at ordinary speech and bad at names it has never heard: your company, your clients, your internal jargon. The **Vocabulary** is a list of what-it-hears to what-it-should-say pairs, applied to every new transcript before anything else reads it.
 
-### Adding a term the fast way
+### Clarifying a word where you found it
 
 You will usually notice the problem while reading a transcript, so fix it there:
 
 1. Open the meeting in the Library and go to the **Transcript** tab.
-2. Right-click the line with the wrong word and pick **Edit text**.
-3. Correct the word and save.
-4. If the fix was one word (or two words next to each other), a small box offers to remember the pair, already filled in with what was heard and what you typed. Check the two sides, and press **Add**.
+2. Right-click the line with the wrong word and pick **Clarify a word…**.
+3. The line is shown at the top of the box. Type the words as they came out wrong, and what they should say.
+4. Choose which of the two you want, then press the button. It names what it will do.
+
+The choice is the important part, because the two do very different amounts:
+
+- **Fix this line only** changes that one line, in this one meeting, and nothing else. You can change it back from the same menu.
+- **Always fix this** adds the pair to your Vocabulary, so every transcript finished from then on is written the corrected way, including meetings you have not recorded yet. Because a term only reaches an existing meeting through a rebuild, this option also offers to **re-transcribe this meeting afterwards**; tick it and the meeting you are looking at comes back corrected. Leave it off and this meeting keeps the words it has until you rebuild it yourself.
+
+Nothing at all is written until you press one of those buttons. That is deliberate: a garble you cannot decode is safe to open, read, and walk away from, and walking away is often the right answer.
+
+### Adding a term as you correct a line
+
+The other way round works too. Right-click a line, pick **Edit text**, correct the word, and save. If the fix was one word (or two words next to each other), a small box offers to remember the pair, already filled in with what was heard and what you typed. Check the two sides, and press **Add**.
 
 Nothing is written until you press Add, and both sides stay editable until you do. A bigger rewrite deliberately produces no offer at all, rather than guessing at a pair that would be wrong.
 
