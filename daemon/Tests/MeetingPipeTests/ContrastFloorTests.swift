@@ -141,6 +141,29 @@ final class ContrastFloorTests: XCTestCase {
         assertPair(MPColors.fgOnSignal, "white", on: MPColors.signalFill, "signalFill", dark: true, floor: 4.5, pin: 4.88)
     }
 
+    /// UX59: the speaker palette as an identity dot in the cast strip's `bgSunk` chip.
+    /// UX14 tuned these eight against the canvas, and the chip is the first surface to
+    /// draw them in the sunk well, so this is a genuinely new pairing. A dot is a
+    /// non-text UI mark, so the floor is 3:1; every hue clears it in both appearances,
+    /// and 15 of the 16 clear the 4.5 body floor as well (the light-mode orange, 4.32,
+    /// is the one that does not, and it carries no text).
+    ///
+    /// Pinned per hue rather than as a minimum, per this file's rule: a palette edit that
+    /// moves any pair, even upward, should fail here and be re-recorded rather than pass
+    /// unnoticed. Ratios are higher in dark than on the canvas because the sunk well is
+    /// darker there and lighter on paper.
+    func test_speaker_palette_dots_clear_the_ui_floor_in_the_chip_well() {
+        let light = [5.40, 5.87, 4.85, 4.32, 4.35, 4.64, 6.80, 5.12]
+        let dark = [5.59, 4.98, 5.13, 8.10, 9.72, 8.94, 5.15, 5.89]
+        XCTAssertEqual(MPColors.speakerPalette.count, light.count)
+        for (slot, hue) in MPColors.speakerPalette.enumerated() {
+            assertPair(hue, "speakerPalette[\(slot)]", on: MPColors.bgSunk, "bgSunk",
+                       dark: false, floor: 3.0, pin: light[slot])
+            assertPair(hue, "speakerPalette[\(slot)]", on: MPColors.bgSunk, "bgSunk",
+                       dark: true, floor: 3.0, pin: dark[slot])
+        }
+    }
+
     /// DSN23: the "Instrument" record-action label on its fill. Light: white on the
     /// deep teal fill. Dark: a near-black backlit label on the brighter fill.
     func test_record_action_label_on_fill() {

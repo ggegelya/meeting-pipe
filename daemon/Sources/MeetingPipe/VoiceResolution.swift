@@ -43,6 +43,13 @@ enum VoiceResolution {
         /// only a per-line label (enrolling a label with no embedding hard-failed with
         /// "pipeline exited 2", which is why this gate exists at all).
         let canEnroll: Bool
+        /// This person's slot in the meeting's cast (UX58's `MeetingCast.colorIndex`),
+        /// so a chip can carry the same identity dot their transcript rows carry
+        /// (UX59). Resolved here rather than in the view because the strip is
+        /// presentation-only by construction: every decision it renders lives on this
+        /// type, and a second place that answered "which colour is this person" is
+        /// exactly how the strip and the rows came to disagree in the first place.
+        let colorIndex: Int?
 
         var id: String { assignKey }
 
@@ -110,7 +117,8 @@ enum VoiceResolution {
     /// - Parameters:
     ///   - cast: the resolved cast from `MeetingCast.members`, which has already folded
     ///     the speaker overlay in, so `displayName` is what the transcript shows and
-    ///     `assignKey` is the underlying label.
+    ///     `assignKey` is the underlying label. Its order is also each voice's palette
+    ///     slot (UX58), which is what lets a chip and a row draw one person one colour.
     ///   - voiceprintLabels: keys of `<stem>.embeddings.json`, i.e. the labels the
     ///     pipeline itself assigned to a voice it had an embedding for.
     ///   - rosterNames: the enrolled people. Only used to tell an empty roster from a
@@ -167,7 +175,13 @@ enum VoiceResolution {
                     displayName: member.displayName,
                     assignKey: key,
                     origin: origin,
-                    canEnroll: canEnroll
+                    canEnroll: canEnroll,
+                    // Through the shared function rather than off this loop's position,
+                    // even though `members` de-duplicates by display name so the two are
+                    // the same number today. The point of UX59 is that one rule answers
+                    // this for both surfaces; a second derivation that happens to agree
+                    // is the shape that drifts.
+                    colorIndex: MeetingCast.colorIndex(displayName: member.displayName, in: cast)
                 )
             )
         }

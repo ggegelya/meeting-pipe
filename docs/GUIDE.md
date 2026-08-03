@@ -166,6 +166,8 @@ The same group has **Also catch near-misses (one letter off)**, which additional
 
 Above the transcript lines is a strip naming every voice in the meeting and saying how many of them are actually named. It is the fastest place to start, and it tells apart the two situations that look identical in the lines themselves: **nobody is enrolled yet**, so nothing could have been matched, versus **your list of voices is populated and this one was missed**, which is worth a re-transcribe once you have named them.
 
+Each chip carries two marks, and they mean different things. The coloured dot on the left is that person's colour in the lines below (see [the colours](#the-colours)). The small icon next to it says how the app got their name: your own voice, one matched from your saved voices, one you named here, or one still unnamed.
+
 Click **Name** on an unnamed voice to name it. Right-click a chip for the rest:
 
 - A voice you named in **this** meeting offers **Rename…** and **Un-name**.
@@ -178,9 +180,9 @@ Right-click any line from a voice that has not been named and choose **Name this
 
 Your own on-disk transcript is never altered by any of this. Names are kept alongside it, so undo always restores the original.
 
-### The colours on the lines
+### The colours
 
-Every voice in a meeting gets a colour, used for the dot and the name on each of its lines, so you can follow one person down the page without reading the names. Up to eight voices each get their own; past that the colours start repeating. The colour is fixed for that meeting: quit and reopen the app and everyone is the colour they were. It belongs to the meeting rather than to the person, so the same person can be a different colour in a different meeting.
+Every voice in a meeting gets a colour, used for the dot and the name on each of its lines, so you can follow one person down the page without reading the names. It is the same colour on their chip in the strip above, so somebody you spot in the strip is findable in the page, and a line you are reading is findable in the strip. Up to eight voices each get their own; past that the colours start repeating. The colour is fixed for that meeting: quit and reopen the app and everyone is the colour they were. It belongs to the meeting rather than to the person, so the same person can be a different colour in a different meeting.
 
 ### Fixing a wrongly attributed line
 

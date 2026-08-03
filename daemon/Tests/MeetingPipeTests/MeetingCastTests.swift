@@ -409,6 +409,86 @@ final class MeetingCastTests: XCTestCase {
         XCTAssertEqual(TranscriptDisplay.color(atCastIndex: nil), Color(MPColors.fgMuted))
     }
 
+    // MARK: - UX59: the cast strip and the transcript draw one person one colour
+
+    /// The strip's answer for every voice, keyed by the name on the chip.
+    private func chipSlots(
+        segments: [TranscriptSegment],
+        overlay ov: SpeakerLabelStore.Overlay,
+        voiceprints: Set<String> = [],
+        roster: [String] = ["Sudip"]
+    ) -> [String: Int?] {
+        let cast = MeetingCast.members(segments: segments, overlay: ov)
+        let outcome = VoiceResolution.derive(
+            cast: cast, voiceprintLabels: voiceprints, rosterNames: roster, userLabel: "Heorhii"
+        )
+        return Dictionary(uniqueKeysWithValues: outcome.voices.map { ($0.displayName, $0.colorIndex) })
+    }
+
+    func test_every_chip_carries_the_slot_its_speakers_rows_carry() {
+        // The acceptance in one assertion: for every voice in the meeting, the dot on the
+        // chip and the dot on that person's lines are the same palette slot. Asked of the
+        // two production paths rather than of one shared helper, since the defect this
+        // closes was precisely two surfaces answering the same question differently.
+        let segments = [
+            seg(0, speaker: "Heorhii"),
+            seg(1, speaker: "THEM-A"),
+            seg(2, speaker: "Sudip"),
+            seg(3, speaker: "speaker_unknown"),
+            seg(4, speaker: "THEM-B"),
+            seg(5, speaker: "THEM-A"),
+        ]
+        let ov = overlay(labels: ["THEM-B": "Anisha"])
+        let cast = MeetingCast.members(segments: segments, overlay: ov)
+        let chips = chipSlots(segments: segments, overlay: ov, voiceprints: ["Heorhii", "Sudip"])
+
+        XCTAssertEqual(chips.count, 5, "every classified voice gets a chip, the junk drawer included")
+        for segment in segments {
+            let row = MeetingCast.rowSpeaker(for: segment, overlay: ov, voiceprintLabels: ["Heorhii", "Sudip"])
+            let rowSlot = MeetingCast.colorIndex(for: row, in: cast)
+            XCTAssertEqual(
+                chips[row.displayName] ?? nil, rowSlot,
+                "line \(segment.index) shows \(row.displayName) on slot \(String(describing: rowSlot)), "
+                    + "but their chip is on \(String(describing: chips[row.displayName] ?? nil))"
+            )
+        }
+    }
+
+    func test_a_reassignment_moves_the_chip_and_the_rows_together() {
+        // The walkthrough's step 6. Moving a line is also the operation that can change
+        // the *cast*: taking Sudip's last line away removes her chip entirely, and every
+        // voice after her in first-appearance order would shift up a slot if the two
+        // surfaces did not read the same list. Both sides are re-derived from the same
+        // overlay here, which is what the one refresh does.
+        let segments = [seg(0, speaker: "THEM-A"), seg(1, speaker: "THEM-B"), seg(2, speaker: "THEM-C")]
+        let before = overlay(labels: ["THEM-B": "Sudip"])
+        XCTAssertEqual(chipSlots(segments: segments, overlay: before)["Sudip"], 1)
+
+        // Sudip's only line moves to Unknown A, so she leaves the meeting.
+        let after = overlay(labels: ["THEM-B": "Sudip"], segments: [1: "THEM-A"])
+        let chips = chipSlots(segments: segments, overlay: after)
+        XCTAssertNil(chips["Sudip"] ?? nil, "no line is hers, so there is no chip to colour")
+
+        let cast = MeetingCast.members(segments: segments, overlay: after)
+        XCTAssertEqual(cast.map(\.displayName), ["Unknown A", "Unknown C"])
+        for segment in segments {
+            let row = MeetingCast.rowSpeaker(for: segment, overlay: after, voiceprintLabels: [])
+            XCTAssertEqual(chips[row.displayName] ?? nil, MeetingCast.colorIndex(for: row, in: cast))
+        }
+    }
+
+    func test_naming_a_voice_repaints_neither_surface() {
+        // UX58 pinned this for the rows; the strip has to hold it too, or naming somebody
+        // would reshuffle the chips above the lines it left alone.
+        let segments = [seg(0, speaker: "THEM-A"), seg(1, speaker: "THEM-B"), seg(2, speaker: "THEM-C")]
+        let anonymous = chipSlots(segments: segments, overlay: overlay())
+        let named = chipSlots(segments: segments, overlay: overlay(labels: ["THEM-B": "Sudip"]))
+
+        XCTAssertEqual(anonymous["Unknown A"], named["Unknown A"])
+        XCTAssertEqual(anonymous["Unknown C"], named["Unknown C"])
+        XCTAssertEqual(anonymous["Unknown B"], named["Sudip"], "the same person, the same slot, a new name")
+    }
+
     // MARK: - The real meeting, as a regression fixture
 
     func test_the_real_20260715_tangle_resolves_to_one_member_per_person() {

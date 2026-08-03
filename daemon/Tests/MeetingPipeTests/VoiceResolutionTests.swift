@@ -167,10 +167,63 @@ final class VoiceResolutionTests: XCTestCase {
         for origin in origins {
             XCTAssertFalse(VoiceResolutionBar.glyph(for: origin).isEmpty, "\(origin)")
             let voice = VoiceResolution.Voice(
-                displayName: "x", assignKey: "x", origin: origin, canEnroll: true
+                displayName: "x", assignKey: "x", origin: origin, canEnroll: true, colorIndex: 0
             )
             XCTAssertFalse(VoiceResolutionBar.state(for: voice).isEmpty, "\(origin)")
         }
+    }
+
+    // MARK: - Identity and status are two marks, not one (UX59)
+
+    func test_a_chip_carries_the_speakers_cast_slot() {
+        let out = derive(
+            [member("Heorhii", key: "Heorhii"),
+             member("Unknown B", key: "THEM-B"),
+             member("Rana", key: "Rana")],
+            voiceprints: ["Heorhii", "THEM-B", "Rana"]
+        )
+        XCTAssertEqual(out.voices.map(\.colorIndex), [0, 1, 2])
+    }
+
+    func test_the_dot_is_position_and_the_glyph_is_status_so_neither_stands_in_for_the_other() {
+        // The task's own out-of-scope line: FEAT11 exists so "did roster matching work
+        // here" is answerable at a glance, and a change that expressed identity by
+        // recolouring the status glyph would have deleted that answer while satisfying
+        // the consistency complaint. So the two channels are checked to be independent
+        // in both directions.
+        let out = derive(
+            [member("Unknown B", key: "THEM-B"), member("Rana", key: "Rana")],
+            voiceprints: ["THEM-B", "Rana"]
+        )
+        XCTAssertEqual(out.voices.map(\.origin), [.unresolved, .roster])
+
+        // Different status, and it is legible without looking at the dot at all: the
+        // glyphs are different symbols, not one symbol in two colours.
+        XCTAssertNotEqual(
+            VoiceResolutionBar.glyph(for: .unresolved), VoiceResolutionBar.glyph(for: .roster)
+        )
+        XCTAssertTrue(out.voices[0].offersNaming)
+        XCTAssertFalse(out.voices[1].offersNaming)
+
+        // And the dot says nothing about status: swap who speaks first and the slots
+        // swap while each voice keeps its own glyph.
+        let swapped = derive(
+            [member("Rana", key: "Rana"), member("Unknown B", key: "THEM-B")],
+            voiceprints: ["THEM-B", "Rana"]
+        )
+        XCTAssertEqual(swapped.voices.map(\.origin), [.roster, .unresolved])
+        XCTAssertEqual(swapped.voices.map(\.colorIndex), [0, 1])
+    }
+
+    func test_two_unnamed_voices_get_two_dots_and_the_same_status() {
+        // The other direction: the dot separates people the status treatment cannot,
+        // which is the whole reason the strip needed one.
+        let out = derive(
+            [member("Unknown A", key: "THEM-A"), member("Unknown B", key: "THEM-B")],
+            voiceprints: ["THEM-A", "THEM-B"]
+        )
+        XCTAssertEqual(out.voices.map(\.origin), [.unresolved, .unresolved])
+        XCTAssertNotEqual(out.voices[0].colorIndex, out.voices[1].colorIndex)
     }
 
     // MARK: - A count of what it shows (UX40)

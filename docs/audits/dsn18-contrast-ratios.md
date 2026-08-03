@@ -43,6 +43,23 @@ The deep fills that carry a legible label. The light-mode `700` button fills (UX
 | `signalFill` (white, both modes) | 4.88 |
 | `recordFill` + `recordLabel` (light / dark) | 4.88 / 4.88 |
 
+## Speaker palette as an identity dot in the chip well (floor 3, UX59)
+
+UX14 tuned the eight categorical speaker hues against the canvas, where they carry the transcript's speaker dot and name. UX59 draws the same hues as an identity dot on the cast strip's `bgSunk` chip, which is a new pairing, so it is measured and pinned like the rest. A dot is a non-text UI mark, so the floor is 3:1; every hue clears it in both appearances, and 15 of the 16 clear the 4.5 body floor too. Ratios run higher in dark than on the base canvas because the sunk well is darker there and lighter on paper.
+
+| Slot (light hex / dark system colour) | light sunk | dark sunk |
+|---|---|---|
+| 0 blue (`#1D5BC4` / systemBlue) | 5.40 | 5.59 |
+| 1 purple (`#7A33C2` / systemPurple) | 5.87 | 4.98 |
+| 2 pink (`#BC2D6B` / systemPink) | 4.85 | 5.13 |
+| 3 orange (`#B45309` / systemOrange) | 4.32* | 8.10 |
+| 4 teal (`#0E7C74` / systemTeal) | 4.35* | 9.72 |
+| 5 green (`#1B7A3D` / systemGreen) | 4.64 | 8.94 |
+| 6 indigo (`#4338CA` / systemIndigo) | 6.80 | 5.15 |
+| 7 brown (`#875A2C` / systemBrown) | 5.12 | 5.89 |
+
+`*` the two light-mode hues between 3 and 4.5. Both are well clear of the UI floor the dot is held to, and neither carries text in the chip: the chip's own label is `fg`, and the palette is used as text only on the transcript line, on the base canvas, where every hue clears 4.5 (UX14).
+
 ## Known gap (partially closed by DSN23)
 
 DSN18 measured and guarded; the DSN20-23 redesign then retoned the values. **DSN23 closed the signal leg**: the display teal now flips bright in dark (`signal600` `#36C6B8`), so `signalAccent` clears the full 4.5 body floor in dark (7.98 / 6.90) instead of the old ~4.18 / 3.63. The residual gap is the **semantic hues**: `successAccent` / `warningAccent` / `danger600` still clear only the 3:1 icon-paired UI floor in dark (3.09 to 4.30), and **`danger600` on a raised card in dark is ~2.7** (sub-3:1). The CSS brightened only the signal hue in dark, not the semantic hues; a follow-up would brighten the dark semantic accents (or restrict them to the base canvas in dark). Kept icon-paired meanwhile (semantic state is never colour-only). Tracked for a future legibility pass.

@@ -121,8 +121,32 @@ struct VoiceResolutionBar: View {
         }
     }
 
+    /// The identity dot's diameter (UX59). Smaller than the transcript row's 8pt on
+    /// purpose: the row draws its dot beside `.body` text on an uncapped line, the chip
+    /// draws it beside 11pt `mpTextXS` inside a 22pt capsule, so 8 here reads as a second
+    /// icon competing with the status glyph rather than as a marker under it.
+    private static let identityDotSize: CGFloat = 6
+
     private func chipBody(_ voice: VoiceResolution.Voice) -> some View {
         HStack(spacing: 4) {
+            // UX59: the identity dot, the same cast slot this person's transcript rows
+            // draw, so one person is one colour on a screen that shows both surfaces at
+            // once. It leads the chip because the row's dot leads the row, which is what
+            // makes the comparison a glance down a column rather than a hunt.
+            //
+            // Deliberately a **separate** view from the glyph beside it rather than a
+            // recolour of it. That glyph's tint is FEAT11's resolution status (warning
+            // for an unmatched voice, signal for a roster match), which is the whole
+            // reason the strip exists; painting identity onto it would have answered the
+            // owner's consistency complaint by deleting the answer to "did roster
+            // matching work here". So the chip now carries two marks that mean two
+            // things, and neither is hue-only: identity is the dot plus the name spelt
+            // out next to it, status is the glyph's shape (a distinct symbol per origin)
+            // plus its tint plus the `Name` affordance, with `help` and `state` under
+            // both for the reader who gets neither.
+            Circle()
+                .fill(TranscriptDisplay.color(atCastIndex: voice.colorIndex))
+                .frame(width: Self.identityDotSize, height: Self.identityDotSize)
             Image(systemName: Self.glyph(for: voice.origin))
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(Self.tint(for: voice))
