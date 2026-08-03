@@ -92,21 +92,36 @@ Globals:
   --version                   Print version
 """
 
+# Ctrl-C. The shell's convention for "killed by SIGINT" is 128 + 2 (PIPE13).
+# Deliberately outside the exit vocabulary the daemon reads: 3 is the
+# all-sinks-failed publish contract (`publish_router.EXIT_PUBLISH_FAILED`,
+# mirrored by `PipelineLauncher.publishFailedExitCode`), 2 is usage, 1 is any
+# other failure. `SinkDispatcher.stage(for:)` branches on 3 alone, so 130 falls
+# into its generic arm and reads as a plain pipeline failure, never as a publish
+# that landed nowhere.
+EXIT_INTERRUPTED = 130
 
-def main() -> int:
-    argv = sys.argv[1:]
+# The one command whose interrupt is worth a second clause. `mp ask` checkpoints
+# the embedding index as it builds (AI11), so a Ctrl-C there is resumable, and
+# that is the non-obvious part after a run long enough to want stopping.
+_INTERRUPT_NOTES = {
+    "ask": "the index keeps what it finished, so the next run resumes from there",
+}
 
-    if not argv or argv[0] in {"-h", "--help", "help"}:
-        print(USAGE)
-        return 0
 
-    if argv[0] == "--version":
-        from . import __version__
-        print(f"mp {__version__}")
-        return 0
+def _interrupt_line(cmd: str) -> str:
+    """The single stderr line a Ctrl-C prints, naming what was interrupted."""
+    note = _INTERRUPT_NOTES.get(cmd)
+    return f"mp {cmd}: interrupted" + (f"; {note}" if note else "")
 
-    cmd, rest = argv[0], argv[1:]
 
+def _dispatch(cmd: str, rest: list[str]) -> int:
+    """Route one subcommand to its module's `main(argv)`.
+
+    Split out of `main` so a single `except KeyboardInterrupt` covers every
+    branch: every subcommand is a `main(argv) -> int` reached through here, so
+    one handler serves all of them and none has to learn about interrupts.
+    """
     # Lazy imports: keep `mp --help` and `mp --version` cheap; the
     # summarize / publish stages pull in anthropic + httpx + pydantic
     # only when actually invoked.
@@ -186,6 +201,33 @@ def main() -> int:
     print(f"unknown subcommand: {cmd}\n", file=sys.stderr)
     print(USAGE, file=sys.stderr)
     return 2
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+
+    if not argv or argv[0] in {"-h", "--help", "help"}:
+        print(USAGE)
+        return 0
+
+    if argv[0] == "--version":
+        from . import __version__
+        print(f"mp {__version__}")
+        return 0
+
+    cmd, rest = argv[0], argv[1:]
+
+    try:
+        return _dispatch(cmd, rest)
+    except KeyboardInterrupt:
+        # No cleanup, no `finally`, no rollback: what the interrupt leaves on
+        # disk is the feature. `mp ask`'s partial index is what lets the next
+        # run resume (AI11; owner-verified 2026-07-31, interrupted at 112 stems
+        # and resumed at 112), and tidying up here would destroy exactly that,
+        # invisibly, with the damage showing only on the following run. Ctrl-C
+        # is a supported way to stop a long run, so it says one line and leaves.
+        print(_interrupt_line(cmd), file=sys.stderr)
+        return EXIT_INTERRUPTED
 
 
 if __name__ == "__main__":  # pragma: no cover

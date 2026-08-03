@@ -16,6 +16,9 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import signal
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -163,3 +166,88 @@ def test_help_paths_exit_zero(argv: list[str], monkeypatch: pytest.MonkeyPatch) 
 
 def test_version_flag_exits_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _run(["--version"], monkeypatch) == 0
+
+
+# --- Ctrl-C (PIPE13) -------------------------------------------------------
+#
+# An unhandled `KeyboardInterrupt` used to reach the interpreter and print a
+# six-frame traceback, which reads as a crash on a path AI11's walkthrough
+# explicitly tells the owner to take. Interrupting is supported, so it exits
+# 130 (128 + 2) with one line.
+
+
+def _raise_interrupt(_argv: list[str]) -> int:
+    raise KeyboardInterrupt
+
+
+def test_interrupt_exits_130_with_one_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`mp ask` is the reported case, and its line carries the resume clause:
+    the index checkpoint survives, which is the non-obvious part."""
+    monkeypatch.setattr("mp.ask.main", _raise_interrupt)
+
+    rc = _run(["ask", "what did we decide"], monkeypatch)
+
+    err = capsys.readouterr().err
+    assert rc == 130
+    assert err.splitlines() == [
+        "mp ask: interrupted; the index keeps what it finished, "
+        "so the next run resumes from there"
+    ]
+    assert "Traceback" not in err
+
+
+def test_interrupt_is_caught_at_the_dispatch_level(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Raised from a different subcommand, so the coverage above cannot be read
+    as ask-specific: the handler sits at the router, not inside `mp ask`."""
+    monkeypatch.setattr("mp.digest.main", _raise_interrupt)
+
+    rc = _run(["digest"], monkeypatch)
+
+    err = capsys.readouterr().err
+    assert rc == 130
+    assert err.splitlines() == ["mp digest: interrupted"]
+    assert "Traceback" not in err
+
+
+CHILD = """
+import sys, time
+import mp.logs_cmd
+
+def blocking_main(argv):
+    print("READY", flush=True)
+    time.sleep(60)
+    return 0
+
+mp.logs_cmd.main = blocking_main
+sys.argv = ["mp", "logs"]
+from mp.__main__ import main
+sys.exit(main())
+"""
+
+
+def test_real_sigint_prints_no_traceback() -> None:
+    """The regression only exists at the interpreter's top level: an in-process
+    call sees an exception, a real `mp` prints a stack trace. So drive a real
+    subprocess and interrupt it for real."""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", CHILD],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        assert proc.stdout is not None
+        ready = proc.stdout.readline()
+        assert ready.strip() == "READY", f"child never started: {proc.communicate()[1]}"
+
+        proc.send_signal(signal.SIGINT)
+        _out, err = proc.communicate(timeout=60)
+    except BaseException:
+        proc.kill()
+        raise
+
+    assert proc.returncode == 130
+    assert "Traceback" not in err
+    assert err.splitlines() == ["mp logs: interrupted"]

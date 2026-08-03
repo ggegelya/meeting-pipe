@@ -52,3 +52,14 @@ An interrupted `mp ask --rebuild` still resumes: the existing embed-index resume
 `cd pipeline && uv run --extra dev ruff check src tests`, `pyright`, and `pytest -q` green. No em-dashes in changed lines.
 
 Owner-visible check, folded into whatever walkthrough next runs an interrupt: Ctrl-C during an index rebuild prints one line, no traceback, and the next run resumes where it stopped.
+
+## Owner walkthrough (for the session that picks this up)
+
+Steps are tagged [owner] / [session] by who acts. The engineering shipped 2026-08-04 (see the ToC row); this section exists only because the acceptance's last line is an owner-visible check, and the status stays `owner-owed` until it is run. It is the same leg as **AI11's step 5**, which is also still open, so run them together rather than twice: AI11 asks whether the resume works, this asks whether the exit reads like a crash while it does.
+
+What the session already verified, so it does not need re-doing: a real SIGINT to a real `mp` process exits 130 with exactly `mp <cmd>: interrupted` on stderr and no traceback, proved red against the pre-fix shape. What it could **not** verify is that same behaviour when the interrupt lands inside an MLX index build over the real library, which is the only reason this is still open.
+
+1. [owner] `cd <repo>/pipeline && uv run mp ask "budget" --rebuild`. Let the indexing lines climb past a few hundred, then Ctrl-C.
+2. [owner] Read what it printed. Expect exactly one line, `mp ask: interrupted; the index keeps what it finished, so the next run resumes from there`, and **no** `Traceback (most recent call last)` block above it. A traceback here means the interrupt unwound past the handler, which is the whole defect.
+3. [owner] Run the same command **without** `--rebuild` and read the first `indexing` line: `stems_done` should start near where the Ctrl-C landed, not at 0. This is AI11's step 5 unchanged; it is repeated here because the one risk this change carries is having disturbed it.
+4. [session] On a clean pass, archive PIPE13 per the done-done move. On a traceback in step 2, capture the whole block: it names the frame the exception escaped through, and that frame is the fix.

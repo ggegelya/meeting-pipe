@@ -213,6 +213,8 @@ A property that exists under one of these names but with a different type is ski
 
 The CLI is a debugging and owner-dev escape hatch, not something normal use needs (every user-facing command has an in-app home). The installer links the launcher to `~/.local/bin/mp`, so the bare `mp` examples below work once `~/.local/bin` is on your PATH; otherwise call it at `~/.local/share/meeting-pipe/venv/bin/mp`.
 
+**Ctrl-C stops any of them.** An interrupted command prints one line saying what it was doing and exits 130 (the shell's convention for SIGINT), instead of the stack trace it used to dump. Nothing is cleaned up on the way out, deliberately: what an interrupt leaves behind is what the next run picks up from, which is how an interrupted `mp ask` index build resumes where it stopped rather than starting over.
+
 You can run any pipeline stage on its own audio file — useful for debugging or re-publishing a fixed transcript:
 
 ```bash

@@ -348,7 +348,7 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 
 ### Entry point
 
-- `__main__.py` - argv dispatch. Lazy imports per subcommand so `mp --help` and `mp logs` stay fast; the heavier `mlx_lm` / `soundfile` imports are deferred to the subcommands that use them.
+- `__main__.py` - argv dispatch. Lazy imports per subcommand so `mp --help` and `mp logs` stay fast; the heavier `mlx_lm` / `soundfile` imports are deferred to the subcommands that use them. It is also the one place a Ctrl-C is handled (PIPE13): the ladder is wrapped in a single `except KeyboardInterrupt` that prints one stderr line and exits 130, cleaning nothing up, so an interrupted `mp ask` still resumes from its index checkpoint. See [`CONVENTIONS.md`](./CONVENTIONS.md#subcommand-pattern).
 
 ### Subcommands (one module each)
 
