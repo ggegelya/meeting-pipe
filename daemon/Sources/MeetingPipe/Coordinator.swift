@@ -41,6 +41,9 @@ final class Coordinator: NSObject {
     /// Read-only in-app viewer over the JSONL event logs (UX20). No dependencies,
     /// so it self-initializes; reads `Log.logsDir` lazily on show.
     let diagnosticsWindow = DiagnosticsWindow()
+    /// Read-only in-app reader over the bundled `docs/GUIDE.md` (DOC11). Same
+    /// shape as the diagnostics viewer: no dependencies, reads on show.
+    let guideWindow = GuideWindow()
     /// Observable mirror of recording state + processing queue +
     /// model-download progress; the library window reads it, the status
     /// bar writes it.

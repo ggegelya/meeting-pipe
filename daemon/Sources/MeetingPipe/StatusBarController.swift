@@ -584,6 +584,13 @@ final class StatusBarController {
         openDiagnostics.target = coordinator
         menu.addItem(openDiagnostics)
 
+        // DOC11: the in-app user guide. Unconditional, so it is not in
+        // `StatusBarModel.Row`; it sits beside Diagnostics because both are
+        // "explain what is going on" rather than "do something".
+        let openGuide = NSMenuItem(title: "Guide…", action: #selector(Coordinator.menuOpenGuide), keyEquivalent: "")
+        openGuide.target = coordinator
+        menu.addItem(openGuide)
+
         let openRecordings = NSMenuItem(title: "Open Recordings Folder", action: #selector(Coordinator.menuOpenRecordings), keyEquivalent: "")
         openRecordings.target = coordinator
         menu.addItem(openRecordings)

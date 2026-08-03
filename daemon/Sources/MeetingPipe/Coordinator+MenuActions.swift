@@ -20,6 +20,11 @@ extension Coordinator {
         diagnosticsWindow.show()
     }
 
+    /// Open the in-app user guide over the bundled `docs/GUIDE.md` (DOC11).
+    @objc func menuOpenGuide() {
+        guideWindow.show()
+    }
+
     @objc func menuOpenRecordings() {
         let dir = liveOutputDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

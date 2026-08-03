@@ -175,6 +175,13 @@ for bundle in "$REPO_ROOT/daemon/.build/release/"*.bundle; do
     [[ -e "$bundle" ]] && cp -R "$bundle" "$APP_BUILD/Contents/MacOS/"
 done
 
+# DOC11: the user guide the menu bar's "Guide…" reads. docs/GUIDE.md is the
+# single copy (it is also what you read on GitHub); this is where it enters the
+# app, so nothing is duplicated into the Swift sources. Missing is non-fatal:
+# the window says so and names this script.
+cp "$REPO_ROOT/docs/GUIDE.md" "$APP_BUILD/Contents/Resources/GUIDE.md" 2>/dev/null \
+    || warn "docs/GUIDE.md not found; the in-app Guide will say so"
+
 # Generate AppIcon.icns. Failure is non-fatal — Spotlight still indexes
 # the .app, just without a custom icon.
 ICON_PATH="$APP_BUILD/Contents/Resources/AppIcon.icns"

@@ -55,6 +55,13 @@ for bundle in "$REPO_ROOT/daemon/.build/release/"*.bundle; do
     ditto "$bundle" "$DEST"
 done
 
+# The user guide the menu bar's "Guide…" reads (DOC11). Refreshed here as well
+# as in install.sh, so editing docs/GUIDE.md and rebuilding shows the edit.
+if [[ -f "$REPO_ROOT/docs/GUIDE.md" ]]; then
+    mkdir -p "$APP/Contents/Resources"
+    cp "$REPO_ROOT/docs/GUIDE.md" "$APP/Contents/Resources/GUIDE.md"
+fi
+
 # Re-sign with the stable "MeetingPipe Dev" identity (ensure_dev_cert creates
 # it on first run; see scripts/lib/dev-cert.sh). The cert gives an
 # identity-based designated requirement that does NOT pin the cdhash, so the

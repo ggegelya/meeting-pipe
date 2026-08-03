@@ -28,7 +28,7 @@ cd meeting-pipe
 ./scripts/install.sh
 ```
 
-Then `⌃⌥M` to record manually, or join any meeting and answer the prompt. Detailed install steps, requirements, and the configuration reference live below. **If you would rather be walked through it**, including the prerequisites the three lines above assume you already have, [`docs/SETUP.md`](./docs/SETUP.md) is the clean-Mac-to-first-summary guide. The design rationale is in [Why it is shaped this way](#why-it-is-shaped-this-way) and the [ADRs](./docs/decisions/).
+Then `⌃⌥M` to record manually, or join any meeting and answer the prompt. Detailed install steps, requirements, and the configuration reference live below. **If you would rather be walked through it**, including the prerequisites the three lines above assume you already have, [`docs/SETUP.md`](./docs/SETUP.md) is the clean-Mac-to-first-summary guide, and [`docs/GUIDE.md`](./docs/GUIDE.md) picks up where that one stops with task-oriented recipes for actually using the app (it is also in the menu bar, under **Guide…**). The design rationale is in [Why it is shaped this way](#why-it-is-shaped-this-way) and the [ADRs](./docs/decisions/).
 
 ---
 
@@ -74,7 +74,7 @@ Until then the `meetingpipe://` URL scheme above is the supported automation sur
 
 For meetings longer than ~1 hour on a cloud backend, the pipeline writes the transcript to disk along with a paste-into-Claude-Code bundle and **does not call the Anthropic API**; on a local backend it summarizes them on-device at no cost instead. See "Long meetings" below.
 
-The on-screen prompt also has a **Record (BYO)** button: same flow, but opt-in per-meeting - useful for sensitive calls or when you'd rather hand-summarise. After the recording finishes, the meeting's Summary tab shows a **Paste your summary** box: drop your text in, hit **Save & publish**, and it fans out to your configured sinks. (`mp publish-from-paste <stem>.md` does the same thing from a shell, reading `<stem>.summary.md` off disk.)
+The on-screen prompt also offers **Record (BYO)**, under the chevron beside Record along with the other secondary actions: same flow, but opt-in per-meeting - useful for sensitive calls or when you'd rather hand-summarise. After the recording finishes, the meeting's Summary tab shows a **Paste your summary** box: drop your text in, hit **Save & publish**, and it fans out to your configured sinks. (`mp publish-from-paste <stem>.md` does the same thing from a shell, reading `<stem>.summary.md` off disk.)
 
 When the workflow about to record has met before, the prompt grows a quiet **Last time** button (CAL2). Click it and the panel expands in place to show the previous meeting in that workflow: its title, how long ago it was, the first few points of its summary, and the actions it left open. Nothing pops up and nothing takes focus; the button only appears when there is something to show, and switching workflows from the chip re-reads the card for the one you picked. The panel only grows so far: a long recap is capped and scrolls inside the card rather than pushing the prompt down over the meeting window, so an expanded prompt stays under ~190pt however much the last meeting left behind. Summary points and actions wrap to complete sentences rather than truncating (UX47), and when more of the card sits below the viewport its bottom edge fades out; scroll to reveal the rest, and the fade lifts at the bottom so the last row reads complete. Clicking **Last time** again collapses it back to the bare pill. `mp prep <workflow>` prints the same card in a shell.
 
@@ -94,6 +94,21 @@ The README covers how to use the app; this section covers the load-bearing desig
 Non-goals, by design: video capture, a live in-call transcript, multi-user sharing, cross-platform, and a mobile companion.
 
 The subsystem map and sequence diagrams are in [ARCHITECTURE.md](./ARCHITECTURE.md); the event-log and sidecar schemas are in [CONVENTIONS.md](./CONVENTIONS.md).
+
+---
+
+## Documentation
+
+Four documents, each with one job. All four are maintained as first-class surfaces: **a change to user-visible behaviour or surfaces updates the ones it touches in the same commit**, so none of them is allowed to drift into a stale description of an older build.
+
+| Document | What it is for |
+| --- | --- |
+| This README | The reference. Every surface, every setting, every failure mode, written beside the code. |
+| [`docs/SETUP.md`](./docs/SETUP.md) | The clean-Mac-to-first-summary walkthrough, for someone with no programming background. It stops once the first summary lands. |
+| [`docs/GUIDE.md`](./docs/GUIDE.md) | The how-do-I guide: task-oriented recipes for using what you installed (recording modes, workflows, vocabulary, voices, finding things, Ask, the weekly rhythm, backups, hotkeys, troubleshooting), plus a plain-language glossary. Also readable in the app, from the menu bar's **Guide…**. |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) + [CONVENTIONS.md](./CONVENTIONS.md) | For working on the code: the subsystem map, and the patterns and schemas to match. |
+
+The long-form *why* behind a design decision is in the [ADRs](./docs/decisions/).
 
 ---
 
