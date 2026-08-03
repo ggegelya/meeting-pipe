@@ -96,7 +96,7 @@ final class RenderedViewSmokeTests: XCTestCase {
     }
 
     private func detailView(backend: String?, modelId: String? = nil) -> MeetingDetailView {
-        MeetingDetailView(meeting: Meeting(
+        MeetingDetailView(store: MeetingStore(recordingsDir: URL(fileURLWithPath: "/tmp")), meeting: Meeting(
             stem: "s", startedAt: Date(),
             audioURL: URL(fileURLWithPath: "/tmp/s.wav"),
             recordingsDir: URL(fileURLWithPath: "/tmp"),

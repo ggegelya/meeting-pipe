@@ -1055,7 +1055,10 @@ struct LibraryRootView: View {
         } else if selected.count > 1 {
             BatchActionsPane(meetings: selected, libraryModel: model)
         } else if let only = selected.first {
-            MeetingDetailView(meeting: only)
+            // UX53: the store is handed down the way it already is to the two
+            // reading tabs, so the header's publish-target buttons re-read when a
+            // republish lands rather than waiting for a tab switch.
+            MeetingDetailView(store: model.meetingStore, meeting: only)
         } else if case .workflow(let id) = scope, let wf = store.workflow(id: id) {
             WorkflowInspector(
                 presentation: WorkflowInspectorPresentation.make(

@@ -4,12 +4,23 @@ import SwiftUI
 /// Right-pane detail view: editable header + three tabs (Summary TECH-A5, Transcript A6, Audio A7). Corrections (A8) is a sheet off the "..." menu and Raw files (A9) was dropped in the DSN2 IA pass.
 struct MeetingDetailView: View {
     @EnvironmentObject var libraryModel: LibraryWindowModel
+    /// UX53: observed for the same reason `SummaryTab` and `TranscriptTab` observe
+    /// it. The header's two Open buttons are the one thing in this pane read off
+    /// disk rather than off `Meeting`, so without a subscription here a finished
+    /// republish refreshed the publish-state line (rebuilt by the scan) and left
+    /// the buttons beside it a run behind. Reaching through
+    /// `libraryModel.meetingStore` reads the value without subscribing to it.
+    @ObservedObject var store: MeetingStore
     let meeting: Meeting
 
     /// Loaded off-main via `.task(id:)`. Caching avoids `Data(contentsOf:)` on the main thread on every observable change, which beach-balled the UI during recording.
     @State var cachedNotionURL: URL? = nil
     @State var cachedObsidianURL: URL? = nil
     @State var publishURLsLoadedForStem: String? = nil
+    /// Sidecar modification dates the cached URLs were read from (UX53), so a store
+    /// revision bump caused by another meeting's write costs two `stat` calls
+    /// instead of two JSON parses.
+    @State var loadedPublishFingerprint: [Date?]? = nil
 
     /// Persisted so reopening the window keeps the user's tab. A stem-keyed default would be over-engineered for a personal product.
     @AppStorage("MeetingDetailSelectedTab") var selectedTab: String = Tab.summary.rawValue
@@ -76,7 +87,9 @@ struct MeetingDetailView: View {
         }
         .onChange(of: libraryModel.pendingTranscriptJump) { _, _ in consumeTranscriptJump() }
         .onChange(of: meeting.displayTitle) { _, _ in syncEditingTitle(force: false) }
-        .task(id: meeting.stem) { await reloadPublishURLs() }
+        .task(id: PublishURLsReloadKey(stem: meeting.stem, revision: store.revision)) {
+            await reloadPublishURLs()
+        }
         .sheet(isPresented: $showCorrectionsSheet) { correctionsSheet }
     }
 
@@ -232,11 +245,29 @@ struct MeetingDetailView: View {
 
     // MARK: Publish-target URLs
 
+    /// Identity for the publish-URL reload task (UX53): re-read when the stem
+    /// changes OR when the store re-scanned, so a republish that just wrote
+    /// `<stem>.notion.json` puts the Open button on the header the reader is
+    /// already looking at. Keyed on the stem alone it never re-ran, and the
+    /// publish-state line beside it did refresh (the scan rebuilds `Meeting`), so
+    /// the header said "published" while offering nothing to open. Same shape as
+    /// `SummaryTab.SummaryReloadKey` and `TranscriptTab.TranscriptReloadKey`; the
+    /// fingerprint guard in `reloadPublishURLs` makes an unrelated rescan a no-op.
+    private struct PublishURLsReloadKey: Equatable {
+        let stem: String
+        let revision: Int
+    }
+
     @MainActor
     private func reloadPublishURLs() async {
         let stem = meeting.stem
-        let notionPath = meeting.recordingsDir.appendingPathComponent("\(stem).notion.json")
-        let obsidianPath = meeting.recordingsDir.appendingPathComponent("\(stem).obsidian.json")
+        let dir = meeting.recordingsDir
+        let fingerprint = PublishURLs.fingerprint(stem: stem, in: dir)
+        // Already showing this stem's sidecars as they are on disk, so a revision
+        // bump from another meeting's write changes nothing and must not re-parse.
+        if publishURLsLoadedForStem == stem, loadedPublishFingerprint == fingerprint { return }
+        let notionPath = PublishURLs.notionPath(stem: stem, in: dir)
+        let obsidianPath = PublishURLs.obsidianPath(stem: stem, in: dir)
 
         let (notion, obsidian) = await Task.detached(priority: .userInitiated) {
             (PublishURLs.notion(at: notionPath), PublishURLs.obsidian(at: obsidianPath))
@@ -246,12 +277,37 @@ struct MeetingDetailView: View {
             cachedNotionURL = notion
             cachedObsidianURL = obsidian
             publishURLsLoadedForStem = stem
+            loadedPublishFingerprint = fingerprint
         }
     }
 }
 
 /// Publish-target sidecar parsers. Kept outside the View so they aren't inferred as main-actor-isolated; the loader calls them from a detached Task.
 enum PublishURLs {
+    static func notionPath(stem: String, in directory: URL) -> URL {
+        directory.appendingPathComponent("\(stem).notion.json")
+    }
+
+    static func obsidianPath(stem: String, in directory: URL) -> URL {
+        directory.appendingPathComponent("\(stem).obsidian.json")
+    }
+
+    /// Modification dates of every sidecar the header's Open buttons are built
+    /// from (UX53), in a fixed order, absent entries included as nil.
+    ///
+    /// Both of them, not one: the two buttons are independent, a workflow can
+    /// publish to either sink or to both, and a guard watching only the Notion
+    /// sidecar would skip the reload for an Obsidian-only publish, which is the
+    /// stale button this task exists to remove. `<stem>.publish.json` is
+    /// deliberately absent: nothing here reads it, and the state it carries is on
+    /// `Meeting`, which the same scan rebuilds.
+    static func fingerprint(stem: String, in directory: URL) -> [Date?] {
+        [notionPath(stem: stem, in: directory), obsidianPath(stem: stem, in: directory)].map { url in
+            (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate
+        }
+    }
+
     static func notion(at path: URL) -> URL? {
         guard let data = try? Data(contentsOf: path),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
