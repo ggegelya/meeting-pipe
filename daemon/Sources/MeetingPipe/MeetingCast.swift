@@ -118,4 +118,97 @@ enum MeetingCast {
         )
         return cast.filter { !$0.isUnattributed && $0.displayName != current }
     }
+
+    /// The speaker one transcript row belongs to, and what its menu may do about them
+    /// (UX57).
+    ///
+    /// A line carries two identities, and the row used to read a different one for each
+    /// job: its **name** resolved through the overlay, while its **menu** and its
+    /// enrollment gate read the raw diarization label, which a per-line reassignment
+    /// never changes by design (FEAT3-SEGMENT leaves `<stem>.json` alone so every naming
+    /// stays reversible). A line moved off Sudip onto Unknown E therefore read
+    /// "Unknown E" and still offered Rename for **Sudip**, and taking that offer would
+    /// have re-enrolled Sudip's voiceprint under the typed name and renamed Sudip on
+    /// every other line of the meeting: a silent wrong-target write into the roster, not
+    /// a display defect.
+    ///
+    /// So this is the row's one identity read, and each action carries the label it
+    /// writes to rather than leaving the call site to pick one.
+    struct RowSpeaker: Equatable {
+        /// The label every action here targets, and the identity this row has: the
+        /// per-segment reassignment when the line carries one, else the raw diarization
+        /// label. Never the cluster a reassigned line came from. `nil` for a line the
+        /// diarizer gave no speaker at all.
+        let label: String?
+        /// The in-app name for `label` (`overlay.labels[label]`), or nil when the label
+        /// renders itself. This is the "old name" a rename or an un-name hands
+        /// `MeetingLibraryService`.
+        let assignedName: String?
+        /// What the row's speaker menu offers, in order. Empty means no speaker item at
+        /// all, which is a real answer: a per-segment "New person" has no whole-voice
+        /// name to change and no voiceprint to enroll.
+        let actions: [Action]
+
+        /// What the row shows. Same resolution `members` groups the cast by
+        /// (`overlay.labels[base] ?? base`, through `TranscriptDisplay`), so the row and
+        /// the cast strip cannot disagree about who a line belongs to.
+        var displayName: String {
+            TranscriptDisplay.displayName(for: assignedName ?? label)
+        }
+
+        /// One item in the row's speaker menu, carrying the label it writes to so the
+        /// view cannot reach past it for a different one.
+        enum Action: Hashable {
+            /// FEAT3-ROSTER: enroll this voice into the roster under a name.
+            case name(label: String)
+            /// FEAT3-UNDO: re-enroll under a new name and forget the old one.
+            case rename(label: String, currentName: String)
+            /// FEAT3-UNDO: drop the overlay entry and un-enroll the voice.
+            case unname(label: String, currentName: String)
+        }
+    }
+
+    /// Resolve one row's speaker, and what its menu offers against that speaker.
+    ///
+    /// Each gate is the one the service behind the action already enforces, and they
+    /// match `VoiceResolutionBar.actions(for:)` so a row and a cast chip never disagree
+    /// about the same person:
+    ///
+    /// - a name in the overlay's `labels` map is a whole-cluster naming, so it is
+    ///   renameable and un-nameable;
+    /// - an unnamed cluster with a voiceprint can be enrolled. `isUnnamedCluster` keeps
+    ///   an already-named person (a baked `Heorhii`, a roster match `Rana`) out of the
+    ///   enroll flow, and the voiceprint gate keeps `mp roster enroll` off a label with
+    ///   no embedding, which used to exit 2;
+    /// - a per-segment "New person" name (FEAT3-SEGMENT) is neither: no `labels` entry
+    ///   holds it, so an un-name would drop nothing and the row would not move, and it
+    ///   has no embedding to enroll. The way back for that line is "Reset to original
+    ///   label", which the assign menu offers already.
+    static func rowSpeaker(
+        for segment: TranscriptSegment,
+        overlay: SpeakerLabelStore.Overlay,
+        voiceprintLabels: Set<String>
+    ) -> RowSpeaker {
+        // The same base `SpeakerLabelStore.displayLabel` resolves from, kept unresolved
+        // because the cluster-name table is keyed on it: it is what an action writes.
+        guard let label = overlay.segments[segment.index] ?? segment.speakerID else {
+            return RowSpeaker(label: nil, assignedName: nil, actions: [])
+        }
+        if let name = overlay.labels[label] {
+            return RowSpeaker(
+                label: label,
+                assignedName: name,
+                actions: [
+                    .rename(label: label, currentName: name),
+                    .unname(label: label, currentName: name),
+                ]
+            )
+        }
+        let enrollable = voiceprintLabels.contains(label) && isUnnamedCluster(label)
+        return RowSpeaker(
+            label: label,
+            assignedName: nil,
+            actions: enrollable ? [.name(label: label)] : []
+        )
+    }
 }

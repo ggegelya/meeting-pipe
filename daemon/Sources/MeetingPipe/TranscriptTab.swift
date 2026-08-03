@@ -831,11 +831,13 @@ private struct TranscriptList: View {
     let onEdit: (TranscriptSegment) -> Void
     /// Called on "Clarify a word…" (FEAT13); the host owns sheet presentation.
     let onClarify: (TranscriptSegment) -> Void
-    /// Called on "Name this speaker" (FEAT3-ROSTER) with the raw speaker label.
+    /// Called on "Name this speaker" (FEAT3-ROSTER) with the label the row resolves to.
+    /// That is the raw diarization label only when the line was never reassigned; on a
+    /// reassigned line it is the label the line was moved *to* (UX57).
     let onName: (String) -> Void
-    /// Called on "Rename…" (FEAT3-UNDO) with the raw label and its current name.
+    /// Called on "Rename…" (FEAT3-UNDO) with the row's label and its current name.
     let onRename: (String, String) -> Void
-    /// Called on "Undo naming" (FEAT3-UNDO) with the raw label and its current name.
+    /// Called on "Undo naming" (FEAT3-UNDO) with the row's label and its current name.
     let onUndoName: (String, String) -> Void
     /// Called on "Assign to <existing speaker>" (FEAT3-SEGMENT) with the target segment indices and the destination label.
     let onReassign: ([Int], String) -> Void
@@ -881,14 +883,15 @@ private struct TranscriptList: View {
                         }
                         TranscriptRow(
                             segment: seg,
-                            overlay: overlay,
-                            // Enrollment is offered only for a voice that is both
-                            // still anonymous and has a voiceprint to enroll. A baked
-                            // name (Heorhii) or a roster match (Rana) is already a
-                            // person, so "Name this speaker" would be nonsense there.
-                            canEnroll: seg.speakerID.map {
-                                voiceprintLabels.contains($0) && MeetingCast.isUnnamedCluster($0)
-                            } ?? false,
+                            // UX57: one identity read per row. The name it shows, the
+                            // items its menu offers, and the label those items write to
+                            // all come from this single value, so a reassigned line can
+                            // no longer act on the cluster it was moved away from.
+                            speaker: MeetingCast.rowSpeaker(
+                                for: seg,
+                                overlay: overlay,
+                                voiceprintLabels: voiceprintLabels
+                            ),
                             isActive: seg.index == activeIndex,
                             isSelected: selection.contains(seg.index),
                             isCited: seg.index == citedIndex,
@@ -1031,14 +1034,12 @@ private struct MarkerChipsRow: View {
 
 private struct TranscriptRow: View {
     let segment: TranscriptSegment
-    /// Reversible speaker-label overrides (FEAT3-UNDO); resolved for display + menu.
-    let overlay: SpeakerLabelStore.Overlay
-    /// True when this segment's voice is still anonymous AND has a voiceprint, i.e.
-    /// the roster can enroll it (FEAT3-ROSTER). Only then is "Name this speaker..."
-    /// offered; everything else uses per-line assignment, so a voiceprint-less
-    /// `speaker_unknown` no longer hard-fails on enroll and an already-named voice is
-    /// not offered up for enrollment.
-    let canEnroll: Bool
+    /// Who this line belongs to *now*, resolved once through the speaker overlay
+    /// (UX57): the name to show, the menu items this row licenses, and the label each
+    /// of those items writes to. The row holds no second identity to read, which is the
+    /// point: it used to render the overlay's answer and act on the raw diarization
+    /// label, so a reassigned line offered to rename the person it had been moved off.
+    let speaker: MeetingCast.RowSpeaker
     let isActive: Bool
     /// Selected for a multi-segment reassignment (FEAT3-SEGMENT).
     let isSelected: Bool
@@ -1068,18 +1069,6 @@ private struct TranscriptRow: View {
     /// discoverable without the right-click menu (TECH-UX12).
     @State private var isHovered = false
 
-    /// The name shown for this speaker, resolved through the overlay so an in-app
-    /// naming appears without rewriting `<stem>.json`.
-    private var displayName: String {
-        TranscriptDisplay.displayName(for: SpeakerLabelStore.displayLabel(for: segment, using: overlay))
-    }
-
-    /// The whole-cluster name assigned in-app (FEAT3-UNDO), or nil. Drives the menu:
-    /// a named cluster offers rename/undo, an unnamed nameable one offers naming.
-    private var clusterName: String? {
-        segment.speakerID.flatMap { overlay.labels[$0] }
-    }
-
     var body: some View {
         Button(action: { onSelect(Self.classifyClick()) }) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -1089,7 +1078,7 @@ private struct TranscriptRow: View {
                     .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] }
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
-                        Text(displayName)
+                        Text(speaker.displayName)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(TranscriptDisplay.color(for: segment.speakerID))
                         Text(TranscriptDisplay.timestamp(segment.start))
@@ -1158,20 +1147,32 @@ private struct TranscriptRow: View {
             // (measured 2026-08-04, extending UX48's probe). The full reasoning, and the
             // pasteboard hack that was rejected, are in `docs/backlog/tasks/FEAT13.md`.
             Button("Clarify a word…", action: onClarify)
-            if let raw = segment.speakerID {
-                if let name = clusterName {
-                    // FEAT3-UNDO: an in-app-named cluster is reversible.
-                    Button("Rename…") { onRename(raw, name) }
-                    Button("Undo naming", role: .destructive) { onUndoName(raw, name) }
-                } else if canEnroll {
-                    // FEAT3-ROSTER: only an anonymous voice with a voiceprint can be
-                    // enrolled. A voiceprint-less line (speaker_unknown, an unclustered
-                    // id) uses the per-line assign menu below instead, which never
-                    // touches the roster and so cannot fail on a missing embedding.
-                    Button("Name this speaker…") { onName(raw) }
-                }
-            }
+            speakerItems
             assignMenu
+        }
+    }
+
+    /// The speaker items, rendered straight off the pure rule rather than re-deciding
+    /// per case here (the `VoiceResolutionBar.menu` idiom), so what ships is exactly
+    /// what `MeetingCast.rowSpeaker` says and the tests pin. Each action carries its own
+    /// target label, which is what makes the old wrong-target write unreachable from
+    /// here: there is no raw label in scope to hand a callback by mistake.
+    @ViewBuilder
+    private var speakerItems: some View {
+        ForEach(speaker.actions, id: \.self) { action in
+            switch action {
+            case .name(let label):
+                // FEAT3-ROSTER: only an anonymous voice with a voiceprint can be
+                // enrolled. A voiceprint-less line (speaker_unknown, an unclustered id,
+                // a per-segment "New person") uses the assign menu below instead, which
+                // never touches the roster and so cannot fail on a missing embedding.
+                Button("Name this speaker…") { onName(label) }
+            case .rename(let label, let currentName):
+                // FEAT3-UNDO: an in-app-named cluster is reversible.
+                Button("Rename…") { onRename(label, currentName) }
+            case .unname(let label, let currentName):
+                Button("Undo naming", role: .destructive) { onUndoName(label, currentName) }
+            }
         }
     }
 

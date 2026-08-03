@@ -180,7 +180,7 @@ Your own on-disk transcript is never altered by any of this. Names are kept alon
 
 ### Fixing a wrongly attributed line
 
-When two people were merged into one voice, or a line landed on the wrong person, right-click that line and pick **Assign to…**. You can pick anyone already in the meeting, or **New person…** to type a name for someone who was never separated out (a latecomer with two lines, say). Someone you introduce this way joins the meeting's cast, so later lines can go to them without retyping. Cmd-click or Shift-click to select a run of lines and assign them together, and **Reset to original label** undoes it.
+When two people were merged into one voice, or a line landed on the wrong person, right-click that line and pick **Assign to…**. You can pick anyone already in the meeting, or **New person…** to type a name for someone who was never separated out (a latecomer with two lines, say). Someone you introduce this way joins the meeting's cast, so later lines can go to them without retyping. Cmd-click or Shift-click to select a run of lines and assign them together, and **Reset to original label** undoes it. A line you have moved belongs to whoever it now shows, so right-clicking it again offers to name that person, never the one it came from.
 
 This changes labels only. It does not teach the app a new voice, so your saved voices are untouched.
 
