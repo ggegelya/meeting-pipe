@@ -189,15 +189,20 @@ enum TranscriptDisplay {
         return id
     }
 
-    /// Stable tint per speaker so list reordering doesn't reshuffle colors.
-    static func color(for speakerID: String?) -> Color {
-        guard let id = speakerID, !id.isEmpty else { return Color(MPColors.fgMuted) }
-        let palette: [Color] = MPColors.speakerPalette.map { Color(nsColor: $0) }
-        if id.hasPrefix("speaker_"),
-           let n = Int(id.dropFirst("speaker_".count)) {
-            return palette[n % palette.count]
-        }
-        return palette[abs(id.hashValue) % palette.count]
+    /// The tint for one speaker: their slot in the meeting's cast, from
+    /// `MeetingCast.colorIndex`, wrapped over the palette (UX58).
+    ///
+    /// Stable per speaker across launches, and distinct per person while the cast is at
+    /// or under the palette's eight, neither of which the hash-of-the-raw-label rule
+    /// before it managed. The doc comment it replaced promised stability and delivered
+    /// it only within one process. `nil` is the muted tint: a line with no speaker, or a
+    /// name that is nobody in this meeting's cast.
+    static func color(atCastIndex index: Int?) -> Color {
+        // No `abs` here on purpose: the old rule's `abs(id.hashValue)` traps on
+        // `Int.min`, and a cast position needs no rescuing to begin with.
+        guard let index, index >= 0 else { return Color(MPColors.fgMuted) }
+        let palette = MPColors.speakerPalette
+        return Color(nsColor: palette[index % palette.count])
     }
 
     /// `mm:ss` / `h:mm:ss` - matches the Library row duration format.
@@ -361,8 +366,16 @@ struct TranscriptTab: View {
                 vocabularyOffer = offer
             }
         }) { seg in
+            // The sheet is a magnified copy of one row, so it reads that row's identity
+            // (UX57) and its cast slot (UX58) rather than the raw diarization label,
+            // which a reassignment never moves.
+            let speaker = MeetingCast.rowSpeaker(
+                for: seg, overlay: speakerOverlay, voiceprintLabels: voiceprintLabels
+            )
             TranscriptLineEditor(
                 segment: seg,
+                speakerName: speaker.displayName,
+                colorIndex: MeetingCast.colorIndex(for: speaker, in: cast),
                 onSave: { newText in
                     saveCorrection(for: seg, newText: newText)
                     editingSegment = nil
@@ -536,10 +549,14 @@ struct TranscriptTab: View {
                 onSeekHandled: { pendingSeek = nil },
                 onEdit: { seg in editingSegment = seg },
                 onClarify: { seg in
+                    let speaker = MeetingCast.rowSpeaker(
+                        for: seg, overlay: speakerOverlay, voiceprintLabels: voiceprintLabels
+                    )
                     clarifyTarget = ClarifyTarget(
                         segmentIndex: seg.index,
                         line: seg.text,
-                        speakerID: seg.speakerID,
+                        speakerName: speaker.displayName,
+                        speakerColorIndex: MeetingCast.colorIndex(for: speaker, in: cast),
                         start: seg.start,
                         workflowName: meeting.workflowName
                     )
@@ -878,20 +895,25 @@ private struct TranscriptList: View {
                         .padding(.top, language == nil ? 12 : 2)
                         .padding(.bottom, 4)
                     ForEach(segments) { seg in
+                        // UX57: one identity read per row. The name it shows, the items
+                        // its menu offers, and the label those items write to all come
+                        // from this single value, so a reassigned line can no longer act
+                        // on the cluster it was moved away from. UX58 keyed the row's
+                        // colour on the same value, which is why it is bound here rather
+                        // than passed inline: the dot, the name, and the menu are one
+                        // answer to "who is this line", not three.
+                        let speaker = MeetingCast.rowSpeaker(
+                            for: seg,
+                            overlay: overlay,
+                            voiceprintLabels: voiceprintLabels
+                        )
                         if let times = markerMap[seg.index] {
                             MarkerChipsRow(times: times, onSeek: { playback.playFrom($0) })
                         }
                         TranscriptRow(
                             segment: seg,
-                            // UX57: one identity read per row. The name it shows, the
-                            // items its menu offers, and the label those items write to
-                            // all come from this single value, so a reassigned line can
-                            // no longer act on the cluster it was moved away from.
-                            speaker: MeetingCast.rowSpeaker(
-                                for: seg,
-                                overlay: overlay,
-                                voiceprintLabels: voiceprintLabels
-                            ),
+                            speaker: speaker,
+                            colorIndex: MeetingCast.colorIndex(for: speaker, in: cast),
                             isActive: seg.index == activeIndex,
                             isSelected: selection.contains(seg.index),
                             isCited: seg.index == citedIndex,
@@ -1040,6 +1062,10 @@ private struct TranscriptRow: View {
     /// point: it used to render the overlay's answer and act on the raw diarization
     /// label, so a reassigned line offered to rename the person it had been moved off.
     let speaker: MeetingCast.RowSpeaker
+    /// This speaker's slot in the meeting's cast (UX58), which is what the dot and the
+    /// name are tinted from. Passed in already resolved, off the same `speaker` above,
+    /// so the row cannot colour one person and name another; nil draws muted.
+    let colorIndex: Int?
     let isActive: Bool
     /// Selected for a multi-segment reassignment (FEAT3-SEGMENT).
     let isSelected: Bool
@@ -1073,14 +1099,14 @@ private struct TranscriptRow: View {
         Button(action: { onSelect(Self.classifyClick()) }) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Circle()
-                    .fill(TranscriptDisplay.color(for: segment.speakerID))
+                    .fill(TranscriptDisplay.color(atCastIndex: colorIndex))
                     .frame(width: 8, height: 8)
                     .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] }
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
                         Text(speaker.displayName)
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(TranscriptDisplay.color(for: segment.speakerID))
+                            .foregroundStyle(TranscriptDisplay.color(atCastIndex: colorIndex))
                         Text(TranscriptDisplay.timestamp(segment.start))
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(Color(MPColors.fgSubtle))
@@ -1300,13 +1326,27 @@ private struct SpeakerNamingSheet: View {
 
 private struct TranscriptLineEditor: View {
     let segment: TranscriptSegment
+    /// Who the line shows, and their slot in the meeting's cast: the same two values the
+    /// row under this sheet renders (UX57 / UX58). It used to read `segment.speakerID`
+    /// for both, so the header of a reassigned line named the cluster it had been moved
+    /// off and wore that cluster's colour.
+    let speakerName: String
+    let colorIndex: Int?
     let onSave: (String) -> Void
     let onCancel: () -> Void
 
     @State private var text: String
 
-    init(segment: TranscriptSegment, onSave: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+    init(
+        segment: TranscriptSegment,
+        speakerName: String,
+        colorIndex: Int?,
+        onSave: @escaping (String) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
         self.segment = segment
+        self.speakerName = speakerName
+        self.colorIndex = colorIndex
         self.onSave = onSave
         self.onCancel = onCancel
         _text = State(initialValue: segment.text)
@@ -1315,9 +1355,9 @@ private struct TranscriptLineEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
-                Text(TranscriptDisplay.displayName(for: segment.speakerID))
+                Text(speakerName)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(TranscriptDisplay.color(for: segment.speakerID))
+                    .foregroundStyle(TranscriptDisplay.color(atCastIndex: colorIndex))
                 Text(TranscriptDisplay.timestamp(segment.start))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(Color(MPColors.fgSubtle))

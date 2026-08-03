@@ -178,6 +178,10 @@ Right-click any line from a voice that has not been named and choose **Name this
 
 Your own on-disk transcript is never altered by any of this. Names are kept alongside it, so undo always restores the original.
 
+### The colours on the lines
+
+Every voice in a meeting gets a colour, used for the dot and the name on each of its lines, so you can follow one person down the page without reading the names. Up to eight voices each get their own; past that the colours start repeating. The colour is fixed for that meeting: quit and reopen the app and everyone is the colour they were. It belongs to the meeting rather than to the person, so the same person can be a different colour in a different meeting.
+
 ### Fixing a wrongly attributed line
 
 When two people were merged into one voice, or a line landed on the wrong person, right-click that line and pick **Assign to…**. You can pick anyone already in the meeting, or **New person…** to type a name for someone who was never separated out (a latecomer with two lines, say). Someone you introduce this way joins the meeting's cast, so later lines can go to them without retyping. Cmd-click or Shift-click to select a run of lines and assign them together, and **Reset to original label** undoes it. A line you have moved belongs to whoever it now shows, so right-clicking it again offers to name that person, never the one it came from.

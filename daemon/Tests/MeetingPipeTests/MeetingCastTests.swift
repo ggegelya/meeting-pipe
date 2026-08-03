@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import MeetingPipe
 
@@ -268,6 +269,144 @@ final class MeetingCastTests: XCTestCase {
             MeetingCast.rowSpeaker(for: segments[1], overlay: ov, voiceprintLabels: ["THEM-A"])
                 .actions.isEmpty
         )
+    }
+
+    // MARK: - UX58: the colour follows the person, and holds across launches
+
+    /// One launch's worth of work: build the cast from the meeting's files, then ask for
+    /// every line's colour slot. Declared inputs only, so calling it twice is what a
+    /// relaunch does.
+    private func slots(
+        segments: [TranscriptSegment], overlay ov: SpeakerLabelStore.Overlay
+    ) -> [Int?] {
+        let cast = MeetingCast.members(segments: segments, overlay: ov)
+        return segments.map { segment in
+            let row = MeetingCast.rowSpeaker(for: segment, overlay: ov, voiceprintLabels: [])
+            return MeetingCast.colorIndex(for: row, in: cast)
+        }
+    }
+
+    func test_a_speakers_colour_slot_is_their_position_in_the_cast() {
+        let segments = [
+            seg(0, speaker: "THEM-A"),
+            seg(1, speaker: "THEM-B"),
+            seg(2, speaker: "THEM-A"),
+            seg(3, speaker: "THEM-C"),
+        ]
+        let ov = overlay(labels: ["THEM-B": "Sudip"])
+        let cast = MeetingCast.members(segments: segments, overlay: ov)
+        XCTAssertEqual(cast.map(\.displayName), ["Unknown A", "Sudip", "Unknown C"])
+        // First-appearance order, so the slots are 0, 1, 0, 2. Under the rule this
+        // replaced these were `abs(label.hashValue) % 8`, which is a different set of
+        // numbers in every process the test runs in.
+        XCTAssertEqual(slots(segments: segments, overlay: ov), [0, 1, 0, 2])
+    }
+
+    func test_the_same_meeting_gives_the_same_colours_on_a_second_run() {
+        // The headline defect, and the one the owner could not have reported: Swift
+        // seeds string hashing per process, so the old rule handed every speaker a new
+        // colour on every launch (`THEM-A` measured on slot 3, then 4, then 7 across
+        // three processes on 2026-08-03).
+        //
+        // Asserted by computing the mapping twice from freshly built inputs and
+        // comparing, never by hashing anything: a test that hashed would agree with
+        // itself inside one process and prove nothing about the launch-to-launch defect
+        // that motivated this task.
+        func meeting() -> ([TranscriptSegment], SpeakerLabelStore.Overlay) {
+            let segments = [
+                seg(0, speaker: "THEM-A"),
+                seg(1, speaker: "THEM-B"),
+                seg(2, speaker: "Heorhii"),
+                seg(3, speaker: "THEM-C"),
+                seg(4, speaker: "THEM-D"),
+                seg(5, speaker: "THEM-E"),
+            ]
+            return (segments, overlay(labels: ["THEM-C": "Sudip"], segments: [4: "Anisha"]))
+        }
+        let (firstSegments, firstOverlay) = meeting()
+        let (secondSegments, secondOverlay) = meeting()
+        let first = slots(segments: firstSegments, overlay: firstOverlay)
+        let second = slots(segments: secondSegments, overlay: secondOverlay)
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(first, [0, 1, 2, 3, 4, 5], "and it is the cast order both times")
+    }
+
+    func test_no_two_of_six_voices_share_a_colour() {
+        let segments = (0..<6).map { seg($0, speaker: "THEM-\(["A", "B", "C", "D", "E", "F"][$0])") }
+        let ov = overlay(labels: ["THEM-B": "Sudip", "THEM-D": "Rana"])
+        let assigned = slots(segments: segments, overlay: ov).compactMap { $0 }
+        XCTAssertEqual(assigned.count, 6)
+        XCTAssertEqual(
+            Set(assigned).count, 6,
+            "six voices, six colours; the hash rule collided about 92% of the time here"
+        )
+    }
+
+    func test_no_two_of_eight_voices_share_a_colour() {
+        // Eight is the palette size, so this is the last cast that can be collision-free
+        // and the one worth pinning.
+        let letters = ["A", "B", "C", "D", "E", "F", "G", "H"]
+        let segments = (0..<8).map { seg($0, speaker: "THEM-\(letters[$0])") }
+        let assigned = slots(segments: segments, overlay: overlay()).compactMap { $0 }
+        XCTAssertEqual(Set(assigned).count, 8)
+    }
+
+    func test_a_reassigned_line_takes_the_colour_of_the_speaker_it_moved_to() {
+        // The owner's report: "once I assign Sudip, then want to re-assign wrong replica
+        // from Sudip to someone else, color remains on sudip". `segment.speakerID` still
+        // reads THEM-A on line 1 by design, so keying colour on it kept Sudip's hue on a
+        // line that had stopped being hers.
+        let segments = [seg(0, speaker: "THEM-A"), seg(1, speaker: "THEM-A"), seg(2, speaker: "THEM-E")]
+        let before = overlay(labels: ["THEM-A": "Sudip"])
+        XCTAssertEqual(slots(segments: segments, overlay: before), [0, 0, 1])
+
+        let after = overlay(labels: ["THEM-A": "Sudip"], segments: [1: "THEM-E"])
+        let moved = slots(segments: segments, overlay: after)
+        XCTAssertEqual(moved[1], moved[2], "the moved line now wears Unknown E's colour")
+        XCTAssertNotEqual(moved[1], moved[0], "and no longer Sudip's")
+        XCTAssertEqual(moved[0], 0, "Sudip's own lines are untouched")
+    }
+
+    func test_naming_a_voice_leaves_their_colour_where_it_was() {
+        // Naming is the operation the owner performs most, and it must not repaint the
+        // meeting: an overlay name lands on somebody already in the cast rather than
+        // appending a new member, so their position, and their colour, do not move.
+        let segments = [seg(0, speaker: "THEM-A"), seg(1, speaker: "THEM-B"), seg(2, speaker: "THEM-C")]
+        let anonymous = slots(segments: segments, overlay: overlay())
+        let named = slots(segments: segments, overlay: overlay(labels: ["THEM-B": "Sudip"]))
+        XCTAssertEqual(anonymous, named)
+    }
+
+    func test_a_line_with_no_speaker_has_no_colour_slot() {
+        let segments = [seg(0, speaker: nil), seg(1, speaker: "THEM-A")]
+        let ov = overlay()
+        let cast = MeetingCast.members(segments: segments, overlay: ov)
+        let row = MeetingCast.rowSpeaker(for: segments[0], overlay: ov, voiceprintLabels: [])
+        // It renders "Unknown", which is also what an empty `THEM-` would render, so the
+        // nil label is checked rather than the name: a line the diarizer credited to
+        // nobody must not borrow a real cluster's hue.
+        XCTAssertEqual(row.displayName, "Unknown")
+        XCTAssertNil(MeetingCast.colorIndex(for: row, in: cast))
+        XCTAssertNil(MeetingCast.colorIndex(displayName: "somebody else's meeting", in: cast))
+    }
+
+    func test_a_ninth_voice_wraps_onto_the_first_colour() {
+        // Past the palette two people do share a hue. Stated here rather than fixed with
+        // a wider palette: the eight are UX14's contrast-tuned set.
+        let letters = ["A", "B", "C", "D", "E", "F", "G", "H", "I"]
+        let segments = (0..<9).map { seg($0, speaker: "THEM-\(letters[$0])") }
+        let assigned = slots(segments: segments, overlay: overlay())
+        XCTAssertEqual(assigned.last, 8)
+        XCTAssertEqual(
+            TranscriptDisplay.color(atCastIndex: 8), TranscriptDisplay.color(atCastIndex: 0)
+        )
+        XCTAssertNotEqual(
+            TranscriptDisplay.color(atCastIndex: 8), TranscriptDisplay.color(atCastIndex: 1)
+        )
+    }
+
+    func test_a_speaker_with_no_cast_slot_renders_the_muted_tint() {
+        XCTAssertEqual(TranscriptDisplay.color(atCastIndex: nil), Color(MPColors.fgMuted))
     }
 
     // MARK: - The real meeting, as a regression fixture

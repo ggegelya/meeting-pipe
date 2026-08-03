@@ -211,4 +211,47 @@ enum MeetingCast {
             actions: enrollable ? [.name(label: label)] : []
         )
     }
+
+    /// The palette slot for one person in this meeting: their position in the cast
+    /// (UX58). `TranscriptDisplay.color(atCastIndex:)` is the render side.
+    ///
+    /// The rule this replaced keyed the transcript's speaker tint on the raw diarization
+    /// label and picked the slot with `abs(label.hashValue) % 8`, which was wrong three
+    /// ways at once:
+    ///
+    ///   - colour never followed a per-line reassignment, because `segment.speakerID` is
+    ///     exactly what FEAT3-SEGMENT leaves alone (the owner's report: "once I assign
+    ///     Sudip, then want to re-assign wrong replica from Sudip to someone else, color
+    ///     remains on sudip");
+    ///   - Swift seeds string hashing per process and nothing here sets
+    ///     `SWIFT_DETERMINISTIC_HASHING`, so every speaker changed colour on every
+    ///     launch (measured 2026-08-03: `THEM-A` landed on slot 3, then 4, then 7 across
+    ///     three processes);
+    ///   - two people collided about 92% of the time in a 6-voice meeting, which is the
+    ///     one job the dot has.
+    ///
+    /// Position in `members(segments:overlay:)` fixes all three, because that order is a
+    /// pure function of the meeting's own files: first-appearance order over the
+    /// segments, so it is identical on every launch and distinct per person. Naming
+    /// somebody does not move them either, since the rename lands on a member that is
+    /// already in the list rather than appending a new one.
+    ///
+    /// Past the palette's size the slots wrap and two people do share a hue. That is
+    /// accepted rather than fixed: the eight are UX14's contrast-tuned set, and a wider
+    /// palette would trade a legible hue for a rare meeting.
+    ///
+    /// `nil` means "nobody in this cast", which the render side draws muted.
+    static func colorIndex(displayName: String, in cast: [CastMember]) -> Int? {
+        cast.firstIndex { $0.displayName == displayName }
+    }
+
+    /// The palette slot for one transcript row, keyed on the identity the row *shows*
+    /// (`rowSpeaker`'s resolution, UX57) rather than on its raw label, so a reassigned
+    /// line takes its new speaker's colour in the same refresh it takes their name.
+    static func colorIndex(for speaker: RowSpeaker, in cast: [CastMember]) -> Int? {
+        // A line the diarizer gave no speaker at all is nobody, and must not borrow the
+        // slot of a `THEM-` cluster that happens to render "Unknown" too.
+        guard speaker.label != nil else { return nil }
+        return colorIndex(displayName: speaker.displayName, in: cast)
+    }
 }

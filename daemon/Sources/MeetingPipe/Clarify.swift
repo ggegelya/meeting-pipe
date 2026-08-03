@@ -165,7 +165,12 @@ struct ClarifyTarget: Identifiable {
     /// The line as it currently reads, corrections already overlaid. The sheet shows it
     /// and the line path substitutes into it.
     let line: String
-    let speakerID: String?
+    /// Who the line shows and their slot in the meeting's cast, resolved by the row this
+    /// sheet was opened from (UX57's `MeetingCast.rowSpeaker`, UX58's `colorIndex`). It
+    /// carried the raw diarization label until UX58, which named and tinted a reassigned
+    /// line after the person it had been moved away from.
+    let speakerName: String
+    let speakerColorIndex: Int?
     let start: TimeInterval
     /// The meeting's workflow, for the rule path's default scope.
     let workflowName: String?

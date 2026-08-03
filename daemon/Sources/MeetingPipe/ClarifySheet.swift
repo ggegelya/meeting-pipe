@@ -145,9 +145,9 @@ struct ClarifySheet: View {
     private var line: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Text(TranscriptDisplay.displayName(for: target.speakerID))
+                Text(target.speakerName)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(TranscriptDisplay.color(for: target.speakerID))
+                    .foregroundStyle(TranscriptDisplay.color(atCastIndex: target.speakerColorIndex))
                 Text(TranscriptDisplay.timestamp(target.start))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(Color(MPColors.fgSubtle))
