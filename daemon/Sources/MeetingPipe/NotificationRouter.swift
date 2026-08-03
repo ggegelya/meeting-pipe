@@ -39,6 +39,27 @@ enum NotificationRouter {
     static let permIDPrefix = "perm-"
     static let accessibilityStartupID = "perm-accessibility-startup"
 
+    /// The done categories are one per Open phrase since UX49.
+    ///
+    /// A category's action titles are fixed when it is registered, so "Open in
+    /// Notion" and "Open the local note" cannot be the same category: one
+    /// category can only ever carry one phrase, and that is why the action title
+    /// was a hardcoded literal for as long as it was. The neutral landing keeps
+    /// the two original identifiers, so nothing here is renamed and a banner
+    /// already sitting in Notification Center still resolves its buttons.
+    ///
+    /// Returns nil for `.nowhere`: nothing landed, so there is no Open action to
+    /// register a category for, and the caller falls back to the correctable
+    /// local category or a plain banner.
+    static func doneCategory(for landing: PublishLanding, canCorrect: Bool) -> String? {
+        let base = canCorrect ? doneCorrectableCategory : doneCategory
+        switch landing {
+        case .sink(let sink): return "\(base)_\(sink.rawValue.uppercased())"
+        case .unnamed:        return base
+        case .nowhere:        return nil
+        }
+    }
+
     /// The mic-only-recording banner deliberately does NOT use `permIDPrefix`.
     ///
     /// It used to (`perm-stop-<file>`), for all three permission states, and the

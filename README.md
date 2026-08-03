@@ -472,7 +472,7 @@ Per [ADR 0003](./docs/decisions/) nothing here is magic: a `cp -R` of the same f
 When `summarization.backend` is `"local"`, you can grade each published summary so the local model gets better over time. There are two surfaces:
 
 - **Done-meeting notification.** After publish, the banner shows three actions:
-  - **Open in Notion** (when applicable) opens the published page.
+  - **Open …** opens what was published, and names where it went: *Open in Notion*, *Open in Obsidian*, *Open the local note* for the filesystem sink, or a plain *Open summary* when a meeting landed in more than one place at once. It is absent when nothing published (a regulated run with only the Notion sink configured, say), rather than offering a button with nowhere to go.
   - **Looks good** records a verdict-good sample inline; nothing else to do.
   - **Edit summary** opens an editor sheet pre-populated with the summary, where you can fix any field (title, summary bullets, decisions, action items, questions, attendees) and save.
 - **Recent meetings…** in the menu bar lists the last 10 published meetings; pick one to open the same editor sheet. Useful when you dismissed the notification.

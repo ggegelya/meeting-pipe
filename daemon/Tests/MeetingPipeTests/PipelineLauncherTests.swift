@@ -303,6 +303,57 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertNil(PublishResult.load(stem: "m", in: dir))
     }
 
+    /// UX49: `page_url` says what to open, the `sinks` map says who produced it,
+    /// and only the second can name the destination for the user.
+    func test_publish_result_reads_the_per_sink_outcomes() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try writePublishSidecar(#"""
+        {"schema_version":1,"state":"partial","page_url":"file:///pub/m.summary.md",
+         "sinks":{"notion":{"ok":false,"page_url":null,"error":"401"},
+                  "filesystem":{"ok":true,"page_url":"file:///pub/m.summary.md","error":null}}}
+        """#, stem: "m", in: dir)
+
+        let result = try XCTUnwrap(PublishResult.load(stem: "m", in: dir))
+        // Sorted by name, because a JSON object carries no order.
+        XCTAssertEqual(result.sinks.map(\.name), ["filesystem", "notion"])
+        XCTAssertEqual(result.sinks.map(\.ok), [true, false])
+        XCTAssertEqual(result.sinks[0].pageURL?.absoluteString, "file:///pub/m.summary.md")
+        XCTAssertNil(result.sinks[1].pageURL)
+    }
+
+    /// A sidecar from before the `sinks` map existed still loads; it just cannot
+    /// name a destination.
+    func test_publish_result_tolerates_a_missing_sinks_map() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try writePublishSidecar(#"{"schema_version":1,"state":"full","page_url":"https://n.so/p"}"#,
+                                stem: "m", in: dir)
+
+        let result = try XCTUnwrap(PublishResult.load(stem: "m", in: dir))
+        XCTAssertEqual(result.sinks, [])
+        XCTAssertEqual(
+            PublishLanding.decide(publish: result, pageURL: result.pageURL), .unnamed
+        )
+    }
+
+    /// A shape we do not understand must not read as a successful publish: the
+    /// costlier mistake is announcing a sink that never landed.
+    func test_a_sink_entry_with_no_ok_flag_does_not_count_as_landed() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try writePublishSidecar(#"""
+        {"schema_version":1,"state":"full","page_url":"https://n.so/p",
+         "sinks":{"notion":{"page_url":"https://n.so/p"}}}
+        """#, stem: "m", in: dir)
+
+        let result = try XCTUnwrap(PublishResult.load(stem: "m", in: dir))
+        XCTAssertEqual(result.sinks.map(\.ok), [false])
+        XCTAssertEqual(
+            PublishLanding.decide(publish: result, pageURL: result.pageURL), .unnamed
+        )
+    }
+
     func test_publish_result_is_nil_on_malformed_json() throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

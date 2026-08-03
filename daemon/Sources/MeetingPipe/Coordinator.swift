@@ -291,8 +291,9 @@ final class Coordinator: NSObject {
                 // A no-speech / suspect-transcript skip finishes with no summary
                 // and no page. The pipeline wrote <stem>.empty.json; post an
                 // honest terminal notice and skip the completion tone, rather
-                // than the misleading "Local Markdown ready (regulated mode)" the
-                // generic done path posts for a nil page URL (PIPE3 / AUD-16a).
+                // than the generic done path's "Meeting processed / Nothing was
+                // published", which would claim a summary exists (PIPE3 /
+                // AUD-16a).
                 // An empty-skip meeting never produces a summary, so the marker
                 // unambiguously identifies this completion as the skip.
                 if let reason = EmptyMarker.read(stem: stem, in: recordingsDir) {

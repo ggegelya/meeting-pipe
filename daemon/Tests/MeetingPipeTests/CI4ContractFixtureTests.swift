@@ -66,6 +66,45 @@ final class CI4ContractFixtureTests: XCTestCase {
 
             let expectedURL = c["expected_page_url"] as? String
             XCTAssertEqual(result.pageURL?.absoluteString, expectedURL, name)
+
+            // UX49: the per-sink map is read too, since which sink landed is
+            // what the done notification and the detail header name.
+            let expectedSinks = (payload["sinks"] as? [String: Any]) ?? [:]
+            XCTAssertEqual(result.sinks.count, expectedSinks.count, "\(name): sink count")
+            for sink in result.sinks {
+                let raw = try XCTUnwrap(expectedSinks[sink.name] as? [String: Any], "\(name): \(sink.name)")
+                XCTAssertEqual(sink.ok, raw["ok"] as? Bool, "\(name): \(sink.name) ok")
+                XCTAssertEqual(
+                    sink.pageURL?.absoluteString, raw["page_url"] as? String,
+                    "\(name): \(sink.name) page_url"
+                )
+            }
+        }
+    }
+
+    /// UX49: the phrase the user reads is derived from this file, so the
+    /// derivation is pinned against the generated cases rather than only against
+    /// Swift-authored ones. The banner named Notion unconditionally for months
+    /// while the fixture's own local-only case had never been near it.
+    func test_publish_landing_never_names_a_sink_the_run_did_not_land_in() throws {
+        for c in try cases("publish-result-golden") {
+            let name = c["name"] as? String ?? "?"
+            let dir = try tempDir()
+            let payload = try XCTUnwrap(c["payload"] as? [String: Any], name)
+            try JSONSerialization.data(withJSONObject: payload)
+                .write(to: dir.appendingPathComponent("meeting.publish.json"))
+            let result = try XCTUnwrap(PublishResult.load(stem: "meeting", in: dir), name)
+
+            let landing = PublishLanding.decide(publish: result, pageURL: result.pageURL)
+            XCTAssertEqual(landing == .nowhere, result.pageURL == nil, "\(name): openability")
+
+            for sink in PublishSink.allCases
+            where !result.sinks.contains(where: { $0.name == sink.rawValue && $0.ok }) {
+                XCTAssertNotEqual(
+                    landing.openPhrase, sink.openPhrase,
+                    "\(name): named \(sink.rawValue), which did not land"
+                )
+            }
         }
     }
 

@@ -1,4 +1,9 @@
 // Notification - UNUserNotification banner recreation.
+//
+// The done kind's body and action label are one string in the app, and it names
+// the sink that actually published (UX49): "Open in Notion", "Open in Obsidian",
+// "Open the local note", or "Open summary" when more than one landed. The
+// defaults below show the Notion case; pass `body` / `action` for the others.
 const Notification = ({ kind = "done", title, body, action }) => {
   const titleText = title ?? ({
     started: "Recording started",

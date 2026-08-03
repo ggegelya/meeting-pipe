@@ -434,19 +434,24 @@ extension MeetingDetailView {
     }
 
     /// Notion / Obsidian / Reveal-in-Finder ghost icons. Reveal is rightmost since it's the most common action.
+    ///
+    /// The help strings come from `PublishSink`, not from literals here (UX49):
+    /// this header and the done notification both name where a meeting landed,
+    /// and while each spelled it itself the notification said Notion for every
+    /// publish whatever ran.
     @ViewBuilder
     var ghostShortcuts: some View {
         HStack(spacing: 2) {
             if let url = cachedNotionURL {
                 MPGhostIconButton(
                     systemImage: "arrow.up.right.square",
-                    help: "Open in Notion"
+                    help: PublishSink.notion.openPhrase
                 ) { NSWorkspace.shared.open(url) }
             }
             if let url = cachedObsidianURL {
                 MPGhostIconButton(
                     systemImage: "book.closed",
-                    help: "Open in Obsidian"
+                    help: PublishSink.obsidian.openPhrase
                 ) { NSWorkspace.shared.open(url) }
             }
             MPGhostIconButton(

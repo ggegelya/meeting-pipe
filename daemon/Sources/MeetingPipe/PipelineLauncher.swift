@@ -289,10 +289,26 @@ extension PipelineDriver {
 
 /// This run's publish outcome, read from `<stem>.publish.json` (PIPE1). Written fresh by `publish_router.fanout` on every run, so unlike the per-sink sidecars it can never be a leftover from a previous one. Absent whenever the pipeline short-circuited before publish (no speech, BYO, too long, Apple hand-off), which reads as "nothing published, nothing failed".
 struct PublishResult: Equatable {
+    /// One sink this run actually ran, and how it went.
+    struct SinkOutcome: Equatable {
+        /// The `output.sinks` name Python keys the map by (`notion`, `obsidian`, `filesystem`, `lan`). Kept as the raw string rather than a `PublishSink`, so a sink this build has never heard of is still counted rather than dropped.
+        let name: String
+        let ok: Bool
+        let pageURL: URL?
+    }
+
     /// `"full"`, `"partial"`, or `"none"` (every sink failed, or none ran).
     let state: String
     /// The page URL of the first successful sink that produced one. Nil for a local-only workflow, and nil when no page-producing sink succeeded.
     let pageURL: URL?
+    /// Every sink the run ran, sorted by name because a JSON object carries no order. `page_url` says what to open; this says who produced it, which is what `PublishLanding` names for the user (UX49).
+    let sinks: [SinkOutcome]
+
+    init(state: String, pageURL: URL?, sinks: [SinkOutcome] = []) {
+        self.state = state
+        self.pageURL = pageURL
+        self.sinks = sinks
+    }
 
     static func load(stem: String, in dir: URL) -> PublishResult? {
         let url = dir.appendingPathComponent("\(stem).publish.json")
@@ -302,7 +318,18 @@ struct PublishResult: Equatable {
             return nil
         }
         let pageURL = (obj["page_url"] as? String).flatMap(URL.init(string:))
-        return PublishResult(state: state, pageURL: pageURL)
+        let sinks = (obj["sinks"] as? [String: Any] ?? [:])
+            .compactMap { name, raw -> SinkOutcome? in
+                guard let entry = raw as? [String: Any] else { return nil }
+                return SinkOutcome(
+                    name: name,
+                    // A missing `ok` reads as failed: the writer always emits it, so its absence is a shape we do not understand, and claiming a publish landed is the costlier mistake.
+                    ok: entry["ok"] as? Bool ?? false,
+                    pageURL: (entry["page_url"] as? String).flatMap(URL.init(string:))
+                )
+            }
+            .sorted { $0.name < $1.name }
+        return PublishResult(state: state, pageURL: pageURL, sinks: sinks)
     }
 }
 

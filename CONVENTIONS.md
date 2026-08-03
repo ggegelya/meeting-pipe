@@ -360,6 +360,8 @@ This run's publish outcome (PIPE1). A Python-to-Swift surface: `publish_router.f
 
 `state` is `full` (every sink succeeded), `partial` (some did), or `none` (every sink failed, or none ran). `page_url` is the first successful sink that produced one, and null for a local-only workflow.
 
+**`page_url` says what to open; `sinks` says who wrote it.** Swift reads both (`PublishResult.sinks`), because the two questions have different answers and only the map can name a destination for the user: `page_url` is whichever sink came first in `output.sinks` order, so a run that landed in Notion and the filesystem reports one URL and gives no clue which of the two produced it. `PublishLanding.decide` (UX49) is the one reader of that distinction: exactly one sink with `ok: true` is named, more than one is deliberately unnamed ("Open summary"), and a null `page_url` means no open affordance at all rather than a button that cannot open anything. Every local sink returns a `file://` `page_url`, so "has a URL" never meant "went to Notion", which is exactly what the done notification used to say.
+
 The reason this exists rather than the daemon reading the per-sink `<stem>.<sink>.json` sidecars: a publisher that raises never writes its sidecar, so an earlier successful run's `<stem>.notion.json` survives and is indistinguishable from a fresh one. That is how an all-sinks-failed run used to notify "Meeting published" with a stale URL. This file is rewritten on every fanout, so it always describes the run that just finished.
 
 Absent whenever the pipeline short-circuited before publish (no speech, suspect transcript, BYO, long-meeting bundle, Apple hand-off). Absent reads as "nothing published, nothing failed", never as a reason to fall back to a per-sink sidecar.

@@ -50,8 +50,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     // interprets these, and the routing table's test needs them without
     // reaching into this class. Aliased so every `Self.x` call site below reads
     // the same as before.
-    private static let doneCategory = NotificationRouter.doneCategory
-    private static let doneCorrectableCategory = NotificationRouter.doneCorrectableCategory
+    // The two open-capable done categories are composed per Open phrase by
+    // `NotificationRouter.doneCategory(for:canCorrect:)` since UX49, so only the
+    // local one (which carries no Open action) is aliased here.
     private static let doneCorrectableLocalCategory = NotificationRouter.doneCorrectableLocalCategory
     private static let actionOpen = NotificationRouter.actionOpen
     private static let actionLooksGood = NotificationRouter.actionLooksGood
@@ -102,39 +103,49 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         post(title: "Recording stopped", body: "Processing \(file.lastPathComponent)…")
     }
 
-    /// Post the "meeting done" notification. If `stem`+`recordingsDir` are supplied and `<stem>.run.json` exists, surfaces a "Looks good" correction action. Otherwise falls back to legacy behaviour (Open in Notion only, or plain "Local Markdown ready" under regulated mode).
+    /// Post the "meeting done" notification. If `stem`+`recordingsDir` are supplied and `<stem>.run.json` exists, surfaces a "Looks good" correction action.
+    ///
+    /// Every user-facing string here comes from `DoneNotificationCopy`, over the
+    /// sink that actually landed (UX49). It used to name Notion unconditionally,
+    /// in the body and on the action button, so a filesystem publish, the common
+    /// case for this library, announced a sink that never ran and offered to open
+    /// a local Markdown file as if it were a Notion page. The action was always
+    /// correct: it opens `pageURL`, which is whatever published.
     func notifyDone(
         stem: String? = nil,
         recordingsDir: URL? = nil,
         pageURL: URL?
     ) {
         let canCorrect = Self.canCorrect(stem: stem, recordingsDir: recordingsDir)
+        let landing = PublishLanding.decide(
+            publish: Self.publishResult(stem: stem, recordingsDir: recordingsDir),
+            pageURL: pageURL
+        )
+        let copy = DoneNotificationCopy.make(landing: landing, canCorrect: canCorrect)
 
         let content = UNMutableNotificationContent()
         content.sound = .default
+        content.title = copy.title
+        content.body = copy.body
 
         let id = "done-\(UUID().uuidString)"
 
-        if let url = pageURL {
-            content.title = "Meeting published"
-            content.body = canCorrect ? "Open in Notion. How did this summary look?"
-                                      : "Open in Notion"
-            content.categoryIdentifier = canCorrect
-                ? Self.doneCorrectableCategory
-                : Self.doneCategory
+        if let url = pageURL,
+           let category = NotificationRouter.doneCategory(for: landing, canCorrect: canCorrect) {
+            content.categoryIdentifier = category
             doneEntries[id] = DoneEntry(
                 stem: stem ?? "",
                 recordingsDir: recordingsDir ?? URL(fileURLWithPath: "/"),
                 pageURL: url
             )
         } else if canCorrect, let stem = stem, let dir = recordingsDir {
-            content.title = "Meeting processed"
-            content.body = "Local Markdown ready. How did this summary look?"
+            // Nothing landed anywhere, so there is nothing to open; the summary
+            // is still gradeable.
             content.categoryIdentifier = Self.doneCorrectableLocalCategory
             doneEntries[id] = DoneEntry(stem: stem, recordingsDir: dir, pageURL: nil)
         } else {
-            // No corrections, no Notion page: keep the legacy plain banner.
-            post(title: "Meeting processed", body: "Local Markdown ready (regulated mode)")
+            // Nothing to open and nothing to grade: a plain terminal banner.
+            post(title: copy.title, body: copy.body)
             return
         }
 
@@ -144,9 +155,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// A run that finished but intentionally produced no summary: no speech, or a
     /// transcript that looked unreliable (PIPE3 / AUD-16a). An honest, quiet
-    /// terminal banner with no correction action and no Notion, replacing the
-    /// misleading "Local Markdown ready (regulated mode)" the generic done path
-    /// posted for these (the recording was neither regulated nor summarized).
+    /// terminal banner with no correction action and no publish claim, replacing
+    /// the misleading "Local Markdown ready (regulated mode)" the generic done
+    /// path posted for these (the recording was neither regulated nor
+    /// summarized).
     func notifyEmptySkip(reason: EmptyReason) {
         post(title: reason.notificationTitle, body: reason.notificationBody)
     }
@@ -156,6 +168,18 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         guard let stem = stem, let dir = recordingsDir else { return false }
         let runURL = dir.appendingPathComponent("\(stem).run.json")
         return FileManager.default.fileExists(atPath: runURL.path)
+    }
+
+    /// This run's publish outcome, when the caller named a meeting.
+    ///
+    /// The same file `pageURL` was read out of, read again here because *which*
+    /// sink produced that URL is what the copy names, and only the sidecar knows
+    /// (`page_url` alone says what to open, not who wrote it). Nil is a real
+    /// answer: every `run-all` short-circuit stops before publish and writes no
+    /// sidecar at all.
+    private static func publishResult(stem: String?, recordingsDir: URL?) -> PublishResult? {
+        guard let stem = stem, let dir = recordingsDir else { return nil }
+        return PublishResult.load(stem: stem, in: dir)
     }
 
     func notifyError(_ message: String) {
@@ -328,24 +352,33 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     // MARK: Categories
 
     private func registerCategories() {
-        let open = UNNotificationAction(identifier: Self.actionOpen, title: "Open in Notion", options: [.foreground])
         let looksGood = UNNotificationAction(identifier: Self.actionLooksGood, title: "Looks good", options: [])
         let edit = UNNotificationAction(identifier: Self.actionEditSummary, title: "Edit summary", options: [.foreground])
-        // MP_DONE: pre-Phase-2 fallback (Open in Notion only).
-        // MP_DONE_CORRECTABLE: Notion + correction actions.
-        // MP_DONE_CORRECTABLE_LOCAL: regulated/local-only + correction actions.
-        let done = UNNotificationCategory(
-            identifier: Self.doneCategory,
-            actions: [open],
-            intentIdentifiers: [],
-            options: []
-        )
-        let doneCorrectable = UNNotificationCategory(
-            identifier: Self.doneCorrectableCategory,
-            actions: [open, looksGood, edit],
-            intentIdentifiers: [],
-            options: []
-        )
+        // MP_DONE[_<SINK>]: Open only.
+        // MP_DONE_CORRECTABLE[_<SINK>]: Open + correction actions.
+        // MP_DONE_CORRECTABLE_LOCAL: nothing landed, correction actions only.
+        //
+        // One pair per Open phrase (UX49): an action's title is fixed when its
+        // category is registered, so the sink's name can only reach the button
+        // through the category the banner picks. The Open action identifier is
+        // the same in all of them, so `NotificationRouter` still routes on one
+        // string and none of this reaches the response side.
+        let doneCategories: [UNNotificationCategory] = PublishLanding.openable.flatMap {
+            landing -> [UNNotificationCategory] in
+            guard let phrase = landing.openPhrase else { return [] }
+            let open = UNNotificationAction(
+                identifier: Self.actionOpen, title: phrase, options: [.foreground]
+            )
+            return [(false, [open]), (true, [open, looksGood, edit])].compactMap {
+                canCorrect, actions in
+                guard let id = NotificationRouter.doneCategory(
+                    for: landing, canCorrect: canCorrect
+                ) else { return nil }
+                return UNNotificationCategory(
+                    identifier: id, actions: actions, intentIdentifiers: [], options: []
+                )
+            }
+        }
         let doneCorrectableLocal = UNNotificationCategory(
             identifier: Self.doneCorrectableLocalCategory,
             actions: [looksGood, edit],
@@ -386,7 +419,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             options: []
         )
         UNUserNotificationCenter.current().setNotificationCategories(
-            [done, doneCorrectable, doneCorrectableLocal, perm, accessibility, stillMeeting, skipLate]
+            Set(doneCategories + [doneCorrectableLocal, perm, accessibility, stillMeeting, skipLate])
         )
     }
 
