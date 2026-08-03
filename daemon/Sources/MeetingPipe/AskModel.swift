@@ -21,6 +21,16 @@ protocol AskRunning: AnyObject {
         question: String,
         onPhase: @escaping (AskRunPhase) -> Void
     ) async -> Result<AskAnswer, Error>
+    /// As above, buying a wider retrieved pack for this one question (AI12).
+    /// `contextTokens` is `mp ask --context-tokens`, and it always comes from an
+    /// `AskContextWidth` position, so it is never a width the backend and this
+    /// Mac cannot take. Defaulted to the plain form, so a fake with no interest
+    /// in the width implements nothing extra.
+    func askMeetings(
+        question: String,
+        contextTokens: Int,
+        onPhase: @escaping (AskRunPhase) -> Void
+    ) async -> Result<AskAnswer, Error>
     /// Terminate the in-flight `mp ask` subprocess, if any (UX37).
     func cancelAsk()
 }
@@ -31,6 +41,14 @@ extension AskRunning {
         onPhase: @escaping (AskRunPhase) -> Void
     ) async -> Result<AskAnswer, Error> {
         await askMeetings(question: question)
+    }
+
+    func askMeetings(
+        question: String,
+        contextTokens: Int,
+        onPhase: @escaping (AskRunPhase) -> Void
+    ) async -> Result<AskAnswer, Error> {
+        await askMeetings(question: question, onPhase: onPhase)
     }
 }
 
@@ -132,6 +150,18 @@ final class AskModel: ObservableObject {
     /// a half-typed question.
     @Published var question: String = ""
 
+    /// AI12: how wide a pack the next question buys, as an `AskContextWidth`
+    /// position id. Here for the reason `question` is here: the rail switch that
+    /// used to throw away a running answer would otherwise throw away the width
+    /// the user chose for it.
+    ///
+    /// The id rather than the token count, because *which* positions exist
+    /// depends on the backend and this Mac's RAM, and that decision belongs to
+    /// `AskContextWidth`, re-resolved by the surface every time it appears. An
+    /// id nothing pins resolves back to the resting position, so a wide
+    /// selection made on a cloud backend cannot survive a switch to a local one.
+    @Published var contextWidthID: String = AskContextWidth.normal.id
+
     /// The run in flight, or nil when idle.
     @Published private(set) var inFlight: AskInFlight?
 
@@ -229,9 +259,15 @@ final class AskModel: ObservableObject {
         let run = AskInFlight(id: UUID(), question: q, startedAt: Date())
         inFlight = run
         onRunFinished = onFinished
+        // Resolved through the table rather than read as a number, so a stale id
+        // (a width picked before the backend changed) buys the resting width
+        // instead of whatever it used to mean.
+        let tokens = AskContextWidth.position(forID: contextWidthID).tokens
         Task { [weak self] in
             guard let self else { return }
-            let result = await self.runner.askMeetings(question: q) { [weak self] phase in
+            let result = await self.runner.askMeetings(
+                question: q, contextTokens: tokens
+            ) { [weak self] phase in
                 self?.note(phase, for: run.id)
             }
             self.finish(run: run, result: result)

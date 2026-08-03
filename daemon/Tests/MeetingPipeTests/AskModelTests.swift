@@ -15,6 +15,8 @@ final class AskModelTests: XCTestCase {
     /// conformance to `AskRunning`, which makes every read below race-free.
     private final class FakeRunner: AskRunning {
         private(set) var questions: [String] = []
+        /// AI12: the retrieved-context width each spawn was asked at.
+        private(set) var widths: [Int] = []
         private(set) var cancelCalls = 0
         private var parked: [CheckedContinuation<Result<AskAnswer, Error>, Never>] = []
         /// The live run's heartbeat sink (UX38), retained so a test can play a
@@ -32,7 +34,20 @@ final class AskModelTests: XCTestCase {
             question: String,
             onPhase: @escaping (AskRunPhase) -> Void
         ) async -> Result<AskAnswer, Error> {
+            await askMeetings(
+                question: question,
+                contextTokens: AskContextWidth.defaultTokens,
+                onPhase: onPhase
+            )
+        }
+
+        func askMeetings(
+            question: String,
+            contextTokens: Int,
+            onPhase: @escaping (AskRunPhase) -> Void
+        ) async -> Result<AskAnswer, Error> {
             questions.append(question)
+            widths.append(contextTokens)
             phaseSink = onPhase
             return await withCheckedContinuation { parked.append($0) }
         }
@@ -127,6 +142,36 @@ final class AskModelTests: XCTestCase {
         // Trimmed on the way to the subprocess, untouched in the field.
         XCTAssertEqual(runner.questions, ["hiring plan"])
         XCTAssertEqual(model.question, "  hiring plan  ")
+    }
+
+    // MARK: - AI12: the width the question was asked at
+
+    /// The width lives here for the reason the question does: a rail switch
+    /// destroys the view, and the run it started keeps going.
+    func testTheChosenWidthReachesTheRun() async {
+        model.contextWidthID = "widest"
+        model.question = "what did we decide about hiring this quarter?"
+        XCTAssertTrue(model.ask())
+        await pump { runner.isRunning }
+        XCTAssertEqual(runner.widths, [100_000])
+    }
+
+    func testTheRestingWidthIsWhatAnUntouchedControlAsksFor() async {
+        model.question = "anything"
+        XCTAssertTrue(model.ask())
+        await pump { runner.isRunning }
+        XCTAssertEqual(runner.widths, [AskContextWidth.defaultTokens])
+    }
+
+    /// An id nothing pins buys the resting width rather than the last thing that
+    /// id used to mean. The surface re-resolves the selection whenever it
+    /// appears, so this is the belt to that braces.
+    func testAWidthIdNothingPinsBuysTheRestingWidth() async {
+        model.contextWidthID = "__gone"
+        model.question = "anything"
+        XCTAssertTrue(model.ask())
+        await pump { runner.isRunning }
+        XCTAssertEqual(runner.widths, [AskContextWidth.defaultTokens])
     }
 
     func testBlankQuestionNeverSpawns() async {

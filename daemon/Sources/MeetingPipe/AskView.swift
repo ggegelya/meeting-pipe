@@ -75,8 +75,26 @@ struct AskView: View {
         meetingStore.meetings.prefix(20).compactMap(\.workflowName).first
     }
 
+    /// AI12: which widths this backend on this Mac may honestly be asked for.
+    ///
+    /// Re-derived per render rather than stored, and normalized into the model
+    /// on appear, because the backend is a Preferences setting that can change
+    /// under a selection: this view is destroyed and rebuilt on every rail
+    /// switch (the reason `AskModel` exists at all), so coming back to Ask is
+    /// what re-resolves a width the machine can no longer take. The clamp in
+    /// `mp.ask` stays the last line of defence for the window in between.
+    private var widthOffer: AskContextWidth.Offer {
+        AskContextWidth.offer(
+            backendID: model.summarizationBackend,
+            regulatedMode: model.regulatedMode,
+            ramGB: LocalModelTier.physicalRamGB(),
+            selectedID: askModel.contextWidthID
+        )
+    }
+
     var body: some View {
         let pane = self.pane
+        let width = self.widthOffer
         // One VStack across both states, and the input keeps its slot in it, so
         // the dock is a move rather than a swap: the invitation's spacers and
         // header collapse around a control that stays the same view.
@@ -85,9 +103,12 @@ struct AskView: View {
                 Spacer(minLength: 0)
                 invitation(pane)
             }
-            askBar(pane)
-                .frame(maxWidth: pane.isDocked ? .infinity : AskLayout.invitationMeasure)
-                .padding(MPSpace.s3)
+            VStack(alignment: .leading, spacing: MPSpace.s2) {
+                askBar(pane)
+                widthControl(width)
+            }
+            .frame(maxWidth: pane.isDocked ? .infinity : AskLayout.invitationMeasure)
+            .padding(MPSpace.s3)
             if !pane.isDocked {
                 suggestions(pane)
                 Spacer(minLength: 0)
@@ -101,6 +122,14 @@ struct AskView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: MPMotion.durBase), value: pane.layout)
         .onAppear {
             fieldFocused = true
+            // AI12: pull the stored width back to one this backend and this Mac
+            // can take, before anything can be asked at it. A deeplinked
+            // question runs without the user touching the control, so this has
+            // to happen ahead of the consume below rather than on first use.
+            // Guarded because `@Published` fires on every set, equal or not.
+            if askModel.contextWidthID != width.selection.id {
+                askModel.contextWidthID = width.selection.id
+            }
             // AUTO1: a meetingpipe://ask?q=... deeplink may have set the question
             // before this view mounted (the scope switch mounts it).
             consumePendingQuestion()
@@ -200,6 +229,54 @@ struct AskView: View {
                 .strokeBorder(Color(MPColors.borderStrong), lineWidth: 1)
         )
         .opacity(pane.isRunning ? 0.6 : 1)
+    }
+
+    // MARK: - How wide to read (AI12)
+
+    /// The width dial and the two lines that make turning it honest, under the
+    /// input rather than beside it: the cost has to be readable *before* the
+    /// ask, and a caption tucked into the bar would be read as placeholder text.
+    ///
+    /// `SettingsSegmented` rather than a control of its own, for the reason
+    /// `daemon/CLAUDE.md` gives about parallel one-offs, and it is the same
+    /// named-position idiom DIAR3 uses for a knob whose raw number explains
+    /// nothing. It is drawn only when there is a choice to make: on a Mac whose
+    /// tier ceiling leaves one position, the reason line below is the whole
+    /// truth and a one-segment control would be a control that does nothing.
+    @ViewBuilder
+    private func widthControl(_ offer: AskContextWidth.Offer) -> some View {
+        VStack(alignment: .leading, spacing: MPSpace.s1) {
+            if offer.showsPicker {
+                SettingsSegmented(
+                    selection: widthBinding(offer),
+                    options: offer.positions.map { (value: $0.id, label: $0.label) }
+                )
+                .disabled(askModel.isAsking)
+                .accessibilityLabel("How much of your library to read")
+            }
+            Text(offer.sublabel)
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgMuted))
+                .fixedSize(horizontal: false, vertical: true)
+            if let reason = offer.reason {
+                Text(reason)
+                    .font(.mpTextXS)
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Reads the *resolved* selection rather than the stored id, so the control
+    /// can never be handed a tag that is not among its options (SwiftUI renders
+    /// that as nothing selected), and writes the raw id, which the model
+    /// re-resolves on the next appear.
+    private func widthBinding(_ offer: AskContextWidth.Offer) -> Binding<String> {
+        Binding(
+            get: { offer.selection.id },
+            set: { askModel.contextWidthID = $0 }
+        )
     }
 
     // MARK: - The session

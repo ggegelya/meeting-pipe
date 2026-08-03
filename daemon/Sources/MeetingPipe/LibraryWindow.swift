@@ -314,11 +314,19 @@ final class LibraryWindowModel: ObservableObject {
         coordinator?.regulatedMode ?? false
     }
 
+    /// AI12: the configured `summarization.backend` id, read live off the config
+    /// store (the same idiom as `regulatedMode`) so a backend changed in
+    /// Preferences is picked up the next time a surface asks. The Ask width
+    /// control needs the raw id, since which widths it may offer depends on
+    /// where the answer will actually run.
+    var summarizationBackend: String {
+        coordinator?.summarizationBackend ?? "anthropic"
+    }
+
     /// True when the configured backend is on-device (MLX-local or Apple
     /// Intelligence), so the free local re-run preview is offered (TECH-A16).
     var canPreviewLocally: Bool {
-        let backend = coordinator?.summarizationBackend ?? "anthropic"
-        return backend == "local" || backend == "apple_intelligence"
+        summarizationBackend == "local" || summarizationBackend == "apple_intelligence"
     }
 
     /// Re-run summarization into a candidate preview (TECH-A16); never publishes.
@@ -365,8 +373,21 @@ final class LibraryWindowModel: ObservableObject {
         question: String,
         onPhase: @escaping (AskRunPhase) -> Void
     ) async -> Result<AskAnswer, Error> {
+        await askMeetings(
+            question: question, contextTokens: AskContextWidth.defaultTokens, onPhase: onPhase
+        )
+    }
+
+    /// As above, at AI12's chosen retrieved-context width.
+    func askMeetings(
+        question: String,
+        contextTokens: Int,
+        onPhase: @escaping (AskRunPhase) -> Void
+    ) async -> Result<AskAnswer, Error> {
         await bridge { library, done in
-            library.askMeetings(question: question, onPhase: onPhase) { done($0) }
+            library.askMeetings(
+                question: question, contextTokens: contextTokens, onPhase: onPhase
+            ) { done($0) }
         }
     }
 

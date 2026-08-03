@@ -98,8 +98,8 @@ enum LocalModelTier {
         Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0
     }
 
-    /// Whole GB when it is whole, one decimal otherwise, so "16 GB" does not render as "16.0 GB".
-    private static func gb(_ value: Double) -> String {
+    /// Whole GB when it is whole, one decimal otherwise, so "16 GB" does not render as "16.0 GB". Internal rather than private because AI12's Ask width control quotes the same number in its refusal, and two spellings of this Mac's memory is the kind of drift a user reads as a bug.
+    static func gb(_ value: Double) -> String {
         value == value.rounded()
             ? String(Int(value.rounded()))
             : String(format: "%.1f", value)

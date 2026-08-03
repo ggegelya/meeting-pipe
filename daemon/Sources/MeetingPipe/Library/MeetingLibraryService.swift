@@ -456,14 +456,19 @@ final class MeetingLibraryService {
     /// one-shot (AI2 found live synthesis too slow, so the caller shows a spinner).
     /// Errors flow back through `completion` for inline display, not a notification.
     func askMeetings(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
-        askMeetings(question: question, onPhase: nil, completion: completion)
+        askMeetings(question: question, contextTokens: AskContextWidth.defaultTokens,
+                    onPhase: nil, completion: completion)
     }
 
     /// As `askMeetings`, reporting AI11's index heartbeat while the run works
     /// (UX38), which is what lets the Ask pane say how much of the library the
     /// index covers instead of showing an unmoving spinner through a first build.
+    /// `contextTokens` is AI12's chosen width, already resolved against the
+    /// backend and this Mac by `AskContextWidth`; it rides the log line too, so
+    /// the daemon's own events say which width a question was asked at.
     func askMeetings(
         question: String,
+        contextTokens: Int,
         onPhase: ((AskRunPhase) -> Void)?,
         completion: @escaping (Result<AskAnswer, Error>) -> Void
     ) {
@@ -472,8 +477,11 @@ final class MeetingLibraryService {
             completion(.failure(LibraryError.emptyQuestion))
             return
         }
-        Log.event(category: "coordinator", action: "ask_requested", attributes: ["chars": trimmed.count])
-        launcher.ask(question: trimmed, onPhase: onPhase) { result in
+        Log.event(category: "coordinator", action: "ask_requested", attributes: [
+            "chars": trimmed.count,
+            "context_tokens": contextTokens,
+        ])
+        launcher.ask(question: trimmed, contextTokens: contextTokens, onPhase: onPhase) { result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let ans):

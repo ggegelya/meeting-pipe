@@ -226,6 +226,33 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertNil(PipelineLauncher.askPhase(PipelineProgress(stage: "summarize", elapsedSec: 42)))
     }
 
+    // MARK: - AI12: the chosen width reaches the subprocess
+
+    /// The whole point of the control is that the position the user picked is
+    /// what `mp ask` is actually run with. Spawning is the only other way to see
+    /// it, so the argv is pure and this pins it.
+    func test_askArgs_carries_the_chosen_context_width() {
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("a.json")
+        let args = PipelineLauncher.askArgs(
+            question: "what did we decide about hiring?", out: out, contextTokens: 100_000
+        )
+        XCTAssertEqual(args.first, "ask")
+        XCTAssertEqual(args[1], "what did we decide about hiring?")
+        XCTAssertEqual(args.suffix(2), ["--context-tokens", "100000"])
+        XCTAssertTrue(args.contains("--out"))
+    }
+
+    /// The resting position passes exactly what the CLI would have defaulted to
+    /// with no flag at all, which is what makes "an owner who never touches the
+    /// control sees no change" a true statement rather than a hope.
+    func test_the_resting_width_passes_the_cli_default() {
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("a.json")
+        let args = PipelineLauncher.askArgs(
+            question: "q", out: out, contextTokens: AskContextWidth.normal.tokens
+        )
+        XCTAssertEqual(args.suffix(2), ["--context-tokens", "4000"])
+    }
+
     // MARK: - PublishResult (PIPE1)
 
     private func writePublishSidecar(_ json: String, stem: String, in dir: URL) throws {

@@ -92,6 +92,8 @@ protocol PipelineDriver: AnyObject {
     func ask(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void)
     /// As `ask`, reporting AI11's index-rebuild heartbeat as it lands (UX38), so the Ask pane can show real counts during a first build instead of a spinner. Defaulted to forward to the silent form so fakes are unchanged.
     func ask(question: String, onPhase: ((AskRunPhase) -> Void)?, completion: @escaping (Result<AskAnswer, Error>) -> Void)
+    /// As `ask`, at the retrieved-context budget the asker chose (AI12): `mp ask --context-tokens N`. The value is an `AskContextWidth` position, never a raw number from a field, so it cannot be above what the backend and this Mac can take. Defaulted to forward to the plain form so fakes are unchanged.
+    func ask(question: String, contextTokens: Int, onPhase: ((AskRunPhase) -> Void)?, completion: @escaping (Result<AskAnswer, Error>) -> Void)
     /// Generate the weekly review digest now (AI4): runs `mp digest`, which writes `digest-<date>.summary.json/.md` into the `digests` library sibling. Library-wide, so `cloudSecretPolicy(for: nil)` applies the global egress posture. Defaulted no-op.
     func digest(completion: @escaping (Result<Void, Error>) -> Void)
     /// Group a recurring series' restatements of one commitment (AI7): runs `mp actions --open --cluster`, which embeds each open action's task on-device and merges near-duplicates within a workflow, and returns the per-action cluster assignment the Facts view groups by. Read-only and fully local. Defaulted no-op.
@@ -198,6 +200,12 @@ extension PipelineDriver {
     /// only implement the completion form get this for free.
     func ask(question: String, onPhase: ((AskRunPhase) -> Void)?, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
         ask(question: question, completion: completion)
+    }
+
+    /// Default: ignore the width and defer to the heartbeat form (AI12), which
+    /// is the CLI default anyway.
+    func ask(question: String, contextTokens: Int, onPhase: ((AskRunPhase) -> Void)?, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
+        ask(question: question, onPhase: onPhase, completion: completion)
     }
 
     /// Default no-op stub; `PipelineLauncher` overrides this.
@@ -520,6 +528,18 @@ final class PipelineLauncher: PipelineDriver {
         }
     }
 
+    /// AI12: the argv of one ask. Pure and static, like `restoreArgs`, because
+    /// the only other way to observe that the width the user picked reaches the
+    /// subprocess is to spawn `mp` and read the event log afterwards.
+    ///
+    /// `--context-tokens` is passed on every run, including at the resting
+    /// position where it is exactly `mp.ask.DEFAULT_CONTEXT_TOKENS`: one code
+    /// path rather than two, and the `ask_answered` event then records the width
+    /// every answer was bought with rather than only the widened ones.
+    static func askArgs(question: String, out: URL, contextTokens: Int) -> [String] {
+        ["ask", question, "--out", out.path, "--context-tokens", String(contextTokens)]
+    }
+
     /// Ask a natural-language question across the library (AI3). Spawns `mp ask
     /// "<q>" --out <tmp>`, which retrieves over the on-device embedding index,
     /// synthesizes an engine-backed answer with verified `[stem]` citations, and
@@ -542,12 +562,24 @@ final class PipelineLauncher: PipelineDriver {
         onPhase: ((AskRunPhase) -> Void)?,
         completion: @escaping (Result<AskAnswer, Error>) -> Void
     ) {
+        ask(question: question, contextTokens: AskContextWidth.defaultTokens,
+            onPhase: onPhase, completion: completion)
+    }
+
+    /// The AI12 form: the same run at the width the asker chose.
+    func ask(
+        question: String,
+        contextTokens: Int,
+        onPhase: ((AskRunPhase) -> Void)?,
+        completion: @escaping (Result<AskAnswer, Error>) -> Void
+    ) {
         let outURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("mp-ask-\(UUID().uuidString).json")
         let progress: ((PipelineProgress) -> Void)? = onPhase.map { report in
             { beat in Self.askPhase(beat).map(report) }
         }
-        runMP(["ask", question, "--out", outURL.path], timeout: 10 * 60,
+        runMP(Self.askArgs(question: question, out: outURL, contextTokens: contextTokens),
+              timeout: 10 * 60,
               onProgress: progress, retain: .ask) { result in
             defer { try? FileManager.default.removeItem(at: outURL) }
             // Prefer the structured error the Python side wrote (a clean, single
