@@ -389,15 +389,36 @@ final class SinkDispatcher: @unchecked Sendable {
                     // failed run (or retry) left behind for this stem.
                     PipelineFailureSidecar.clear(stem: loc.stem, in: loc.dir)
                 case .failure(let err):
-                    Log.writeLine("daemon", "pipeline FAIL -> \(err.localizedDescription)")
-                    Log.event(category: "coordinator", action: "pipeline_failed", attributes: [
-                        "file": job.file.lastPathComponent,
-                        "error": err.localizedDescription,
-                    ])
-                    PipelineFailureSidecar.write(
-                        stem: loc.stem, in: loc.dir,
-                        stage: SinkDispatcher.stage(for: err), reason: err.localizedDescription
-                    )
+                    // UX50: a Cancel is not a fault. The app sent the SIGTERM
+                    // itself, so `pipeline_failed` does not fire (the
+                    // `pipeline_cancelled` the click already logged is the
+                    // record of it) and no banner or notification is raised.
+                    //
+                    // The marker is still written, and this is the half that is
+                    // easy to get wrong: without a terminal sidecar the row sits
+                    // in Processing with nothing running, then ages into a
+                    // `.failed` that names no reason at all. `.interrupted` is
+                    // the same honest label PIPE3 gives a job a restart
+                    // stranded, and it keeps the row retryable, which is the
+                    // deliberate part of the old behaviour.
+                    if PipelineLauncher.isCancellation(err) {
+                        Log.writeLine("daemon", "pipeline cancelled -> \(loc.stem)")
+                        PipelineFailureSidecar.write(
+                            stem: loc.stem, in: loc.dir,
+                            stage: SinkDispatcher.stage(for: err),
+                            reason: SinkDispatcher.cancelledReason
+                        )
+                    } else {
+                        Log.writeLine("daemon", "pipeline FAIL -> \(err.localizedDescription)")
+                        Log.event(category: "coordinator", action: "pipeline_failed", attributes: [
+                            "file": job.file.lastPathComponent,
+                            "error": err.localizedDescription,
+                        ])
+                        PipelineFailureSidecar.write(
+                            stem: loc.stem, in: loc.dir,
+                            stage: SinkDispatcher.stage(for: err), reason: err.localizedDescription
+                        )
+                    }
                 }
                 self.completeActiveJob(job, with: result)
             }
@@ -447,9 +468,16 @@ final class SinkDispatcher: @unchecked Sendable {
         stalledFired = false
     }
 
+    /// Why a cancelled run's row still carries a marker (UX50). Reads as the
+    /// owner's own action rather than as a fault, and names the way back, the
+    /// same shape as PIPE3's stranded-job reason.
+    static let cancelledReason = "You cancelled this run. Reprocess to run it again."
+
     /// Cancel the active pipeline subprocess (TECH-UX5). The launcher terminates
-    /// it; the termination handler then completes the job as a failure (so the
-    /// row becomes retryable).
+    /// it; the termination handler then completes the job as a failure, which is
+    /// what makes the row retryable and is deliberate. UX50 narrowed which
+    /// failure: a cancelled run lands as `LaunchError.cancelled`, so the row
+    /// stays actionable while nothing reports the app's own kill as a fault.
     func cancelActiveJob() {
         guard activeJob != nil else { return }
         Log.event(category: "coordinator", action: "pipeline_cancelled", attributes: [:])
@@ -461,13 +489,15 @@ final class SinkDispatcher: @unchecked Sendable {
          job.file.deletingLastPathComponent())
     }
 
-    /// Attribute a pipeline failure to the stage that produced it. A missing executable is the only launch-stage failure. `mp` exits `publishFailedExitCode` when every configured sink failed (PIPE1), which leaves a complete summary on disk, so the Library can retry publish alone. A memory refusal or watchdog abort (LOCAL16) is recognised by the marker its message carries, because it has no exit code of its own and "Summarize and publish failed" would hide the one fact the user can act on. Everything else faults somewhere inside summarize/publish and gets the coarse `.pipeline` label. Internal for `SinkDispatcherTests`.
+    /// Attribute a pipeline failure to the stage that produced it. A missing executable is the only launch-stage failure. `mp` exits `publishFailedExitCode` when every configured sink failed (PIPE1), which leaves a complete summary on disk, so the Library can retry publish alone. A cancelled run (UX50) is `.interrupted`, PIPE3's label for work that stopped without faulting; it carries no exit code, so it cannot collide with the publish contract. A memory refusal or watchdog abort (LOCAL16) is recognised by the marker its message carries, because it has no exit code of its own and "Summarize and publish failed" would hide the one fact the user can act on. Everything else faults somewhere inside summarize/publish and gets the coarse `.pipeline` label. Internal for `SinkDispatcherTests`.
     static func stage(for error: Error) -> PipelineFailureSidecar.Stage {
         switch error {
         case PipelineLauncher.LaunchError.mpNotFound:
             return .launch
         case PipelineLauncher.LaunchError.nonZeroExit(PipelineLauncher.publishFailedExitCode, _):
             return .publish
+        case PipelineLauncher.LaunchError.cancelled:
+            return .interrupted
         default:
             let reason = error.localizedDescription
             if reason.range(

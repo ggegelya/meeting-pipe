@@ -253,6 +253,188 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertEqual(args.suffix(2), ["--context-tokens", "4000"])
     }
 
+    // MARK: - UX50: a run this app killed is a cancellation, not a failure
+
+    /// The whole bug: the daemon sends the SIGTERM, the child exits 15, and the
+    /// app then reports its own kill as an unexplained failure.
+    func test_a_cancelled_run_completes_as_cancelled_not_a_non_zero_exit() throws {
+        let result = PipelineLauncher.outcome(
+            status: 15, cancelled: true,
+            stderr: "2026-07-31 18:31:05,602 INFO mp.workflow: Workflow overlay applied (Personal)"
+        )
+        guard case .failure(let error) = result else {
+            return XCTFail("a killed subprocess is still a failure, so the row stays retryable")
+        }
+        XCTAssertTrue(PipelineLauncher.isCancellation(error))
+        if case PipelineLauncher.LaunchError.nonZeroExit = error {
+            XCTFail("a cancel must not be reported as an exit code the user has to interpret")
+        }
+    }
+
+    /// The other half: a subprocess that fell over on its own is unchanged, and
+    /// keeps both its exit code and a caption.
+    func test_a_subprocess_that_failed_on_its_own_still_reports_its_exit() {
+        let result = PipelineLauncher.outcome(
+            status: 1, cancelled: false,
+            stderr: "2026-07-31 18:31:05,602 ERROR mp.orchestrate: run-all failed: boom"
+        )
+        guard case .failure(let error) = result,
+              case PipelineLauncher.LaunchError.nonZeroExit(let code, let caption) = error else {
+            return XCTFail("expected a nonZeroExit")
+        }
+        XCTAssertEqual(code, 1)
+        XCTAssertTrue(caption.contains("run-all failed: boom"))
+        XCTAssertFalse(PipelineLauncher.isCancellation(error))
+    }
+
+    /// A run that finished before the SIGTERM landed did the work and wrote it to
+    /// disk. Reporting that as cancelled would throw away a completed run.
+    func test_a_run_that_finished_before_the_cancel_landed_is_a_success() {
+        guard case .success = PipelineLauncher.outcome(status: 0, cancelled: true, stderr: "") else {
+            return XCTFail("exit 0 is a success whatever was clicked")
+        }
+    }
+
+    func test_isCancellation_matches_only_the_cancelled_case() {
+        XCTAssertFalse(PipelineLauncher.isCancellation(PipelineLauncher.LaunchError.mpNotFound))
+        XCTAssertFalse(PipelineLauncher.isCancellation(
+            PipelineLauncher.LaunchError.nonZeroExit(15, "tail")
+        ))
+        XCTAssertFalse(PipelineLauncher.isCancellation(PipelineLauncher.LaunchError.timeout(60)))
+        struct Boom: Error {}
+        XCTAssertFalse(PipelineLauncher.isCancellation(Boom()))
+        XCTAssertTrue(PipelineLauncher.isCancellation(PipelineLauncher.LaunchError.cancelled))
+    }
+
+    // MARK: - UX50: the cancel flag is per run, not per launcher
+
+    private func unstartedProcess() -> Process {
+        // Never run: these tests are about the bookkeeping between a click and a
+        // run, which is settled before anything is signalled.
+        Process()
+    }
+
+    func test_a_cancel_marks_the_run_in_its_own_slot() {
+        let slots = PipelineRunSlots()
+        let run = slots.retain(unstartedProcess(), in: .run)
+        let ask = slots.retain(unstartedProcess(), in: .ask)
+
+        XCTAssertTrue(slots.markCancelled(.run) === run)
+        XCTAssertTrue(run.isCancelled)
+        // UX37: two slots so the Library's Cancel cannot kill a question.
+        XCTAssertFalse(ask.isCancelled)
+    }
+
+    /// The regression the per-run flag exists for: a click landing after a run
+    /// has already exited must mark nothing, or the *next* run's genuine failure
+    /// is reported as the owner's cancellation.
+    func test_a_cancel_after_the_run_ended_does_not_mislabel_the_next_run() {
+        let slots = PipelineRunSlots()
+        let first = slots.retain(unstartedProcess(), in: .run)
+        slots.release(first, from: .run)
+
+        XCTAssertNil(slots.markCancelled(.run), "nothing is running, so nothing is cancelled")
+
+        let second = slots.retain(unstartedProcess(), in: .run)
+        XCTAssertFalse(second.isCancelled, "the next run must still be able to fail on its own")
+    }
+
+    /// A late clear from a run that has already been replaced must not blind the
+    /// Cancel aimed at its successor.
+    func test_releasing_a_superseded_run_leaves_the_current_one_cancellable() {
+        let slots = PipelineRunSlots()
+        let first = slots.retain(unstartedProcess(), in: .run)
+        let second = slots.retain(unstartedProcess(), in: .run)
+
+        slots.release(first, from: .run)
+
+        XCTAssertTrue(slots.markCancelled(.run) === second)
+        XCTAssertTrue(second.isCancelled)
+    }
+
+    /// Most spawns (finalize, roster, backup) offer no Cancel at all; they still
+    /// get a handle so the termination handler has one code path.
+    func test_an_unretained_spawn_is_never_cancelled() {
+        let slots = PipelineRunSlots()
+        let handle = slots.retain(unstartedProcess(), in: .none)
+        XCTAssertNil(slots.markCancelled(.run))
+        XCTAssertNil(slots.markCancelled(.ask))
+        XCTAssertFalse(handle.isCancelled)
+    }
+
+    // MARK: - UX50: the caption prefers a real error over the last line written
+
+    /// The transcript from the filed bug, near enough: the run's real problem is
+    /// several lines up and the last thing written is a routine INFO line about a
+    /// successful step.
+    func test_caption_prefers_an_error_line_over_a_later_info_line() {
+        let stderr = """
+        2026-07-31 18:30:02,101 INFO mp.orchestrate: [1/3] transcribe
+        2026-07-31 18:30:44,900 ERROR mp.summarize: summarize failed: connection reset by peer
+        2026-07-31 18:31:05,602 INFO mp.workflow: Workflow overlay applied (Personal): team_context
+        """
+        XCTAssertEqual(
+            PipelineLauncher.failureCaption(stderr: stderr),
+            "2026-07-31 18:30:44,900 ERROR mp.summarize: summarize failed: connection reset by peer"
+        )
+    }
+
+    /// No ERROR anywhere: today's behaviour, unchanged. A crash whose only
+    /// evidence is a bare traceback stays as legible as it was.
+    func test_caption_falls_back_to_the_whole_tail_when_nothing_was_logged_as_a_fault() {
+        let stderr = """
+        Traceback (most recent call last):
+          File "mp/orchestrate.py", line 12, in run_all
+        RuntimeError: boom
+        """
+        XCTAssertEqual(PipelineLauncher.failureCaption(stderr: stderr), stderr)
+    }
+
+    func test_caption_takes_a_warning_only_when_there_is_no_error() {
+        let stderr = """
+        2026-07-31 18:30:02,101 WARNING mp.publish: notion sink retrying
+        2026-07-31 18:31:05,602 INFO mp.workflow: Workflow overlay applied (Personal)
+        """
+        XCTAssertEqual(
+            PipelineLauncher.failureCaption(stderr: stderr),
+            "2026-07-31 18:30:02,101 WARNING mp.publish: notion sink retrying"
+        )
+    }
+
+    /// `log.exception` writes the message at ERROR and appends the traceback to
+    /// the same record, so the level line is what carries the reason.
+    func test_caption_picks_the_level_line_out_of_a_logged_exception() {
+        let stderr = """
+        2026-07-31 18:30:44,900 ERROR mp.orchestrate: run-all failed: Not enough memory: free RAM fell to 4%
+        Traceback (most recent call last):
+          File "mp/summarize_local.py", line 743, in _spawn
+        mp.resource_guard.LowMemoryError
+        """
+        // LOCAL16 rides on this: the marker has to survive into the caption, or a
+        // memory failure degrades to "Summarize and publish failed".
+        XCTAssertTrue(
+            PipelineLauncher.failureCaption(stderr: stderr)
+                .range(of: PipelineFailureSidecar.lowMemoryMarker, options: .caseInsensitive) != nil
+        )
+    }
+
+    /// The level is a field the formatter emits, not a word anywhere in the line.
+    func test_stderr_log_level_reads_the_formatter_field_only() {
+        XCTAssertEqual(
+            PipelineLauncher.stderrLogLevel("2026-07-31 18:31:05,602 INFO mp.workflow: hi"), "INFO"
+        )
+        // Some subcommands configure the formatter without the timestamp.
+        XCTAssertEqual(PipelineLauncher.stderrLogLevel("ERROR mp.ask: no index"), "ERROR")
+        XCTAssertNil(PipelineLauncher.stderrLogLevel("  File \"mp/ask.py\", line 3, in run"))
+        XCTAssertEqual(
+            PipelineLauncher.stderrLogLevel(
+                "2026-07-31 18:31:05,602 INFO mp.publish: retrying after ERROR from notion"
+            ),
+            "INFO",
+            "a level word inside the message is not the record's level"
+        )
+    }
+
     // MARK: - PublishResult (PIPE1)
 
     private func writePublishSidecar(_ json: String, stem: String, in dir: URL) throws {

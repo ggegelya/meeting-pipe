@@ -244,11 +244,20 @@ final class MeetingLibraryService {
                             token.finish(published)
                         }
                     case .failure(let err):
-                        Log.event(category: "coordinator", action: "regenerate_failed", attributes: [
-                            "stem": stem,
-                            "error": err.localizedDescription,
-                        ])
-                        self.notifyError("Regenerate failed: \(err.localizedDescription)")
+                        // UX50: the Library's Cancel reaches this leg too, since
+                        // UX28 retained the re-summarize process in the same
+                        // slot run-all uses. A cancelled regenerate leaves the
+                        // meeting's previous summary exactly where it was, so
+                        // there is nothing to mark and nothing to report; the
+                        // failure still flows back so whoever is awaiting it
+                        // resolves rather than hanging.
+                        if !PipelineLauncher.isCancellation(err) {
+                            Log.event(category: "coordinator", action: "regenerate_failed", attributes: [
+                                "stem": stem,
+                                "error": err.localizedDescription,
+                            ])
+                            self.notifyError("Regenerate failed: \(err.localizedDescription)")
+                        }
                         token.finish(.failure(err))
                     }
                 }
@@ -491,9 +500,16 @@ final class MeetingLibraryService {
                         "verified": ans.verified,
                     ])
                 case .failure(let err):
-                    Log.event(category: "coordinator", action: "ask_failed", attributes: [
-                        "error": err.localizedDescription,
-                    ])
+                    // UX50: the sibling of the pipeline's Cancel. An ask the
+                    // owner stopped already logged `ask_cancelled` at the click,
+                    // so logging `ask_failed` for the SIGTERM this app sent
+                    // would put a second, wrong record of one deliberate action
+                    // in the event log.
+                    if !PipelineLauncher.isCancellation(err) {
+                        Log.event(category: "coordinator", action: "ask_failed", attributes: [
+                            "error": err.localizedDescription,
+                        ])
+                    }
                 }
                 completion(result)
             }
@@ -1045,6 +1061,11 @@ final class MeetingLibraryService {
                         "page_url": url?.absoluteString ?? NSNull(),
                     ])
                 case .failure(let err):
+                    // UX50: a cancelled publish is the owner's own action, and
+                    // the summary it was publishing is untouched on disk. No
+                    // failure sidecar, no event, no banner; the result still
+                    // flows back to the caller.
+                    guard !PipelineLauncher.isCancellation(err) else { break }
                     Log.event(category: "coordinator", action: "republish_failed", attributes: [
                         "stem": stem,
                         "error": err.localizedDescription,

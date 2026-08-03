@@ -552,6 +552,103 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertEqual(SinkDispatcher.stage(for: err), .pipeline)
     }
 
+    // MARK: - UX50: a cancelled job is stopped, not failed
+
+    /// A cancel is the owner's own action, so it takes PIPE3's label for work
+    /// that stopped without faulting rather than the coarse pipeline stage, and
+    /// it must not collide with the exit-3 publish contract.
+    func test_a_cancelled_run_maps_to_the_interrupted_stage() {
+        let err = PipelineLauncher.LaunchError.cancelled
+        XCTAssertEqual(SinkDispatcher.stage(for: err), .interrupted)
+        XCTAssertFalse(SinkDispatcher.stage(for: err).retriesFromSummary,
+                       "a cancel can leave a half-written summary, so a retry re-runs the pipeline")
+    }
+
+    /// The whole bug: `pipeline_cancelled` and `pipeline_failed` both fired for
+    /// one deliberate click, the second carrying "pipeline exited 15" captioned
+    /// with a routine INFO line. Only the cancellation is a true record of it.
+    func test_a_cancelled_job_logs_the_cancel_and_not_a_failure() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        dispatcher.cancelActiveJob()
+        driver.finish(.failure(PipelineLauncher.LaunchError.cancelled))
+        drainMain()
+
+        let actions = try String(
+            contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8
+        )
+        .split(separator: "\n")
+        .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+        .compactMap { $0["action"] as? String }
+
+        XCTAssertTrue(actions.contains("pipeline_cancelled"))
+        XCTAssertFalse(actions.contains("pipeline_failed"),
+                       "the app sent the SIGTERM; reporting it as a failure is reporting itself")
+    }
+
+    /// The marker is still written. Without a terminal sidecar the row sits in
+    /// Processing with nothing running, then ages into a `.failed` that names no
+    /// reason at all; with it, the row is retryable straight away and says why.
+    func test_a_cancelled_job_stays_retryable_with_an_honest_reason() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        dispatcher.cancelActiveJob()
+        driver.finish(.failure(PipelineLauncher.LaunchError.cancelled))
+        waitForJobCompletion { completed.count }
+
+        let failure = PipelineFailureSidecar.read(
+            stem: "clip", in: wav.deletingLastPathComponent()
+        )
+        XCTAssertEqual(failure?.stage, .interrupted)
+        XCTAssertEqual(failure?.reason, SinkDispatcher.cancelledReason)
+        XCTAssertFalse(
+            failure?.reason.contains("exited") ?? true,
+            "the row must not quote an exit code the owner would have to interpret"
+        )
+        // Retryable means the job also has to land, so the lane frees up and the
+        // caller awaiting it resolves.
+        if case .failure = completed.first?.1 {} else {
+            XCTFail("a cancelled job still completes as a failure, which is what keeps it retryable")
+        }
+    }
+
+    /// A genuine failure is untouched by any of it.
+    func test_an_uncancelled_failure_still_writes_the_pipeline_stage() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        driver.finish(.failure(PipelineLauncher.LaunchError.nonZeroExit(1, "summarize blew up")))
+        drainMain()
+
+        let failure = PipelineFailureSidecar.read(
+            stem: "clip", in: wav.deletingLastPathComponent()
+        )
+        XCTAssertEqual(failure?.stage, .pipeline)
+        XCTAssertEqual(failure?.reason, "pipeline exited 1: summarize blew up")
+    }
+
     // MARK: - transcription.language reaches the runner (HYG2)
 
     /// Records the `languageHint` it was handed. The knob was parsed, persisted,

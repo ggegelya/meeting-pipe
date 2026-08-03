@@ -388,6 +388,8 @@ Failed meetings collect in the Library's **Needs you** rail, which carries an am
 
 Some failures lead with a more specific fix than plain Retry, because plain Retry would just fail again. A summary the engine refused because of the language leads with re-summarizing on the on-device model. A confidential meeting that needed a model you have not downloaded leads with **Download model**, then Retry.
 
+A meeting you stopped yourself lands here too, and says so: **Interrupted**, with "You cancelled this run. Reprocess to run it again." Nothing is reported when you press Cancel, since you asked for it; the row is here only so the meeting stays one click from running again rather than looking finished when it is not.
+
 ### When a re-transcribe is the answer
 
 Reach for **Re-transcribe…** when the problem is the **words or the voices**, not the summary:

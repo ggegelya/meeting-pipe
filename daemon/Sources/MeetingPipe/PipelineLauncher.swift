@@ -333,6 +333,108 @@ struct PublishResult: Equatable {
     }
 }
 
+/// One-way flag a spawn's signals raise for its own termination handler: the
+/// watchdog's overrun kill, and UX50's cancel. Uses NSLock because the Swift
+/// stdlib has no public atomic Bool; cheap for a one-shot flip.
+private final class OneWayFlag: @unchecked Sendable {
+    private var flag = false
+    private let lock = NSLock()
+    func set() { lock.lock(); flag = true; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return flag }
+}
+
+/// Which Cancel a spawn answers to (UX37), and whether that Cancel has been
+/// clicked (UX50).
+///
+/// Its own type because the binding between a click and a run is what has gone
+/// wrong twice. UX37 split one slot into two, since an `mp ask` runs outside
+/// PIPE11's job lane and overlaps it freely, so a shared slot had the Library's
+/// Cancel killing a question and Ask's Cancel killing a pipeline run. UX50 then
+/// put the cancelled flag on the *run* rather than on the launcher: a click that
+/// lands just after a run ended must mark nothing, or a launcher-wide flag would
+/// still be set when the next run started and that run's genuine failure would
+/// be reported as the owner's cancellation.
+///
+/// Neither is observable through a real spawn (both need a signal raced against
+/// a subprocess), so the bookkeeping lives here where a test can drive it
+/// directly. `@unchecked Sendable`: every field is behind `lock`.
+final class PipelineRunSlots: @unchecked Sendable {
+
+    /// One retained spawn plus the cancel intent aimed at it. The termination
+    /// handler reads the handle it was handed at spawn time, never the slot,
+    /// which is what keeps the flag per run.
+    final class RunHandle: @unchecked Sendable {
+        let process: Process
+        private let cancelledFlag = OneWayFlag()
+
+        init(_ process: Process) { self.process = process }
+
+        func markCancelled() { cancelledFlag.set() }
+
+        var isCancelled: Bool { cancelledFlag.isSet }
+    }
+
+    enum Slot {
+        /// Not cancellable: the short local spawns (finalize, roster, backup)
+        /// nothing offers a Cancel for.
+        case none
+        /// run-all, and since UX28 the Library's summarize / publish re-runs.
+        /// PIPE11's one lane is what keeps this slot unambiguous.
+        case run
+        /// `mp ask` (UX37), which overlaps the lane rather than queueing behind it.
+        case ask
+    }
+
+    private var run: RunHandle?
+    private var ask: RunHandle?
+    private let lock = NSLock()
+
+    /// Retain `process` in `slot` and hand back its handle. `.none` retains
+    /// nothing but still gets a handle, so a spawn's termination handler has one
+    /// code path whether or not anything can cancel it.
+    func retain(_ process: Process, in slot: Slot) -> RunHandle {
+        let handle = RunHandle(process)
+        lock.lock()
+        switch slot {
+        case .none: break
+        case .run: run = handle
+        case .ask: ask = handle
+        }
+        lock.unlock()
+        return handle
+    }
+
+    /// Clear the slot when this run finished or was killed. Identity-checked, so
+    /// a late clear from a run that has already been replaced cannot blind the
+    /// Cancel aimed at its successor.
+    func release(_ handle: RunHandle, from slot: Slot) {
+        lock.lock()
+        switch slot {
+        case .none: break
+        case .run: if run === handle { run = nil }
+        case .ask: if ask === handle { ask = nil }
+        }
+        lock.unlock()
+    }
+
+    /// Mark whatever `slot` holds as cancelled and hand it back, or nil when the
+    /// slot is empty because nothing is running. Marking here rather than at the
+    /// caller is deliberate: the flag has to be set before the signal, or the
+    /// termination handler can get there first and report the kill as a fault.
+    func markCancelled(_ slot: Slot) -> RunHandle? {
+        lock.lock()
+        let handle: RunHandle?
+        switch slot {
+        case .none: handle = nil
+        case .run: handle = run
+        case .ask: handle = ask
+        }
+        lock.unlock()
+        handle?.markCancelled()
+        return handle
+    }
+}
+
 /// Spawns `mp` pipeline subcommands out of process so transcription doesn't block the daemon.
 final class PipelineLauncher: PipelineDriver {
     /// Hard wallclock cap for `run-all`. Worst legitimate run is ~30 min for a 3-hour input; 90 min ensures the daemon never sits in `.handoff` indefinitely (May 2026 incident: a 3h file pinned 4 cores for 13h before manual kill).
@@ -349,19 +451,107 @@ final class PipelineLauncher: PipelineDriver {
 
     enum LaunchError: Error, LocalizedError {
         case mpNotFound
+        /// A subprocess that failed on its own. The second value is the *caption*
+        /// `failureCaption(stderr:)` picked out of the stderr tail (UX50), not the
+        /// raw tail: the tail is whatever was written last, which for a failure
+        /// whose real error came earlier is a routine INFO line shown as the reason.
+        /// The full transcript is in `pipeline.log` either way.
         case nonZeroExit(Int32, String)
         case timeout(TimeInterval)
+        /// This app terminated the run itself, on the owner's Cancel (UX50).
+        /// Distinct from `nonZeroExit(15, …)` because a SIGTERM the app sent is
+        /// not a fault: every surface that would report a failure asks
+        /// `isCancellation` first and stays quiet. Carries no exit code on
+        /// purpose, so it can never collide with the exit-3 publish contract.
+        case cancelled
 
         var errorDescription: String? {
             switch self {
             case .mpNotFound:
                 return "`mp` (pipeline) not found. Did you run scripts/install.sh?"
-            case .nonZeroExit(let code, let tail):
-                return "pipeline exited \(code): \(tail)"
+            case .nonZeroExit(let code, let caption):
+                return "pipeline exited \(code): \(caption)"
             case .timeout(let seconds):
                 return "pipeline timed out after \(Int(seconds / 60)) min - killed to free CPU. The audio file is preserved; re-run `mp run-all <wav>` manually after diagnosing."
+            case .cancelled:
+                return "cancelled"
             }
         }
+    }
+
+    /// True when the run ended because this app terminated it on the owner's
+    /// Cancel, rather than because anything went wrong (UX50).
+    ///
+    /// Every surface that reports a pipeline failure has to ask this first. The
+    /// app sends the SIGTERM itself, so without the check it reports its own
+    /// deliberate action back to the person who asked for it, as an unexplained
+    /// failure captioned with whatever the child happened to log last.
+    static func isCancellation(_ error: Error) -> Bool {
+        if case LaunchError.cancelled = error { return true }
+        return false
+    }
+
+    /// Log levels the pipeline's formatter can put on a line. Python's standard
+    /// set; `mp` configures `%(asctime)s %(levelname)s %(name)s: %(message)s`
+    /// (a few subcommands drop the timestamp), so the level is one of the
+    /// leading whitespace-separated fields.
+    private static let stderrLogLevels: Set<String> = [
+        "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL",
+    ]
+
+    /// The level one pipeline stderr line was logged at, or nil when it carries
+    /// none: a traceback frame, a bare `print`, or a wrapped continuation of the
+    /// line above it.
+    ///
+    /// Bounded to the first three fields rather than scanning the whole line, so
+    /// the word ERROR inside a message is not mistaken for the record's level.
+    static func stderrLogLevel(_ line: String) -> String? {
+        for field in line.split(separator: " ", omittingEmptySubsequences: true).prefix(3) {
+            if stderrLogLevels.contains(String(field)) { return String(field) }
+        }
+        return nil
+    }
+
+    /// The caption a genuine non-zero exit is reported with (UX50).
+    ///
+    /// The stderr tail is simply the last thing the process wrote, so a failure
+    /// whose real error came earlier gets captioned with a routine INFO line:
+    /// UX50 was filed over `Workflow overlay applied (Personal)` presented as
+    /// the reason a run failed. Prefer the last line the pipeline logged at
+    /// `ERROR` (or `CRITICAL`), then the last `WARNING`, and fall back to the
+    /// whole tail only when the transcript carries neither, which is what keeps
+    /// a crash with a bare traceback as legible as it is today.
+    ///
+    /// Deliberately no structure beyond the level the formatter already emits:
+    /// the pipeline does not mark its errors any other way, and inventing a
+    /// sentinel here would be a contract the Python side never agreed to.
+    static func failureCaption(stderr: String) -> String {
+        let lines = stderr
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        if let fault = lines.last(where: {
+            let level = stderrLogLevel($0)
+            return level == "ERROR" || level == "CRITICAL"
+        }) {
+            return fault
+        }
+        if let warning = lines.last(where: { stderrLogLevel($0) == "WARNING" }) {
+            return warning
+        }
+        return stderr
+    }
+
+    /// What a finished subprocess means, once the watchdog has had its say (UX50).
+    ///
+    /// Pure and static because the alternative is spawning a real `mp` to
+    /// observe it: the cancel path in particular is only reachable by racing a
+    /// signal against a subprocess, and it is exactly the path that shipped
+    /// wrong. A run that completed before the SIGTERM landed is a success even
+    /// though a cancel was asked for, since the work is done and on disk.
+    static func outcome(status: Int32, cancelled: Bool, stderr: String) -> Result<Void, Error> {
+        if status == 0 { return .success(()) }
+        if cancelled { return .failure(LaunchError.cancelled) }
+        return .failure(LaunchError.nonZeroExit(status, failureCaption(stderr: stderr)))
     }
 
     /// Completion receives the Notion page URL (nil in regulated_mode) or an error.
@@ -376,46 +566,22 @@ final class PipelineLauncher: PipelineDriver {
     /// Sentinel prefix the pipeline prints for live progress (TECH-UX5); mirrors `orchestrate.PROGRESS_SENTINEL`.
     private static let progressSentinel = "__MP_PROGRESS__"
 
-    /// Which Cancel a spawn answers to (UX37). Two slots, not one: PIPE11's job
-    /// lane keeps `run` unambiguous across run-all / summarize / publish, but an
-    /// `mp ask` runs outside that lane and can overlap any of them. Sharing one
-    /// slot would mean the last spawn wins, so the Library's Cancel would kill a
-    /// question and Ask's Cancel would kill a pipeline run.
-    private enum RetainSlot {
-        case none
-        case run
-        case ask
-    }
+    /// The two Cancel slots and the cancel intent aimed at whatever is in them.
+    private let slots = PipelineRunSlots()
 
-    /// The in-flight `run-all` process, retained so a user Cancel can terminate it (TECH-UX5). Guarded by `processLock` (set on main, cleared on the termination queue, read on main).
-    private var activeRunProcess: Process?
-    /// The in-flight `mp ask` process, retained for Ask's own Cancel (UX37). Same locking contract as `activeRunProcess`.
-    private var activeAskProcess: Process?
-    private let processLock = NSLock()
-
-    private func setRetained(_ proc: Process?, slot: RetainSlot) {
-        processLock.lock()
-        switch slot {
-        case .none: break
-        case .run: activeRunProcess = proc
-        case .ask: activeAskProcess = proc
-        }
-        processLock.unlock()
-    }
-
-    /// Terminate the in-flight run-all (TECH-UX5 Cancel). The termination
-    /// handler then reports a non-zero exit, so the row flips to failed/retryable.
+    /// Terminate the in-flight run-all (TECH-UX5 Cancel). The termination handler
+    /// then completes the job as `LaunchError.cancelled`, so the row is still
+    /// retryable (which is deliberate) without anything reporting a failure the
+    /// owner asked for (UX50).
     func cancelActiveRun() {
-        processLock.lock(); let proc = activeRunProcess; processLock.unlock()
-        terminate(proc, what: "pipeline run")
+        terminate(slots.markCancelled(.run)?.process, what: "pipeline run")
     }
 
-    /// Terminate the in-flight `mp ask` (UX37 Cancel). The termination handler
-    /// reports a non-zero exit, which `AskModel` has already closed the run out
-    /// ahead of, so the pane says "stopped" rather than showing a kill's stderr.
+    /// Terminate the in-flight `mp ask` (UX37 Cancel). Completes as
+    /// `LaunchError.cancelled`, which `AskModel` has already closed the run out
+    /// ahead of, so the pane says "stopped" and nothing logs a failed ask.
     func cancelAsk() {
-        processLock.lock(); let proc = activeAskProcess; processLock.unlock()
-        terminate(proc, what: "ask")
+        terminate(slots.markCancelled(.ask)?.process, what: "ask")
     }
 
     /// SIGTERM now, SIGKILL if it is still alive after the grace period.
@@ -973,7 +1139,7 @@ final class PipelineLauncher: PipelineDriver {
         timeout: TimeInterval,
         meeting: URL? = nil,
         onProgress: ((PipelineProgress) -> Void)? = nil,
-        retain: RetainSlot = .none,
+        retain: PipelineRunSlots.Slot = .none,
         extraEnv: [String: String] = [:],
         backendOverride: String? = nil,
         completion: @escaping (Result<Void, Error>) -> Void
@@ -996,7 +1162,10 @@ final class PipelineLauncher: PipelineDriver {
         )
         for (k, v) in extraEnv { env[k] = v }
         p.environment = env
-        setRetained(p, slot: retain)   // TECH-UX5 / UX37: retained so Cancel can terminate it
+        // TECH-UX5 / UX37: retained so Cancel can terminate it. UX50: the handle
+        // carries the cancel flag with it, so the termination handler below reads
+        // this run's intent and not a later run's.
+        let handle = slots.retain(p, in: retain)
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -1042,7 +1211,7 @@ final class PipelineLauncher: PipelineDriver {
         }
 
         // Watchdog: on overrun SIGTERM then SIGKILL after a grace period; terminationHandler routes killed status to LaunchError.timeout.
-        let timedOut = TimeoutFlag()
+        let timedOut = OneWayFlag()
         let watchdog = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         watchdog.schedule(deadline: .now() + timeout)
         watchdog.setEventHandler {
@@ -1061,7 +1230,7 @@ final class PipelineLauncher: PipelineDriver {
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
             try? logHandle?.close()
-            self.setRetained(nil, slot: retain)   // TECH-UX5 / UX37: run finished/killed
+            self.slots.release(handle, from: retain)   // TECH-UX5 / UX37: run finished/killed
             if timedOut.isSet {
                 // LOCAL10: we just killed an `mp` that may have been mid-summarize on
                 // the local backend. Neither SIGTERM nor SIGKILL runs its `finally`, so
@@ -1074,12 +1243,13 @@ final class PipelineLauncher: PipelineDriver {
                 completion(.failure(LaunchError.timeout(timeout)))
                 return
             }
-            if proc.terminationStatus != 0 {
-                let tail = String(data: stderrTail, encoding: .utf8) ?? ""
-                completion(.failure(LaunchError.nonZeroExit(proc.terminationStatus, tail)))
-                return
-            }
-            completion(.success(()))
+            // UX50: the cancel flag is consulted here rather than at the call
+            // sites, so every spawn answering to a Cancel gets the same answer.
+            completion(Self.outcome(
+                status: proc.terminationStatus,
+                cancelled: handle.isCancelled,
+                stderr: String(data: stderrTail, encoding: .utf8) ?? ""
+            ))
         }
 
         do {
@@ -1088,14 +1258,6 @@ final class PipelineLauncher: PipelineDriver {
             watchdog.cancel()
             completion(.failure(error))
         }
-    }
-
-    /// One-way flag for the watchdog-to-terminationHandler signal. Uses NSLock because Swift stdlib has no public atomic Bool; cheap for a one-shot flip.
-    private final class TimeoutFlag: @unchecked Sendable {
-        private var flag = false
-        private let lock = NSLock()
-        func set() { lock.lock(); flag = true; lock.unlock() }
-        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return flag }
     }
 
     /// Build a pipeline subprocess environment from the daemon's current env and apply the SEC5 strip policy.

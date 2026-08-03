@@ -144,6 +144,12 @@ final class PipelineJobDispatcher: LibraryRunLane {
             let recordingsDir = job.file.deletingLastPathComponent()
             onDone(stem, recordingsDir, pageURL)
         case .failure(let err):
+            // UX50: the owner clicked Cancel, this app sent the SIGTERM, and
+            // the child exited 15. Reporting that as "Pipeline failed" is the
+            // app reporting its own action back as an unexplained fault, with a
+            // caption taken from whatever the child last logged. The row is
+            // still marked retryable by `SinkDispatcher`; only the alarm goes.
+            if PipelineLauncher.isCancellation(err) { return }
             // A library re-run's failure is already surfaced by
             // `MeetingLibraryService` with the verb the user asked for
             // ("Regenerate failed: ..."), so routing it here too would say the

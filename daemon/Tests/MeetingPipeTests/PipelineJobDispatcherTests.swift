@@ -104,6 +104,31 @@ final class PipelineJobDispatcherTests: XCTestCase {
         XCTAssertTrue(done.isEmpty)
     }
 
+    // MARK: - UX50: a cancel raises nothing
+
+    /// The banner and the notification are the two surfaces the filed bug was
+    /// seen on. The app sent the SIGTERM on the owner's own click, so there is
+    /// nothing to tell them; the row is marked retryable by `SinkDispatcher`
+    /// without any of this firing.
+    func test_a_cancelled_job_raises_neither_the_banner_nor_the_notification() {
+        sink.onJobCompleted?(
+            job("/tmp/recordings/meeting.wav"),
+            .failure(PipelineLauncher.LaunchError.cancelled)
+        )
+        XCTAssertTrue(errors.isEmpty, "a deliberate Cancel is not an error to report")
+        XCTAssertTrue(done.isEmpty)
+    }
+
+    /// The guard is on the cancellation, not on the exit code: an `mp` that
+    /// genuinely exited 15 on its own is still a failure worth reporting.
+    func test_a_genuine_failure_still_raises_the_banner() {
+        sink.onJobCompleted?(
+            job("/tmp/recordings/meeting.wav"),
+            .failure(PipelineLauncher.LaunchError.nonZeroExit(15, "killed by the OS"))
+        )
+        XCTAssertEqual(errors, ["Pipeline failed: pipeline exited 15: killed by the OS"])
+    }
+
     /// The queue-depth surface is shared: the menu-bar processing badge counts a
     /// re-transcribe like any other job, so a batch is visible from the menu bar.
     func test_retranscribe_still_counts_toward_queue_depth() {

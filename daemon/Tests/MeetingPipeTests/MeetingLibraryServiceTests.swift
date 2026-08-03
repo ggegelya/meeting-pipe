@@ -705,6 +705,80 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertEqual(driver.publishInputs.count, 1)
     }
 
+    // MARK: - UX50: the Library's Cancel reaches these legs too
+
+    /// UX28 retained the re-summarize process in the same slot run-all uses, so
+    /// the row's Cancel kills `mp summarize`. That is the owner's own action:
+    /// the meeting keeps the summary it already had, and "Regenerate failed"
+    /// over a SIGTERM this app sent is reporting itself.
+    func test_a_cancelled_regenerate_reports_nothing_but_still_answers() throws {
+        try touch("m.md")
+        let lane = FakeLane()
+        let service = makeService(lane: lane)
+
+        var answer: Result<URL?, Error>?
+        service.regenerateMeeting(stem: "m") { answer = $0 }
+        lane.startNext()
+        driver.finishSummarize(.failure(PipelineLauncher.LaunchError.cancelled))
+        drainMain()
+
+        XCTAssertTrue(errors.isEmpty, "a deliberate Cancel raises no banner")
+        XCTAssertTrue(driver.publishInputs.isEmpty, "a cancelled summarize does not chain into publish")
+        guard case .failure? = answer else {
+            return XCTFail("the caller still has to be answered, or its Task hangs forever")
+        }
+    }
+
+    /// A genuine regenerate failure is untouched: it still names the verb the
+    /// owner asked for.
+    func test_a_failed_regenerate_still_names_the_verb() throws {
+        try touch("m.md")
+        let lane = FakeLane()
+        let service = makeService(lane: lane)
+
+        service.regenerateMeeting(stem: "m") { _ in }
+        lane.startNext()
+        driver.finishSummarize(.failure(PipelineLauncher.LaunchError.nonZeroExit(1, "boom")))
+        drainMain()
+
+        XCTAssertEqual(errors.count, 1)
+        XCTAssertTrue(errors.first?.hasPrefix("Regenerate failed:") ?? false)
+    }
+
+    /// The publish leg is the other half of the same click. A cancelled publish
+    /// leaves the summary on disk exactly as it was, so there is nothing to mark
+    /// failed either.
+    func test_a_cancelled_republish_reports_nothing_and_writes_no_failure_marker() throws {
+        try touch("m.summary.json")
+        let lane = FakeLane()
+        let service = makeService(lane: lane)
+
+        service.republishMeeting(stem: "m") { _ in }
+        lane.startNext()
+        driver.finishPublish(.failure(PipelineLauncher.LaunchError.cancelled))
+        drainMain()
+
+        XCTAssertTrue(errors.isEmpty)
+        XCTAssertNil(PipelineFailureSidecar.read(stem: "m", in: dir),
+                     "a cancel is not a failure of the meeting")
+    }
+
+    func test_a_failed_republish_still_marks_the_row() throws {
+        try touch("m.summary.json")
+        let lane = FakeLane()
+        let service = makeService(lane: lane)
+
+        service.republishMeeting(stem: "m") { _ in }
+        lane.startNext()
+        driver.finishPublish(.failure(
+            PipelineLauncher.LaunchError.nonZeroExit(PipelineLauncher.publishFailedExitCode, "no sinks")
+        ))
+        drainMain()
+
+        XCTAssertEqual(errors.count, 1)
+        XCTAssertEqual(PipelineFailureSidecar.read(stem: "m", in: dir)?.stage, .publish)
+    }
+
     func test_regenerate_with_backend_threads_override_to_summarize() throws {
         // PIPE6: "Re-summarize with Local/Anthropic" reuses the transcript and
         // passes the one-shot backend into `mp summarize --backend`.
@@ -999,6 +1073,56 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertEqual(driver.cancelAskCalls, 0)
         service.cancelAsk()
         XCTAssertEqual(driver.cancelAskCalls, 1)
+    }
+
+    /// UX50, the ask sibling: the click already logged `ask_cancelled`, so
+    /// logging `ask_failed` for the SIGTERM this app sent would put a second,
+    /// wrong record of one deliberate action in the event log.
+    func test_a_cancelled_ask_is_not_logged_as_a_failed_ask() throws {
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+
+        service.askMeetings(question: "budget?") { _ in }
+        service.cancelAsk()
+        driver.finishAsk(.failure(PipelineLauncher.LaunchError.cancelled))
+        let drained = expectation(description: "drain")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 1.0)
+
+        let actions = try String(
+            contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8
+        )
+        .split(separator: "\n")
+        .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+        .compactMap { $0["action"] as? String }
+
+        XCTAssertTrue(actions.contains("ask_cancelled"))
+        XCTAssertFalse(actions.contains("ask_failed"))
+    }
+
+    /// A question that genuinely failed still says so.
+    func test_a_failed_ask_is_still_logged() throws {
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+
+        service.askMeetings(question: "budget?") { _ in }
+        driver.finishAsk(.failure(PipelineLauncher.LaunchError.nonZeroExit(1, "no index")))
+        let drained = expectation(description: "drain")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 1.0)
+
+        let actions = try String(
+            contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8
+        )
+        .split(separator: "\n")
+        .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+        .compactMap { $0["action"] as? String }
+
+        XCTAssertTrue(actions.contains("ask_failed"))
     }
 
     // MARK: - re-transcribe (ASR3)
