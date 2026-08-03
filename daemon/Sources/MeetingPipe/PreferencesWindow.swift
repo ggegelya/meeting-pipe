@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Preferences window (TECH-E4: 780x660 NavigationSplitView, replaced the old 540x620 TabView). One window at a time; re-opening brings it to front. Owns the `NSWindow` lifecycle and the `WindowActivationManager` handshake so Cmd+Tab works while Preferences is up. `LocalModelPreset` lives here so callers don't need to import the Preferences/ folder.
+/// Preferences window (TECH-E4: a NavigationSplitView, replaced the old 540x620 TabView; opens at 820x660 with a 780x660 floor since UX43). One window at a time; re-opening brings it to front. Owns the `NSWindow` lifecycle and the `WindowActivationManager` handshake so Cmd+Tab works while Preferences is up. `LocalModelPreset` lives here so callers don't need to import the Preferences/ folder.
 final class PreferencesWindow {
     private var window: NSWindow?
     private let store: ConfigStore
@@ -40,8 +40,18 @@ final class PreferencesWindow {
         w.title = "MeetingPipe Preferences"
         // Resizable: benefits from extra width for long Notion DB IDs.
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        w.setContentSize(NSSize(width: 780, height: 660))
-        w.minSize = NSSize(width: 720, height: 560)
+        // 820 wide, not the 780 floor below (UX43, owner call 2026-08-03): the sidebar
+        // and the detail pane's 32pt gutters take ~200 of the width, so at 780 the pane
+        // could offer ~515pt to content designed to read at 620. Opening at 820 is what
+        // makes that measure reachable without the user resizing first.
+        w.setContentSize(NSSize(width: 820, height: 660))
+        // UX43: the floor is the SwiftUI root's own `.frame(minWidth:minHeight:)`
+        // (`PreferencesView`). It used to be 720x560, so the window could be resized
+        // below the size the hierarchy inside it declares as its minimum, and the
+        // squeeze landed on the control columns ("Choose destination…" truncated).
+        // `contentMinSize`, not `minSize`: the latter is frame-space, so 660 there
+        // would still allow a content box a title bar shorter than the root demands.
+        w.contentMinSize = NSSize(width: 780, height: 660)
         // Bound the window to the screen so a wide control can never push it
         // off-screen (regression seen when the 4-option backend picker stretched
         // the Pipeline tab). Still resizable within the screen for long IDs.
@@ -117,4 +127,45 @@ struct LocalModelPreset {
             qualityHint: "Highest quality of the curated presets, but the heaviest to run."
         ),
     ]
+
+    // MARK: - Picker seam (UX43)
+    //
+    // The four rules the Local model picker runs on, pure so they are testable
+    // without a view or a config. They exist because Custom used to be a dead
+    // option: the binding derived its selection from the stored id alone and its
+    // setter dropped the Custom tag, so picking Custom wrote nothing, the getter
+    // re-derived the previous preset, and the Model id field that Custom is
+    // supposed to reveal could never appear.
+
+    /// The selection a stored model id implies: the preset that pins it, else Custom.
+    /// The fall-through is deliberate (a config holding the dropped 32B id keeps it,
+    /// intact, rather than being silently rewritten), and it is the only reason the
+    /// Custom row existed at all before it could be selected.
+    static func id(forModelId modelId: String) -> String {
+        all.first { $0.modelId == modelId }?.id ?? customId
+    }
+
+    /// What selecting `id` writes to `summarization.local_model`, or nil for Custom,
+    /// which writes nothing on its own: the Model id field beside it is the writer.
+    static func modelId(forID id: String) -> String? {
+        all.first { $0.id == id }?.modelId
+    }
+
+    /// Whether the Model id field is shown for a selection. Derived from
+    /// `modelId(forID:)` rather than compared against `customId` a second time, so
+    /// the field is revealed for exactly the selections that write nothing on their
+    /// own. The two cannot drift apart into a selection that neither writes nor
+    /// offers a field, which is what the dead branch was.
+    static func showsModelIdField(forID id: String) -> Bool {
+        modelId(forID: id) == nil
+    }
+
+    /// The id a typed Custom field should persist, or nil while it is not usable yet.
+    /// Trimmed, because a pasted repo id carries whitespace. Blank is nil rather than
+    /// an empty write: `ConfigStore`'s save is debounced 500 ms, so a field cleared on
+    /// the way to a new value would otherwise be persisted as no model at all.
+    static func persistableModelId(_ typed: String) -> String? {
+        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }

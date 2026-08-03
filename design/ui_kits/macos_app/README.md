@@ -9,7 +9,7 @@ The kit covers the surfaces that ship today, plus one anticipated near-future su
 | `MenuBarDropdown.jsx` | `StatusBarController.swift` | the `rebuildMenu()` function |
 | `MeetingPrompt.jsx` | `MeetingPromptWindow.swift` | the 600×64 horizontal `NSPanel` pill + the `⌄` chevron menu |
 | `Notification.jsx` | `Notifier.swift` | `notifyDone` / `notifyRecordingStarted` body strings |
-| `PreferencesWindow.jsx` | `Preferences/PreferencesView.swift` + the per-section files | the 780×660 `NavigationSplitView` (General / Recording / Prompt / Pipeline / Integrations / Permissions / Advanced) |
+| `PreferencesWindow.jsx` | `Preferences/PreferencesView.swift` + the per-section files | the 820×660 `NavigationSplitView` (General / Recording / Prompt / Pipeline / Integrations / Permissions / Advanced), floor 780×660 |
 | `SummaryLibrary.jsx` | `LibraryWindow.swift` + `LibrarySidebar` / `LibraryListView` / `MeetingRow` / `MeetingDetailView` + tabs | the shipped `NavigationSplitView` Library (rail + filtered list + Summary / Transcript / Audio tabs) |
 | `OnboardingPermissions.jsx` | *(anticipated)* | the four-permission grant list (Microphone, Screen Recording, Accessibility, Notifications); see the README install steps |
 

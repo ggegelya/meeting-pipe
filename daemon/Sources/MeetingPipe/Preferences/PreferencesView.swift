@@ -57,18 +57,38 @@ struct PreferencesView: View {
 
     @State private var doctorSheetOpen: Bool = false
 
+    /// UX43: what a pane switch scrolls back to. A zero-height anchor driven by a
+    /// `ScrollViewReader`, deliberately not `.id(selectionState.current)` on the
+    /// content: re-identifying the content would reset the offset too, but it also
+    /// tears down every pane's own `@State` (a rename in flight in People, a
+    /// disclosure the user just opened), which is a far larger change than "open at
+    /// the top". This moves the scroller and nothing else. The id is a constant, so
+    /// the anchor itself never re-identifies anything either.
+    private static let topAnchor = "preferences-top"
+
     var body: some View {
         NavigationSplitView {
             PreferencesSidebar(selection: $selectionState.current)
         } detail: {
-            ScrollView {
-                detailContent
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Color.clear.frame(height: 0).id(Self.topAnchor)
+                        detailContent
+                    }
                     .padding(.horizontal, 32)
                     .padding(.vertical, 28)
                     .frame(maxWidth: 620, alignment: .topLeading)
                     .frame(maxWidth: .infinity, alignment: .top)
+                }
+                .background(Color(MPColors.bg))
+                // The ScrollView is created outside the pane switch, so its backing
+                // NSScrollView and that scroller's offset survive it: scrolled to the
+                // bottom of Storage, General used to open at the bottom.
+                .onChange(of: selectionState.current) { _, _ in
+                    proxy.scrollTo(Self.topAnchor, anchor: .top)
+                }
             }
-            .background(Color(MPColors.bg))
         }
         .frame(minWidth: 780, minHeight: 660)
         .sheet(isPresented: $doctorSheetOpen) { doctorSheet }

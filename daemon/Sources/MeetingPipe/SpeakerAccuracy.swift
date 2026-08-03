@@ -30,10 +30,15 @@ enum SpeakerSeparation {
     /// The tag the control carries when the config holds a value no position pins.
     ///
     /// It is a **readout, never a target**: `value(forID:)` returns nil for it, and
-    /// `options(forValue:)` offers it only while it is already the selection. That is
-    /// the difference from the local-model picker, which always offers Custom and
-    /// whose setter then drops it, so picking it does nothing and the picker snaps
-    /// back (UX43). Here there is no option a user can reach that does nothing.
+    /// `options(forValue:)` offers it only while it is already the selection. So there
+    /// is no option a user can reach here that does nothing.
+    ///
+    /// The local-model picker (UX43) resolves the same tension the other way: its
+    /// Custom is a real target, because there is a field behind it to type a model id
+    /// into. A threshold has no such field, and inventing one would be the slider this
+    /// control exists instead of, so Custom stays a readout here. What both refuse is
+    /// the shape UX43 found and fixed: an option always on offer whose setter drops it,
+    /// leaving the picker to snap back to the previous selection.
     static let customId = "__custom"
 
     /// Lower means more distinct speakers, higher merges more voices into one.

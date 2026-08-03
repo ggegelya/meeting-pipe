@@ -78,6 +78,11 @@ struct SettingsRow<Content: View>: View {
     let label: String
     let sublabel: String?
     let alignTop: Bool
+    /// UX43: `true` for a control that genuinely wants the remaining width instead of
+    /// hugging (the Pipeline pane's prompt preview is the only one). Everything else
+    /// leaves this alone: a button, pill, picker, or value readout has an ideal width,
+    /// and hugging it is what stops the greedy label column truncating it.
+    let controlFills: Bool
     @ViewBuilder var content: () -> Content
     var showsDivider: Bool
 
@@ -85,11 +90,13 @@ struct SettingsRow<Content: View>: View {
          sublabel: String? = nil,
          alignTop: Bool = false,
          showsDivider: Bool = true,
+         controlFills: Bool = false,
          @ViewBuilder content: @escaping () -> Content) {
         self.label = label
         self.sublabel = sublabel
         self.alignTop = alignTop
         self.showsDivider = showsDivider
+        self.controlFills = controlFills
         self.content = content
     }
 
@@ -113,7 +120,21 @@ struct SettingsRow<Content: View>: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, alignTop ? 4 : 0)
+                // UX43: the control column keeps its natural width under a squeeze,
+                // which is what the row's own doc comment above has always claimed and
+                // what the locked mockup pins (`PWRow` in `PreferencesWindow.jsx` gives
+                // this column `flexShrink: 0`). The Swift shipped without it: the info
+                // column beside it is greedy (`maxWidth: .infinity`) and the controls
+                // carry no compression resistance of their own, so a narrow window ate
+                // the buttons instead. Storage's "Choose destination…" read as an
+                // ellipsis, and People and Caches have the same two-ghost-button shape.
+                // Horizontal only: a wrapping control still gets its height.
+                // `controlFills` opts out for a control that wants the remaining width,
+                // since fixing one of those to its ideal width would be worse than the
+                // truncation (a ScrollView's ideal width is its content's, i.e. a mile
+                // of unwrapped prose).
                 HStack(spacing: 8) { content() }
+                    .fixedSize(horizontal: !controlFills, vertical: false)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, MPSpace.s3)

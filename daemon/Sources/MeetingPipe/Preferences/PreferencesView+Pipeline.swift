@@ -18,6 +18,16 @@ struct PipelineSectionView: View {
     @State private var promptError: String?
     @State private var showLocalModelConfig = false
     @State private var voiceprintMeetings = 0
+    /// UX43: the Local model picker's own selection, `nil` until the user picks one
+    /// and the stored id speaks for itself. This is what makes Custom reachable: it
+    /// writes nothing to the store, so a selection derived from the store alone could
+    /// never hold it (shape 1 of the two the task offered, chosen over seeding an
+    /// empty model id into `ConfigStore` and letting its 500 ms debounced write
+    /// persist a config that names no model).
+    @State private var localModelSelection: String?
+    /// The Model id field's text while Custom is selected. A draft rather than a
+    /// direct binding to the store, so a half-typed or cleared field is never saved.
+    @State private var customModelDraft: String = ""
 
     // FEAT3-MANAGE: the named-speaker roster. Read directly for display (the
     // `VoiceprintProfile` exception); mutations go through `mp roster` via `launcher`.
@@ -73,10 +83,10 @@ struct PipelineSectionView: View {
                             .pickerStyle(.menu)
                             .fixedSize()
                         }
-                        if currentLocalModelPresetId == LocalModelPreset.customId {
+                        if LocalModelPreset.showsModelIdField(forID: localModelSelectionId) {
                             SettingsStackRow("Model id",
-                                sublabel: "HuggingFace MLX repo id.") {
-                                TextField("mlx-community/...", text: $store.summarizationLocalModel)
+                                sublabel: "HuggingFace MLX repo id. Blank leaves the model below unchanged.") {
+                                TextField("mlx-community/...", text: customModelIdBinding)
                                     .textFieldStyle(.roundedBorder)
                                     .font(.system(.body, design: .monospaced))
                             }
@@ -160,7 +170,10 @@ struct PipelineSectionView: View {
             VocabularySection(glossary: glossary, workflowNames: workflowNames)
 
             SettingsGroup("Summarization prompt") {
-                SettingsRow("System prompt", alignTop: true, showsDivider: false) {
+                // The one row whose control wants the width rather than hugging it
+                // (UX43): the preview is a scrolling block of the rendered prompt.
+                SettingsRow("System prompt", alignTop: true, showsDivider: false,
+                            controlFills: true) {
                     promptPreview
                 }
             } footer: {
@@ -239,6 +252,9 @@ struct PipelineSectionView: View {
         .onAppear {
             voiceprintMeetings = VoiceprintProfile.meetingsLearned()
             refreshRoster()
+            // UX43: a config already holding a non-preset id opens on Custom, so the
+            // field has to open holding that id rather than empty.
+            customModelDraft = store.summarizationLocalModel
         }
     }
 
@@ -353,7 +369,7 @@ struct PipelineSectionView: View {
     private var machineRamGB: Double { LocalModelTier.physicalRamGB() }
 
     private var localModelHint: String {
-        let id = currentLocalModelPresetId
+        let id = localModelSelectionId
         if let p = LocalModelPreset.all.first(where: { $0.id == id }) {
             let tier = LocalModelTier.annotation(modelId: p.modelId, ramGB: machineRamGB)
             return "\(p.diskHint) on disk, \(p.speedHint). \(p.qualityHint) \(tier)"
@@ -386,18 +402,41 @@ struct PipelineSectionView: View {
         }
     }
 
-    private var currentLocalModelPresetId: String {
-        LocalModelPreset.all.first(where: { $0.modelId == store.summarizationLocalModel })?.id
-            ?? LocalModelPreset.customId
+    /// The picker's selection: the user's own pick where there is one, else what the
+    /// stored id implies. Custom writes nothing, so it can only ever be held here
+    /// (UX43); before that it was derived from the store alone, which is why picking
+    /// it did nothing and the picker snapped back to the previous preset.
+    private var localModelSelectionId: String {
+        localModelSelection ?? LocalModelPreset.id(forModelId: store.summarizationLocalModel)
     }
 
     private var localModelPresetBinding: Binding<String> {
         Binding<String>(
-            get: { self.currentLocalModelPresetId },
+            get: { self.localModelSelectionId },
             set: { newID in
-                if newID != LocalModelPreset.customId,
-                   let p = LocalModelPreset.all.first(where: { $0.id == newID }) {
-                    store.summarizationLocalModel = p.modelId
+                localModelSelection = newID
+                guard let modelId = LocalModelPreset.modelId(forID: newID) else {
+                    // Custom: seed the field with the id in force so the owner edits
+                    // from it rather than from nothing, and leave the store alone
+                    // until they type something usable.
+                    customModelDraft = store.summarizationLocalModel
+                    return
+                }
+                store.summarizationLocalModel = modelId
+            }
+        )
+    }
+
+    /// The Model id field. Writes through only what `persistableModelId` accepts, so
+    /// a cleared field cannot reach `config.toml` via the debounced save; the Active
+    /// model row below keeps showing what is actually configured meanwhile.
+    private var customModelIdBinding: Binding<String> {
+        Binding<String>(
+            get: { customModelDraft },
+            set: { typed in
+                customModelDraft = typed
+                if let modelId = LocalModelPreset.persistableModelId(typed) {
+                    store.summarizationLocalModel = modelId
                 }
             }
         )
@@ -414,9 +453,10 @@ struct PipelineSectionView: View {
             set: { newID in
                 // Custom is only ever offered while it is already the selection, and
                 // `value(forID:)` returns nil for it, so this guard cannot swallow a
-                // selection the user could actually make. That is the difference from
-                // the local-model picker's setter, which drops a Custom the picker
-                // always offers, leaving a dead option (UX43).
+                // selection the user could actually make. The local-model picker above
+                // reaches the same place from the other side (UX43): its Custom is
+                // always on offer, so instead of dropping it, it holds the selection
+                // itself and reveals the field that does the writing.
                 guard let value = SpeakerSeparation.value(forID: newID) else { return }
                 store.diarizationClusteringThreshold = value
             }

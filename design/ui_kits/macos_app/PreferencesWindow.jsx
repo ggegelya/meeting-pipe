@@ -4,8 +4,10 @@
 // Pipeline / Integrations / Permissions / Advanced) + PreferencesControls.swift
 // (the shared SettingsGroup / SettingsRow / ... primitives).
 //
-// Shipped: a 780x660 window, a 200pt sidebar List of 7 panes, and a scrolling
-// detail pane (620 max-width). Panes are interactive here.
+// Shipped: an 820x660 window (floor 780x660), a 200pt sidebar List of 7 panes, and a
+// scrolling detail pane (620 max-width). Panes are interactive here. The window opens
+// at 820 rather than its floor precisely so that 620 measure is reachable without a
+// resize: sidebar plus gutters take ~200, so 780 left the pane ~515 (UX43).
 //
 // Row model (the layout fix): a settings row is [info grows · control hugs right].
 // The label and its description take the full available width and wrap to one or two
@@ -32,7 +34,7 @@ const PreferencesWindow = () => {
   const [pane, setPane] = React.useState("general");
   return (
     <div style={{
-      width: 780, height: 660, background: "var(--mp-bg)", display: "flex", overflow: "hidden",
+      width: 820, height: 660, background: "var(--mp-bg)", display: "flex", overflow: "hidden",
       borderRadius: "var(--mp-radius-lg)", fontFamily: "var(--mp-font-sans)", color: "var(--mp-fg)",
       border: "1px solid var(--mp-border)", boxShadow: "var(--mp-shadow-lg)",
     }}>
