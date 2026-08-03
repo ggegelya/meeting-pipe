@@ -206,6 +206,8 @@ struct WorkflowInspectorPresentation: Equatable {
                 return "Obsidian"
             case .filesystem:
                 return "Local folder"
+            case .lan:
+                return "LAN share"
             }
         }
         return Row(label: "Output", value: joined(orderedUnique(names), conjunction: "and"))

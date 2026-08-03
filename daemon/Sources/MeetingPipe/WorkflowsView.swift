@@ -11,13 +11,17 @@ private struct SinkSelection: Equatable {
     var notionDatabaseID: String = ""
     var obsidianEnabled: Bool = false
     var filesystemEnabled: Bool = false
+    /// UX45: the fourth case. The pipeline has published to a mounted share since
+    /// FEAT1; this checkbox is what made it reachable per workflow.
+    var lanEnabled: Bool = false
 
-    /// Rebuild `Workflow.sinks` from checkbox state; order matches the form rows (Notion, Obsidian, Filesystem).
+    /// Rebuild `Workflow.sinks` from checkbox state; order matches the form rows (Notion, Obsidian, Filesystem, LAN).
     func toWorkflowSinks() -> [WorkflowSink] {
         var out: [WorkflowSink] = []
         if notionEnabled { out.append(.notion(databaseId: notionDatabaseID)) }
         if obsidianEnabled { out.append(.obsidian) }
         if filesystemEnabled { out.append(.filesystem) }
+        if lanEnabled { out.append(.lan) }
         return out
     }
 
@@ -32,9 +36,19 @@ private struct SinkSelection: Equatable {
                 s.obsidianEnabled = true
             case .filesystem:
                 s.filesystemEnabled = true
+            case .lan:
+                s.lanEnabled = true
             }
         }
         return s
+    }
+
+    func isEnabled(_ target: PublishTarget) -> Bool {
+        switch target {
+        case .obsidian:   return obsidianEnabled
+        case .filesystem: return filesystemEnabled
+        case .lan:        return lanEnabled
+        }
     }
 }
 
@@ -63,6 +77,12 @@ struct WorkflowEditor: View {
     /// preselected. Nil in headless tests and any host with no Preferences window
     /// behind it, in which case the link row is not drawn at all rather than drawn dead.
     var onOpenVocabulary: ((String) -> Void)? = nil
+    /// UX45: where the non-Notion sinks write, so a checkbox that turns on a sink
+    /// with no destination says so instead of failing silently at publish time. A
+    /// snapshot, injected the same way `localModelPreflight` is; nil in headless
+    /// tests and any host with no `ConfigStore` behind it, which then show no
+    /// captions rather than guessing.
+    var publishTargets: PublishTargets? = nil
     /// Notion DB list for the picker (TECH-B8). Held at editor level so the picker is populated on open, not only when Notion is toggled on.
     @StateObject private var notionDBs = NotionDatabaseList()
 
@@ -487,10 +507,32 @@ struct WorkflowEditor: View {
                 }
             }
             SettingsToggleRow("Obsidian", isOn: $sinks.obsidianEnabled)
+            unconfiguredNote(.obsidian)
             SettingsToggleRow("Filesystem (local Markdown only)", isOn: $sinks.filesystemEnabled)
+            unconfiguredNote(.filesystem)
+            SettingsToggleRow(
+                "LAN share",
+                sublabel: "A mounted SMB/NFS share. The same files as the filesystem sink, written only after a reachability check, so a share that is down fails loudly instead of quietly landing on local disk.",
+                isOn: $sinks.lanEnabled
+            )
+            unconfiguredNote(.lan)
             if ndaMode {
                 note("NDA mode forces filesystem-only; toggles above are ignored at run time.", color: .mpWarning)
             }
+        }
+    }
+
+    /// UX45: the quiet cue under a sink whose destination was never set, the WF9
+    /// name-collision shape. Enable-but-broken used to be entirely silent: three
+    /// of these four sinks are configured in global config, and until UX45 that
+    /// config had no UI at all, so a checkbox could turn on a publish that could
+    /// never happen. Absent (not empty) when the caption has nothing to say, and
+    /// absent everywhere when the host handed in no targets, which is the headless
+    /// and test case.
+    @ViewBuilder
+    private func unconfiguredNote(_ target: PublishTarget) -> some View {
+        if let caption = publishTargets?.caption(for: target, enabled: sinks.isEnabled(target)) {
+            note(caption, color: .mpWarning)
         }
     }
 

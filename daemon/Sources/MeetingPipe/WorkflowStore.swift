@@ -346,6 +346,8 @@ final class WorkflowStore: ObservableObject {
                     sinks.append(.obsidian)
                 case "filesystem":
                     sinks.append(.filesystem)
+                case "lan":
+                    sinks.append(.lan)
                 default:
                     continue
                 }

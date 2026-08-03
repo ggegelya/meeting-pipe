@@ -169,6 +169,21 @@ extension Coordinator {
         configRefresh.makeLocalModelPreflight()
     }
 
+    /// UX45: where the Obsidian, Filesystem, and LAN sinks write, for the workflow
+    /// editor's enabled-but-unconfigured caption. A snapshot read off the live
+    /// `ConfigStore`, so a destination set in Preferences shows up the next time
+    /// the sheet opens. Nil with no store (headless / test), which suppresses the
+    /// captions rather than asserting a target is unconfigured on no evidence.
+    var publishTargets: PublishTargets? {
+        configStore.map {
+            PublishTargets(
+                obsidianVaultPath: $0.obsidianVaultPath,
+                filesystemOutputDir: $0.filesystemOutputDir,
+                lanMountPath: $0.lanMountPath
+            )
+        }
+    }
+
     /// UX21: start (or resume) a download of the configured local model on demand,
     /// independent of the global backend. The failed-row "Download model" remedy
     /// and the inline affordance both route here.

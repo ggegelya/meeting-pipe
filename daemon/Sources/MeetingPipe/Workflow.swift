@@ -15,10 +15,27 @@ enum WorkflowBackend: String, Codable, Equatable, CaseIterable {
 }
 
 /// One publish destination, workflow-scoped. Empty strings fall back to the global config field.
+///
+/// `lan` joined in UX45, the same shape of gap `claudeCLI` / `openai` were in
+/// `WorkflowBackend`: the pipeline has shipped the LAN publisher since FEAT1
+/// (`publish_router._build_one` builds it for the literal `"lan"`), but the
+/// daemon modelled three cases, so the capability was unreachable from the
+/// editor. The destination itself (`lan.mount_path` / `lan.host`) stays global,
+/// like every other sink's: a workflow chooses WHICH sinks run, global config
+/// says WHERE they land.
+///
+/// One thing worth not repeating: `config.effective_sinks` preserves the LAN
+/// sink under zero egress on the grounds that an on-prem share is not egress,
+/// but every recorded meeting reaches the publishers through
+/// `mp.workflow.apply_overrides` first, whose belt-and-braces clamp is
+/// filesystem-only for NDA and regulated alike. So a LAN sink does not in
+/// practice survive a regulated meeting, and no copy on this surface says it
+/// does (`test_zero_egress_collapses_the_lan_sink_too` pins the behaviour).
 enum WorkflowSink: Codable, Equatable, Hashable {
     case notion(databaseId: String)
     case obsidian
     case filesystem
+    case lan
 
     /// Stable string used in TOML; matches the pipeline's `output.sinks` vocabulary.
     var typeName: String {
@@ -26,6 +43,20 @@ enum WorkflowSink: Codable, Equatable, Hashable {
         case .notion: return "notion"
         case .obsidian: return "obsidian"
         case .filesystem: return "filesystem"
+        case .lan: return "lan"
+        }
+    }
+
+    /// The global publish target this sink writes through, or nil when the sink
+    /// configures itself per workflow (Notion, whose database id rides on the
+    /// case). Lets a surface ask "is the thing this checkbox turns on actually
+    /// set up?" without restating the mapping.
+    var publishTarget: PublishTarget? {
+        switch self {
+        case .notion: return nil
+        case .obsidian: return .obsidian
+        case .filesystem: return .filesystem
+        case .lan: return .lan
         }
     }
 }

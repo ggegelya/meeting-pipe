@@ -1,7 +1,7 @@
 import XCTest
 @testable import MeetingPipe
 
-/// CI2: the cross-language `<stem>.meta.json` contract. The three committed
+/// CI2: the cross-language `<stem>.meta.json` contract. The committed
 /// fixtures in `Fixtures/meta-contract/` are the SAME files the Python suite
 /// asserts against (`pipeline/tests/test_workflow_overlay.py`, read via the
 /// repo-relative path). This side pins that `MeetingMetaSidecar.build` still
@@ -61,6 +61,31 @@ final class MetaContractFixtureTests: XCTestCase {
         XCTAssertEqual(dict as NSDictionary, try fixture("workflow-full"))
     }
 
+    /// UX45: the `"lan"` literal crossing the contract. The pipeline has built a
+    /// LAN publisher for it since FEAT1, but `WorkflowSink` had three cases, so
+    /// nothing on this side could ever emit it. Its own fixture rather than an
+    /// edit to `workflow-full` because that one is also the input to the WF8
+    /// reassignment case, and a fixture with two jobs breaks two tests at once.
+    /// The workflow pins no backend on purpose, so the fixture also carries the
+    /// inherit case (`workflow_backend` omitted) beside the new sink.
+    func test_workflow_lan_matches_fixture() throws {
+        let source = AppSource(
+            bundleID: "com.microsoft.teams2",
+            displayName: "Microsoft Teams",
+            kind: .native,
+            meetingTitle: "Ops standup"
+        )
+        let wf = Workflow(
+            id: UUID(uuidString: "0A2B3C4D-0000-0000-0000-00000000F003")!,
+            name: "On-prem",
+            color: "#0E8C82",
+            contextPrompt: "Publishes to the office share.",
+            sinks: [.lan, .filesystem]
+        )
+        let dict = MeetingMetaSidecar.build(source: source, workflow: wf)
+        XCTAssertEqual(dict as NSDictionary, try fixture("workflow-lan"))
+    }
+
     func test_workflow_nda_matches_fixture() throws {
         let source = AppSource(
             bundleID: "com.microsoft.teams2",
@@ -108,7 +133,7 @@ final class MetaContractFixtureTests: XCTestCase {
     }
 
     func test_all_fixtures_carry_schema_version_three() throws {
-        for name in ["source-only-regulated", "workflow-full", "workflow-nda", "workflow-reassigned-to-nda"] {
+        for name in ["source-only-regulated", "workflow-full", "workflow-lan", "workflow-nda", "workflow-reassigned-to-nda"] {
             let f = try fixture(name)
             XCTAssertEqual(f["schema_version"] as? Int, 3, "\(name) must carry schema_version 3")
         }

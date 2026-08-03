@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from mp.config import Config
+from mp.publish_router import build_publishers
 from mp.workflow import apply_overrides
 
 
@@ -167,6 +168,44 @@ def test_apple_intelligence_backend_override_applies(tmp_path: Path) -> None:
     assert result.summarization.backend == "apple_intelligence"
 
 
+def test_lan_sink_literal_resolves_to_the_lan_publisher(tmp_path: Path) -> None:
+    # UX45: the daemon can offer the LAN sink per workflow now, so the literal it
+    # writes has to be the one `publish_router._build_one` dispatches on. Asserted
+    # against the router rather than only against `output.sinks`, because a string
+    # the overlay happily copies through and the router then rejects is exactly the
+    # failure this task exists to prevent, and it would surface after the meeting.
+    cfg = Config.model_validate({"lan": {"mount_path": str(tmp_path / "share")}})
+    stem = "20260512-lan"
+    _write_meta(tmp_path, stem, {"workflow_sinks": ["lan", "filesystem"]})
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+
+    result = apply_overrides(cfg, wav)
+    assert result.output.sinks == ["lan", "filesystem"]
+    assert [p.name for p in build_publishers(result)] == ["lan", "filesystem"]
+
+
+def test_zero_egress_collapses_the_lan_sink_too(tmp_path: Path) -> None:
+    # Worth pinning because the two clamps disagree and the coarser one runs
+    # first. `config.effective_sinks` preserves the on-prem LAN sink under zero
+    # egress and drops only Notion (`test_lan_survives_regulated_mode`), but any
+    # recorded meeting reaches the publishers through this overlay, whose
+    # belt-and-braces clamp is filesystem-only for NDA and regulated alike. So a
+    # LAN sink does NOT in practice survive a regulated meeting, and UX45's
+    # editor copy must not promise that it does.
+    cfg = Config.model_validate({"lan": {"mount_path": str(tmp_path / "share")}})
+    stem = "20260512-lanreg"
+    _write_meta(tmp_path, stem, {
+        "regulated_mode": True,
+        "workflow_sinks": ["notion", "lan"],
+    })
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+
+    result = apply_overrides(cfg, wav)
+    assert result.output.sinks == ["filesystem"]
+
+
 def test_empty_sinks_list_is_ignored(tmp_path: Path) -> None:
     # A workflow that ended up with no sinks (UI bug, hand-edited TOML)
     # must not silently strip publishing. Fall back to the global default.
@@ -240,9 +279,22 @@ def test_contract_fixture_reassigned_into_nda_forces_local_filesystem() -> None:
     assert result.notion.database_id in (None, "")
 
 
+def test_contract_fixture_lan_sink_resolves_to_the_lan_publisher(tmp_path: Path) -> None:
+    # UX45's other direction: the committed sidecar is the one Swift's
+    # `MetaContractFixtureTests` builds from a `[.lan, .filesystem]` workflow, so
+    # this asserts the literal the daemon actually writes, not one hand-typed here.
+    cfg = Config.model_validate({"lan": {"mount_path": str(tmp_path / "share")}})
+    result = apply_overrides(cfg, _CONTRACT / "workflow-lan.meta.json")
+    assert result.output.sinks == ["lan", "filesystem"]
+    assert [p.name for p in build_publishers(result)] == ["lan", "filesystem"]
+    # The workflow pins no backend, so the global default stays in effect.
+    assert result.summarization.backend == cfg.summarization.backend
+
+
 def test_contract_fixtures_carry_schema_version() -> None:
     for name in (
-        "source-only-regulated", "workflow-full", "workflow-nda", "workflow-reassigned-to-nda"
+        "source-only-regulated", "workflow-full", "workflow-lan",
+        "workflow-nda", "workflow-reassigned-to-nda"
     ):
         data = json.loads((_CONTRACT / f"{name}.meta.json").read_text(encoding="utf-8"))
         assert data["schema_version"] == 3

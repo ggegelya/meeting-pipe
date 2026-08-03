@@ -104,6 +104,46 @@ final class WorkflowStoreTests: XCTestCase {
         XCTAssertTrue(loaded.isDefault)
     }
 
+    /// UX45: the fourth sink case. The pipeline has built a LAN publisher for the
+    /// literal `"lan"` since FEAT1; before this, `WorkflowStore.decode`'s switch
+    /// fell through to `continue`, so even a hand-written `type = "lan"` was
+    /// silently dropped on load.
+    func test_lan_sink_round_trips_through_toml() throws {
+        let dir = try makeTempDir()
+        let store = WorkflowStore(directory: dir)
+        let wf = Workflow(
+            id: UUID(),
+            name: "On-prem",
+            sinks: [.lan, .filesystem]
+        )
+        try store.upsert(wf)
+
+        // Quote-agnostic: `encode` renders with TOMLKit's defaults, which prefer
+        // the literal single-quote form, and the point here is the word, not the
+        // quoting (`ConfigStore` is the one that pins double quotes, and only
+        // because its own round-trip assertions needed it).
+        let raw = try String(contentsOf: dir.appendingPathComponent("\(wf.id.uuidString).toml"), encoding: .utf8)
+            .replacingOccurrences(of: "'", with: "\"")
+        XCTAssertTrue(raw.contains("type = \"lan\""), "the TOML carries the pipeline's own sink literal")
+
+        let reloaded = WorkflowStore(directory: dir)
+        reloaded.load()
+        let loaded = try XCTUnwrap(reloaded.workflows.first)
+        XCTAssertEqual(loaded.sinks, [.lan, .filesystem])
+        XCTAssertEqual(loaded.effectiveSinkTypeNames, ["lan", "filesystem"])
+    }
+
+    /// The sink vocabulary is the Swift-to-Python contract, so it is worth
+    /// asserting as a set rather than only through a round-trip: a case added
+    /// here whose `typeName` the pipeline does not build raises
+    /// `PublisherBuildError` at publish time, on a meeting that is already over.
+    func test_every_sink_case_names_a_publisher_the_pipeline_builds() {
+        let names = [
+            WorkflowSink.notion(databaseId: ""), .obsidian, .filesystem, .lan,
+        ].map(\.typeName)
+        XCTAssertEqual(names, ["notion", "obsidian", "filesystem", "lan"])
+    }
+
     func test_extra_sections_round_trip() throws {
         let dir = try makeTempDir()
         let store = WorkflowStore(directory: dir)

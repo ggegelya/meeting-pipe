@@ -274,6 +274,107 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertTrue(raw.contains("diarize_cleanup = true"))
     }
 
+    // MARK: - Publish targets (UX45)
+
+    func test_publish_target_defaults_match_the_pipeline_on_a_fresh_file() throws {
+        // These are the values `ObsidianCfg` / `FilesystemCfg` / `LanCfg` /
+        // `NotionCfg` carry in config.py. A drift here would show the owner a
+        // destination the publisher does not use, which is worse than no UI.
+        let url = try makeTempConfigURL()
+        let store = try ConfigStore(configURL: url)
+        XCTAssertEqual(store.obsidianVaultPath, "", "no vault until the owner picks one")
+        XCTAssertEqual(store.obsidianFolder, "Meetings")
+        XCTAssertTrue(store.obsidianAttachAudio)
+        XCTAssertEqual(store.obsidianAttachmentsSubfolder, "_attachments")
+        XCTAssertEqual(store.filesystemOutputDir, "~/Documents/Meetings/published")
+        XCTAssertEqual(store.lanMountPath, "/Volumes/meetings")
+        XCTAssertEqual(store.lanHost, "")
+        XCTAssertTrue(store.notionIncludeFullTranscript, "on, matching the pipeline default")
+        XCTAssertEqual(store.summarizationOpenAIModel, "gpt-4o")
+    }
+
+    func test_publish_targets_round_trip() throws {
+        let url = try makeTempConfigURL()
+        try """
+        [obsidian]
+        vault_path = "~/Vaults/Work"
+        folder = "Calls"
+        attach_audio = false
+        attachments_subfolder = "media"
+
+        [filesystem]
+        output_dir = "~/Published"
+
+        [lan]
+        mount_path = "/Volumes/team"
+        host = "files.example.lan"
+
+        [notion]
+        include_full_transcript = false
+        """.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        XCTAssertEqual(store.obsidianVaultPath, "~/Vaults/Work")
+        XCTAssertEqual(store.obsidianFolder, "Calls")
+        XCTAssertFalse(store.obsidianAttachAudio)
+        XCTAssertEqual(store.obsidianAttachmentsSubfolder, "media")
+        XCTAssertEqual(store.filesystemOutputDir, "~/Published")
+        XCTAssertEqual(store.lanMountPath, "/Volumes/team")
+        XCTAssertEqual(store.lanHost, "files.example.lan")
+        XCTAssertFalse(store.notionIncludeFullTranscript)
+
+        store.obsidianVaultPath = "~/Vaults/Personal"
+        store.obsidianAttachAudio = true
+        store.filesystemOutputDir = "~/Elsewhere"
+        store.lanMountPath = "/Volumes/other"
+        store.lanHost = ""
+        store.notionIncludeFullTranscript = true
+        store.summarizationOpenAIModel = "gpt-4o-mini"
+        try store.saveNow()
+
+        let reloaded = try ConfigStore(configURL: url)
+        XCTAssertEqual(reloaded.obsidianVaultPath, "~/Vaults/Personal")
+        XCTAssertTrue(reloaded.obsidianAttachAudio)
+        XCTAssertEqual(reloaded.filesystemOutputDir, "~/Elsewhere")
+        XCTAssertEqual(reloaded.lanMountPath, "/Volumes/other")
+        XCTAssertEqual(reloaded.lanHost, "")
+        XCTAssertTrue(reloaded.notionIncludeFullTranscript)
+        XCTAssertEqual(reloaded.summarizationOpenAIModel, "gpt-4o-mini")
+    }
+
+    func test_publish_target_writes_preserve_unmodelled_siblings() throws {
+        // The two Obsidian keys UX45 deliberately left TOML-only live in the same
+        // table as the four it models, so a write that dropped them would silently
+        // switch the owner back to the built-in template.
+        let url = try makeTempConfigURL()
+        try """
+        [obsidian]
+        vault_path = "~/Vaults/Work"
+        template_path = "~/Vaults/Work/_templates/meeting.md"
+        daily_note_backlink = true
+
+        [notion]
+        database_id = "deadbeef"
+        default_status = "Captured"
+
+        [lan]
+        mount_path = "/Volumes/team"
+        """.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        store.obsidianFolder = "Calls"
+        store.notionIncludeFullTranscript = false
+        try store.saveNow()
+
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(raw.contains("_templates/meeting.md"), "template_path stays TOML-only, not dropped")
+        XCTAssertTrue(raw.contains("daily_note_backlink = true"))
+        XCTAssertTrue(raw.contains("default_status = \"Captured\""))
+        XCTAssertTrue(raw.contains("folder = \"Calls\""))
+        XCTAssertTrue(raw.contains("include_full_transcript = false"))
+        XCTAssertTrue(raw.contains("mount_path = \"/Volumes/team\""))
+    }
+
     func test_loads_pipeline_side_fields_surfaced_in_ui() throws {
         let url = try makeTempConfigURL()
         try """

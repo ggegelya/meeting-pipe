@@ -153,17 +153,16 @@ You can change this later at any time, and switch a single meeting's backend aft
 
 There is nothing you have to edit. Your Notion database, your backend, and your API keys are all set in the app (the Welcome flow, or Preferences at any time), and the menu bar's **Finish setup** row tells you if anything is still missing. Most people never open a config file.
 
-The installer did create one at `~/.config/meeting-pipe/config.toml` for power users. Every option is documented with comments in the file, and most have working defaults. You only need it for the few things without a dedicated control yet, such as changing the **global** publish target to Obsidian or a plain folder:
+**Publishing somewhere other than Notion needs no file.** Open **Preferences ▸ Integrations** and set the destination there: an Obsidian vault, a plain output folder, or a mounted network share. Then tick that destination in the workflow editor for the meetings that should use it. If you tick one whose destination is not set, the editor tells you so under the checkbox rather than letting the publish quietly fail after the meeting.
+
+The installer did create a config file at `~/.config/meeting-pipe/config.toml` for power users. Every option is documented with comments in the file, and most have working defaults. You only need it for the few things without a dedicated control yet, such as changing which destinations a meeting uses when **no** workflow matched it:
 
 ```toml
 [output]
 sinks = ["obsidian"]
-
-[obsidian]
-vault_path = "~/Documents/MyVault"
 ```
 
-`sinks` takes a list, so `["notion", "obsidian"]` writes to both, and each is independent: if one fails the other still lands. (Per-workflow sinks are set with checkboxes in the workflow editor instead, no file needed.) Most changes take effect on the next recording; a few need the app relaunched, and the comments say which. When you are done, re-run the doctor from **Preferences ▸ Integrations ▸ Run doctor…** and it should come up clean.
+`sinks` takes a list, so `["notion", "obsidian"]` writes to both, and each is independent: if one fails the other still lands. Most changes take effect on the next recording; a few need the app relaunched, and the comments say which. When you are done, re-run the doctor from **Preferences ▸ Integrations ▸ Run doctor…** and it should come up clean.
 
 ## Step 9: Record your first meeting
 

@@ -76,9 +76,46 @@ final class ConfigStore: ObservableObject {
     @Published var summarizationBackend: String { didSet { scheduleSave() } }
     @Published var summarizationLocalModel: String { didSet { scheduleSave() } }
     @Published var summarizationLocalEndpoint: String { didSet { scheduleSave() } }
+    /// Model id the `openai` backend calls (`summarization.openai_model`). Ignored
+    /// by every other backend. Surfaced by UX45; before that, picking the OpenAI
+    /// backend showed an instruction to hand-edit `config.toml`.
+    @Published var summarizationOpenAIModel: String { didSet { scheduleSave() } }
     /// Display name stamped on the user's own diarized speaker so "me vs them"
     /// reads as a real name (`summarization.user_label`).
     @Published var summarizationUserLabel: String { didSet { scheduleSave() } }
+
+    // MARK: - Publish targets (UX45)
+
+    /// Where each non-Notion sink writes. Global, not per-workflow, and
+    /// deliberately so: a workflow chooses WHICH sinks run, global config says
+    /// WHERE they land. All of these were TOML-only until UX45, which meant a
+    /// workflow could enable the Obsidian or Filesystem sink and have it silently
+    /// fail to run, and the LAN sink could not be selected at all.
+    ///
+    /// The defaults mirror the pipeline's own (`ObsidianCfg` / `FilesystemCfg` /
+    /// `LanCfg` in `config.py`) so Preferences never shows a value the publisher
+    /// would not use. They stay inline rather than in `ConfigDefaults` because
+    /// only this store reads them Swift-side, which is the rule that file states
+    /// for its own contents.
+    ///
+    /// `obsidian.template_path` and `obsidian.daily_note_backlink` are the two
+    /// keys left TOML-only on purpose: both are advanced, neither can stop the
+    /// sink from running.
+    @Published var obsidianVaultPath: String { didSet { scheduleSave() } }
+    @Published var obsidianFolder: String { didSet { scheduleSave() } }
+    @Published var obsidianAttachAudio: Bool { didSet { scheduleSave() } }
+    @Published var obsidianAttachmentsSubfolder: String { didSet { scheduleSave() } }
+    @Published var filesystemOutputDir: String { didSet { scheduleSave() } }
+    /// Target directory on an already-mounted SMB/NFS share (FEAT1). The publisher
+    /// never creates the mount root itself, so a share that is down fails loudly
+    /// rather than quietly writing to local disk.
+    @Published var lanMountPath: String { didSet { scheduleSave() } }
+    /// Optional label, used only in the LAN sink's "share unreachable" message.
+    @Published var lanHost: String { didSet { scheduleSave() } }
+    /// Whether Notion pages carry the full transcript body. Defaults on, matching
+    /// the pipeline: without a switch, every transcript egresses to Notion wherever
+    /// that sink runs, and regulated mode was the only in-app lever that stopped it.
+    @Published var notionIncludeFullTranscript: Bool { didSet { scheduleSave() } }
 
     /// Opt-in LoRA adapter the local backend serves (`summarization.local_adapter_path`,
     /// LOCAL9), read straight off the live TOML. Read-only for the same reason as
@@ -131,6 +168,9 @@ final class ConfigStore: ObservableObject {
         let mod = doc["modes"]?.table
         let notion = doc["notion"]?.table
         let summ = doc["summarization"]?.table
+        let obsidian = doc["obsidian"]?.table
+        let filesystem = doc["filesystem"]?.table
+        let lan = doc["lan"]?.table
 
         self.outputDirPath = rec?["output_dir"]?.string ?? ConfigDefaults.outputDirPath
         self.autoConsentApps = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string })
@@ -179,7 +219,20 @@ final class ConfigStore: ObservableObject {
             ?? "mlx-community/Qwen2.5-7B-Instruct-4bit"
         self.summarizationLocalEndpoint = summ?["local_endpoint"]?.string
             ?? "http://127.0.0.1:8765"
+        self.summarizationOpenAIModel = summ?["openai_model"]?.string ?? "gpt-4o"
         self.summarizationUserLabel = summ?["user_label"]?.string ?? ""
+
+        // UX45 publish targets. Defaults mirror the pipeline's models exactly.
+        self.notionIncludeFullTranscript = notion?["include_full_transcript"]?.bool ?? true
+        self.obsidianVaultPath = obsidian?["vault_path"]?.string ?? ""
+        self.obsidianFolder = obsidian?["folder"]?.string ?? "Meetings"
+        self.obsidianAttachAudio = obsidian?["attach_audio"]?.bool ?? true
+        self.obsidianAttachmentsSubfolder = obsidian?["attachments_subfolder"]?.string
+            ?? "_attachments"
+        self.filesystemOutputDir = filesystem?["output_dir"]?.string
+            ?? "~/Documents/Meetings/published"
+        self.lanMountPath = lan?["mount_path"]?.string ?? "/Volumes/meetings"
+        self.lanHost = lan?["host"]?.string ?? ""
 
         // Arm last: every prior assignment's didSet no-ops on !isInitialized.
         self.isInitialized = true
@@ -241,13 +294,24 @@ final class ConfigStore: ObservableObject {
         ensureTable("transcription")["diarization_clustering_threshold"] = diarizationClusteringThreshold
 
         ensureTable("notion")["database_id"] = notionDatabaseId
+        ensureTable("notion")["include_full_transcript"] = notionIncludeFullTranscript
         ensureTable("summarization")["summary_language"] = summaryLanguage
         ensureTable("summarization")["diarize_cleanup"] = summarizationDiarizeCleanup
         ensureTable("summarization")["skip_above_chars"] = summarizationSkipAboveChars
         ensureTable("summarization")["backend"] = summarizationBackend
         ensureTable("summarization")["local_model"] = summarizationLocalModel
         ensureTable("summarization")["local_endpoint"] = summarizationLocalEndpoint
+        ensureTable("summarization")["openai_model"] = summarizationOpenAIModel
         ensureTable("summarization")["user_label"] = summarizationUserLabel
+
+        // UX45 publish targets.
+        ensureTable("obsidian")["vault_path"] = obsidianVaultPath
+        ensureTable("obsidian")["folder"] = obsidianFolder
+        ensureTable("obsidian")["attach_audio"] = obsidianAttachAudio
+        ensureTable("obsidian")["attachments_subfolder"] = obsidianAttachmentsSubfolder
+        ensureTable("filesystem")["output_dir"] = filesystemOutputDir
+        ensureTable("lan")["mount_path"] = lanMountPath
+        ensureTable("lan")["host"] = lanHost
     }
 
     /// Render `rawDocument` and replace `configURL` atomically.

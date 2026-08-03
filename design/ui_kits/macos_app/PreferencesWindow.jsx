@@ -336,7 +336,7 @@ const PWPipelinePane = () => (
 
 const PWIntegrationsPane = () => (
   <div>
-    <PWSectionHeader title="Integrations" caption="Credentials for outbound services. Stored in ~/.config/meeting-pipe/secrets.env (mode 0600)." trailing={<PWSmallButton><span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><Icon name="stethoscope" size={12}/> Run doctor…</span></PWSmallButton>}/>
+    <PWSectionHeader title="Integrations" caption="Credentials for outbound services, stored in your macOS Keychain, and where each publish target writes. Which targets a meeting uses is per workflow; this is where they point." trailing={<PWSmallButton><span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><Icon name="stethoscope" size={12}/> Run doctor…</span></PWSmallButton>}/>
     <PWGroup label="Anthropic" footer="Used to summarize transcripts. Get a key at console.anthropic.com. Local MLX backend doesn't need this.">
       <PWStackRow first label="API key"><PWSecretField placeholder="sk-ant-…"/></PWStackRow>
       <PWRow label="Status"><PWStatusPill tone="granted" icon="check-circle" text="Configured"/></PWRow>
@@ -344,7 +344,29 @@ const PWIntegrationsPane = () => (
     <PWGroup label="Notion" footer="Create the integration at notion.so/profile/integrations, share your Meetings database with it, and paste the database ID here.">
       <PWStackRow first label="Integration token"><PWSecretField placeholder="ntn_…"/></PWStackRow>
       <PWStackRow label="Database ID"><PWField placeholder="32-char hex from your database URL" mono/></PWStackRow>
+      <PWToggleRow on label="Include the full transcript" sublabel="Every word spoken is sent to Notion and stored on the page. Off publishes the summary and actions only; the transcript stays on this Mac."/>
       <PWRow label="Status"><PWStatusPill tone="needed" icon="alert-triangle" text="Not configured"/></PWRow>
+    </PWGroup>
+    {/* UX45 publish targets. No heading of their own: DSN28 locks one type
+        anchor per surface, so the group eyebrows carry the level and the pane
+        caption says the pane now holds two kinds of thing. Each is a path field
+        beside a Choose… panel button, then a status pill whose sublabel names
+        the missing setting while it is unset. */}
+    <PWGroup label="Obsidian" footer="Notes land at <vault>/<subfolder>/<date> <title>.md with YAML front-matter. A custom template and the daily-note backlink stay in config.toml (obsidian.template_path, obsidian.daily_note_backlink).">
+      <PWStackRow first label="Vault folder"><PWField placeholder="~/Documents/Obsidian/Personal" mono/><PWSmallButton>Choose…</PWSmallButton></PWStackRow>
+      <PWStackRow label="Notes subfolder" sublabel="Where inside the vault a meeting note lands."><PWField placeholder="Meetings"/></PWStackRow>
+      <PWToggleRow on label="Copy the recording into the vault" sublabel="Attaches the audio beside the note. An hour of meeting is about 0.7 GB, so a synced vault feels this."/>
+      <PWStackRow label="Attachments subfolder"><PWField placeholder="_attachments"/></PWStackRow>
+      <PWRow label="Status" sublabel="Set a vault folder above. Until then, a workflow with the Obsidian sink on publishes nothing there."><PWStatusPill tone="needed" icon="alert-triangle" text="Not configured"/></PWRow>
+    </PWGroup>
+    <PWGroup label="Filesystem" footer="Three files per meeting: summary, transcript, and actions. This is where an NDA workflow publishes, and the only place it does, so it is worth setting even if you never enable the sink by hand.">
+      <PWStackRow first label="Output folder"><PWField value="~/Documents/Meetings/published" mono/><PWSmallButton>Choose…</PWSmallButton></PWStackRow>
+      <PWRow label="Status"><PWStatusPill tone="granted" icon="check-circle" text="Configured"/></PWRow>
+    </PWGroup>
+    <PWGroup label="LAN share" footer="Mount the SMB/NFS share yourself first: the publisher never creates the mount root, so a share that is down fails loudly instead of quietly writing to local disk. A regulated or NDA meeting still publishes to the local folder only, share or no share.">
+      <PWStackRow first label="Mount path"><PWField value="/Volumes/meetings" mono/><PWSmallButton>Choose…</PWSmallButton></PWStackRow>
+      <PWStackRow label="Share name" sublabel="Optional. Only ever shown in the &quot;share unreachable&quot; message."><PWField placeholder="files.example.lan"/></PWStackRow>
+      <PWRow label="Status"><PWStatusPill tone="granted" icon="check-circle" text="Configured"/></PWRow>
     </PWGroup>
   </div>
 );

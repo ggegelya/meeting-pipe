@@ -58,6 +58,18 @@ struct PipelineSectionView: View {
                         width: 260
                     )
                 }
+                if store.summarizationBackend == "openai" {
+                    // UX45: this row replaces an instruction to hand-edit
+                    // config.toml, which is the literal anti-pattern the de-CLI
+                    // rule names. Global, like every other backend's model id: a
+                    // workflow pins WHICH backend, not which model.
+                    SettingsStackRow("Model id",
+                        sublabel: "Any model your OpenAI key can call.") {
+                        TextField("gpt-4o", text: $store.summarizationOpenAIModel)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                    }
+                }
                 if store.summarizationBackend == "local" || store.summarizationBackend == "auto" {
                     // The local-MLX cluster (preset, model id, endpoint, active
                     // model, preload) is collapsed behind a disclosure so the
@@ -402,7 +414,7 @@ struct PipelineSectionView: View {
         case "claude_cli":
             Text("Runs the headless `claude` CLI (Claude Code). No API key needed: it uses your existing Claude Code login, so it summarizes at no extra API cost. A cloud backend, so a regulated or NDA workflow forces on-device instead.")
         case "openai":
-            Text("Calls an OpenAI-compatible API. Requires an OpenAI API key (set OPENAI_API_KEY under Integrations); the model id is summarization.openai_model in config.toml.")
+            Text("Calls an OpenAI-compatible API. Requires an OpenAI API key (set it under Integrations). A cloud backend, so a regulated or NDA workflow forces on-device instead.")
         default:
             Text("Calls api.anthropic.com. Requires an Anthropic API key (set it under Integrations).")
         }

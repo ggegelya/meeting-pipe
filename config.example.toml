@@ -181,6 +181,7 @@ local_endpoint = "http://127.0.0.1:8765"
 # run loudly instead of quietly serving the base model.
 # local_adapter_path = ""
 # Model id for the "openai" backend (PROV1). Ignored by every other backend.
+# Picking OpenAI in Preferences -> Pipeline reveals a Model id field over this.
 openai_model = "gpt-4o"
 # Local-backend timeouts (LOCAL2). `local_startup_timeout_sec` bounds the wait
 # for mlx_lm.server to report healthy; `local_request_timeout_sec` is the base
@@ -212,37 +213,48 @@ diarize_cleanup = false
 # Ordered list of publishers to invoke after a summary is produced. Each sink
 # fails independently, so one going down does not block the others. Add any of
 # "obsidian", "filesystem", "lan" to fan out; each has its own section below and
-# is only consulted when it appears here.
+# is only consulted when it appears here. This is the GLOBAL list; a workflow's
+# own sink checkboxes (workflow editor) override it for the meetings it matches.
 sinks = ["notion"]
 
 [notion]
 # Notion database ID (32 chars, no hyphens — copy from the database URL).
 database_id = ""
 default_status = "Captured"
-# Toggle off for regulated meetings to keep transcripts out of Notion.
+# Whether the page carries the whole transcript body. On by default, so every
+# word spoken goes to Notion wherever this sink runs. Toggle it in
+# Preferences -> Integrations -> Notion ("Include the full transcript"); off
+# publishes the summary and actions only, a much smaller hammer than regulated
+# mode for the same worry.
 include_full_transcript = true
 
 # Every key below is only read when its sink is listed in `output.sinks` above.
 # The values shown are the defaults, so a sink you never enable costs nothing.
+# A workflow picks WHICH sinks run; these say WHERE each one writes, which is
+# why they are global. Set them in Preferences -> Integrations rather than here.
 
 [obsidian]
 # Required when "obsidian" is in output.sinks: the vault root. Left blank the
-# sink cannot run, and `mp doctor` warns. Notes land at
-# <vault_path>/<folder>/<date> <slug>.md with YAML front-matter.
+# sink cannot run, `mp doctor` warns, and the workflow editor says so under the
+# checkbox. Notes land at <vault_path>/<folder>/<date> <slug>.md with YAML
+# front-matter.
 # vault_path = "~/Documents/Obsidian/Personal"
 folder = "Meetings"
 # Point at your own Markdown template; blank uses the built-in one, which
-# covers the common case.
+# covers the common case. Config-only on purpose (UX45): advanced, and it
+# cannot stop the sink from running.
 template_path = ""
 # Copy the recording into the vault beside the note.
 attach_audio = true
 attachments_subfolder = "_attachments"
-# Also append a link to that day's daily note.
+# Also append a link to that day's daily note. Config-only, like template_path.
 daily_note_backlink = false
 
 [filesystem]
 # Where the "filesystem" sink drops its three files per meeting (summary,
-# transcript, actions). A sibling of the recordings dir by default.
+# transcript, actions). A sibling of the recordings dir by default. Worth
+# setting even if you never enable the sink by hand: an NDA workflow publishes
+# here and nowhere else.
 output_dir = "~/Documents/Meetings/published"
 
 [lan]
@@ -250,7 +262,10 @@ output_dir = "~/Documents/Meetings/published"
 # Same three files as the filesystem sink, but written atomically and only
 # after a reachability check: the publisher never creates the mount root
 # itself, so a share that is down fails loudly instead of quietly writing to
-# local disk. On-prem, so it survives regulated mode.
+# local disk. On-prem, so `effective_sinks` keeps it while dropping Notion
+# under zero egress, but a RECORDED meeting reaches the publishers through the
+# workflow overlay first, and that clamp is filesystem-only for a regulated or
+# NDA meeting alike; in practice a LAN sink does not publish under either.
 mount_path = "/Volumes/meetings"
 # Optional label, used only in the "share unreachable" error message.
 host = ""
