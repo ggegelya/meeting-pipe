@@ -106,6 +106,10 @@ protocol PipelineDriver: AnyObject {
     func rosterRename(old: String, new: String, completion: @escaping (Result<Void, Error>) -> Void)
     /// Run a full library backup now (STOR3): `mp backup <dir>` writes a dated `tar.gz` into `dir` and updates `.last-backup.json`. Local-only (`entry.prepare(secrets=False)`), so no meeting anchor. Defaulted no-op.
     func backup(dir: URL, completion: @escaping (Result<Void, Error>) -> Void)
+    /// STOR5 step one: `mp restore <archive> --dry-run --json --out <tmp>`, the mandatory preview. Writes nothing and refuses nothing, so it always answers with the plan the confirm is about. Defaulted no-op.
+    func restorePreview(archive: URL, completion: @escaping (Result<RestorePlan, Error>) -> Void)
+    /// STOR5 step two: `mp restore <archive> --force`, the real run, only ever after a confirmed plan. Defaulted no-op.
+    func restore(archive: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// Merge fragmented recordings into the primary (FEAT9): `mp merge-meetings <primary.wav> <fragment.wav>...` concatenates the audio + transcripts, re-summarizes, and republishes under the primary stem (upsert). Returns the primary's page URL. The primary anchors `cloudSecretPolicy`, matching the pipeline arming its egress guard on the primary's workflow. Defaulted no-op.
     func mergeMeetings(primary: URL, fragments: [URL], completion: @escaping (Result<URL?, Error>) -> Void)
 }
@@ -247,6 +251,22 @@ extension PipelineDriver {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "backup unsupported by this driver"]
+        )))
+    }
+
+    /// Default no-op stub; `PipelineLauncher` overrides this.
+    func restorePreview(archive: URL, completion: @escaping (Result<RestorePlan, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "restorePreview unsupported by this driver"]
+        )))
+    }
+
+    /// Default no-op stub; `PipelineLauncher` overrides this.
+    func restore(archive: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "restore unsupported by this driver"]
         )))
     }
 
@@ -583,6 +603,59 @@ final class PipelineLauncher: PipelineDriver {
     /// A multi-gigabyte library can take minutes to tar, hence the generous cap.
     func backup(dir: URL, completion: @escaping (Result<Void, Error>) -> Void) {
         runMP(["backup", dir.path], timeout: 30 * 60, meeting: nil, completion: completion)
+    }
+
+    /// STOR5: the argv of the two restore invocations. Pure and static so a test
+    /// pins both without spawning anything, which is the only way the sequence
+    /// (dry run first, real run only after a confirm) is observable at all.
+    ///
+    /// The plan comes back through a temp file rather than stdout because
+    /// `runMP` reports success or failure and nothing else, the same reason `ask`
+    /// and `actions --cluster` are shaped this way.
+    static func restorePreviewArgs(archive: URL, out: URL) -> [String] {
+        ["restore", archive.path, "--dry-run", "--json", "--out", out.path]
+    }
+
+    /// `--force` here is not bravado. Every in-app restore writes into a *live*
+    /// library, and a plain `mp restore` refuses an occupied destination because
+    /// it was written for a new Mac's empty roots. The refusal is what the
+    /// preview replaces: it names the files this overwrites, and the owner
+    /// presses a button that says so.
+    static func restoreArgs(archive: URL) -> [String] {
+        ["restore", archive.path, "--force"]
+    }
+
+    /// STOR5 step one: the mandatory dry run, parsed into the plan the confirm
+    /// renders. Local-only, so no meeting anchor. A multi-gigabyte archive has to
+    /// be decompressed end to end to be walked, hence the same generous cap as
+    /// `backup`.
+    func restorePreview(archive: URL, completion: @escaping (Result<RestorePlan, Error>) -> Void) {
+        let outURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mp-restore-plan-\(UUID().uuidString).json")
+        runMP(Self.restorePreviewArgs(archive: archive, out: outURL),
+              timeout: 30 * 60, meeting: nil) { result in
+            defer { try? FileManager.default.removeItem(at: outURL) }
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success:
+                guard let plan = RestorePlan.load(from: outURL) else {
+                    completion(.failure(NSError(domain: "mp restore", code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "restore --dry-run produced no readable plan"])))
+                    return
+                }
+                completion(.success(plan))
+            }
+        }
+    }
+
+    /// STOR5 step two: the real run. Deliberately not retained for cancel, unlike
+    /// `runAll` / `summarize`: a restore killed halfway leaves a library that is
+    /// neither the old one nor the backup, so there is no safe point to stop it
+    /// at and the pane offers no Cancel to imply there is.
+    func restore(archive: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        runMP(Self.restoreArgs(archive: archive), timeout: 30 * 60, meeting: nil,
+              completion: completion)
     }
 
     /// AI4: generate the weekly digest now (`mp digest`). Library-wide, so no meeting

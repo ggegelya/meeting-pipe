@@ -17,7 +17,13 @@ from mp import storage
 from mp import backup as backup_mod
 from mp.backup import MANIFEST_NAME, BackupError, check_destination, create_backup
 from mp.config import KEYCHAIN_SERVICE, MANAGED_SECRET_KEYS, Config
-from mp.restore import RestoreError, read_manifest, restore_archive
+from mp.restore import (
+    PLAN_SAMPLE_LIMIT,
+    RestoreError,
+    plan_restore,
+    read_manifest,
+    restore_archive,
+)
 
 
 def _make_home(tmp_path: Path, name: str = "home") -> Path:
@@ -392,6 +398,220 @@ def test_restore_refuses_a_member_escaping_from_inside_a_valid_prefix(tmp_path: 
         restore_archive(hostile, _cfg(fresh), home=fresh)
     assert not (tmp_path / "escaped.txt").exists()
     assert not (tmp_path.parent / "escaped.txt").exists()
+
+
+# ---------- the dry-run plan the app previews (STOR5) ------------------------
+
+
+def _plan_fixture(tmp_path: Path, destination_name: str = "this-mac") -> tuple[Path, Path]:
+    """A real archive, plus a scratch home to plan a restore into."""
+    source = _make_home(tmp_path, "old-mac")
+    _populate(source)
+    archive = create_backup(_cfg(source), tmp_path / "out", home=source)
+    return archive, _make_home(tmp_path, destination_name)
+
+
+def test_plan_counts_every_root_and_names_what_lands(tmp_path: Path) -> None:
+    archive, fresh = _plan_fixture(tmp_path)
+
+    plan = plan_restore(archive, _cfg(fresh), home=fresh)
+
+    assert plan["total_files"] == 10
+    assert plan["added"] == 10
+    assert plan["replaced"] == 0
+    roots = {root["name"]: root for root in plan["roots"]}
+    assert roots["library"]["files"] == 3
+    assert roots["library"]["destination"] == str(fresh / "Meetings" / "raw")
+    assert roots["library"]["occupied"] is False
+    assert roots["digests"]["files"] == 1
+    assert roots["corrections"]["files"] == 1
+    # The sample is what lets a preview say *which* meeting comes back.
+    assert "library/20260101-120000.wav" in plan["added_sample"]
+    assert plan["replaced_sample"] == []
+    assert plan["created_at"] == read_manifest(archive)["created_at"]
+    assert plan["audio_included"] is True
+
+
+def test_plan_splits_the_files_that_come_back_from_the_ones_it_overwrites(
+    tmp_path: Path,
+) -> None:
+    """The recovery case STOR5 exists for: one meeting's files were lost from a
+    live library, and the preview has to name exactly that one as coming back
+    while being honest that everything else is overwritten in place."""
+    archive, live = _plan_fixture(tmp_path, "live")
+    _populate(live)
+    (live / "Meetings" / "raw" / "20260101-120000.wav").unlink()
+
+    plan = plan_restore(archive, _cfg(live), home=live)
+
+    assert plan["added"] == 1
+    assert plan["added_sample"] == ["library/20260101-120000.wav"]
+    assert plan["replaced"] == plan["total_files"] - 1
+    assert "library/20260101-120000.md" in plan["replaced_sample"]
+    library = next(root for root in plan["roots"] if root["name"] == "library")
+    assert (library["files"], library["added"], library["replaced"]) == (3, 1, 2)
+
+
+def test_plan_marks_an_occupied_destination_with_nothing_to_replace(tmp_path: Path) -> None:
+    # Occupancy is not the same question as overwriting: a library holding only
+    # *other* meetings is what a plain restore refuses over, and replaces nothing.
+    archive, live = _plan_fixture(tmp_path, "live")
+    library = live / "Meetings" / "raw"
+    library.mkdir(parents=True)
+    (library / "20260707-090000.wav").write_bytes(b"RIFF")
+
+    plan = plan_restore(archive, _cfg(live), home=live)
+
+    root = next(r for r in plan["roots"] if r["name"] == "library")
+    assert root["occupied"] is True
+    assert root["replaced"] == 0
+    assert root["added"] == 3
+
+
+def test_plan_never_refuses_an_occupied_destination_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    # A preview whose whole job is to describe a conflict cannot be the thing
+    # that refuses one, and it must leave the disk exactly as it found it.
+    archive, live = _plan_fixture(tmp_path, "live")
+    _populate(live)
+    before = sorted(p.name for p in (live / "Meetings" / "raw").iterdir())
+
+    plan = plan_restore(archive, _cfg(live), home=live)
+
+    assert plan["replaced"] > 0
+    assert sorted(p.name for p in (live / "Meetings" / "raw").iterdir()) == before
+    assert (live / "Meetings" / "raw" / "20260101-120000.md").read_text() == "# transcript"
+
+
+def test_plan_reports_that_this_macs_config_toml_is_kept(tmp_path: Path) -> None:
+    archive, fresh = _plan_fixture(tmp_path)
+    assert plan_restore(archive, _cfg(fresh), home=fresh)["keeps_config_toml"] is False
+
+    config = storage.config_dir(fresh)
+    config.mkdir(parents=True, exist_ok=True)
+    (config / "config.toml").write_text('[recording]\noutput_dir = "~/Recordings"\n')
+
+    plan = plan_restore(archive, _cfg(fresh), home=fresh)
+    assert plan["keeps_config_toml"] is True
+    # ... and the backup's copy is then not among the files that would land.
+    assert "config/config.toml" not in plan["added_sample"] + plan["replaced_sample"]
+
+
+def test_plan_samples_are_capped_but_the_counts_stay_exact(tmp_path: Path) -> None:
+    source = _make_home(tmp_path, "old-mac")
+    _populate(source)
+    for i in range(PLAN_SAMPLE_LIMIT + 5):
+        (source / "Meetings" / "raw" / f"2026020{i % 10}-1200{i:02d}.md").write_text("x")
+    archive = create_backup(_cfg(source), tmp_path / "out", home=source)
+    fresh = _make_home(tmp_path, "new-mac")
+
+    plan = plan_restore(archive, _cfg(fresh), home=fresh)
+
+    assert len(plan["added_sample"]) == PLAN_SAMPLE_LIMIT
+    assert plan["added"] > PLAN_SAMPLE_LIMIT
+
+
+def test_plan_carries_the_no_audio_flag(tmp_path: Path) -> None:
+    # A sidecar-only backup restores meetings with no recording, which the
+    # confirm has to say before the owner presses it.
+    source = _make_home(tmp_path, "old-mac")
+    _populate(source)
+    archive = create_backup(_cfg(source), tmp_path / "out", home=source, include_audio=False)
+    fresh = _make_home(tmp_path, "new-mac")
+
+    assert plan_restore(archive, _cfg(fresh), home=fresh)["audio_included"] is False
+
+
+def test_plan_rejects_a_missing_archive(tmp_path: Path) -> None:
+    with pytest.raises(RestoreError, match="no archive at"):
+        plan_restore(tmp_path / "nope.tar.gz", _cfg(_make_home(tmp_path)))
+
+
+def test_plan_matches_what_the_real_run_then_writes(tmp_path: Path) -> None:
+    """The two are one walk, seen twice. If they can disagree, the confirm the
+    owner pressed described a different restore than the one that ran."""
+    archive, live = _plan_fixture(tmp_path, "live")
+    _populate(live)
+    (live / "Meetings" / "raw" / "20260101-120000.wav").unlink()
+
+    plan = plan_restore(archive, _cfg(live), home=live)
+    written = restore_archive(archive, _cfg(live), home=live, force=True)
+
+    assert {root["prefix"]: root["files"] for root in plan["roots"]} == written
+
+
+# ---------- the CLI surface the daemon spawns (STOR5) ------------------------
+
+
+def _restore_main(
+    argv: list[str], home: Path, monkeypatch: pytest.MonkeyPatch
+) -> int:
+    """Run `mp restore` the way the daemon spawns it, against a scratch `$HOME`.
+
+    `main` resolves the config and corrections roots from the *real* home (it
+    passes no `home=` override), so without the `$HOME` swap a CLI test reads the
+    developer's own `~/.config/meeting-pipe` and its counts move machine to
+    machine."""
+    from mp import restore as restore_mod
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("mp.entry.prepare", lambda *a, **k: _cfg(home))
+    return restore_mod.main(argv)
+
+
+def test_cli_json_without_dry_run_is_a_usage_error(tmp_path: Path) -> None:
+    from mp import restore as restore_mod
+
+    with pytest.raises(SystemExit) as exc:
+        restore_mod.main([str(tmp_path / "a.tar.gz"), "--json"])
+    assert exc.value.code == 2
+
+
+def test_cli_out_without_json_is_a_usage_error(tmp_path: Path) -> None:
+    from mp import restore as restore_mod
+
+    with pytest.raises(SystemExit) as exc:
+        restore_mod.main([str(tmp_path / "a.tar.gz"), "--dry-run", "--out", str(tmp_path / "p")])
+    assert exc.value.code == 2
+
+
+def test_cli_writes_the_plan_the_daemon_reads_and_restores_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, fresh = _plan_fixture(tmp_path)
+    out = tmp_path / "plan" / "restore-plan.json"
+
+    rc = _restore_main([str(archive), "--dry-run", "--json", "--out", str(out)], fresh, monkeypatch)
+
+    assert rc == 0
+    plan = json.loads(out.read_text())
+    assert plan["total_files"] == 10
+    assert [root["name"] for root in plan["roots"]] == [
+        "library", "digests", "config", "corrections"
+    ]
+    assert not (fresh / "Meetings" / "raw").exists()
+
+
+def test_cli_json_to_stdout_is_the_whole_of_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    archive, fresh = _plan_fixture(tmp_path)
+
+    rc = _restore_main([str(archive), "--dry-run", "--json"], fresh, monkeypatch)
+
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["archive"] == str(archive)
+
+
+def test_cli_reports_a_bad_archive_without_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = _restore_main(
+        [str(tmp_path / "nope.tar.gz"), "--dry-run", "--json"], _make_home(tmp_path), monkeypatch
+    )
+    assert rc == 1
+    assert "[FAIL]" in capsys.readouterr().out
 
 
 def test_read_manifest_round_trips_the_creation_time(tmp_path: Path) -> None:

@@ -338,6 +338,7 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 - `LaunchAgentScheduler.swift` — the shared scheduled-LaunchAgent mechanism (STOR4): writes a `StartCalendarInterval` plist under `~/Library/LaunchAgents/` and `launchctl bootstrap`/`bootout`s it. A nil weekday omits the key, which is how launchd expresses "every day". Callers own their label, `mp` subcommand, and events.
 - `DigestSchedulerService.swift` — AI4: `com.meetingpipe.digest`, a weekly `mp digest`, driven by the Preferences → Pipeline digest toggle. Schedule state lives in `UISettings`.
 - `BackupSchedulerService.swift` — STOR4: `com.meetingpipe.backup`, a daily (or weekly) `mp backup <dir>`, driven by the Preferences → Storage "Automatic backup" toggle. The destination is baked into the plist's `ProgramArguments`, so changing it in Preferences rewrites the agent; no destination means no agent, whatever the toggle says.
+- `RestoreFlow.swift` - STOR5: the other half of the backup story, in three pieces. `RestorePlan` decodes what `mp restore --dry-run --json` writes; `RestorePreview` is the pure copy over it (the confirm's title, its blast-radius message, the footer summary), separate from the view because this is the text that has to be honest about overwriting a live library; `RestoreFlow` is the two-invocation state machine the Storage pane drives, where `confirm()` only acts from `.confirming`, so the real run is *unreachable* except through a plan the owner was shown. `StorageBusyGate` lives here too and is what keeps a backup and a restore from overlapping (a backup taken mid-restore archives a half-restored library). The real run passes `--force`, since every destination it writes into is live; the preview is what replaces the refusal that suppresses.
 
 ---
 
@@ -368,7 +369,7 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 | `prep.py` | `mp prep <workflow>` | CAL2: recap the last meeting recorded under a workflow (opening summary points + the actions it left open). The shell twin of the prompt panel's "Last time" card |
 | `roster_cmd.py` | `mp roster {enroll,list,forget,rename}` | named-speaker voiceprint management (FEAT3-ROSTER; `rename` is FEAT3-MANAGE) |
 | `backup.py` | `mp backup <dir>` | dated tar.gz of the non-recreatable state + manifest (STOR2) |
-| `restore.py` | `mp restore <archive>` | unpack a backup into this Mac's configured roots (STOR2) |
+| `restore.py` | `mp restore <archive>` | unpack a backup into this Mac's configured roots (STOR2); `--dry-run --json [--out P]` emits the plan (per-root counts, what would be overwritten) the in-app restore previews instead of restoring (STOR5) |
 | `doctor.py` | `mp doctor` | preflight diagnostics |
 | `logs_cmd.py` | `mp logs` | `events.jsonl` pretty-printer / filter |
 | `prefetch_model.py` | `mp prefetch-model <repo>` | MLX model download (JSONL progress) |

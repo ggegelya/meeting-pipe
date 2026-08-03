@@ -78,8 +78,10 @@ Subcommands:
   backup <dir> [--no-audio]   Archive the library, config, workflows, roster, and
                               corrections into a dated tar.gz, plus a manifest
                               naming the Keychain items (values never exported)
-  restore <archive> [--dry-run] [--force]
-                              Unpack a backup into this Mac's configured roots
+  restore <archive> [--dry-run] [--force] [--json] [--out P]
+                              Unpack a backup into this Mac's configured roots;
+                              --dry-run --json prints the plan (per-root counts,
+                              what would be replaced) instead of restoring
   digest [--since N] [--publish] [--dir P] [--out-dir P] [--json]
                               Weekly review digest of aging open actions +
                               recent decisions, generated on-device; writes to

@@ -403,7 +403,9 @@ mp backup ~/Backups              # a dated meeting-pipe-backup-YYYYMMDD-HHMMSS.t
 mp backup ~/Backups --no-audio   # sidecars only; much smaller, meetings restore without audio
 ```
 
-Or from **Preferences ▸ Storage ▸ Backup**: pick a destination once (it is remembered) and click **Back up now**; the section shows how long ago the last backup ran and surfaces any failure inline. `mp doctor` reports the same age under `== storage ==`. Restore stays a terminal step (below): a new-Mac restore runs before the app is installed and configured.
+Or from **Preferences ▸ Storage ▸ Backup**: pick a destination once (it is remembered) and click **Back up now**; the section shows how long ago the last backup ran and surfaces any failure inline. `mp doctor` reports the same age under `== storage ==`.
+
+**Restoring on this Mac.** The same section has **Restore from backup…**: pick an archive and the app reads it first, without writing anything, then shows you exactly what a restore would do (how many files land, how many replace files already there, which ones come back) and waits for you to confirm. That is the way to un-delete meetings a retention sweep took, undo a bad batch operation, or pull the library back after moving it. It writes into your *live* library, so files with the same name are replaced and there is no undo; files the backup does not carry are left alone, and the `config.toml` naming your library's location is kept rather than overwritten with the old Mac's. A backup and a restore never run at the same time: each disables the other while it runs. A first restore onto a **new** Mac is still a Terminal step, because it happens before the app is installed and configured (the runbook below).
 
 **Automatic backup.** The same section carries an **Automatic backup** toggle, which installs a launch agent that runs the same `mp backup <destination>` on its own, daily (the default) or on a chosen weekday, at a time you pick. A Mac asleep at that hour backs up when it next wakes. Changing the destination rewrites the schedule; turning the toggle off removes the agent. The runs are unattended, so read their outcome from the last-backup line here, from `mp doctor`, or from `~/Library/Logs/MeetingPipe/backup.err.log`.
 
@@ -419,13 +421,15 @@ If the destination is on an external drive, `mp backup` refuses to run while tha
 
 ### Moving to a new Mac
 
+This is the fresh-machine path, and it runs from the Terminal because it happens before the app exists on that Mac. Recovering something on a Mac that already runs meeting-pipe is the in-app **Restore from backup…** above, not this.
+
 1. **Install** meeting-pipe (see [Install](#install)) and write `~/.config/meeting-pipe/config.toml` with `recording.output_dir` set to where you want the library on *this* Mac. Pick somewhere outside iCloud's Desktop & Documents scope while you are here.
 2. **Restore.** Destinations come from the config you just wrote, not from wherever the backup was taken, so the library can live at a different path than before.
    ```bash
    mp restore ~/Backups/meeting-pipe-backup-20260709-215757.tar.gz --dry-run   # look first
    mp restore ~/Backups/meeting-pipe-backup-20260709-215757.tar.gz
    ```
-   Restore refuses to write into a root that already has files (pass `--force` if you mean it), and it keeps the `config.toml` you wrote in step 1 rather than the backup's, which names the old Mac's paths. Everything else under the config directory (workflows, roster, voiceprint, glossary) is restored.
+   Restore refuses to write into a root that already has files (pass `--force` if you mean it), and it keeps the `config.toml` you wrote in step 1 rather than the backup's, which names the old Mac's paths. Everything else under the config directory (workflows, roster, voiceprint, glossary) is restored. `--dry-run --json` prints the same look-first pass as machine-readable counts instead of prose; that is what the in-app preview reads.
 3. **Re-add the Keychain items.** `mp restore` prints the exact commands:
    ```bash
    security add-generic-password -U -s com.meetingpipe.daemon -a ANTHROPIC_API_KEY -w '<value>'

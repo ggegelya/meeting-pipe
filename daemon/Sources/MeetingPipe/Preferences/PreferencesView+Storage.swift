@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Preferences ▸ Storage (STOR1). Where the library's disk footprint becomes
 /// visible: total size, what each retention policy governs, and the two caches
@@ -22,11 +23,27 @@ struct StorageSectionView: View {
     @State private var backupError: String?
     @State private var lastBackupAge: String?
 
+    // STOR5: the restore's two-step state lives on its own object, not in this
+    // view, so the dry-run-then-confirm sequence is testable. Its own launcher:
+    // the two never run together (see `busy`), and a spawner is stateless.
+    @StateObject private var restore: RestoreFlow
+
     init(store: ConfigStore, workflowStore: WorkflowStore) {
         self.store = store
         _stats = StateObject(wrappedValue: StorageStatsStore(
             configStore: store, workflowStore: workflowStore
         ))
+        _restore = StateObject(wrappedValue: RestoreFlow(launcher: PipelineLauncher()))
+    }
+
+    /// STOR5: one gate over both long jobs, so neither can start while the other
+    /// is out.
+    private var busy: StorageBusyGate {
+        StorageBusyGate(
+            backupRunning: backupInFlight,
+            restoreRunning: restore.isBusy,
+            hasBackupDestination: ui.backupDestinationPath != nil
+        )
     }
 
     var body: some View {
@@ -77,6 +94,28 @@ struct StorageSectionView: View {
         } message: {
             if let plan = pendingMove {
                 Text("\(plan.source.path)\nmoves to\n\(plan.destination.path)")
+            }
+        }
+        // STOR5: the confirm the dry run earned. Everything it says comes from
+        // the plan `mp restore --dry-run --json` just produced, so the counts are
+        // this archive's against this disk, not a generic warning.
+        .confirmationDialog(
+            "Restore from this backup?",
+            isPresented: Binding(
+                get: { restore.pendingPlan != nil },
+                set: { if !$0 { restore.dismiss() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let plan = restore.pendingPlan {
+                Button(RestorePreview.confirmTitle(for: plan), role: .destructive) {
+                    restore.confirm()
+                }
+            }
+            Button("Cancel", role: .cancel) { restore.dismiss() }
+        } message: {
+            if let plan = restore.pendingPlan {
+                Text(RestorePreview.message(for: plan))
             }
         }
     }
@@ -168,12 +207,18 @@ struct StorageSectionView: View {
         }
     }
 
-    // MARK: Backup (STOR3)
+    // MARK: Backup (STOR3) + restore (STOR5)
 
-    /// Spawns `mp backup <dir>` to a remembered destination, and (STOR4) schedules
-    /// the same command as an unattended launch agent. Restore stays a terminal
-    /// step (a new-Mac restore runs before the app is configured), so it is not
-    /// surfaced here - the footer points at the README runbook.
+    /// Spawns `mp backup <dir>` to a remembered destination, (STOR4) schedules the
+    /// same command as an unattended launch agent, and (STOR5) restores from an
+    /// archive.
+    ///
+    /// Restore used to be terminal-only here, on the reasoning that a new-Mac
+    /// restore runs before the app is configured. That is true of *that* restore
+    /// and silent about the other one: on this Mac, with the app running, restore
+    /// is how you un-delete meetings a sweep took, undo a bad batch, or pull the
+    /// library back after a move. The split is now explicit, in the footer and in
+    /// the README: in-app for recovery here, the runbook for a fresh machine.
     private var backupGroup: some View {
         SettingsGroup("Backup") {
             SettingsRow(
@@ -189,10 +234,28 @@ struct StorageSectionView: View {
                         chooseBackupDestination()
                     }
                     .buttonStyle(.mpGhost)
-                    .disabled(backupInFlight)
+                    .disabled(busy.isBusy)
                     Button("Back up now") { runBackup() }
                         .buttonStyle(.mpGhost)
-                        .disabled(backupInFlight || ui.backupDestinationPath == nil)
+                        .disabled(!busy.backupEnabled)
+                }
+            }
+            // Its own row rather than a third button beside "Back up now": that
+            // row's controls were truncating with two (UX43), and this one earns
+            // a sublabel of its own, since the honest thing to say about restore
+            // is where it is the right tool and where it is not.
+            SettingsRow(
+                "Restore from backup",
+                sublabel: "Brings a whole archive back into this Mac's library, replacing files it already has. You see exactly what it would write before anything happens.",
+                alignTop: true
+            ) {
+                HStack(spacing: MPSpace.s2) {
+                    if restore.isBusy {
+                        ProgressView().controlSize(.small)
+                    }
+                    Button("Restore from backup…") { chooseArchiveToRestore() }
+                        .buttonStyle(.mpGhost)
+                        .disabled(!busy.restoreEnabled)
                 }
             }
             SettingsToggleRow(
@@ -221,10 +284,15 @@ struct StorageSectionView: View {
                     .disabled(!scheduleControlsEnabled)
             }
         } footer: {
+            // One slot, three things that could claim it. A failure outranks a
+            // report, and the restore's own line outranks the backup age while it
+            // has something to say, because it is the thing that just happened.
             if let error = backupError {
                 Text(error).foregroundStyle(.mpDanger)
+            } else if let line = restore.footerText {
+                Text(line).foregroundStyle(restore.hasFailed ? .mpDanger : Color(MPColors.fgMuted))
             } else {
-                Text(lastBackupAge ?? "No backup has run on this Mac yet. Restore is a terminal step; see the README backup runbook.")
+                Text("\(lastBackupAge ?? "No backup has run on this Mac yet"). Restoring here recovers meetings this Mac lost; a first restore onto a new Mac still runs from the Terminal, see the README backup runbook.")
             }
         }
     }
@@ -255,8 +323,31 @@ struct StorageSectionView: View {
         applyBackupSchedule()
     }
 
+    /// STOR5: pick an archive and run the mandatory dry run over it. Nothing is
+    /// written by this; the confirm the plan produces is the only path to a real
+    /// restore. Opens at the remembered backup destination, which is where every
+    /// archive this app made already is.
+    private func chooseArchiveToRestore() {
+        guard busy.restoreEnabled else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.message = "Pick a meeting-pipe backup archive (meeting-pipe-backup-*.tar.gz)."
+        panel.allowedContentTypes = [.gzip]
+        if let current = ui.backupDestinationPath {
+            panel.directoryURL = URL(fileURLWithPath: current)
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        backupError = nil
+        restore.preview(archive: url)
+    }
+
     private func runBackup() {
-        guard let dest = ui.backupDestinationPath, !backupInFlight else { return }
+        // The gate, not just `!backupInFlight`: a backup started over a running
+        // restore would archive a half-restored library (STOR5).
+        guard let dest = ui.backupDestinationPath, busy.backupEnabled else { return }
         backupError = nil
         backupInFlight = true
         launcher.backup(dir: URL(fileURLWithPath: dest)) { result in

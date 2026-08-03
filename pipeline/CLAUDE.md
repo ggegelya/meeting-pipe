@@ -58,6 +58,8 @@ A second Swift-to-Python surface: `mp.speaker_overlay` reads `<stem>.speaker_lab
 
 A third: `mp.transcript_corrections` reads `<stem>.transcript_corrections.json` (the reversible text-correction overlay, written by Swift's `TranscriptCorrectionStore` when the user edits a transcript line, PIPE9) and applies edited text by segment array index. `transcript_corrections.overlaid_markdown` is the composed transcript view (speaker labels THEN text corrections), used by `summarize` and `embed_index.chunk_stem`, so any re-read applies both overlays; both sidecars are in `embed_index.STEM_SOURCE_SUFFIXES`, so a correction re-embeds the meeting it corrected (since AI11 that is one meeting, not the whole `mp ask` index). Both resolutions are pinned against Swift by `Fixtures/transcript-corrections-golden.json` (both suites read it); change one side and change the other.
 
+Those three all run Swift to Python. **One runs the other way** (STOR5): `mp.restore.plan_restore` writes the `RestorePlan` payload `mp restore --dry-run --json` emits, and Swift's `RestorePlan` (`RestoreFlow.swift`) decodes it to build the confirm behind Preferences ▸ Storage ▸ Restore from backup. Its TypedDict is the contract; rename a key on this side and the owner's confirm quietly renders an empty plan for the app's most destructive button. The plan and the real run share `_restorable_members`, so what the preview describes and what the run then writes cannot drift apart.
+
 ## Don't
 
 - Don't add a new top-level import for a heavy dep. Move it inside the function body.

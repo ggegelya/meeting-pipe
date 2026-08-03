@@ -45,7 +45,13 @@ enum LastBackup {
     /// `ISO8601DateFormatter`'s fractional-seconds mode expects milliseconds, so on a
     /// miss we strip the fraction and reparse at whole-second precision, which is all
     /// the day-granularity age line needs.
-    private static func parseISO8601(_ s: String) -> Date? {
+    ///
+    /// Internal rather than private since STOR5: the restore preview reads the same
+    /// flavour of timestamp out of a backup manifest (`created_at`), and a second
+    /// copy of this would be a copy that drifts. The naive two-attempt version
+    /// (fractional, then plain) silently fails on every real Python timestamp,
+    /// because the string still carries the microseconds on the second attempt.
+    static func parseISO8601(_ s: String) -> Date? {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = formatter.date(from: s) { return date }
