@@ -120,7 +120,10 @@ struct RecordingSectionView: View {
 
 // MARK: - Prompt
 
-/// Wrapping row layout for the bundle-id tag stack, using SwiftUI's `Layout` API.
+/// The bundle-id tag stack's convenience over the shared `FlowLayout`: a collection in,
+/// a wrapped row of tags out. The layout itself moved to `PreferencesControls.swift` when
+/// the cast strip became its second caller (UX51); this wrapper stayed, because taking a
+/// collection and a per-element builder is this pane's shape, not a shared one.
 private struct WrappingHStack<Data: RandomAccessCollection, Content: View>: View where Data.Element: Hashable {
     let items: Data
     let spacing: CGFloat
@@ -138,51 +141,5 @@ private struct WrappingHStack<Data: RandomAccessCollection, Content: View>: View
                 content(item)
             }
         }
-    }
-}
-
-private struct FlowLayout: Layout {
-    var spacing: CGFloat
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? .infinity
-        let rows = computeRows(subviews: subviews, width: width)
-        let height = rows.reduce(CGFloat(0)) { acc, row in
-            acc + row.height + (acc == 0 ? 0 : spacing)
-        }
-        return CGSize(width: proposal.width ?? rows.first?.width ?? 0, height: height)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let width = bounds.width
-        var y = bounds.minY
-        let rows = computeRows(subviews: subviews, width: width)
-        for row in rows {
-            var x = bounds.minX
-            for index in row.indices {
-                let size = subviews[index].sizeThatFits(.unspecified)
-                subviews[index].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-                x += size.width + spacing
-            }
-            y += row.height + spacing
-        }
-    }
-
-    private func computeRows(subviews: Subviews, width: CGFloat) -> [(indices: [Int], width: CGFloat, height: CGFloat)] {
-        var rows: [(indices: [Int], width: CGFloat, height: CGFloat)] = []
-        var current: (indices: [Int], width: CGFloat, height: CGFloat) = ([], 0, 0)
-        for (i, sub) in subviews.enumerated() {
-            let size = sub.sizeThatFits(.unspecified)
-            let needsBreak = !current.indices.isEmpty && current.width + size.width + spacing > width
-            if needsBreak {
-                rows.append(current)
-                current = ([], 0, 0)
-            }
-            current.indices.append(i)
-            current.width += size.width + (current.indices.count == 1 ? 0 : spacing)
-            current.height = max(current.height, size.height)
-        }
-        if !current.indices.isEmpty { rows.append(current) }
-        return rows
     }
 }

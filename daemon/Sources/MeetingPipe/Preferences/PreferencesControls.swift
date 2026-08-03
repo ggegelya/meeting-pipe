@@ -677,3 +677,82 @@ extension ButtonStyle where Self == MPDangerButtonStyle {
     /// The design-system destructive button, the sibling of `.mpGhost` / `.mpIcon`.
     static var mpDanger: MPDangerButtonStyle { MPDangerButtonStyle() }
 }
+
+// MARK: - Flow layout
+
+/// Wrapping row layout, using SwiftUI's `Layout` API: subviews are placed left to
+/// right and break onto a new row when the next one would not fit the proposed
+/// width. Every subview keeps its ideal size, so nothing is compressed or clipped.
+///
+/// UX51 promoted this out of `PreferencesView+Recording.swift`'s private scope, the
+/// same move UX30 made for `MPDangerButtonStyle` above. It is worth recording *why*
+/// the promotion happened now and not sooner, so the next reader does not re-litigate
+/// either half: UX38 looked at promoting it, decided against it because that surface
+/// wanted stacked chips rather than wrapped ones, and wrote down that it would not
+/// promote a primitive "for one speculative caller". That was right. UX51 is the real
+/// second caller (the cast strip above the transcript clipped its last chip mid-word
+/// against the reading measure, with no fade, scrollbar or chevron to say so), and a
+/// second wrapping layout beside this one would have been the actual mistake.
+///
+/// Two callers now: the Preferences auto-record allowlist's bundle-id tags, through
+/// the `WrappingHStack` convenience that still lives beside them, and `VoiceResolutionBar`.
+struct FlowLayout: Layout {
+    var spacing: CGFloat
+
+    /// One laid-out row: which subviews landed in it, how wide they came to together,
+    /// and how tall the row is (its tallest subview).
+    struct Row: Equatable {
+        var indices: [Int]
+        var width: CGFloat
+        var height: CGFloat
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        let rows = Self.rows(for: measure(subviews), width: width, spacing: spacing)
+        let height = rows.reduce(CGFloat(0)) { acc, row in
+            acc + row.height + (acc == 0 ? 0 : spacing)
+        }
+        return CGSize(width: proposal.width ?? rows.first?.width ?? 0, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let sizes = measure(subviews)
+        var y = bounds.minY
+        for row in Self.rows(for: sizes, width: bounds.width, spacing: spacing) {
+            var x = bounds.minX
+            for index in row.indices {
+                subviews[index].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(sizes[index]))
+                x += sizes[index].width + spacing
+            }
+            y += row.height + spacing
+        }
+    }
+
+    private func measure(_ subviews: Subviews) -> [CGSize] {
+        subviews.map { $0.sizeThatFits(.unspecified) }
+    }
+
+    /// The break arithmetic, over already-measured sizes rather than over `Subviews`.
+    /// Split out and made static so it is reachable from a test: `LayoutSubviews` cannot
+    /// be constructed outside a live layout pass, and "do these chips wrap or get sliced"
+    /// is exactly the claim UX51 needs pinned. A subview wider than `width` on its own
+    /// still gets a row rather than being dropped, because the break is only ever taken
+    /// against a row that already holds something.
+    static func rows(for sizes: [CGSize], width: CGFloat, spacing: CGFloat) -> [Row] {
+        var rows: [Row] = []
+        var current = Row(indices: [], width: 0, height: 0)
+        for (i, size) in sizes.enumerated() {
+            let needsBreak = !current.indices.isEmpty && current.width + size.width + spacing > width
+            if needsBreak {
+                rows.append(current)
+                current = Row(indices: [], width: 0, height: 0)
+            }
+            current.indices.append(i)
+            current.width += size.width + (current.indices.count == 1 ? 0 : spacing)
+            current.height = max(current.height, size.height)
+        }
+        if !current.indices.isEmpty { rows.append(current) }
+        return rows
+    }
+}

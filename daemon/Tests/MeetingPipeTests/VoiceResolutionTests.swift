@@ -379,4 +379,73 @@ final class VoiceResolutionTests: XCTestCase {
         )
         XCTAssertNotNil(bar.body)
     }
+
+    // MARK: - Overflow (UX51)
+
+    /// The same source with whole-line comments dropped, for the absence fence below:
+    /// the code comment explaining this fix names the shape it replaced, and a fence
+    /// that reads comments cannot tell a rejected form from a description of one
+    /// (`PreferencesSurfaceTests`' idiom).
+    private func code(_ source: String) -> String {
+        source
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+    }
+
+    /// The reported defect, as arithmetic. The owner's meeting carried eight chips on a
+    /// strip capped at `SummaryLayout.readingMeasure`; laid in one row they cannot fit,
+    /// so the only two outcomes are "wrap" and "the tail is cut off", which is what
+    /// shipped (a final chip sliced mid-word into a bare `U`). Chip widths are synthetic
+    /// on the same reasoning as `FlowLayoutTests`: pinning rendered text metrics pins the
+    /// host macOS, and what is being pinned here is that a cast too wide for the measure
+    /// produces more than one row and loses nobody.
+    func test_a_cast_wider_than_the_reading_measure_wraps_instead_of_being_cut_off() {
+        let cast = (0 ..< 8).map { _ in CGSize(width: 110, height: 22) }
+        XCTAssertGreaterThan(cast.reduce(0) { $0 + $1.width }, SummaryLayout.readingMeasure,
+                             "the premise: this cast cannot fit one row at the reading measure")
+
+        let rows = FlowLayout.rows(for: cast, width: SummaryLayout.readingMeasure, spacing: 6)
+        XCTAssertGreaterThan(rows.count, 1)
+        XCTAssertEqual(rows.flatMap(\.indices).sorted(), Array(0 ..< cast.count),
+                       "every voice the header counts is still on screen somewhere")
+    }
+
+    /// The narrowest the strip is ever asked to render at: the detail pane's own floor,
+    /// less the reading stack's gutter on both sides. The measure caps the column, so
+    /// below 720 the strip simply gets narrower, and narrower is where a single-row
+    /// layout fails hardest. Nothing may fall off there either.
+    func test_no_chip_falls_off_at_the_narrowest_width_the_pane_allows() {
+        let narrowest = LibraryLayout.detailMinWidth - 2 * SummaryLayout.contentPadding
+        XCTAssertLessThan(narrowest, SummaryLayout.readingMeasure, "the floor is below the cap, or this is not the floor")
+
+        let cast = (0 ..< 8).map { _ in CGSize(width: 110, height: 22) }
+        let rows = FlowLayout.rows(for: cast, width: narrowest, spacing: 6)
+        XCTAssertGreaterThan(rows.count, 1)
+        XCTAssertEqual(rows.flatMap(\.indices).sorted(), Array(0 ..< cast.count))
+        for row in rows {
+            XCTAssertLessThanOrEqual(row.width, narrowest, "a row past the pane's own floor is the clip, back again")
+        }
+    }
+
+    /// A cast that fits is left alone: wrapping must not cost a second row on the common
+    /// meeting, which is the reason a chip strip can afford to wrap at all.
+    func test_a_cast_that_fits_the_measure_stays_on_one_row() {
+        let cast = (0 ..< 4).map { _ in CGSize(width: 110, height: 22) }
+        XCTAssertEqual(FlowLayout.rows(for: cast, width: SummaryLayout.readingMeasure, spacing: 6).count, 1)
+    }
+
+    /// Where that is decided: the strip lays its chips out with the shared wrapping
+    /// layout and no longer hangs them off a horizontal scroll. The scroll it replaced
+    /// carried `showsIndicators: false` inside a centred, capped reading column, so there
+    /// was nothing on screen to say the row continued. Re-introducing it, even with an
+    /// indicator, is the fallback UX51 explicitly ranked second (and only with a visible
+    /// edge fade, the UX47 shape), so it is worth having to argue past this fence.
+    func test_the_strip_wraps_its_chips_rather_than_scrolling_them() throws {
+        let bar = code(try daemonSource("Sources/MeetingPipe/VoiceResolutionBar.swift"))
+        XCTAssertTrue(bar.contains("FlowLayout(spacing:"),
+                      "the chips ride the shared wrapping layout")
+        XCTAssertFalse(bar.contains("ScrollView("),
+                       "a scroll inside the capped reading measure is the shipped-and-rejected form")
+    }
 }

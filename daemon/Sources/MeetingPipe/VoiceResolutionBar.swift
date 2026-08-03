@@ -34,13 +34,22 @@ struct VoiceResolutionBar: View {
                 }
                 Spacer(minLength: 0)
             }
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(outcome.voices) { voice in
-                        chip(voice)
-                    }
+            // UX51: the chips wrap onto as many rows as they need. They used to ride a
+            // single indicator-less horizontal scroll, which at the owner's seven-voice
+            // meeting sliced the last chip mid-word into a bare `U` with no fade,
+            // scrollbar or chevron over it. The header right above says "3 of 6 other
+            // voices named", so the strip stated a count the reader could not reconcile
+            // with what was on screen and a hidden voice read as a missing one.
+            //
+            // Wrapping rather than a scroll with a visible affordance (the UX47 edge
+            // fade), because this strip lives inside the transcript's capped 720 reading
+            // measure: a horizontally scrolling row inside a centred, capped column is
+            // an interaction the reader has to discover, and a chip is a short label, so
+            // wrapping costs one extra line at worst.
+            FlowLayout(spacing: 6) {
+                ForEach(outcome.voices) { voice in
+                    chip(voice)
                 }
-                .padding(.bottom, 2)
             }
         }
         // Horizontal inset comes from the caller: TranscriptTab (the single
