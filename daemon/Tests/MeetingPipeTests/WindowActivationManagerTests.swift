@@ -17,6 +17,8 @@ private final class ActivationRecorder {
             setPolicy: { [weak self] policy in self?.note("policy:\(Self.name(policy))") },
             activateApp: { [weak self] in self?.note("activate") },
             handOffActivation: { [weak self] in self?.note("handoff") },
+            installMainMenu: { [weak self] in self?.note("menu:install") },
+            removeMainMenu: { [weak self] in self?.note("menu:remove") },
             onNextRunLoopTurn: { [weak self] work in self?.pending.append(work) }
         )
     }
@@ -85,12 +87,12 @@ final class WindowActivationManagerTests: XCTestCase {
 
         manager.showWindow(window)
         XCTAssertEqual(
-            recorder.calls, ["policy:regular"],
+            recorder.calls, ["policy:regular", "menu:install"],
             "Fronting or activating in the same turn as the policy flip is the MRU-tail bug."
         )
 
         recorder.runNextRunLoopTurn()
-        XCTAssertEqual(recorder.calls, ["policy:regular", "front:library", "activate"])
+        XCTAssertEqual(recorder.calls, ["policy:regular", "menu:install", "front:library", "activate"])
     }
 
     /// A window that is not miniaturized is never sent a spurious deminiaturize.
@@ -119,11 +121,11 @@ final class WindowActivationManagerTests: XCTestCase {
 
         XCTAssertEqual(
             recorder.calls,
-            ["policy:regular", "front:library", "activate", "front:library", "activate"]
+            ["policy:regular", "menu:install", "front:library", "activate", "front:library", "activate"]
         )
 
         manager.didCloseWindow(window)
-        XCTAssertEqual(recorder.calls.suffix(2), ["policy:accessory", "handoff"])
+        XCTAssertEqual(recorder.calls.suffix(3), ["policy:accessory", "menu:remove", "handoff"])
     }
 
     /// The regression the owner hit: `NSWindow.isVisible` is false while a window is miniaturized,
@@ -148,7 +150,7 @@ final class WindowActivationManagerTests: XCTestCase {
 
         manager.didCloseWindow(window)
         XCTAssertEqual(
-            recorder.calls.suffix(2), ["policy:accessory", "handoff"],
+            recorder.calls.suffix(3), ["policy:accessory", "menu:remove", "handoff"],
             "One close has to undo any number of reopens, or the Dock icon never goes away."
         )
     }
@@ -165,9 +167,13 @@ final class WindowActivationManagerTests: XCTestCase {
 
         manager.didCloseWindow(prefs)
         XCTAssertFalse(recorder.calls.contains("policy:accessory"))
+        XCTAssertFalse(
+            recorder.calls.contains("menu:remove"),
+            "Closing one of two windows must not take the menu bar down under the other."
+        )
 
         manager.didCloseWindow(library)
-        XCTAssertEqual(recorder.calls.suffix(2), ["policy:accessory", "handoff"])
+        XCTAssertEqual(recorder.calls.suffix(3), ["policy:accessory", "menu:remove", "handoff"])
     }
 
     /// A window that was never counted (or a second `windowWillClose` for one already gone) must
@@ -186,6 +192,7 @@ final class WindowActivationManagerTests: XCTestCase {
 
         XCTAssertEqual(recorder.calls.filter { $0 == "policy:accessory" }.count, 1)
         XCTAssertEqual(recorder.calls.filter { $0 == "handoff" }.count, 1)
+        XCTAssertEqual(recorder.calls.filter { $0 == "menu:remove" }.count, 1)
     }
 
     // MARK: - Close and reopen
@@ -205,9 +212,9 @@ final class WindowActivationManagerTests: XCTestCase {
         XCTAssertEqual(
             recorder.calls,
             [
-                "policy:regular", "front:library", "activate",
-                "policy:accessory", "handoff",
-                "policy:regular", "front:library", "activate"
+                "policy:regular", "menu:install", "front:library", "activate",
+                "policy:accessory", "menu:remove", "handoff",
+                "policy:regular", "menu:install", "front:library", "activate"
             ]
         )
     }
@@ -228,5 +235,69 @@ final class WindowActivationManagerTests: XCTestCase {
             return XCTFail("Expected both the policy drop and the handoff: \(recorder.calls)")
         }
         XCTAssertLessThan(drop, handoff)
+    }
+
+    // MARK: - Main menu (UX48)
+
+    /// The menu bar exists exactly while the app is `.regular`, so it is installed in the same step
+    /// that raises the policy rather than a run-loop turn later with the fronting. macOS matches a
+    /// command-key event against `NSApp.mainMenu` before anything else, and an event that arrives
+    /// between the flip and a deferred install would still beep.
+    func test_first_show_installs_the_menu_in_the_same_step_as_the_policy_flip() {
+        let manager = makeManager()
+        let window = FakeWindow("library", recorder: recorder)
+
+        manager.showWindow(window)
+
+        XCTAssertEqual(recorder.calls, ["policy:regular", "menu:install"])
+    }
+
+    /// A second window is not a second menu bar. `NSApp.mainMenu` is one slot, so a re-install would
+    /// be harmless here, but the count is what says the transition is owned rather than sprayed.
+    func test_second_window_opening_does_not_reinstall_the_menu() {
+        let manager = makeManager()
+        let library = FakeWindow("library", recorder: recorder)
+        let prefs = FakeWindow("prefs", recorder: recorder)
+
+        manager.showWindow(library)
+        manager.showWindow(prefs)
+        recorder.runNextRunLoopTurn()
+
+        XCTAssertEqual(recorder.calls.filter { $0 == "menu:install" }.count, 1)
+        XCTAssertFalse(recorder.calls.contains("menu:remove"))
+    }
+
+    /// Re-showing a window already counted (the Dock-icon reopen path) is not a fresh open, so it
+    /// must not touch the menu any more than it touches the policy.
+    func test_reshowing_a_counted_window_does_not_reinstall_the_menu() {
+        let manager = makeManager()
+        let window = FakeWindow("library", recorder: recorder)
+
+        manager.showWindow(window)
+        recorder.runNextRunLoopTurn()
+        window.isMiniaturized = true
+        manager.showWindow(window)
+        recorder.runNextRunLoopTurn()
+
+        XCTAssertEqual(recorder.calls.filter { $0 == "menu:install" }.count, 1)
+    }
+
+    /// The way back: the menu comes down with the policy, before the handoff, so this app is never
+    /// the one whose menu bar is drawn once another app is frontmost.
+    func test_last_close_removes_the_menu_before_handing_activation_off() {
+        let manager = makeManager()
+        let window = FakeWindow("library", recorder: recorder)
+
+        manager.showWindow(window)
+        recorder.runNextRunLoopTurn()
+        manager.didCloseWindow(window)
+
+        guard let drop = recorder.calls.firstIndex(of: "policy:accessory"),
+              let remove = recorder.calls.firstIndex(of: "menu:remove"),
+              let handoff = recorder.calls.firstIndex(of: "handoff") else {
+            return XCTFail("Expected the drop, the removal and the handoff: \(recorder.calls)")
+        }
+        XCTAssertLessThan(drop, remove)
+        XCTAssertLessThan(remove, handoff)
     }
 }

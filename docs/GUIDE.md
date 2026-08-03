@@ -328,7 +328,7 @@ The last three do nothing when nothing is recording.
 
 ### In the menu-bar dropdown
 
-Click the menu-bar icon and these keys are shown beside their rows. They act on the open menu, so they are a faster click rather than a global chord.
+Click the menu-bar icon and these keys are shown beside their rows. Most of them act on the open menu, so they are a faster click rather than a global chord. `⌘,` is the exception: it also works from any MeetingPipe window, because a window being open gives the app a menu bar of its own.
 
 | Key | Row |
 | --- | --- |
@@ -342,13 +342,23 @@ Click the menu-bar icon and these keys are shown beside their rows. They act on 
 
 ### In a window
 
+Open a window and MeetingPipe puts a menu bar across the top of the screen, the way any Mac app does. The usual keys work from there.
+
 | Key | Does |
 | --- | --- |
+| `⌘C` | Copy what you have selected. Select transcript or summary text and this is how you get it out |
+| `⌘A` | Select everything in the field you are typing in |
+| `⌘X` / `⌘V` | Cut and paste, in any field you can type in |
+| `⌘Z` / `⇧⌘Z` | Undo and redo, in any field you can type in |
+| `⌘,` | Open Preferences |
+| `⌘M` | Minimise the window to the Dock. Click it there to bring it back |
 | `⌘W` | Hides the Library. The app keeps running and the window comes back the way you left it |
 | `Space` | Play or pause, on the Transcript and Audio tabs |
 | `Return` | Commit a title you are editing in the detail header |
 | `Esc` | Close a sheet without saving |
 | `⌘` or `⇧` click | Select several meetings in the list, or several lines in a transcript |
+
+Close the last window and the menu bar goes back to whatever app is in front. The recording panel and the Quick Find box are not windows in this sense: they float over other apps deliberately, and the keys above do not reach them.
 
 ### Without the keyboard
 

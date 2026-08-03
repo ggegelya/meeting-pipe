@@ -275,6 +275,8 @@ To change the threshold, edit `summarization.skip_above_chars` in `~/.config/mee
 
 Click the menu bar icon → **Open Library…** to open the main window (900×600, restorable, hides on Cmd+W with the daemon still running).
 
+While any window is open, MeetingPipe puts a normal menu bar across the top (App / Edit / Window) and takes it back down when the last one closes (UX48). That is what makes the standard chords work: Cmd+C, Cmd+A, Cmd+X, Cmd+V, Cmd+Z, Cmd+M, Cmd+W, and Cmd+, for Preferences. Before it, the app installed no main menu at all, and since macOS matches every command-key event against the main menu first, each of those was the system beep and a transcript's text could not be copied out with the keyboard. The menu-bar dropdown's own shortcuts (Cmd+L, Cmd+K, Cmd+Q) are a different surface and still act only while that dropdown is open.
+
 The window is a smart-folder rail + scoped list + context-aware detail pane, with a custom toolbar across the top:
 
 - **Toolbar** — breadcrumb (`Library` → scope name), an optional `Edit workflow` button that appears only when a workflow scope is selected, the always-visible **state pill** (Idle / Processing / live Recording with workflow tint and timer), a Record/Stop button, and a gear that opens Preferences.

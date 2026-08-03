@@ -551,16 +551,10 @@ struct LibraryRootView: View {
             split
         }
         .frame(minWidth: LibraryLayout.windowMinWidth)
-        // Cmd+, opens Preferences from the Library window. The status-bar menu's
-        // key equivalent (StatusBarController) is not validated against a key
-        // window in this LSUIElement app (no NSApp.mainMenu), so the Preferences
-        // shortcut is wired into the view hierarchy here.
-        .background(
-            Button("") { model.openPreferences() }
-                .keyboardShortcut(",", modifiers: .command)
-                .opacity(0)
-                .accessibilityHidden(true)
-        )
+        // UX48: Cmd+, is an item on `MainMenu`'s App menu now, installed for as long as a window
+        // is up. A zero-opacity `Button` carrying `.keyboardShortcut(",")` used to sit here
+        // instead (292dfe49); one shortcut per hidden button does not scale to Copy or Select
+        // All, which have to reach the text under the pointer rather than a button this app owns.
         .onAppear {
             meetingStore.start()
             recomputeCounts()

@@ -37,6 +37,12 @@ extension NSWindow: ActivatableWindow {}
 /// 3. **Hand activation off on the way out.** Dropping to `.accessory` while still the active app
 ///    leaves this app owning the menu bar with no window and no switcher entry, and the Dock icon
 ///    outlives the flip until something else takes over.
+///
+/// A fourth rule arrived with UX48: **the menu bar is part of the same transition.** macOS matches
+/// a command-key event against `NSApp.mainMenu` before anything else, so this app's total absence
+/// of one is why Cmd+C, Cmd+A and Cmd+W beeped in the Library. The menu is installed in the same
+/// step that raises the policy and removed in the same step that drops it, because those are
+/// exactly the moments this app does and does not own a menu bar.
 final class WindowActivationManager {
     static let shared = WindowActivationManager()
 
@@ -45,6 +51,8 @@ final class WindowActivationManager {
         var setPolicy: (NSApplication.ActivationPolicy) -> Void
         var activateApp: () -> Void
         var handOffActivation: () -> Void
+        var installMainMenu: () -> Void
+        var removeMainMenu: () -> Void
         var onNextRunLoopTurn: (@escaping () -> Void) -> Void
 
         /// The real thing.
@@ -60,11 +68,16 @@ final class WindowActivationManager {
         /// owns, which would take the recording HUD and the detection prompt down with the
         /// Library. `deactivate()` touches no window of ours, and its worst case is a no-op that
         /// leaves the pre-UX39 behaviour, not a regression.
+        ///
+        /// The menu pair is UX48: `MainMenu` is the whole menu bar, and `NSApp.mainMenu` is a
+        /// single slot, so installing is an assignment and removing is a nil.
         static var appKit: Effects {
             Effects(
                 setPolicy: { NSApp.setActivationPolicy($0) },
                 activateApp: { NSApp.activate() },
                 handOffActivation: { NSApp.deactivate() },
+                installMainMenu: { MainMenu.install(into: NSApp) },
+                removeMainMenu: { MainMenu.remove(from: NSApp) },
                 onNextRunLoopTurn: { work in DispatchQueue.main.async(execute: work) }
             )
         }
@@ -81,12 +94,13 @@ final class WindowActivationManager {
         self.effects = effects
     }
 
-    /// Open, re-front, or deminiaturize `window`, raising the app to `.regular` on the first one.
-    /// Idempotent per window: calling it again for a window already counted brings that window
-    /// forward without touching the count.
+    /// Open, re-front, or deminiaturize `window`, raising the app to `.regular` and installing the
+    /// menu bar on the first one. Idempotent per window: calling it again for a window already
+    /// counted brings that window forward without touching the count.
     func showWindow(_ window: ActivatableWindow) {
         if shown.insert(ObjectIdentifier(window)).inserted, shown.count == 1 {
             effects.setPolicy(.regular)
+            effects.installMainMenu()
         }
         // Deferred so the policy transition above has landed before this app claims frontmost.
         let effects = self.effects
@@ -98,12 +112,14 @@ final class WindowActivationManager {
         }
     }
 
-    /// Record `window` as gone; drop back to `.accessory` and hand activation on when it was the
-    /// last one. A window that was never counted is ignored, so a second close notification cannot
-    /// drop the policy out from under a window that is still up.
+    /// Record `window` as gone; drop back to `.accessory`, take the menu bar down, and hand
+    /// activation on when it was the last one. A window that was never counted is ignored, so a
+    /// second close notification cannot drop the policy out from under a window that is still up.
     func didCloseWindow(_ window: ActivatableWindow) {
         guard shown.remove(ObjectIdentifier(window)) != nil, shown.isEmpty else { return }
         effects.setPolicy(.accessory)
+        // Before the handoff, so the outgoing app is never the one whose menu bar is drawn.
+        effects.removeMainMenu()
         effects.handOffActivation()
     }
 }

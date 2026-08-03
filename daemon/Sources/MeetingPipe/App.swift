@@ -72,6 +72,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// UX48: the main menu's Preferences item dispatches with a nil target so AppKit walks the
+    /// responder chain, and `NSApp`'s delegate is on that chain where `Coordinator` is not. Keeps
+    /// `MainMenu` from having to be handed a coordinator it would then have to hold weakly.
+    @objc func openPreferencesFromMainMenu(_ sender: Any?) {
+        coordinator?.menuPreferences()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.main.info("MeetingPipe starting")
 
