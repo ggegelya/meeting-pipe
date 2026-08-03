@@ -141,6 +141,10 @@ final class MeetingLibraryServiceTests: XCTestCase {
     /// completions so a test decides when (and whether) the run lands.
     private var retranscribed: [URL] = []
     private var retranscribeCompletions: [(Result<Void, Error>) -> Void] = []
+    /// UX52: how many times the service asked the Library store to rescan. That
+    /// rescan is the `revision` bump the detail pane's reload tasks key on, so
+    /// counting it here pins the notification without rendering anything.
+    private var libraryRefreshes = 0
 
     override func setUpWithError() throws {
         dir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -155,6 +159,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         corrections = []
         retranscribed = []
         retranscribeCompletions = []
+        libraryRefreshes = 0
         service = MeetingLibraryService(
             outputDir: { [unowned self] in self.dir },
             launcher: driver,
@@ -168,7 +173,8 @@ final class MeetingLibraryServiceTests: XCTestCase {
             enqueueRetranscribe: { [unowned self] file, done in
                 self.retranscribed.append(file)
                 self.retranscribeCompletions.append(done)
-            }
+            },
+            refreshLibrary: { [unowned self] in self.libraryRefreshes += 1 }
         )
     }
 
@@ -1205,6 +1211,49 @@ final class MeetingLibraryServiceTests: XCTestCase {
 
         guard case .failure? = captured else { return XCTFail("expected failure") }
         XCTAssertEqual(SpeakerLabelStore.read(stem: stem, in: dir).labels, ["THEM-A": "Alice"])
+    }
+
+    /// UX52's acceptance, pinned at the service rather than at the rendering: a
+    /// re-transcribe that lands asks the store to rescan, and that rescan's
+    /// `revision` bump is what the open detail pane's reload tasks key on. Before
+    /// this the completion published nothing, so the transcript on screen stayed
+    /// the old one until a tab switch rebuilt the pane from disk.
+    func test_a_finished_retranscribe_publishes_the_store_refresh() throws {
+        let stem = "20260101-1400"
+        try touch("\(stem).wav")
+        try writeTranscript(stem, segments: [segment(0, 10, "hi", "THEM-A")])
+
+        service.retranscribeMeeting(stem: stem) { _ in }
+        XCTAssertEqual(libraryRefreshes, 0, "queuing the run is not the change to publish")
+
+        try writeTranscript(stem, segments: [segment(0, 10, "hello", "THEM-A")])
+        finishRetranscribe()
+        drainMain()
+
+        XCTAssertEqual(libraryRefreshes, 1)
+    }
+
+    /// The failed half publishes too: the job transcribes and then runs
+    /// `mp finalize`, so a failure in the second leg still leaves a rewritten
+    /// `<stem>.json` behind, and a pane rendering text that is no longer on disk
+    /// is the same defect wearing an error alert.
+    func test_a_failed_retranscribe_publishes_the_store_refresh_too() throws {
+        let stem = "20260101-1500"
+        try touch("\(stem).wav")
+        try writeTranscript(stem, segments: [segment(0, 10, "hi", "THEM-A")])
+
+        service.retranscribeMeeting(stem: stem) { _ in }
+        finishRetranscribe(.failure(NSError(domain: "x", code: 1)))
+        drainMain()
+
+        XCTAssertEqual(libraryRefreshes, 1)
+    }
+
+    /// A request that never reached the queue changed nothing on disk, so there
+    /// is nothing to publish and the store is left alone.
+    func test_a_retranscribe_that_never_ran_publishes_nothing() {
+        service.retranscribeMeeting(stem: "20260101-1600") { _ in }
+        XCTAssertEqual(libraryRefreshes, 0)
     }
 
     /// A meeting with nothing overlaid skips the carry entirely; the outcome

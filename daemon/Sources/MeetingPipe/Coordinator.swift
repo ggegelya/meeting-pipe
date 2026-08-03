@@ -759,6 +759,11 @@ final class Coordinator: NSObject {
             }
             self.jobDispatcher.enqueueRetranscribe(file: file, completion: completion)
         },
+        // UX52: the store's own rescan, which is what bumps `revision`. Nothing
+        // else is needed to reach the open detail pane: its tabs key their reload
+        // tasks on that number, and the header reads a `Meeting` the same scan
+        // rebuilds.
+        refreshLibrary: { [weak self] in self?.libraryModel.meetingStore.refresh() },
         // PIPE11: regenerate / republish share the run-all lane. Resolved inside
         // the closure for the same reason as `enqueue`: `jobDispatcher` is still
         // nil while this lazy var is being forced in `init`.

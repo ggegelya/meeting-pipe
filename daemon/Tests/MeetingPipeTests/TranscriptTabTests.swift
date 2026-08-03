@@ -223,7 +223,97 @@ final class TranscriptTabTests: XCTestCase {
         XCTAssertEqual(result.segments[1].text, "let's start", "edited segment overlaid on reload")
     }
 
+    // MARK: reload fingerprint (UX52)
+
+    /// The guard that keeps the store-revision reload cheap: two reads with
+    /// nothing written in between are the same, so a rescan caused by another
+    /// meeting's write never re-parses this transcript.
+    func test_fingerprint_is_stable_when_no_sidecar_changed() throws {
+        let dir = try makeFingerprintDir()
+        let stem = "20260501-090000"
+        try writeTranscriptJSON(stem: stem, in: dir, text: "good morning")
+
+        XCTAssertEqual(
+            TranscriptLoader.fingerprint(stem: stem, in: dir),
+            TranscriptLoader.fingerprint(stem: stem, in: dir)
+        )
+    }
+
+    /// The reason the fingerprint spans every sidecar rather than `<stem>.json`
+    /// alone. Naming a speaker writes only the overlay, so a guard watching the
+    /// transcript would skip exactly the reload it exists to allow, and the cast
+    /// strip would keep showing the old name.
+    func test_fingerprint_moves_when_only_the_speaker_overlay_is_written() throws {
+        let dir = try makeFingerprintDir()
+        let stem = "20260501-091500"
+        try writeTranscriptJSON(stem: stem, in: dir, text: "good morning")
+        let before = TranscriptLoader.fingerprint(stem: stem, in: dir)
+
+        _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Alice", stem: stem, in: dir)
+
+        XCTAssertNotEqual(before, TranscriptLoader.fingerprint(stem: stem, in: dir))
+    }
+
+    /// A correction is the same shape as the overlay: its own sidecar, no
+    /// transcript write.
+    func test_fingerprint_moves_when_only_a_correction_is_written() throws {
+        let dir = try makeFingerprintDir()
+        let stem = "20260501-093000"
+        try writeTranscriptJSON(stem: stem, in: dir, text: "good morning")
+        let before = TranscriptLoader.fingerprint(stem: stem, in: dir)
+
+        _ = try TranscriptCorrectionStore.upsert(
+            segmentIndex: 0, pipelineOriginal: "good morning",
+            edited: "Good morning", stem: stem, in: dir
+        )
+
+        XCTAssertNotEqual(before, TranscriptLoader.fingerprint(stem: stem, in: dir))
+    }
+
+    /// The re-transcribe case itself: the run rewrote `<stem>.json` in place, so
+    /// the fingerprint has to move even though every filename is unchanged. The
+    /// modification date is set explicitly rather than raced, since two writes in
+    /// the same test can land inside one timestamp.
+    func test_fingerprint_moves_when_the_transcript_is_rewritten_in_place() throws {
+        let dir = try makeFingerprintDir()
+        let stem = "20260501-094500"
+        try writeTranscriptJSON(stem: stem, in: dir, text: "sitting environment")
+        let before = TranscriptLoader.fingerprint(stem: stem, in: dir)
+
+        try writeTranscriptJSON(stem: stem, in: dir, text: "staging environment")
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(5)],
+            ofItemAtPath: TranscriptLoader.path(stem: stem, in: dir).path
+        )
+
+        XCTAssertNotEqual(before, TranscriptLoader.fingerprint(stem: stem, in: dir))
+    }
+
+    /// A meeting with no sidecars at all fingerprints cleanly rather than
+    /// throwing, so the guard is safe on a row whose transcript has not landed.
+    func test_fingerprint_of_a_meeting_with_no_sidecars_is_all_absent() throws {
+        let dir = try makeFingerprintDir()
+        XCTAssertEqual(TranscriptLoader.fingerprint(stem: "nothing-here", in: dir), [nil, nil, nil, nil])
+    }
+
     // MARK: helpers
+
+    private func makeFingerprintDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TranscriptTabTests-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
+    private func writeTranscriptJSON(stem: String, in dir: URL, text: String) throws {
+        let payload: [String: Any] = [
+            "language": "en",
+            "segments": [["start": 0.0, "end": 1.5, "text": text, "speaker": "THEM-A"]],
+        ]
+        try JSONSerialization.data(withJSONObject: payload)
+            .write(to: TranscriptLoader.path(stem: stem, in: dir))
+    }
 
     private func seg(_ index: Int, start: TimeInterval, end: TimeInterval) -> TranscriptSegment {
         TranscriptSegment(

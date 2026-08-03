@@ -215,7 +215,15 @@ struct MeetingDetailView: View {
     }
 
     private var transcriptTab: some View {
-        TranscriptTab(playback: playback, meeting: meeting, pendingSeek: $pendingTranscriptSeek)
+        // UX52: the store is handed down like `SummaryTab`'s, so a rescan (the
+        // signal a finished re-transcribe publishes) re-runs the transcript's
+        // reload rather than waiting for a tab switch to rebuild the pane.
+        TranscriptTab(
+            playback: playback,
+            store: libraryModel.meetingStore,
+            meeting: meeting,
+            pendingSeek: $pendingTranscriptSeek
+        )
     }
 
     private var audioTab: some View {

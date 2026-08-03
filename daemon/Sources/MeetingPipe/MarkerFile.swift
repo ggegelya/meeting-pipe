@@ -52,12 +52,19 @@ struct MarkerFile: Codable {
              in: final.deletingLastPathComponent())
     }
 
+    /// Stem-addressed sidecar path, the spelling `SpeakerLabelStore.path` and
+    /// `TranscriptCorrectionStore.path` already use. Lifted out of `read` so a
+    /// caller that only wants to stat the file (UX52's reload guard) does not
+    /// have to spell `.markers.json` a second time.
+    static func path(stem: String, in directory: URL) -> URL {
+        directory.appendingPathComponent("\(stem).markers.json")
+    }
+
     /// Read the flagged markers for a stem. The stem-addressed form, for readers
     /// that have no recording to derive the path from: a `drop` retention policy
     /// reclaims the audio but leaves the markers alongside the transcript.
     static func read(stem: String, in directory: URL) -> MarkerFile? {
-        let url = directory.appendingPathComponent("\(stem).markers.json")
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = try? Data(contentsOf: path(stem: stem, in: directory)) else { return nil }
         return try? JSONDecoder().decode(MarkerFile.self, from: data)
     }
 }

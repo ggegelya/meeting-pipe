@@ -84,6 +84,20 @@ final class MeetingLibraryService {
     /// (ASR3). Separate from `enqueue` because it needs a per-job answer: the
     /// overlay carry runs against the transcript that job produced.
     private let enqueueRetranscribe: (URL, @escaping (Result<Void, Error>) -> Void) -> Void
+    /// UX52: asks the Library's `MeetingStore` to rescan, which bumps its
+    /// `revision`.
+    ///
+    /// That bump is the refresh signal the detail pane already subscribes to, not
+    /// a new one: `SummaryTab` and `TranscriptTab` key their reload tasks on it,
+    /// and the header re-renders because the same scan rebuilds the `Meeting` it
+    /// reads. The re-transcribe completion published nothing at all and leaned on
+    /// the directory watcher noticing the rewritten sidecars by itself, which is a
+    /// side effect this path does not own; the visible result was a finished
+    /// re-transcribe leaving the old transcript on screen until an unrelated tab
+    /// switch tore the pane down and rebuilt it from disk. Injected as a closure
+    /// like the other collaborators, and a no-op by default so a headless test
+    /// need not wire a store.
+    private let refreshLibrary: () -> Void
     /// PIPE11: the single execution lane a regenerate / republish runs in.
     /// Resolved per call (the `outputDir` idiom) because the Coordinator builds
     /// its job dispatcher after this service. `nil` runs the work inline, which
@@ -101,6 +115,7 @@ final class MeetingLibraryService {
         recordCorrection: @escaping (String, String?, Workflow) -> Bool = { _, _, _ in false },
         enqueueRetranscribe: @escaping (URL, @escaping (Result<Void, Error>) -> Void) -> Void
             = { _, done in done(.failure(LibraryError.transcriptionUnavailable)) },
+        refreshLibrary: @escaping () -> Void = {},
         libraryRunLane: @escaping () -> LibraryRunLane? = { nil }
     ) {
         self.outputDir = outputDir
@@ -111,6 +126,7 @@ final class MeetingLibraryService {
         self.summarizationBackend = summarizationBackend
         self.recordCorrection = recordCorrection
         self.enqueueRetranscribe = enqueueRetranscribe
+        self.refreshLibrary = refreshLibrary
         self.libraryRunLane = libraryRunLane
     }
 
@@ -340,6 +356,11 @@ final class MeetingLibraryService {
                         stem: stem, in: dir,
                         before: before, overlay: overlay, corrections: corrections
                     )
+                    // UX52: after the carry, never before it. The rows and the cast
+                    // strip are read from the transcript and the overlay together,
+                    // so a rescan published between the two would put the new text
+                    // under the previous run's names.
+                    self.refreshLibrary()
                     Log.event(category: "coordinator", action: "retranscribe_done", attributes: [
                         "stem": stem,
                         "carried": outcome.carried,
@@ -348,6 +369,24 @@ final class MeetingLibraryService {
                     ])
                     completion(.success(outcome))
                 case .failure(let err):
+                    // UX52: the failed half publishes too, whatever the cause. The
+                    // job transcribes and then runs `mp finalize`, so a failure in
+                    // the second leg leaves a transcript the runner already
+                    // replaced (`SinkDispatcher.invokeFinalize` says as much where
+                    // it writes the marker); not publishing here would leave the
+                    // pane rendering text that is no longer on disk, behind an
+                    // alert saying nothing happened.
+                    //
+                    // Deliberately *not* gated on `PipelineLauncher.isCancellation`
+                    // the way UX50 gated the regenerate / republish / ask legs.
+                    // Those guards suppress *reporting*, so the app stops blaming
+                    // the user's own Cancel on the pipeline; this is not a report,
+                    // it is reconciling the open pane with the disk, and a kill
+                    // landing between the two writes is precisely when they differ.
+                    // Cancel cannot reach this leg today (`finalize` runs through
+                    // `runMP` with no retain slot, so `cancelActiveRun` never sees
+                    // it), and if it ever does the publish is still the right call.
+                    self.refreshLibrary()
                     Log.event(category: "coordinator", action: "retranscribe_failed", attributes: [
                         "stem": stem,
                         "error": err.localizedDescription,

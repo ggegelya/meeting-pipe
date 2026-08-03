@@ -81,8 +81,36 @@ enum TranscriptLoader {
         var voiceprintLabels: Set<String> = []
     }
 
+    static func path(stem: String, in directory: URL) -> URL {
+        directory.appendingPathComponent("\(stem).json")
+    }
+
+    /// Modification dates of the per-meeting sidecars the transcript pane renders,
+    /// in a fixed order so two fingerprints compare positionally (UX52). A `nil`
+    /// entry is a file that is not there, which is itself a state worth noticing:
+    /// undoing a naming deletes the overlay sidecar.
+    ///
+    /// It covers every sidecar `TranscriptTab.reload` reads, not just the
+    /// transcript. An in-app rename or a per-line reassignment writes only the
+    /// speaker overlay, so a guard watching `<stem>.json` alone would skip exactly
+    /// the refresh it exists to allow. `<stem>.embeddings.json` is left out on
+    /// purpose: its only writer is `mp finalize`, which rewrites the transcript in
+    /// the same pass, so the first entry already moves whenever it does.
+    static func fingerprint(stem: String, in directory: URL) -> [Date?] {
+        let paths = [
+            path(stem: stem, in: directory),
+            SpeakerLabelStore.path(stem: stem, in: directory),
+            TranscriptCorrectionStore.path(stem: stem, in: directory),
+            MarkerFile.path(stem: stem, in: directory),
+        ]
+        return paths.map { url in
+            (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate
+        }
+    }
+
     static func load(stem: String, in directory: URL) -> Result? {
-        let url = directory.appendingPathComponent("\(stem).json")
+        let url = path(stem: stem, in: directory)
         guard let data = try? Data(contentsOf: url),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
@@ -219,6 +247,13 @@ enum SegmentClick { case plain, command, shift }
 struct TranscriptTab: View {
     @ObservedObject var playback: AudioPlaybackController
     @EnvironmentObject private var libraryModel: LibraryWindowModel
+    /// UX52: observed so a store rescan (the `revision` bump every in-place sidecar
+    /// rewrite ends in) re-runs the reload task, which is how a finished
+    /// re-transcribe reaches the pane the reader is already looking at. `SummaryTab`
+    /// captures the store the same way and for the same reason: reaching through
+    /// `libraryModel.meetingStore` reads the value without subscribing to it, so the
+    /// bump would arrive and change nothing.
+    @ObservedObject var store: MeetingStore
     let meeting: Meeting
     /// FEAT10: a time another tab asked us to reveal, set when the reader clicks
     /// an evidence chip in the Summary tab. Consumed (set back to nil) once the
@@ -253,6 +288,10 @@ struct TranscriptTab: View {
     /// list (see `installRightClickPause`).
     @State private var rightClickMonitor: Any? = nil
     @State private var loadedForStem: String? = nil
+    /// Sidecar modification dates the loaded render was built from (UX52), so a
+    /// store revision bump caused by another meeting's write costs four `stat`
+    /// calls instead of re-parsing an 80-minute transcript.
+    @State private var loadedFingerprint: [Date?]? = nil
     @State private var loading: Bool = true
     /// Segment whose edit sheet is open; nil when no sheet is showing.
     @State private var editingSegment: TranscriptSegment? = nil
@@ -301,11 +340,17 @@ struct TranscriptTab: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
         }
+        // UX52: two tasks, deliberately. The transcript reload has to re-run on a
+        // store rescan as well as on a stem change; the audio load must not, since
+        // re-attaching the player on every rescan would drop the play head under
+        // whoever is listening.
         .task(id: meeting.stem) {
-            await reload()
             if let audio = meeting.audioURL {
                 playback.load(url: audio)
             }
+        }
+        .task(id: TranscriptReloadKey(stem: meeting.stem, revision: store.revision)) {
+            await reload()
         }
         .sheet(item: $editingSegment, onDismiss: {
             // FEAT12: raise the vocabulary offer only once the editor is off screen.
@@ -615,10 +660,26 @@ struct TranscriptTab: View {
         .padding(40)
     }
 
+    /// Identity for the reload task (UX52): re-read when the stem changes OR when
+    /// the store re-scanned, so a re-transcribe that rewrote this meeting's
+    /// sidecars refreshes the open pane instead of waiting for the tab switch that
+    /// used to be the only thing that revealed it. The fingerprint guard in
+    /// `reload` makes a bump from an unrelated rescan a no-op. Same shape as
+    /// `SummaryTab.SummaryReloadKey`, which is what already makes the summary pane
+    /// refresh in place.
+    private struct TranscriptReloadKey: Equatable {
+        let stem: String
+        let revision: Int
+    }
+
     @MainActor
     private func reload() async {
         let stem = meeting.stem
         let dir = meeting.recordingsDir
+        let fingerprint = TranscriptLoader.fingerprint(stem: stem, in: dir)
+        // Already showing this stem's sidecars as they are on disk, so a revision
+        // bump from an unrelated rescan changes nothing and must not re-parse.
+        if loadedForStem == stem, loadedFingerprint == fingerprint { return }
         loading = true
         let owner = libraryModel.ownerLabel
         let loaded = await Task.detached(priority: .userInitiated) {
@@ -641,6 +702,7 @@ struct TranscriptTab: View {
         // Small sidecar; a synchronous read on main is fine, like the corrections overlay.
         markers = MarkerFile.read(stem: stem, in: dir)?.markers.map(\.tSeconds) ?? []
         loadedForStem = stem
+        loadedFingerprint = fingerprint
         loading = false
     }
 }
