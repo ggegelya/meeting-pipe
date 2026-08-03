@@ -59,6 +59,10 @@ struct WorkflowEditor: View {
     /// resolves to the on-device backend but the MLX model is not yet cached. Nil
     /// in headless tests and any host that has no daemon behind it.
     var localModelPreflight: LocalModelPreflight? = nil
+    /// UX44: opens Preferences ▸ Pipeline ▸ Vocabulary with this workflow's scope
+    /// preselected. Nil in headless tests and any host with no Preferences window
+    /// behind it, in which case the link row is not drawn at all rather than drawn dead.
+    var onOpenVocabulary: ((String) -> Void)? = nil
     /// Notion DB list for the picker (TECH-B8). Held at editor level so the picker is populated on open, not only when Notion is toggled on.
     @StateObject private var notionDBs = NotionDatabaseList()
 
@@ -98,6 +102,7 @@ struct WorkflowEditor: View {
                 identitySection
                 matchingRulesSection
                 contextSection
+                vocabularySection
                 extraSectionsSection
                 sinksSection
                 backendSection
@@ -397,6 +402,39 @@ struct WorkflowEditor: View {
                 }
             }
         )
+    }
+
+    /// UX44: the cross-link out to this workflow's own vocabulary. Renders under the
+    /// context prompt (see `body`), because the two are the same idea from either end:
+    /// the context prompt is what the model is told about this workflow, the vocabulary
+    /// is what the transcriber is. FEAT11 shipped per-workflow terms with no mention of
+    /// them anywhere near a workflow, so reaching them meant leaving the sheet, opening
+    /// Preferences, and re-selecting the workflow you had just been editing.
+    ///
+    /// It links rather than embeds deliberately: the terms live in a file this sheet does
+    /// not own, edited by a store this sheet does not hold, and a second editor over the
+    /// same table is how two writers end up racing the same debounce.
+    ///
+    /// Sends the **saved** name, not the live field: `glossary.toml` keys a workflow's
+    /// table by name, and an unsaved rename names a table that does not exist yet.
+    @ViewBuilder
+    private var vocabularySection: some View {
+        if let open = onOpenVocabulary {
+            SettingsGroup("Vocabulary") {
+                SettingsFullRow(showsDivider: false) {
+                    HStack(spacing: 10) {
+                        Text(WorkflowVocabularyLink.caption)
+                            .font(.mpTextSM)
+                            .foregroundStyle(Color(MPColors.fgMuted))
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        Button(WorkflowVocabularyLink.buttonLabel) { open(workflow.name) }
+                            .buttonStyle(.mpGhost)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
     }
 
     private var contextSection: some View {

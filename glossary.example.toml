@@ -1,9 +1,10 @@
 # Reference copy. The app edits the real file for you: Preferences > Pipeline >
 # Vocabulary lists the same term pairs, with a scope picker for the global table
 # and each workflow's own, and writes ~/.config/meeting-pipe/glossary.toml
-# preserving anything it does not model (including [fuzzy] below). Copy this file
-# there instead if you would rather hand-edit; both work, and the app leaves your
-# hand-written entries alone.
+# preserving anything it does not model (everything in [fuzzy] below except
+# `enabled`, which the app has a toggle for). Copy this file there instead if you
+# would rather hand-edit; both work, and the app leaves your hand-written entries
+# alone.
 #
 # Custom vocabulary (ASR1). The pipeline reads this at transcript finalize and
 # normalizes recurring proper nouns / code-switched terms BEFORE summarize and
@@ -33,7 +34,9 @@
 # token within `max_distance` edits of a canonical name above (single-token
 # names, length >= 4), which can occasionally fire on a real, different word. A
 # wrong substitution is worse than a missed one, so enable it only if the exact
-# table is not catching enough.
+# table is not catching enough. `enabled` is the "Also catch near-misses (one
+# letter off)" toggle in Preferences > Pipeline > Vocabulary; `max_distance` has
+# no control, because 1 is the setting worth having.
 [fuzzy]
 enabled = false
 max_distance = 1

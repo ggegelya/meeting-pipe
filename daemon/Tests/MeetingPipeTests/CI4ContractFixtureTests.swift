@@ -198,13 +198,23 @@ final class CI4ContractFixtureTests: XCTestCase {
 
             let resolved = GlossaryStore.resolvedTerms(at: url, workflowName: workflow)
             XCTAssertEqual(resolved, expected, "\(name): resolved terms")
+
+            // UX44 gave `[fuzzy].enabled` a toggle, so the editor now claims to know
+            // whether the near-miss pass is on. The fixture carries the Python reader's
+            // answer for the same file; a drift here means the toggle reads back the
+            // opposite of what the pipeline will do.
+            let expectedFuzzy = try XCTUnwrap(c["fuzzy_enabled"] as? Bool, name)
+            XCTAssertEqual(
+                GlossaryStore(fileURL: url).fuzzyEnabled, expectedFuzzy, "\(name): fuzzy enabled"
+            )
         }
     }
 
     /// A round-trip through the editor must not disturb what it does not model. The
     /// fixture case carrying `[fuzzy]` and an unknown `[future]` table is the one that
-    /// matters: `[fuzzy]` is a live pipeline knob with no UI, so silently dropping it
-    /// on the first term the user adds would turn fuzzy matching off behind their back.
+    /// matters: silently dropping either on the first term the user adds would turn a
+    /// live pipeline setting off behind their back. UX44 modeled `[fuzzy].enabled` and
+    /// nothing else in that table, so `max_distance` is now the key this pins.
     func test_glossary_editor_preserves_sections_it_does_not_model() throws {
         let all = try cases("glossary-golden")
         let c = try XCTUnwrap(

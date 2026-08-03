@@ -35,8 +35,10 @@ struct GlossaryTerm: Identifiable, Equatable {
 /// at finalize) and had no in-app surface at all, so the only way to fix a recurring ASR
 /// garble was to hand-write a TOML file that did not exist on disk. This store is the
 /// Preferences half: same `ConfigStore` shape (read into a `TOMLTable`, mutate only the
-/// tables the UI models, debounce the write), so an unknown key and the `[fuzzy]`
-/// section survive an edit untouched.
+/// tables the UI models, debounce the write), so an unknown key survives an edit
+/// untouched. UX44 extended the modeled surface by exactly one boolean,
+/// `[fuzzy].enabled`; the rest of that table (`max_distance`, anything later) is still
+/// round-tripped blind.
 ///
 /// Two layers, exactly as the pipeline resolves them: a global `[terms]` table and an
 /// optional `[workflow."<name>".terms]` that wins on a key clash. The editor holds one
@@ -52,8 +54,8 @@ final class GlossaryStore: ObservableObject {
     private let writeQueue = DispatchQueue(label: "com.meetingpipe.glossarystore.write", qos: .utility)
 
     /// Read once at load, mutated in place and re-serialized on persist; that is how
-    /// `[fuzzy]`, a per-workflow table for a workflow the editor is not showing, and
-    /// any key a later pipeline version adds all survive.
+    /// `[fuzzy].max_distance`, a per-workflow table for a workflow the editor is not
+    /// showing, and any key a later pipeline version adds all survive.
     private var rawDocument: TOMLTable
 
     /// The global `[terms]` table, in editing order.
@@ -65,6 +67,16 @@ final class GlossaryStore: ObservableObject {
 
     /// The selected workflow's own terms. Empty (and never written) on the global scope.
     @Published var workflowTerms: [GlossaryTerm] { didSet { scheduleSave() } }
+
+    /// `[fuzzy].enabled`, the near-miss second pass (UX44).
+    ///
+    /// The one key this store models outside the term tables. It stayed UI-less through
+    /// FEAT11 and the only way to turn it on was to hand-edit a file the app otherwise
+    /// owns, which for a knob whose whole job is "catch the spelling I did not think to
+    /// list" is the wrong side of the trade. `max_distance` deliberately stays
+    /// config-only: its default of 1 is the sane setting, and a second control would ask
+    /// the user to reason about edit distance to change nothing worth changing.
+    @Published var fuzzyEnabled: Bool { didSet { scheduleSave() } }
 
     /// Last write failure, surfaced in the editor rather than swallowed: a vocabulary
     /// the user typed and the pipeline never sees is the whole bug this task fixes.
@@ -87,6 +99,11 @@ final class GlossaryStore: ObservableObject {
         self.globalTerms = GlossaryStore.terms(in: doc["terms"]?.table)
         self.selectedWorkflow = nil
         self.workflowTerms = []
+        // Missing key and non-bool value both read as off, matching the default in
+        // `load_glossary`. The two readers only part on a hand-written non-bool
+        // (Python's `bool("yes")` is true), which no UI can produce and which off is
+        // the safe answer to anyway: a wrong substitution is worse than a missed one.
+        self.fuzzyEnabled = doc["fuzzy"]?.table?["enabled"]?.bool ?? false
         self.isInitialized = true
     }
 
@@ -262,11 +279,21 @@ final class GlossaryStore: ObservableObject {
             let workflow = ensureTable(name, in: workflows)
             write(workflowTerms, into: ensureTable("terms", in: workflow))
         }
+        // One key, set in place. `[fuzzy]` is now modeled to the depth of that single
+        // boolean and no further, so `max_distance` and anything a later pipeline adds
+        // beside it round-trip exactly as they did while the whole table was blind
+        // (UX44). The table is created unconditionally, like `[terms]` above: this file
+        // is already written the moment the pane is opened, and a knob spelled out as
+        // `enabled = false` is easier to find by hand than one that exists only in the
+        // example file.
+        ensureTable("fuzzy", in: rawDocument)["enabled"] = fuzzyEnabled
     }
 
     /// Replace a `[terms]` table's contents with `terms`, dropping keys the user
     /// removed. Only this one table is touched, so anything else in the document
-    /// (`[fuzzy]`, another workflow, a key a later pipeline adds) is left alone.
+    /// (`[fuzzy]`, another workflow, a key a later pipeline adds) is left alone; the one
+    /// key outside a term table this store writes at all is `[fuzzy].enabled`, and
+    /// `writeBack` sets that one in place rather than through here.
     private func write(_ terms: [GlossaryTerm], into table: TOMLTable) {
         let live = GlossaryStore.liveTerms(terms)
         let keep = Set(live.map(\.key))

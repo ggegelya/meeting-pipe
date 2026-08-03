@@ -592,14 +592,18 @@ struct LibraryRootView: View {
         }
         .sheet(item: $editingWorkflow, onDismiss: { editingWorkflow = nil }) { wf in
             if let store = model.workflowStore {
-                WorkflowEditorSheet(workflow: wf, store: store, localModelPreflight: model.coordinator?.localModelPreflight) {
+                WorkflowEditorSheet(workflow: wf, store: store,
+                                    localModelPreflight: model.coordinator?.localModelPreflight,
+                                    onOpenVocabulary: openVocabularyPreferences) {
                     editingWorkflow = nil
                 }
             }
         }
         .sheet(isPresented: $isCreatingWorkflow) {
             if let store = model.workflowStore {
-                NewWorkflowSheet(store: store, localModelPreflight: model.coordinator?.localModelPreflight) { newID in
+                NewWorkflowSheet(store: store,
+                                 localModelPreflight: model.coordinator?.localModelPreflight,
+                                 onOpenVocabulary: openVocabularyPreferences) { newID in
                     isCreatingWorkflow = false
                     // Jump to the new workflow's scope so the rail + inspector confirm the action.
                     if let id = newID { scope = .workflow(id) }
@@ -626,6 +630,18 @@ struct LibraryRootView: View {
                 }
             )
         }
+    }
+
+    // MARK: - Vocabulary cross-link (UX44)
+
+    /// Route the workflow sheet's "Vocabulary…" link to Preferences ▸ Pipeline with that
+    /// workflow's scope preselected. Nothing to close first: the sheet stays up behind
+    /// the Preferences window, so a user who only wanted to glance at the terms comes
+    /// back to the edits they had not saved yet.
+    private func openVocabularyPreferences(workflowName: String) {
+        model.coordinator?.preferencesWindow?.show(
+            initial: VocabularyDeepLink.pane, vocabularyScope: workflowName
+        )
     }
 
     // MARK: - Citation deeplinks (AUTO2)
@@ -1077,6 +1093,8 @@ private struct WorkflowEditorSheet: View {
     @ObservedObject var store: WorkflowStore
     /// UX21: passed through to the editor's inline model-download affordance.
     var localModelPreflight: LocalModelPreflight? = nil
+    /// UX44: passed through to the editor's Vocabulary cross-link.
+    var onOpenVocabulary: ((String) -> Void)? = nil
     let onClose: () -> Void
 
     /// Live mirror of the editor's name field (TECH-UI-7). Nil until the editor
@@ -1101,7 +1119,7 @@ private struct WorkflowEditorSheet: View {
             .padding(.vertical, 12)
             Divider()
             // Save commits and closes; Cancel above discards unsaved edits.
-            WorkflowEditor(workflow: workflow, store: store, onNameChange: { liveName = $0 }, onCommit: onClose, localModelPreflight: localModelPreflight)
+            WorkflowEditor(workflow: workflow, store: store, onNameChange: { liveName = $0 }, onCommit: onClose, localModelPreflight: localModelPreflight, onOpenVocabulary: onOpenVocabulary)
                 .padding(20)
         }
         .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 640)
@@ -1113,6 +1131,8 @@ private struct NewWorkflowSheet: View {
     @ObservedObject var store: WorkflowStore
     /// UX21: passed through to the editor's inline model-download affordance.
     var localModelPreflight: LocalModelPreflight? = nil
+    /// UX44: passed through to the editor's Vocabulary cross-link.
+    var onOpenVocabulary: ((String) -> Void)? = nil
     let onClose: (Workflow.ID?) -> Void
     @State private var stub: Workflow? = nil
     /// Live name from the (blank-started) editor field (TECH-UI-7); header reads
@@ -1148,7 +1168,7 @@ private struct NewWorkflowSheet: View {
                     // the rail routes to it. Delete closes on nil instead (UX30): the
                     // stub is gone, and routing the rail to a workflow scope whose id no
                     // longer exists is the same stranding in a different place.
-                    WorkflowEditor(workflow: s, store: store, startsBlank: true, onNameChange: { liveName = $0 }, onCommit: { onClose(s.id) }, onDelete: { onClose(nil) }, localModelPreflight: localModelPreflight)
+                    WorkflowEditor(workflow: s, store: store, startsBlank: true, onNameChange: { liveName = $0 }, onCommit: { onClose(s.id) }, onDelete: { onClose(nil) }, localModelPreflight: localModelPreflight, onOpenVocabulary: onOpenVocabulary)
                         .padding(20)
                 }
             } else {

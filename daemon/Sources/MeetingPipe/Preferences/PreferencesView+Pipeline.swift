@@ -8,6 +8,10 @@ struct PipelineSectionView: View {
     /// optional, and the host (`PreferencesView`) already observes the store; empty in
     /// headless hosts, which then get the global table only.
     var workflowNames: [String] = []
+    /// UX44: a Vocabulary scope requested by the workflow sheet's cross-link, handed
+    /// straight to the editor, which consumes and clears it. `.constant(nil)` in
+    /// headless hosts, which have no deep link to serve.
+    var pendingVocabularyScope: Binding<String?> = .constant(nil)
     /// FEAT11: the custom-vocabulary editor's backing store. Owned here rather than by
     /// the Coordinator because nothing outside Preferences reads it; the pipeline reads
     /// the file itself at finalize.
@@ -167,7 +171,9 @@ struct PipelineSectionView: View {
             // idea a level apart, teaching the pipeline who this team is and what its
             // words are, and both turn something the model has to guess into something
             // written in the transcript.
-            VocabularySection(glossary: glossary, workflowNames: workflowNames)
+            VocabularySection(glossary: glossary,
+                              workflowNames: workflowNames,
+                              pendingScope: pendingVocabularyScope)
 
             SettingsGroup("Summarization prompt") {
                 // The one row whose control wants the width rather than hugging it

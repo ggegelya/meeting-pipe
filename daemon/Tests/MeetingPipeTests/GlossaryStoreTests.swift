@@ -3,9 +3,10 @@ import XCTest
 
 /// FEAT11: the in-app Vocabulary editor writes a file the pipeline owns the meaning of,
 /// so the store has two jobs it must not get wrong. It has to round-trip everything it
-/// does not model (`[fuzzy]` is a live pipeline knob with no UI, and dropping it would
-/// turn fuzzy matching off behind the user's back), and it has to resolve terms exactly
-/// as `mp.glossary` does. The cross-tree half of that second job is pinned by
+/// does not model (dropping a key would turn a live pipeline setting off behind the
+/// user's back; since UX44 the modeled surface includes `[fuzzy].enabled`, so the
+/// guarantee now has to hold key by key inside that table, not just table by table), and
+/// it has to resolve terms exactly as `mp.glossary` does. That second job is pinned by
 /// `Fixtures/glossary-golden.json` in `CI4ContractFixtureTests`; this suite covers the
 /// editing behaviour that has no Python counterpart.
 final class GlossaryStoreTests: XCTestCase {
@@ -194,6 +195,96 @@ final class GlossaryStoreTests: XCTestCase {
         store.selectWorkflow("Client work")
         XCTAssertEqual(store.workflowTerms.map(\.heard), ["ps"])
         XCTAssertEqual(store.workflowTerms.map(\.canonical), ["PS Corp"])
+    }
+
+    // MARK: - Fuzzy (UX44)
+
+    func test_fuzzy_enabled_loads_from_the_file() throws {
+        let url = try makeTempURL()
+        try write("""
+        [fuzzy]
+        enabled = true
+        max_distance = 2
+        """, to: url)
+
+        XCTAssertTrue(GlossaryStore(fileURL: url).fuzzyEnabled)
+    }
+
+    func test_fuzzy_defaults_off_when_the_table_is_absent() throws {
+        let url = try makeTempURL()
+        try write("""
+        [terms]
+        "acme" = "ACME"
+        """, to: url)
+
+        // Same default as `load_glossary`: `bool(fuzzy.get("enabled", False))`. A knob
+        // that turned itself on because nobody wrote it down would be the wrong side of
+        // "a wrong substitution is worse than a missed one".
+        XCTAssertFalse(GlossaryStore(fileURL: url).fuzzyEnabled)
+    }
+
+    /// The one that matters. UX44 modeled exactly one key inside `[fuzzy]`, so the
+    /// blind-preservation guarantee had to survive at the key level rather than the
+    /// table level: turning the toggle on must not be the write that eats a
+    /// `max_distance` the owner hand-tuned, or a key a later pipeline version adds.
+    func test_toggling_fuzzy_preserves_max_distance_and_unknown_keys() throws {
+        let url = try makeTempURL()
+        try write("""
+        [terms]
+        "acme" = "ACME"
+
+        [fuzzy]
+        enabled = false
+        max_distance = 3
+        future_knob = "keep me"
+        """, to: url)
+
+        let store = GlossaryStore(fileURL: url)
+        XCTAssertFalse(store.fuzzyEnabled)
+        store.fuzzyEnabled = true
+        try store.saveNow()
+
+        let rewritten = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(rewritten.contains("enabled = true"), rewritten)
+        XCTAssertTrue(rewritten.contains("max_distance = 3"), rewritten)
+        XCTAssertTrue(rewritten.contains("keep me"), rewritten)
+        // And the terms table is untouched by a fuzzy-only edit.
+        XCTAssertEqual(
+            GlossaryStore.resolvedTerms(at: url, workflowName: nil), ["acme": "ACME"]
+        )
+    }
+
+    func test_fuzzy_round_trips_back_off_again() throws {
+        let url = try makeTempURL()
+        try write("""
+        [fuzzy]
+        enabled = true
+        max_distance = 2
+        """, to: url)
+
+        let store = GlossaryStore(fileURL: url)
+        store.fuzzyEnabled = false
+        try store.saveNow()
+
+        XCTAssertFalse(GlossaryStore(fileURL: url).fuzzyEnabled)
+        XCTAssertTrue(try String(contentsOf: url, encoding: .utf8).contains("max_distance = 2"))
+    }
+
+    /// A term edit alone writes the toggle's current value rather than leaving the key
+    /// absent, so the file states the knob it is subject to. On a file that never had a
+    /// `[fuzzy]` table this creates one holding `enabled = false`, which changes nothing
+    /// the pipeline does (that is already the default) and makes the knob findable by
+    /// hand, the way `[terms]` has always been created here.
+    func test_a_term_edit_writes_the_fuzzy_key_on_a_file_that_had_none() throws {
+        let url = try makeTempURL()
+        let store = GlossaryStore(fileURL: url)
+        store.globalTerms = [GlossaryTerm(heard: "acme", canonical: "ACME")]
+        try store.saveNow()
+
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(text.contains("[fuzzy]"), text)
+        XCTAssertTrue(text.contains("enabled = false"), text)
+        XCTAssertFalse(GlossaryStore(fileURL: url).fuzzyEnabled)
     }
 
     // MARK: - Live rows

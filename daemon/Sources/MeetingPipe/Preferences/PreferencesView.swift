@@ -4,6 +4,11 @@ import SwiftUI
 /// Shared selection state for the Preferences window. `PreferencesWindow.show(initial:)` mutates `current` to deeplink an external caller (e.g. permission-warning row) to a specific section; SwiftUI re-renders the sidebar whether the window is fresh or already on screen.
 final class PreferencesSelectionState: ObservableObject {
     @Published var current: PreferencesItem = .general
+    /// UX44: a Vocabulary scope the Pipeline pane should preselect, set by the workflow
+    /// editor sheet's "Vocabulary…" cross-link and cleared by the editor once consumed.
+    /// One-shot rather than sticky, so opening Preferences by hand later does not
+    /// silently re-route the picker to a workflow a link visited once.
+    @Published var pendingVocabularyScope: String?
 }
 
 /// Sidebar items for the Preferences window (TECH-E4). IA per the Claude-Design handoff, refined in DSN1: General (hotkeys, appearance), Recording (output, debounce, allowlist), Prompt (timeout, stop conditions), Pipeline (summarization), Storage (library size, retention, caches), Integrations (Anthropic, Notion), Permissions (TCC, regulated mode), Advanced (config/logs).
@@ -108,7 +113,8 @@ struct PreferencesView: View {
                 store: store,
                 workflowNames: workflows.workflows.map(\.name).sorted {
                     $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
-                }
+                },
+                pendingVocabularyScope: $selectionState.pendingVocabularyScope
             )
         case .storage:
             StorageSectionView(store: store, workflowStore: workflows)

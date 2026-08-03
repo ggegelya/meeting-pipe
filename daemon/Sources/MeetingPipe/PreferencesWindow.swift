@@ -18,7 +18,17 @@ final class PreferencesWindow {
     }
 
     /// Open the window, optionally deeplinking to `initial`. Idempotent: re-call brings the existing window to front.
-    func show(initial: PreferencesItem? = nil) {
+    ///
+    /// `vocabularyScope` (UX44) additionally asks the Pipeline pane's Vocabulary editor to
+    /// preselect that workflow, which is what the workflow sheet's "Vocabulary…" link
+    /// needs: without it the link lands the user in the same picker they just left a
+    /// workflow to reach. Set before the window is built and before it is brought
+    /// forward, for the same reason `initial` is: the pane may already be on screen, in
+    /// which case the published change is the only thing that moves it.
+    func show(initial: PreferencesItem? = nil, vocabularyScope: String? = nil) {
+        if let scope = vocabularyScope {
+            selectionState.pendingVocabularyScope = scope
+        }
         if let item = initial {
             selectionState.current = item
         }

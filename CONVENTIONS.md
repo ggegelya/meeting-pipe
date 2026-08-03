@@ -427,7 +427,7 @@ Every Swift-Python surface where both trees implement the same thing is pinned b
 | `publish-result-golden.json` (CI4) | `<stem>.publish.json` + the `state` vocabulary | `CI4ContractFixtureTests` | `test_ci4_contracts.py` |
 | `prefetch-progress-golden.json` (CI4) | the progress stream above | `CI4ContractFixtureTests` | `test_ci4_contracts.py` |
 | `speaker-overlay-golden.json` (CI4) | `<stem>.speaker_labels.json` resolution | `CI4ContractFixtureTests` | `test_ci4_contracts.py` |
-| `glossary-golden.json` (FEAT11) | `glossary.toml` resolution: the global + per-workflow merge, key folding, and the skip rules | `CI4ContractFixtureTests` | `test_ci4_contracts.py` |
+| `glossary-golden.json` (FEAT11) | `glossary.toml` resolution: the global + per-workflow merge, key folding, the skip rules, and `[fuzzy].enabled` | `CI4ContractFixtureTests` | `test_ci4_contracts.py` |
 
 **The CI4 four are generated, not hand-authored**, by `scripts/gen_contract_fixtures.py`, which calls the shipping Python writers (and AST-walks `prefetch_model`'s `_emit` call sites). Regenerate after any intentional shape change:
 
@@ -437,7 +437,7 @@ cd pipeline && uv run python ../scripts/gen_contract_fixtures.py
 
 The earlier five are hand-maintained: change the writer, run the test, paste the failing actual into the fixture. That is the process the CI4 generator replaces, and it is why those five carry a `_comment` telling you not to hand-edit them casually.
 
-`glossary-golden.json` is the only one where **Swift also writes the file**, not just reads it: the in-app Vocabulary editor (FEAT11) rewrites `glossary.toml`, and `mp.glossary` decides what the result means. A drift there does not corrupt anything, it does something worse and quieter, showing the user a substitution the pipeline will never make.
+`glossary-golden.json` is the only one where **Swift also writes the file**, not just reads it: the in-app Vocabulary editor (FEAT11) rewrites `glossary.toml`, and `mp.glossary` decides what the result means. A drift there does not corrupt anything, it does something worse and quieter, showing the user a substitution the pipeline will never make. UX44 extended that to a setting as well as to terms: the editor's near-miss toggle writes `[fuzzy].enabled`, so the Swift side is checked against the fixture's `fuzzy_enabled` for every case, and a reader that disagreed would show a toggle reading back the opposite of what the pipeline does.
 
 Two failure modes, both intended. A **renamed key or event name** fails at generation time with a message naming the Swift reader that would break, because the generator cannot produce an expectation for a key that no longer exists. A **changed value or resolution rule** regenerates cleanly and then fails the *Swift* suite, which is the drift that used to pass both trees.
 
