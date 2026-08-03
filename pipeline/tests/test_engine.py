@@ -6,6 +6,11 @@ regulated / NDA force-local rule, not the vendor SDKs.
 """
 from __future__ import annotations
 
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
 import anthropic
 import httpx
 import pytest
@@ -179,3 +184,147 @@ def test_empty_local_completion_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_local(monkeypatch, _FakeLocal(text="   "))
     with pytest.raises(EngineError):
         _call(_cfg("local"))
+
+
+# ----- PIPE12: the apple_intelligence substitution is a fact, not a log line -----
+
+def _events(logs_dir: Path) -> list[dict]:
+    path = logs_dir / "pipeline_events.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_apple_intelligence_result_names_what_it_substituted_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `backend` reports what ran, so on its own it says "local" and a user who
+    # picked Apple Intelligence cannot tell that a multi-GB MLX model was spawned
+    # for their question. `substituted_from` is what carries that to the surface.
+    _patch_local(monkeypatch, _FakeLocal(text="apple->local"))
+    res = _call(_cfg("apple_intelligence"))
+    assert res.backend == "local"
+    assert res.substituted_from == "apple_intelligence"
+
+
+@pytest.mark.parametrize("backend", ["local", "anthropic", "auto"])
+def test_a_backend_that_answered_for_itself_marks_no_substitution(
+    monkeypatch: pytest.MonkeyPatch, backend: str
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(engine, "AnthropicTextClient", _FakeAnthropic)
+    _patch_local(monkeypatch, _FakeLocal())
+    assert _call(_cfg(backend)).substituted_from is None
+
+
+def test_apple_intelligence_substitution_is_recorded_in_the_event_log(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    logs = tmp_path / "logs"
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(logs))
+    _patch_local(monkeypatch, _FakeLocal(text="apple->local"))
+    _call(_cfg("apple_intelligence"))
+
+    rows = [r for r in _events(logs) if r["action"] == "engine_backend_substituted"]
+    assert len(rows) == 1
+    assert rows[0]["category"] == "pipeline"
+    assert rows[0]["requested"] == "apple_intelligence"
+    assert rows[0]["used"] == "local"
+    assert rows[0]["model"] == "fake-local"
+
+
+def test_the_substitution_is_recorded_even_when_the_local_answer_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The substitution is a routing fact, already true before the local model is
+    # asked anything, and a failed run is exactly when someone reads the log to
+    # find out what actually ran. So it is emitted ahead of the call, not after.
+    logs = tmp_path / "logs"
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(logs))
+    _patch_local(monkeypatch, _FakeLocal(text="   "))
+    with pytest.raises(EngineError):
+        _call(_cfg("apple_intelligence"))
+
+    assert [r["action"] for r in _events(logs)] == ["engine_backend_substituted"]
+
+
+def test_a_backend_that_answered_for_itself_emits_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    logs = tmp_path / "logs"
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(logs))
+    _patch_local(monkeypatch, _FakeLocal())
+    _call(_cfg("local"))
+    assert _events(logs) == []
+
+
+# ----- PIPE12: the configured LoRA adapter reaches free-form calls -----
+
+class _FakeMLXHandler(BaseHTTPRequestHandler):
+    """Just enough `mlx_lm.server` for one free-form completion: a health endpoint,
+    so `LocalSummaryClient` reuses this server instead of spawning a real one, and
+    a chat-completions endpoint that records the request body it was sent."""
+
+    def log_message(self, *_: object) -> None:  # silence test output
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+        self._respond(b'{"data": [{"id": "fake"}]}')
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("Content-Length", "0"))
+        self.server.captured.append(json.loads(self.rfile.read(length) or b"{}"))  # type: ignore[attr-defined]
+        self._respond(json.dumps({"choices": [{"message": {"content": "a local answer"}}]}).encode())
+
+    def _respond(self, body: bytes) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@pytest.fixture
+def fake_mlx_server():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeMLXHandler)
+    server.captured = []  # type: ignore[attr-defined]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield server
+    server.shutdown()
+    server.server_close()
+
+
+def _served_cfg(server: ThreadingHTTPServer, **summarization: object) -> Config:
+    host, port = server.server_address[0], server.server_address[1]
+    return Config.model_validate({
+        "summarization": {
+            "backend": "local",
+            "local_model": "fake-local",
+            "local_endpoint": f"http://{host}:{port}",
+            **summarization,
+        },
+    })
+
+
+def test_configured_adapter_serves_free_form_calls_too(
+    fake_mlx_server: ThreadingHTTPServer,
+) -> None:
+    """`_local_client` used to build a `LocalSummaryClient` with model/host/port
+    and timeouts only, while `summarize._select_backend` also passed the adapter.
+    A trained LoRA (LOCAL9, served per request since LOCAL15) therefore answered
+    every summary and no ask, digest, or classification, with nothing in the answer
+    to say so."""
+    cfg = _served_cfg(fake_mlx_server, local_adapter_path="/adapters/mine")
+    res = complete_text(cfg, system_prompt="s", user_message="u", max_tokens=64)
+    assert res.text == "a local answer"
+    assert fake_mlx_server.captured[-1].get("adapters") == "/adapters/mine"  # type: ignore[attr-defined]
+
+
+def test_no_configured_adapter_leaves_free_form_calls_on_the_base_model(
+    fake_mlx_server: ThreadingHTTPServer,
+) -> None:
+    # An empty `local_adapter_path` must omit the key rather than send "": the
+    # server raises on a path it cannot load, so an empty one would break every
+    # ask on an install that has never trained an adapter.
+    cfg = _served_cfg(fake_mlx_server)
+    complete_text(cfg, system_prompt="s", user_message="u", max_tokens=64)
+    assert "adapters" not in fake_mlx_server.captured[-1]  # type: ignore[attr-defined]

@@ -38,6 +38,7 @@ from tenacity import (
 from . import corrections, entry, events, evidence, storage, transcript_corrections
 from .backend_fallback import run_with_local_fallback
 from .config import (
+    SAMPLING_TEMPERATURE,
     Config,
     ExtraSectionSpec,
     effective_backend,
@@ -369,6 +370,11 @@ class AnthropicSummaryClient:
                 self._client,
                 model=model,
                 max_tokens=max_tokens,
+                # PIPE12: the same temperature local and openai have always sampled
+                # at. Left unset, this call ran at the API default of 1.0, which
+                # made the *default* backend the least repeatable one to compare
+                # regenerations on.
+                temperature=SAMPLING_TEMPERATURE,
                 system=[
                     {
                         "type": "text",

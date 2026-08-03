@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
+from .config import SAMPLING_TEMPERATURE
 from .endpoints import OPENAI_API_BASE, OPENAI_CHAT_PATH
 from .json_extract import parse_summary
 from .prompt_safety import wrap_untrusted
@@ -120,7 +121,9 @@ class OpenAIClient:
             "model": self.model,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": 0.2,
+            # PIPE12 promoted the literal 0.2 this shipped with to
+            # `config.SAMPLING_TEMPERATURE`; same value, one owner.
+            "temperature": SAMPLING_TEMPERATURE,
         }
         if json_mode:
             # JSON mode guarantees syntactically valid JSON; the schema still

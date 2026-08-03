@@ -79,6 +79,12 @@ class Answer:
     sources_considered: list[str] = field(default_factory=list)
     backend: str | None = None
     model: str | None = None
+    # PIPE12: the backend the asker configured, when it could not answer and
+    # another one did (`apple_intelligence` has no Python free-form path, so the
+    # answer runs on the local MLX model). `backend` alone says "local", which
+    # reads as the configured choice rather than a substitution for it. None on
+    # every path where the configured backend is the one that answered.
+    substituted_from: str | None = None
     # True when the model's own `[stem]` citations verified against the retrieved
     # set; False when we fell back to the top retrieved meeting as the source.
     verified: bool = False
@@ -217,6 +223,7 @@ def answer_question(
         sources_considered=stems,
         backend=result.backend,
         model=result.model,
+        substituted_from=result.substituted_from,
         verified=was_verified,
     )
 

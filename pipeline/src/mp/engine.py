@@ -21,10 +21,17 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+from . import events
 from .backend_fallback import run_with_local_fallback
-from .config import Config, effective_backend, parse_local_endpoint, require_env
+from .config import (
+    SAMPLING_TEMPERATURE,
+    Config,
+    effective_backend,
+    parse_local_endpoint,
+    require_env,
+)
 
 log = logging.getLogger("mp.engine")
 
@@ -46,6 +53,13 @@ class EngineResult:
     text: str
     backend: str
     model: str
+    # PIPE12: the backend the user actually configured, when this call could not
+    # run on it and something else answered instead. `backend` above is always
+    # what ran, so on its own it cannot tell a user who picked Apple Intelligence
+    # that a multi-GB local model was spawned for their question. None whenever
+    # the configured backend is the one that answered, which is every path but
+    # the apple_intelligence substitution below.
+    substituted_from: str | None = None
 
 
 class AnthropicTextClient:
@@ -72,6 +86,10 @@ class AnthropicTextClient:
         response = self._client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
+            # PIPE12: parity with summarize and with the local / openai backends.
+            # Unset, this ran at the API default of 1.0, so the same question asked
+            # twice of the same library gave two differently-worded answers.
+            temperature=SAMPLING_TEMPERATURE,
             system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user_message}],
         )
@@ -87,7 +105,12 @@ class AnthropicTextClient:
 
 def _local_client(cfg: Config, model: str | None):
     """A `LocalSummaryClient` pinned to (host, port) from config. Lazy import so
-    non-local installs never pay the mlx cost for an ask that never runs local."""
+    non-local installs never pay the mlx cost for an ask that never runs local.
+
+    Deliberately not every setting `summarize._select_backend` passes. Two are
+    skipped on purpose, recorded at the keyword arguments below, so a later reader
+    can tell a decision from an omission (PIPE12; the adapter was the omission).
+    """
     from .summarize_local import LocalSummaryClient
 
     host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
@@ -101,6 +124,25 @@ def _local_client(cfg: Config, model: str | None):
         # that hard-rebooted this Mac started on exactly this path, so the same
         # floor applies to an answer as to a summary.
         memory_floor_pct=cfg.summarization.local_memory_floor_pct,
+        # PIPE12/LOCAL9: the configured LoRA adapter, served per request since
+        # LOCAL15. This was dropped, so a trained adapter answered every summary
+        # and no ask, digest, or classification, silently and with no way to tell
+        # from the answer. An adapter tuned on this owner's meetings is at least as
+        # relevant to a question about them as to a summary of one.
+        adapter_path=cfg.summarization.local_adapter_path or None,
+        # `summary_language` is deliberately NOT passed. It pins the *summary's*
+        # output language and drives a re-ask when the local model drifts off it
+        # (LOCAL7); a question is not a summary, and an ask answered in the
+        # configured summary language rather than the language it was asked in
+        # would be a bug, not parity. Free-form callers own their own language
+        # instruction in their prompt (`rag.RAG_SYSTEM`, digest's narrate system).
+        #
+        # `map_reduce_above_chars` is deliberately NOT passed either. It routes an
+        # over-long *transcript* through a windowed map-reduce (PIPE4); every
+        # free-form caller here packs its own prompt to a budget first (ask to
+        # `--context-tokens` clamped by RAM tier, digest to a formatted fact list,
+        # classify to a title plus attendees), so there is nothing left for it to
+        # window. The default is what LocalSummaryClient already applies.
     )
 
 
@@ -146,11 +188,29 @@ def complete_text(
         # The Apple Intelligence Foundation Model is Swift-only and only wired for
         # transcript summarization (the daemon produces it). ask / digest have no
         # daemon hand-off, so run them on the local MLX path instead: still
-        # on-device, still zero-egress, just a different local model. Logged so the
-        # substitution is never silent.
+        # on-device, still zero-egress, just a different local model.
+        #
+        # PIPE12: a log line is not a surface. Someone who picked Apple
+        # Intelligence precisely to avoid a resident multi-GB model gets one
+        # spawned per ask, and `EngineResult.backend` reads "local", which is true
+        # and explains nothing. So the substitution travels three ways now: the
+        # log, a durable event, and the result the caller renders from.
+        #
+        # Emitted BEFORE the call, not after: the substitution is a routing fact,
+        # already true whether or not the local model then answers, and a run that
+        # fails is exactly when someone goes looking for why. `model` is therefore
+        # the id this call asks for rather than `LocalSummaryClient.model`'s
+        # read-back of what a warm server turned out to be serving (LOCAL11).
         log.info("backend 'apple_intelligence' has no Python free-form path; using local MLX for this call")
-        return _complete_local(cfg, system_prompt=system_prompt, user_message=user_message,
-                               max_tokens=max_tokens, model=model)
+        events.emit(
+            "pipeline", "engine_backend_substituted",
+            requested="apple_intelligence", used="local",
+            model=model or cfg.summarization.local_model,
+            reason="no Python free-form path",
+        )
+        result = _complete_local(cfg, system_prompt=system_prompt, user_message=user_message,
+                                 max_tokens=max_tokens, model=model)
+        return replace(result, substituted_from="apple_intelligence")
 
     if backend == "local":
         return _complete_local(cfg, system_prompt=system_prompt, user_message=user_message,

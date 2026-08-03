@@ -62,6 +62,7 @@ from pydantic import ValidationError
 
 from . import egress_guard, local_server, resource_guard, summarize_staged
 from .chunking import chunked_windows
+from .config import SAMPLING_TEMPERATURE
 from .json_extract import largest_balanced_json_object, repair_missing_commas
 from .prefetch_model import model_is_cached
 from .prompt_safety import wrap_untrusted
@@ -901,8 +902,10 @@ class LocalSummaryClient:
             # Low temperature: structured output is the priority, not
             # creative phrasing. The model's default 0.7 was producing
             # extra prose around the JSON object often enough that
-            # layer 2 of the fallback was firing on most calls.
-            "temperature": 0.2,
+            # layer 2 of the fallback was firing on most calls. PIPE12
+            # promoted the literal to `config.SAMPLING_TEMPERATURE`, the
+            # one value every backend now samples at.
+            "temperature": SAMPLING_TEMPERATURE,
             # OpenAI structured-outputs hint. Newer mlx_lm.server builds
             # honor this and constrain decoding via outlines under the
             # hood; older builds ignore it. Either way the request

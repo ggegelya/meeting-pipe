@@ -317,6 +317,19 @@ BACKENDS: frozenset[str] = frozenset(get_args(BackendName))
 # guard is armed, as defense in depth (the SEC10 posture).
 CLI_BACKENDS: frozenset[str] = frozenset({"claude_cli"})
 
+# Decoding temperature every backend samples at, structured summary and free-form
+# alike. Not a config key: it is a property of what this product does with a
+# summary, not a user preference. 0.2 because output here is *compared*, run
+# against run, by the corrections A/B, `mp dogfood` scoring, and FEAT10's evidence
+# verifier; at a provider's own default those comparisons measure the sampler
+# rather than the change under test. The local path picked 0.2 first (a hotter
+# sample kept wrapping the JSON object in prose) and openai matched it; PIPE12
+# brought the two Anthropic paths, `summarize.AnthropicSummaryClient.summarize`
+# and `engine.AnthropicTextClient.complete`, onto the same value, which had been
+# running at the API default of 1.0 and so made the default backend the least
+# repeatable one.
+SAMPLING_TEMPERATURE: float = 0.2
+
 
 def with_backend_override(cfg: Config, backend: str) -> Config:
     """Return a copy of ``cfg`` with a one-shot summarization backend override

@@ -6,10 +6,18 @@ or a network namespace). Instead it patches `httpx.Client.send` and
 the `anthropic.Anthropic` constructor so any non-localhost outbound
 call fails the test loudly. That covers both the explicit Anthropic
 SDK path and any hidden httpx call inside summarize.py.
+
+Also the home of PIPE12's sampling-temperature fence. That one invariant spans two
+modules (summarize's tool-use call and engine's free-form one), so both request
+bodies are asserted here rather than splitting one constant's guard across two
+files, each with its own copy of the same transport patch.
 """
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import patch
 
@@ -17,7 +25,7 @@ import anthropic
 import httpx
 import pytest
 
-from mp.config import Config
+from mp.config import SAMPLING_TEMPERATURE, Config
 from mp.config import parse_local_endpoint
 from mp.summarize import _AutoFallbackClient, _select_backend
 
@@ -459,3 +467,85 @@ def test_non_timeout_errors_keep_their_tenacity_retry(monkeypatch: pytest.Monkey
 
     assert _create_message(client, model="claude-x") == "answer"
     assert client.calls == 3
+
+
+# ----- PIPE12: one sampling temperature, on every backend -----
+
+@contextmanager
+def _anthropic_transport(body: dict) -> Iterator[list[dict]]:
+    """Route every `httpx.Client` through a MockTransport that records the request
+    body and answers with `body`. The transport is the seam because the Anthropic
+    SDK builds its own client; neither call site takes an injectable one, and
+    reshaping them for a test would be the test dictating the design."""
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, request=request, json=body)
+
+    real_init = httpx.Client.__init__
+
+    def patched_init(self: httpx.Client, *args: Any, **kwargs: Any) -> None:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        real_init(self, *args, **kwargs)
+
+    with patch.object(httpx.Client, "__init__", patched_init):
+        yield seen
+
+
+def _message_response(content: list[dict], stop_reason: str) -> dict:
+    return {
+        "id": "msg_01",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-x",
+        "content": content,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {"input_tokens": 3, "output_tokens": 2},
+    }
+
+
+def test_the_shared_temperature_is_the_value_local_and_openai_already_sampled_at() -> None:
+    # The number itself is the contract: every comparison surface in this product
+    # (corrections A/B, `mp dogfood` scoring, FEAT10's evidence verifier) reads
+    # runs against each other, so a backend sampling somewhere else measures the
+    # sampler instead of the change under test.
+    assert SAMPLING_TEMPERATURE == 0.2
+
+
+def test_anthropic_summarize_request_pins_the_temperature() -> None:
+    from mp.summarize import AnthropicSummaryClient
+
+    summary = {
+        "title": "Standup", "summary": ["A point."], "decisions": [], "actions": [],
+        "questions": [], "attendees": ["Alice"], "detected_language": "en",
+    }
+    body = _message_response(
+        [{"type": "tool_use", "id": "toolu_01", "name": "emit_meeting_summary", "input": summary}],
+        "tool_use",
+    )
+    with _anthropic_transport(body) as seen:
+        out = AnthropicSummaryClient(api_key="sk-test").summarize(
+            system_prompt="Summarize.", transcript="A: hello.",
+            model="claude-x", max_tokens=512,
+        )
+
+    assert out.title == "Standup"
+    assert seen[0]["temperature"] == SAMPLING_TEMPERATURE
+
+
+def test_anthropic_free_form_request_pins_the_same_temperature() -> None:
+    # `engine.AnthropicTextClient` is the free-form sibling behind ask / digest /
+    # classify. It carried no temperature either, so the default backend answered
+    # the same question differently every time it was asked.
+    from mp.engine import AnthropicTextClient
+
+    body = _message_response([{"type": "text", "text": "an answer"}], "end_turn")
+    with _anthropic_transport(body) as seen:
+        text = AnthropicTextClient(api_key="sk-test", model="claude-x").complete(
+            system_prompt="Answer.", user_message="a question", max_tokens=64,
+        )
+
+    assert text == "an answer"
+    assert seen[0]["temperature"] == SAMPLING_TEMPERATURE

@@ -379,3 +379,48 @@ def test_a_second_ask_reuses_the_index_and_says_nothing_new(
     ]
     refreshes = [r for r in rows if r["action"] == "ask_index_refresh_started"]
     assert len(refreshes) == 1, "an unchanged library must not re-enter the embed path"
+
+
+# ----- PIPE12: the answer says which backend it substituted for -----
+
+def _substituting_engine(cfg, *, system_prompt, user_message, max_tokens, model=None):
+    """What `engine.complete_text` returns under `backend = "apple_intelligence"`:
+    that backend is Swift-only and has no Python free-form path, so the local MLX
+    model answers and the result says whose place it took."""
+    return EngineResult(text="answer [20260101-0900]", backend="local", model="fake",
+                        substituted_from="apple_intelligence")
+
+
+def test_the_answer_json_round_trips_the_substitution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The daemon renders its provenance line off this file, so a marker that stops
+    # at the dataclass is no more visible to the owner than the log line was.
+    root, out = tmp_path / "raw", tmp_path / "a.json"
+    _meeting(root, "20260101-0900", title="Budget", transcript="A: we cut the budget.")
+    monkeypatch.setattr(ask.Config, "load", classmethod(lambda cls: _cfg()))
+    monkeypatch.setattr(ask.engine, "complete_text", _substituting_engine)
+
+    ask.main(["budget", "--dir", str(root), "--index-dir", str(tmp_path / "idx"), "--out", str(out)])
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["backend"] == "local"
+    assert payload["substituted_from"] == "apple_intelligence"
+
+
+def test_an_unsubstituted_answer_carries_a_null_marker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Present-and-null rather than absent: a reader that has to tell "no
+    # substitution" from "an older build that did not record one" gets the answer
+    # from the key, not from its absence.
+    root, out = tmp_path / "raw", tmp_path / "a.json"
+    _meeting(root, "20260101-0900", title="Budget", transcript="A: we cut the budget.")
+    monkeypatch.setattr(ask.Config, "load", classmethod(lambda cls: _cfg()))
+    monkeypatch.setattr(ask.engine, "complete_text", _echo_first_stem_engine)
+
+    ask.main(["budget", "--dir", str(root), "--index-dir", str(tmp_path / "idx"), "--out", str(out)])
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert "substituted_from" in payload
+    assert payload["substituted_from"] is None
