@@ -39,6 +39,7 @@ from . import engine, entry, events
 from .config import Config
 from .schemas import ActionItem, Confidence, ExtraSection, MeetingSummary
 from .markdown import render_summary_md
+from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
 
 log = logging.getLogger("mp.digest")
 
@@ -67,6 +68,13 @@ _NARRATE_SYSTEM = (
     "themes, then notable decisions. Use ONLY the facts given: do not invent "
     "tasks, owners, dates, or decisions. No preamble and no closing, one bullet "
     "per line starting with '- '."
+    # SEC15: the facts are second-order (fields a summarizer wrote), which is one
+    # remove from the transcript but not a boundary: a task or decision line can
+    # carry a participant's words close to verbatim (FEAT10 evidence quotes are
+    # the explicit case), so an "ignore your instructions" spoken in a meeting
+    # can reach here through its own summary. The fence costs one line, so it
+    # gets the same treatment the summarizer gets.
+    "\n\n" + UNTRUSTED_GUIDANCE
 )
 
 
@@ -336,7 +344,11 @@ def narrate(cfg: Config, scope: ActionScope, decisions: list[RecentDecision],
     summary if it is unavailable. Returns (bullets, backend-used)."""
     if not scope.actions and not decisions:
         return (["No open actions or recent decisions this period."], "none")
-    facts = _format_facts(scope, decisions, today)
+    # The whole facts block goes inside the fence (SEC15). Every instruction the
+    # narration follows lives in `_NARRATE_SYSTEM`, so the user turn is data and
+    # nothing else; the AI10 header the block opens with is a count, not an
+    # instruction, and reads the same fenced.
+    facts = wrap_untrusted(_format_facts(scope, decisions, today))
     try:
         result = engine.complete_text(
             cfg, system_prompt=_NARRATE_SYSTEM, user_message=facts, max_tokens=400

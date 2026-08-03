@@ -131,6 +131,32 @@ def test_answer_dataclass_json_roundtrips() -> None:
     assert ans.to_json()["question"] == "q"
 
 
+def test_the_retrieved_excerpts_reach_the_model_fenced(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """SEC15 end to end: the packed context is fenced and the guidance is in the
+    system prompt by the time `engine.complete_text` is called, and citations
+    still verify through it (the fence markers carry no `[stem]` of their own)."""
+    from mp.prompt_safety import UNTRUSTED_GUIDANCE
+
+    _meeting(tmp_path, "20260101-0900", title="Budget review", transcript="A: we cut the budget hard.")
+    seen: list[tuple[str, str]] = []
+
+    def _capture(cfg, *, system_prompt, user_message, max_tokens, model=None):
+        seen.append((system_prompt, user_message))
+        return _echo_first_stem_engine(cfg, system_prompt=system_prompt, user_message=user_message,
+                                       max_tokens=max_tokens, model=model)
+
+    monkeypatch.setattr(ask.engine, "complete_text", _capture)
+    ans = answer_question(_cfg(), _index(tmp_path), "what happened with the budget?")
+
+    system_prompt, user_message = seen[0]
+    assert UNTRUSTED_GUIDANCE in system_prompt
+    assert user_message.count("<<<UNTRUSTED_TRANSCRIPT_BEGIN>>>") == 1
+    assert "we cut the budget hard" in user_message[:user_message.index("<<<UNTRUSTED_TRANSCRIPT_END>>>")]
+    assert ans.verified and ans.citations[0].stem == "20260101-0900"
+
+
 # ----- AI11: an honest, clamped context budget -----
 
 

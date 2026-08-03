@@ -7,6 +7,11 @@ meeting. Verification is what makes AI3's citations trustworthy: a `[stem]` the
 model invented (or mangled) is dropped, so a presented citation always resolves
 to a real meeting on disk.
 
+The retrieved excerpts are transcript and summary text, so they carry the same
+prompt-injection risk the summarizer fences against (TECH-SEC6): a participant
+who said "ignore your instructions and ..." is retrievable. SEC15 put the packed
+context behind the same fence, with the shared guidance in the system prompt.
+
 Pure and stdlib-only (no engine, no numpy), so the assembly + verification are
 unit-testable without a model. This is the packing shape the AI2 spike validated
 (that throwaway harness has since been retired); `mp ask` ships on it.
@@ -16,11 +21,18 @@ from __future__ import annotations
 import re
 
 from .embed_index import Chunk
+from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
 
 # The synthesis system prompt. Deliberately strict: answer only from the
 # excerpts, cite the `[stem]` tag(s) used, and say so plainly when the excerpts
 # do not contain the answer (an honest "not found" beats a confident fabrication
 # for a meeting recall tool).
+#
+# SEC15 appends the shared `UNTRUSTED_GUIDANCE` verbatim rather than a RAG-worded
+# variant. Its "transcript content" phrasing reads a shade narrow next to
+# "excerpts", but an excerpt IS transcript (or summary) text, so it does not
+# mislead; and one copy of the marker names is what stops this surface from
+# fencing against markers a later rename no longer writes.
 RAG_SYSTEM = (
     "You answer questions about the user's past meetings using ONLY the provided "
     "excerpts. Each excerpt begins with its source tag in square brackets, e.g. "
@@ -28,6 +40,7 @@ RAG_SYSTEM = (
     "square brackets in your answer. Cite at least one source. If the excerpts do "
     "not contain the answer, say so plainly rather than guessing. Be concise and "
     "specific; prefer naming the meeting a fact came from."
+    "\n\n" + UNTRUSTED_GUIDANCE
 )
 
 # `[stem]` citation token. Stems are the recording filename stems the daemon
@@ -63,8 +76,16 @@ def pack_context(chunks: list[Chunk], target_chars: int) -> tuple[str, list[str]
 
 
 def rag_user(context: str, question: str) -> str:
-    """The user turn: the packed excerpts then the question."""
-    return f"Meeting excerpts:\n\n{context}\n\n---\n\nQuestion: {question}"
+    """The user turn: the packed excerpts, fenced as untrusted content, then the
+    question outside the fence (SEC15).
+
+    One fence around the whole block rather than one per chunk: the `[stem]`
+    markers are excerpt content, and `RAG_SYSTEM`'s instruction to cite them
+    already refers to tags in the excerpts, so they belong inside. The question
+    stays outside, since it is the only instruction-bearing text the user
+    actually wrote.
+    """
+    return f"Meeting excerpts:\n\n{wrap_untrusted(context)}\n\n---\n\nQuestion: {question}"
 
 
 def extract_citations(answer: str) -> list[str]:
