@@ -6,10 +6,17 @@ import Combine
 final class App {
     static func main() {
         let args = CommandLine.arguments
-        // The long-lived daemon (not the one-shot CLI subcommands) migrates a legacy plaintext secrets.env
-        // into the Keychain once (SEC8), before seeding the process env from it.
+        // The long-lived daemon (not the one-shot CLI subcommands) refuses to be a second copy (UX54)
+        // and migrates a legacy plaintext secrets.env into the Keychain once (SEC8), before seeding the
+        // process env from it. `doctor` and `prefetch-models` are diagnostics that must keep running
+        // alongside a live daemon, so both only apply here.
         let isDaemon = !(args.count > 1 && (args[1] == "doctor" || args[1] == "prefetch-models"))
         if isDaemon {
+            // First, ahead of everything this process could otherwise do twice: a second daemon means
+            // two detectors, two recorders that can answer the same meeting, and a second process
+            // outside PIPE11's job lane. A rejected instance exits inside this call, so it never
+            // reaches the Keychain migration below, let alone the status item or any subsystem.
+            SingleInstanceGuard.standDownIfPeerIsRunning()
             SecretsStore.migrateEnvFileIfPresent()
         }
         Secrets.loadIfPresent()
