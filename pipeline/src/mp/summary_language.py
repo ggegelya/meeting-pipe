@@ -28,6 +28,46 @@ _UK_SIGNATURE = frozenset("іїєґІЇЄҐ")
 _RU_SIGNATURE = frozenset("ыэъёЫЭЪЁ")
 # Enough letters to trust a script read; a title plus one bullet clears this.
 _LANG_MIN_LETTERS = 12
+# LANG2: how much of the *other* script a transcript may carry and still be a firm
+# target language. It protects one thing: a genuinely code-switched meeting, which
+# must stay unverified rather than be flattened into whichever script edged ahead.
+# It is not there to protect against noise, and before LANG2 the Latin branch used
+# `cyr == 0`, which treated the two as the same thing: 25 Cyrillic letters in
+# 17,247 (one opening quip in a 30-minute English meeting) left the target
+# unverified, so LANG1's reinforcement, divergence check, and repair all sat out
+# and that meeting shipped 1,178 characters of Ukrainian prose.
+#
+# 0.33 comes from scoring all 232 transcripts in the owner's library, measured on
+# the rendered markdown because that is what callers pass, not on the raw segment
+# text. The population is three groups, not a continuum:
+#   - 205 are a single script exactly (0% minority);
+#   - the 19 Cyrillic-dominant meetings run 0.9% to 23.1% Latin, because a
+#     Ukrainian standup borrows English technical vocabulary word by word
+#     (Jenkins, Docker, tenant, API); longest run of Latin words: 14;
+#   - the Latin-dominant meetings sit at 0.1% to 1.4%, with one at 8.0%, because
+#     the only way Cyrillic enters an English transcript is somebody actually
+#     speaking it for a stretch (contiguous runs of 35 to 94 words);
+#   - exactly one meeting is genuinely bilingual: 45.2% minority, 1,637 Cyrillic
+#     words, a single run of 281. That one must stay unverified.
+# So the window is (23.1%, 45.2%), and 0.33 sits 1.43x above the most English-larded
+# single-language meeting and 1.37x below the bilingual one, which is as close to
+# centred as the data allows. Read plainly: a transcript is a firm target only when
+# at least two thirds of its letters are one script.
+#
+# The 23.1% ceiling is worth knowing about, because it is not linguistic. That
+# meeting's *speech* is 5.7% Latin; the rest is the markdown wrapper, whose header
+# and one `**Name**:` label per turn are Latin whatever the meeting was spoken in.
+# It is a fixed cost per turn, so it lands hardest on the shortest meetings (that
+# one is ~3 minutes: 174 of its 218 Latin letters are labels), while the longest
+# Cyrillic meeting is barely moved (0.4% to 0.9%). Two consequences. Erring low is
+# the safer error, so this constant is deliberately nearer the Cyrillic ceiling
+# than the middle of the raw range: a threshold set too low costs a very short
+# meeting its safety net and leaves it where it was before LANG1, while one set too
+# high forces a genuinely bilingual meeting into a single language, which is an
+# actively wrong answer rather than an absent one. And a still shorter Cyrillic
+# meeting could clear 33% on labels alone; the fix for that would be to stop
+# counting the wrapper rather than to keep raising this number.
+_LANG_MAX_MINORITY_SHARE = 0.33
 # The languages the cheap detector can actually verify. A forced code outside
 # this set (de, es, fr, ...) is left unverified rather than misread as English.
 _VERIFIABLE_LANGS = frozenset({"uk", "ru", "en"})
@@ -63,7 +103,19 @@ def language_signature(text: str) -> str | None:
     not enough signal to be sure. Script first (Cyrillic vs Latin), then uk vs ru
     by signature letters. "en" really means "Latin script"; the detector does not
     separate Latin languages, and callers must not ask it to (see
-    ``expected_summary_language``). Pure, so it is unit-tested without a server."""
+    ``expected_summary_language``). Pure, so it is unit-tested without a server.
+
+    LANG2 reviewed whether this should share ``_LANG_MAX_MINORITY_SHARE`` and
+    deliberately left it on the plain majority split, because it answers a
+    different question over much shorter text. Its callers are the per-section
+    checks in ``divergent_sections``, and the owner's real Ukrainian summaries
+    carry 20% to 37% Latin per section (product names, ADR, API, DMS), one title
+    at 49%. Gating this on the same share would return None for most of them, and
+    a section the detector will not read is a section ``divergent_sections`` will
+    not flag, which is LANG1's whole mechanism switched off. Fail-safe is the
+    wrong default here: the cost of a missed flag is a summary in the wrong
+    language, the cost of a wrong flag is one extra model call that is discarded
+    unless it comes back clean."""
     cyr, lat, uk, ru = _script_counts(text)
     if cyr + lat < _LANG_MIN_LETTERS:
         return None
@@ -84,18 +136,28 @@ def expected_summary_language(summary_language: str, transcript: str) -> str | N
     (uk / ru / en); other forced Latin codes (de, es, ...) are left alone rather
     than risk forcing English on a German meeting.
 
-    "auto" trusts a *confident* read of the transcript: a Cyrillic-dominant
-    transcript yields uk or ru; a confidently all-Latin transcript (zero Cyrillic,
-    enough letters) yields "en" (LANG1) so a Russian action block in an English
-    meeting is an unambiguous divergence even under auto. A transcript that mixes
-    scripts, or is too short, stays unverified so a code-switched meeting is never
-    force-flattened to one language."""
+    "auto" trusts a *confident* read of the transcript: a mostly-Cyrillic
+    transcript yields uk or ru, a mostly-Latin one yields "en" (LANG1), so a
+    Russian action block in an English meeting is an unambiguous divergence even
+    under auto. "Mostly" is one symmetric share (LANG2): a transcript whose
+    minority script is more than ``_LANG_MAX_MINORITY_SHARE`` of its letters, or
+    that is too short to read, stays unverified so a genuinely code-switched
+    meeting is never force-flattened into one language.
+
+    That share is the same on both sides on purpose. Before LANG2 the Latin branch
+    demanded purity while the Cyrillic branch accepted anything up to half, so a
+    49%-Latin Ukrainian meeting was a confident "uk" while a 49%-Cyrillic English
+    one was unverifiable; the same meeting got opposite treatment depending on
+    which script happened to edge ahead. Now neither is verified."""
     code = (summary_language or "auto").strip().lower()
     if len(code) == 2 and code.isalpha():
         return code if code in _VERIFIABLE_LANGS else None
     cyr, lat, uk, ru = _script_counts(transcript)
-    if cyr + lat < _LANG_MIN_LETTERS:
+    letters = cyr + lat
+    if letters < _LANG_MIN_LETTERS:
         return None
+    if min(cyr, lat) / letters > _LANG_MAX_MINORITY_SHARE:
+        return None  # genuinely code-switched; do not pick a side for it
     if cyr >= lat:
         # Cyrillic-dominant: only act on a confident uk / ru read.
         if uk > ru:
@@ -103,10 +165,7 @@ def expected_summary_language(summary_language: str, transcript: str) -> str | N
         if ru > uk:
             return "ru"
         return None
-    # Latin-dominant. LANG1: only a *pure* Latin transcript (zero Cyrillic) is a
-    # firm "en" target. Any Cyrillic mixed in means the meeting may legitimately
-    # carry another script, so leave it unverified rather than force English.
-    return "en" if cyr == 0 else None
+    return "en"
 
 
 def _summary_sections(summary: MeetingSummary) -> dict[str, list[str]]:
