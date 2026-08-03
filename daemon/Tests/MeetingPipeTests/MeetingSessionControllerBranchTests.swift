@@ -610,6 +610,32 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         XCTAssertEqual(host.recorderSpy.offTheRecordStates, [true, false])
         XCTAssertEqual(host.hudSpy.offTheRecordStates, [true, false])
     }
+
+    // MARK: - FEAT8 / UX46: flag a moment
+
+    /// The guard the HUD's new flag button inherits by sharing this entry point (UX46): pressing it
+    /// when nothing is recording does nothing at all, exactly as the hotkey has always behaved.
+    func test_flagMoment_whenIdle_isANoOp() async {
+        let (controller, host) = makeController()
+        controller.flagMoment()
+        await settle()
+        XCTAssertEqual(host.hudSpy.blinkCount, 0, "nothing was flagged, so nothing is acknowledged")
+    }
+
+    func test_flagMoment_whileRecording_acknowledgesEveryPress() async {
+        let (controller, host) = makeController()
+        host.stateMachine.setRecording(
+            file: tempDir.appendingPathComponent("rec.wav"), source: source(), summaryMode: .auto
+        )
+
+        controller.flagMoment()
+        controller.flagMoment()
+        await settle()
+
+        // One quiet blink per moment, and the blink is the whole acknowledgement: no chrome, and
+        // the markers themselves are flushed to the sidecar at stop.
+        XCTAssertEqual(host.hudSpy.blinkCount, 2)
+    }
 }
 
 /// `AppState`'s cases carry associated values, so a test that only cares "which

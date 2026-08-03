@@ -180,4 +180,11 @@ extension Coordinator: RecordingHUDDelegate {
         // when idle; `toggleOffTheRecord` calls back into `hud.setOffTheRecord` to reflect the state.
         session.toggleOffTheRecord()
     }
+
+    func recordingHUDDidRequestFlagMoment(_ hud: RecordingHUDWindow) {
+        // FEAT8 discoverability (UX46): same entry point the flag-moment hotkey uses, so there is
+        // one marker writer. A no-op when idle; `flagMoment` calls back into `hud.blink` to
+        // acknowledge.
+        session.flagMoment()
+    }
 }

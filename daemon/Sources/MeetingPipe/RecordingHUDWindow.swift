@@ -8,6 +8,11 @@ protocol RecordingHUDDelegate: AnyObject {
     /// User toggled off-the-record from the HUD (MIC14 discoverability, UX23): the icon toggle beside
     /// Stop, or the right-click menu. The session controller owns the actual on/off state.
     func recordingHUDDidRequestToggleOffTheRecord(_ hud: RecordingHUDWindow)
+    /// User flagged a moment from the HUD (FEAT8 discoverability, UX46): the flag button on the
+    /// control row, or the right-click menu. Routes to the same session entry the flag-moment hotkey
+    /// uses, so the marker has exactly one writer; the quiet blink is the acknowledgement, and a
+    /// press while nothing is recording is the same no-op the hotkey is.
+    func recordingHUDDidRequestFlagMoment(_ hud: RecordingHUDWindow)
 }
 
 /// Pure panel geometry for the recording HUD (UX35), in the house `decide` style: explicit
@@ -19,20 +24,38 @@ protocol RecordingHUDDelegate: AnyObject {
 /// toggling can never resize the panel. `HUDPanelGeometryTests` asserts exactly that, which is
 /// what stops a per-state width coming back.
 enum HUDPanelGeometry {
+    /// Gap between the controls at the pill's foot, and the side of one icon control.
+    static let controlGap: CGFloat = 8
+    static let iconControlSide: CGFloat = 26
+
+    /// The control row at the pill's foot: the Stop record key, then the two icon controls beside
+    /// it (off the record, MIC14 / UX23; flag a moment, UX46). 34 + 8 + 26 + 8 + 26 = 102pt.
+    /// Derived rather than written out, so the pill width and Stop's centring offset cannot drift
+    /// apart from the row they describe.
+    static let controlRowWidth: CGFloat =
+        RecordKey.Geometry.side + 2 * (controlGap + iconControlSide)
+
+    /// Stop's offset from the pill's centreX. The row is centred as a group with Stop leftmost, so
+    /// Stop sits half the row left of centre and half its own width back again: -17 with one icon
+    /// control beside it (UX23), -34 with two (UX46).
+    static let stopCenterXOffset: CGFloat = -(controlRowWidth - RecordKey.Geometry.side) / 2
+
     /// Shared pill width for the recording and off-the-record states.
     ///
-    /// 76 -> 96 (UX35). The pill's widest content is the dot row (dot 8 + gap 5 + the state label
-    /// at 10pt medium), which lays out at 64pt for "Recording" and 83pt for "Off the record". 76
-    /// fit only the first, so off-the-record used to resize to a hand-picked 150 and carry ~67pt
-    /// of dead space, while the resting pill could not have shown the longer label at all. 96 is
-    /// 83 plus the same 12pt of side margin 76 gave "Recording", rounded onto the 4pt grid. Every
-    /// element in the pill is centred on its centerX or pinned to both edges, so one width is
-    /// layout-safe and the truncating workflow name only gains room (68pt of text width -> 88pt).
+    /// 76 -> 96 (UX35) -> 116 (UX46). Two pieces of content compete for it. The dot row (dot 8 +
+    /// gap 5 + the state label at 10pt medium) lays out at 64pt for "Recording" and 83pt for "Off
+    /// the record"; 76 fit only the first, so off-the-record used to resize to a hand-picked 150
+    /// and carry ~67pt of dead space, and UX35 measured 96 as 83 plus 13pt of side margin, rounded
+    /// onto the 4pt grid. UX46's third control then made the *control row* the wider of the two at
+    /// `controlRowWidth` 102pt, which 96 could not have held, so 116 is 102 plus that same 13pt of
+    /// margin, rounded onto the grid the same way. Every element in the pill is centred on its
+    /// centerX or pinned to both edges, so one width stays layout-safe and the truncating workflow
+    /// name only gains room (88pt of text width -> 108pt).
     ///
-    /// This is the single place to resize the pill. UX46 adds a third control (flag a moment)
-    /// beside Stop and the off-record toggle, taking that row from 34 + 8 + 26 = 68pt to
-    /// 34 + 8 + 26 + 8 + 26 = 102pt, so it widens this constant rather than adding a second one.
-    static let pillWidth: CGFloat = 96
+    /// This is the single place to resize the pill. A fourth control widens `controlRowWidth`,
+    /// which moves `stopCenterXOffset` on its own but not this constant; `HUDPanelGeometryTests`
+    /// fails on the row outgrowing the pill rather than letting it clip on screen.
+    static let pillWidth: CGFloat = 116
 
     /// Degraded mode (TECH-UX4): the pill widens into a card so the banner text and retry button fit.
     static let cardWidth: CGFloat = 232
@@ -271,8 +294,9 @@ final class RecordingHUDWindow {
     /// Show or clear the persistent "Off the record" state: retitle + retint the state label so it
     /// cannot be forgotten, flip the toggle's glyph, and drop the meter. Idempotent. Main-queue only.
     ///
-    /// Deliberately does not resize (UX35): `HUDPanelGeometry.pillWidth` is sized for the longer
-    /// label, so both states share one width and the pill never jumps under the user's cursor.
+    /// Deliberately does not resize (UX35): `HUDPanelGeometry.pillWidth` holds the longer label
+    /// with room to spare, so both states share one width and the pill never jumps under the
+    /// user's cursor.
     func setOffTheRecord(_ on: Bool) {
         recordingLabel?.stringValue = on ? "Off the record" : "Recording"
         recordingLabel?.textColor = on ? MPColors.pulse600 : MPColors.fgMuted
@@ -317,7 +341,9 @@ final class RecordingHUDWindow {
         return panel
     }
 
-    private func makeContentView(source: AppSource?, workflow: Workflow?) -> NSView {
+    /// Internal rather than private so `HUDControlRowTests` can build the pill's content view and
+    /// fire its controls without a panel or a window server (UX46).
+    func makeContentView(source: AppSource?, workflow: Workflow?) -> NSView {
         let bg = HUDBackgroundView(frame: NSRect(origin: .zero, size: HUDPanelGeometry.size(offRecord: false, degraded: false)))
         bg.cornerRadius = MPRadius.lg
         bg.host = self
@@ -346,9 +372,10 @@ final class RecordingHUDWindow {
         self.pulseDot = dot
 
         // "Recording" label beside the dot so the state is never colour-only. The dot + label sit
-        // as a centred row; 10pt matches the workflow line below. This row is what sizes the pill:
-        // 64pt here, 83pt once `setOffTheRecord` swaps in "Off the record", and
-        // `HUDPanelGeometry.pillWidth` is sized for the longer of the two (UX35).
+        // as a centred row; 10pt matches the workflow line below. This row sized the pill until
+        // UX46: 64pt here, 83pt once `setOffTheRecord` swaps in "Off the record", which is what
+        // UX35 measured 96 against. The three-control row at the foot is wider still (102pt), so
+        // `HUDPanelGeometry.pillWidth` now holds that and this row clears it comfortably.
         let recordingLabel = NSTextField(labelWithString: "Recording")
         recordingLabel.font = .systemFont(ofSize: 10, weight: MPType.medium)
         recordingLabel.textColor = MPColors.fgMuted
@@ -396,12 +423,20 @@ final class RecordingHUDWindow {
         // Off-the-record toggle beside Stop (MIC14 discoverability, UX23). One click marks a
         // sensitive stretch to keep out of the notes; the glyph + tint flip to coral while the span
         // is open, mirroring the "Off the record" state label. Also reachable from the HUD's
-        // right-click menu. The [Stop + toggle] pair is centred (Stop shifted left by half the
-        // toggle+gap), so it fits any pill width.
+        // right-click menu. The whole control row is centred as a group (Stop shifted left by
+        // `HUDPanelGeometry.stopCenterXOffset`), so it fits any pill width.
         let offRecord = HUDOffRecordButton(target: bg, action: #selector(HUDBackgroundView.didClickOffRecord))
         offRecord.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(offRecord)
         self.offRecordButton = offRecord
+
+        // Flag-a-moment button, the third control on the row (FEAT8 discoverability, UX46). FEAT8
+        // was hotkey-only, so the one surface that is on screen for exactly as long as flagging is
+        // possible never offered it. Momentary, not a toggle: it keeps no state, the quiet blink
+        // acknowledges it, and it fires the same session entry the hotkey does.
+        let flag = HUDFlagButton(target: bg, action: #selector(HUDBackgroundView.didClickFlagMoment))
+        flag.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(flag)
 
         // Retain refs so the degraded banner can be added lazily (TECH-UX4):
         // keeping it out of the tree while collapsed stops its wide content
@@ -440,18 +475,23 @@ final class RecordingHUDWindow {
 
             // The record key sits at the foot, pinned to the bottom; the top-anchored stack above
             // and this pin leave a flexible gap between, which absorbs the taller (NDA two-row)
-            // workflow label. Shifted left by 17pt so [Stop + off-record toggle] reads as a centred
-            // pair (34 + 8 + 26 = 68pt within the 96pt pill). UX46's third control changes both
-            // this offset and `HUDPanelGeometry.pillWidth`.
-            stop.centerXAnchor.constraint(equalTo: bg.centerXAnchor, constant: -17),
+            // workflow label. Shifted left so [Stop + the two icon controls] reads as a centred
+            // group (34 + 8 + 26 + 8 + 26 = 102pt within the 116pt pill). Both the offset and the
+            // width come off `HUDPanelGeometry`, so a control added or removed moves them together.
+            stop.centerXAnchor.constraint(equalTo: bg.centerXAnchor, constant: HUDPanelGeometry.stopCenterXOffset),
             stopBottom,
             stop.widthAnchor.constraint(equalToConstant: RecordKey.Geometry.side),
             stop.heightAnchor.constraint(equalToConstant: RecordKey.Geometry.side),
 
-            offRecord.leadingAnchor.constraint(equalTo: stop.trailingAnchor, constant: 8),
+            offRecord.leadingAnchor.constraint(equalTo: stop.trailingAnchor, constant: HUDPanelGeometry.controlGap),
             offRecord.centerYAnchor.constraint(equalTo: stop.centerYAnchor),
-            offRecord.widthAnchor.constraint(equalToConstant: 26),
-            offRecord.heightAnchor.constraint(equalToConstant: 26),
+            offRecord.widthAnchor.constraint(equalToConstant: HUDPanelGeometry.iconControlSide),
+            offRecord.heightAnchor.constraint(equalToConstant: HUDPanelGeometry.iconControlSide),
+
+            flag.leadingAnchor.constraint(equalTo: offRecord.trailingAnchor, constant: HUDPanelGeometry.controlGap),
+            flag.centerYAnchor.constraint(equalTo: stop.centerYAnchor),
+            flag.widthAnchor.constraint(equalToConstant: HUDPanelGeometry.iconControlSide),
+            flag.heightAnchor.constraint(equalToConstant: HUDPanelGeometry.iconControlSide),
         ])
         return bg
     }
@@ -497,6 +537,14 @@ final class RecordingHUDWindow {
 
     fileprivate func handleToggleOffTheRecord() {
         delegate?.recordingHUDDidRequestToggleOffTheRecord(self)
+    }
+
+    /// UX46: the button and the right-click item both land here, and this is the only thing either
+    /// does. No marker is written on this side; the delegate hop reaches the same
+    /// `MeetingSessionController.flagMoment` the hotkey calls, which stamps the timestamp and asks
+    /// the HUD to blink.
+    fileprivate func handleFlagMoment() {
+        delegate?.recordingHUDDidRequestFlagMoment(self)
     }
 
     private static func fallbackGlyph() -> NSImage {
@@ -565,11 +613,18 @@ private final class HUDBackgroundView: NSView {
     @objc func didClickStop() { host?.handleStop() }
     @objc func didClickRetrySystemAudio() { host?.handleRetrySystemAudio() }
     @objc func didClickOffRecord() { host?.handleToggleOffTheRecord() }
+    @objc func didClickFlagMoment() { host?.handleFlagMoment() }
 
-    /// Right-click menu (UX23): the second discoverable path to off-the-record, plus Stop. The label
-    /// reflects the live state so it reads "Back on the record" while a span is open.
+    /// Right-click menu (UX23): the second discoverable path to off-the-record and, since UX46, to
+    /// flagging a moment, plus Stop. The off-record label reflects the live state so it reads "Back
+    /// on the record" while a span is open. Ordered by consequence, the destructive one last behind
+    /// its separator; each item is the same selector its button on the control row fires, so a
+    /// press by either route is one path.
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
+        let flag = NSMenuItem(title: HUDFlagButton.label, action: #selector(didClickFlagMoment), keyEquivalent: "")
+        flag.target = self
+        menu.addItem(flag)
         let offRec = NSMenuItem(
             title: isOffRecord ? "Back on the record" : "Go off the record",
             action: #selector(didClickOffRecord),
@@ -794,6 +849,37 @@ private final class HUDOffRecordButton: NSButton {
         toolTip = label
         setAccessibilityLabel(label)
     }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
+
+/// Compact flag-a-moment button on the HUD control row (FEAT8 discoverability, UX46). Its sibling
+/// above is a toggle; this one is momentary, so it has no active state to render: a press stamps a
+/// timestamp on the running recording and the HUD's own quiet blink is the whole acknowledgement.
+/// Outline rather than filled, per the design system's rule that filled is reserved for a selected
+/// state, and tinted `fgMuted` like the toggle beside it (the AA-clearing muted step, not `fgFaint`).
+private final class HUDFlagButton: NSButton {
+    /// Named once, so the tooltip, the VoiceOver label, and the right-click item cannot drift into
+    /// three descriptions of one action.
+    static let label = "Flag this moment"
+
+    init(target: AnyObject?, action: Selector?) {
+        super.init(frame: .zero)
+        self.target = target
+        self.action = action
+        title = ""
+        isBordered = false
+        bezelStyle = .regularSquare
+        imagePosition = .imageOnly
+        wantsLayer = true
+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        image = NSImage(systemSymbolName: "flag", accessibilityDescription: nil)?
+            .withSymbolConfiguration(config)
+        contentTintColor = MPColors.fgMuted
+        toolTip = HUDFlagButton.label
+        setAccessibilityLabel(HUDFlagButton.label)
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
 
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 }

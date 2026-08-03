@@ -74,6 +74,30 @@ final class HUDPanelGeometryTests: XCTestCase {
         XCTAssertGreaterThan(card.width, pill.width)
     }
 
+    /// UX46's arithmetic, read off the constants the layout actually uses rather than off the
+    /// numbers the spec quoted: Stop plus the two icon controls beside it is 102pt, and the pill
+    /// has to hold it. This is the piece UX35 could not settle, since it shipped against two
+    /// controls and left the third's width to whichever task landed second.
+    func test_the_control_row_fits_inside_the_pill() {
+        XCTAssertEqual(HUDPanelGeometry.controlRowWidth, 102)  // 34 + 8 + 26 + 8 + 26
+        XCTAssertGreaterThan(
+            HUDPanelGeometry.pillWidth, HUDPanelGeometry.controlRowWidth,
+            "the control row is what sizes the pill now; a control added without widening it clips"
+        )
+        // And with a real margin either side, not a squeeze that only technically fits.
+        XCTAssertGreaterThanOrEqual((HUDPanelGeometry.pillWidth - HUDPanelGeometry.controlRowWidth) / 2, 6)
+    }
+
+    /// Stop is shifted left by exactly enough that the whole row reads as centred: its two outer
+    /// edges are mirror images about the pill's centreX. A third control added without moving the
+    /// offset would show up as a group drifting off-centre, so pin the property, not the number.
+    func test_the_stop_offset_centres_the_whole_control_row() {
+        let leading = HUDPanelGeometry.stopCenterXOffset - RecordKey.Geometry.side / 2
+        let trailing = leading + HUDPanelGeometry.controlRowWidth
+        XCTAssertEqual(leading, -trailing, accuracy: 0.001, "the control row must sit centred on the pill")
+        XCTAssertEqual(HUDPanelGeometry.stopCenterXOffset, -34, "-17 with one icon control, -34 with two")
+    }
+
     /// The number itself: the pill has to fit the widest state label it can show. Measured the way
     /// the HUD lays it out, dot 8 + stack spacing 5 + the label's intrinsic width at 10pt medium,
     /// so a font or copy change that outgrows the constant fails here instead of clipping on screen.
@@ -93,5 +117,98 @@ final class HUDPanelGeometryTests: XCTestCase {
         let label = NSTextField(labelWithString: text)
         label.font = .systemFont(ofSize: 10, weight: MPType.medium)
         return 8 + 5 + label.intrinsicContentSize.width
+    }
+}
+
+/// UX46: the flag control on the HUD. What matters is not that a button exists but that both of its
+/// entry points reach the *same* session call the flag-moment hotkey makes, since a second marker
+/// writer is exactly the failure this task exists to avoid. So these assert on the delegate the HUD
+/// calls, which is the only thing either control does. The content view is built directly rather
+/// than presented, so nothing here needs a panel or a window server.
+@MainActor
+final class HUDControlRowTests: XCTestCase {
+
+    private final class SpyHUDDelegate: RecordingHUDDelegate {
+        var stops = 0
+        var retries = 0
+        var offRecords = 0
+        var flags = 0
+        func recordingHUDDidRequestStop(_ hud: RecordingHUDWindow) { stops += 1 }
+        func recordingHUDDidRequestRetrySystemAudio(_ hud: RecordingHUDWindow) { retries += 1 }
+        func recordingHUDDidRequestToggleOffTheRecord(_ hud: RecordingHUDWindow) { offRecords += 1 }
+        func recordingHUDDidRequestFlagMoment(_ hud: RecordingHUDWindow) { flags += 1 }
+    }
+
+    /// The delegate is weak, so the spy has to outlive the call; returned together for that reason.
+    private func makeHUD() -> (RecordingHUDWindow, SpyHUDDelegate, NSView) {
+        let hud = RecordingHUDWindow()
+        let spy = SpyHUDDelegate()
+        hud.delegate = spy
+        return (hud, spy, hud.makeContentView(source: nil, workflow: nil))
+    }
+
+    /// Found by its VoiceOver label, which makes the lookup itself the accessibility fence: an
+    /// unlabelled button fails here before a word is asserted about the wiring.
+    private func flagButton(in content: NSView) throws -> NSButton {
+        try XCTUnwrap(
+            content.subviews.compactMap { $0 as? NSButton }
+                .first { $0.accessibilityLabel() == "Flag this moment" },
+            "no control on the HUD carries a VoiceOver label naming the flag action"
+        )
+    }
+
+    private func rightClick() throws -> NSEvent {
+        try XCTUnwrap(NSEvent.mouseEvent(
+            with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+        ))
+    }
+
+    private func fire(_ target: AnyObject?, _ action: Selector?) throws {
+        let object = try XCTUnwrap(target as? NSObject, "the control has no target")
+        _ = object.perform(try XCTUnwrap(action, "the control has no action"))
+    }
+
+    func test_the_flag_button_reaches_the_flag_entry_and_nothing_else() throws {
+        let (hud, spy, content) = makeHUD()
+        let button = try flagButton(in: content)
+
+        XCTAssertEqual(button.toolTip, "Flag this moment", "the .help tooltip names the same action")
+        XCTAssertNotNil(button.image, "the flag glyph has to resolve; a mistyped symbol name is an invisible button")
+        try fire(button.target, button.action)
+
+        XCTAssertEqual(spy.flags, 1)
+        XCTAssertEqual(spy.stops, 0, "a flag must never reach Stop; it is the control next to it")
+        XCTAssertEqual(spy.offRecords, 0)
+        _ = hud
+    }
+
+    func test_the_right_click_item_is_the_same_path_as_the_button() throws {
+        let (hud, spy, content) = makeHUD()
+        let button = try flagButton(in: content)
+        let menu = try XCTUnwrap(content.menu(for: rightClick()))
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Flag this moment" })
+
+        // One path, pinned structurally as well as behaviourally: the menu item is not allowed to
+        // grow a second route into the session.
+        XCTAssertEqual(item.action, button.action)
+        XCTAssertTrue(item.target === button.target)
+
+        try fire(item.target, item.action)
+        XCTAssertEqual(spy.flags, 1)
+        XCTAssertEqual(spy.stops, 0)
+        _ = hud
+    }
+
+    /// The new item does not disturb the menu's ordering rule: the destructive one stays last,
+    /// alone behind the separator.
+    func test_the_menu_keeps_stop_last_behind_its_separator() throws {
+        let (hud, _, content) = makeHUD()
+        let menu = try XCTUnwrap(content.menu(for: rightClick()))
+        XCTAssertEqual(
+            menu.items.map(\.title),
+            ["Flag this moment", "Go off the record", "", "Stop recording"]
+        )
+        _ = hud
     }
 }
