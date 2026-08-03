@@ -58,7 +58,7 @@ Daemon tests: ConfigStore round-trips both keys (typed binding writes the value,
 
 `python3 scripts/truth_fences.py config` green (both keys already documented; the fence's dead-knob direction now sees a Preferences control WITH a reader, which is the passing shape).
 
-Both suites green (baselines at filing: 1770 Swift, 1050 Python; the pipeline side should need no change).
+Both suites green, with the number of tests this task adds recorded in the same commit (the pipeline side should need no change).
 
 Owner eyeball: set More distinct, confirm `config.toml` reads 0.55, Re-transcribe the 2026-07-27 meeting where Anisha was labeled as Sudip, and check whether the voices split (the result feeds DIAR2's calibration either way). Walkthrough below; note the relaunch step, which the acceptance as filed did not have and the run needs.
 

@@ -69,6 +69,6 @@ A browser tab rejected at the admission gate emits an event. Verified by opening
 
 New tests extend `MeetingSourceScannerTests` and pin the admission decision through whatever pure seam the fix introduces, with cases for: a Meet room-code title (admitted), a `meet.google.com` title (admitted), a bare "microsoft teams" title (behaviour per the measured verdict), a bare "webex" title (same), a `\bhuddle\b` title (same), and a doc title such as "Webex vs Zoom Comparison" which must stay rejected in every branch of the verdict tree. That last case is the regression fence for END5's original concern.
 
-`cd daemon && swift build` and `cd daemon && swift test` both green; the suite baseline at filing time is 1331 tests.
+`cd daemon && swift build` and `cd daemon && swift test` both green, with the number of tests this task adds recorded in the same commit.
 
 The repo dash guard stays green (no U+2014 in any changed line, and none at all under `daemon/Sources` or `daemon/Resources`).

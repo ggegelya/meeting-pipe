@@ -25,13 +25,13 @@ Pure diff tests: single-token replacement yields the pair (with original casing 
 
 Flow tests: the affordance appears only when a candidate exists; confirming appends exactly one row to the right scope via the shared store path; cancelling writes nothing (store contents pinned unchanged).
 
-`cd daemon && swift build` and `swift test` green (baseline at filing: 1770). Repo dash guard green.
+`cd daemon && swift build` and `swift test` green, 23 new tests. Repo dash guard green.
 
 Owner eyeball: fix a garbled product name in any transcript line; the offer names the exact pair; confirm; Preferences, Pipeline, Vocabulary shows it under the meeting's workflow; Re-transcribe that meeting and the garble is gone (the FEAT11 acceptance loop, now reachable in three clicks).
 
 ## Shipped 2026-08-03
 
-Everything above the owner eyeball is done. `swift build` clean, `swift test` 2052 passing against a 2029 baseline measured on this branch; the spec's 1770 was two months stale, so the delta is +23, not +282.
+Everything above the owner eyeball is done. `swift build` clean, `swift test` 2052 passing against a 2029 baseline measured on this branch, so the delta is +23; the figure this spec was filed with was two months stale, which is why the baseline was measured rather than quoted.
 
 **What landed.** `daemon/Sources/MeetingPipe/VocabularyCandidate.swift` is the pure half: `VocabularyCandidate.derive(original:edited:)` names at most one pair, and `VocabularyOffer.make` wraps it with the scope default. `TranscriptTab.saveCorrection` builds the offer after a line edit persists, the edit sheet's `onDismiss` hands it to a new `VocabularyOfferSheet`, and only that sheet's **Add** calls `GlossaryStore.addTerm(heard:canonical:workflow:)`, a new entry point that is the Preferences editor's own scope-then-mutate steps collapsed into one call.
 

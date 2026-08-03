@@ -25,7 +25,7 @@ Pipeline: if `--json` is added, tests pin the dry-run JSON shape (counts, confli
 
 Daemon: launcher tests pin the two-invocation sequence (dry-run first, real run only after confirm, correct argv both times) against a fake launcher; preview presentation derives from a fixture dry-run payload (counts and conflict rendering table-tested); the restore and backup busy states are mutually exclusive.
 
-Both suites, ruff, pyright green (baselines at filing: 1770 Swift, 1050 Python). Truth fences green. Repo dash guard green.
+Both suites, ruff, pyright green, 23 new daemon tests and 14 new pipeline tests. Truth fences green. Repo dash guard green.
 
 Owner eyeball: Back up now; move one meeting's files out of the library; Restore from backup, pick the archive: the preview names the missing meeting; confirm; the meeting is back in the Library list.
 

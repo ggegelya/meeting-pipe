@@ -4,7 +4,7 @@ Band origin: filed 2026-07-29 (owner exploratory sweep, item 16: capabilities wi
 
 ## Progress (2026-08-03, shipped; owner-owed eyeball)
 
-Daemon green at **2038** tests, 9 new, from a 2029 baseline measured on this same tree before any edit (the filing's 1770 was two weeks stale, so it was re-measured rather than quoted). `swift build` clean with no new warnings, `sh scripts/pre-commit` (both dash guards) clean, `python3 scripts/truth_fences.py both` clean. No Python touched.
+Daemon green at **2038** tests, 9 new, from a 2029 baseline measured on this same tree before any edit (the figure this spec was filed with was two weeks stale, so the baseline was measured rather than quoted). `swift build` clean with no new warnings, `sh scripts/pre-commit` (both dash guards) clean, `python3 scripts/truth_fences.py both` clean. No Python touched.
 
 **Eight rows, not seven.** The spec counts seven verbs, and `AutomationCommand.verb` names eight strings, because `record` and `record?byo=1` are separate verbs to the event log and separate things to copy: one starts a recording MeetingPipe will summarize, the other starts one the owner will write up themselves. Keying the fence on `verb` therefore wants a row each, and it makes the back direction exact instead of approximate.
 
@@ -40,7 +40,7 @@ New verbs. Unblocking the native App Intents (AUTO1, gated on D8). A scripting/A
 
 The fence test described above (every listed row parses; every parser verb is listed). Copy button places the template on the pasteboard.
 
-`cd daemon && swift build` and `swift test` green (baseline at filing: 1770). Repo dash guard green.
+`cd daemon && swift build` and `swift test` green, 9 new tests. Repo dash guard green.
 
 Owner eyeball: Preferences, Advanced, Automation lists the verbs; copying the ask template and opening it from Raycast prefills Ask (the AUTO1-verified path, now discoverable without the README).
 
