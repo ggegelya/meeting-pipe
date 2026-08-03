@@ -256,6 +256,13 @@ struct TranscriptTab: View {
     @State private var loading: Bool = true
     /// Segment whose edit sheet is open; nil when no sheet is showing.
     @State private var editingSegment: TranscriptSegment? = nil
+    /// FEAT12: the vocabulary pair a just-saved line edit implies, held until the edit
+    /// sheet has actually gone away. Presenting the second sheet in the same run-loop
+    /// turn that dismisses the first is the well-known way to get neither, so the handoff
+    /// happens in the edit sheet's `onDismiss`.
+    @State private var pendingVocabularyOffer: VocabularyOffer? = nil
+    /// FEAT12: the offer whose confirm sheet is open; nil when none is showing.
+    @State private var vocabularyOffer: VocabularyOffer? = nil
     /// Raw speaker label being named (FEAT3-ROSTER); nil when the sheet is closed.
     @State private var namingTarget: NamingTarget? = nil
     /// Segments being assigned to a typed-in new person (FEAT3-SEGMENT); nil when closed.
@@ -300,7 +307,13 @@ struct TranscriptTab: View {
                 playback.load(url: audio)
             }
         }
-        .sheet(item: $editingSegment) { seg in
+        .sheet(item: $editingSegment, onDismiss: {
+            // FEAT12: raise the vocabulary offer only once the editor is off screen.
+            if let offer = pendingVocabularyOffer {
+                pendingVocabularyOffer = nil
+                vocabularyOffer = offer
+            }
+        }) { seg in
             TranscriptLineEditor(
                 segment: seg,
                 onSave: { newText in
@@ -308,6 +321,16 @@ struct TranscriptTab: View {
                     editingSegment = nil
                 },
                 onCancel: { editingSegment = nil }
+            )
+        }
+        .sheet(item: $vocabularyOffer) { offer in
+            VocabularyOfferSheet(
+                offer: offer,
+                onAdd: { heard, canonical, scope in
+                    addVocabularyTerm(heard: heard, canonical: canonical, workflow: scope)
+                },
+                // FEAT12: Cancel is the outcome of walking away, and it writes nothing.
+                onCancel: { vocabularyOffer = nil }
             )
         }
         .sheet(item: $namingTarget) { target in
@@ -340,7 +363,8 @@ struct TranscriptTab: View {
         // Hold the transcript still while a sheet is open (FEAT3): naming or editing
         // a line while playback keeps scrolling the list out from under the cursor
         // is the friction that forced a manual pause every time.
-        .onChange(of: editingSegment != nil || namingTarget != nil || assignNewTarget != nil) { _, open in
+        .onChange(of: editingSegment != nil || namingTarget != nil
+                  || assignNewTarget != nil || vocabularyOffer != nil) { _, open in
             if open { playback.pause() }
         }
         .onAppear { installRightClickPause() }
@@ -521,6 +545,57 @@ struct TranscriptTab: View {
                 speakerID: segment.speakerID
             )
         }
+        // FEAT12: the only moment both sides of a vocabulary pair are known. `make` is
+        // pure, so this decides whether to *offer*, never whether to write; on a nil it
+        // says nothing at all rather than nagging with an empty sheet.
+        pendingVocabularyOffer = VocabularyOffer.make(
+            original: pipelineOriginal,
+            edited: edited,
+            workflowName: meeting.workflowName
+        )
+    }
+
+    /// FEAT12: the confirmed half of "Add to Vocabulary". Reached only from the sheet's
+    /// Add button, and it goes through `GlossaryStore.addTerm`, the same append the
+    /// Preferences editor's rows ride, so there is no second writer of `glossary.toml`.
+    ///
+    /// The store is built here rather than held for the tab's lifetime so the document it
+    /// merges into is read at confirm time, not at meeting-open time. It leaves one
+    /// narrow race with a Preferences window sitting open on the Vocabulary group mid-keystroke,
+    /// whose 500 ms debounce would then write its own document over this one; that costs
+    /// the term, not the file, and closing the gap properly means shared ownership of the
+    /// store, which is a bigger change than this leg is worth.
+    ///
+    /// Returns nil on success, or a message the sheet renders inline and stays open on:
+    /// a vocabulary term the user confirmed and the pipeline never sees is exactly the
+    /// silent failure FEAT11 existed to remove.
+    private func addVocabularyTerm(heard: String, canonical: String, workflow: String?) -> String? {
+        do {
+            try GlossaryStore().addTerm(heard: heard, canonical: canonical, workflow: workflow)
+        } catch {
+            Log.event(category: "correction", action: "vocabulary_term_add_failed",
+                      attributes: [
+                        "stem": meeting.stem,
+                        "error": error.localizedDescription,
+                      ])
+            return error.localizedDescription
+        }
+        // SEC14, the same split `transcript_correction` above makes: the term comes out of
+        // a transcript line, so the log carries lengths and the scope by default and the
+        // words themselves only under verbose.
+        var attributes: [String: Any] = [
+            "stem": meeting.stem,
+            "scope": workflow == nil ? "global" : "workflow",
+            "heard_len": heard.count,
+            "canonical_len": canonical.count,
+        ]
+        if UISettings.shared.verboseLogging {
+            attributes["heard"] = heard
+            attributes["canonical"] = canonical
+        }
+        Log.event(category: "correction", action: "vocabulary_term_added", attributes: attributes)
+        vocabularyOffer = nil
+        return nil
     }
 
     @ViewBuilder
@@ -1092,6 +1167,113 @@ private struct TranscriptLineEditor: View {
         }
         .padding(20)
         .frame(minWidth: 480, idealWidth: 560, minHeight: 240)
+    }
+}
+
+// MARK: - Vocabulary offer sheet (FEAT12)
+
+/// The confirm moment for "Add to Vocabulary", raised after a transcript line is saved
+/// and only when the word-diff named a pair.
+///
+/// It is a **pre-fill, not an auto-write**, and the shape says so: both sides are
+/// editable because the diff that filled them is deliberately dumb, the scope starts on
+/// the meeting's workflow but can be widened, and the only thing that reaches
+/// `glossary.toml` is the Add button. Dismissing writes nothing.
+///
+/// The pair fields deliberately mirror the Preferences editor's row (heard on the left,
+/// correct spelling on the right, an arrow between) so the two surfaces read as the same
+/// list, which is the one the user will find the term in afterwards.
+private struct VocabularyOfferSheet: View {
+    let offer: VocabularyOffer
+    /// Returns nil on success, or a message to show while staying open.
+    let onAdd: (String, String, String?) -> String?
+    let onCancel: () -> Void
+
+    @State private var heard: String
+    @State private var canonical: String
+    @State private var scope: String?
+    @State private var error: String?
+
+    init(
+        offer: VocabularyOffer,
+        onAdd: @escaping (String, String, String?) -> String?,
+        onCancel: @escaping () -> Void
+    ) {
+        self.offer = offer
+        self.onAdd = onAdd
+        self.onCancel = onCancel
+        _heard = State(initialValue: offer.pair.heard)
+        _canonical = State(initialValue: offer.pair.canonical)
+        _scope = State(initialValue: offer.defaultScope)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add to Vocabulary")
+                .font(.headline)
+            Text("From the line you just fixed. Nothing is saved until you add it.")
+                .font(.caption)
+                .foregroundStyle(Color(MPColors.fgMuted))
+            HStack(alignment: .center, spacing: 8) {
+                TextField("as heard", text: $heard)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.body.monospaced())
+                    .accessibilityLabel("Term as heard")
+                Image(systemName: "arrow.right")
+                    .font(.caption)
+                    .foregroundStyle(Color(MPColors.fgMuted))
+                    .accessibilityHidden(true)
+                TextField("correct spelling", text: $canonical)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Correct spelling")
+            }
+            if let workflow = offer.defaultScope {
+                Picker("Applies to", selection: $scope) {
+                    Text(workflow).tag(String?.some(workflow))
+                    Text("Every meeting").tag(String?.none)
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: 320, alignment: .leading)
+            } else {
+                Text("Applies to every meeting.")
+                    .font(.caption)
+                    .foregroundStyle(Color(MPColors.fgMuted))
+            }
+            // The FEAT11 acceptance loop, said at the moment it matters: terms are applied
+            // when a transcript is finalized, so this meeting keeps the text just typed
+            // until it is rebuilt, and Re-transcribe is the one action that rebuilds it.
+            Text("Applied when a transcript is finalized, so meetings from now on pick it up on their own. This one keeps the text you just edited; use Re-transcribe\u{2026} from its \u{2026} menu to rebuild it with the term.")
+                .font(.caption)
+                .foregroundStyle(Color(MPColors.fgMuted))
+                .fixedSize(horizontal: false, vertical: true)
+            if let error {
+                Text(error)
+                    .font(.mpTextXS)
+                    .foregroundStyle(.mpDanger)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Add", action: submit)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!isLive)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 420, idealWidth: 460)
+    }
+
+    /// Mirrors `GlossaryTerm.isLive`: a row the pipeline would actually read.
+    private var isLive: Bool {
+        !heard.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !canonical.isEmpty
+    }
+
+    private func submit() {
+        guard isLive else { return }
+        error = onAdd(heard.trimmingCharacters(in: .whitespacesAndNewlines), canonical, scope)
     }
 }
 

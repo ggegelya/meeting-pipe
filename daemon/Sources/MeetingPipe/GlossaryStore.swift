@@ -105,6 +105,45 @@ final class GlossaryStore: ObservableObject {
         workflowTerms = GlossaryStore.terms(in: table?["terms"]?.table)
     }
 
+    // MARK: - Confirmed append (FEAT12)
+
+    /// Add one confirmed pair to a scope's table and write it out now.
+    ///
+    /// The transcript's "Add to Vocabulary" has no editor on screen, so it cannot ride
+    /// the `globalTerms` / `workflowTerms` bindings the rows use. This is those same two
+    /// steps, point the store at a scope and mutate that scope's rows, collapsed into one
+    /// call, so `glossary.toml` still has exactly one writer rather than a second one that
+    /// could learn a different idea of what a live row is.
+    ///
+    /// A row already holding the same folded key is updated in place instead of
+    /// duplicated. `liveTerms` would collapse a duplicate on the way to disk anyway
+    /// (last wins), but leaving two rows in memory would show the editor a phantom row
+    /// that disappears on its next open.
+    ///
+    /// Callers must have an explicit user confirm behind them (FEAT11's honesty rule,
+    /// FEAT12's hard constraint): nothing in the correction flow may reach this without
+    /// one.
+    func addTerm(heard: String, canonical: String, workflow: String?) throws {
+        selectWorkflow(workflow)
+        let fold = heard.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        func apply(_ rows: inout [GlossaryTerm]) {
+            let match = rows.firstIndex {
+                $0.heard.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == fold
+            }
+            if let i = match {
+                rows[i].canonical = canonical
+            } else {
+                rows.append(GlossaryTerm(heard: heard, canonical: canonical))
+            }
+        }
+        if workflow == nil {
+            apply(&globalTerms)
+        } else {
+            apply(&workflowTerms)
+        }
+        try saveNow()
+    }
+
     // MARK: - Resolution (the `mp.glossary` mirror)
 
     /// The substitutions the pipeline would apply to a meeting in `workflowName`,
