@@ -68,6 +68,18 @@ final class StatusBarController {
     /// appears/disappears without waiting for a state change.
     private var permissionsCancellable: AnyCancellable?
 
+    /// UX55: whether the `com.meetingpipe.daemon` agent is enabled, which is what
+    /// decides whether a plain Quit can be undone by a relaunch at all. Cached
+    /// rather than read where it is used, because reading it shells out to
+    /// `launchctl`: `populateMenu` also runs on every model-download progress tick
+    /// and every processing-count change, so an inline read would be a subprocess
+    /// per tick on the main queue. `refreshMenuBeforeDisplay` re-reads it, and
+    /// AppKit calls that before every display of this menu, so what the user is
+    /// looking at is never stale. Optimistic until that first read, which is the
+    /// pre-UX55 behaviour and only ever visible in a menu nobody has opened.
+    private var launchAgentEnabled: Bool = true
+    private let launchAtLogin = LaunchAtLoginService()
+
     /// Permission snapshot for `removeDuplicates`, so the menu rebuilds on
     /// real value changes rather than every `objectWillChange` (per-property,
     /// 2 s poll).
@@ -408,6 +420,16 @@ final class StatusBarController {
         ))
     }
 
+    /// Whether the menu offers the one-off "Quit (do not relaunch)" row (UX55), from
+    /// the preference plus the launch-agent state read before this menu was shown.
+    /// The rule itself is `StatusBarModel`'s; this only sources its inputs.
+    private func offersQuitWithoutRelaunch() -> Bool {
+        StatusBarModel.offersQuitWithoutRelaunch(.init(
+            disableAutoRestart: UISettings.shared.disableAutoRestart,
+            launchAgentEnabled: launchAgentEnabled
+        ))
+    }
+
     private func rebuildMenu(state: AppState) {
         lastMenuState = state
         let menu = NSMenu()
@@ -418,8 +440,14 @@ final class StatusBarController {
 
     /// Re-probe permissions then repopulate in place (via
     /// `menuNeedsUpdate`), so opening the menu reflects a just-made grant.
+    ///
+    /// UX55 re-reads the launch agent here for the same reason: Preferences ▸ General
+    /// ▸ Launch at login can flip between two opens, and so can a `launchctl` in a
+    /// terminal or an `install.sh` run, so the quit rows are decided against launchd
+    /// as the user looks at them rather than against a value cached at launch.
     fileprivate func refreshMenuBeforeDisplay(_ menu: NSMenu) {
         PermissionsCenter.shared.refreshMenuRelevantSync()
+        launchAgentEnabled = launchAtLogin.status().isOn
         populateMenu(menu, state: lastMenuState)
     }
 
@@ -602,10 +630,10 @@ final class StatusBarController {
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit MeetingPipe", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        // TECH-UX7: when auto-restart is on (the default), offer a one-off quit
-        // that does not relaunch. Hidden when the user already disabled
-        // auto-restart, since the plain Quit above already means quit.
-        if !UISettings.shared.disableAutoRestart, let coordinator = coordinator {
+        // TECH-UX7 / UX55: the one-off quit that does not relaunch, offered only while
+        // something could actually relaunch us. `StatusBarModel` owns that rule, so the
+        // shipped menu and the tested model cannot disagree about it again.
+        if offersQuitWithoutRelaunch(), let coordinator = coordinator {
             let quitNoRelaunch = NSMenuItem(
                 title: "Quit (do not relaunch)",
                 action: #selector(Coordinator.menuQuitWithoutRelaunch),

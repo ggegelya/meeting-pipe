@@ -349,7 +349,7 @@ Click the menu-bar icon and these keys are shown beside their rows. Most of them
 | `⌘Q` | Quit MeetingPipe |
 | `⌥⌘Q` | Quit (do not relaunch) |
 
-**Quit MeetingPipe** is not the one that closes it for good: with launch-at-login on, the app comes back a few seconds later. **Quit (do not relaunch)** is the one that really stops it, and it disappears from the menu once you have turned auto-restart off.
+**Quit MeetingPipe** is not the one that closes it for good: with launch-at-login on, the app comes back a few seconds later. **Quit (do not relaunch)** is the one that really stops it, and it is only in the menu while something could actually bring the app back. Turn off either **Relaunch after quitting** or **Launch at login** (both under Preferences ▸ General ▸ Startup) and the row goes away, because from then on plain **Quit MeetingPipe** already closes it for good.
 
 ### In a window
 

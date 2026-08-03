@@ -68,6 +68,12 @@ enum StatusBarModel {
         var screenRecordingCaptureDenied: Bool
         var failedMeetingCount: Int
         var disableAutoRestart: Bool
+        /// UX55: whether the `com.meetingpipe.daemon` launch agent is enabled, which is
+        /// whether anything is left that *could* relaunch the app after a quit
+        /// (`LaunchAtLoginService.status().isOn`). A second input to the quit row, not a
+        /// second name for the preference above: UX42 made that agent the single owner of
+        /// relaunch-after-quit, so the two can disagree.
+        var launchAgentEnabled: Bool
         /// DET7: the display name of a skipped-but-still-running meeting's app, from
         /// `DetectionStateMachine.liveSuppressedCandidate`, or nil when there is none.
         /// Deliberately independent of `state`: an explicit Skip leaves the *presentation*
@@ -91,6 +97,7 @@ enum StatusBarModel {
             screenRecordingCaptureDenied: Bool = false,
             failedMeetingCount: Int = 0,
             disableAutoRestart: Bool = false,
+            launchAgentEnabled: Bool = true,
             suppressedCandidateAppName: String? = nil
         ) {
             self.state = state
@@ -107,6 +114,7 @@ enum StatusBarModel {
             self.screenRecordingCaptureDenied = screenRecordingCaptureDenied
             self.failedMeetingCount = failedMeetingCount
             self.disableAutoRestart = disableAutoRestart
+            self.launchAgentEnabled = launchAgentEnabled
             self.suppressedCandidateAppName = suppressedCandidateAppName
         }
     }
@@ -258,13 +266,31 @@ enum StatusBarModel {
             break
         }
 
-        // TECH-UX7: the one-off quit that does not relaunch is offered only when
-        // auto-restart is on, since otherwise plain Quit already means quit.
-        if !i.disableAutoRestart {
+        if offersQuitWithoutRelaunch(i) {
             rows.append(.quitWithoutRelaunch)
         }
 
         return rows
+    }
+
+    /// Whether to offer the one-off quit that does not relaunch.
+    ///
+    /// TECH-UX7 wrote the rule down correctly: the extra row exists only where a plain
+    /// Quit would be undone by a relaunch, and is hidden otherwise, since otherwise the
+    /// plain Quit above already means quit. It then implemented that rule against one
+    /// input, the `disableAutoRestart` preference, which was the whole story at the time.
+    ///
+    /// UX42 gave relaunch-after-quit a second owner and this rule did not learn about it
+    /// (UX55): the `com.meetingpipe.daemon` launch agent's `KeepAlive` is what actually
+    /// brings the app back, so with the agent disabled a plain Quit already means quit
+    /// while the preference still reads "relaunch", and the row was offered anyway. It is
+    /// a truthfulness defect rather than a behavioural one, of exactly the family UX42
+    /// was about: a control describing a distinction the machine no longer makes.
+    ///
+    /// A *missing* agent reads as not enabled and gets the same answer for the same
+    /// reason, since nothing can relaunch the app then either.
+    static func offersQuitWithoutRelaunch(_ i: Inputs) -> Bool {
+        !i.disableAutoRestart && i.launchAgentEnabled
     }
 
     /// The start row's title (DET7). `StatusBarController.populateMenu` builds its

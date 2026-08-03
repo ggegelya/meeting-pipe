@@ -283,6 +283,53 @@ final class StatusBarModelTests: XCTestCase {
         XCTAssertEqual(M.rows(.init(state: .idle, disableAutoRestart: true)), [.startRecording])
     }
 
+    /// UX55: the case the preference alone could not see. UX42 made the launch agent the
+    /// single owner of relaunch-after-quit, so with the agent disabled a plain Quit
+    /// already means quit and the extra row describes a distinction the machine no
+    /// longer makes. The owner reached that conclusion from the menu alone.
+    func test_quit_without_relaunch_is_hidden_when_the_launch_agent_is_off() {
+        XCTAssertEqual(M.rows(.init(state: .idle, launchAgentEnabled: false)), [.startRecording])
+    }
+
+    /// All four corners of the rule, on the rows the menu actually renders: the row is
+    /// offered only where *both* inputs say a relaunch would really happen.
+    func test_quit_without_relaunch_needs_the_preference_and_the_agent() {
+        func offered(autoRestart: Bool, agent: Bool) -> Bool {
+            M.rows(.init(state: .idle,
+                         disableAutoRestart: !autoRestart,
+                         launchAgentEnabled: agent))
+                .contains(.quitWithoutRelaunch)
+        }
+        XCTAssertTrue(offered(autoRestart: true, agent: true))
+        XCTAssertFalse(offered(autoRestart: false, agent: true))
+        XCTAssertFalse(offered(autoRestart: true, agent: false))
+        XCTAssertFalse(offered(autoRestart: false, agent: false))
+    }
+
+    /// The menu is built by hand in `StatusBarController.populateMenu` rather than from
+    /// `rows`, so a correct model is not by itself a correct menu: the shipped condition
+    /// reading only `UISettings.shared.disableAutoRestart` while the model's comment
+    /// described the fuller rule *is* the UX55 defect. Pinned in source, the way
+    /// `GuideDocumentTests` pins its own row, since `NSMenu` construction is not
+    /// observable headlessly.
+    func test_the_status_bar_menu_asks_the_model_for_the_quit_row() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // MeetingPipeTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // daemon
+            .deletingLastPathComponent()   // repo root
+        let controller = try String(
+            contentsOf: root.appendingPathComponent("daemon/Sources/MeetingPipe/StatusBarController.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(controller.contains("StatusBarModel.offersQuitWithoutRelaunch"),
+                      "the quit row's condition must come from StatusBarModel, not a second copy")
+        XCTAssertTrue(controller.contains("launchAtLogin.status().isOn"),
+                      "the launch-agent state has to be read for the model to be given it")
+        XCTAssertFalse(controller.contains("if !UISettings.shared.disableAutoRestart"),
+                      "the preference-only condition is the defect UX55 removed")
+    }
+
     /// The Screen Recording deep link sits under the screen-recording consequence
     /// row. The capture probe's `.denied` is a separate signal from the
     /// `screenRecording` permission status, and on its own is authoritative enough
