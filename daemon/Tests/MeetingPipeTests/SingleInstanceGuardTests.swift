@@ -24,7 +24,9 @@ final class SingleInstanceGuardTests: XCTestCase {
     }
 
     func test_starts_when_the_list_holds_only_itself() {
-        // The snapshot always contains this process, so "only me" has to read as no peer at all.
+        // The snapshot contains this process once Launch Services has registered it, which is
+        // after the guard runs, so "only me" has to read as no peer at all. (At the real call
+        // site the list holds the *other* copies and not this one; both shapes work.)
         let me = peer(100, secondsAfterBase: 0)
         XCTAssertEqual(SingleInstanceGuard.decide(current: me, peers: [me]), .start)
     }
@@ -105,6 +107,60 @@ final class SingleInstanceGuardTests: XCTestCase {
             SingleInstanceGuard.decide(current: me, peers: [middle, oldest, me]),
             .standDown(peerPID: 100)
         )
+    }
+
+    // MARK: - Who this process thinks it is
+
+    // The pure cases above were all green for the whole week the shipped guard never fired once.
+    // What was wrong was the *input*: `current` came from `NSRunningApplication.current`, which is
+    // a placeholder until AppKit is up. These pin the identity read, which is the half that broke.
+
+    func test_a_placeholder_current_can_never_stand_down() {
+        // The 2026-08-04 defect, stated as arithmetic. Measured before AppKit exists,
+        // `NSRunningApplication.current` answers pid -1 / nil launchDate / isTerminated true, and
+        // `startedBefore(peer, current)` then reduces to `peer.pid < -1`, false for every real
+        // pid. So the incumbent list is empty however many daemons are running, and the guard
+        // returns .start forever while silently believing it checked.
+        let placeholder = SingleInstanceGuard.Peer(pid: -1, launchDate: nil, isTerminated: true)
+        let incumbent = peer(87918, secondsAfterBase: 0)
+        XCTAssertEqual(SingleInstanceGuard.decide(current: placeholder, peers: [incumbent]), .start)
+    }
+
+    func test_current_peer_is_this_process_and_is_alive() {
+        let me = SingleInstanceGuard.currentPeer()
+        XCTAssertEqual(me.pid, ProcessInfo.processInfo.processIdentifier)
+        XCTAssertGreaterThan(me.pid, 0)
+        XCTAssertFalse(me.isTerminated)
+        XCTAssertNotNil(me.launchDate, "a current that cannot date itself falls back to pid order")
+    }
+
+    func test_current_peer_stands_down_for_an_older_incumbent() {
+        // The composition the app actually runs: a real self, an incumbent one second older.
+        // This is the assertion the shipped guard could not have satisfied.
+        let me = SingleInstanceGuard.currentPeer()
+        let started = try? XCTUnwrap(me.launchDate)
+        let older = SingleInstanceGuard.Peer(
+            pid: me.pid == 1 ? 2 : 1,
+            launchDate: started?.addingTimeInterval(-1),
+            isTerminated: false
+        )
+        XCTAssertEqual(
+            SingleInstanceGuard.decide(current: me, peers: [older]),
+            .standDown(peerPID: older.pid)
+        )
+    }
+
+    func test_kernel_start_time_orders_launchd_before_this_process() {
+        // Real kernel data rather than a fixture: pid 1 is launchd, which by definition started
+        // before anything else on the machine. Proves the sysctl read yields a real, correctly
+        // ordered clock and not a constant.
+        guard let launchd = SingleInstanceGuard.kernelStartTime(of: 1),
+              let me = SingleInstanceGuard.kernelStartTime(of: ProcessInfo.processInfo.processIdentifier)
+        else {
+            return XCTFail("kernel start times unavailable")
+        }
+        XCTAssertLessThan(launchd, me)
+        XCTAssertLessThanOrEqual(me, Date().addingTimeInterval(1))
     }
 
     // MARK: - The exit code
