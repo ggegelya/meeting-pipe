@@ -39,13 +39,16 @@ final class SpeakerAccuracyTests: XCTestCase {
         }
     }
 
-    func test_the_shipped_default_is_the_middle_position() {
-        // Not a restatement of the constant: if DIAR2's sweep moves the default and
-        // nobody moves Balanced, a fresh config would open on Custom.
-        XCTAssertEqual(
-            SpeakerSeparation.id(forValue: ConfigDefaults.diarizationClusteringThreshold),
-            "balanced"
-        )
+    func test_the_shipped_default_lands_on_a_named_position() {
+        // Not a restatement of the constant. The property is that a fresh config opens
+        // on a position the user can see and reason about, never on Custom, which is a
+        // readout rather than a selectable option. DIAR2's sweep moved the default from
+        // Balanced to More distinct on 2026-08-04; what must not happen is the default
+        // drifting to a value no position pins.
+        let id = SpeakerSeparation.id(forValue: ConfigDefaults.diarizationClusteringThreshold)
+        XCTAssertNotEqual(id, SpeakerSeparation.customId,
+                          "a fresh config would open on Custom, which nobody can pick")
+        XCTAssertEqual(id, "distinct")
     }
 
     // MARK: - Fall-through to Custom

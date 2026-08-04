@@ -49,11 +49,23 @@ enum ConfigDefaults {
     static let transcriptionLanguage = "auto"
 
     /// FluidAudio's speaker-embedding clustering threshold (DIAR2's dial, DIAR3's
-    /// Preferences control). 0.65 sits below FluidAudio's own 0.7 on purpose: merging
+    /// Preferences control). It sits below FluidAudio's own 0.7 on purpose: merging
     /// several people into one voice puts a confidently wrong name on the summary's
     /// attendees and action owners, while over-splitting only shows one person as two
     /// unnamed clusters you can merge in-app. Moved here once `ConfigStore` became a
     /// third reader; `FluidAudioRunner.defaultClusteringThreshold` is the alias the
     /// transcription default arguments use, so there is still one literal.
-    static let diarizationClusteringThreshold: Double = 0.65
+    ///
+    /// **0.55 is measured, not guessed** (DIAR2's sweep, closed 2026-08-04 against the
+    /// owner's hand-labelled corpus). Over 35 meetings the median raw cluster count per
+    /// meeting went 3 at 0.7, 4 at 0.65, and 9 at 0.55, so the under-clustering behind
+    /// the original 5-people-in-one-voice defect is gone as a systemic condition. The
+    /// cost side of the tradeoff measured at **zero**: across all 14 hand-corrected
+    /// meetings, at every threshold, the owner never once named two clusters as the
+    /// same person, which is what over-splitting would look like on disk. Note this is
+    /// the *lowest* position the Preferences control offers ("More distinct"), so the
+    /// shipped default is deliberately at the safe end of the range rather than in the
+    /// middle of it. Residual merges at 0.55 exist and are **not** threshold-reachable
+    /// (see DIAR4/DIAR5); lower does not fix them, it only adds debris clusters.
+    static let diarizationClusteringThreshold: Double = 0.55
 }
