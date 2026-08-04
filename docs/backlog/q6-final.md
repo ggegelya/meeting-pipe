@@ -131,6 +131,8 @@
 
 | UX58 | Speaker colour is keyed on the raw label and reshuffles on every launch | UX | done | P2 | Shipped 2026-08-04; the status is the walkthrough clause only. `swift build` clean, daemon suite green with 9 new tests; no Python touched. Speaker colour is now two calls, `MeetingCast.colorIndex(for:in:)` then `TranscriptDisplay.color(atCastIndex:)`, and the slot is the speaker's **position in the meeting's cast**, keyed on UX57's `rowSpeaker(...)` identity rather than on `segment.speakerID`. One rule answers all three defects: colour follows a reassignment because the identity it indexes does, it is a pure function of the meeting's own files so a relaunch reproduces it exactly, and first-appearance position is collision-free while the cast is at or under the palette's eight. Past eight it wraps, said in the comment rather than fixed with a wider palette; the eight are UX14's contrast-tuned set and DSN18's `ContrastFloorTests` is untouched. The `speaker_N`-parses-its-own-integer branch went with the hash: kept beside cast positions it would have collided with them, which is precisely the no-two-share-a-colour clause. **Decisions not in the spec.** The two sheets take the *resolved* identity rather than only a colour, so the line editor's header and Clarify's no longer name the cluster a reassigned line was moved off while wearing its hue; both read `segment.speakerID` for name and colour alike. FEAT13's `ClarifySheet` is a fourth call site that did not exist when this was filed, so `ClarifyTarget` carries `speakerName` + `speakerColorIndex` in place of `speakerID`; leaving it behind would have kept the launch-reshuffle alive in one surface. Nine cases in `MeetingCastTests`: the mapping computed twice from freshly declared inputs and compared (never by hashing, which agrees with itself inside one process and proves nothing about a launch-to-launch defect), uniqueness at six and at eight voices, a reassignment moving one line's slot and leaving its old speaker's alone, naming leaving every slot where it was, the ninth voice wrapping onto the first, and a no-speaker line drawing muted. **UX59 consumes exactly this:** `MeetingCast.colorIndex(displayName:in:cast)` then `TranscriptDisplay.color(atCastIndex:)`, the same two calls a row makes, and the index is stable for a meeting whichever view asks. Colour is per **meeting** by construction, so one person can read differently in two meetings, which UX59's scope already accepts. **Owner-owed:** the seven-step walkthrough at the end of [`tasks/UX58.md`](./tasks/UX58.md), whose live legs are steps 3, 4 and 5 (the reassignment, the relaunch, and no two voices sharing a colour), plus step 1's `./scripts/rebuild.sh`, which was not run from the session that built this. Original report: filed 2026-08-03, owner-reported ("once I assign Sudip, then want to re-assign wrong replica from Sudip to someone else, color remains on sudip"), plus two defects found in the same function that no eye could isolate. `TranscriptDisplay.color(for:)` took the raw label, so colour did not follow a reassignment (UX57's root confusion, different consequence), and it indexed the palette by `abs(hashValue) % 8`. Swift reseeds string hashing per process and nothing here sets `SWIFT_DETERMINISTIC_HASHING`, so **colours changed on every launch**: measured 2026-08-03 across three processes, `THEM-A` landed on slot 3, then 4, then 7. Collisions were routine too, about 92% likely with 6 voices, and run 1 put three speakers on one slot. Teams meetings all took that hash branch (`THEM-*`), so it hit every real meeting. **Closed 2026-08-04 on the owner walkthrough**, steps 2 to 6 pass: a reassigned line takes the target speaker's colour on both the dot and the name, colours are identical after a full quit and relaunch (the check the old hash-indexed build failed every time), no two speakers share a slot, and both appearances stay readable. |
 
+| UX59 | The cast strip and the transcript use unrelated colour systems | UX | done | P2 | Shipped 2026-08-04; `swift build` clean and `swift test` green, 7 new tests (2312 before, 2319 after on this branch). Every cast chip now carries the speaker's identity dot, the same `MeetingCast.colorIndex` slot their transcript rows draw (UX58), so one person is one colour on a screen that shows both surfaces at once. The slot rides on `VoiceResolution.Voice` and is filled in `derive` rather than read by the chip: two surfaces each answering "which colour is this person" is the disagreement this task existed to remove, and it is derived through the shared function rather than off `derive`'s loop position, since a second derivation that happens to agree is the shape that drifts. **FEAT11's status signal survives, and constrained the design rather than being checked after it**: the chip's leading glyph is tinted by `tint(for:)` for resolution status, so the dot went in as a separate sibling view instead of a recolour of it, and neither signal is hue-only (identity is the dot plus the name beside it, status is a distinct symbol per origin plus its tint plus the `Name` affordance). Three tests pin that independence in both directions. Contrast is pinned rather than asserted: the chip well is the first surface to draw the speaker palette on `bgSunk`, all 16 legs clear the 3:1 UI floor (min 4.32, light orange), `ContrastFloorTests` holds each and `docs/audits/dsn18-contrast-ratios.md` carries the table. Two decisions the spec left open: the dot is 6pt rather than the row's 8pt (at 8 it reads as a second icon competing with the status glyph), and it leads the chip, mirroring the row's dot-then-name order. **Owner-owed:** the walkthrough's eyeball at the end of the task file, plus the `./scripts/rebuild.sh` its step 2 asks for, which a worktree session must not run over the owner's running app. **Closed 2026-08-04 on the owner walkthrough**, steps 3 to 7 pass: the chip dots match the transcript rows one to one, unnamed and roster-matched voices are still distinguishable at a glance without reading the header count (so FEAT11's status signal survived the identity dot beside it), a reassignment keeps the strip and the rows in agreement, and both hold in light and dark. The eyeball this task deliberately ended owner-owed on is the acceptance it just cleared. |
+
 ## Task specs
 
 **[DONE] C7 (P3): backstop-end corpus coverage.** Band origin: carried from Q4 with a changed scope. C6-FINISH (below) landed 20 real redacted dogfood traces (`teams_native_*` in the detection corpus) covering the three pure-engine endings real sessions actually produce, derived by `scripts/extract_detection_trace.py`. The one real ending the corpus structurally cannot cover is the idle-stop backstop: a lone ax-leave `.ended` with empty `confirmed_by` (~1/3 of real sessions) is force-ended by `IdleStopBackstop`, not `PromotionEngine`, and the replay harness (`DetectionCorpusTests`) only drives the pure engine. Scope: either extend the harness with a backstop-level end driver so a real backstop session replays, or accept the gap explicitly and close. Not correctness (the backstop path works in production); this is test-coverage completeness, so it pairs with T3.
@@ -2300,3 +2302,82 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 5. [owner] Scan the transcript for two different speakers sharing a colour. Pass: none, as long as the meeting has 8 or fewer voices.
 6. [owner] Switch between light and dark appearance and confirm the names are still readable in both.
 7. [owner] Say "UX58 good to close" (or what is wrong); [session] moves the row and this spec into `q6-final.md` and deletes this file.
+
+# [DONE] UX59: The cast strip and the transcript use unrelated colour systems
+
+Band origin: filed 2026-08-03, owner-asked in the same pass as UX57 and UX58 ("also related to colors, would be nice to have consistency between top bar with voices, and transcriptions. to have a color dot or something"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+
+## Context
+
+Two surfaces sit one above the other in the Transcript tab and colour the same people by two unrelated rules.
+
+The **cast strip** (FEAT11's `VoiceResolutionBar`, above the rows) tints each chip by **resolution status**: `VoiceResolutionBar.tint(for:)` ([VoiceResolutionBar.swift:232](../../../daemon/Sources/MeetingPipe/VoiceResolutionBar.swift#L232)) returns `warningAccent` for an unresolved voice, `signalAccent` for a roster match, and `fgMuted` otherwise. There is no per-speaker mark on a chip at all.
+
+The **transcript rows** tint by speaker, through `TranscriptDisplay.color(for:)` ([TranscriptTab.swift:165](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L165)) over the 8-hue `MPColors.speakerPalette`.
+
+So the same person is one colour in the strip and a different one in the rows, and the strip's colour carries information about matching state that the rows' colour does not, using a palette the rows also draw from. The owner reads the two as one system that is inconsistent, which is a fair reading of what is on screen.
+
+This is a design gap rather than a defect: the strip's status tint is deliberate and load-bearing. FEAT11 exists so the question "did roster matching work here" is answerable without reading the transcript, and UX40 layered the chip's right-click actions on the same distinction. Whatever this task does must not cost that.
+
+It is filed third and last of the 2026-08-03 speaker-naming cluster because it is only buildable after UX58. Mirroring an identity colour into the strip is worth nothing while that colour is keyed on the raw label, reshuffles on every launch, and collides between speakers about 92% of the time in a 6-voice meeting (measured, see [UX58.md](./UX58.md)). Copying that into a second surface would double the wrong signal.
+
+## Scope
+
+Give each chip the speaker's identity dot from UX58, and decide how it coexists with the status tint rather than replacing it.
+
+The likely shape, to be confirmed by eye rather than in the spec: the dot carries identity (matching the row dot exactly), and the chip's existing treatment keeps carrying status. Both signals stay legible and neither is expressed only by hue, which the a11y floor in [PRODUCT.md](../../../PRODUCT.md) and `design/README.md` require anyway.
+
+The identity input is the same `MeetingCast` cast UX58 keys on, and the strip is already downstream of it, so no new derivation is needed. `VoiceResolutionBar` is presentation-only by construction (every decision lives in the pure `VoiceResolution`), so keep any new rule there and out of the view.
+
+## Explicitly not / out of scope
+
+**Not a removal or weakening of the status tint.** FEAT11's whole purpose is that an unmatched voice is visible at a glance. A change that makes unnamed and roster-matched voices harder to tell apart fails this task even if the dots line up.
+
+**Not the strip's clipping and overflow.** UX51 owns that (chips overflow the 720 reading measure and the last one renders sliced, with no fade or chevron). The two touch the same file and should be sequenced, not merged: UX51 is a layout fix with a promoted `FlowLayout`, this is a colour-semantics change.
+
+**Not colour in the People rail or the Facts rail.** Those are library-wide projections across meetings, and the cast palette is per-meeting by construction (a slot index within one meeting's cast). Extending it across meetings is a different question and is not filed.
+
+**Not a new palette.** UX58's constraints apply unchanged.
+
+## Acceptance
+
+Every chip in the cast strip shows a dot whose colour matches that speaker's rows in the transcript below it, for every voice in the meeting.
+
+An unnamed voice and a roster-matched voice remain distinguishable from each other in the strip at a glance, without relying on the identity dot to tell them apart.
+
+Reassigning a line so that a speaker gains or loses their last line updates the strip and the rows consistently in the same refresh.
+
+Contrast holds in both appearances per DSN3 and DSN18: no new text or UI pair below 4.5:1 (3:1 for large or UI), and `ContrastFloorTests` stays green. No new `.system(size:)` literal, per the DSN3 token guard.
+
+`cd daemon && swift build` and `swift test` green. No em-dashes in changed lines.
+
+This one ends `owner-owed` after implementation: it is a visual judgement on a menu-bar app that cannot be screenshotted from a session, so the eyeball below is part of the acceptance, not a formality.
+
+## What landed (2026-08-04)
+
+Everything above the owner eyeball is done. `cd daemon && swift build` clean and `swift test` green, 7 new tests, measured on this branch (2312 before, 2319 after; the figure is recorded here rather than in the bar, per HYG5).
+
+**The change is two lines of production code and a field.** `VoiceResolution.Voice` gained `colorIndex: Int?`, filled in `derive` by `MeetingCast.colorIndex(displayName:in:)`, and `VoiceResolutionBar.chipBody` draws it as a leading `Circle` through `TranscriptDisplay.color(atCastIndex:)`. That is the whole mechanism: the strip is already downstream of the same `MeetingCast.members` cast the rows key on, so no new derivation, no new plumbing into the view, and no new sidecar.
+
+**Why the slot rides on the pure type rather than being read by the chip.** Passing `cast` into `VoiceResolutionBar` and calling `colorIndex` per chip would have worked and been shorter to write. It is the shape this task exists to remove: two surfaces each answering "which colour is this person" is exactly how they came to disagree, and `VoiceResolutionBar` is presentation-only by construction (FEAT11 and UX40 both put their decisions on the pure type). It is also derived through the shared function rather than off `derive`'s own loop position, even though `members` de-duplicates by display name so the two are the same integer today; a second derivation that happens to agree is the shape that drifts.
+
+**The status signal survives, and that constrained the design rather than being checked afterwards.** The chip's leading glyph is already tinted by `tint(for:)`, which is FEAT11's resolution status (warning for unmatched, signal for a roster match), so the identity dot went in as a **separate sibling view**. Recolouring that glyph would have satisfied the owner's consistency complaint by deleting the answer to "did roster matching work here", which the Explicitly-not section forbids. Neither signal ends up hue-only: identity is the dot plus the name spelt out beside it, status is a distinct SF Symbol per origin plus its tint plus the `Name` affordance, with `help` and `state` under both. Three tests pin the independence in both directions (the glyphs differ for `.unresolved` against `.roster`; the dot swaps with speaking order while the glyphs stay put; two unnamed voices get two dots and one status).
+
+**Contrast is pinned rather than asserted.** The chip well is the first surface to draw the speaker palette on `bgSunk`, so it is a genuinely new pairing. All 16 legs clear the 3:1 UI floor a non-text mark is held to (minimum 4.32, the light-mode orange), `ContrastFloorTests` now pins each one per this file's rule that a palette edit should fail loudly, and `docs/audits/dsn18-contrast-ratios.md` carries the table.
+
+**Two decisions the spec left open.** The dot is 6pt rather than the row's 8pt: the row draws beside `.body` on an uncapped line, the chip beside 11pt `mpTextXS` in a 22pt capsule, and at 8 it reads as a second icon competing with the status glyph rather than as a marker under it. And it leads the chip, mirroring the row's own dot-then-name order, so the walkthrough's comparison is a glance down a column rather than a hunt.
+
+**Still owed before the walkthrough:** `./scripts/rebuild.sh`. This landed from a worktree session, and running it there would have installed a worktree build over the running app, so step 2's install has not happened.
+
+## Owner walkthrough (for the session that picks this up)
+
+Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who acts.
+
+1. [session] Confirm UX58 has landed first. If it has not, stop and say so: this task is not buildable before it, for the reason in Context.
+2. [session] Implement, then `./scripts/rebuild.sh` and tell the owner it is ready.
+3. [owner] Open a meeting with a mix of named and unnamed voices, Transcript tab.
+4. [owner] Compare each chip in the top strip against that speaker's lines below. Pass: the dots match, one to one.
+5. [owner] Check you can still tell at a glance which voices are unnamed and which were matched from the roster. Pass: yes, without having to read the header count. Fail: the chips now all look alike.
+6. [owner] Reassign a line to a different speaker and confirm the strip and the rows stay in agreement.
+7. [owner] Switch between light and dark appearance and confirm both still hold.
+8. [owner] Say "UX59 good to close" (or what is wrong); [session] moves the row and this spec into `q6-final.md` and deletes this file.
