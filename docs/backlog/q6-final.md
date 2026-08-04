@@ -145,6 +145,10 @@
 
 | UX49 | The done notification says "Open in Notion" whichever sink actually ran | UX | done | P2 | Shipped 2026-08-04, and the status is the walkthrough clause only. `swift build` clean, daemon suite green with 21 new tests; truth fences clean; no Python touched. Both string sites derive from one pure rule now, `PublishLanding.swift`: `PublishSink` holds one phrase per sink ("Open in Notion" / "Open in Obsidian" / "Open the local note" / "Open the shared note"), `PublishLanding.decide` maps a run's `<stem>.publish.json` to what a surface may claim, and `DoneNotificationCopy` is the banner's whole copy over it. `MeetingDetailView+Header` reads the same phrases, so a Swift grep for "Open in Notion" returns the one home instead of three. **Three rules the spec asked to be decided once:** two sinks landing is neutral ("Open summary"), because the top-level `page_url` is whichever sink came first in `output.sinks` order and naming it would promote a config detail into a claim about where the meeting lives; a nil `page_url` is `.nowhere`, so the Open affordance is absent rather than dead; and an unknown or unreadable sink map keeps a working Open under the neutral phrase rather than guessing. **Decisions not in the spec.** `PublishResult` had to grow the `sinks` map to answer this at all, since `page_url` says what to open and not who wrote it (documented in `CONVENTIONS.md`, and the CI4 fixture now pins Swift's read of it plus the derivation, both against Python's own generated output). The done categories are one pair per phrase, because a notification action's title is baked into its category at registration, which is the mechanical reason the literal survived; the neutral landing keeps the original `MP_DONE` / `MP_DONE_CORRECTABLE` ids and the Open action identifier is unchanged, so `NotificationRouter` never sees the split. The regulated mis-keying is corrected by dropping the claim rather than re-deriving it: nothing-published now reads "Meeting processed / Nothing was published.", since "Local Markdown ready (regulated mode)" asserted a *mode* off a nil page URL and was a guess for a BYO, too-long, or zero-sinks run alike. `PublishSink` is a fourth type carrying the `output.sinks` vocabulary and is pinned against `WorkflowSink` and `PublishTarget` rather than merged with them, since `WorkflowSink.notion` carries a database id and cannot be built from a bare name. Deliberately untouched: the Open action's behaviour, and the `General`-classification question behind "no Notion since 28th", which is routing working as configured. **Owner-owed:** the five-step walkthrough at the end of [`tasks/UX49.md`](./tasks/UX49.md), whose live leg is a finished `Personal` meeting whose banner no longer says Notion and whose Open still opens the summary. **Closed 2026-08-04 on the owner walkthrough.** The done notification no longer names Notion for a filesystem publish and names the local note instead, and its Open action still opens the summary, so the rename did not break the action it renamed. Corroborated on disk: the publish sidecar for a Personal meeting carries the `sinks` model UX49 added (`sinks: {filesystem: {ok: true, page_url: file://...}}`), which is the source of truth the wording now reads instead of guessing from `page_url`. The Notion leg of step 4 was not exercised, because no meeting has classified as `General` since 2026-07-28, which the filing already recorded as routing working as configured rather than a publish failure. |
 
+| PIPE13 | Ctrl-C on any `mp` command dumps a traceback instead of exiting | Pipeline | done | P2 | Shipped 2026-08-04; every engineering line of the acceptance is green and the status is the owner-visible check alone. `__main__.main` wraps the dispatch ladder in one `except KeyboardInterrupt`: one stderr line naming the interrupted command, then `EXIT_INTERRUPTED` (130, the shell's `128 + 2`). The ladder moved verbatim into `_dispatch(cmd, rest)` so a single `except` covers every registered command spelling and no subcommand learned about interrupts. `mp ask` alone adds the clause about what survived ("the index keeps what it finished, so the next run resumes from there"), keyed off a one-entry `_INTERRUPT_NOTES`. **Both pinned constraints hold.** No `finally`, no cleanup, no disk touched, so AI11's index checkpoint survives an interrupt exactly as before. And 130 was checked against the daemon rather than assumed: `SinkDispatcher.stage(for:)` is the only site branching on an `mp` exit code, it branches on 3 alone, and `test_other_non_zero_exits_stay_on_the_pipeline_stage` already pins a non-3 non-zero as the generic `.pipeline` stage, so 130 cannot read as a failed publish and no Swift change was needed or made. **Tests: 3 new**, in `test_main_dispatch.py` (the existing entry-point module; there is no `test_main_cli.py`). The reported `ask` case, the same from `digest` so the coverage cannot be read as ask-specific, and a real SIGINT to a real child process. That third one is the only shape that can see the actual regression, since the traceback is printed by the interpreter's top level and an in-process `main()` call never reaches it; it was proved red against the pre-fix shape (returncode -2, six-frame traceback ending in the blocked call). Python suite green, 3 new tests (measured 1197 from a 1194 baseline on this branch); ruff, pyright and truth fences clean, no Swift touched. Docs: CONVENTIONS "Subcommand pattern" carries the rule and its two load-bearing halves, the publish-result section now names 130 in the exit vocabulary, plus ARCHITECTURE's entry-point line, README "Running by hand", and `pipeline/CLAUDE.md`. **Owner-owed:** the acceptance's owner-visible check, Ctrl-C during a real index rebuild, one line and no traceback, and the next run resuming where it stopped. The interrupt path is verified here against a real SIGINT to a real process, but not against an MLX build over the real library, which is the remaining risk; a two-step walkthrough is on the spec. Archive on that verdict. Filed 2026-07-31 off AI11's owner walkthrough, where interrupting `mp ask --rebuild` printed a six-frame traceback ending in `mx.eval(emb)` on a path the walkthrough itself instructs the owner to take. **Closed 2026-08-04 by owner decision, walkthrough NOT run.** Recorded plainly so the archive is not read later as a verified pass. What *is* verified, by the shipping session: an out-of-process proof driving the real entry point with a real SIGINT returned exit **130** and `mp logs: interrupted` on stderr with no traceback, re-run and still green after the rebase; the Python trio and truth fences were green; and the 130-versus-exit-3 question was checked rather than assumed, with `SinkDispatcher.stage(for:)` established as the only site in the daemon branching on an `mp` exit code and matching 3 alone. What is **not** verified is the owner-visible half of the Acceptance: Ctrl-C during a real MLX index rebuild, and the next run resuming where it stopped. The shipping session could not run that from a session and proposed folding it into AI11's step 5, which remains owner-owed and is the leg that produced this bug; if that run ever happens and the resume misbehaves, this is the row to reopen. |
+
+| LANG2 | One stray Cyrillic character disables the whole summary-language target | Pipeline | done | P2 | Shipped 2026-08-04; suite green, 4 new tests (ruff, pyright, truth fences clean). The `cyr == 0` purity gate is now one symmetric share, `_LANG_MAX_MINORITY_SHARE = 0.33`: a transcript is a firm target only when at least two thirds of its letters are one script, whichever script leads. **The threshold was measured, not guessed, and measured on the right text.** The first pass scored the 232-transcript library by raw segment text and landed on 20%; re-scored on the rendered **markdown**, which is what `summarize` actually hands the function, the Cyrillic side's ceiling moves from 10.8% to 23.1% and 20% would have de-verified a real Ukrainian meeting, which is the damage the walkthrough's step 3 exists to catch, arrived at from the other side. On markdown the population is three groups: 205 meetings single-script exactly; the 19 Cyrillic-dominant ones at 0.9% to 23.1% Latin (a Ukrainian standup borrows English terms word by word, longest Latin run 14 words); the Latin-dominant ones at 0.1% to 1.4% with one at 8.0% (Cyrillic only enters an English transcript as contiguous 35 to 94-word asides); and exactly one genuinely bilingual meeting at 45.2%. So the window is (23.1%, 45.2%) and 0.33 sits 1.43x above the ceiling and 1.37x below the bilingual one. Verified against the whole library: **7 meetings change answer, all `None -> en`, and none loses a target**, so it is a pure widening. On the subject meeting `20260730-163434` the target is now `en` and all five stored sections flag as divergent, so LANG1's repair fires. `language_signature` was reviewed in the same pass and deliberately **left on the majority split**: real Ukrainian summary sections carry 20% to 37% Latin (one title at 49%), so sharing the threshold would make `divergent_sections` blind to most of them, which is LANG1's mechanism switched off. **Finding worth its own task:** the 23.1% ceiling is not linguistic. That meeting's speech is 5.7% Latin; the rest is the markdown wrapper, whose header and one `**Name**:` label per turn are Latin whatever the meeting was spoken in, a fixed cost per turn that lands hardest on the shortest meetings. A still shorter Cyrillic meeting could clear 33% on labels alone, and the fix for that is to stop counting the wrapper rather than to keep raising the constant. **Owner-owed:** the five-step walkthrough at the end of [`tasks/LANG2.md`](./tasks/LANG2.md), whose live legs are the re-summarize of `20260730-163434`, a read of two or three genuinely Ukrainian meetings to confirm they are unchanged, and the judgement call on the two code-switched meetings the corpus scan named (`20260521-163051`, now `en`; `20260611-113210`, still unverified). **Closed 2026-08-04 by owner decision, walkthrough NOT run.** Recorded plainly so the archive is not read later as a verified pass. What *is* verified, by the shipping session: `_LANG_MAX_MINORITY_SHARE = 0.33` was chosen against a re-measurement of all 232 transcripts after the session caught its own first pass scoring the wrong text (raw segments rather than the rendered markdown `summarize` actually passes, whose per-turn labels are Latin whatever the meeting was spoken in); the resulting window is (23.1%, 45.2%), and a library-wide check showed 7 meetings change answer, all `None -> en`, **none losing a target**, so the widening is pure. On the subject meeting `20260730-163434` the target is now `en` and all five sections flag divergent, so LANG1's repair fires on the exact meeting that produced the report. Suite green with 4 new tests, ruff, pyright and truth fences clean. What is **not** verified is the owner's eyeball on the two genuinely code-switched meetings the corpus scan found, `20260521-163051` (now English-targeted) and `20260611-113210` (still unverified either way); whether that split is right was the one input that would have moved the constant. Also carried forward unfiled: the 23.1% ceiling is a markdown-wrapper artefact rather than a linguistic fact (that meeting's speech is 5.7% Latin), so a shorter Cyrillic meeting could clear 33% on labels alone, and the real fix is to stop counting the wrapper rather than to keep raising the constant. |
+
 ## Task specs
 
 **[DONE] C7 (P3): backstop-end corpus coverage.** Band origin: carried from Q4 with a changed scope. C6-FINISH (below) landed 20 real redacted dogfood traces (`teams_native_*` in the detection corpus) covering the three pure-engine endings real sessions actually produce, derived by `scripts/extract_detection_trace.py`. The one real ending the corpus structurally cannot cover is the idle-stop backstop: a lone ax-leave `.ended` with empty `confirmed_by` (~1/3 of real sessions) is force-ended by `IdleStopBackstop`, not `PromotionEngine`, and the replay harness (`DetectionCorpusTests`) only drives the pure engine. Scope: either extend the harness with a backstop-level end driver so a real backstop session replays, or accept the gap explicitly and close. Not correctness (the backstop path works in production); this is test-coverage completeness, so it pairs with T3.
@@ -2763,3 +2767,169 @@ Per the 2026-07-30 standing rule: every task gated on an owner action carries on
 3. [owner] Click the notification's Open action. Pass: the summary opens, exactly as it did before. This step exists because the action already worked and must not have been broken by renaming it.
 4. [owner] If you have a meeting that publishes to Notion (a `General` one), let one finish or re-summarize it. Pass: that notification does say Notion, and its Open action reaches the Notion page.
 5. [owner] Say "UX49 good to close" (or what is wrong); [session] moves the row and the spec into `q6-final.md` and deletes this file.
+
+# [DONE] PIPE13: Ctrl-C on any `mp` command dumps a traceback instead of exiting
+
+Band origin: filed 2026-07-31, observed during AI11's owner walkthrough. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+
+## Context
+
+AI11's owner walkthrough, step 5, instructs the owner to interrupt an index rebuild: "let the indexing lines climb past a few hundred, then Ctrl-C". Doing so on 2026-07-31 produced this:
+
+```
+^CTraceback (most recent call last):
+  File ".../bin/mp", line 10, in <module>
+    sys.exit(main())
+  File ".../src/mp/__main__.py", line 164, in main
+    return run(rest)
+  File ".../src/mp/ask.py", line 297, in main
+    index = embed_index.load_or_build(
+  File ".../src/mp/embed_index.py", line 777, in load_or_build
+    return refresh_index(
+  File ".../src/mp/embed_index.py", line 733, in refresh_index
+    blocks.append(embedder.embed([c.text for c in batch_chunks], kind="passage"))
+  File ".../src/mp/embed_index.py", line 260, in embed
+    mx.eval(emb)  # mlx is lazy; force the compute before leaving mlx-land
+KeyboardInterrupt
+```
+
+The interrupt worked correctly in every way that matters: the checkpoint survived and the next run resumed from stem 112 rather than 0, which is precisely what AI11 built. Only the exit reads as a failure.
+
+This is not specific to `mp ask`. `grep -rn "KeyboardInterrupt" pipeline/src/` returns nothing, so no subcommand handles it, and every command long enough to be worth interrupting (`ask`, `run-all`, `prefetch-model`, `digest`, `train-adapter`) ends the same way. A documented, supported, deliberately-resumable action should not be indistinguishable from a crash, and the walkthrough that tells the owner to press Ctrl-C is the reason this is worth the small change.
+
+## Scope
+
+Catch `KeyboardInterrupt` once in `__main__.main`, print a single line to stderr naming what was interrupted, and return 130 (the shell convention for SIGINT, `128 + 2`). Every subcommand is dispatched through that one function as `main(argv) -> int`, so one handler covers all of them and no subcommand needs to learn about it.
+
+For `ask` specifically the message is worth one clause about what survived, since the resume is the non-obvious part and the owner has just been told the run was long: something of the shape "interrupted; the index keeps what it finished, so the next run resumes from there".
+
+## Explicitly not / out of scope
+
+**The handler must not clean up.** AI11's resume works because the interrupt leaves the last checkpoint on disk; a `finally` that deleted a partial index, or a "tidy up before exiting" impulse, would break the exact behaviour the owner verified on 2026-07-31 (interrupted at 112 stems, resumed at 112). Exit and leave the disk alone.
+
+**130 must not collide with an exit code the daemon reads.** `publish_router.EXIT_PUBLISH_FAILED` is 3 and six Swift sites branch on the publish contract; 130 is outside that vocabulary, and this task must not renumber anything that exists. Check `PipelineLauncher`'s exit-code handling treats an unknown non-zero as a generic failure rather than misreporting it.
+
+**Not a graceful-shutdown mechanism.** No signal handlers, no cooperative cancellation, no flushing work in progress. The point is the exit line, not new behaviour on the way out.
+
+**Not the daemon's cancel path.** UX28's in-app Cancel is a different mechanism (`pipeline_cancelled`, the job queue) and is unaffected.
+
+## Acceptance
+
+`test_main_cli.py` (or the existing entry-point test module) pins that a subcommand raising `KeyboardInterrupt` returns 130 from `main`, writes its one line to stderr, and prints no traceback. A second test pins that the handler is at the dispatch level by raising from a different subcommand, so the coverage cannot be read as ask-specific.
+
+An interrupted `mp ask --rebuild` still resumes: the existing embed-index resume test stays green, and nothing in the new path touches the index directory.
+
+`cd pipeline && uv run --extra dev ruff check src tests`, `pyright`, and `pytest -q` green. No em-dashes in changed lines.
+
+Owner-visible check, folded into whatever walkthrough next runs an interrupt: Ctrl-C during an index rebuild prints one line, no traceback, and the next run resumes where it stopped.
+
+## Owner walkthrough (for the session that picks this up)
+
+Steps are tagged [owner] / [session] by who acts. The engineering shipped 2026-08-04 (see the ToC row); this section exists only because the acceptance's last line is an owner-visible check, and the status stays `owner-owed` until it is run. It is the same leg as **AI11's step 5**, which is also still open, so run them together rather than twice: AI11 asks whether the resume works, this asks whether the exit reads like a crash while it does.
+
+What the session already verified, so it does not need re-doing: a real SIGINT to a real `mp` process exits 130 with exactly `mp <cmd>: interrupted` on stderr and no traceback, proved red against the pre-fix shape. What it could **not** verify is that same behaviour when the interrupt lands inside an MLX index build over the real library, which is the only reason this is still open.
+
+1. [owner] `cd <repo>/pipeline && uv run mp ask "budget" --rebuild`. Let the indexing lines climb past a few hundred, then Ctrl-C.
+2. [owner] Read what it printed. Expect exactly one line, `mp ask: interrupted; the index keeps what it finished, so the next run resumes from there`, and **no** `Traceback (most recent call last)` block above it. A traceback here means the interrupt unwound past the handler, which is the whole defect.
+3. [owner] Run the same command **without** `--rebuild` and read the first `indexing` line: `stems_done` should start near where the Ctrl-C landed, not at 0. This is AI11's step 5 unchanged; it is repeated here because the one risk this change carries is having disturbed it.
+4. [session] On a clean pass, archive PIPE13 per the done-done move. On a traceback in step 2, capture the whole block: it names the frame the exception escaped through, and that frame is the fix.
+
+# [DONE] LANG2: One stray Cyrillic character disables the whole summary-language target
+
+Band origin: filed 2026-07-31, off a miss the owner caught while running UX41's walkthrough: "summary in UA even tho meeting in english, I thought we fixed that". They were right on both counts, which is what makes this worth a task rather than a bug comment. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+
+## Context
+
+Meeting `20260730-163434` ("Kintava 5.12 Release, HIPAA CloudFront & Kintava 6 Update", 2026-07-30 16:34, header language EN) was re-summarized on 2026-07-31 at 13:43:41Z by `anthropic` / `claude-sonnet-4-6` as part of UX41's owner pass. The summary came back in Ukrainian: its first bullet reads "Heorhii завершив CloudFront setup для GMS (для відповідності HIPAA) та Sentry review rep...", and the stored `summary.json` carries **1,178 Cyrillic characters**.
+
+The transcript it was generated from is English. Measured over `20260730-163434.json`: 22,213 characters of segment text, **25 Cyrillic letters against 17,222 Latin**, so Cyrillic is **0.14% of all letters**. Every one of those 25 is in a single throwaway opening line before the meeting starts ("Суть в том, что мне треба солнце"), and the remaining 30 minutes are English.
+
+The cause is one line. `expected_summary_language(summary_language, transcript)` ends its Latin-dominant branch with:
+
+```python
+# Latin-dominant. LANG1: only a *pure* Latin transcript (zero Cyrillic) is a
+# firm "en" target. Any Cyrillic mixed in means the meeting may legitimately
+# carry another script, so leave it unverified rather than force English.
+return "en" if cyr == 0 else None
+```
+
+`summary_language.py:106-109`. With `cyr == 25` the function returns `None`, which is the "cannot cheaply verify" answer, and `None` switches off everything LANG1 built: `language_reinforcement` is not added to the prompt, `divergent_sections` is not consulted, and the post-hoc repair never runs. The model was free to answer in any language and nothing was watching. Detection never failed; it was never asked.
+
+**LANG1 (done 2026-07-10, archived in [q6-final.md](../q6-final.md)) is not regressed and this is not a reopen.** Its verifier, its per-section detection including `actions[].task`, and its backend-agnostic repair all work as built. The zero-Cyrillic gate is a deliberate conservatism recorded in its own comment, and its purpose is right: a genuinely code-switched meeting must not be force-flattened into one language. The defect is that the gate is absolute where the thing it is protecting against is proportional, so 0.14% noise is treated identically to a half-Ukrainian meeting.
+
+## Scope
+
+Replace the `cyr == 0` test in `expected_summary_language` with a share-based one, and give the Cyrillic-dominant branch the same treatment so the fix is symmetric rather than an English special case.
+
+The threshold is the whole decision and it should be picked deliberately, not guessed: it needs to leave a meeting like this one (0.14%) verified as `en`, and leave a real code-switched meeting unverified. The corpus can inform it rather than intuition, since 244 recordings exist on disk and their transcripts can be scored for script share in one pass; a short script that prints the distribution of Cyrillic share across the library is cheap and would show whether the population is bimodal (mostly-pure meetings and genuinely mixed ones, with a gap to put the threshold in) or continuous. Record the chosen number and its justification in the function's comment, replacing the one quoted above.
+
+`language_signature` carries the same `cyr >= lat` coarse split for its own purposes and should be reviewed in the same pass for consistency, but it answers a different question (what language is this text) and does not need the same threshold unless the review says so.
+
+## Explicitly not / out of scope
+
+**Not a change to `summary_language`'s config vocabulary.** `auto` and forced ISO codes stay as they are; `_VERIFIABLE_LANGS` is unchanged. Forcing `en` in config would work around this meeting and is not the fix, since the owner's library is genuinely multilingual and `auto` is the right default for it.
+
+**Not a language-detection library.** The coarse script read is deliberate and sufficient; adding a dependency for this is out of proportion to the problem and the repo's dependency floor forbids it without asking.
+
+**Not a re-summarize of the affected meeting as part of the fix.** That is a one-line owner action once the threshold lands, and it is in the walkthrough below rather than in the code.
+
+**Not the `en` label's meaning.** `"en"` continues to mean "Latin script" rather than English specifically, and callers must keep not asking it to separate Latin languages (the existing docstring is explicit and stays).
+
+## Acceptance
+
+`test_summary_language.py` gains the regression case built from this meeting's real numbers: a transcript of ~17,200 Latin letters carrying 25 Cyrillic ones returns `"en"`, not `None`. A genuinely mixed transcript (a share above the chosen threshold) still returns `None`, and the existing zero-Cyrillic and Cyrillic-dominant cases keep their current answers, so the change is a widening of the verified set and not a re-specification.
+
+The Cyrillic-dominant branch has the mirrored case: a Ukrainian transcript carrying a few Latin words still returns `"uk"`.
+
+The chosen threshold appears once, as a named module constant beside `_LANG_MIN_LETTERS`, with the comment stating what it protects and what the corpus showed.
+
+`cd pipeline && uv run --extra dev ruff check src tests`, `pyright`, and `pytest -q` green. No em-dashes in changed lines.
+
+## As built (2026-08-04)
+
+`expected_summary_language`'s `cyr == 0` test is replaced by one symmetric constant beside `_LANG_MIN_LETTERS`:
+
+```python
+_LANG_MAX_MINORITY_SHARE = 0.33
+```
+
+Both branches now reject before they read the script: a transcript whose minority script is more than a third of its letters returns `None`, and only then does the Cyrillic-dominant branch do its uk-vs-ru read. Read plainly: a transcript is a firm target only when at least two thirds of its letters are one script, whichever script leads.
+
+### How the number was chosen, and the mistake worth recording
+
+The corpus was scored, per the Scope section's suggestion. The first pass measured the raw segment text of 208 transcripts and landed on **20%**, which looked well supported: the Cyrillic-dominant meetings topped out at 10.8% Latin and the one genuinely bilingual meeting sat at 46.8%, so 20% had margins of 1.8x and 2.3x.
+
+**That measured the wrong text.** `summarize` hands the function `transcript`, which is the *rendered markdown* (speaker labels, header, timestamps), not the segment text. Re-scored on the markdown across all 232 transcripts on disk, the picture moves:
+
+| Group | Count | Minority-script share (markdown) |
+|---|---|---|
+| Single script exactly | 205 | 0% |
+| Cyrillic-dominant | 19 | 0.9% to **23.1%** |
+| Latin-dominant, not bilingual | 7 | 0.1% to 1.4%, plus one at 8.0% |
+| Genuinely bilingual | 1 | **45.2%** |
+
+At 20% one real Ukrainian meeting (`20260730-163033`) would have lost its verified `uk` target, which is exactly the damage the walkthrough's step 3 exists to catch, reached from the other side. The window is therefore **(23.1%, 45.2%)**, and 0.33 sits 1.43x above the ceiling and 1.37x below the bilingual meeting, about as centred as the data allows.
+
+The two sides differ in kind, not only in degree, which is why one number covers both. In a Ukrainian meeting the Latin minority is borrowed technical vocabulary interleaved word by word (Jenkins, Docker, tenant, API), longest contiguous Latin run 14 words. In an English meeting the Cyrillic minority is somebody actually speaking Ukrainian for a stretch, contiguous runs of 35 to 94 words. The one bilingual meeting is 1,637 Cyrillic words in a single 281-word run and half the transcript.
+
+### Verified against the whole library
+
+Old answer against new, over all 232 transcripts: **7 meetings change, every one of them `None -> en`, and none loses a target.** A pure widening, as the Acceptance section asked for. The seven sit at 0.10%, 0.14% (the subject meeting), 0.59%, 0.75%, 0.81%, 1.37%, and 7.97%. On `20260730-163434` specifically the target is now `en`, and all five sections of the summary it shipped flag as divergent, so LANG1's repair fires on the exact meeting that produced the report.
+
+### `language_signature`: reviewed, deliberately unchanged
+
+It keeps the plain majority split. It answers a different question over much shorter text, and its callers are the per-section checks in `divergent_sections`. The owner's real Ukrainian summaries carry **20% to 37% Latin per section**, with one title at 49%, because that is where the product names live. Gating it on the same share would return `None` for most of them, and a section the detector will not read is a section `divergent_sections` will not flag, which is LANG1's whole mechanism switched off. Fail-safe is the wrong instinct here: a missed flag costs a summary in the wrong language, a wrong flag costs one model call that is discarded unless it comes back clean.
+
+### One finding this task does not fix
+
+The 23.1% ceiling that pins the threshold is **not linguistic**. That meeting's speech is 5.7% Latin; the rest is the markdown wrapper, whose `# Transcript - <stem>` header and one `**Name**:` label per turn are Latin whatever the meeting was spoken in. It is a fixed cost per turn, so it lands hardest on the shortest meetings (that one is ~3 minutes, and 174 of its 218 Latin letters are labels) while the longest Cyrillic meeting barely moves (0.4% to 0.9%). Two consequences, both recorded in the constant's comment: erring low is the safer error, since a threshold set too low costs a short meeting its safety net and leaves it where it was before LANG1, while one set too high forces a genuinely bilingual meeting into a single language, which is an actively wrong answer rather than an absent one; and a still shorter Cyrillic meeting could clear 33% on labels alone, whose fix is to stop counting the wrapper rather than to keep raising this constant. Worth its own task if it ever bites.
+
+## Owner walkthrough (for the session that picks this up)
+
+Per the 2026-07-30 standing rule: every task gated on an owner action carries one. Walk the owner through it step by step; the owner does not read code. Steps are tagged [owner] / [session] by who acts.
+
+1. [session] Land the threshold, then re-summarize `20260730-163434` (Library, the 2026-07-30 16:34 meeting, Re-summarize with Anthropic).
+2. [owner] Read the summary. Pass: it is in English. This is the meeting that produced the report, so it is the one that has to change.
+3. [owner] Open two or three meetings that were genuinely conducted in Ukrainian or Russian and read their summaries. Pass: they are still in their own language. This step matters more than step 2: the easy way to "fix" this task is to force English everywhere, and that would quietly ruin every non-English meeting you have. If you want the ones with the most English mixed in, since those are where a bad threshold would show first, they are the 2026-06-18 11:31 and 2026-07-14 16:20 meetings, plus the short 2026-07-30 16:30 one.
+4. [owner] The corpus scan found exactly two meetings that really do switch languages, and they now get opposite answers. Read both and say whether that is right. **2026-05-21 16:30** (`20260521-163051`) is mostly English with one Ukrainian stretch of about 66 words, and now gets an English target, so its summary will be steered to English. **2026-06-11 11:32** (`20260611-113210`) is about half and half, and is deliberately left alone, so its summary comes out in whatever language the model picks. There is no automatic right answer for either, and your call is the only way to know whether the threshold sits in the right place. If the first one should have stayed Ukrainian, the constant comes down; if the second should be pinned to one language, it goes up.
+5. [owner] Say "LANG2 good to close" (or what is wrong); [session] moves the row and the spec into `q6-final.md` and deletes this file.
