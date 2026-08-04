@@ -143,6 +143,8 @@
 
 | UX55 | "Quit (do not relaunch)" is still offered when nothing can relaunch | UX | done | P2 | Shipped 2026-08-04; every engineering line of the acceptance is green and the remainder is the owner walkthrough in the spec. `swift build` clean, daemon suite green with 3 new tests, truth fences clean; no Python touched. **The fix:** `StatusBarModel.offersQuitWithoutRelaunch(_:)` is the rule (`!disableAutoRestart && launchAgentEnabled`) over a new `Inputs.launchAgentEnabled`, and `StatusBarController` asks it instead of carrying its own `if !UISettings.shared.disableAutoRestart`. `Row` needed no change, since `quitWithoutRelaunch` was already modelled, so the tests pin the shipped row directly rather than falling back to a fence the way DOC11's unconditional row had to. **The one decision not in the spec:** the agent state is `LaunchAtLoginService.status().isOn`, read in `refreshMenuBeforeDisplay` and cached on the controller rather than read where it is used. `status()` spawns `launchctl`, and `populateMenu` also runs on every model-download progress tick and every processing-count change, so an inline read would have been a subprocess per tick on the main queue; the pre-display hook is where the permissions re-probe already lives and AppKit calls it before every display. That is also what settles the spec's "confirm rather than assume" about the toggle: the re-read is per menu open, so no rebuild or relaunch carries it. A `.notInstalled` agent reads as not enabled and hides the row for the same reason nothing can relaunch it; an unreadable `print-disabled` reports enabled and keeps the row, which is what Preferences already renders. One source fence over `StatusBarController` was added beside the model tests, because the menu is built by hand rather than from `rows` and a correct model beside a stale hand-built condition is precisely this defect. Docs: `README.md` (startup paragraph + the Idle-in-a-meeting troubleshooting line), `docs/GUIDE.md`, `docs/SETUP.md`, `daemon/CLAUDE.md`. **Remainder:** the spec's owner walkthrough, steps 2 to 4 (step 1's `rebuild.sh` was deliberately not run, with 18 parallel worktrees in flight). A recommendation on UX48's open Cmd+Q question was returned to the owner unshipped: the app menu's quit section, if it is added, has to read the same predicate or it reproduces this defect on a second surface. **As filed** (2026-07-31, line numbers below are the pre-fix ones): owner-reasoned from the menu alone at the end of UX42's walkthrough: "I just need to see one 'quit' instead of 'quit dont relaunch', cause when this flag is off, relaunch is not working for classic quit." Correct. The row's condition is `if !UISettings.shared.disableAutoRestart` (`StatusBarController.swift:601`), which consults only the preference, while UX42 made the login agent the single owner of relaunch-after-quit and its own close note says "with launch at login OFF, Quit MeetingPipe really quits". So with the agent disabled, plain Quit already means quit, which is exactly the case the code's own comment says should hide the extra row, and it is shown anyway. Behaviour is correct either way; this is a truthfulness defect of the same family UX42 was about, a control describing a distinction the machine no longer makes. Scope: condition on `disableAutoRestart` **and** the agent being enabled (`LaunchAtLoginService` already reads the latter), with the predicate in `StatusBarModel` where its comment at `:262` already describes the rule. **Closed 2026-08-04 on the owner walkthrough.** The owner confirmed the Startup toggles and the dropdown agree: **Quit (do not relaunch)** is shown or hidden to match, so the row now describes a distinction the machine actually makes, which was the whole defect. Found while running it and not folded in: the Startup toggles were briefly unresponsive until a full quit, filed separately rather than absorbed here, since UX55 changed only the menu predicate and never the toggles' own binding. |
 
+| UX49 | The done notification says "Open in Notion" whichever sink actually ran | UX | done | P2 | Shipped 2026-08-04, and the status is the walkthrough clause only. `swift build` clean, daemon suite green with 21 new tests; truth fences clean; no Python touched. Both string sites derive from one pure rule now, `PublishLanding.swift`: `PublishSink` holds one phrase per sink ("Open in Notion" / "Open in Obsidian" / "Open the local note" / "Open the shared note"), `PublishLanding.decide` maps a run's `<stem>.publish.json` to what a surface may claim, and `DoneNotificationCopy` is the banner's whole copy over it. `MeetingDetailView+Header` reads the same phrases, so a Swift grep for "Open in Notion" returns the one home instead of three. **Three rules the spec asked to be decided once:** two sinks landing is neutral ("Open summary"), because the top-level `page_url` is whichever sink came first in `output.sinks` order and naming it would promote a config detail into a claim about where the meeting lives; a nil `page_url` is `.nowhere`, so the Open affordance is absent rather than dead; and an unknown or unreadable sink map keeps a working Open under the neutral phrase rather than guessing. **Decisions not in the spec.** `PublishResult` had to grow the `sinks` map to answer this at all, since `page_url` says what to open and not who wrote it (documented in `CONVENTIONS.md`, and the CI4 fixture now pins Swift's read of it plus the derivation, both against Python's own generated output). The done categories are one pair per phrase, because a notification action's title is baked into its category at registration, which is the mechanical reason the literal survived; the neutral landing keeps the original `MP_DONE` / `MP_DONE_CORRECTABLE` ids and the Open action identifier is unchanged, so `NotificationRouter` never sees the split. The regulated mis-keying is corrected by dropping the claim rather than re-deriving it: nothing-published now reads "Meeting processed / Nothing was published.", since "Local Markdown ready (regulated mode)" asserted a *mode* off a nil page URL and was a guess for a BYO, too-long, or zero-sinks run alike. `PublishSink` is a fourth type carrying the `output.sinks` vocabulary and is pinned against `WorkflowSink` and `PublishTarget` rather than merged with them, since `WorkflowSink.notion` carries a database id and cannot be built from a bare name. Deliberately untouched: the Open action's behaviour, and the `General`-classification question behind "no Notion since 28th", which is routing working as configured. **Owner-owed:** the five-step walkthrough at the end of [`tasks/UX49.md`](./tasks/UX49.md), whose live leg is a finished `Personal` meeting whose banner no longer says Notion and whose Open still opens the summary. **Closed 2026-08-04 on the owner walkthrough.** The done notification no longer names Notion for a filesystem publish and names the local note instead, and its Open action still opens the summary, so the rename did not break the action it renamed. Corroborated on disk: the publish sidecar for a Personal meeting carries the `sinks` model UX49 added (`sinks: {filesystem: {ok: true, page_url: file://...}}`), which is the source of truth the wording now reads instead of guessing from `page_url`. The Notion leg of step 4 was not exercised, because no meeting has classified as `General` since 2026-07-28, which the filing already recorded as routing working as configured rather than a publish failure. |
+
 ## Task specs
 
 **[DONE] C7 (P3): backstop-end corpus coverage.** Band origin: carried from Q4 with a changed scope. C6-FINISH (below) landed 20 real redacted dogfood traces (`teams_native_*` in the detection corpus) covering the three pure-engine endings real sessions actually produce, derived by `scripts/extract_detection_trace.py`. The one real ending the corpus structurally cannot cover is the idle-stop backstop: a lone ax-leave `.ended` with empty `confirmed_by` (~1/3 of real sessions) is force-ended by `IdleStopBackstop`, not `PromotionEngine`, and the replay harness (`DetectionCorpusTests`) only drives the pure engine. Scope: either extend the harness with a backstop-level end driver so a real backstop session replays, or accept the gap explicitly and close. Not correctness (the backstop path works in production); this is test-coverage completeness, so it pairs with T3.
@@ -2695,3 +2697,69 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 3. [owner] Turn Launch at login **off** (Preferences ▸ General ▸ Startup), then open the status-bar menu again. Pass: only **one** Quit row. This is the whole task.
 4. [owner] Turn it back **on** and check the menu once more. Pass: both rows are back, without needing to restart the app.
 5. [owner] Say "UX55 good to close" (or what is wrong); [session] moves the row and the spec into `q6-final.md` and deletes this file.
+
+# [DONE] UX49: The done notification says "Open in Notion" whichever sink actually ran
+
+Band origin: filed 2026-07-31, owner-reported during the owner-owed pass: "notification wording. It keep saying 'Open in Notion' while the notion was not an option and there's no new meetings in here since 28th." Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+
+## Context
+
+The meeting-done notification names Notion unconditionally. Both strings are literals:
+
+- `Notifier.swift:120-121`: `content.body = canCorrect ? "Open in Notion. How did this summary look?" : "Open in Notion"`
+- `Notifier.swift:331`: `UNNotificationAction(identifier: Self.actionOpen, title: "Open in Notion", ...)`
+
+Neither consults what was published. **The action itself is correct**, which is why this is wording and not a broken feature: it opens `entry.pageURL` (`Notifier.swift:426`), which is taken from the publish result, so for a filesystem publish it opens the real `file:///Users/.../Documents/Meetings/published/<stem>.summary.md` and lands where it should. The user is simply told the wrong thing on the way there, on every meeting.
+
+The owner's library shows how routine that is. Sinks per publish, from `<stem>.publish.json` on 2026-07-31:
+
+| Meeting | Sink that ran |
+|---|---|
+| 20260731-163028, -121524, -103033 | `filesystem` |
+| 20260730-163434, -175154, -163033 | `filesystem` |
+| 20260729-160040, -155902, -103147 | `filesystem` |
+| 20260728-133356 | `notion` |
+| 20260727-140126, -103155 | `filesystem` |
+| 20260724-163048, 20260723-163108 | `notion` |
+
+Nine consecutive filesystem publishes, each announced as Notion. The sink follows the workflow (`Personal` publishes to the filesystem, `General` to Notion), so this is not rare or edge-case: it is the common path for this user.
+
+**The second half of the owner's report is not a bug and should not be chased.** Nothing has appeared in Notion since 2026-07-28 because 20260728-133356 was the last meeting to classify as `General`; every meeting since has been `Personal`. Workflow counts per day over the preceding fortnight show the mix has always varied (all `Personal` on 16, 17, 20, 21 July; `General` on 23, 24, 28 July; `Client work` on 22 and 27 July), so there is no step change and no publish failure. Every recent `publish.json` reads `state: "full"`. If the owner wants work meetings in Notion, that is a workflow-matcher question, not this task.
+
+## Scope
+
+Derive the sink's name from what actually ran, at both string sites, and pick the verb from the same source.
+
+The data is already there and already used elsewhere: `PublishResult.load` reads `<stem>.publish.json`, whose `sinks` map names each sink that ran with its `ok` and `page_url`. `MeetingDetailView+Header.swift:443-449` already branches on this exact distinction to choose between "Open in Notion" and "Open in Obsidian" help text, so the naming rule exists and should be promoted rather than copied. That promotion is the point: this is the same class of defect as UX31's seven independent backend-name switch tables, and a second literal spelling of a sink's name is how the notification and the header come to disagree.
+
+The multi-sink case needs a decision rather than a guess, and it should be made once in the pure rule: when two sinks succeed there is one `pageURL` and two plausible names. A neutral phrasing ("Open summary") is the obvious answer and avoids naming one sink over another.
+
+The `Notifier.swift:105` doc comment describing the legacy fallback ("Open in Notion only, or plain 'Local Markdown ready' under regulated mode") needs updating with the behaviour, since it documents the bug as intended. Note that the "Local Markdown ready" variant is keyed on regulated mode rather than on the sink, which is why a plain filesystem publish outside regulated mode never reaches it; that keying is part of what this task corrects.
+
+## Explicitly not / out of scope
+
+**Not the workflow routing.** Why recent meetings classify as `Personal` rather than `General`, and whether that is what the owner wants, is a matcher question. Measured above and deliberately left alone.
+
+**Not the notification's action behaviour.** `pageURL` already resolves correctly and the Open action already works. Do not "fix" the action while renaming it.
+
+**Not new sinks or a sink picker.** The set of publishers is unchanged.
+
+**Not the correction ("Looks good") flow.** `canCorrect` and the correction action are untouched; only the sink-naming half of the body string changes.
+
+## Acceptance
+
+A pure rule (name it beside the existing header logic, not inside `Notifier`) maps a publish result to the phrase the user reads, and its tests pin: filesystem-only publish names the local note and not Notion; Notion-only names Notion; both succeeding produces the neutral phrasing; no sink succeeding produces no Open affordance at all rather than an action that cannot open anything. `NotificationRouter`'s existing coverage stays green.
+
+`MeetingDetailView+Header.swift` reads the same rule rather than keeping its own copy, so a grep for `"Open in Notion"` returns one site instead of three.
+
+`cd daemon && swift build` and `swift test` green. `python3 scripts/truth_fences.py both` green. No em-dashes in changed lines.
+
+## Owner walkthrough (for the session that picks this up)
+
+Per the 2026-07-30 standing rule: every task gated on an owner action carries one. Walk the owner through it step by step; the owner does not read code. Steps are tagged [owner] / [session] by who acts.
+
+1. [session] `./scripts/rebuild.sh`, then tell the owner it is ready.
+2. [owner] Let a normal meeting finish, or re-summarize any `Personal` meeting to trigger the notification. Pass: the notification no longer mentions Notion, and names the local note instead. This is the whole bug, so if it still says Notion nothing else matters.
+3. [owner] Click the notification's Open action. Pass: the summary opens, exactly as it did before. This step exists because the action already worked and must not have been broken by renaming it.
+4. [owner] If you have a meeting that publishes to Notion (a `General` one), let one finish or re-summarize it. Pass: that notification does say Notion, and its Open action reaches the Notion page.
+5. [owner] Say "UX49 good to close" (or what is wrong); [session] moves the row and the spec into `q6-final.md` and deletes this file.
