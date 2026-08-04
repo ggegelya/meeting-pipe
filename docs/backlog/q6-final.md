@@ -135,6 +135,12 @@
 
 | UX51 | The cast strip clips its last chips with no sign there are more | UX | done | P2 | Shipped 2026-08-04. The chips wrap onto as many rows as they need instead of riding an indicator-less horizontal scroll, so the last one can no longer render sliced mid-word and the header's count stays reconcilable with what is visible at any width. Wrap rather than a scroll with a UX47-style edge fade, because the strip sits inside the transcript's capped 720 reading measure where a scroll affordance is easy to miss in a centred column; a chip is a short label, so the cost is one extra row at worst. `FlowLayout` moved to `Preferences/PreferencesControls.swift` with its `private` dropped, so it is a shared primitive with two callers now (the auto-record allowlist's tags and the cast strip), and its break arithmetic is a static function over measured sizes because `LayoutSubviews` cannot be constructed outside a live layout pass and "do these wrap or get sliced" was otherwise unreachable from a test. UX38's recorded reason for declining that promotion is annotated in its archived text rather than rewritten: it was right for one speculative caller, and this is a real second one. Chip contents, menus, status tinting, and the header wording are untouched (UX40 and FEAT11 own those; UX59's identity dot builds on this layout). Daemon suite green, 11 new tests. **Owner-owed:** the walkthrough at the end of the spec, whose two legs are the owner's own `20260727-103155` reading with every chip fully visible and agreeing with the count above it, and the chips re-flowing readably as the window is narrowed to its floor. **Closed 2026-08-04 on the owner walkthrough**, both steps pass: on the reported meeting every chip is fully readable with none sliced mid-word, and the chip count now reconciles with the "n of m other voices named" line above it, which was the actual defect (a voice read as missing rather than hidden). Narrowing the window to its floor re-flows the chips onto more rows with nothing cut off at any width, so the wrap-rather-than-scroll choice holds inside the 720pt reading measure. |
 
+| UX52 | The detail view does not refresh when a re-transcribe finishes | UX | done | P2 | Shipped 2026-08-04; `swift build` clean, `swift test` green with 8 new tests, truth fences clean. The idiom reused is `SummaryTab`'s store-revision reload key, which is why the summary pane already refreshed in place and the transcript did not: an `@ObservedObject MeetingStore` plus `.task(id:)` keyed on `(stem, revision)`. `TranscriptTab` now takes the store the same way and carries `TranscriptReloadKey`; the audio load stays on its own stem-only task, since re-attaching the player on every rescan would drop the play head. The publisher half is at the service, per the acceptance: `MeetingLibraryService` gained an injected `refreshLibrary`, wired by the `Coordinator` to `meetingStore.refresh()`, called on **both** outcomes of a re-transcribe and after the overlay carry, so the rows and the cast strip are never a run apart. Three tests pin the notification at the service (fires on success, fires on failure, silent when the run never queued) and five pin the reload guard, which fingerprints four sidecars rather than `<stem>.json` alone because a rename writes only the speaker overlay. **The refresh is complete for this operation, not partial**: text and clusters come from the transcript reload, and the header lines were always covered, since the same scan rebuilds the `Meeting` the header reads. Decision not in the spec: the failed branch publishes too, because the job transcribes and then runs `mp finalize`, so a second-leg failure still leaves a rewritten `<stem>.json`. Rule written into `daemon/CLAUDE.md` as a Don't bullet for UX53 to sweep against. **Owner-owed:** the walkthrough at the end of [`tasks/UX52.md`](./tasks/UX52.md), whose one live leg is watching a Re-transcribe finish without touching anything, transcript and cast strip both. The owner's larger point stays deliberately out: "this is not the first issue, I need full assessment all over the app for this" is UX53. **Closed 2026-08-04 on the owner walkthrough.** With the owner sitting on the Transcript tab and touching nothing, a finished Re-transcribe updated the transcript on screen on its own, and the cast strip above it updated in the same moment (step 3), so the fix is complete rather than partial exactly as the shipping session claimed and UX53 independently verified. |
+
+| FEAT12 | Add to Vocabulary from a transcript correction | Feature | done | P2 | Shipped 2026-08-03; `swift build` clean and `swift test` green, 2029 -> 2052 (the baseline this spec was filed with was stale by two months, so it was measured on the branch). Saving a transcript line edit now raises a pre-filled **Add to Vocabulary** sheet whenever the new pure `VocabularyCandidate` diff (`VocabularyCandidate.swift`) names a pair, scoped by default to the meeting's workflow and falling back to the global table when it has none. Both FEAT11 constraints held rather than softened, and both are pinned by `VocabularyCandidateTests` rather than left to a comment: the diff does no I/O at all, so only the sheet's Add can reach `glossary.toml` (the cancel case is pinned on the file's bytes), and the diff bails to no candidate on an insertion, a deletion, a change split across two places, a same-words reorder, or any span past two contiguous tokens. The write goes through a new `GlossaryStore.addTerm`, the editor's own scope-then-mutate steps collapsed into one call, so the file still has exactly one writer and `[fuzzy]` survives an add for the same reason it survives an edit. **Two decisions the spec left open**: the affordance is the post-save sheet only, not the second "and/or" context-menu entry point, since the confirm moment is where both sides are known and a standing menu item would need corrections threaded through the row; and a pure capitalization fix ("kubernetes" -> "Kubernetes") counts as a pair, because the key is folded and the value is not, so it is a substitution that does something. **Owner-owed:** the spec's eyeball, per the walkthrough at the end of the task file. **Closed 2026-08-04 on the owner walkthrough**, steps 2 to 10 pass. The post-save sheet named the exact single-word pair and nothing wider, **Applies to** pre-filled the meeting's workflow, and Cancel wrote nothing: verified on the file, where the owner's deliberate cancel-first pass left `glossary.toml` byte-identical, and the two later Adds landed under `[workflow.Personal.terms]` rather than the global `[terms]`, with `[fuzzy]` intact through both writes. Step 10's Re-transcribe applied the terms: the transcript on disk came back with the corrected spellings and no `Jorji` anywhere. |
+
+| FEAT13 | Clarify a misheard word where you find it, not in Preferences | Feature | done | P2 | Shipped 2026-08-04; `swift build` clean, `swift test` green, 22 new tests, `truth_fences.py both` green. **Clarify a word…** now sits on a transcript line's right-click menu, under **Edit text…**. It opens a sheet showing the line, takes the misheard wording and the intended wording, and makes the user choose between the two things a single button would have merged: **Fix this line only** writes the PIPE9 correction overlay and never `glossary.toml`, **Always fix this** writes a term through `GlossaryStore.addTerm` and never the overlay, and only the second offers to re-transcribe (a tick box in the sheet, default off, because a correction applies at load time while a term needs a rebuild to reach an existing meeting). `Clarify.swift` is pure and does no I/O, so `ClarifyTests` states the pre-fill rule on the bytes of *both* files across the whole sheet lifecycle, which is the Venusaur case as a test. **The spec's selection-driven entry point was not built, and the reason is narrower than first recorded**: measured 2026-08-04 with an on-screen `NSWindow` probe extending UX48's, SwiftUI's `SelectionTextField` answers `acceptsFirstResponder` false, engages no field editor, and returns nil from `validRequestor(forSendType: .string,…)`. But that probe, like UX48's, could not create a live selection, so it measured the untouched control only; walking UX48 the same day the owner right-clicked a real mouse selection and got a working Copy, which falsifies the strong reading that nothing in this process can reach the words under the pointer. The row's own context menu remains the right affordance, and the owner independently confirmed why (the transcript line owns its own actions), but treat the programmatic-access claim as unproven rather than established. Walkthrough steps 2 and 3 were rewritten to match, and the closed hedge is now in `daemon/CLAUDE.md`. **Three calls the spec left open**, all recorded in the spec: the per-meeting fix is the default, "always" does **not** also write the overlay (an overlay laid over a term makes a dead rule look live), and `Clarify.substitute` mirrors `mp.glossary`'s `\b(<key>)\b` exactly, limitation included, so the safe option is a faithful preview of the other rather than something better. **Owner-owed:** the seven-step walkthrough at the end of the task file. Original filing: 2026-07-31 at the owner's request, off FEAT11's walkthrough friction: fixing a garble means leaving the transcript for Preferences, retyping the phrase from memory, and coming back to Re-transcribe. Owner's shape: select the words, get a Clarify option, type the intended text, save with an offer to re-transcribe. **This is FEAT11's own parked leg**, whose recorded constraint decides the design: "keep it a pre-fill, not an auto-write", which the current store cannot express because every `GlossaryStore` write is live. The same session produced the argument for that constraint: the same meeting contained "Venusaur", an invented word neither owner nor session could decode, and an auto-write would have made it a permanent global rule rewriting every future transcript. The real design question is that a per-meeting text fix (PIPE9's correction overlay, reversible, one meeting) and a global vocabulary rule (every transcript finalized from then on) have very different blast radii and must stay visibly distinct; the re-transcribe offer belongs on the rule path only, since an overlay needs no re-run. **Closed 2026-08-04 on the owner walkthrough**, steps 2 to 6 pass. **Clarify a word…** sits under **Edit text…** on the row menu, the sheet shows the line so the wrong words can be read straight off it, and the two choices are legible as different blast radii. Step 4, the Venusaur case and the one that matters most, was exercised deliberately: the owner dismissed without confirming and `glossary.toml` was byte-identical afterwards, so the walk-away really is a walk-away. **Fix this line only** wrote the per-meeting overlay and no vocabulary entry; **Always fix this** with the re-transcribe box ticked wrote the term and started the rebuild without asking a second time. Found while running it, filed as UX66 rather than folded in: a per-meeting overlay and a vocabulary rule that touch the same word fight, and the stale overlay wins silently. |
+
 ## Task specs
 
 **[DONE] C7 (P3): backstop-end corpus coverage.** Band origin: carried from Q4 with a changed scope. C6-FINISH (below) landed 20 real redacted dogfood traces (`teams_native_*` in the detection corpus) covering the three pure-engine endings real sessions actually produce, derived by `scripts/extract_detection_trace.py`. The one real ending the corpus structurally cannot cover is the idle-stop backstop: a lone ax-leave `.ended` with empty `confirmed_by` (~1/3 of real sessions) is force-ended by `IdleStopBackstop`, not `PromotionEngine`, and the replay harness (`DetectionCorpusTests`) only drives the pure engine. Scope: either extend the harness with a backstop-level end driver so a real backstop session replays, or accept the gap explicitly and close. Not correctness (the backstop path works in production); this is test-coverage completeness, so it pairs with T3.
@@ -2428,3 +2434,206 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 2. [owner] Open `20260727-103155`, the meeting from the report (7 voices, 3 unnamed), Transcript tab. Pass: every chip is fully readable, none is sliced mid-word, and counting the chips agrees with the "n of m other voices named" line above them.
 3. [owner] Narrow the window to its floor. Pass: the chips re-flow onto more rows and stay readable; nothing is cut off at any width.
 4. [owner] Say "UX51 good to close" (or what is wrong); [session] moves the row and the spec into `q6-final.md` and deletes this file.
+
+# [DONE] UX52: The detail view does not refresh when a re-transcribe finishes
+
+Band origin: filed 2026-07-31, owner-reported during FEAT11's walkthrough: "when re-transcribing, UI is not updated after it is ended. I need to switch between tabs to see new version. this something need fixing as well. and this is not the first issue, I need full assessment all over the app for this." Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+
+## Context
+
+A Re-transcribe completes correctly and writes a new transcript, and the open detail view keeps showing the old one. Switching to another tab and back reveals the new text, because the Library's centre column is an `if/else` on `scope` so a tab switch destroys the projection view and rebuilds it from disk (the same property `daemon/CLAUDE.md` documents as the reason run state must not live in that view).
+
+`MeetingLibraryService.retranscribeMeeting` (`Library/MeetingLibraryService.swift:305`) ends by logging `retranscribe_done` (`:334`), and nothing on that path bumps a store revision or otherwise tells the detail view its data changed. So the refresh depends entirely on the user performing an unrelated navigation.
+
+The owner confirmed the workaround works, which is what makes this a visibility defect rather than a data one: the re-transcribe itself is correct, verified the same day when FEAT11's vocabulary test showed "sitting environment" corrected to "staging environment" after a tab switch.
+
+**The owner's framing is the more important half and should not be dropped when this task is picked up:** "this is not the first issue, I need full assessment all over the app for this." A missing refresh is a class, not an incident. This task fixes the reported instance and is explicitly not the sweep; the sweep is `/audit`, offered to the owner on 2026-07-31 and theirs to trigger.
+
+## Scope
+
+Make the re-transcribe completion path publish a change the detail view observes, using whatever mechanism the Library already uses for the writes that *do* refresh correctly. Find that mechanism first rather than inventing one: several operations (rename, enroll, reassign, regenerate) already update the UI without a tab switch, so the correct shape exists in this codebase and the defect is that the re-transcribe path does not use it. Copying the working idiom is the fix; adding a second notification mechanism beside it is not.
+
+The chain to check while there, since re-transcribe touches more than the text: the transcript rows, the cast strip (a re-transcribe re-derives speaker clusters, so `TranscriptOverlayCarry` re-anchors both overlay sidecars and the strip's contents genuinely change), and the header's language and duration lines.
+
+## Explicitly not / out of scope
+
+**Not the app-wide sweep.** The owner asked for a full assessment and that is `/audit`'s job, owner-triggered. Fixing this instance must not turn into an unbounded refactor of every refresh path; anything else the pickup notices gets named here or filed, not fixed opportunistically.
+
+**Not the re-transcribe itself.** It works, and FEAT11's pass on 2026-07-31 depended on it working.
+
+**Not the tab-switch rebuild behaviour.** The centre column rebuilding on `scope` change is deliberate and load-bearing elsewhere; this task adds a refresh signal, it does not change how views are torn down.
+
+## Acceptance
+
+With a meeting's detail view open on the Transcript tab, a Re-transcribe started from its `...` menu updates the visible transcript when it completes, with no tab switch and no reopening. The cast strip above it reflects the re-derived clusters at the same moment.
+
+A test pins the notification rather than the rendering: completing a re-transcribe publishes the store change the detail view subscribes to. Pin it at the service level, since the window-server behaviour itself is not observable in a test.
+
+`cd daemon && swift build` and `swift test` green. No em-dashes in changed lines.
+
+## Owner walkthrough (for the session that picks this up)
+
+Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who acts.
+
+1. [session] `./scripts/rebuild.sh`, then tell the owner it is ready.
+2. [owner] Open any meeting, Transcript tab, and run **Re-transcribe...** from its `...` menu. **Stay on that tab and do not touch anything.** Pass: when it finishes, the transcript on screen becomes the new one on its own. Watching without navigating is the entire test, since a tab switch has always worked and is what hid this.
+3. [owner] Look at the cast strip above the transcript in the same moment. Pass: it reflects the re-derived voices too, rather than the previous run's.
+4. [owner] Say "UX52 good to close" (or what is wrong); [session] moves the row and the spec into `q6-final.md` and deletes this file.
+
+# [DONE] FEAT12: Add to Vocabulary from a transcript correction
+
+Band origin: filed 2026-07-29 (owner exploratory sweep, items 15/16; the invisible-capability inventory ranked this the highest-leverage missing bridge). Revisits the optional leg FEAT11 (shipped 2026-07-28) deliberately did not build; its scope note records why, and those reasons are honored below as constraints. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+
+## Context
+
+The Vocabulary teaches the transcriber recurring fixes, but the only way terms get in is a user remembering a garble, opening Preferences, and typing both sides from memory. The moment they actually know the pair is when they fix it in the transcript: the segment context menu's "Edit text..." (`TranscriptTab.swift:849-887`) writes a correction record with the original and edited text (`TranscriptCorrectionStore`), and that knowledge is then discarded. FEAT11's own vocabulary editor cannot benefit from the corrections the product already captures.
+
+FEAT11 skipped this leg for named reasons (backlog row, 2026-07-28): honoring "keep it a pre-fill, not an auto-write" needs an uncommitted-row concept in the store plus a word-diff over the edit, real complexity for a `may` leg. The owner's non-technical-use framing (2026-07-29) changes the value side of that trade, not the constraints: it stays a pre-fill, and the diff stays deliberately dumb.
+
+## Scope
+
+- A pure word-diff helper: given (original, edited) segment text, produce at most one candidate pair when the edit is a single-token or short-span replacement (case-insensitive compare, punctuation-tolerant), and bail (no candidate) on anything larger: multi-word rewrites, insertions, deletions, reordering. Bailing is a feature; a wrong vocabulary pair silently corrupts future transcripts.
+- The affordance: after a transcript text edit saves and the diff yields a candidate, offer "Add 'X' to Vocabulary as 'Y'..." in the edit flow's confirmation moment (and/or a standing "Add to Vocabulary..." item in the segment context menu that opens pre-filled from that segment's correction). Clicking opens the pre-filled pair with the scope defaulted to the meeting's workflow (fall back to global when the meeting has none); the user confirms; only then does `GlossaryStore` append. Nothing is ever written without the explicit confirm (FEAT11's honesty rule, restated as this task's hard constraint).
+- The pre-fill lands through the same `GlossaryStore` append path the editor uses (no second writer), and the editor shows the new row on next open.
+- Copy stays in the UX44 register (no "ASR").
+
+## Explicitly not in scope
+
+Auto-writing pairs from corrections, ever (rejected in FEAT11 and re-rejected here; recorded so pickup does not soften it). Mining historical corrections in batch to seed the vocabulary (a real idea, noted as an adjacency for the owner to commission separately; it has different consent and review needs). Fuzzy-match suggestions. Changing correction storage or `mp.glossary` semantics.
+
+## Acceptance
+
+Pure diff tests: single-token replacement yields the pair (with original casing preserved on the canonical side); a cased variant matches case-insensitively; punctuation-adjacent tokens tolerated; two-token span replacement yields the pair only when contiguous; insertions, deletions, and multi-span edits yield no candidate (each pinned).
+
+Flow tests: the affordance appears only when a candidate exists; confirming appends exactly one row to the right scope via the shared store path; cancelling writes nothing (store contents pinned unchanged).
+
+`cd daemon && swift build` and `swift test` green, 23 new tests. Repo dash guard green.
+
+Owner eyeball: fix a garbled product name in any transcript line; the offer names the exact pair; confirm; Preferences, Pipeline, Vocabulary shows it under the meeting's workflow; Re-transcribe that meeting and the garble is gone (the FEAT11 acceptance loop, now reachable in three clicks).
+
+## Shipped 2026-08-03
+
+Everything above the owner eyeball is done. `swift build` clean, `swift test` 2052 passing against a 2029 baseline measured on this branch, so the delta is +23; the figure this spec was filed with was two months stale, which is why the baseline was measured rather than quoted.
+
+**What landed.** `daemon/Sources/MeetingPipe/VocabularyCandidate.swift` is the pure half: `VocabularyCandidate.derive(original:edited:)` names at most one pair, and `VocabularyOffer.make` wraps it with the scope default. `TranscriptTab.saveCorrection` builds the offer after a line edit persists, the edit sheet's `onDismiss` hands it to a new `VocabularyOfferSheet`, and only that sheet's **Add** calls `GlossaryStore.addTerm(heard:canonical:workflow:)`, a new entry point that is the Preferences editor's own scope-then-mutate steps collapsed into one call.
+
+**How the diff decides.** Tokens are compared exactly; edge tokens of the changed run that differ only in case are then trimmed off it. That two-step is what keeps a re-capitalized neighbour ("the" to "The") from widening a one-word fix into a two-word pair, while still letting a pure capitalization fix stand when it is the whole edit. It refuses: unequal token counts (every insertion and deletion), a run longer than two tokens, a change split across two places, a same-words reorder, and a pair that trims to the same string on both sides (a punctuation-only tweak).
+
+**Both hard constraints held, and are pinned rather than asserted.** `VocabularyCandidateTests` (23 cases) covers every acceptance clause; `test_making_an_offer_writes_nothing` is the cancel case and pins the glossary file byte-for-byte, which states the pre-fill rule as a fact about the code rather than about the UI wiring. `test_confirming_preserves_the_knobs_the_editor_does_not_model` pins that `[fuzzy]` survives an add, which is the payoff for routing through `GlossaryStore` instead of writing a second time.
+
+**Two decisions the spec left open.**
+
+1. The affordance is the post-save sheet **only**, not the "and/or" standing context-menu item. The confirm moment is where both sides of the pair are known, so it is the leg that earns its complexity; the menu variant would need each row to know whether its segment carries a correction, which is plumbing the row does not have today. If the owner wants a second way in after living with this, it is a small follow-up rather than a rework.
+2. A pure capitalization fix counts as a pair. Keys are folded at match time and values are not, so "kubernetes" to "Kubernetes" is a substitution that actually does something to every future transcript, and refusing it would have been the surprising behaviour.
+
+**One race, named rather than fixed.** The sheet's confirm builds its own `GlossaryStore` so the document it merges into is read at confirm time. A Preferences window sitting open on the Vocabulary group mid-keystroke has a 500 ms debounce pending that would then write its own document over this one, costing the term (not the file). Closing that properly means shared ownership of the store, which is a larger change than this leg is worth; it is commented at the call site.
+
+## Owner walkthrough (for the session that picks this up)
+
+Every task gated on an owner action carries one (2026-07-30 rule). Walk the owner through it step by step; the owner does not read code. Steps are tagged [owner] / [session] by who acts.
+
+1. [session] Install the build so the Library has the new sheet: `./scripts/rebuild.sh` from the repo root.
+2. [owner] Open the Library, pick any meeting whose transcript contains a mangled product or person name, and open its **Transcript** tab. If nothing obvious is there, any single word will do: the check is about the mechanism, not about the word being genuinely wrong.
+3. [owner] Hover the line and click the pencil (or right-click and pick **Edit text…**). Change exactly **one** word, leaving the rest of the line alone, and press **Save**.
+4. [owner] A second sheet should appear, titled **Add to Vocabulary**, with the old spelling on the left and the new one on the right. Read both boxes: they must name the exact pair you just changed and nothing else. If a whole phrase shows up instead of the one word, stop and say so, because that is the diff being less dumb than it is supposed to be.
+5. [owner] Check the **Applies to** row. It should already read this meeting's workflow name. A meeting with no workflow shows the line "Applies to every meeting." instead, with no picker, which is also correct.
+6. [owner] Press **Cancel** the first time, on purpose. Nothing should have been written.
+7. [session] Confirm that: `grep -c . ~/.config/meeting-pipe/glossary.toml` before and after should match, or the file should still not exist if there were no terms. This is the honesty rule, checked once by hand.
+8. [owner] Repeat steps 3 and 4, and this time press **Add**.
+9. [owner] Open **Preferences ▸ Pipeline ▸ Vocabulary** and set **Applies to** to that meeting's workflow. The new pair should be listed there. Switching **Applies to** back to **Every meeting** should not show it, since it was scoped to the workflow.
+10. [owner] Back in the Library, run **Re-transcribe…** from that meeting's `...` menu. It costs no engine call and keeps the existing summary. When it finishes, the garbled word should be spelled correctly in the transcript, without your line edit being what fixed it.
+11. [session] If steps 4, 9, and 10 all hold, FEAT12 moves to done and its spec archives into `q6-final.md`. If step 4 named the wrong pair, that is a `VocabularyCandidate.derive` bug and the failing line pair belongs in a test before anything is changed.
+
+# [DONE] FEAT13: Clarify a misheard word where you find it, not in Preferences
+
+Band origin: filed 2026-07-31 at the owner's request, immediately after FEAT11's vocabulary walkthrough made the friction concrete: "I want to have an easy mechanism to 'clarify' things on the flight, not with 'Settings -> Pipeline'. I think it would be nice to select words with mouse, see automatically menu 'Clarify' or something, then enter the clarification, and save it with options to re-transcribe or whatever." Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+
+## Context
+
+FEAT11 shipped the vocabulary editor at Preferences ▸ Pipeline ▸ Vocabulary, and it works: on 2026-07-31 the owner added `sitting environment` to `staging environment`, ran Re-transcribe on `20260723-103118`, and the garble was gone. The friction is where the surface lives. A misheard word is discovered while reading a transcript, and fixing it means leaving the transcript, opening Preferences, finding the pane, retyping a phrase from memory, closing Preferences, and returning to run Re-transcribe.
+
+**This was anticipated and deliberately parked.** FEAT11's spec records it as not built: "the optional *add to vocabulary* pre-fill off PIPE9. Reason in the ToC row. If it is ever picked up, the constraint that decides its shape is the spec's own 'keep it a pre-fill, not an auto-write', which the current store cannot express (every write is live)." This task is that pickup, and the constraint is the most valuable thing carried forward.
+
+**The same session produced the argument for that constraint.** The meeting also contained the word "Venusaur", which the ASR invented and which neither the owner nor the session could decode ("Venusaur I cannot understand myself what was speaking about"). Under an auto-write, selecting it and clarifying would have written a permanent global rule rewriting every future transcript on a guess. Under a pre-fill, the owner saw it and walked away, which is what actually happened. A Clarify affordance that writes on confirm is the whole feature; one that writes on selection is a corpus hazard.
+
+The seam already exists on both sides. The transcript is already editable in place: `TranscriptTab` says "Click a line to edit or seek", and `TranscriptCorrectionStore` (PIPE9) persists a per-segment text overlay to `<stem>.transcript_corrections.json`. The vocabulary side is `GlossaryStore` over `glossary.toml` (FEAT11), whose resolution is mirrored by `mp.glossary` and pinned by a CI4 fixture.
+
+## The design question this task exists to answer
+
+**A per-meeting text fix and a global vocabulary rule are different things with different blast radii, and Clarify touches both.** Correcting one line changes one meeting and is trivially reversible. Adding a glossary term changes every transcript finalized from then on, including meetings not yet recorded. Collapsing them behind one button is the failure mode to avoid.
+
+The affordance should therefore offer both, visibly distinguished, in the register of "fix it here" versus "always fix this". Which of the two is the default, and whether "always" implies "here" as well, is the call to make at pickup and to record. A reasonable starting position, to be challenged rather than assumed: fixing here is the safe default because it is per-meeting and reversible, and promoting to a rule is the deliberate extra step.
+
+The re-transcribe offer the owner asked for ("save it with options to re-transcribe or whatever") belongs on the rule path only. A per-meeting text correction is already applied by the overlay and needs no re-run; a new glossary term only reaches existing transcripts through Re-transcribe, and that is exactly the confusion FEAT11's walkthrough had to warn against ("not Reprocess and not Re-summarize: both re-run over the transcript already on disk").
+
+## Scope
+
+A selection-driven Clarify affordance in the transcript that pre-fills a small editor with the selected text as the "as heard" side, takes the intended text, and offers the two destinations above. On the rule path, offer Re-transcribe for the current meeting once the term is saved.
+
+Nothing is written until the user confirms. The FEAT11 note that "the current store cannot express" a pre-fill is the real work here: `GlossaryStore`'s writes are live, so a staged, uncommitted entry either needs the store to grow that concept or needs the editor to hold the pair until confirm and write once. Prefer the latter if it keeps the store simpler, since a store with a draft state is a store two surfaces can disagree about.
+
+## Explicitly not / out of scope
+
+**Not an auto-write on selection**, and not a "learn from my corrections" inference. FEAT11 already parked corpus mining ("auto-suggested glossary terms from the corrections corpus") and the Venusaur case above is the argument against inferring rules from garbles.
+
+**Not a replacement for the Preferences editor.** That surface stays: it is where the whole table is reviewed, edited and pruned, which a per-selection affordance cannot do.
+
+**Not fuzzy matching or per-workflow scoping changes.** `[fuzzy]` and the per-workflow term tables are FEAT11's and are unchanged; a term added here goes global unless the editor offers the existing scope choice, which it may.
+
+**Not speaker naming.** The cast strip's chips are their own affordance (UX40) and are not folded in.
+
+## Acceptance
+
+Selecting text in a transcript row offers Clarify. Choosing it opens an editor pre-filled with the selection, and **nothing is persisted until confirm**: a test pins that opening and dismissing the editor leaves both `glossary.toml` and `<stem>.transcript_corrections.json` byte-identical.
+
+The two destinations are distinguishable in the UI and in the tests: confirming the per-meeting fix writes only the correction overlay; confirming the rule writes only the glossary term (or both, if that is the recorded decision), and the rule path offers Re-transcribe while the per-meeting path does not.
+
+A term added through Clarify resolves identically to one typed in Preferences, so the CI4 `glossary-golden.json` fixture and `mp.glossary` still agree; regenerate the fixture if the writer changes (`cd pipeline && uv run python ../scripts/gen_contract_fixtures.py`).
+
+`cd daemon && swift build` and `swift test` green. `python3 scripts/truth_fences.py both` green. No em-dashes in changed lines.
+
+## Shipped 2026-08-04
+
+Everything above the owner walkthrough is done. `cd daemon && swift build` clean, `swift test` green with 22 new tests (`ClarifyTests`), `python3 scripts/truth_fences.py both` green, no em-dash in any changed line. The CI4 `glossary-golden.json` fixture was **not** regenerated and did not need to be: the glossary writer is untouched, this task's rule path calls FEAT12's existing `GlossaryStore.addTerm`, and `CI4ContractFixtureTests` passes as it stood.
+
+**What landed.** `daemon/Sources/MeetingPipe/Clarify.swift` is the pure half: `Clarify.Destination` (the two blast radii plus their copy), `Clarify.Plan` (one case per destination), `Clarify.plan(…)`, and `Clarify.substitute`. `ClarifySheet.swift` renders it. `TranscriptTab`'s row context menu gained **Clarify a word…** directly under **Edit text…**, and the host gained a `clarifyTarget` sheet plus `applyClarify`, which routes each plan to exactly one writer.
+
+### The entry point is not the one the spec asked for, because that one cannot fire
+
+The spec's shape was "select words with the mouse, get a Clarify option". **Measured first, per the pickup instruction, and it is not available on this stack.** An on-screen `NSWindow` probe hosting `Text(…).textSelection(.enabled)` (extending UX48's offscreen one) reports that SwiftUI's `SelectionTextField`:
+
+- answers `acceptsFirstResponder` **false**, and `makeFirstResponder(field)` leaves the **window** as first responder;
+- engages **no field editor** (`window.fieldEditor(false, for:)` is nil);
+- returns **nil** from `validRequestor(forSendType: .string, returnType: nil)`, before and after a `selectAll`.
+
+That closes UX48's own hedge from the other side. Its escape route was that a selectable `NSTextField` conventionally engages the window's field editor, which *is* an `NSTextView` with the standard text menu, so a right-click after selecting might find what a right-click before selecting does not. No field editor is ever engaged, so there is nothing to find, and there is no `NSServicesMenuRequestor` to hand the selection over either. SwiftUI owns the selection privately in a `PlatformViewRepresentableAdaptor<SelectionOverlay>` and exposes no accessor on the macOS 14 floor.
+
+**One workaround was considered and rejected rather than shipped.** Since UX48 installed a main menu whose Copy has a nil target, `NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)` plausibly *would* put the live selection on the general pasteboard, and the sheet could read it, verify it occurs in this line, and restore the pasteboard afterwards. It was turned down: it puts the owner's clipboard at risk (a restore cannot faithfully rebuild lazily-provided or custom types) to save typing one word, it is untestable, and it depends on private behaviour that an OS update can change silently. If the owner wants it after living with the shipped shape, it is a small follow-up with a stated cost, not a thing to have guessed at now.
+
+So the affordance is the transcript row's own `.contextMenu`, which is proven to open over transcript text (it is where **Edit text…** and **Assign to…** already live). Walkthrough steps 2 and 3 below are rewritten to match; the durable measurement is recorded in `daemon/CLAUDE.md` so no later session re-derives it.
+
+### The three calls the spec left open
+
+1. **The per-meeting fix is the default.** The spec's own starting position, adopted rather than overturned: it is the reversible, one-meeting option, and promoting to a rule should cost a deliberate second click.
+2. **"Always" does not imply "here".** The rule path writes the term and **only** the term. Writing the overlay alongside was rejected for a reason worth keeping: an overlay laid over a term makes a rule that never matched look like it worked, so the owner would have no way to tell a live term from a dead one. It also keeps each choice one-to-one with one write, which is the honesty the whole task is about, and keeps FEAT12's shipped sheet copy true rather than contradicted.
+3. **Re-transcribe is a tick box inside the sheet, on the rule path only, defaulting off.** The owner asked to "save it with options to re-transcribe", and pre-registering the choice beats a second modal after the fact. Its presence is itself the visible discriminator between the two paths. Off by default because a rebuild spends minutes of the Mac's time, and a sheet that starts a job nobody asked for is the same class of surprise as a rule written without a confirm. There is no second confirmation once it is ticked: the tick was the ask, and re-asking is the friction this task exists to remove.
+
+### Two smaller decisions
+
+`Clarify.substitute` deliberately mirrors `mp.glossary`'s `\b(<key>)\b` case-insensitive, every-occurrence substitution (`glossary.py:70`), **including its limitation** that a term ending in punctuation ("c++") anchors nowhere and matches nothing. `test_wording_ending_in_punctuation_matches_nothing_here_or_in_the_pipeline` pins that on purpose: making the line path cleverer than the rule path would mean "Fix this line only" fixing a line that "Always fix this" could never fix, which is exactly the confusion between the two blast radii the task exists to prevent. The line path also refuses a substitution that would not change the line, so Clarify cannot write a no-op overlay entry that later shows up in a re-transcribe's carry report as work to preserve.
+
+`LibraryDialogs.reportRetranscribe` is the re-transcribe result dialog, promoted out of `MeetingDetailView+Header`'s private scope because this task gave it a second caller. A carry that dropped an override has to read the same wherever the rebuild was started from, and a private copy per caller is how the Trash confirm came to be worded two different ways for the same action.
+
+**One thing deliberately not done:** no new event action. A Clarify-driven write emits the same `transcript_correction` / `vocabulary_term_added` events the other surfaces do, because it is literally the same write through the same store; a Clarify-specific action would have been a second name for one thing.
+
+## Owner walkthrough (for the session that picks this up)
+
+Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who acts.
+
+1. [session] `./scripts/rebuild.sh`, then tell the owner it is ready.
+2. [owner] Open a transcript and **right-click** a line with a misheard word in it. Pass: **Clarify a word…** is there, directly under **Edit text…**. (It is a right-click and not a mouse selection, and that is not a shortcut taken: the app cannot see what you selected. The measurement is above.)
+3. [owner] Open it and read what it offers. Pass: the line you right-clicked is shown at the top so you can read the wrong words straight off it, and it is obvious which choice changes only this meeting and which changes every future transcript. **Judge that wording as writing**: it is the only thing standing between a one-line fix and a permanent rule.
+4. [owner] Dismiss it without confirming, then check Preferences ▸ Pipeline ▸ Vocabulary. Pass: nothing was added. This is the step that matters most, and the reason it exists is Venusaur: a garble you cannot decode must be walk-away-able.
+5. [owner] Now do it for real on a word you are sure about, choosing the per-meeting fix. Pass: that line reads correctly and no vocabulary entry appeared.
+6. [owner] Do it again, this time choosing **Always fix this**, and tick **Re-transcribe this meeting afterwards** before pressing the button (it starts off, on purpose). Pass: the term is in Preferences ▸ Pipeline ▸ Vocabulary, the rebuild runs on its own without asking a second time, and the meeting comes back corrected. If a text edit of yours could not be re-anchored the report says how many were dropped, which is expected behaviour rather than a fault.
+7. [owner] Say "FEAT13 good to close" (or what is wrong); [session] moves the row and the spec into `q6-final.md` and deletes this file.
