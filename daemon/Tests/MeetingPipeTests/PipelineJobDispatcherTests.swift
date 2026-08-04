@@ -30,6 +30,7 @@ final class PipelineJobDispatcherTests: XCTestCase {
     private var done: [(stem: String, dir: URL, page: URL?)] = []
     private var errors: [String] = []
     private var depths: [Int] = []
+    private var progressEnded = 0
 
     override func setUp() {
         super.setUp()
@@ -37,11 +38,13 @@ final class PipelineJobDispatcherTests: XCTestCase {
         done = []
         errors = []
         depths = []
+        progressEnded = 0
         dispatcher = PipelineJobDispatcher(
             sinkDispatcher: sink,
             onDone: { [unowned self] stem, dir, page in self.done.append((stem, dir, page)) },
             onError: { [unowned self] message in self.errors.append(message) },
-            onQueueDepth: { [unowned self] depth in self.depths.append(depth) }
+            onQueueDepth: { [unowned self] depth in self.depths.append(depth) },
+            onProgressEnded: { [unowned self] in self.progressEnded += 1 }
         )
     }
 
@@ -117,6 +120,16 @@ final class PipelineJobDispatcherTests: XCTestCase {
         )
         XCTAssertTrue(errors.isEmpty, "a deliberate Cancel is not an error to report")
         XCTAssertTrue(done.isEmpty)
+    }
+
+    /// ...and the row's live entry ends anyway. The clear is wired straight from
+    /// the queue rather than through `route`, which returns early for exactly the
+    /// completions nothing is told about, so a silent completion used to be a
+    /// silent row too: frozen on its last heartbeat in the In progress section.
+    func test_the_live_progress_entry_clear_is_forwarded() {
+        sink.onActiveProgressEnded?()
+        XCTAssertEqual(progressEnded, 1)
+        XCTAssertTrue(errors.isEmpty, "ending the entry is not a report")
     }
 
     /// The guard is on the cancellation, not on the exit code: an `mp` that

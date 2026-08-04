@@ -282,7 +282,9 @@ final class Coordinator: NSObject {
             sinkDispatcher: sinkDispatcher,
             onDone: { [weak self] stem, recordingsDir, pageURL in
                 guard let self = self else { return }
-                self.libraryModel.activeProcessing = nil
+                // The row's live entry is not cleared here: `onProgressEnded`
+                // below is its one owner, because it fires on every completion
+                // path and this one does not (UX50).
                 // ADR 0016 / MIC13 / STOR1: keep the originals folder and the raw/
                 // library bounded through a long-running session, not only at
                 // launch. Runs on every completion path below (including the
@@ -313,7 +315,6 @@ final class Coordinator: NSObject {
                 )
             },
             onError: { [weak self] message in
-                self?.libraryModel.activeProcessing = nil
                 self?.notifier.notifyError(message)
             },
             onQueueDepth: { [weak self] depth in self?.statusBar.setProcessingCount(depth) },
@@ -326,6 +327,15 @@ final class Coordinator: NSObject {
                     elapsedSec: progress.elapsedSec,
                     stalled: false
                 )
+            },
+            // UX50: the one clear, fired by the queue when the job lands however
+            // it landed. It used to ride the done and error surfaces instead, so
+            // the completions those two deliberately say nothing about (a Cancel,
+            // and a library re-run that reports itself) left the row frozen on
+            // its last heartbeat, in the In progress section, past the end of the
+            // window it was started from.
+            onProgressEnded: { [weak self] in
+                self?.libraryModel.activeProcessing = nil
             },
             onStalled: { [weak self] stem in
                 guard let self = self else { return }

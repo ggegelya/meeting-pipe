@@ -46,6 +46,7 @@ final class PipelineJobDispatcher: LibraryRunLane {
     private let onError: (String) -> Void
     private let onQueueDepth: (Int) -> Void
     private let onProgress: (_ stem: String, _ progress: PipelineProgress) -> Void
+    private let onProgressEnded: () -> Void
     private let onStalled: (_ stem: String) -> Void
     private let onPending: ([QueuedJob]) -> Void
     private let onLibraryRun: (LibraryRun?) -> Void
@@ -56,6 +57,7 @@ final class PipelineJobDispatcher: LibraryRunLane {
         onError: @escaping (String) -> Void,
         onQueueDepth: @escaping (Int) -> Void,
         onProgress: @escaping (_ stem: String, _ progress: PipelineProgress) -> Void = { _, _ in },
+        onProgressEnded: @escaping () -> Void = {},
         onStalled: @escaping (_ stem: String) -> Void = { _ in },
         onPending: @escaping ([QueuedJob]) -> Void = { _ in },
         onLibraryRun: @escaping (LibraryRun?) -> Void = { _ in }
@@ -65,6 +67,7 @@ final class PipelineJobDispatcher: LibraryRunLane {
         self.onError = onError
         self.onQueueDepth = onQueueDepth
         self.onProgress = onProgress
+        self.onProgressEnded = onProgressEnded
         self.onStalled = onStalled
         self.onPending = onPending
         self.onLibraryRun = onLibraryRun
@@ -82,6 +85,13 @@ final class PipelineJobDispatcher: LibraryRunLane {
         }
         sinkDispatcher.onActiveProgress = { [weak self] stem, progress in
             self?.onProgress(stem, progress)
+        }
+        // UX50: not routed through `route` below, deliberately. That method
+        // decides what to *tell* the user about a completion and returns early
+        // for the two kinds it tells them nothing about; the row's live entry has
+        // to end either way.
+        sinkDispatcher.onActiveProgressEnded = { [weak self] in
+            self?.onProgressEnded()
         }
         sinkDispatcher.onActiveStalled = { [weak self] stem in
             self?.onStalled(stem)

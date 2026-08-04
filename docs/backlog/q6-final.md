@@ -157,6 +157,8 @@
 
 | DIAR2 | Diarization + segmentation quality | Transcription | done | P1 | Closed 2026-08-04. Leg (b) shipped 2026-07-17 (`SegmentBuilder.coalesce`). Leg (a)'s owner-owed threshold sweep is what closed here, and it produced a verdict rather than needing another round: **`diarization_clustering_threshold` is now 0.55 by measurement**, changed from 0.65 in `ConfigDefaults` with README, `config.example.toml` and the DIAR3 picker's default-position test following. **What the corpus says.** Over 35 meetings of 5 minutes or more, the median number of voices the diarizer separates per meeting went **3 at 0.7, 4 at 0.65, and 9 at 0.55**, so the under-clustering behind the original five-people-in-one-voice defect is gone as a systemic condition. The cost side measured at **zero**: across all 14 hand-corrected meetings, at every threshold, the owner never once named two clusters as the same person, which is exactly what over-splitting would look like on disk, so the walkthrough's step-4 trigger to step back up never fired. The DIAR3 re-transcribe of `20260727-103155` at 0.55 needed **no segment corrections at all**, only a name for the newly separated cluster. **Where it stops, which is the more useful half.** The merge is reduced, not eliminated, and the residue is **not threshold-reachable**, which is why the answer is successors rather than another step down. At 0.55 `20260803-103042` **over-splits and merges simultaneously** (9 clusters, three holding under 5 s of speech, while `THEM-A` still held 4+ people across 3.9 min); a single global distance cut doing both at once is what having no room left looks like, and only 0.05 of range remains. Filed as **DIAR4** (spike, the `OfflineDiarizerManager` migration, which is what DIAR2's own step 5 pre-registered for this outcome), carrying the segment-internal speaker change at 2:01 in `20260727-103155` that no threshold can reach by construction. **A second merge source turned up mid-sweep and is the bigger finding**, filed as **DIAR5** (P1): `summarization.diarize_cleanup` first ran on real meetings on 2026-08-04, and on the 11-person standup `20260804-103026` it relabelled 25 of 81 segments, taking the meeting from the 12 labels the embeddings sidecar records at finalize down to 7, after which the owner hand-corrected 21 segments (36.6% misattributed, three merged clusters). It merges on `[i] Label: text` with no audio and no embeddings, so it is structurally unable to tell two people apart, and it sits directly downstream of the separation this sweep just bought. **Measurement caveat worth carrying:** 2 of the 9 rows `--der` prints under MERGED CLUSTERS are `speaker_unknown`, which is the unattributed catch-all rather than a cluster, so a merge there is true by construction and should not be counted as a diarizer defect. Verified: `swift build` clean, `swift test` **2320 tests, 0 failures**, `truth_fences.py both` OK on both fences. Both earlier rejections stand and were not re-litigated (`speakerManager.reset()` removal, and `stepRatio` as an offline-only lever). |
 
+| UX50 | A cancelled pipeline is reported to the user as a failure | UX | done | P2 | Shipped 2026-08-04; both halves landed and the status is the walkthrough only. The cancel intent now rides from the click to the termination handler on a **per-run** handle (`PipelineRunSlots`, lifted out of the launcher so the binding is testable without racing a signal against a real subprocess), so a killed run completes as `LaunchError.cancelled` rather than `nonZeroExit(15, <whatever was last on stderr>)`. The retryable modelling is untouched, which was the deliberate part: the job still completes as a failure and still writes a marker, but as PIPE3's `.interrupted` stage reading "You cancelled this run. Reprocess to run it again." Nothing reports it: no `pipeline_failed`, no error banner, no notification. The Library's one Cancel reaches four legs, not one, since UX28 put the re-summarize and publish re-runs in run-all's retain slot, so `SinkDispatcher`, `PipelineJobDispatcher`, and `MeetingLibraryService`'s regenerate / republish / ask branches all ask `PipelineLauncher.isCancellation` first; the ask leg stops double-logging `ask_failed` over the `ask_cancelled` its own click already wrote. Secondary half taken: `nonZeroExit`'s second value is now a caption from `failureCaption(stderr:)` (last `ERROR`/`CRITICAL` line, else last `WARNING`, else today's tail), so a genuine failure quotes the pipeline's own error rather than the last INFO line; LOCAL16's `.memory` staging survives it because `orchestrate` reports through `log.exception`. Suite green, 25 new tests; `truth_fences.py both` green. **Owner-owed:** the walkthrough at the end of the spec, whose live legs are a Cancel on a long Reprocess showing no error at all and the row still retrying, and the same in Ask. **Walkthrough run 2026-08-04, split verdict: the filed bug is gone and a second one is now visible underneath it. Does not close.** Verified from the log and the sidecar rather than the screen, on a real Cancel of a full re-run of `20260716-163031` at 13:04:55Z: `pipeline_cancelled` fired, **`pipeline_failed` did not**, no `mp` process was left running, no banner or notification appeared, and the terminal marker is exactly the shape decision 1 argued for (`stage: interrupted`, `reason: You cancelled this run. Reprocess to run it again.`). So `Pipeline failed: pipeline exited 15`, the whole reason this task exists, is gone, and the retryable modelling survived. **What fails is the other half of step 2, that the row returns to normal.** The row froze at **Cleaning up 0:20** in the In progress section and did **not** clear, including across a close and reopen of the Library, so it is not the projection being stale. The owner's screenshots contain the discriminator: the toolbar read **Idle** while that row still read **Cleaning up**, so the job lane cleared correctly and a **per-row progress entry did not**, and it outlives the window because the view does not own it. `Cleaning up` is the `diarize_cleanup` phase label (`MeetingRow.swift:396`), so the row is rendering the last phase the pipeline reported before the kill, with nothing on the cancel path clearing it. Distinct from UX52 and UX53's class, which is a view failing to re-read correct disk state; here the disk state is correct and a live in-memory entry is wrong. **Second finding, unmeasured:** Cancel is not offered immediately after Reprocess and appears only some time later, so there is a window in which a running job cannot be stopped; the owner reported it but its length was not measured. Steps 3 and 4 (re-Reprocess after a cancel, and cancelling an Ask) were not reached. **Second pass 2026-08-04: the walkthrough's remaining defect is fixed and the task closes.** The stuck row was neither the projection nor a missing reload key. The row's live progress entry was cleared by the *reporting* of a completion (the Coordinator's `onDone` / `onError`), while `PipelineJobDispatcher.route` returns early for exactly the two completions this app deliberately reports nothing about, a cancel and a library re-run, so UX50's own quieting took the clear away with the alarm and a cancelled run-all was left rendering its last heartbeat. `SinkDispatcher.onActiveProgressEnded` is the one clear now, fired from `completeActiveJob` on every path, beside UX28's busy-chip clear and for the reason that comment already gave; the done and error closures no longer touch `activeProcessing`. 5 new tests (4 in `SinkDispatcherTests`, 1 in `PipelineJobDispatcherTests`), and the four `SinkDispatcher` ones were each run red against the fix removed before it went in. `swift build` clean, `swift test` green at 2325, `python3 scripts/truth_fences.py both` green. **The second finding is measured, and it is a different defect.** From the owner's own run: Reprocess clicked 13:03:39.998Z, FluidAudio ASR 13:03:40.034 to 13:04:32.574 (52.5 s), `mp run-all` up at 13:04:33.553, first `stage_progress` beat at 13:04:38.629, so **Cancel first appears 58.6 s after the click**. About 52.5 s of that is the daemon's own transcription, where there is no subprocess to signal and Cancel would be a dead control (`cancelActiveRun` has nothing retained yet), so covering it needs a cancellation seam in `TranscriptionRunner` rather than a presentation change; the remaining ~6 s is fixed cost, process start plus one 5 s heartbeat interval. Proposed as its own task at the end of the archived spec rather than widened into this one. The same log confirms the frozen label exactly: `Cleaning up 0:20` is beat 4 (`elapsed_s: 20`, 13:04:53.867Z), the last heartbeat before the 13:04:55.321Z kill. **Steps 3 and 4 close without a second walkthrough.** Step 3's blocker *was* this bug, since a row stuck in the In progress block disables Republish, Regenerate, Export and Move to Trash on that meeting, and what it checked, that a cancel leaves the row usable, is now pinned by the entry-clears tests beside the existing interrupted-marker and lane-drains ones. Step 4 does not share the seam at all: `AskModel.cancel` closes its own run out synchronously and the run-id guard drops the late completion, which five `AskModelTests` already pin. |
+
 ## Task specs
 
 **[DONE] C7 (P3): backstop-end corpus coverage.** Band origin: carried from Q4 with a changed scope. C6-FINISH (below) landed 20 real redacted dogfood traces (`teams_native_*` in the detection corpus) covering the three pure-engine endings real sessions actually produce, derived by `scripts/extract_detection_trace.py`. The one real ending the corpus structurally cannot cover is the idle-stop backstop: a lone ax-leave `.ended` with empty `confirmed_by` (~1/3 of real sessions) is force-ended by `IdleStopBackstop`, not `PromotionEngine`, and the replay harness (`DetectionCorpusTests`) only drives the pure engine. Scope: either extend the harness with a backstop-level end driver so a real backstop session replays, or accept the gap explicitly and close. Not correctness (the backstop path works in production); this is test-coverage completeness, so it pairs with T3.
@@ -3257,3 +3259,140 @@ The sweep the "Owner-owed" note above reserved was run against the real corpus, 
 **One caveat about the instrument itself.** Two of the nine rows `--der` printed under MERGED CLUSTERS are `speaker_unknown`, which is the unattributed catch-all bucket rather than a diarization cluster; a "merge" there is true by construction. Read that line with those rows excluded, or the metric over-reports.
 
 **Not re-litigated:** removing `speakerManager.reset()` and the `stepRatio` dial. Both were rejected by measurement above and nothing in this sweep disturbs either.
+
+# [DONE] UX50: A cancelled pipeline is reported to the user as a failure
+
+Band origin: filed 2026-07-31, surfaced the first time UX28's Cancel was exercised against a job long enough to still be running when the click landed. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+
+## Context
+
+Cancelling a healthy pipeline job works: it stops, the row returns to normal, and both events fire. It then tells the owner this:
+
+```
+Pipeline failed: pipeline exited 15:
+2026-07-31 18:31:05,602 INFO mp.workflow:
+Workflow overlay applied (Personal): team_context, sinks=filesystem...
+```
+
+Two separate wrongs in one message, from a deliberate user action.
+
+**Exit 15 is SIGTERM, which is the signal this app just sent itself.** `cancelActiveJob` calls `launcher.cancelActiveRun()` (`SinkDispatcher.swift:453-457`), which calls `terminate(proc, what: "pipeline run")` (`PipelineLauncher.swift:353-355`). The process termination handler then reports every non-zero exit identically: `completion(.failure(LaunchError.nonZeroExit(proc.terminationStatus, tail)))` (`:947`). Nothing carries the fact that the kill was requested, so a cancellation is indistinguishable from a crash by the time it reaches the UI, and `SinkDispatcher.stage(for:)` classifies it as a generic `.pipeline` failure because 15 is not the one exit code it recognises (3, the publish contract).
+
+**The caption is an unrelated INFO line.** `errorDescription` renders `"pipeline exited \(code): \(tail)"` (`:305`) where `tail` is the stderr tail. A process killed mid-run has no error on stderr, so the tail is simply whatever it last logged, here a routine `INFO mp.workflow: Workflow overlay applied (Personal)`. The user is shown a log line that describes a success as though it were the reason for a failure. This half is not cancel-specific: any failure whose real error is not the last thing written can be captioned with something irrelevant.
+
+**Modelling a cancelled job as a failure internally is deliberate and should stay.** `SinkDispatcher.swift:450-452` says why: "The launcher terminates it; the termination handler then completes the job as a failure (so the row becomes retryable)." Retryability is the right outcome. The defect is only that the user-facing surfaces cannot tell the two apart, so a deliberate action produces an alarming error.
+
+Evidence from the event log, 2026-07-31, in order (a Reprocess of `20260720-163134`, a 68-minute meeting, plus a duplicate Reprocess):
+
+```
+15:31:02  pipeline_queued     queue_depth: 2
+15:31:07  pipeline_dequeued   queue_depth: 1
+15:31:15  pipeline_cancelled
+15:31:15  pipeline_failed     error: "pipeline exited 15: ... INFO mp.workflow: ..."
+```
+
+`pipeline_cancelled` and `pipeline_failed` fire for the same event, one after the other. The log already knows it was a cancellation; only the presentation does not.
+
+## Scope
+
+Carry the intent from `cancelActiveRun()` to the termination handler, so a job the app killed completes as cancelled rather than failed.
+
+The seam is `PipelineLauncher`: `cancelActiveRun()` sets a flag against the run it is terminating, and the termination handler consults it before constructing the error, returning a distinct `LaunchError.cancelled` (or an equivalent result case) rather than `nonZeroExit`. `SinkDispatcher` then completes the job retryable exactly as it does today, but without emitting `pipeline_failed` and without raising the error banner or the failure notification. The flag must be per-run rather than a bare boolean on the launcher, or a cancel racing a natural exit will mislabel the next run.
+
+`cancelAsk()` (UX37) is the sibling path and takes the same treatment: an ask the owner stopped should not report itself as a failed ask. Check it in the same pass rather than fixing one and leaving the other, since the two were deliberately separated (`PipelineLauncher.swift:75`) and will drift.
+
+Secondary, in the same pass: `nonZeroExit`'s caption should prefer a real error over the last line written. Selecting the last line at `ERROR`/`WARNING` level when one exists, and falling back to the tail only when none does, would keep genuine failures legible without inventing structure the pipeline does not emit.
+
+## Explicitly not / out of scope
+
+**Do not stop treating a cancelled job as retryable.** That behaviour is deliberate and the row must stay actionable after a cancel.
+
+**Not a change to the cancel mechanism.** SIGTERM is the right way to stop the subprocess and it works; only the reporting of its outcome changes.
+
+**Not the `pipeline_cancelled` / `pipeline_dequeued` events.** Both fire correctly and are what proved this. `pipeline_failed` firing for the same cancellation is what stops.
+
+**Not the exit-3 publish contract.** `publishFailedExitCode` handling is untouched, and the new case must not collide with it.
+
+## Acceptance
+
+`PipelineLauncherTests` pin that a run terminated through `cancelActiveRun()` completes with the cancelled case rather than `nonZeroExit`, and that a subprocess exiting non-zero on its own still yields `nonZeroExit` with its tail. A cancel that lands after a run has already exited naturally does not mislabel the following run (the per-run flag, not a launcher-wide one).
+
+`SinkDispatcherTests` pin that a cancelled job emits `pipeline_cancelled` and **not** `pipeline_failed`, and that the row is still retryable afterwards.
+
+The caption change, if taken: a stderr transcript whose last line is INFO but which contains an ERROR line earlier is captioned with the ERROR line; a transcript with no ERROR or WARNING keeps today's tail behaviour.
+
+`cd daemon && swift build` and `swift test` green. `python3 scripts/truth_fences.py both` green. No em-dashes in changed lines.
+
+## What shipped (2026-08-04)
+
+Both halves. The line numbers quoted in Context are from the filing and have moved since; the seams are named below instead.
+
+The cancel intent rides from the click to the termination handler on a per-run handle. `PipelineRunSlots` (in `PipelineLauncher.swift`) now owns both retain slots and the flag on each: `markCancelled(.run)` sets the flag and hands back the handle to signal, `retain` mints a fresh handle per spawn, and `release` is identity-checked so a late clear from a superseded run cannot blind the Cancel aimed at its successor. It is its own type for the reason the spec asks for a per-run flag at all: neither UX37's two-slot split nor this one is observable through a real spawn, so the bookkeeping had to be somewhere a test can drive it without racing a signal against a subprocess. The termination handler then calls the pure `PipelineLauncher.outcome(status:cancelled:stderr:)`, which returns `LaunchError.cancelled` for a killed run, keeps `nonZeroExit` for a genuine one, and treats exit 0 as a success even when a cancel was asked for (the work is done and on disk).
+
+The retryable modelling is untouched, deliberately. A cancelled job still completes as a failure, and `SinkDispatcher` still writes a marker; only the stage and the reason changed, to PIPE3's `.interrupted` and "You cancelled this run. Reprocess to run it again." Dropping the marker was considered and rejected: without a terminal sidecar the row sits in Processing with nothing running and then ages into a `.failed` naming no reason at all, which is the bug class the empty-recording defect already taught this repo.
+
+The Library's one Cancel reaches four legs, not the one the spec names, because UX28 put the re-summarize and publish re-runs in run-all's retain slot. All four ask `PipelineLauncher.isCancellation(err)` first: `SinkDispatcher.invokePipeline` (no `pipeline_failed`), `PipelineJobDispatcher.route` (no banner, no notification), and `MeetingLibraryService`'s regenerate and republish branches (no `regenerate_failed` / `republish_failed`, no banner, and no failure sidecar, since a cancelled re-run leaves the summary the meeting already had exactly where it was). The ask leg is the fifth: `askMeetings` no longer logs `ask_failed` over the `ask_cancelled` its own click already wrote.
+
+Secondary half taken. `nonZeroExit`'s second value is a caption rather than the raw tail, picked by the pure `failureCaption(stderr:)`: the last `ERROR` or `CRITICAL` line, else the last `WARNING`, else today's whole tail, with the level read as a formatter field among a line's first three rather than as a word anywhere in it. LOCAL16's `.memory` staging rides on the marker surviving that selection and does, because `orchestrate` reports the fault through `log.exception`, which puts the marker on an `ERROR` line; a test pins that specifically.
+
+Suite green, 25 new tests across `PipelineLauncherTests`, `SinkDispatcherTests`, `PipelineJobDispatcherTests`, and `MeetingLibraryServiceTests`. `python3 scripts/truth_fences.py both` green; no new config keys and no new event categories (one emission removed on one branch, nothing added).
+
+
+## Walkthrough findings, 2026-08-04 (read this before re-deriving anything)
+
+The owner ran the walkthrough and the filed bug is **fixed**. Do not re-fix it. What follows is measured, not inferred.
+
+**Verified working**, from the event log and the sidecar rather than the screen, on a real Cancel of a full re-run of `20260716-163031` at 13:04:55Z: `pipeline_cancelled` fired, **`pipeline_failed` did not**, no `mp` process was left running, no banner or notification appeared, and the terminal marker is exactly what decision 1 argued for:
+
+```json
+{"stage": "interrupted", "reason": "You cancelled this run. Reprocess to run it again.", "ts": "2026-08-04T13:04:55Z"}
+```
+
+**The remaining defect is a stuck per-row progress entry.** Step 2 also requires that the row returns to normal, and it does not: it froze at **Cleaning up 0:20** in the In progress section and stayed there across a close and reopen of the Library.
+
+**The discriminator, from the owner's screenshots, and the reason this is not UX52 or UX53's class:** the toolbar read **Idle** while that same row read **Cleaning up**. So the job lane cleared correctly and a per-row progress entry did not, and it survives a window close because the view does not own it. UX52 and UX53's class is a view failing to re-read correct disk state, and navigating fixes those; here the disk state is already correct, navigating does **not** fix it, and a live in-memory entry is wrong. Look for what writes the row's phase, not for a missing reload key.
+
+`Cleaning up` is the `diarize_cleanup` phase label (`MeetingRow.swift:396`), so the row is rendering the last phase the pipeline reported before the kill.
+
+**Second finding, unmeasured:** Cancel is not offered immediately after Reprocess and appears only some time later, so there is a window in which a running job cannot be stopped. The owner reported it; its length was not measured. Measure it before deciding whether it is one defect or two.
+
+**Not reached:** step 3 (re-Reprocess after a cancel) and step 4 (cancelling an Ask). Both still owed.
+
+## Owner walkthrough (for the session that picks this up)
+
+Per the 2026-07-30 standing rule: every task gated on an owner action carries one. Walk the owner through it step by step; the owner does not read code. Steps are tagged [owner] / [session] by who acts.
+
+1. [session] `./scripts/rebuild.sh`, then tell the owner it is ready.
+2. [owner] Reprocess a long meeting (`20260716-163031` is 110 minutes, so there is no time pressure) and click **Cancel** on the row. Pass: the job stops, the row returns to normal and is still retryable, and **no error appears at all**, neither a banner nor a notification. The alarming "Pipeline failed: pipeline exited 15" message is the whole bug and its absence is the test.
+3. [owner] Click **Reprocess** on that same row again. Pass: it runs normally, which confirms cancelling left the row usable rather than merely quiet.
+4. [owner] Do the same in Ask: start a question, press Cancel while it runs. Pass: the run stops and nothing reports a failure.
+5. [session] Confirm from the log that `pipeline_cancelled` fired and `pipeline_failed` did not: `cd <repo>/pipeline && uv run mp logs --category coordinator --since 10m`.
+6. [owner] Say "UX50 good to close" (or what is wrong); [session] moves the row and the spec into `q6-final.md` and deletes this file.
+
+## The stuck progress entry, fixed 2026-08-04 (second pass)
+
+`LibraryWindowModel.activeProcessing` is the row's live entry, and it had two writers and one and a half clears. The pipeline's heartbeat wrote it (`SinkDispatcher.onActiveProgress` to `PipelineJobDispatcher.onProgress` to the Coordinator), a library re-run wrote it (`onActiveLibraryRun`), and the clears hung off the Coordinator's `onDone` and `onError`, which is to say off the *reporting* of a completion rather than off the completion. `PipelineJobDispatcher.route` returns early for exactly the two completions this app deliberately reports nothing about: a cancel (UX50's own first pass) and a library re-run (whose own surface names it better). The library-run leg was covered by accident, since UX28 already clears its busy chip on every path; the cancel leg was not. That is the whole defect, and it is why the walkthrough saw a run-all frozen at `Cleaning up 0:20` beside an idle toolbar, surviving a close and reopen of the window: the entry lives on the model, not in the view.
+
+The fix is UX28's own stated rule applied to the other in-flight surface, that the entry ends with the job. `SinkDispatcher.onActiveProgressEnded` fires from `completeActiveJob` on every path, `PipelineJobDispatcher` forwards it past `route` rather than through it, and the Coordinator's done and error closures no longer touch `activeProcessing`, so it has one owner rather than three partial ones. Nothing about the retryable modelling, the marker, or the quiet moves.
+
+Tests: `test_a_cancelled_job_ends_the_rows_live_progress_entry` (the regression, with a heartbeat first so there is an entry to be left holding), its success and genuine-failure siblings, `test_a_failed_library_run_ends_the_live_progress_entry_too` (the other early return, where nothing is stuck today and the clear fires anyway, because a per-kind exception is how the rule stopped being true the first time), and `test_the_live_progress_entry_clear_is_forwarded` in `PipelineJobDispatcherTests`. All four `SinkDispatcher` ones were run against the production line removed and all four failed, so they pin the line and not the plumbing.
+
+## The Cancel window, measured, and not this task's defect
+
+The walkthrough's second finding was unmeasured. It is measurable from the owner's own run of `20260716-163031` without another live pass, and it splits into two causes with different fixes.
+
+```
+13:03:39.998Z  toolbar_action reprocess          (the click)
+13:03:40.034Z  transcription engine_started      (FluidAudio, in-daemon)
+13:04:32.574Z  transcription engine_succeeded    (+52.5 s)
+13:04:33.553Z  pipeline run_started              (mp run-all is up, +1.0 s)
+13:04:38.629Z  pipeline stage_progress beat 1    (+5.1 s, the first thing the row sees)
+```
+
+So Cancel first appears **58.6 s** after the click, because the row's Cancel is gated on `activeProcessing` and nothing writes that until the pipeline's first 5 s heartbeat. About 52.5 s of it is the daemon's own transcription pass, and that share scales with meeting length. The remaining ~6 s is fixed: subprocess start plus one heartbeat interval.
+
+Only the ~6 s tail is a presentation problem. During the ASR phase there is no subprocess at all: `cancelActiveJob` logs the event and calls `PipelineLauncher.cancelActiveRun`, which has nothing retained, and the per-run flag design means the intent does not survive to the spawn either. So the run would continue and the button would do nothing, which is the dead-control shape `daemon/CLAUDE.md` forbids. Closing that half needs a cancellation seam in `TranscriptionRunner` plus a cancelled-during-transcription completion that lands like the run-all one, which is a capability rather than a fix, and it is not what UX50 was filed about.
+
+### Recommended filing (owner-gated, not filed by this session)
+
+`| UX?? | A running job cannot be cancelled for its first minute | UX | new | P2 | Found by UX50's second pass and measured on the owner's own 2026-08-04 run of 20260716-163031: Reprocess clicked 13:03:39.998Z, first pipeline heartbeat 13:04:38.629Z, so the row offers no Cancel for 58.6 s. Cancel is gated on activeProcessing, which only a pipeline heartbeat writes, and for a full run-all nothing beats until the daemon's own FluidAudio pass finishes (52.5 s here, scaling with meeting length); the last ~6 s is fixed cost, mp start plus one 5 s interval. The two halves need different fixes. The tail closes by publishing the entry when invokePipeline spawns the subprocess, which is the moment Cancel starts working. The ASR phase does not: cancelActiveJob calls PipelineLauncher.cancelActiveRun, which has nothing retained yet, so offering Cancel there without a cancellation seam in TranscriptionRunner ships a dead control. Scope is that seam plus a cancelled-during-transcription completion that lands like the run-all one (interrupted marker, row retryable, nothing reported). |`

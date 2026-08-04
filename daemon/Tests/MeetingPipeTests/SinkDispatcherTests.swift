@@ -630,6 +630,67 @@ final class SinkDispatcherTests: XCTestCase {
         }
     }
 
+    /// The remainder the owner's walkthrough found (UX50): the alarm was gone and
+    /// the row was still reading "Cleaning up 0:20" in the In progress section,
+    /// beside an idle toolbar, across a close and reopen of the Library. A cancel
+    /// is the completion the dispatcher above deliberately reports nothing for,
+    /// and while the clear rode the error surface it went quiet with the alarm.
+    func test_a_cancelled_job_ends_the_rows_live_progress_entry() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        var progress: [(String, PipelineProgress)] = []
+        var ended = 0
+        dispatcher.onActiveProgress = { progress.append(($0, $1)) }
+        dispatcher.onActiveProgressEnded = { ended += 1 }
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        driver.emitProgress(PipelineProgress(stage: "diarize_cleanup", elapsedSec: 20))
+        dispatcher.cancelActiveJob()
+        driver.finish(.failure(PipelineLauncher.LaunchError.cancelled))
+        drainMain()
+
+        XCTAssertEqual(progress.count, 1, "there has to be a live entry for the row to be left holding")
+        XCTAssertEqual(ended, 1, "the entry a heartbeat put on the row has to end with the job")
+    }
+
+    /// The other two paths, so the clear is the job's and not the cancel's.
+    func test_a_successful_job_ends_the_live_progress_entry_too() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        var ended = 0
+        dispatcher.onActiveProgressEnded = { ended += 1 }
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: 12))
+        driver.finish(.success(nil))
+        drainMain()
+
+        XCTAssertEqual(ended, 1)
+    }
+
+    func test_a_genuine_failure_ends_the_live_progress_entry_too() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        var ended = 0
+        dispatcher.onActiveProgressEnded = { ended += 1 }
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: 12))
+        driver.finish(.failure(PipelineLauncher.LaunchError.nonZeroExit(1, "summarize blew up")))
+        drainMain()
+
+        XCTAssertEqual(ended, 1)
+    }
+
     /// A genuine failure is untouched by any of it.
     func test_an_uncancelled_failure_still_writes_the_pipeline_stage() throws {
         let driver = FakeDriver()
@@ -1074,6 +1135,24 @@ final class SinkDispatcherTests: XCTestCase {
 
         XCTAssertEqual(runs.count, 2)
         XCTAssertNil(runs.last ?? nil)
+    }
+
+    /// The second completion `PipelineJobDispatcher.route` returns early for
+    /// (UX50). A re-run has no heartbeat of its own, so nothing here is stuck
+    /// today; the clear fires for it anyway, because "the entry ends with the
+    /// job" is the whole rule and a per-kind exception is how it stopped being
+    /// true the first time.
+    func test_a_failed_library_run_ends_the_live_progress_entry_too() {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        var ended = 0
+        dispatcher.onActiveProgressEnded = { ended += 1 }
+        struct Boom: Error {}
+
+        enqueueRun(dispatcher, regenerate("m")) { $0.finish(.failure(Boom())) }
+        drainMain()
+
+        XCTAssertEqual(ended, 1)
     }
 
     /// Leg (e): the re-run's subprocess is retained now, so the same Cancel path

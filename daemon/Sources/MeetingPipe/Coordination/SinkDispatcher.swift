@@ -42,6 +42,14 @@ final class SinkDispatcher: @unchecked Sendable {
     /// Live pipeline progress for the active job (TECH-UX5): (stem, stage+elapsed). Main queue.
     var onActiveProgress: ((String, PipelineProgress) -> Void)?
 
+    /// The active job's live progress entry has ended (UX50). Fires once per job
+    /// at completion, on every path, so the row a heartbeat put in the In
+    /// progress section always leaves it. Separate from `onJobCompleted` because
+    /// that one is *routed* (a cancel and a library re-run are both deliberately
+    /// unreported), and clearing the entry has to happen whether the completion
+    /// is reported or not. Main queue.
+    var onActiveProgressEnded: (() -> Void)?
+
     /// Fires once when the active job's pipeline goes 30 s without a heartbeat (TECH-UX5): (stem). Main queue.
     var onActiveStalled: ((String) -> Void)?
 
@@ -427,6 +435,15 @@ final class SinkDispatcher: @unchecked Sendable {
 
     private func completeActiveJob(_ job: ProcessingJob, with result: Result<URL?, Error>) {
         stopStallTracking()
+        // The live progress entry ends with the job, on every path, for the same
+        // reason the busy chip below does (UX50). It used to be cleared by the
+        // *routing* of the completion instead, so the two paths that deliberately
+        // report nothing (a cancel, and a library re-run whose own surface
+        // reports it) left the row rendering the last stage the pipeline had beat
+        // out. A cancelled run-all froze at "Cleaning up 0:20" beside an idle
+        // toolbar and stayed there across a close and reopen of the Library,
+        // because the entry lives on the window model, not in the view.
+        onActiveProgressEnded?()
         if case .libraryRun = job.kind {
             // Clear the busy chip on every path, success and failure alike
             // (UX28): a chip that outlives its job is the same lie as no chip.
