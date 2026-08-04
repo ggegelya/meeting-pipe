@@ -226,7 +226,7 @@ Above the meetings list: a search field plus chips for workflow, app, status, an
 
 ### Quick Find
 
-`⌘K` from the menu-bar dropdown opens a search box over everything, without opening the Library first. Every query also carries an **Ask about your meetings** row that hands what you typed to [Ask](#6-ask-questions-across-every-meeting), already running. End your query with a question mark and that row leads the list, so type-and-Return is the whole path.
+`⌘K` opens a search box over everything, without opening the Library first. It works from the menu-bar dropdown and, since 2026-08-04, from any MeetingPipe window too. Every query also carries an **Ask about your meetings** row that hands what you typed to [Ask](#6-ask-questions-across-every-meeting), already running. End your query with a question mark and that row leads the list, so type-and-Return is the whole path.
 
 A query that matches nothing is an Ask row rather than a dead end.
 
@@ -345,7 +345,7 @@ The last three do nothing when nothing is recording.
 
 ### In the menu-bar dropdown
 
-Click the menu-bar icon and these keys are shown beside their rows. Most of them act on the open menu, so they are a faster click rather than a global chord. `⌘,` is the exception: it also works from any MeetingPipe window, because a window being open gives the app a menu bar of its own.
+Click the menu-bar icon and these keys are shown beside their rows. Most of them act on the open menu, so they are a faster click rather than a global chord. `⌘,` and `⌘K` are the exceptions: both also work from any MeetingPipe window, because a window being open gives the app a menu bar of its own.
 
 | Key | Row |
 | --- | --- |
@@ -368,6 +368,7 @@ Open a window and MeetingPipe puts a menu bar across the top of the screen, the 
 | `⌘X` / `⌘V` | Cut and paste, in any field you can type in |
 | `⌘Z` / `⇧⌘Z` | Undo and redo, in any field you can type in |
 | `⌘,` | Open Preferences |
+| `⌘K` | Quick Find, the search box over every meeting. Works here as well as from the menu-bar dropdown |
 | `⌘M` | Minimise the window to the Dock. Click it there to bring it back |
 | `⌘W` | Hides the Library. The app keeps running and the window comes back the way you left it |
 | `Space` | Play or pause, on the Transcript and Audio tabs |

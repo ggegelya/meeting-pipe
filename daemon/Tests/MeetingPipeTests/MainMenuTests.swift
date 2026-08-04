@@ -24,12 +24,12 @@ final class MainMenuTests: XCTestCase {
 
     // MARK: - Shape
 
-    func test_menu_carries_app_edit_and_window_submenus() {
+    func test_menu_carries_app_edit_find_and_window_submenus() {
         let menu = MainMenu.build()
 
         XCTAssertEqual(
             menu.items.compactMap { $0.submenu?.title },
-            ["MeetingPipe", "Edit", "Window"],
+            ["MeetingPipe", "Edit", "Find", "Window"],
             "AppKit draws the first submenu as the application menu, so the order is load-bearing."
         )
         XCTAssertTrue(menu.items.allSatisfy { $0.submenu != nil },
@@ -108,6 +108,27 @@ final class MainMenuTests: XCTestCase {
         XCTAssertNil(prefs?.target)
     }
 
+    // MARK: - Find
+
+    /// Quick Find on the main menu, added on the owner's yes during UX48's walkthrough.
+    ///
+    /// The point of the row is that `NSApp.mainMenu.performKeyEquivalent` cannot see an
+    /// `NSStatusItem`'s menu, so the status-bar Cmd+K only ever matched while that menu was open
+    /// and the chord did nothing from a MeetingPipe window. Same nil-target responder-chain route
+    /// as Preferences, for the same reason: `AppDelegate` is on that chain and `Coordinator` is not.
+    func test_quick_find_is_command_k_and_routes_through_the_responder_chain() {
+        let find = submenu("Find", in: MainMenu.build())
+        let quick = itemTitled("Quick Find…", in: find)
+
+        XCTAssertEqual(quick?.keyEquivalent, "k")
+        XCTAssertEqual(quick?.keyEquivalentModifierMask, [.command])
+        XCTAssertEqual(
+            quick?.action.map(NSStringFromSelector),
+            NSStringFromSelector(#selector(AppDelegate.openQuickFindFromMainMenu(_:)))
+        )
+        XCTAssertNil(quick?.target, "A target here would bypass the responder chain the row exists to use.")
+    }
+
     // MARK: - Collisions
 
     /// Two items sharing a chord means one of them silently never fires. Cheap to check now, and
@@ -137,9 +158,9 @@ final class MainMenuTests: XCTestCase {
         let first = holder.mainMenu
         MainMenu.install(into: holder)
 
-        XCTAssertEqual(holder.mainMenu?.items.count, 3)
+        XCTAssertEqual(holder.mainMenu?.items.count, 4)
         XCTAssertEqual(holder.mainMenu?.items.compactMap { $0.submenu?.title },
-                       ["MeetingPipe", "Edit", "Window"])
+                       ["MeetingPipe", "Edit", "Find", "Window"])
         XCTAssertFalse(first === holder.mainMenu, "Each install builds a fresh menu.")
     }
 

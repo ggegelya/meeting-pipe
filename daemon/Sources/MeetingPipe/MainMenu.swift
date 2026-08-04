@@ -23,9 +23,15 @@ extension NSApplication: MainMenuHolder {}
 /// field has focus, Minimize and Close reach the key window, and Preferences reaches `AppDelegate`,
 /// which is in a menu item's responder chain where `Coordinator` is not.
 ///
-/// Deliberately absent: the status-bar menu's own rows (Open Library, Quick Find, Manage Workflows,
-/// Quit). That menu is the menu-bar-extra surface, it matches its own key equivalents while it is
-/// open, and putting a second owner on the same chord is a different task's decision.
+/// Deliberately absent: most of the status-bar menu's own rows (Open Library, Manage Workflows,
+/// Quit). That menu is the menu-bar-extra surface and it matches its own key equivalents while it
+/// is open.
+///
+/// **Quick Find is the one exception**, added 2026-08-04 on the owner's yes during UX48's
+/// walkthrough. It has two owners on Cmd+K on purpose, and they cannot shadow each other because
+/// they are matched by different mechanisms: an `NSMenu` matches its own key equivalents only while
+/// it is open, and `NSApp.mainMenu.performKeyEquivalent` cannot see an `NSStatusItem`'s menu at all.
+/// Before the row, Cmd+K did nothing from a MeetingPipe window, which is what UX48 measured.
 enum MainMenu {
 
     /// Build a fresh menu bar. Nothing here reads or writes global state, so two calls are two
@@ -34,6 +40,7 @@ enum MainMenu {
         let main = NSMenu()
         main.addItem(submenu(appMenu()))
         main.addItem(submenu(editMenu()))
+        main.addItem(submenu(findMenu()))
         main.addItem(submenu(windowMenu()))
         return main
     }
@@ -87,6 +94,22 @@ enum MainMenu {
     /// `performMiniaturize:` and `performClose:` rather than `miniaturize:` / `close:`, so the key
     /// window gets the same validation and the same beep-instead-of-act behaviour the title bar's
     /// yellow and red buttons get.
+    /// Quick Find, added 2026-08-04 on the owner's yes during UX48's walkthrough.
+    ///
+    /// Its own submenu rather than a row on the App menu, because Find is where macOS users look
+    /// for it and because the App menu is the one AppKit labels with the app name, which is a
+    /// different kind of list. One item is a small menu, and that is fine; the alternative was a
+    /// global hotkey that would have taken Cmd+K from every app.
+    private static func findMenu() -> NSMenu {
+        let menu = NSMenu(title: "Find")
+        menu.addItem(item(
+            "Quick Find…",
+            #selector(AppDelegate.openQuickFindFromMainMenu(_:)),
+            "k"
+        ))
+        return menu
+    }
+
     private static func windowMenu() -> NSMenu {
         let menu = NSMenu(title: "Window")
         menu.addItem(item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"))

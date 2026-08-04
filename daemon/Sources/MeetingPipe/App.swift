@@ -86,6 +86,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator?.menuPreferences()
     }
 
+    /// UX48 follow-up, owner-approved 2026-08-04. Same seam and the same reason as Preferences
+    /// above: a nil-target menu item walks the responder chain to `NSApp`'s delegate.
+    ///
+    /// This exists because the status-bar menu's own Cmd+K is only matched while that menu is
+    /// **open**, and `NSApp.mainMenu.performKeyEquivalent` cannot see an `NSStatusItem`'s menu, so
+    /// before this row Cmd+K did nothing from a MeetingPipe window. Two owners for one chord is
+    /// deliberate and safe: they are matched by different mechanisms and never both while one menu
+    /// is open. The rejected alternative was a Carbon global hotkey, which would have taken Cmd+K
+    /// from every app on the machine.
+    @objc func openQuickFindFromMainMenu(_ sender: Any?) {
+        coordinator?.menuQuickFind()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.main.info("MeetingPipe starting")
 
