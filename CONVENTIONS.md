@@ -112,6 +112,7 @@ The daemon seeds the tokens into its process env at launch + on each Preferences
 Pure logic lives in its own type with explicit inputs (a `Date`, a `Bool`, a function pointer) so XCTest can drive it without AVFoundation, NSWorkspace, or TCC. Examples in repo:
 
 - `MicGate.decide(state:)` - pure precedence over the fused mute signals, no AX or CoreAudio dependency. Test feeds synthetic probe states.
+- `MuteSourceFusion.accepts(source:now:lastLogReadingAt:freshness:)` - which app-mute oracle wins when Teams' SlimCore log and the AX scrape both speak (MIC8), taking the clock as an argument so the precedence is a table test rather than a sleep. `SlimCoreMuteLog` beside it is the same split applied to a file format: the line parse, the family resolution, and the byte-range tail are functions of their arguments, so `LogMuteAdapter` is left holding only the timer and the queue hop.
 - `AudioRetention.decide(...)` - pure keep / compress / drop verdict over a meeting's age and workflow policy, no filesystem dependency (STOR1).
 - `WorkflowMatcher.match(source:workflows:)` — pure function, full unit coverage.
 - `StatusBarModel.derive(_:)` - the menu-bar title, icon, header, and conditional rows from a snapshot of state + permissions + download + counts, no `NSStatusItem` (T3).

@@ -19,8 +19,10 @@
 # not transcript content; each match is still truncated to 200 chars as a privacy guard.
 # Nothing is written, uploaded, or sent anywhere.
 #
-# TEAMS IS ALREADY ANSWERED (2026-07-23), so you do not need this probe for it. The
-# signal exists, is default-on and stable: Teams' SlimCore media-stack log writes
+# TEAMS IS ALREADY ANSWERED (2026-07-23) AND BUILT (2026-08-04), so you do not need this
+# probe for it: the daemon reads that log itself now, through LogMuteAdapter, fused with
+# the AX read (log wins when present, AX carries when absent). The signal exists, is
+# default-on and stable: Teams' SlimCore media-stack log writes
 # "AirPodsService: Input mute event received: mute|unmute" on every in-call toggle.
 # It was measured offline against 11 days of real dogfood rather than a live toggle
 # session - see docs/spikes/mic8_log_correlation.py, which replays every mute

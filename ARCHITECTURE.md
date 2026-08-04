@@ -106,7 +106,9 @@ sequenceDiagram
 
 ### Verdict-fusion stack
 
-The post-detection layer that reads, every audio buffer, whether you look muted in the meeting client. Four probes feed `MicGate`; by default (capture-first, ADR 0016) its verdict drives the muted-span timeline for opt-in offline redaction and the silence backstop (auto-stops dead meetings), never the recorded mic. Only under the regulated / NDA gate does the verdict silence the mic in real time through `MicGateWriter`.
+The post-detection layer that reads, every audio buffer, whether you look muted in the meeting client. Five signals feed `MicGate`; by default (capture-first, ADR 0016) its verdict drives the muted-span timeline for opt-in offline redaction and the silence backstop (auto-stops dead meetings), never the recorded mic. Only under the regulated / NDA gate does the verdict silence the mic in real time through `MicGateWriter`.
+
+The app-mute read is the one signal with two oracles (MIC8). The AX mute observer scrapes a localized button label; for Teams, `LogMuteAdapter` additionally reads the client's own SlimCore media log, which is UI-independent, locale-independent, and measured to lead the AX read on 59 of 61 paired transitions. They share one state field and `MuteSourceFusion` decides which wins: **the log wins when present, the AX read carries when absent**, so a client redesign cannot blind the gate and a missing log line degrades to unknown rather than to unmuted.
 
 ```mermaid
 flowchart TB
@@ -114,6 +116,7 @@ flowchart TB
         HALMute["HAL system mute<br/>kAudioObjectPropertyMute"]
         HALVAD["HAL VAD<br/>VoiceActivityDetection*"]
         AXMute["AX mute observer<br/>MuteLabels.toml<br/>en, uk, de, es, fr, ja, pt, ru"]
+        LogMute["Teams SlimCore log<br/>LogMuteAdapter (MIC8)<br/>UI-independent, no locale"]
         RMS["Per-buffer mic RMS<br/>(from MeetingRecorder tap)"]
     end
 
@@ -131,7 +134,8 @@ flowchart TB
 
     HALMute --> MicGate
     HALVAD --> MicGate
-    AXMute --> MicGate
+    AXMute -->|"app mute (fused)"| MicGate
+    LogMute -->|"app mute (wins when fresh)"| MicGate
     RMS --> MicGate
     MicGate --> Verdict
     Verdict --> Writer
@@ -266,9 +270,11 @@ Detection is the `MeetingPipeCore` lifecycle subsystem plus the daemon-side disc
 
 ### Mute gating - track mute, redact the notes or gate live
 
-- `MeetingPipeCore/MicGate/` - the `MicGate` verdict-fusion subsystem. Probes (HAL system mute, HAL voice-activity detection, an AX read of the meeting client's Mute button, a per-buffer RMS gate) feed `MicGate.decide`. By default (capture-first, ADR 0016) the verdict is recorded as a muted-span timeline, not applied: the mic is captured in full, and only a per-workflow `redactMutedSpans` opt-in removes those spans from the consumed artifact offline. Under the regulated / NDA gate `MicGateWriter` zeros the mic channel in real time with a short fade instead, preserving frame alignment with system audio (no audio at rest).
+- `MeetingPipeCore/MicGate/` - the `MicGate` verdict-fusion subsystem. Probes (HAL system mute, HAL voice-activity detection, the app-mute read, a per-buffer RMS gate) feed `MicGate.decide`. By default (capture-first, ADR 0016) the verdict is recorded as a muted-span timeline, not applied: the mic is captured in full, and only a per-workflow `redactMutedSpans` opt-in removes those spans from the consumed artifact offline. Under the regulated / NDA gate `MicGateWriter` zeros the mic channel in real time with a short fade instead, preserving frame alignment with system audio (no audio at rest).
 - `MeetingPipeCore/MicGate/IdleStopBackstop.swift` - the meeting-idle backstop (TECH-END3). Off one idle streak, gated on the fused `MicGate` verdict plus a live-system-audio mirror (not raw RMS, so ambient noise cannot keep a dead meeting open), it fires the nudge then the auto-stop. Supersedes the old `SilenceDetector` and `MicOnlySilenceBackstop`.
-- The AX mute read is the incumbent, not the end state. A UI-independent replacement for it is measured and available but not yet built (MIC8, GO 2026-07-23): Teams' SlimCore media log writes a mute-transition line on every in-call toggle, and over 11 days of dogfood it led the AX read on 59 of 61 paired transitions with a 50 ms median, default-on and format-stable across 9 log generations. Measurement, the supersede-vs-fuse question the build turns on, and the timezone/rotation gotchas are in [`docs/spikes/mic8-native-mute-signals.md`](./docs/spikes/mic8-native-mute-signals.md); re-run [`docs/spikes/mic8_log_correlation.py`](./docs/spikes/mic8_log_correlation.py) after a Teams update to confirm the line held. The vendor-SDK and OS-device-mute alternatives are closed (the latter a category error: a client's in-call mute is a transmit gate that deliberately keeps the OS mic live, which is why capture-first exists).
+- `MeetingPipeCore/MicGate/Adapters/LogMuteAdapter.swift` + `MicGate/SlimCoreMuteLog.swift` - the app mute read without the UI (MIC8, shipped 2026-08-04). For Teams it tails the newest `MSTeamsNM_SlimCore_*.log` generation and parses `AirPodsService: Input mute event received: mute|unmute`, handing the state to the same `MicGate` field the AX scrape writes. `SlimCoreMuteLog` is the pure half (line parse, family resolution, byte-range tail); the adapter is the host (1 Hz tick, blocking read off main, edge-triggered sink). Four measured properties are load-bearing and all pinned by tests: the stamp is **UTC** despite the local-offset suffix it prints, the generation resolves **by log family** and never by mtime (the shell log rotates hourly and always looks fresher), rotation is per Teams restart so the generation is re-resolved rather than held open, and an **absent line degrades to unknown, never to unmuted**.
+- `MeetingPipeCore/MicGate/MuteSourceFusion.swift` - which of the two app-mute oracles wins: the log outright, the AX read whenever the log has been quiet for 5 s (`MuteReadingSource`, and the same gate applies to `clearAxMute`). Fusing rather than superseding is the owner's call on the measurement: of 61 paired transitions the log led 59, three of the four imperfect pairs were AX-side defects, and the fourth was a lone log gap that only a fusion covers. "Present" is *recently spoke* and not *the file exists*, because the log is a transition stream that says nothing until the first toggle, so at join time the AX read is the only oracle that knows.
+- Zoom stays on the AX read alone: its logs are empty/stale, its verbose logging is opt-in, and the corpus has zero Zoom calls. The vendor-SDK and OS-device-mute alternatives are closed for every client (the latter a category error: a client's in-call mute is a transmit gate that deliberately keeps the OS mic live, which is why capture-first exists). The measurement, the gotchas, and the pre-registered GO bar are in [`docs/spikes/mic8-native-mute-signals.md`](./docs/spikes/mic8-native-mute-signals.md); re-run [`docs/spikes/mic8_log_correlation.py`](./docs/spikes/mic8_log_correlation.py) after a Teams update to confirm the line held, which is the standing regression test for this bet.
 
 ### Transcription - "ASR + speaker labels, on device"
 

@@ -21,6 +21,11 @@ public protocol MicGateAdapter: AnyObject {
     var bundleIDs: Set<String> { get }
     /// MuteLabels TOML app key (`"teams"`, `"zoom"`, `"slack"`, …).
     var app: String { get }
+    /// Which oracle this adapter's readings come from. `MicGate` starts at most one
+    /// adapter per source for a meeting and fuses their readings (MIC8), so an app
+    /// with both an AX control and a log signal gets both. Defaults to `.ax`: every
+    /// adapter that predates MIC8 reads a mute *button*.
+    var source: MuteReadingSource { get }
 
     func start(
         context: MeetingLifecycleContext,
@@ -29,4 +34,8 @@ public protocol MicGateAdapter: AnyObject {
     ) throws
 
     func stop()
+}
+
+public extension MicGateAdapter {
+    var source: MuteReadingSource { .ax }
 }

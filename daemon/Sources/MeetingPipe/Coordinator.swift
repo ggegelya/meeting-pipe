@@ -241,6 +241,12 @@ final class Coordinator: NSObject {
                 NativeMuteAdapter(config: .slack, axBus: axBus, catalogue: muteLabels, eventLog: logAdapter),
                 NoOpMuteAdapter(config: .meet, eventLog: logAdapter),
                 NoOpMuteAdapter(config: .browser, eventLog: logAdapter),
+                // MIC8: Teams' SlimCore media log is a second, UI-independent mute
+                // oracle. It runs ALONGSIDE the Teams AX adapter above (MicGate
+                // starts one adapter per source), and `MuteSourceFusion` gives the
+                // log precedence while it is fresh. Teams only: Zoom's logs are
+                // stale/opt-in and the corpus has zero Zoom calls.
+                LogMuteAdapter(config: .teams, eventLog: logAdapter),
             ]
         )
         // TECH-END3: idle auto-stop horizon from TOML (`mic_only_silence_seconds`,

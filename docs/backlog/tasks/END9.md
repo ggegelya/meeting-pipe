@@ -94,7 +94,7 @@ Pure decision seam: `CallTeardownOracle.decide(_ input:) -> Verdict` in `Meeting
 
 Constants, each from the measurements above: `teardownLookbackSec = 15` (largest observed lead 6.82 s, so 2.2x margin) and `holdCapSec = 150` (above the largest in-coverage blackout, and it is the entire cost when the oracle is wrong, so deliberately not larger).
 
-Gotchas that must be pinned by tests, all of them inherited from MIC8's spike on the same file family (`docs/spikes/mic8-native-mute-signals.md`):
+Gotchas that must be pinned by tests, all of them inherited from MIC8's spike on the same file family (`docs/spikes/mic8-native-mute-signals.md`). **Since 2026-08-04 they are also inherited as code**: MIC8's build shipped `MeetingPipeCore/MicGate/SlimCoreMuteLog.swift`, whose `generations` / `newest` / `tail` / `parseTimestamp` are exactly this read path (family resolution, the UTC parse, the byte-range tail with a partial-line carry, rotation re-resolve), and `LogMuteAdapter` beside it is the working example of the host half (own queue, 1 Hz tick, edge-triggered sink). Reuse them rather than writing a second SlimCore reader; only the line predicate differs, so the natural shape is a teardown-line parse beside `SlimCoreMuteLog.parse`.
 
 - The `+03:00` suffix on every SlimCore timestamp is a lie. The naive clock value is UTC. Verified: the teardown at naive 07:41:22 on 2026-08-03 matches the 10:41 local end of `20260803-103042`.
 - Resolve the log by file family, never by mtime. The directory holds several families and `MSTeams_<date>` is always fresher than the SlimCore generation.
