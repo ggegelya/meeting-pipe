@@ -133,6 +133,8 @@
 
 | UX59 | The cast strip and the transcript use unrelated colour systems | UX | done | P2 | Shipped 2026-08-04; `swift build` clean and `swift test` green, 7 new tests (2312 before, 2319 after on this branch). Every cast chip now carries the speaker's identity dot, the same `MeetingCast.colorIndex` slot their transcript rows draw (UX58), so one person is one colour on a screen that shows both surfaces at once. The slot rides on `VoiceResolution.Voice` and is filled in `derive` rather than read by the chip: two surfaces each answering "which colour is this person" is the disagreement this task existed to remove, and it is derived through the shared function rather than off `derive`'s loop position, since a second derivation that happens to agree is the shape that drifts. **FEAT11's status signal survives, and constrained the design rather than being checked after it**: the chip's leading glyph is tinted by `tint(for:)` for resolution status, so the dot went in as a separate sibling view instead of a recolour of it, and neither signal is hue-only (identity is the dot plus the name beside it, status is a distinct symbol per origin plus its tint plus the `Name` affordance). Three tests pin that independence in both directions. Contrast is pinned rather than asserted: the chip well is the first surface to draw the speaker palette on `bgSunk`, all 16 legs clear the 3:1 UI floor (min 4.32, light orange), `ContrastFloorTests` holds each and `docs/audits/dsn18-contrast-ratios.md` carries the table. Two decisions the spec left open: the dot is 6pt rather than the row's 8pt (at 8 it reads as a second icon competing with the status glyph), and it leads the chip, mirroring the row's dot-then-name order. **Owner-owed:** the walkthrough's eyeball at the end of the task file, plus the `./scripts/rebuild.sh` its step 2 asks for, which a worktree session must not run over the owner's running app. **Closed 2026-08-04 on the owner walkthrough**, steps 3 to 7 pass: the chip dots match the transcript rows one to one, unnamed and roster-matched voices are still distinguishable at a glance without reading the header count (so FEAT11's status signal survived the identity dot beside it), a reassignment keeps the strip and the rows in agreement, and both hold in light and dark. The eyeball this task deliberately ended owner-owed on is the acceptance it just cleared. |
 
+| UX51 | The cast strip clips its last chips with no sign there are more | UX | done | P2 | Shipped 2026-08-04. The chips wrap onto as many rows as they need instead of riding an indicator-less horizontal scroll, so the last one can no longer render sliced mid-word and the header's count stays reconcilable with what is visible at any width. Wrap rather than a scroll with a UX47-style edge fade, because the strip sits inside the transcript's capped 720 reading measure where a scroll affordance is easy to miss in a centred column; a chip is a short label, so the cost is one extra row at worst. `FlowLayout` moved to `Preferences/PreferencesControls.swift` with its `private` dropped, so it is a shared primitive with two callers now (the auto-record allowlist's tags and the cast strip), and its break arithmetic is a static function over measured sizes because `LayoutSubviews` cannot be constructed outside a live layout pass and "do these wrap or get sliced" was otherwise unreachable from a test. UX38's recorded reason for declining that promotion is annotated in its archived text rather than rewritten: it was right for one speculative caller, and this is a real second one. Chip contents, menus, status tinting, and the header wording are untouched (UX40 and FEAT11 own those; UX59's identity dot builds on this layout). Daemon suite green, 11 new tests. **Owner-owed:** the walkthrough at the end of the spec, whose two legs are the owner's own `20260727-103155` reading with every chip fully visible and agreeing with the count above it, and the chips re-flowing readably as the window is narrowed to its floor. **Closed 2026-08-04 on the owner walkthrough**, both steps pass: on the reported meeting every chip is fully readable with none sliced mid-word, and the chip count now reconciles with the "n of m other voices named" line above it, which was the actual defect (a voice read as missing rather than hidden). Narrowing the window to its floor re-flows the chips onto more rows with nothing cut off at any width, so the wrap-rather-than-scroll choice holds inside the 720pt reading measure. |
+
 ## Task specs
 
 **[DONE] C7 (P3): backstop-end corpus coverage.** Band origin: carried from Q4 with a changed scope. C6-FINISH (below) landed 20 real redacted dogfood traces (`teams_native_*` in the detection corpus) covering the three pure-engine endings real sessions actually produce, derived by `scripts/extract_detection_trace.py`. The one real ending the corpus structurally cannot cover is the idle-stop backstop: a lone ax-leave `.ended` with empty `confirmed_by` (~1/3 of real sessions) is force-ended by `IdleStopBackstop`, not `PromotionEngine`, and the replay harness (`DetectionCorpusTests`) only drives the pure engine. Scope: either extend the harness with a backstop-level end driver so a real backstop session replays, or accept the gap explicitly and close. Not correctness (the backstop path works in production); this is test-coverage completeness, so it pairs with T3.
@@ -2381,3 +2383,48 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 6. [owner] Reassign a line to a different speaker and confirm the strip and the rows stay in agreement.
 7. [owner] Switch between light and dark appearance and confirm both still hold.
 8. [owner] Say "UX59 good to close" (or what is wrong); [session] moves the row and this spec into `q6-final.md` and deletes this file.
+
+# [DONE] UX51: The cast strip clips its last chips with no sign there are more
+
+Band origin: filed 2026-07-31, owner-reported with a screenshot during FEAT11's walkthrough. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+
+## Context
+
+The voice-resolution strip above the Transcript tab (`VoiceResolutionBar`, FEAT11, with UX40's chip menus) lays its chips out in a single horizontal row that overflows. On the owner's meeting the row reads `Sudip`, `Anisha`, `Unknown speaker`, `Maharsh`, `Unknown B Name`, `Heorhii`, `Unknown C Name`, and then a final chip sliced mid-word at the pane's right edge, rendering as a bare `U`. Nothing indicates that anything is cut off: no fade, no scrollbar, no chevron.
+
+The header directly above it says "3 of 6 other voices named. 3 voices are still unnamed." So the strip states a count the user then cannot reconcile with what is visible, which is the specific way this fails: a user who trusts the row over the header concludes a voice is missing rather than hidden.
+
+The owner's own framing, which the scope below follows: "it will be better to have it full width in that row + have visible scrolling intention when they overflow. or if you against full width row - then wrap."
+
+## Scope
+
+**Wrap, rather than scroll.** Both of the owner's options are reasonable and wrapping is the safer default here, for a reason specific to this surface: the strip lives inside the transcript's capped reading measure (`SummaryLayout.readingMeasure`, 720, owner-picked 2026-07-29 and shared with the Summary tab), so a horizontally scrolling row sits inside a centred, capped column where a scroll affordance is easy to miss. Wrapping keeps every chip reachable without an interaction the user has to discover. A chip is a short label, so a wrapped row costs one or two extra lines at worst.
+
+**The layout primitive already exists and this is the second caller.** `PreferencesView+Recording.swift` holds a `private` `FlowLayout`. UX38 considered promoting it and deliberately did not, recording the reason: "No wrapping layout was introduced, so the `private` `FlowLayout` in `PreferencesView+Recording.swift` stayed where it is rather than being promoted for one speculative caller." That reasoning was sound and its premise has now changed: this is a real second caller, so promote it to the shared design-system home (`Preferences/PreferencesControls.swift` is where the shared primitives live, per `daemon/CLAUDE.md`) rather than writing a second wrapping layout beside it.
+
+If measurement shows wrapping is wrong here after all, the fallback is a scroll with a **visible** affordance (an edge fade that follows the scrolled bounds, the UX47 shape), never a bare clip.
+
+## Explicitly not / out of scope
+
+**Not the chip contents, menus, or the header wording.** What a chip offers on right-click is UX40 (closed 2026-07-31) and the "n of m other voices named" wording is its too; both are correct as shipped and this task only changes where the chips are placed.
+
+**Not the reading measure.** The 720 cap is owner-picked and shared with the Summary tab; widening the strip past it would re-open the edge disagreement UX36 closed.
+
+**Not a general audit of clipped rows elsewhere.** If other surfaces clip the same way that belongs to the staleness/assessment sweep the owner asked for, not here.
+
+## Acceptance
+
+`VoiceResolutionBar` renders every chip at the transcript's narrowest supported width without clipping any of them, and the count in the header is reconcilable with the chips visible below it. A layout test pins that a cast of N chips wider than the measure produces more than one row rather than a truncated single row.
+
+`FlowLayout` lives in the shared controls file with its `private` removed, and `PreferencesView+Recording.swift` reads it from there rather than keeping a copy. UX38's recorded reason for leaving it private is updated in that spec's archived text or noted here, so the next reader does not re-litigate it.
+
+`cd daemon && swift build` and `swift test` green. No em-dashes in changed lines.
+
+## Owner walkthrough (for the session that picks this up)
+
+Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who acts.
+
+1. [session] `./scripts/rebuild.sh`, then tell the owner it is ready.
+2. [owner] Open `20260727-103155`, the meeting from the report (7 voices, 3 unnamed), Transcript tab. Pass: every chip is fully readable, none is sliced mid-word, and counting the chips agrees with the "n of m other voices named" line above them.
+3. [owner] Narrow the window to its floor. Pass: the chips re-flow onto more rows and stay readable; nothing is cut off at any width.
+4. [owner] Say "UX51 good to close" (or what is wrong); [session] moves the row and the spec into `q6-final.md` and deletes this file.
