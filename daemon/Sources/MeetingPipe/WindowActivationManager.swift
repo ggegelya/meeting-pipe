@@ -16,19 +16,21 @@ extension NSWindow: ActivatableWindow {}
 /// participating windows cannot re-diverge on the ordering. Without the policy flip, Cmd+Tab away
 /// from the Library or Preferences window leaves no path back.
 ///
-/// Call sites: `LibraryWindow.show()`, `PreferencesWindow.show()`, `DiagnosticsWindow.show()` on
-/// open; their `windowWillClose` delegates on close. The panels that stay Dock-less on purpose
-/// (QuickFind, Onboarding, Correction) never call in. Threading: main queue only.
+/// Call sites: `LibraryWindow.show()`, `PreferencesWindow.show()`, `DiagnosticsWindow.show()`,
+/// `GuideWindow.show()` on open; their `windowWillClose` delegates on close. The panels that stay
+/// Dock-less on purpose (QuickFind, Onboarding, Correction) never call in. Threading: main queue
+/// only.
 ///
 /// Three rules the sequence encodes (UX39):
 ///
-/// 1. **Policy first, then front and activate one run-loop turn later.** `setActivationPolicy` is
-///    processed asynchronously, so an `activate` issued in the same turn is evaluated against the
-///    still-`.accessory` app: the newly-regular app is appended to the *tail* of the Cmd+Tab MRU
-///    list instead of promoted to its front. The symptom was "the Library sits last in Cmd+Tab and
-///    one Cmd+Tab cannot switch back to it". Each call site used to run
-///    `makeKeyAndOrderFront` + `activate` itself *before* handing over, which fronted the window
-///    while the app was still an accessory, so the whole dance lives here now.
+/// 1. **Policy first, and the activation re-issued once the transition has landed.**
+///    `setActivationPolicy` is processed asynchronously, so an `activate` issued in the same turn
+///    can still be evaluated against the `.accessory` app: the newly-regular app is appended to the
+///    *tail* of the Cmd+Tab MRU list instead of promoted to its front. The symptom was "the Library
+///    sits last in Cmd+Tab and one Cmd+Tab cannot switch back to it". Each call site used to run
+///    `makeKeyAndOrderFront` + `activate` itself *before* handing over, so the app asked to be
+///    frontmost before it had asked to be regular; the raise comes first now, and the follow-up
+///    activation a run-loop turn later is what covers an attempt evaluated too early.
 /// 2. **Counting by window identity, not by a bare int.** `NSWindow.isVisible` is false for a
 ///    miniaturized window, so the `if !w.isVisible` guard each call site carried counted a
 ///    minimize-then-reopen as a fresh open while only one `windowWillClose` ever arrived. The
@@ -44,15 +46,26 @@ extension NSWindow: ActivatableWindow {}
 /// step that raises the policy and removed in the same step that drops it, because those are
 /// exactly the moments this app does and does not own a menu bar.
 ///
-/// UX56 sharpened rule 1 rather than reversing it: **the wait is for the policy transition, not for
-/// the window.** The deferral was unconditional, so a window opened while the app was already
-/// `.regular` waited too, with nothing to wait for. That is the second Preferences window opening
-/// over the Library (the toolbar gear, Cmd+, from the main menu, the Vocabulary and permission
-/// cross-links), and the owner's report was that it landed behind the Library rather than over it.
-/// The flag below is what says whether a raise is actually in flight, so a window opened during one
-/// still waits (two windows opened in the same turn are one transition, and the second must not
-/// activate ahead of it) while a window opened with no raise pending is fronted in the same turn
-/// that asked for it.
+/// UX56 is where the *shape* of rule 1 changed, in two passes, and the second pass is the one that
+/// matters. UX39 made the window **wait** for the transition. A wait is not free: it hands the app
+/// the user came from a run-loop turn in which to keep or reclaim focus, and on the macOS 14 floor
+/// this app asks for activation cooperatively rather than taking it. The owner walked both paths on
+/// 2026-08-04, and they came out opposite ways. A window opened while the app was already `.regular`
+/// (the Library toolbar's gear, Cmd+, from the main menu, the Vocabulary and permission
+/// cross-links) waited for nothing, and once the first pass stopped making it wait, it came up in
+/// front and at the **head** of the switcher. The window that still waited came up **behind** the
+/// frontmost app and put this app at the Cmd+Tab **tail**: the wait was paying its cost and not
+/// buying the MRU position it exists to buy. That is every open from the status-bar menu with
+/// nothing else up, since the last close drops the policy back to `.accessory` and so every one of
+/// them is a first-window open.
+///
+/// So nothing waits. Every window is fronted and activated in the turn that asked for it, which is
+/// the turn the user's click is still in, and a policy raise additionally queues **one** activation
+/// for the turn after, by which point the transition has certainly landed. On an app that is
+/// already frontmost that second call is a no-op; on one whose first attempt was evaluated against
+/// the still-accessory app it is the promotion UX39 wanted, so rule 1's guarantee is kept as a
+/// retry instead of as a wait. It is queued per transition and not per window, which is what keeps
+/// two windows opened in the same turn fronting in the order they were asked for, second on top.
 final class WindowActivationManager {
     static let shared = WindowActivationManager()
 
@@ -99,13 +112,6 @@ final class WindowActivationManager {
     /// identifier that a later allocation at the same address could match.
     private var shown: Set<ObjectIdentifier> = []
 
-    /// True from the moment the policy is raised to `.regular` until the run-loop turn that fronts
-    /// the window, which is exactly the span over which `setActivationPolicy` may not have landed
-    /// yet. Any window shown inside that span waits with it: the transition is app-wide, so a
-    /// second window fronting immediately would issue its `activate` against the still-accessory
-    /// app, which is the Cmd+Tab MRU tail UX39 exists to prevent.
-    private var policyRaiseInFlight = false
-
     private let effects: Effects
 
     init(effects: Effects = .appKit) {
@@ -116,34 +122,23 @@ final class WindowActivationManager {
     /// menu bar on the first one. Idempotent per window: calling it again for a window already
     /// counted brings that window forward without touching the count.
     ///
-    /// The fronting waits a run-loop turn only while a policy raise is in flight (UX39's rule 1,
-    /// narrowed by UX56). With the app already `.regular` there is no asynchronous transition to
-    /// outlive, so the wait bought nothing and cost the thing it looks like it should cost: a turn
-    /// in which the app the user came from can keep or reclaim focus, and on macOS 14 an activation
-    /// this app asks for cooperatively rather than takes.
+    /// The fronting is never deferred (UX39's rule 1, reshaped by UX56): a window the user just
+    /// asked for goes up in the turn they asked for it, which is the turn their click is still in.
+    /// The asynchronous policy raise is covered by the single follow-up activation queued beside
+    /// it, not by making the window wait for it.
     func showWindow(_ window: ActivatableWindow) {
         if shown.insert(ObjectIdentifier(window)).inserted, shown.count == 1 {
             effects.setPolicy(.regular)
             effects.installMainMenu()
-            policyRaiseInFlight = true
+            // Queued here rather than beside each window's fronting, so it is one retry per
+            // transition however many windows open in this turn, and it runs after all of them.
+            // The local copy is what keeps `self` out of the escaping closure; `Effects` is a value.
+            let effects = self.effects
+            effects.onNextRunLoopTurn { effects.activateApp() }
         }
-        let effects = self.effects
-        // One spelling for both branches, so "wait a turn" can never drift into doing something
-        // different from "do it now".
-        let frontAndActivate: (ActivatableWindow) -> Void = { window in
-            if window.isMiniaturized { window.deminiaturize(nil) }
-            window.makeKeyAndOrderFront(nil)
-            effects.activateApp()
-        }
-        guard policyRaiseInFlight else {
-            frontAndActivate(window)
-            return
-        }
-        effects.onNextRunLoopTurn { [weak self, weak window] in
-            self?.policyRaiseInFlight = false
-            guard let window else { return }
-            frontAndActivate(window)
-        }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+        effects.activateApp()
     }
 
     /// Record `window` as gone; drop back to `.accessory`, take the menu bar down, and hand

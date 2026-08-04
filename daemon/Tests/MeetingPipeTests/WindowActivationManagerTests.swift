@@ -4,8 +4,10 @@ import XCTest
 
 /// One ordered log for everything the manager does, so a test can pin *when* each call happens and
 /// not just that it happened. The two defects UX39 fixed are both ordering or identity defects that
-/// a "was it called" assertion would have passed: the activation landed in the same run-loop turn as
-/// the policy flip (Cmd+Tab MRU tail), and a miniaturized re-show counted twice (stuck `.regular`).
+/// a "was it called" assertion would have passed: the app asked to be frontmost before it asked to
+/// be regular (Cmd+Tab MRU tail), and a miniaturized re-show counted twice (stuck `.regular`). The
+/// log is what pins UX56's answer to the first one too, which is a retry on the turn after the
+/// policy raise rather than a window made to wait for it.
 private final class ActivationRecorder {
     private(set) var calls: [String] = []
     private var pending: [() -> Void] = []
@@ -77,22 +79,29 @@ final class WindowActivationManagerTests: XCTestCase {
 
     // MARK: - Ordering
 
-    /// The whole point of UX39's first defect: the policy flip is issued on its own, and the
-    /// fronting plus activation wait for the next run-loop turn so the async `.regular` transition
-    /// has landed before this app claims frontmost. Issued together, the activation is evaluated
-    /// against the still-accessory app and macOS appends it to the Cmd+Tab MRU tail.
-    func test_first_show_flips_policy_before_deferring_front_and_activate() {
+    /// UX39's first defect and UX56's answer to it in one sequence. The policy flip is issued before
+    /// anything asks to be frontmost, which is the half that was always load-bearing: the call sites
+    /// used to front and activate *before* handing over, so the app asked to be frontmost while it
+    /// was still an accessory and macOS appended it to the Cmd+Tab MRU tail. The window itself no
+    /// longer waits for the transition, because the wait was measured costing focus and buying no
+    /// MRU position; the activation is re-issued on the next turn instead, when the raise has
+    /// certainly landed.
+    func test_first_show_flips_policy_then_fronts_in_the_same_turn() {
         let manager = makeManager()
         let window = FakeWindow("library", recorder: recorder)
 
         manager.showWindow(window)
         XCTAssertEqual(
-            recorder.calls, ["policy:regular", "menu:install"],
-            "Fronting or activating in the same turn as the policy flip is the MRU-tail bug."
+            recorder.calls, ["policy:regular", "menu:install", "front:library", "activate"],
+            "The raise precedes the activation, and the window the user asked for goes up now."
         )
 
         recorder.runNextRunLoopTurn()
-        XCTAssertEqual(recorder.calls, ["policy:regular", "menu:install", "front:library", "activate"])
+        XCTAssertEqual(
+            recorder.calls,
+            ["policy:regular", "menu:install", "front:library", "activate", "activate"],
+            "The follow-up activation is the retry for an attempt evaluated against the accessory app."
+        )
     }
 
     /// A window that is not miniaturized is never sent a spurious deminiaturize.
@@ -121,7 +130,10 @@ final class WindowActivationManagerTests: XCTestCase {
 
         XCTAssertEqual(
             recorder.calls,
-            ["policy:regular", "menu:install", "front:library", "activate", "front:library", "activate"]
+            [
+                "policy:regular", "menu:install", "front:library", "activate", "activate",
+                "front:library", "activate"
+            ]
         )
 
         manager.didCloseWindow(window)
@@ -212,9 +224,9 @@ final class WindowActivationManagerTests: XCTestCase {
         XCTAssertEqual(
             recorder.calls,
             [
-                "policy:regular", "menu:install", "front:library", "activate",
+                "policy:regular", "menu:install", "front:library", "activate", "activate",
                 "policy:accessory", "menu:remove", "handoff",
-                "policy:regular", "menu:install", "front:library", "activate"
+                "policy:regular", "menu:install", "front:library", "activate", "activate"
             ]
         )
     }
@@ -249,7 +261,10 @@ final class WindowActivationManagerTests: XCTestCase {
 
         manager.showWindow(window)
 
-        XCTAssertEqual(recorder.calls, ["policy:regular", "menu:install"])
+        XCTAssertEqual(
+            Array(recorder.calls.prefix(2)), ["policy:regular", "menu:install"],
+            "The menu goes up with the policy, ahead of anything this window does for itself."
+        )
     }
 
     /// A second window is not a second menu bar. `NSApp.mainMenu` is one slot, so a re-install would
@@ -282,12 +297,13 @@ final class WindowActivationManagerTests: XCTestCase {
         XCTAssertEqual(recorder.calls.filter { $0 == "menu:install" }.count, 1)
     }
 
-    // MARK: - Waiting only for a policy raise (UX56)
+    // MARK: - Fronting in the turn that asked, with the raise retried after it (UX56)
 
-    /// The UX56 fix. With the app already `.regular` there is no asynchronous policy transition to
-    /// outlive, so the window is fronted in the turn that asked for it rather than a turn later.
-    /// The turn was not free: it is one in which the app the user came from can keep or reclaim
-    /// focus, and the report was a Preferences window landing behind the Library that opened it.
+    /// The first half of UX56, and the half the owner confirmed on 2026-08-04. With the app already
+    /// `.regular` there is no asynchronous policy transition to outlive, so the window is fronted in
+    /// the turn that asked for it rather than a turn later. The turn was not free: it is one in
+    /// which the app the user came from can keep or reclaim focus, and the report was a Preferences
+    /// window landing behind the Library that opened it.
     func test_show_while_the_app_is_already_regular_fronts_in_the_same_turn() {
         let manager = makeManager()
         let library = FakeWindow("library", recorder: recorder)
@@ -322,11 +338,11 @@ final class WindowActivationManagerTests: XCTestCase {
         XCTAssertEqual(recorder.calls.suffix(3), ["deminiaturize:library", "front:library", "activate"])
     }
 
-    /// The guard on the narrowing: the wait is for the *transition*, not for the first window, so a
-    /// second window opened before the deferred turn drains waits with it. Fronting it immediately
-    /// would issue its `activate` against the still-accessory app, which is exactly the Cmd+Tab MRU
-    /// tail UX39 exists to prevent, and it would put the window opened second underneath.
-    func test_a_window_shown_during_a_pending_raise_waits_with_it() {
+    /// Two windows opened in the same turn are **one** transition, so they front in the order they
+    /// were asked for (the second ends up on top) and share the single follow-up activation. Queuing
+    /// the retry per window instead would issue one `activate` per open for a transition that
+    /// happened once.
+    func test_two_windows_shown_in_one_turn_share_one_follow_up_activation() {
         let manager = makeManager()
         let library = FakeWindow("library", recorder: recorder)
         let prefs = FakeWindow("prefs", recorder: recorder)
@@ -335,12 +351,6 @@ final class WindowActivationManagerTests: XCTestCase {
         manager.showWindow(prefs)
 
         XCTAssertEqual(
-            recorder.calls, ["policy:regular", "menu:install"],
-            "Neither window may front while the policy raise is still in flight."
-        )
-
-        recorder.runNextRunLoopTurn()
-        XCTAssertEqual(
             recorder.calls,
             [
                 "policy:regular", "menu:install",
@@ -348,12 +358,21 @@ final class WindowActivationManagerTests: XCTestCase {
             ],
             "Order follows the asks, so the window opened second ends up on top."
         )
+
+        recorder.runNextRunLoopTurn()
+        XCTAssertEqual(
+            recorder.calls.suffix(1), ["activate"],
+            "One transition, one retry, however many windows rode it."
+        )
+        XCTAssertEqual(recorder.calls.filter { $0 == "activate" }.count, 3)
     }
 
-    /// The other half of that guard, and the one a naive "front it immediately" fix would break:
-    /// the last close drops the policy, so the next open raises it again and therefore waits again.
-    /// Every open of Preferences from the status-bar menu with no other window up is this case.
-    func test_show_after_the_last_close_defers_again_because_the_policy_is_raised_again() {
+    /// The reported path, and the one this pass exists for: the last close drops the policy, so
+    /// every open of Preferences from the status-bar menu with no other window up raises it again.
+    /// That open used to wait a run-loop turn, and the owner measured the wait landing the window
+    /// behind the frontmost app **and** the app at the Cmd+Tab tail, which is the position the wait
+    /// existed to buy. It fronts in the turn that asked now, and the raise is retried after it.
+    func test_show_after_the_last_close_raises_again_and_still_fronts_in_the_same_turn() {
         let manager = makeManager()
         let window = FakeWindow("prefs", recorder: recorder)
 
@@ -363,12 +382,31 @@ final class WindowActivationManagerTests: XCTestCase {
         manager.showWindow(window)
 
         XCTAssertEqual(
-            recorder.calls.suffix(2), ["policy:regular", "menu:install"],
-            "A re-raised policy has to land before this app claims frontmost, or it lands at the MRU tail."
+            recorder.calls.suffix(4),
+            ["policy:regular", "menu:install", "front:prefs", "activate"],
+            "A re-raised policy must not put the window the user just asked for a turn behind."
         )
 
         recorder.runNextRunLoopTurn()
-        XCTAssertEqual(recorder.calls.suffix(2), ["front:prefs", "activate"])
+        XCTAssertEqual(recorder.calls.suffix(1), ["activate"])
+    }
+
+    /// The retry belongs to the transition, so a show with no raise behind it queues nothing at all.
+    /// Without this, every re-front of an already-`.regular` app would trail an activation into the
+    /// next turn, which is the shape whose cost this task measured.
+    func test_a_show_with_no_policy_raise_queues_nothing_for_the_next_turn() {
+        let manager = makeManager()
+        let library = FakeWindow("library", recorder: recorder)
+        let prefs = FakeWindow("prefs", recorder: recorder)
+
+        manager.showWindow(library)
+        recorder.runNextRunLoopTurn()
+
+        manager.showWindow(prefs)
+        let afterShow = recorder.calls
+        recorder.runNextRunLoopTurn()
+
+        XCTAssertEqual(recorder.calls, afterShow, "Nothing was pending, so draining the turn is a no-op.")
     }
 
     /// The way back: the menu comes down with the policy, before the handoff, so this app is never
