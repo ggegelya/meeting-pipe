@@ -26,10 +26,10 @@ On a retry, do not reopen the same path. Two shapes work:
 - Write the recovered stream to a numbered sibling (`<stem>.system.2.wav`) and teach `produceFinal` to concatenate the system legs with a silence gap before the merge.
 - Or pre-pad the new file with silence covering the outage window so sample 0 still means recording start.
 
-Either way the offset handling is shared with REC9's length policy, so pick these up together.
+The offset handling is shared with REC9's length policy. REC9 shipped 2026-08-05 (see [q6-final.md](../q6-final.md)) and stands alone, so this is no longer a joint pickup: `RecordingPostProcessor.mergeLengths` already applies `adelay` for a late-starting system channel, and the head offset is measured from `systemUptime` at start against the first frame written into the system WAV as it currently stands, with the mark cleared in `startSystemCapture` precisely because `AVAudioFile(forWriting:)` truncates. Build on that rather than reinventing it. Note what REC9 did and did not change here: a retry's audio now merges at the offset where the retry actually happened rather than at sample 0, but the pre-loss audio the retry overwrote is still lost, which is this task's whole subject.
 
 Fix `handleSystemAudioLost`'s doc comment and `REC8.md:5`'s preservation claim in the same commit.
 
 ## Acceptance
 
-Suite green with new tests. A test drives `handleSystemAudioLost` then `retrySystemAudio` over a fake file sink and asserts the pre-loss bytes survive and the post-retry frames land at the right offset. Not owner-verifiable without killing an SCStream mid-call, so this closes on tests plus REC9's walkthrough, and the spec says so rather than pre-registering an observation the owner cannot make.
+Suite green with new tests. A test drives `handleSystemAudioLost` then `retrySystemAudio` over a fake file sink and asserts the pre-loss bytes survive and the post-retry frames land at the right offset. Not owner-verifiable without killing an SCStream mid-call, so this closes on tests alone, and the spec says so rather than pre-registering an observation the owner cannot make. It previously said it would close on tests plus REC9's walkthrough; that leg is gone, because REC9 closed 2026-08-05 with its walkthrough step 3 recorded as **unperformable**: changing the Screen Recording grant restarts the app, so the permission cannot be re-enabled mid-recording. Do not re-introduce an owner step of that shape here.
