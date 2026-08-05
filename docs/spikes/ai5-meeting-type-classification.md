@@ -1,6 +1,6 @@
 # AI5 spike: meeting-type classification
 
-Spike, 2026-07-11. **Measured and resolved 2026-07-23: NO-GO on a permanent `MeetingSummary.meeting_type` field.** Instruments: `mp classify-meetings` (the prototype labeller, kept) and [`ai5_agreement.py`](./ai5_agreement.py) (the reducer that produced [`ai5-classification-results.json`](./ai5-classification-results.json)).
+Spike, 2026-07-11. **Measured and resolved 2026-07-23: NO-GO on a permanent `MeetingSummary.meeting_type` field.** Instruments: `mp classify-meetings` (the prototype labeller, retired by HYG4 on 2026-08-05 once this verdict was banked; git history holds it) and [`ai5_agreement.py`](./ai5_agreement.py) (the reducer that produced [`ai5-classification-results.json`](./ai5-classification-results.json)).
 
 ## Question
 
@@ -72,4 +72,4 @@ The specific thing not to build: a field that is 94% right on a quarter of the l
 
 **AI9** ("Learned workflow routing") carried "Gated on the AI5 owner verdict". That gate is now resolved, and resolved in a way that does not block AI9: AI9's signal is the WF8 reassignment pairs, actual owner corrections of a real workflow assignment, which is a strictly better-grounded label than an inferred type. AI9 should not take a dependency on `meeting_type`; nothing here says workflow suggestion is a bad idea, only that a derived type field is.
 
-`mp classify-meetings` is kept as the owner-dev harness that produced this (de-CLI exempt, spike class). Re-running it after the library grows or after a calendar lands is a one-command way to re-test the verdict.
+`mp classify-meetings` produced this and was **retired by HYG4 on 2026-08-05**, with the module, its tests, and its dispatch arm deleted (the HYG1 `ai2_spike` precedent). The verdict is what the spike was for, and it is recorded here; a verb that advertises a capability the product decided against is a dead surface sitting in `mp --help` beside the real ones. Re-testing after the library grows or a calendar lands means restoring the labeller from git history, which is the cheaper half of the bargain.

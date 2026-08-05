@@ -18,8 +18,6 @@ Subcommands:
                               a one-shot backend (regulated/NDA still force local)
   publish <summary.json>      Fan an existing summary out to all configured
                               sinks (used by the Apple Intelligence backend)
-  publish-notion <summary.json>
-                              Publish summary to Notion (idempotent)
   publish-from-paste <transcript.md>
                               Parse <stem>.summary.md you wrote by hand,
                               then publish to Notion (BYO summary mode)
@@ -56,9 +54,6 @@ Subcommands:
                               corpus, on-device (Phase 3)
   analyze-detection [--since 7d] [--source PATH] [--output FILE] [--json]
                               Audit detector end-signal reliability
-  classify-meetings [--llm] [--dir P] [--json]
-                              AI5 spike: label the library by meeting type
-                              (heuristic; --llm adds a local-engine label)
   ask <question...> [--context-tokens N] [--model M] [--rebuild] [--dir P] [--out F] [--json]
                               Ask a natural-language question about your meetings;
                               engine-backed, cited answers over the on-device
@@ -134,9 +129,6 @@ def _dispatch(cmd: str, rest: list[str]) -> int:
     if cmd == "publish":
         from .publish_cmd import main as run
         return run(rest)
-    if cmd in {"publish-notion", "publish_notion"}:
-        from .publish_notion import main as run
-        return run(rest)
     if cmd in {"publish-from-paste", "publish_from_paste"}:
         from .publish_from_paste import main as run
         return run(rest)
@@ -172,9 +164,6 @@ def _dispatch(cmd: str, rest: list[str]) -> int:
         return run(rest)
     if cmd in {"analyze-detection", "analyze_detection"}:
         from .analyze_detection import main as run
-        return run(rest)
-    if cmd in {"classify-meetings", "classify_meetings"}:
-        from .classify import main as run
         return run(rest)
     if cmd == "ask":
         from .ask import main as run

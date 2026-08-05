@@ -148,7 +148,8 @@ def test_nda_workflow_skips_notion_and_arms_guard(tmp_path: Path, monkeypatch):
     # SEC review regression: an NDA workflow (sidecar workflow_nda_mode=true) must
     # skip the Notion publish on this legacy publish() path too, even when
     # NOTION_TOKEN is set, and the egress guard must arm on the resolved config as
-    # the structural backstop. Covers `mp publish-notion` and `mp publish-from-paste`.
+    # the structural backstop. Covers the explicit single-sink `publish()` path,
+    # whose `mp publish-notion` verb HYG4 retired, and `mp publish-from-paste`.
     from mp import egress_guard
 
     summary_path = _write_summary(tmp_path)
@@ -181,9 +182,9 @@ def test_nda_workflow_scrubs_the_notion_token(tmp_path: Path, monkeypatch):
 
 def test_explicit_publish_notion_ignores_the_configured_sink_list(tmp_path: Path, monkeypatch):
     """SEC13(c): the skip keys off `config.zero_egress`, not `effective_sinks`.
-    `mp publish-notion <summary.json>` names its sink, so an `output.sinks` that
-    omits notion (a routing preference, not an egress rule) must not silently
-    turn the command into a no-op."""
+    `publish_notion.publish()` names its sink, so an `output.sinks` that omits
+    notion (a routing preference, not an egress rule) must not silently turn the
+    call into a no-op."""
     summary_path = _write_summary(tmp_path)
     monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
     cfg = _cfg()

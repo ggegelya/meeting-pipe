@@ -19,6 +19,13 @@ the meeting's sidecars (PIPE5). Enrichment is fail-soft: a database that lacks a
 property is skipped silently, a type mismatch is skipped with one log line, a
 failed probe collapses back to the three base columns, and the sink never
 creates or mutates database schema.
+
+There is no `mp publish-notion` verb any more (HYG4 retired it): `mp publish`
+fans a summary out to every configured sink, so a single-sink escape hatch only
+sent an obsidian-only install's summary somewhere it had not asked for. The live
+entry point into this module is `NotionRestPublisher`, which
+`publish_router.fanout` builds; `publish()` and `main()` below are kept as the
+explicit-single-sink path and are no longer reachable from the CLI.
 """
 from __future__ import annotations
 

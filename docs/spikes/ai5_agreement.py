@@ -11,6 +11,11 @@ agreement rates, which is what the verdict rests on:
 The headline number is the per-label Jaccard between the two independent
 labellers (heuristic and local LLM). Overall agreement flatters a taxonomy whose
 mass sits in one or two easy buckets; per-label overlap does not.
+
+The producing verb no longer exists: HYG4 retired `mp classify-meetings` on
+2026-08-05, once the NO-GO verdict this reducer produced was banked in
+`ai5-meeting-type-classification.md`. This file is kept as the provenance of the
+recorded numbers; re-running it means restoring the labeller from git history.
 """
 from __future__ import annotations
 

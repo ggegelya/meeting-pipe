@@ -140,9 +140,9 @@ def _local_client(cfg: Config, model: str | None):
         # `map_reduce_above_chars` is deliberately NOT passed either. It routes an
         # over-long *transcript* through a windowed map-reduce (PIPE4); every
         # free-form caller here packs its own prompt to a budget first (ask to
-        # `--context-tokens` clamped by RAM tier, digest to a formatted fact list,
-        # classify to a title plus attendees), so there is nothing left for it to
-        # window. The default is what LocalSummaryClient already applies.
+        # `--context-tokens` clamped by RAM tier, digest to a formatted fact
+        # list), so there is nothing left for it to window. The default is what
+        # LocalSummaryClient already applies.
     )
 
 
