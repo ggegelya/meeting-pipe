@@ -124,12 +124,17 @@ public enum InputDeviceResolver {
     /// `AVAudioEngine.inputNode` builds a `CADefaultDeviceAggregate` spanning both directions, so
     /// our mic capture pins the default OUTPUT device RUNNING too. Never reuse this property as
     /// an end signal. Measured: `daemon/scripts/end6-device-idle-probe.swift`, written up in
-    /// `docs/spikes/end6-device-idle-corroborator.md`. The per-process read
-    /// (`ProcessAudioSignal` / DET2) would be unconfounded in principle, since it asks about the
-    /// client's process rather than the device, but it does not resolve at all: DET2 closed NO-GO
-    /// 2026-07-20 after measuring that neither the Screen Recording grant, a live process tap, nor
-    /// a private aggregate device revives it. So there is no unconfounded alternative to reach for
-    /// here; end detection rests on the AX re-walk and the idle-stop backstop.
+    /// `docs/spikes/end6-device-idle-corroborator.md`. The per-process read (`ProcessAudioSignal`) is
+    /// unconfounded, since it asks about the client's process rather than the device, and DET8 revived
+    /// it on 2026-08-05: DET2's NO-GO had translated the `MSTeams` shell PID, which never registers as
+    /// a CoreAudio client, while enumerating `kAudioHardwarePropertyProcessObjectList` resolves the
+    /// SlimCore `ModuleHost` helper that actually holds the mic, with no TCC grant, and an owner-run
+    /// live-call probe returned GO across two calls. So there IS an unconfounded per-process read to
+    /// reach for now, and it is wired end-side for Teams and Zoom. It does not replace this
+    /// start-time check: it says whether the CLIENT is capturing, not whether the device we are about
+    /// to record is the one it opened, which is the mismatch this function exists to catch. And it is
+    /// held to `requiresCorroboration`, so end detection still rests on the AX re-walk and the
+    /// idle-stop backstop with process audio as a corroborator rather than a lead.
     public static func shouldWarnMismatch(defaultInputRunning: Bool, anotherInputRunning: Bool) -> Bool {
         !defaultInputRunning && anotherInputRunning
     }

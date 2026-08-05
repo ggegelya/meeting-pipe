@@ -445,12 +445,52 @@ final class PromotionEngineTests: XCTestCase {
         )
     }
 
-    func test_requiresCorroboration_is_scoped_to_ax_leave() {
+    func test_requiresCorroboration_covers_ax_leave_and_process_audio() {
         XCTAssertTrue(PrimarySignalKind.axLeaveButton.requiresCorroboration)
+        // DET8's rail, and the condition its spike pre-registered for reviving the signal at all:
+        // a lone input drop (object churn, a client whose mute the OS honours) must never
+        // solo-confirm an end. Reviving the signal without this is the shape not to ship.
+        XCTAssertTrue(PrimarySignalKind.processAudioIsRunningInput.requiresCorroboration)
         XCTAssertFalse(PrimarySignalKind.shareableContentWindow.requiresCorroboration)
         XCTAssertFalse(PrimarySignalKind.workspaceAppTerminated.requiresCorroboration)
         XCTAssertFalse(PrimarySignalKind.windowTitleLeftPattern.requiresCorroboration)
         XCTAssertFalse(PrimarySignalKind.browserTabTitle.requiresCorroboration)
+    }
+
+    func test_lone_process_audio_drop_does_not_promote_to_ended_after_debounce() {
+        // The rail in action: process audio leads an end with nothing else observed, and the
+        // debounce alone must not promote it. A helper restart or a resolution refresh reads
+        // exactly like this, and DET8's probe caught an audio client re-registering under a new
+        // object ID, so this is a measured risk rather than a theoretical one.
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 1))
+        XCTAssertNil(
+            engine.tick(at: Date(timeIntervalSince1970: 10)),
+            "a lone process-audio drop must stay provisional, not promote on the debounce"
+        )
+    }
+
+    func test_process_audio_lead_ends_when_corroborated_by_cross_class_signal() {
+        // And the other half: the rail holds it provisional, it does not make the signal inert.
+        // A genuinely independent class still confirms it on the fast path.
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 1))
+        let decision = engine.ingest(event(.shareableContentWindow, .ended, at: 1.4))
+        XCTAssertEqual(
+            decision?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "process_audio_is_running_input_false",
+                    confirmedBy: ["shareable_content_window_gone"]
+                )
+            )
+        )
     }
 
     func test_evidence_class_groups_only_ax_leave_and_window_gone() {

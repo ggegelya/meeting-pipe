@@ -42,19 +42,33 @@ final class LifecycleAdapterTests: XCTestCase {
         XCTAssertEqual(adapter.bundleIDs, ["us.zoom.xos"])
     }
 
-    func test_process_audio_signal_is_disabled_for_every_provider() {
-        // TECH-END1: the process mic-release signal returned object 0 for 19.8
-        // days (13,419 unresolved, 0 resolved) and is off for all providers, so no
-        // NativeLifecycleAdapter constructs a ProcessAudioSignal and the
-        // `process_audio_unresolved` log spam stops at the source.
-        // DET2 (2026-07-20) made this permanent rather than provisional: an
-        // owner-run probe on a real Mac, holding the Screen Recording grant during
-        // a live call, got object 0 from the grant alone, from a live bare process
-        // tap, and from a private aggregate device around that tap. Adopting a tap
-        // does not revive the read, so flipping any of these to true needs a new
-        // macOS measurement first, not just a build. Do not relax this test.
-        XCTAssertFalse(NativeLifecycleConfig.teams.usesProcessAudio)
-        XCTAssertFalse(NativeLifecycleConfig.zoom.usesProcessAudio)
+    func test_process_audio_is_enabled_with_the_corroboration_rail() {
+        // DET8 (2026-08-05) re-enabled the process mic signal for Teams and Zoom. This test used to
+        // pin it disabled everywhere, on TECH-END1's 19.8 days of 13,419 unresolved reads and DET2's
+        // 2026-07-20 NO-GO; both measured the `MSTeams` shell PID, which never registers as a
+        // CoreAudio client, so they measured the wrong process. Enumerating the process-object list
+        // finds the SlimCore ModuleHost that does own the mic, with no TCC grant, and an owner-run
+        // live-call probe returned GO across two calls.
+        //
+        // The rail assert below is the LOAD-BEARING one, not the flip. DET8's spike pre-registered
+        // `requiresCorroboration` as the condition of reviving this signal at all: a lone input drop
+        // must never solo-confirm a meeting end. Note it survived a result that superficially argues
+        // against it, because that is the thing a later reader will want to re-litigate. The probe
+        // measured two confirmed in-call mutes producing zero input transitions, so the mute risk
+        // the rail was partly justified on is measured away; the churn risk is not, since the same
+        // probe caught an audio client re-registering under a new object ID. Zoom is unmeasured
+        // besides. Do not relax this to keep a flip green.
+        XCTAssertTrue(
+            PrimarySignalKind.processAudioIsRunningInput.requiresCorroboration,
+            "DET8's flip ships with the corroboration rail or it does not ship"
+        )
+
+        XCTAssertTrue(NativeLifecycleConfig.teams.usesProcessAudio)
+        XCTAssertTrue(NativeLifecycleConfig.zoom.usesProcessAudio)
+
+        // Webex and Slack stay off, and not as TECH-END1 leftovers: Cisco holds the mic open
+        // post-call for ultrasound device discovery, so an input read there cannot tell a live call
+        // from a finished one. `Coordinator` builds both without a halBus to match.
         XCTAssertFalse(NativeLifecycleConfig.webex.usesProcessAudio)
         XCTAssertFalse(NativeLifecycleConfig.slack.usesProcessAudio)
     }

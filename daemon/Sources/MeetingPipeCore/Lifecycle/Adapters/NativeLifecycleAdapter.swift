@@ -5,20 +5,27 @@ import Foundation
 public struct NativeLifecycleConfig {
     public let bundleIDs: Set<String>
     public let titleMatch: (String?) -> Bool
-    /// TECH-END1: false for every provider, and DET2 made that permanent. The
-    /// `kAudioProcessPropertyIsRunningInput` signal needs the PID-to-HAL-process-object
-    /// translation, which returns object 0: 0 successful reads in 19.8 days (13,419
-    /// `process_audio_unresolved`, every OSStatus `noErr`, so the HAL answers and reports
-    /// no process object rather than refusing). The obvious fix was to blame our capture
-    /// model (ScreenCaptureKit, no audio-tap authorization, no process tap) and adopt a
-    /// tap. DET2 measured that on a real Mac against a live call while holding the Screen
-    /// Recording grant: object 0 from the grant alone, from a live bare process tap, and
-    /// from a private aggregate device around that tap, with tap and aggregate both
-    /// constructing fine. The tap hypothesis is refuted, not untried, so this flag stays
-    /// false and the machinery is kept only to re-measure cheaply if a future macOS changes
-    /// process-object authorization. Never constructing the signal also stops the log spam.
-    /// See `docs/spikes/det2-process-tap-attribution.md`.
-    /// (Webex/Slack were already false: Cisco holds the mic open post-call for ultrasound.)
+    /// TECH-END1 turned this off for every provider; DET8 turned it back on for Teams and Zoom
+    /// on 2026-08-05. The signal had 0 successful reads in 19.8 days (13,419
+    /// `process_audio_unresolved`, every OSStatus `noErr`, so the HAL answered and reported no
+    /// process object rather than refusing), and DET2 measured on a real Mac against a live call
+    /// that neither the Screen Recording grant, a live bare process tap, nor a private aggregate
+    /// device changed that. The tap hypothesis stays refuted rather than untried. What DET2 got
+    /// wrong is the conclusion: all three mechanisms asked about the `MSTeams` SHELL PID, the one
+    /// the daemon detects, and the shell never registers as a CoreAudio client at all. Enumerating
+    /// `kAudioHardwarePropertyProcessObjectList` instead (2026-07-30, no TCC grant) found
+    /// `com.microsoft.teams2.modulehost`, the SlimCore media stack MIC8 proved owns the mic, and an
+    /// owner-run live-call probe on 2026-08-05 returned GO: input true at the call's first event
+    /// and false within 11.4 s of the leave, against a 60 s bar. `ProcessAudioSignal` now resolves
+    /// by enumerate-and-match, and `processAudioIsRunningInput` carries `requiresCorroboration ==
+    /// true` in `PromotionEngine`. Those two ship together: the flag is only safe to set here
+    /// because a lone input drop cannot solo-confirm an end.
+    ///
+    /// Webex and Slack stay false, which is NOT a leftover from TECH-END1. Cisco holds the mic open
+    /// post-call for ultrasound device discovery, so an input read there says nothing about whether
+    /// the call is over, and that carve-out predates DET2. Neither was covered by the 2026-08-05
+    /// probe either (Teams only), and `Coordinator` builds both without a `halBus`, which the
+    /// initializer below requires for a true flag. Flipping either needs its own measurement first.
     public let usesProcessAudio: Bool
 
     public init(
@@ -33,28 +40,34 @@ public struct NativeLifecycleConfig {
 }
 
 public extension NativeLifecycleConfig {
-    /// ShareableContent + AXLeaveButton (ProcessAudio disabled, TECH-END1).
+    /// ShareableContent + AXLeaveButton + ProcessAudio (re-enabled by DET8; the only provider its probe measured).
     static let teams = NativeLifecycleConfig(
         bundleIDs: ["com.microsoft.teams2", "com.microsoft.teams"],
         titleMatch: MeetingTitlePatterns.teams,
-        usesProcessAudio: false
+        usesProcessAudio: true
     )
 
-    /// ShareableContent + AXLeaveButton (same set as Teams; ProcessAudio disabled, TECH-END1).
+    /// ShareableContent + AXLeaveButton + ProcessAudio (same set as Teams). Zoom was not covered by
+    /// DET8's probe, so this rides on the resolver being provider-agnostic rather than on a
+    /// measurement: it matches `us.zoom.xos*` by the same prefix rule, and no match simply resolves
+    /// to unresolved and holds prior state, which is the pre-DET8 behaviour rather than a new risk.
     static let zoom = NativeLifecycleConfig(
         bundleIDs: ["us.zoom.xos"],
         titleMatch: MeetingTitlePatterns.zoom,
-        usesProcessAudio: false
+        usesProcessAudio: true
     )
 
-    /// ShareableContent + AXLeaveButton. Covers legacy `com.cisco.webexmeetingsapp` and the unified Webex App (`com.cisco.spark`).
+    /// ShareableContent + AXLeaveButton. Covers legacy `com.cisco.webexmeetingsapp` and the unified
+    /// Webex App (`com.cisco.spark`). ProcessAudio stays off: Cisco holds the mic open post-call for
+    /// ultrasound device discovery, so an input read cannot say whether the call is over.
     static let webex = NativeLifecycleConfig(
         bundleIDs: ["com.cisco.webexmeetingsapp", "com.cisco.spark"],
         titleMatch: MeetingTitlePatterns.webex,
         usesProcessAudio: false
     )
 
-    /// ShareableContent + AXLeaveButton for `com.tinyspeck.slackmacgap`.
+    /// ShareableContent + AXLeaveButton for `com.tinyspeck.slackmacgap`. ProcessAudio stays off,
+    /// unmeasured and grouped with Webex since TECH-END1.
     static let slack = NativeLifecycleConfig(
         bundleIDs: ["com.tinyspeck.slackmacgap"],
         titleMatch: MeetingTitlePatterns.slackHuddle,

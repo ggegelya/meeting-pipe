@@ -143,9 +143,14 @@ final class MeetingSourceScanner {
                 // it is rejected here.
                 //
                 // END5 originally let such a title in when live process audio corroborated it (a
-                // real browser call holds the mic). DET2 closed that signal as permanently dead on
-                // 2026-07-20, so the disjunct was removed rather than left reading as if
-                // corroboration were still possible. The consequence is a real coverage gap, stated
+                // real browser call holds the mic). DET2 closed that signal on 2026-07-20, so the
+                // disjunct was removed rather than left reading as if corroboration were still
+                // possible. DET8 later refuted that close and revived the signal (2026-08-05: DET2
+                // had translated the shell PID, which never registers as a CoreAudio client), but
+                // end-side only, and did NOT re-add this disjunct. Re-admitting bare brand-token
+                // titles is a start-side false-positive question, which is DET6's to answer with a
+                // measurement rather than a free consequence of the end-side flip. The consequence
+                // below is therefore still live today. The gap is a real one, stated
                 // plainly so it is not rediscovered as a surprise: a plain browser tab running
                 // Teams, Webex or a Slack huddle can never become a candidate, and Zoom-in-browser
                 // never reaches here at all (no Zoom title matcher). Only Google Meet clears
@@ -246,9 +251,15 @@ final class MeetingSourceScanner {
         var signals = MeetingSourceCandidate.Signals()
 
         // A cheap per-process audio probe used to run here, ahead of the AX walks, as one of the
-        // PERF6 gate preconditions. DET2 measured it permanently dead (2026-07-20) and it was
-        // removed: it cost a CoreAudio HAL round-trip per candidate process on every scan to
-        // produce a value that could never be true.
+        // PERF6 gate preconditions. The DET2 cleanup removed it (2026-07-20): it cost a CoreAudio
+        // HAL round-trip per candidate process on every scan to produce a value that could never be
+        // true. DET8 revived the signal on 2026-08-05, so a read here could be true again, and it
+        // was still not restored. Two reasons, both worth knowing before adding it back. The cost
+        // argument got worse, not better: resolution is now an enumeration of the whole HAL process
+        // list plus two property reads per object, which is heavier than the old translate and would
+        // run per candidate per scan. And the benefit is a start-side widening that DET6 owns and
+        // has to measure. If it comes back it belongs behind the same PERF6 gate, resolved once per
+        // scan rather than once per candidate.
 
         if axTrusted {
             let axApp = AXUIElementCreateApplication(pid)

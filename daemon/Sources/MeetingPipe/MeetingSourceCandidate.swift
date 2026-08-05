@@ -13,8 +13,11 @@ struct MeetingSourceCandidate: Equatable {
     ///
     /// The name is historical: it once meant "this native is probed for process audio", the probe
     /// that excluded Webex/spark because they keep the mic open post-call for ultrasound device
-    /// discovery. DET2 closed that probe as permanently dead (2026-07-20) and the discovery path
-    /// no longer reads process audio at all, so no candidate has an audio leg now. The flag is kept
+    /// discovery. The DET2 cleanup removed that probe (2026-07-20), and DET8's 2026-08-05 revival
+    /// put the signal back end-side only, so the DISCOVERY path still reads no process audio at all
+    /// and no candidate has an audio leg. (The Webex exclusion outlived the probe on its own merits;
+    /// `NativeLifecycleConfig.webex` keeps `usesProcessAudio` false for the same ultrasound reason.)
+    /// The flag is kept
     /// because the behaviour it gates is still wanted and unrelated to audio: a normal native can
     /// reach two distinct signals in a real call (toolbar + Leave + Mute) so it is held to
     /// `isConfidentNativeMeeting`, while Webex/spark cannot reach that bar as reliably (their

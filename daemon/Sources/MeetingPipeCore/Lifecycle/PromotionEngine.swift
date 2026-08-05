@@ -33,11 +33,26 @@ public extension PrimarySignalKind {
     /// held in provisional, not promoted to `.ended`, until a reliable signal
     /// (window-gone) corroborates. Reliable signals stay false here so they keep
     /// promoting on their own via the debounce, preserving the ends that already work.
+    ///
+    /// DET8 put `processAudioIsRunningInput` in the same bucket, and this is the rail its
+    /// spike pre-registered as the condition of reviving that signal at all: it ships
+    /// true-with-corroboration or it does not ship. Worth knowing that it survived a
+    /// measurement that superficially argues against needing it. The rail was justified on
+    /// two risks, mute and object churn, and the 2026-08-05 probe measured the mute half as
+    /// a NON-risk: two confirmed in-call mutes across two calls produced zero
+    /// `isRunningInput` transitions, the HAL independently agreeing with MIC8's SlimCore
+    /// finding that client mute is a transmit gate and the OS mic stays live. The churn half
+    /// stands and is now the live risk: the same probe caught an audio client that tore down
+    /// and re-registered under a NEW process-object ID, so a stale or refreshing resolution
+    /// can read as an input drop that is really an unknown. Two calls on one app is not a
+    /// licence to drop the rail either: Zoom's mute behaviour here is unmeasured, and a
+    /// future Teams can change. As a CORROBORATOR the signal is unaffected and still confirms
+    /// another class's lead on the fast path, which is most of what DET8 bought back.
     var requiresCorroboration: Bool {
         switch self {
-        case .axLeaveButton:
+        case .axLeaveButton, .processAudioIsRunningInput:
             return true
-        case .shareableContentWindow, .processAudioIsRunningInput, .browserTabTitle,
+        case .shareableContentWindow, .browserTabTitle,
              .workspaceAppTerminated, .windowTitleLeftPattern:
             return false
         }

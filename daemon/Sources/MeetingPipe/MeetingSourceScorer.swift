@@ -45,8 +45,11 @@ enum MeetingSourceScorer {
     /// unreliable for natives: Teams/Slack title recognizers match chat threads and calendar
     /// windows. The calling-controls toolbar, Leave button and Mute button only appear during an
     /// active call. `shareableContentActive` is listed but never set (see its declaration), and the
-    /// process-audio disjunct was removed when DET2 closed that signal as permanently dead, so in
-    /// practice this is the three AX control signals.
+    /// process-audio disjunct was removed by the DET2 cleanup, so in practice this is the three AX
+    /// control signals. DET8 revived process audio on 2026-08-05 (DET2 had measured the wrong
+    /// process) but END-SIDE only, and deliberately did not re-add this disjunct: re-admitting a
+    /// candidate on an audio read is a start-side false-positive question that DET6 owns and gates
+    /// on its own measurement. So the signal exists again and this scorer still does not consult it.
     static func hasCorroboratingSignal(_ signals: MeetingSourceCandidate.Signals) -> Bool {
         signals.callingControlsToolbar
             || signals.leaveButton
