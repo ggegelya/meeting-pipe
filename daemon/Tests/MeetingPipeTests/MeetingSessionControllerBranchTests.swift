@@ -453,13 +453,38 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         XCTAssertEqual(host.stateMachine.liveSuppressedCandidate()?.displayName, "Microsoft Teams")
     }
 
+    /// DET9's consequence at the surface that shows it. The menu bar's `Suppressed (<app>)` label
+    /// and the "Record this <app> meeting" row both read the skip latch, so a latch that lapses
+    /// during a mid-call stretch of scans with no confident winner takes DET7's whole attach
+    /// affordance with it, while the call is still running. Walk the quiet discovery cadence
+    /// across the 48 s gap the owner's log actually recorded on 2026-07-27.
+    func test_cachedCandidate_survivesAMidCallStretchWithNoConfidentWinner() {
+        let (controller, host) = makeController()
+        let teams = source("com.microsoft.teams2")
+        let sightedAt = Date()
+        skipThenSight(controller, host, teams)
+
+        let idle = DiscoveryScanCadence.discoveryDefault.idle
+        for missedPolls in 1...4 {
+            let now = sightedAt.addingTimeInterval(idle * Double(missedPolls))
+            XCTAssertTrue(
+                host.stateMachine.isSkipLatched(bundleID: teams.bundleID, now: now),
+                "the menu bar drops back to Start Recording \(idle * Double(missedPolls)) s into a live call"
+            )
+            XCTAssertNotNil(
+                host.stateMachine.liveSuppressedCandidate(now: now),
+                "and the meeting the user skipped is no longer attachable, so a manual start records generic"
+            )
+        }
+    }
+
     func test_cachedCandidate_clearsWhenTheLatchLapses() {
         let (controller, host) = makeController()
         let teams = source("com.microsoft.teams2")
         skipThenSight(controller, host, teams)
         XCTAssertNotNil(host.stateMachine.liveSuppressedCandidate())
 
-        // Discovery stops seeing the meeting: the latch lapses ~15 s later, and the stale
+        // Discovery stops seeing the meeting for a whole grace: the latch lapses and the stale
         // candidate goes with it. Otherwise a start hours later would attribute itself to a
         // meeting that ended, which is worse than recording generic.
         let afterGrace = Date().addingTimeInterval(DetectionStateMachine.skipLatchGraceSec + 1)

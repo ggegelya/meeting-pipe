@@ -37,7 +37,7 @@ Join a call in Zoom, Teams, Google Meet, Webex, or a Slack huddle and a small pa
 - **Last time** appears when this workflow has met before. Click it and the panel expands in place to show the previous meeting: its title, how long ago, the first few summary points, and what it left open. Click again to collapse.
 - The **workflow chip** shows which routing this meeting will use. Click it to pick a different one before you record.
 
-If you ignore the panel it does what **Preferences ▸ Prompt** says after the timeout, which by default is to skip. A skipped meeting is not lost: the menu bar reads `Suppressed (<app>)` for as long as the call is still running, and the menu's top action changes to **Record this `<app>` meeting**, so you can start late and still get the app chip and the automatic stop.
+If you ignore the panel it does what **Preferences ▸ Prompt** says after the timeout, which by default is to skip. A skipped meeting is not lost: the menu bar reads `Suppressed (<app>)` for as long as the call is still running, and the menu's top action changes to **Record this `<app>` meeting**, so you can start late and still get the app chip and the automatic stop. It stays that way even when you switch to another app and leave the call in the background, and it clears about a minute after the call actually ends.
 
 ### Recording by hand
 

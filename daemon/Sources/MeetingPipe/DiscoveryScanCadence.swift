@@ -13,6 +13,16 @@ import Foundation
 /// since the previous poll. Threading: the watcher drives it entirely on the main run loop (observers
 /// hop to main; the timer fires on main), so the single-`Bool` flip needs no lock.
 struct DiscoveryScanCadence {
+
+    /// The intervals `MeetingDiscoveryWatcher` actually runs at (PERF6). Named here rather than
+    /// written at the watcher's stored property so anything sizing a timeout against the discovery
+    /// poll reads the live number instead of copying it into a constant that then decays.
+    ///
+    /// DET9 is why this exists: `DetectionStateMachine.skipLatchGraceSec` was a literal 15
+    /// justified in its own comment as "5x the 3 s poll", PERF6 moved the quiet poll here to 12 s,
+    /// and the justification silently became 1.25 polls with nothing to catch it.
+    static let discoveryDefault = DiscoveryScanCadence(active: 3, idle: 12)
+
     let active: TimeInterval
     let idle: TimeInterval
     private var activitySinceLastPoll = false

@@ -125,6 +125,62 @@ final class DetectionStateMachineTests: XCTestCase {
         XCTAssertFalse(m.isSkipLatched(bundleID: Self.teams.bundleID))
     }
 
+    // MARK: - DET9: the grace is measured in discovery polls, not wall-clock taste
+
+    /// The regression in one assert. The grace was a literal 15 justified in its own comment as
+    /// "5x the MeetingDiscoveryWatcher 3 s poll"; PERF6 backed the quiet poll off to 12 s and
+    /// nothing failed, so the justification decayed to 1.25 polls in silence. Derived from the
+    /// cadence, it moves with it.
+    func test_skipLatchGrace_is_derived_from_the_live_discovery_poll() {
+        XCTAssertEqual(
+            DetectionStateMachine.skipLatchGraceSec,
+            DiscoveryScanCadence.discoveryDefault.idle * DetectionStateMachine.skipLatchGracePolls,
+            accuracy: 0.001,
+            "the grace has to be a multiple of the poll it exists to bridge, or the next cadence change re-opens DET9"
+        )
+        // The old constant was the right answer to the old poll, which is exactly why a literal
+        // was the wrong shape: 15 was never wrong, it just stopped being 5 polls.
+        XCTAssertEqual(DetectionStateMachine.skipLatchGrace(idlePollSec: 3), 15, accuracy: 0.001)
+        XCTAssertEqual(DetectionStateMachine.skipLatchGrace(idlePollSec: 12), 60, accuracy: 0.001)
+    }
+
+    /// Drive the latch at the *idle* cadence, one poll at a time, with every scan finding no
+    /// confident winner. That is the 2026-07-27 shape from the owner's own log: a skipped Teams
+    /// call went 48 s between confident winners while it was plainly still running, because the
+    /// AX control walk found no Leave, Mute or toolbar the whole time (Teams' compact /
+    /// backgrounded call UI). Nothing refreshes the latch across any of these polls and it has to
+    /// hold anyway, or the prompt re-opens over the live meeting and the menu bar's
+    /// `Suppressed (<app>)` label - DET7's only handle on the still-running call - collapses with it.
+    func test_skipLatch_survives_a_stretch_of_polls_that_find_no_confident_winner() {
+        let m = DetectionStateMachine()
+        let idle = DiscoveryScanCadence.discoveryDefault.idle
+        let skippedAt = Date()
+        m.armSkipLatch(bundleID: Self.teams.bundleID)
+
+        for missedPolls in 1...4 {
+            let elapsed = idle * Double(missedPolls)
+            XCTAssertTrue(
+                m.isSkipLatched(bundleID: Self.teams.bundleID, now: skippedAt.addingTimeInterval(elapsed)),
+                "the latch lapsed \(elapsed) s in (\(missedPolls) missed polls), mid-call"
+            )
+        }
+    }
+
+    /// The other half, and the reason the grace cannot simply be made enormous: a latch that never
+    /// lapses silently swallows every later meeting in the same app, which is a missed recording
+    /// rather than a spurious prompt.
+    func test_skipLatch_still_lapses_once_discovery_has_stopped_seeing_the_meeting() {
+        let m = DetectionStateMachine()
+        let skippedAt = Date()
+        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        XCTAssertFalse(
+            m.isSkipLatched(
+                bundleID: Self.teams.bundleID,
+                now: skippedAt.addingTimeInterval(DetectionStateMachine.skipLatchGraceSec + 1)
+            )
+        )
+    }
+
     func test_abandonPrompt_arms_both_the_cooldown_and_the_skip_latch() {
         let m = DetectionStateMachine()
         m.setPrompting(source: Self.teams)

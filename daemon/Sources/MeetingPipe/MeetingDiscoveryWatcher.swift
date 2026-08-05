@@ -49,10 +49,12 @@ final class MeetingDiscoveryWatcher {
     /// `mic_busy_started` / `mic_busy_ended`. Main-queue only.
     private var micBusyTracker = MicBusySpanTracker()
 
-    /// PERF6: the backstop poll runs `active` (3 s) while workspace/mic activity is arriving and backs
-    /// off to `idle` (12 s) once a poll passes quiet, so an idle meeting app (e.g. Teams in the
-    /// background) is no longer AX-walked every 3 s all day. Driven on main only (see the type's note).
-    private var cadence = DiscoveryScanCadence(active: 3, idle: 12)
+    /// PERF6: the backstop poll runs `active` while workspace/mic activity is arriving and backs off
+    /// to `idle` once a poll passes quiet, so an idle meeting app (e.g. Teams in the background) is
+    /// no longer AX-walked every 3 s all day. Driven on main only (see the type's note). The
+    /// intervals live on the type (DET9), because the skip latch sizes its grace against them and a
+    /// second copy here is how they came to disagree.
+    private var cadence = DiscoveryScanCadence.discoveryDefault
 
     /// Coalesces bursts (Cmd+Tab fires didDeactivate + didActivate back to back) into a single scan.
     private var coalesceWork: DispatchWorkItem?

@@ -50,7 +50,8 @@ final class StatusBarController {
     /// stays `.idle` after a timeout-skip (START1), so this is a presentation-only
     /// label that lives as long as the bundle's skip latch holds. `suppressedIsActive`
     /// reads that latch (the single source of truth); the timer re-checks it and
-    /// collapses to Idle once it lapses (~15 s after the call ends).
+    /// collapses to Idle once it lapses, which is a full `skipLatchGraceSec` after discovery last
+    /// saw the meeting and not "shortly after it ends" (DET9).
     private var suppressedDisplayTimer: Timer?
     private var suppressedIsActive: (() -> Bool)?
     private static let suppressedRecheckInterval: TimeInterval = 5
@@ -203,7 +204,10 @@ final class StatusBarController {
     /// Surface a silent timeout-skip in the menu bar (UX10 / AUD-12): show
     /// "Suppressed (<app>)" while the skip latch holds. `isStillSuppressed` reads
     /// that latch; we re-check on a low-frequency timer and collapse to Idle once
-    /// it lapses (~15 s after the call ends). Presentation-only: the state machine
+    /// it lapses, a full `DetectionStateMachine.skipLatchGraceSec` after discovery last saw the
+    /// meeting. That grace is what keeps this label up across a mid-call stretch of scans that
+    /// find no confident winner (DET9); losing it there destroyed DET7's attach affordance while
+    /// the call was still running, which is the whole point of the label. Presentation-only: the state machine
     /// stays `.idle` (re-entering the old global `.suppressed` is the START1 wedge),
     /// so detection keeps running for other apps the whole time.
     func setSuppressed(_ source: AppSource, isStillSuppressed: @escaping () -> Bool) {

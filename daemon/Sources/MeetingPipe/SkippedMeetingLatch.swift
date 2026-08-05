@@ -15,14 +15,25 @@ import Foundation
 /// skip in one app never gates another) and it never keeps the lifecycle adapter engaged,
 /// so there is no 1 Hz Leave-button poll to leak. Discovery is the only liveness oracle.
 ///
+/// What counts as a sighting is the whole design, and DET9 is the cautionary tale: the only
+/// refresh is a discovery scan that produced a *confident* winner, and a live Teams call regularly
+/// produces none for tens of seconds while its compact / backgrounded call UI hides the Leave,
+/// Mute and toolbar controls. The scan still sees the app during that stretch, but title-alone is
+/// not evidence a call is running: measured over the owner's log, 293 of 294 `candidate_dropped`
+/// sightings of Teams were title-only and they fire around the clock, including at 07:22 and
+/// 23:54 with no meeting anywhere near. So a title-only sighting must NOT refresh the latch (it
+/// would never lapse, and every later meeting in that app would be silently swallowed), and the
+/// gap it leaves is absorbed by `graceSec` instead. See `DetectionStateMachine.skipLatchGraceSec`.
+///
 /// Known blind spot: the latch keys on bundle id, not a meeting-instance id (none is
 /// available - titles shift mid-call and are excluded from identity). If a *different*
 /// meeting starts in the *same* app within `graceSec` of the skipped one ending, discovery
-/// can't distinguish them, so the new meeting inherits the latch until it too ends. In
-/// practice the gap between leaving one call and a second call's media going active exceeds
-/// 15 s, and the latch only refreshes while a call is actually active (not during the
-/// inter-call lull), so the next call's prompt is preserved in the common case. A manual
-/// hotkey (`clearSuppression`) always overrides it.
+/// can't distinguish them, so the new meeting inherits the latch until it too ends. The grace
+/// widened to 60 s in DET9, so this window widened with it; it is still shorter than the gap
+/// between leaving one call and a second call's media going active in the common case, and the
+/// latch only refreshes while a call is actually active (not during the inter-call lull). It is
+/// the reason the grace is bounded rather than simply made generous. A manual hotkey
+/// (`clearSuppression`) always overrides it.
 struct SkippedMeetingLatch {
     private var lastSeen: [String: Date] = [:]
 

@@ -37,11 +37,37 @@ final class DetectionStateMachine {
 
     // MARK: - Skipped-meeting latch facade
 
-    /// Grace after discovery stops seeing a skipped meeting before its latch lapses.
-    /// 5x the `MeetingDiscoveryWatcher` 3 s poll, so a few missed scans mid-call do not
-    /// drop the latch, yet the next meeting in the same app can prompt ~15 s after this
-    /// one ends.
-    static let skipLatchGraceSec: Double = 15
+    /// How many discovery polls of grace the latch gets after the last sighting. The latch's whole
+    /// job is to survive the gaps between sightings, and a gap is one poll wide, so the grace is a
+    /// multiple of the poll rather than a wall-clock guess.
+    static let skipLatchGracePolls: Double = 5
+
+    /// Pure derivation, so a test pins the grace against the cadence rather than against a number.
+    static func skipLatchGrace(idlePollSec: TimeInterval) -> TimeInterval {
+        idlePollSec * skipLatchGracePolls
+    }
+
+    /// Grace after discovery stops seeing a skipped meeting before its latch lapses, derived from
+    /// the poll it exists to bridge rather than hardcoded (DET9).
+    ///
+    /// It used to be a literal 15, justified in this comment as "5x the `MeetingDiscoveryWatcher`
+    /// 3 s poll". PERF6 then backed the quiet poll off to 12 s and the justification silently
+    /// decayed to 1.25 polls, so a single scan finding no confident winner dropped the latch
+    /// mid-call: the prompt re-opened over the live meeting, and the menu bar's
+    /// `Suppressed (<app>)` label went with it, which is DET7's only handle on the running call.
+    ///
+    /// Sized against the log, not taste. On 2026-07-27 a skipped Teams call ran 48 s between
+    /// confident winners while plainly still live, because the AX control walk found no Leave,
+    /// Mute or toolbar across that whole stretch (Teams' compact / backgrounded call UI); END9
+    /// measured a 21-33 s control blackout the same way. Five polls is 60 s, which clears both.
+    ///
+    /// Widening it is not free, and the cost is the blind spot in `SkippedMeetingLatch`: the latch
+    /// keys on bundle id, so a *different* meeting starting in the same app within the grace of
+    /// the last one inherits it and is never prompted. That is a missed recording rather than a
+    /// spurious prompt, so the grace is bounded deliberately and must not simply be made large.
+    static let skipLatchGraceSec: Double = DetectionStateMachine.skipLatchGrace(
+        idlePollSec: DiscoveryScanCadence.discoveryDefault.idle
+    )
 
     private var skipLatch = SkippedMeetingLatch()
 
@@ -91,9 +117,12 @@ final class DetectionStateMachine {
     }
 
     /// The still-live skipped meeting to attach a manual start to, or nil when there is
-    /// none. Lapses with the latch: once discovery stops seeing the meeting the latch
-    /// expires (~15 s later) and the stale candidate is dropped here, so a start after the
-    /// call really ended records generic rather than attributing itself to a dead meeting.
+    /// none. Lapses with the latch: once discovery stops seeing the meeting for a whole
+    /// `skipLatchGraceSec` the latch expires and the stale candidate is dropped here, so a start
+    /// after the call really ended records generic rather than attributing itself to a dead
+    /// meeting. The window in which that misattribution is possible is the grace, so it widened
+    /// with it in DET9; recording generic is the failure it protects against, and a live meeting
+    /// wrongly read as dead is the worse one.
     func liveSuppressedCandidate(now: Date = Date()) -> AppSource? {
         guard let candidate = suppressedCandidate else { return nil }
         guard isSkipLatched(bundleID: candidate.source.bundleID, now: now) else {

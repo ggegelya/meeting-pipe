@@ -19,6 +19,16 @@ From the owner's own `events.jsonl`:
 
 The AX control walk returning no Leave, Mute or toolbar mid-call is the normal way this happens: Teams switches its call UI to a compact or background state and one scan finds nothing.
 
+## Measured at pickup 2026-08-05, and it corrects the filing above
+
+Three readings from the owner's `events.jsonl`, recorded because two of them change which fix works. Do not re-derive them from the filing's summary.
+
+**1. The 60.5 s re-prompt is the cooldown expiring, not a fresh detection.** The full 2026-07-27 sequence is `prompt_timeout` 13:49:17.191Z, `candidate_dropped` (title-only) 13:49:53.476Z, then **`discovery_shadow_pick` at 13:50:05.396Z with the complete live-call signature** (`calling_controls_toolbar`, `leave_button`, `mute_button`, `title_match` all true, score 11), then `prompt_shown` 13:50:17.663Z. So a confident winner returned at **48.2 s**, hit an already-lapsed latch, fell through to the cooldown branch and was discarded; the prompt then fired the moment the 60 s cooldown expired. The gap the latch actually has to bridge is 48 s, which is what sized the new grace, with END9's independently measured 21-33 s control blackout as the second point.
+
+**2. Scope's first shape is refuted: a title-only sighting is not liveness.** Of 294 `candidate_dropped` events for `com.microsoft.teams2` in the log, **293 are title-only** (`leave_button`, `mute_button`, `calling_controls_toolbar` all false; the single exception carried a mute button), and they fire around the clock, including 07:22, 22:54 and 23:54 with no meeting anywhere near. Refreshing the latch on those would hold it permanently for Teams and silently swallow every later meeting in that app, which is a worse P1 than this one. The scan genuinely cannot tell a live call from an idle Teams window during a control blackout, so the gap is absorbed by the grace instead.
+
+**3. The mic is not available as a blackout-immune oracle.** `mic_busy_started` / `mic_busy_ended` have fired **zero** times in the current log generation, so DET3's span tracker produces nothing on this Mac and `onMicBusyBundle` cannot corroborate liveness. Do not build on it without re-measuring first.
+
 ## The skeptic's narrowing, recorded
 
 This is not an unbounded loop. Every re-skip calls `abandonPrompt`, which re-arms the latch, so each further re-prompt requires another missed scan. The observed shape is a handful of re-prompts across a call rather than one every 60 s for its whole duration.
@@ -34,6 +44,8 @@ Decouple the latch's liveness oracle from "a scan produced a confident winner". 
 - Derive the grace from the live `DiscoveryScanCadence.idle` rather than a constant that assumes a 3 s poll.
 
 Fix the three stale comments (`DetectionStateMachine.swift:40-45`, `MeetingSessionController.swift:1103-1105`) and the `ARCHITECTURE.md:582` glossary entry in the same commit.
+
+**Shipped 2026-08-05: the third shape only, deliberately.** The measurements above rule the first out (harmful) and the second out (unreachable at the shipped default: latch lapse is `lastSeen + grace` and cooldown expiry is `skip + cooldown` with `lastSeen >= skip`, so at any grace >= the cooldown the cooldown branch cannot be reached by a skipped bundle). `DiscoveryScanCadence.discoveryDefault` now names the watcher's real intervals, and `DetectionStateMachine.skipLatchGraceSec` is `skipLatchGracePolls` (5) times that idle poll, so the comment's original "5x the poll" intent holds by construction and cannot decay again the way it did when PERF6 moved the poll from 3 s to 12 s.
 
 ## Acceptance
 

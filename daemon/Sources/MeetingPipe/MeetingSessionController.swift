@@ -1100,11 +1100,14 @@ final class MeetingSessionController: @unchecked Sendable {
         guard coordinator.stateMachine.isAcceptingPrompts else { return }
 
         // The skipped-meeting latch is anchored here: this scan is proof the meeting the
-        // user dismissed is still live, so refresh the latch and stay out. Keeping it armed
-        // every ~3 s means it lapses only ~15 s after discovery stops seeing the meeting -
-        // i.e. shortly after it actually ends - so the prompt never re-fires mid-call but
-        // the next meeting in this app still prompts. We do NOT re-engage the lifecycle, so
-        // there's no Leave-button poll to leak.
+        // user dismissed is still live, so refresh the latch and stay out. A scan reaches this
+        // point only when it produced a *confident* winner, which is why the grace it refreshes is
+        // `skipLatchGracePolls` polls wide rather than one (DET9): a live Teams call regularly goes
+        // tens of seconds with no confident winner while its compact / backgrounded call UI hides
+        // the Leave, Mute and toolbar controls, and a narrower grace dropped the latch inside that
+        // stretch. So "discovery stopped seeing it" is not "it ended", and only a full grace of
+        // silence is read as the end. We do NOT re-engage the lifecycle, so there's no
+        // Leave-button poll to leak.
         if coordinator.stateMachine.isSkipLatched(bundleID: source.bundleID) {
             coordinator.stateMachine.refreshSkipLatch(bundleID: source.bundleID)
             // DET7: this sighting is also proof of *what* is running, and it is the only
