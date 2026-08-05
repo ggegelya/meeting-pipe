@@ -2,6 +2,22 @@
 
 Filed 2026-08-03 by the audit band. Severity critical, confirmed by an independent skeptic and reproduced by hand.
 
+## Progress (2026-08-05, shipped; owner-owed walkthrough)
+
+All four scope items ship. Daemon suite green, **2377 tests, 21 new** (15 `RecordingPostProcessorTests`, 6 `RecordingDurationParityTests`); `swift build` clean; `truth_fences.py both` clean. The two new event actions (`recorder`/`merge_too_short`, `recorder`/`duration_parity_low`) sit in the existing `recorder` category, so the fence needed no table edit.
+
+**The length policy is `RecordingPostProcessor.mergeLengths`, and it is pure.** `apad` on each leg so neither can end the merge, `adelay` on the system leg for a late start, and `-t` at `max(mic, offset + system)`. Verified against real ffmpeg 8.1 before writing any Swift: the shipped filter turned a 10 s mic plus a 3 s system into 3.000000 s, the new one into 10.000000 s with the right channel silent outside the window it was captured in. Both shapes are exercised end to end by tests that decode the produced WAV per channel rather than trusting its duration alone.
+
+**The head offset is measured, not inferred.** `MeetingRecorder` marks `systemUptime` at start and at the first frame written into the system WAV *as it currently stands*: the mark is cleared in `startSystemCapture`, not at `start()`, because `AVAudioFile(forWriting:)` truncates, so what the merge needs is where the audio the file actually holds begins. Offsets below 1.0 s are dropped as the routine CAP1 skew (median 0.21 s over 153 recordings), so no normal recording moves. The offset also lands in the `intermediate_durations` event as `head_offset_sec`, since the existing `delta_sec` cannot tell a channel that stopped early from one that started late.
+
+**The promote gate fails closed.** `outputIsPlausible` keeps REC1's 4 KiB floor and adds the duration check against the policy's target, with a 0.5 s tolerance for resampler rounding. An output that cannot be measured is refused rather than promoted. The refusal path is the one that already existed, so it keeps both intermediates and writes `.recordfail.json`, now with a `reason` that names the shortfall in seconds. Pinned end to end with a stand-in ffmpeg that exits 0 having written a short file, which is exactly the shape the byte floor waved through: a clean exit status is not evidence that the audio survived.
+
+**The parity warning is visible.** `RecordingDurationParity` is the pure verdict (same family as `RemoteAudioWarning` and `MicCoverageWarning`), snapshotted at stop into `lastDurationParity`; `MeetingSessionController` raises a "Recording is shorter than the meeting" notice and `checkDurationParity` emits `duration_parity_low`, so `mp logs` and the Diagnostics viewer both see it.
+
+**Three corrections, and what they turned out to be.** `MeetingRecorder.swift`'s "the ffmpeg merge pads to the longer input" and `RemoteAudioWarning.interrupted`'s "absent from the death point on" were both false when written and are **true as of this commit**, because the policy makes them true; each now says so and names what re-breaks it, which is more useful than deleting a claim the code finally honours. `Notifier`'s interrupted-capture body ("the recording is mic-only from that point") is the same case and keeps its wording for the same reason, with the dependency recorded above it.
+
+**Scope held to REC9.** REC10 (the retry path overwriting the system partial) is untouched and still open. Its scenario does improve here without being fixed: because the offset is keyed to the file's own first frame, a retry's audio is now merged where the retry happened instead of at sample 0. The audio the retry overwrote is still lost, which is REC10's defect.
+
 ## What is wrong
 
 `RecordingPostProcessor.mergeToTempViaFFmpeg` builds a bare `amerge` with no length policy, so the merged `<stem>.wav` ends where the **shorter** of `mic.wav` / `system.wav` ends. `produceFinal` then verifies only that the output exceeds 4096 bytes, promotes it onto the canonical path, and deletes both intermediates, so whatever the merge dropped is unrecoverable.

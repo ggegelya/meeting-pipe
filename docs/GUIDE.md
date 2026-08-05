@@ -433,6 +433,12 @@ You can always record by hand with `⌃⌥M` while you sort it out.
 - **Only your voice.** Screen Recording is missing, or was granted after the app started. Grant it, then quit and reopen the app.
 - **Only the other people.** Your Mac's default input is not the microphone you are talking into, which usually means idle Bluetooth headphones. Set the right input in **System Settings ▸ Sound ▸ Input** before recording. There is deliberately no microphone picker in the app; it follows the system setting. The app notices this case and flags it on the meeting, and the Audio tab always names which microphone a recording used.
 
+### The recording is shorter than the meeting was
+
+You get a notification at the end when a finished recording holds noticeably less audio than the time it was running, so this is something the app tells you rather than something you find out weeks later. Play the meeting back before you rely on its summary, and if it keeps happening, **Diagnostics…** in the menu bar shows the recorder's own account of each recording.
+
+The cause that used to be behind it was the app's own doing and is fixed. When only one side of the call was being captured, the finished file used to end where that side stopped, taking the rest of your own voice with it. Now the short side is padded with silence, and a side that started late is placed where it actually began, so the recording is as long as the meeting was.
+
 ### The recording did not stop when the call did
 
 Accessibility is missing, or the meeting app is one whose windows cannot be read. There is a backstop: after a long stretch of silence the recording stops itself, and partway through that stretch you get a "Still meeting?" notification with a Stop button. `⌃⌥⇧M` stops it immediately. The length of that stretch is the **Mic-only silence backstop** slider in **Preferences ▸ Prompt**.

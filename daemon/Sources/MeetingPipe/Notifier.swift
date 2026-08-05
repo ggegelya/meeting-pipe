@@ -290,12 +290,36 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// recover, so the call's remote side is missing from that point on (REC4 / AUD-13).
     /// Distinct from `notifyMicOnlyRecording`, which is the whole-recording mic-only case
     /// ("only your voice was captured" would be wrong here: the first part had both sides).
+    ///
+    /// "mic-only from that point" is true only because of REC9's merge length policy.
+    /// Until it landed, the merge ended at the SHORTER capture channel, so a system
+    /// channel that died at minute 3 of a 40-minute call ended the recording there
+    /// too: this banner told the owner they still had their own voice for the rest of
+    /// the meeting while that audio was being deleted. Anything that weakens the
+    /// length policy makes this copy a lie again.
     func notifyRemoteAudioInterrupted(file: URL) {
         let content = UNMutableNotificationContent()
         content.title = "System audio interrupted"
         content.body = "The other side of the call stopped being captured part-way through, so the recording is mic-only from that point. See ~/Library/Logs/MeetingPipe/recorder.log for SCStream errors."
         content.sound = .default
         let req = UNNotificationRequest(identifier: "sysaudio-interrupted-\(file.lastPathComponent)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
+    /// Posted when a finished recording holds materially less audio than the meeting it
+    /// spanned (REC9). The check behind it is old; until REC9 its only output was one line
+    /// in `recorder.log`, so the 2026-07-15 recording that kept 5.28 s of a 41.2 s meeting
+    /// was announced to the owner as a clean success and its intermediates were deleted.
+    /// Informational, so it carries no category and no action button: its own id namespace
+    /// routes it nowhere, like `sysaudio-interrupted-`.
+    func notifyShortRecording(file: URL, audioSec: Double, wallclockSec: Double) {
+        let content = UNMutableNotificationContent()
+        content.title = "Recording is shorter than the meeting"
+        let audio = RecordingDurationParity.clockPhrase(audioSec)
+        let wallclock = RecordingDurationParity.clockPhrase(wallclockSec)
+        content.body = "Only \(audio) of audio was saved for a \(wallclock) recording. Play it back before you rely on it, and see ~/Library/Logs/MeetingPipe/recorder.log for capture errors."
+        content.sound = .default
+        let req = UNNotificationRequest(identifier: "short-recording-\(file.lastPathComponent)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(req)
     }
 

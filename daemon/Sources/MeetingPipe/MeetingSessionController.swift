@@ -553,7 +553,15 @@ final class MeetingSessionController: @unchecked Sendable {
         /// (Screen Recording denied, or the SCStream never started).
         case micOnly
         /// System audio was captured, then the SCStream died mid-meeting and did not
-        /// recover: the remote side is absent from the death point on.
+        /// recover: the remote side is absent from the death point on, while the mic
+        /// keeps recording to the end.
+        ///
+        /// That second half is a claim about the merge, not about the capture, and it
+        /// only became true with REC9. The bare `amerge` ended at the shorter input,
+        /// so a system channel that died early ended the whole recording early and
+        /// the mic tail this case describes was discarded, silently, along with both
+        /// intermediates. The distinction from `.micOnly` is real either way, but the
+        /// "from the death point on" wording rests on the length policy holding.
         case interrupted
     }
 
@@ -616,6 +624,16 @@ final class MeetingSessionController: @unchecked Sendable {
                     self.coordinator.notifications.notifyRemoteAudioInterrupted(file: file)
                 case .none:
                     break
+                }
+                // REC9: the recording carries materially less audio than the meeting it
+                // spanned. Orthogonal to the two warnings around it, which are about
+                // which CHANNEL is missing; this one fires when the file itself is short,
+                // whatever the cause, and it is the surface the 2026-07-15 truncation
+                // never had.
+                if let parity = recorder.lastDurationParity, parity.isShort {
+                    self.coordinator.notifications.notifyShortRecording(
+                        file: file, audioSec: parity.audioSec, wallclockSec: parity.wallclockSec
+                    )
                 }
                 // MIC15(b): the mirror-image warning. RemoteAudioWarning fires when the SYSTEM
                 // side is missing; this fires when the system side was fine the whole call but

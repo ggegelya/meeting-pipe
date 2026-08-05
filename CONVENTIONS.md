@@ -492,7 +492,7 @@ Three rules the two ends of that check have to keep:
 
 ## Daemon-internal recording artifacts
 
-Five artifacts the daemon both writes and reads. Unlike `<stem>.meta.json`, none is part of the Swift-to-Python contract: the redactor and orphan recovery consume them before any pipeline run, so the pipeline never reads them directly (recovery does *rebuild* `<stem>.meta.json` from the manifest below). The MIC4/MIC5 capture-first work introduced the first three; REC2 added the recovery manifest; MIC14 added the off-record marker. Documented here per DOC6.
+Six artifacts the daemon both writes and reads. Unlike `<stem>.meta.json`, none is part of the Swift-to-Python contract: the redactor and orphan recovery consume them before any pipeline run, so the pipeline never reads them directly (recovery does *rebuild* `<stem>.meta.json` from the manifest below). The MIC4/MIC5 capture-first work introduced the first three; REC2 added the recovery manifest; MIC14 added the off-record marker; REC1 added the failure breadcrumb, whose shape REC9 documented here once it grew a second reason to exist. Documented here per DOC6.
 
 **`<stem>.mute-timeline.json`** (TECH-MIC4), next to `<stem>.wav`. The muted spans the offline redactor (TECH-MIC5) zero-fills. Shape:
 
@@ -513,6 +513,14 @@ Seconds from recording start, half-open `[start_sec, end_sec)`. `source` (MIC14)
 ```
 
 `summary_mode` routes the recovered enqueue (a `byo` orphan produces a paste bundle, not an Anthropic+Notion auto-summary); `meta` is replayed into a rebuilt `<stem>.meta.json` (skipped if one already exists) so the pipeline arms its egress guard for an NDA / regulated orphan and keeps the meeting title. Read by `OrphanRecordingRecovery.recover`. Removed at a clean stop that produced a final (kept, like `.capturemode`, when the merge failed so the recurring sweep can still route it; REC6 also runs that sweep after every job completion, not only at the next launch, and exempts a `.recovery.json` / `.recordfail.json`-bearing stem from the 24 h staleness cutoff). Absent for pre-REC2 orphans, which recover on the legacy `.auto` default.
+
+**`<stem>.recordfail.json`** (REC1), next to where `<stem>.wav` would have landed. The breadcrumb that explains retained capture intermediates: it is written on every path where the post-process did not produce a promotable final, so the `.mic.wav` / `.system.wav` beside it read as a kept-for-recovery capture rather than stray debris. Shape:
+
+```json
+{ "schema_version": 1, "reason": "…why the post-process did not promote…", "retained": ["<stem>.mic.wav", "<stem>.system.wav"] }
+```
+
+`reason` is free text and is the only place the *kind* of failure is recorded: a non-zero ffmpeg exit, a merge that timed out, or (REC9) a merged output shorter than the capture it was built from, which names its produced and expected seconds. Informational for a reader; nothing branches on it. What is load-bearing is the file's **existence**: `OrphanRecordingRecovery.scanOrphanStems` exempts a stem carrying it from the 24 h staleness cutoff, `OrphanScan` surfaces it as an `mp doctor` finding, and REC6 deletes it once a re-merge succeeds. Written atomically by `RecordingPostProcessor.writePostProcessFailure`, which also emits `recorder`/`postprocess_failed`. Absent for every recording that finished normally.
 
 **`originals/<stem>.wav`** (ADR 0016), in `~/Library/Application Support/MeetingPipe/originals/`, NOT in the recordings dir. The kept full (un-redacted) recording, moved aside when `MuteRedactor` redacts the canonical `<stem>.wav`, and the quarantine destination for capture-first-redact orphans whose timeline was lost. Deliberately outside the Library-scanned `raw/` tree and the Raw Files tab's reach: mode `0600`, excluded from Time Machine and iCloud. The redacted artifact is what every consumer reads; this is the recovery source only. ADR 0016's mandated retention policy + reaper ships as `OriginalsReaper` (age + size bounded: 30 days / ~10 GB, reaped at launch and after each pipeline job), and meeting deletion cascades into it via `MeetingLibraryService.softDeleteMeeting` (MIC13).
 

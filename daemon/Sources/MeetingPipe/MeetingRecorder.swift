@@ -70,6 +70,20 @@ final class MeetingRecorder {
     private var micFires: UInt64 = 0
     private var systemFires: UInt64 = 0
 
+    /// Monotonic marks for REC9's head offset: when this recording started, and when
+    /// the first frame landed in the system WAV *as it currently stands on disk*.
+    /// `startSystemCapture` re-opens that file `forWriting`, which truncates it, so
+    /// the first-frame mark is cleared there rather than at `start()`: what the merge
+    /// needs is where the audio the file actually holds begins, not where the first
+    /// attempt did. 0 means "no system frame has arrived".
+    ///
+    /// `systemUptime` rather than `Date`, for the same reason every other elapsed
+    /// measure here uses it: it cannot be moved by an NTP step mid-meeting. Written
+    /// on the SCStream delivery queue like `systemFires`, once per recording, and a
+    /// `Double` so the write is a single aligned store.
+    private var startedAtUptime: Double = 0
+    private var systemFirstFrameUptime: Double = 0
+
     /// Per-writer consecutive-failure trackers (REC3 / AUD-7). Each is touched
     /// only on its own writer's serial queue, like `micFires` / `systemFires`, so
     /// no lock is needed. Reset at `start()`.
@@ -276,6 +290,11 @@ final class MeetingRecorder {
     private(set) var lastMicCoverage = MicCoverageSnapshot.empty
     private(set) var lastInputDevice: InputDeviceIdentity?
 
+    /// Audio-vs-wallclock parity of the last recording that produced a final (REC9),
+    /// read by `MeetingSessionController` for the short-recording notice. Nil when
+    /// the last stop produced no final, so a stale verdict can never be re-reported.
+    private(set) var lastDurationParity: RecordingDurationParity?
+
     /// True once the system-audio channel was torn down by a failed start or a
     /// mid-meeting death and not recovered (REC4 / AUD-13). Snapshotted into
     /// `lastSystemDegraded` at `stop()` so the stop-time warning fires on a stream that
@@ -326,6 +345,7 @@ final class MeetingRecorder {
         muteTimeline = MuteTimeline()
         lastMicFires = 0
         lastSystemFires = 0
+        lastDurationParity = nil
         systemDegraded = false
         micTotalSeconds = 0
         micUnmutedSeconds = 0
@@ -476,6 +496,7 @@ final class MeetingRecorder {
         self.micURL = micURL
         self.systemURL = systemURL
         startedAt = Date()
+        startedAtUptime = ProcessInfo.processInfo.systemUptime
         Log.recorder.info("recorder started → \(finalURL.path)")
         Log.writeLine("recorder", "recorder started → \(finalURL.path)")
         startTapLivenessWatchdog()
@@ -534,6 +555,9 @@ final class MeetingRecorder {
             systemFile = nil
         }
         self.systemFile = systemFile
+        // REC9: `forWriting` truncated whatever was there, so the head offset of the
+        // audio this file will hold is not known again until its next first frame.
+        self.systemFirstFrameUptime = 0
         if let systemFile {
             self.systemWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.system-writer") { [weak self] buffer in
                 let ok: Bool
@@ -553,6 +577,13 @@ final class MeetingRecorder {
             self.systemFires &+= 1
             if self.systemFires == 1 {
                 Log.writeLine("recorder", "system tap first fired: frames=\(pcm.frameLength)")
+            }
+            // REC9: where this file's audio begins, relative to the mic. Keyed off the
+            // file's own mark rather than `systemFires`, which counts across a retry
+            // and so would report the FIRST attempt's offset for a file the retry
+            // reopened. One aligned store, once per open.
+            if self.systemFirstFrameUptime == 0 {
+                self.systemFirstFrameUptime = ProcessInfo.processInfo.systemUptime
             }
             // SystemAudioCapture hands us a fresh buffer (not reused), so
             // unlike the mic tap it needs no deep copy.
@@ -1218,6 +1249,12 @@ final class MeetingRecorder {
         let started = startedAt
         let micFires = self.micFires
         let systemFires = self.systemFires
+        // REC9: how far into the recording the system channel's audio starts. Zero
+        // when no system frame ever arrived (there is then nothing to place) and, in
+        // the normal case, the sub-second capture skew the merge policy ignores.
+        let systemHeadOffsetSec = systemFirstFrameUptime > 0
+            ? max(0, systemFirstFrameUptime - startedAtUptime)
+            : 0
 
         currentFile = nil
         self.micURL = nil
@@ -1225,10 +1262,12 @@ final class MeetingRecorder {
         self.startedAt = nil
         self.lastMicFires = micFires
         self.lastSystemFires = systemFires
+        self.lastDurationParity = nil
         self.lastSystemDegraded = systemDegraded
         self.lastInputDevice = capturedInputDevice
         self.micFires = 0
         self.systemFires = 0
+        self.systemFirstFrameUptime = 0
 
         // Stop the tap-liveness + system-liveness watchdogs before teardown so neither
         // can re-arm or re-surface a recorder that is shutting down.
@@ -1256,8 +1295,12 @@ final class MeetingRecorder {
 
         // Halt capture before closing files. ScreenCaptureKit's stopCapture has
         // hung for minutes (2026-06-05, a meeting wedged in "stopping..."), so
-        // bound it: stop() always proceeds to the merge. A short / racy
-        // system.wav is fine - the ffmpeg merge pads to the longer input.
+        // bound it: stop() always proceeds to the merge. A short / racy system.wav
+        // is fine because the merge below runs under an explicit length policy that
+        // pads it to the longer input (REC9). That was NOT true until REC9: the bare
+        // `amerge` ended at the SHORTER input, so this comment licensed every
+        // short-system path while the merge quietly discarded the mic tail those
+        // paths produced. Removing the policy re-breaks all of them at once.
         let capture = systemCapture
         if await runWithTimeout(seconds: 5, { await capture?.stop() }) == false {
             Log.writeLine("recorder", "WARN: system audio stop timed out - proceeding with merge")
@@ -1348,8 +1391,10 @@ final class MeetingRecorder {
         Log.writeLine("recorder", "stopping: mic_fires=\(micFires) system_fires=\(systemFires) mic_bytes=\(RecordingPostProcessor.fileSize(micURL)) system_bytes=\(RecordingPostProcessor.fileSize(systemURL))")
 
         // Per-channel duration diagnostic for the reported end-of-call skew
-        // (TECH-CAP1): log both durations + delta before ffmpeg pads/truncates
-        // to the longer input, so a follow-up can pin where the shift is.
+        // (TECH-CAP1): log both durations + delta before the merge pads to the
+        // longer input, so a follow-up can pin where the shift is. `head_offset_sec`
+        // is REC9's: the delta alone cannot tell a channel that stopped early from
+        // one that started late, and those need opposite handling.
         let micAudioSec = hasMic ? RecordingPostProcessor.audioDurationSec(of: micURL) : nil
         let systemAudioSec = hasSystem ? RecordingPostProcessor.audioDurationSec(of: systemURL) : nil
         let wallclockSec = started.map { Date().timeIntervalSince($0) }
@@ -1362,6 +1407,7 @@ final class MeetingRecorder {
             "system_audio_sec": systemAudioSec as Any,
             "delta_sec": deltaSec as Any,
             "wallclock_sec": wallclockSec as Any,
+            "head_offset_sec": systemHeadOffsetSec,
             "has_mic": hasMic,
             "has_system": hasSystem,
         ])
@@ -1379,7 +1425,8 @@ final class MeetingRecorder {
             RecordingPostProcessor.writePostProcessFailure(final: final, retained: [micURL, systemURL])
         } else if hasMic || hasSystem {
             producedUsableFinal = await RecordingPostProcessor.produceFinal(
-                mic: micURL, system: systemURL, final: final, hasMic: hasMic, hasSystem: hasSystem
+                mic: micURL, system: systemURL, final: final, hasMic: hasMic, hasSystem: hasSystem,
+                systemHeadOffsetSec: systemHeadOffsetSec
             )
         } else {
             Log.writeLine("recorder", "WARN: neither mic nor system has audio data - leaving \(final.lastPathComponent) absent")
@@ -1595,15 +1642,27 @@ final class MeetingRecorder {
 
     /// After stop, sanity-check the WAV's audio duration vs wallclock.
     /// In-process recording should be ~100% - if not, surface it.
+    ///
+    /// REC9: a shortfall now emits an event and is snapshotted into
+    /// `lastDurationParity` for the session controller's notice. It used to write one
+    /// `Log.writeLine` and stop there, which put the only detector of the 2026-07-15
+    /// truncation somewhere no surface reads: not `mp logs`, not the Diagnostics
+    /// viewer, not the owner, who was told the recording succeeded.
     private func checkDurationParity(file url: URL, recordedFor wallclock: TimeInterval) {
         guard let audioSec = RecordingPostProcessor.audioDurationSec(of: url) else { return }
-        let ratio = wallclock > 0 ? audioSec / wallclock : 1.0
-        let summary = String(format: "duration check: wallclock=%.2fs audio=%.2fs ratio=%.0f%%", wallclock, audioSec, ratio * 100)
+        let parity = RecordingDurationParity.evaluate(audioSec: audioSec, wallclockSec: wallclock)
+        lastDurationParity = parity
+        let summary = String(format: "duration check: wallclock=%.2fs audio=%.2fs ratio=%.0f%%", wallclock, audioSec, parity.ratio * 100)
         Log.recorder.info("\(summary)")
         Log.writeLine("recorder", summary)
-        if ratio < 0.85 && wallclock > 2.0 {
-            Log.writeLine("recorder", "WARN: WAV is \(Int(ratio*100))% of recording wallclock")
-        }
+        guard parity.isShort else { return }
+        Log.writeLine("recorder", "WARN: WAV is \(Int(parity.ratio * 100))% of recording wallclock")
+        Log.event(category: "recorder", action: "duration_parity_low", attributes: [
+            "file": url.lastPathComponent,
+            "audio_sec": audioSec,
+            "wallclock_sec": wallclock,
+            "ratio": parity.ratio,
+        ])
     }
 
 }

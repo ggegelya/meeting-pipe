@@ -97,6 +97,7 @@ protocol SessionNotifying: AnyObject {
     func notifyMicOnlyRecording(file: URL, permissionState: SystemAudioCapture.PermissionState)
     func notifyRemoteAudioInterrupted(file: URL)
     func notifyMicRecordedNothing(file: URL)
+    func notifyShortRecording(file: URL, audioSec: Double, wallclockSec: Double)
     func notifyInputDeviceMismatch()
 }
 
@@ -110,6 +111,10 @@ protocol SessionRecording: AnyObject {
     /// for the dead-mic warning and the `mic_device_name` sidecar key.
     var lastMicCoverage: MicCoverageSnapshot { get }
     var lastInputDevice: InputDeviceIdentity? { get }
+    /// Stop-time audio-vs-wallclock parity of a recording that produced a final
+    /// (REC9), read by the controller for the short-recording notice. Nil when the
+    /// last stop produced nothing to measure.
+    var lastDurationParity: RecordingDurationParity? { get }
     var onMicLevel: ((Float) -> Void)? { get set }
     var onSystemLevel: ((Float) -> Void)? { get set }
     func currentMicLevelDb() -> Float

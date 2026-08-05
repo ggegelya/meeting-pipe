@@ -114,6 +114,7 @@ final class SpyNotifier: SessionNotifying {
     private(set) var micOnly: [URL] = []
     private(set) var remoteInterrupted: [URL] = []
     private(set) var micRecordedNothing: [URL] = []
+    private(set) var shortRecordings: [(file: URL, audioSec: Double, wallclockSec: Double)] = []
     private(set) var inputMismatchCount = 0
 
     func notifyRecordingStarted(file: URL) { recordingStarted.append(file) }
@@ -128,6 +129,9 @@ final class SpyNotifier: SessionNotifying {
     }
     func notifyRemoteAudioInterrupted(file: URL) { remoteInterrupted.append(file) }
     func notifyMicRecordedNothing(file: URL) { micRecordedNothing.append(file) }
+    func notifyShortRecording(file: URL, audioSec: Double, wallclockSec: Double) {
+        shortRecordings.append((file: file, audioSec: audioSec, wallclockSec: wallclockSec))
+    }
     func notifyInputDeviceMismatch() { inputMismatchCount += 1 }
 }
 
@@ -158,6 +162,7 @@ final class SpyRecorder: SessionRecording {
     var lastSystemDegraded = false
     var lastMicCoverage = MicCoverageSnapshot.empty
     var lastInputDevice: InputDeviceIdentity?
+    var lastDurationParity: RecordingDurationParity?
     var onMicLevel: ((Float) -> Void)?
     var onSystemLevel: ((Float) -> Void)?
 
