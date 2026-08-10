@@ -14,6 +14,26 @@ On `20260804-103026`, a ~11-person standup, the pass reported `merges_count=4, r
 
 For contrast, the same recurring standup one day earlier at the same threshold, before the pass was live (`20260803-103042`), scored 16.4%.
 
+### The owner reported one instance of this independently, and it is the demonstration case
+
+Added 2026-08-10. The owner's 2026-08-04 testing notes flag the same meeting from the UI, with a screenshot: "Diarization works strange. for some reason the phrase that should become Atul was named Prajval." The DER above already records `Prajval` as holding Atul, Raza and Sudip, so this is not a new cluster finding; what it adds is a single named instance a person can check in ten seconds, which the aggregate numbers do not give anyone.
+
+From `20260804-103026.json`, segments 58 to 62:
+
+| # | Label | Start | Text |
+|---|---|---|---|
+| 58 | `Sudip` | 584.72 | "Mm-hmm. Okay. Thank you. Thank you for the update." |
+| 59 | `Sudip` | 588.80 | **"Let's go next with Atul."** |
+| 60 | `Prajval` | 593.28 | "Oh yeah, hi Sudeep. So yesterday I've been working on uh creating the ADR for MDB..." |
+| 61 | `Prajval` | 620.00 | "And today I'm uh mostly working on ADF for uh DMS PDF viewer..." |
+| 62 | `Prajval` | 627.36 | "for the PDF uh DMS mobile app uh due to some library restriction..." |
+
+`Atul` appears **nowhere**: not in the 12 labels `<stem>.embeddings.json` records at finalize, and not in the 7 the finished transcript carries. So this is a merge, and the label that absorbed him is the one the DER already names.
+
+**The pointed part, which is a different argument from the one in the next section.** Segment 59 is an explicit handover naming the next speaker, in the text, immediately before the misattributed turn. `cleanup_transcript` sees exactly this: `[i] Label: text` lines. So on this instance the pass was not blind for want of audio, it held the answer in its input and did not use it, while spending its licence to relabel on 21 reattributions elsewhere in the same meeting. A round-robin standup is full of these handovers, and they are the one signal text alone genuinely carries.
+
+Attribution limit, per the section below: because per-segment cleanup decisions are recorded nowhere, it cannot be proven from disk whether these three segments were merged by the clustering layer or by the cleanup pass. That is why scope item 1 comes first. Either way the observation holds, since neither stage used the handover line, and this instance is a good acceptance fixture for whichever turns out to be responsible.
+
 ## Why it is worth a task rather than a shrug
 
 The structural argument is the strong half, and it does not depend on the sample size. `cleanup_transcript` sends the model `[i] Label: text` lines and nothing else: **no audio, no embeddings, no timing.** `_apply_edits` validates only that the proposed label already exists in the transcript. So nothing in the pass can tell that two labels are acoustically different people, and its whole declared purpose is "merge labels that clearly belong to one person" (`pipeline/src/mp/diarize_cleanup.py`). On a round-robin standup where ten people deliver similar-sounding status updates, "clearly belong to one person" is exactly the judgement text alone cannot make.
