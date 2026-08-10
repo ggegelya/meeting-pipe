@@ -32,6 +32,22 @@ The sharpest prior instance is 2026-07-29. `ax_leave_button_state` invalid at 13
 
 Population correction, because the obvious classifier is wrong. "Same pid restarts within 180 s" cannot separate a chopped call from a genuine back-to-back meeting, since Teams' pid persists across calls. That rule yields 14 candidates; content verification cuts it to **6 verified false ends**: 2026-06-09 08:50:41Z, 2026-06-09 09:06:25Z, 2026-07-29 13:00:34Z, 2026-07-30 13:33:19Z, 2026-08-03 12:51:19Z, 2026-08-03 13:53:04Z. Rejected: 2026-05-28 14:14:46Z and 2026-06-12 09:56:32Z are different meetings (full farewell, then a new topic and a different cast), 2026-07-02 14:17:41Z ends "take care guys bye bye", and six candidates had no recording in flight at all, five of those inside rebuild sessions with `swift test` writing fixtures into the live event log. Discriminators that worked: a mid-sentence cut versus a farewell, and speech-onset latency (a mid-call resumption starts at t=0.5-1.2 s, a genuine join has a 40-85 s silent lead-in).
 
+## Three more instances, 2026-08-04 and 2026-08-06
+
+Added 2026-08-10 from the owner's testing notes. These are the first occurrences **after** this spec was filed, both reported as unexplained ("got interrupted and recording stopped. no idea why, can you check?" and "in this meeting 20260806-163013 it suddenly stops in the middle of the meeting, looks like the case we had before related to new UI of teams"). All three carry this defect's exact signature: `ending_provisional` led by `ax_leave_button_invalid`, then `lifecycle_provisional_end_confirmed`, then `ended` with `confirmed_by: ["ax_leave_rewalk"]`, `com.microsoft.teams2` pid 91771. Times below are local (UTC+3); `events.jsonl` stores UTC.
+
+`20260804-133028`: recording started 13:30:29, confirmed end 13:30:49, stopped after **21 s** with 1008 system-audio frames.
+
+`20260804-133158`: started 13:31:58 off the reprompt 65 s after the previous end, took a **rescue** at 13:32:13 (`leave_buttons_found: 1`), then a confirmed end at 13:32:28, stopped after **30 s**. So one meeting was chopped twice inside two minutes and split across two stems, and after the second chop the owner stopped trying: no further recording that afternoon.
+
+`20260806-163013`: started 16:30:13, confirmed end 16:31:59, stopped after **1 m 46 s**. The recovery path then cost two more prompts: a reprompt at 16:33:04 that the owner let time out at 16:33:34, and another at 16:34:41 that they accepted, producing `20260806-163446` which ran the remaining 22.7 min. So the call was recorded, but as a 1 m 46 s fragment plus a 22.7 min body with a 2.8 min hole between them.
+
+The `20260804-133158` rescue is worth noting against the fix: the rescue path did its job once and then failed 15 s later on the same call, which is the blackout outlasting a single retry and is consistent with the 21.1 to 33.2 s measurement above.
+
+**A correction this supplies to UX45's row.** UX45 records `20260804-133028` as investigated and not a defect: "correctly never reached publish and carries a `.empty.json` terminal marker with 0 segments and 0 characters, which is the no-speech skip path working as designed rather than a publish failure." Every clause of that is true and the conclusion is incomplete. The recording had no speech because it was **21 seconds long**, cut by this defect 20 seconds after it started. The skip path was working; what it was handed was a chopped recording. UX45's own scope (publish targets) is unaffected, so this is a note here rather than a reopen there.
+
+These three do not change the fix. They land squarely inside the new-calling-UI window the A/B in the Owner walkthrough tests, so they are three more observations for the on arm and the pre-registered threshold is unchanged.
+
 ## Already refuted, do not re-derive
 
 The intuitive cause is that the owner collapsed or backgrounded the call window, Teams tore down its call controls, and the compact mini panel had not yet been created. It is wrong, it is very convincing, and the codebase asserts it, so it will be re-proposed unless this section is read.
