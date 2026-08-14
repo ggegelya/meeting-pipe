@@ -10,12 +10,14 @@ missing-sidecar error path.
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 from typing import Iterable
 from unittest.mock import patch
 
 import pytest
 
+from mp import storage
 from mp.config import Config
 from mp.diarize import cosine_similarity
 from mp.orchestrate import (
@@ -395,6 +397,99 @@ def test_finalize_roster_names_enrolled_person_and_clusters_unknown(
 
     data = json.loads(out["json"].read_text(encoding="utf-8"))
     assert [s["speaker"] for s in data["segments"]] == ["Me", "Alice", "THEM-A"]
+
+
+def _finalize_branch(kind: str, tmp_path: Path, monkeypatch) -> tuple[Path, dict]:
+    """Build the `(wav, streamed)` pair that steers finalize down one of its two
+    branches, and stub the stereo probe each one reads.
+
+    `labelled` is the FluidAudio path (segments already carry speakers);
+    `channel_aware` is the fallback that labels against the stereo WAV. Neither
+    carries `speaker_embeddings`, so the voiceprint/roster work no-ops and the
+    write is what is left to observe."""
+    wav = tmp_path / f"20260803-1000-{kind}.wav"
+    wav.write_bytes(b"")
+    if kind == "labelled":
+        segments = [{"start": 0.0, "end": 1.0, "text": "Hi.", "speaker": "speaker_0"}]
+        monkeypatch.setattr("mp.diarize.is_stereo_recording", lambda w: False)
+    else:
+        segments = [{"start": 0.0, "end": 1.0, "text": "Hi."}]
+        monkeypatch.setattr("mp.orchestrate.is_stereo_recording", lambda w: True)
+        monkeypatch.setattr(
+            "mp.orchestrate.assign_speakers_by_channel",
+            lambda segs, w: [{**s, "speaker": "speaker_user"} for s in segs],
+        )
+    streamed = {
+        "language": "en",
+        "segments": segments,
+        "audio_path": str(wav),
+        "audio_seconds": 1.0,
+        "model": "parakeet-tdt-0.6b-v3",
+        "backend": "fluidaudio",
+        "streaming": False,
+    }
+    return wav, streamed
+
+
+def _finalize(wav: Path, streamed: dict, tmp_path: Path) -> dict[str, Path]:
+    return finalize_streamed_transcript(
+        wav, streamed, user_label="Me",
+        voiceprint_store=VoiceprintStore(tmp_path / "vp.json"),
+        roster_store=RosterStore(tmp_path / "roster.json"),
+    )
+
+
+@pytest.mark.parametrize("branch", ["labelled", "channel_aware"])
+def test_finalize_commits_both_branches_through_the_atomic_helper(
+    branch: str, tmp_path: Path, monkeypatch
+):
+    """PIPE17: BOTH finalize branches commit `<stem>.json` and `<stem>.md`
+    through `storage.atomic_write_text`. PIPE8 recorded the conversion as
+    covering this whole function, but only the labelled branch got it and no
+    test looked at the other one, so parametrize over both rather than trusting
+    the half that was already right. 0600 is asserted here too, since the
+    helper is now the only thing setting it (SEC14)."""
+    wav, streamed = _finalize_branch(branch, tmp_path, monkeypatch)
+    real = storage.atomic_write_text
+    seen: list[Path] = []
+
+    def spy(path, text, **kwargs):
+        seen.append(Path(path))
+        real(path, text, **kwargs)
+
+    monkeypatch.setattr(storage, "atomic_write_text", spy)
+    out = _finalize(wav, streamed, tmp_path)
+
+    assert seen == [out["json"], out["md"]]
+    assert stat.S_IMODE(out["json"].stat().st_mode) == 0o600
+    assert stat.S_IMODE(out["md"].stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("branch", ["labelled", "channel_aware"])
+def test_finalize_leaves_the_prior_transcript_intact_when_the_write_dies(
+    branch: str, tmp_path: Path, monkeypatch
+):
+    """The failure PIPE17 was filed against: the launcher watchdog SIGKILLs a
+    wedged run-all, or the Mac loses power, partway through the finalize write.
+    Whatever was on disk has to survive whole, because the retry parses it and
+    neither the no-speech nor the suspect-transcript guard fires on a file that
+    is merely truncated."""
+    wav, streamed = _finalize_branch(branch, tmp_path, monkeypatch)
+    json_path = tmp_path / f"{wav.stem}.json"
+    md_path = tmp_path / f"{wav.stem}.md"
+    json_path.write_text('{"prior": true}', encoding="utf-8")
+    md_path.write_text("# prior", encoding="utf-8")
+
+    def _die(src, dst):
+        raise OSError("simulated kill mid-write")
+
+    monkeypatch.setattr(storage.os, "replace", _die)
+    with pytest.raises(OSError):
+        _finalize(wav, streamed, tmp_path)
+
+    assert json_path.read_text(encoding="utf-8") == '{"prior": true}'
+    assert md_path.read_text(encoding="utf-8") == "# prior"
+    assert not [p for p in tmp_path.iterdir() if ".tmp-" in p.name]
 
 
 def test_missing_sidecar_raises(tmp_path: Path, monkeypatch):

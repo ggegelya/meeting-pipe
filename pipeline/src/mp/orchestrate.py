@@ -735,11 +735,11 @@ def finalize_streamed_transcript(
         "diarization_failure_reason": diarization_failure_reason,
         "finalized": True,
     }
-    json_path.write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
-    md_path.write_text(render_markdown(structured), encoding="utf-8")
-    # SEC14: transcripts carry meeting content, so keep them user-private (0600), like the logs.
-    os.chmod(json_path, 0o600)
-    os.chmod(md_path, 0o600)
+    # Atomic (PIPE8) + 0600 (SEC14), exactly as the labelled branch above: this
+    # branch hand-rolled `write_text` + `chmod` until PIPE17, so a kill mid-write
+    # left a truncated transcript that a retry then summarized as a whole meeting.
+    storage.atomic_write_text(json_path, json.dumps(structured, ensure_ascii=False, indent=2))
+    storage.atomic_write_text(md_path, render_markdown(structured))
     log.info("Finalized transcript: %s", json_path)
     return {"json": json_path, "md": md_path}
 
