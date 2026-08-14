@@ -12,13 +12,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from mp.analyze_detection import (
+    MIC_INPUT_DEVICE_UNAVAILABLE,
+    MIC_INPUT_NO_SPANS,
+    MIC_INPUT_OBSERVED,
     Session,
     aggregate,
     classify_mic_spans,
     classify_session,
     collect_correlation_markers,
+    collect_mic_input_faults,
     iter_events,
     main,
+    mic_input_status,
     pair_mic_spans,
     pair_sessions,
     render_report,
@@ -444,3 +449,95 @@ def test_min_miss_sec_excludes_short_spans(tmp_path: Path, capsys) -> None:
     rc = main(["--source", str(source), "--json", "--min-miss-sec", "5"])
     assert rc == 0
     assert len(json.loads(capsys.readouterr().out)["mic_busy"]["misses"]) == 1
+
+
+# --- DET10: zero misses is not zero spans -------------------------------------------------
+
+
+def _unavailable(ts: str) -> dict:
+    return _event(ts, "detector", "mic_device_unavailable", authorization="authorized")
+
+
+def test_collect_mic_input_faults_reads_only_its_own_action() -> None:
+    events = [
+        _unavailable("2026-05-01T09:00:00Z"),
+        _event("2026-05-01T09:01:00Z", "detector", "candidate_dropped", bundle_id="x"),
+        _event("2026-05-01T09:02:00Z", "coordinator", "mic_device_unavailable"),  # wrong category
+        _unavailable("2026-05-01T09:03:00Z"),
+    ]
+    assert len(collect_mic_input_faults(events)) == 2
+
+
+def test_collect_mic_input_faults_filters_by_since() -> None:
+    events = [_unavailable("2026-05-01T09:00:00Z"), _unavailable("2026-05-08T09:00:00Z")]
+    since = datetime(2026, 5, 5, tzinfo=timezone.utc)
+    assert len(collect_mic_input_faults(events, since=since)) == 1
+
+
+def test_mic_input_status_reports_what_was_measured() -> None:
+    spans = pair_mic_spans(_mic("us.zoom.xos", "2026-05-01T11:00:00Z", "2026-05-01T11:30:00Z"))
+    fault = [datetime(2026, 5, 1, 9, tzinfo=timezone.utc)]
+    # Spans exist: a zero-miss count is a real measurement, whatever else is in the log.
+    assert mic_input_status(spans, []) == MIC_INPUT_OBSERVED
+    assert mic_input_status(spans, fault) == MIC_INPUT_OBSERVED
+    # No spans: the dimension audited nothing, and the fault event says why.
+    assert mic_input_status([], fault) == MIC_INPUT_DEVICE_UNAVAILABLE
+    assert mic_input_status([], []) == MIC_INPUT_NO_SPANS
+
+
+def test_a_week_with_no_mic_spans_does_not_render_as_zero_misses() -> None:
+    """The filing's whole point: recordings all ended cleanly, and the mic-busy dimension measured
+    nothing at all. The section must exist and must not claim a count."""
+    events = [
+        _event("2026-05-01T10:00:00Z", "coordinator", "recording_started",
+               file="m.wav", bundle_id="us.zoom.xos"),
+        _event("2026-05-01T10:30:00Z", "lifecycle", "ended", bundle_id="us.zoom.xos"),
+        _event("2026-05-01T10:30:02Z", "coordinator", "recording_stopped",
+               file="m.wav", bundle_id="us.zoom.xos"),
+    ]
+    sessions = [classify_session(s) for s in pair_sessions(events)]
+    report = render_report(sessions, aggregate(sessions), mic_spans=[])
+    assert "## Mic-busy misses (not audited)" in report
+    assert "## Mic-busy misses (0)" not in report
+    assert "det10-mic-busy-probe.swift" in report
+
+
+def test_dead_input_names_the_daemon_event_as_the_cause() -> None:
+    fault = datetime(2026, 5, 1, 9, 0, tzinfo=timezone.utc)
+    report = render_report([], {}, mic_spans=[], mic_input_faults=[fault])
+    assert "## Mic-busy misses (not audited)" in report
+    assert "mic_device_unavailable" in report
+    assert "2026-05-01T09:00:00" in report
+    # It is not the fresh-install skeleton: there IS something to report.
+    assert "No recording sessions" not in report
+
+
+def test_empty_log_still_returns_the_skeleton() -> None:
+    # Guard against the DET10 section swallowing the fresh-install case: no events at all is not a
+    # false-clean, there is simply no window to be clean about.
+    assert "No recording sessions" in render_report([], {}, mic_spans=[], mic_input_faults=[])
+
+
+def test_json_mode_distinguishes_zero_misses_from_zero_spans(tmp_path: Path, capsys) -> None:
+    # A machine reader saw `spans_observed: 0, misses: []` for both, which is the same false-clean
+    # one level down.
+    quiet = _write_events(tmp_path / "quiet.jsonl", [
+        _event("2026-05-01T10:00:00Z", "coordinator", "recording_started", file="m.wav"),
+        _event("2026-05-01T10:30:00Z", "coordinator", "recording_stopped", file="m.wav"),
+    ])
+    assert main(["--source", str(quiet), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)["mic_busy"]
+    assert payload["input_status"] == MIC_INPUT_NO_SPANS
+    assert payload["spans_observed"] == 0
+    assert payload["device_unavailable_events"] == 0
+
+    dead = _write_events(tmp_path / "dead.jsonl", [_unavailable("2026-05-01T09:00:00Z")])
+    assert main(["--source", str(dead), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)["mic_busy"]
+    assert payload["input_status"] == MIC_INPUT_DEVICE_UNAVAILABLE
+    assert payload["device_unavailable_events"] == 1
+
+    live = _write_events(tmp_path / "live.jsonl", _mic(
+        "chat.unknown.app", "2026-05-01T10:00:00Z", "2026-05-01T10:45:00Z", "Unknown Chat"))
+    assert main(["--source", str(live), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["mic_busy"]["input_status"] == MIC_INPUT_OBSERVED

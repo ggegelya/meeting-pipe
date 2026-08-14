@@ -134,7 +134,20 @@ final class MeetingDiscoveryWatcher {
     }
 
     private func wireMicObserver() {
-        guard let mic = AVCaptureDevice.default(for: .audio) else { return }
+        guard let mic = AVCaptureDevice.default(for: .audio) else {
+            // DET10: say it out loud. This resolve happens once, at daemon start, and is never
+            // retried, so a nil here disables DET3's mic-busy spans AND DET1's catch-all tier for
+            // the whole process lifetime. Returning silently made a permanently-dead detection
+            // input indistinguishable from a quiet week, and `mp analyze-detection` then reported
+            // the absence as zero mic-busy misses. The retry is deliberately NOT written here: the
+            // cause of the dogfood log's zero spans is unestablished, and DET10 is probe-first.
+            Log.event(category: "detector", action: "mic_device_unavailable", attributes: [
+                "authorization": MicInputAvailability.authorizationLabel(
+                    AVCaptureDevice.authorizationStatus(for: .audio)
+                ),
+            ])
+            return
+        }
         micDevice = mic
         avObservation = mic.observe(\.isInUseByAnotherApplication, options: [.new, .initial]) { [weak self] _, _ in
             DispatchQueue.main.async {

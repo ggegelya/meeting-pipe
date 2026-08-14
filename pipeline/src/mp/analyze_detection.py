@@ -10,6 +10,13 @@ so a call the whitelist never saw shows up as a "mic was busy, nothing fired" mi
 never a candidate (an unlisted app, or Accessibility / Screen Recording denied). Brief spans below
 `--min-miss-sec` (default 30 s) are excluded so dictation / voice-memo blips are not counted.
 
+**Zero misses and zero spans are different results, and this report says which one it has** (DET10).
+The mic-busy dimension exists to make silent start-detection false-negatives visible, so it must not
+itself go silent when its own input dies: a window with no `mic_busy_started` at all audited nothing,
+and used to render as a missing section beside a clean end-detection report. The daemon's
+`mic_device_unavailable` event (it could not resolve an audio input device, so the observer was
+never wired) is read here for the same reason, and names the cause when it is present.
+
 Audits how often meeting-end detection misses the "meeting ended" signal.
 
 Pairs each `coordinator.recording_started` with the next
@@ -371,6 +378,48 @@ def collect_correlation_markers(
     return prompts, dropped, picks
 
 
+# DET10: what the mic-busy dimension actually measured, which is not the same question as how many
+# misses it found. Three states, because "no misses" is only a result under the first one.
+MIC_INPUT_OBSERVED = "observed"  # spans exist: the input is alive and a zero-miss count is real
+MIC_INPUT_DEVICE_UNAVAILABLE = "device_unavailable"  # no spans, and the daemon said why
+MIC_INPUT_NO_SPANS = "no_spans"  # no spans, no stated reason: quiet window, or a silently dead input
+
+
+def collect_mic_input_faults(
+    events: Iterable[dict], *, since: datetime | None = None
+) -> list[datetime]:
+    """Timestamps of ``detector.mic_device_unavailable``: the daemon could not resolve an audio
+    input device, so `MeetingDiscoveryWatcher` never wired the mic-busy observer and both DET3's
+    spans and DET1's catch-all tier were off for that whole daemon run (DET10).
+
+    Kept separate from ``collect_correlation_markers`` because it is not a correlation marker: it
+    does not explain one span, it says the whole dimension was blind."""
+    out: list[datetime] = []
+    for ev in events:
+        if ev.get("category") != "detector" or ev.get("action") != "mic_device_unavailable":
+            continue
+        try:
+            ts = _parse_ts(str(ev["ts"]))
+        except (TypeError, ValueError, KeyError):
+            continue
+        if since is not None and ts < since:
+            continue
+        out.append(ts)
+    return sorted(out)
+
+
+def mic_input_status(spans: Iterable[MicBusySpan], faults: Iterable[datetime]) -> str:
+    """Whether the mic-busy dimension measured anything, and if not whether the daemon said why.
+
+    The fault list only enriches the answer; it never gates it. A daemon that started before
+    ``--since`` and has been dead-input ever since logged its fault outside the window, so a report
+    that leaned on the event would call that window clean. Zero spans is the gate, and zero spans
+    is never "clean"."""
+    if list(spans):
+        return MIC_INPUT_OBSERVED
+    return MIC_INPUT_DEVICE_UNAVAILABLE if list(faults) else MIC_INPUT_NO_SPANS
+
+
 def _format_delta(seconds: float | None) -> str:
     return f"{seconds:.1f}s" if seconds is not None else "n/a"
 
@@ -390,11 +439,13 @@ def render_report(
     stats: dict[str, AppStats],
     mic_spans: list[MicBusySpan] | None = None,
     min_miss_sec: float = 30.0,
+    mic_input_faults: list[datetime] | None = None,
 ) -> str:
     """Render a markdown audit report. Empty input still produces a
     valid skeleton so the caller can pipe it without branching."""
     spans = list(mic_spans or [])
-    if not sessions and not spans:
+    faults = list(mic_input_faults or [])
+    if not sessions and not spans and not faults:
         return "# Detection Audit\n\n_No recording sessions or mic activity found in event stream._\n"
 
     lines: list[str] = []
@@ -403,8 +454,9 @@ def render_report(
 
     # Window spans whatever we have: a missed meeting produces mic-busy spans but no session, so
     # the report must not be gated on sessions existing (that would hide the misses DET3 exists for).
-    starts = [s.started_ts for s in sessions] + [s.started_ts for s in spans]
-    ends = [s.stopped_ts for s in sessions] + [s.ended_ts for s in spans]
+    # A dead-input event is the third case, and it can be the only thing in the window (DET10).
+    starts = [s.started_ts for s in sessions] + [s.started_ts for s in spans] + faults
+    ends = [s.stopped_ts for s in sessions] + [s.ended_ts for s in spans] + faults
     first_ts = min(starts).isoformat(timespec="seconds")
     last_ts = max(ends).isoformat(timespec="seconds")
     lines.append(f"Window: `{first_ts}` -> `{last_ts}` · {len(sessions)} session(s)")
@@ -485,7 +537,39 @@ def render_report(
 
     # DET3: mic-busy misses - the mic was held by another process but nothing recorded and no
     # prompt fired. This is the false-negative class the whitelist can't see on its own.
-    if spans:
+    #
+    # DET10: the section renders with no spans too. It used to be gated on `if spans:`, so a window
+    # whose mic-busy input was dead produced no section at all, beside an end-detection report that
+    # read fine - the instrument built to expose silent false-negatives going silent itself. A
+    # heading of "Mic-busy misses (0)" would be no better, because 0 of 0 is not the same claim as
+    # 0 of N.
+    status = mic_input_status(spans, faults)
+    if status != MIC_INPUT_OBSERVED:
+        lines.append("## Mic-busy misses (not audited)")
+        lines.append("")
+        lines.append("**No mic-busy span was observed in this window, so start-detection was not "
+                     "audited at all.** This is not the zero-misses result: nothing was measured. "
+                     "The mic-busy dimension has one producer, "
+                     "`AVCaptureDevice.isInUseByAnotherApplication`, and a dead one is silent "
+                     "rather than loud.")
+        lines.append("")
+        if status == MIC_INPUT_DEVICE_UNAVAILABLE:
+            first = min(faults).isoformat(timespec="seconds")
+            lines.append(f"The daemon logged **{len(faults)}** `mic_device_unavailable` event(s) "
+                         f"(first `{first}`): it could not resolve an audio input device, so the "
+                         "mic-busy observer was never wired. That resolve is not retried, so DET1's "
+                         "catch-all prompt and this whole dimension were off for the rest of each "
+                         "of those daemon runs. Check the microphone permission first; the event "
+                         "carries the TCC status it saw.")
+        else:
+            lines.append("No `mic_device_unavailable` event was logged either, so nothing here says "
+                         "the input was missing (a daemon older than that event would say nothing "
+                         "either). So: nothing held the microphone in this window, or the signal "
+                         "does not observe mic contention on this Mac at all. Those are different "
+                         "findings and this report cannot tell them apart. "
+                         "`daemon/scripts/det10-mic-busy-probe.swift` is what settles it (DET10).")
+        lines.append("")
+    else:
         handled_n = sum(1 for s in spans if s.handled)
         mic_misses = [s for s in spans if not s.handled and s.duration_sec >= min_miss_sec]
         lines.append(f"## Mic-busy misses ({len(mic_misses)})")
@@ -581,6 +665,8 @@ def main(argv: list[str]) -> int:
         pair_mic_spans(raw, since=since), sessions,
         prompts=prompts, dropped=dropped, picks=picks,
     )
+    # DET10: and read whether the producer of those spans was alive at all.
+    mic_faults = collect_mic_input_faults(raw, since=since)
 
     if args.json:
         payload = {
@@ -609,6 +695,11 @@ def main(argv: list[str]) -> int:
                 for s in sessions if s.stop_kind == STOP_MANUAL
             ],
             "mic_busy": {
+                # DET10: `spans_observed: 0` with `misses: []` used to be the only thing a machine
+                # reader saw, and it reads identically to a clean week. `input_status` is the
+                # discriminator: only "observed" means the misses list is a measurement.
+                "input_status": mic_input_status(mic_spans, mic_faults),
+                "device_unavailable_events": len(mic_faults),
                 "spans_observed": len(mic_spans),
                 "handled": sum(1 for s in mic_spans if s.handled),
                 "misses": [
@@ -627,7 +718,10 @@ def main(argv: list[str]) -> int:
         sys.stdout.write(json.dumps(payload, indent=2, default=str) + "\n")
         return 0
 
-    report = render_report(sessions, stats, mic_spans=mic_spans, min_miss_sec=args.min_miss_sec)
+    report = render_report(
+        sessions, stats,
+        mic_spans=mic_spans, min_miss_sec=args.min_miss_sec, mic_input_faults=mic_faults,
+    )
     if args.output:
         Path(args.output).write_text(report, encoding="utf-8")
     else:

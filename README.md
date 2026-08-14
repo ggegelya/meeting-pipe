@@ -240,7 +240,9 @@ mp logs --since 1h --category detector
 # Audit detection from both ends: meeting-end reliability (recordings you had to
 # stop manually), and start-detection false negatives (the mic was held but nothing
 # recorded, e.g. an unlisted-domain call), with a reason per miss. --min-miss-sec
-# (default 30) filters out brief dictation / voice-memo blips.
+# (default 30) filters out brief dictation / voice-memo blips. A window in which the
+# mic was never once observed held reads as "not audited" rather than as zero misses:
+# nothing was measured, which is a different thing from nothing being wrong.
 mp analyze-detection --since 7d
 
 # Compare Anthropic vs the local backend on one transcript; writes a

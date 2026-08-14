@@ -282,7 +282,7 @@ So a reader over the real log owes it a residue filter. `mp.events.is_test_resid
 Two things it deliberately does not do, both worth knowing before you trust a number:
 
 - **It is not exhaustive, and cannot be.** Test rows that name no meeting (`coordinator.state_change`, `workflow.migrator_seeded`, `daemon.notion_fetch_blocked`) are byte-identical to real ones and interleave with them in the same window, so no content or time discriminator separates them. They inflate benign counters; they fabricate no failures. A pass through the filter does not mean "the log is clean".
-- **Not every reader needs it.** `mp analyze-detection` deliberately does not filter: it pairs `recording_started` / `recording_stopped` / `force_stop` / `mic_busy_*`, and there is not one residue row on any of those actions. `scripts/valid1_check.py --diar` keeps its own `engine` filter rather than delegating, because it also counts and prints what it skipped (`other_engines`) instead of dropping it silently. Check which actions your report actually reads before you add or skip a filter.
+- **Not every reader needs it.** `mp analyze-detection` deliberately does not filter: it pairs `recording_started` / `recording_stopped` / `force_stop` / `mic_busy_*` / `mic_device_unavailable`, and there is not one residue row on any of those actions. `scripts/valid1_check.py --diar` keeps its own `engine` filter rather than delegating, because it also counts and prints what it skipped (`other_engines`) instead of dropping it silently. Check which actions your report actually reads before you add or skip a filter.
 
 ### Adding a new action
 
