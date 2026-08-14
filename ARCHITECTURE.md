@@ -396,7 +396,7 @@ The AI5 spike's `classify.py` / `mp classify-meetings` used to sit in this table
 
 ### Sinks
 
-- `publish_router.py` - the fan-out over `effective_sinks(cfg)`. Runs each publisher, isolates their failures, and writes `<stem>.publish.json` with this run's outcome. Owns the `EXIT_PUBLISH_FAILED` contract (PIPE1).
+- `publish_router.py` - the fan-out over `effective_sinks(cfg)`. Runs each publisher, isolates their failures, and writes `<stem>.publish.json` with this run's outcome. Owns the `EXIT_PUBLISH_FAILED` contract (PIPE1). A sink whose required secret is missing becomes an `UnavailablePublisher` (PIPE16) so it fails *inside* the fan-out rather than aborting it before any sink runs.
 - `publish_obsidian.py` - Markdown note in the vault. `publish_fs.py` - three files in a directory. `publish_lan.py` - the same three files onto a mounted SMB/NFS share, atomically and behind a reachability check (TECH-FEAT1). `publish_notion.py` hosts the `NotionRestPublisher` the router builds; it has no subcommand of its own since HYG4 retired the `mp publish-notion` verb (`mp publish` fans out, and a single-sink escape hatch only routed around the configured sinks).
 
 ### AI band (engine-backed, on-device by default)

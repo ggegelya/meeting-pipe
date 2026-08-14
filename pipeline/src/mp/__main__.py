@@ -96,6 +96,15 @@ Globals:
 # that landed nowhere.
 EXIT_INTERRUPTED = 130
 
+# A managed secret was missing and no stage could work around it (PIPE16).
+# Deliberately 2, the same code `require_env`'s old `sys.exit(2)` returned, so
+# the fail-fast contract at the CLI boundary is byte-identical to what it was;
+# what changed is only that it can no longer escape a run's handlers on its way
+# out. It shares the usage code, which is imprecise but is the behaviour that
+# shipped, and both alike fall into `SinkDispatcher.stage(for:)`'s generic arm
+# since 3 is the only code Swift branches on.
+EXIT_MISSING_SECRET = 2
+
 # The one command whose interrupt is worth a second clause. `mp ask` checkpoints
 # the embedding index as it builds (AI11), so a Ctrl-C there is resumable, and
 # that is the non-obvious part after a run long enough to want stopping.
@@ -193,6 +202,8 @@ def _dispatch(cmd: str, rest: list[str]) -> int:
 
 
 def main() -> int:
+    from .config import MissingSecretError
+
     argv = sys.argv[1:]
 
     if not argv or argv[0] in {"-h", "--help", "help"}:
@@ -208,6 +219,18 @@ def main() -> int:
 
     try:
         return _dispatch(cmd, rest)
+    except MissingSecretError as e:
+        # PIPE16: `require_env` used to `sys.exit(2)` from library code, which is
+        # a `BaseException` and so escaped every `except Exception` a run is
+        # wrapped in, taking the `run_failed` event, the exit-3 mapping and the
+        # `<stem>.publish.json` write with it. The fail-fast it was reaching for
+        # belongs here, at the boundary, for the same reason the interrupt handler
+        # below does: one handler serves every subcommand and none has to learn
+        # about it. A stage that owns a recovery catches it before this (the
+        # publish fan-out records the sink as failed and runs the others), so what
+        # reaches here is a secret nothing could work around.
+        print(f"ERROR: {e}", file=sys.stderr)
+        return EXIT_MISSING_SECRET
     except KeyboardInterrupt:
         # No cleanup, no `finally`, no rollback: what the interrupt leaves on
         # disk is the feature. `mp ask`'s partial index is what lets the next

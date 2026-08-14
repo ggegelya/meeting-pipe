@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -25,7 +27,7 @@ import anthropic
 import httpx
 import pytest
 
-from mp.config import SAMPLING_TEMPERATURE, Config
+from mp.config import SAMPLING_TEMPERATURE, Config, MissingSecretError
 from mp.config import parse_local_endpoint
 from mp.summarize import _AutoFallbackClient, _select_backend
 
@@ -57,14 +59,40 @@ def test_select_backend_auto_returns_fallback_wrapper() -> None:
 
 
 def test_select_backend_anthropic_requires_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    # require_env raises SystemExit(2) by design (fail-fast for missing
-    # secrets at the top of the pipeline). _select_backend bubbles that
-    # out unchanged for the explicit "anthropic" mode. The auto-fallback
-    # mode reads os.environ directly so it can fall back instead.
+    # require_env fails fast on a missing secret by design, and _select_backend
+    # bubbles that out unchanged for the explicit "anthropic" mode. The
+    # auto-fallback mode reads os.environ directly so it can fall back instead.
+    #
+    # PIPE16 changed the *mechanism* and not the intent: this was `SystemExit(2)`
+    # raised from library code, which is a BaseException and so escaped every
+    # `except Exception` a run is wrapped in, skipping the run_failed event, the
+    # exit-3 mapping and the publish sidecar. The exit code the CLI returns is
+    # unchanged and is pinned at the boundary by the test below.
+    from mp.config import MissingSecretError
+
     cfg = _local_cfg("anthropic")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with pytest.raises(SystemExit):
+    with pytest.raises(MissingSecretError):
         _select_backend(cfg)
+
+
+def test_a_missing_secret_still_exits_two_at_the_cli_boundary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The fail-fast half of PIPE16's contract, at the one place it was ever
+    # meant: `mp.__main__.main` catches MissingSecretError once, beside the
+    # KeyboardInterrupt handler, so every subcommand inherits it.
+    import mp.__main__ as entry_point
+
+    md = tmp_path / "20260101-120000.md"
+    md.write_text("A: hello.\n", encoding="utf-8")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        entry_point, "_dispatch",
+        lambda _cmd, _rest: (_ for _ in ()).throw(MissingSecretError("ANTHROPIC_API_KEY")),
+    )
+    monkeypatch.setattr(sys, "argv", ["mp", "summarize", str(md)])
+    assert entry_point.main() == 2
 
 
 def test_select_backend_unknown_raises() -> None:

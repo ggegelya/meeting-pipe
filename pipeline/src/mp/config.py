@@ -6,7 +6,6 @@ which is fine because both are read-only consumers — config is owned by the us
 from __future__ import annotations
 
 import os
-import sys
 import tomllib
 from pathlib import Path
 from typing import Literal, get_args
@@ -459,14 +458,41 @@ def load_secrets(reader=_keychain_get) -> None:
             os.environ[key] = val
 
 
+class MissingSecretError(Exception):
+    """A managed secret this stage needs is absent from the environment (PIPE16).
+
+    An ordinary `Exception`, and that is the entire point. `require_env` used to
+    call `sys.exit(2)` from library code, and `SystemExit` derives from
+    `BaseException`, so it passed straight through both of `orchestrate`'s
+    `except Exception` handlers: no `run_failed` event, no exit-3 mapping, no
+    `<stem>.publish.json`. The daemon then saw exit 2 over a meeting whose
+    summary was already on disk, mapped it to the generic pipeline stage, and
+    `MeetingStore` settled the durable row on **"Ready"** for a meeting that
+    published nowhere.
+
+    Fail-fast is preserved where it was actually meant, at the CLI boundary:
+    `mp.__main__.main` catches this once, beside the `KeyboardInterrupt` handler
+    and for the same reason, and returns 2.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(
+            f"${name} is not set. Set it in the daemon's Preferences, re-run scripts/install.sh, "
+            f"or add it to the Keychain:\n"
+            f"  security add-generic-password -U -s {KEYCHAIN_SERVICE} -a {name} -w <value>"
+        )
+
+
 def require_env(name: str) -> str:
-    """Fail fast with an actionable message if a secret is missing."""
+    """Fail fast with an actionable message if a secret is missing.
+
+    Raises `MissingSecretError` rather than exiting, so a caller that owns a
+    recovery (the publish fan-out records the sink as failed and runs the rest)
+    can take it, and so the handlers a run is already wrapped in can see it. The
+    CLI boundary still turns it into exit 2.
+    """
     val = os.environ.get(name)
     if not val:
-        sys.stderr.write(
-            f"ERROR: ${name} is not set. Set it in the daemon's Preferences, re-run scripts/install.sh, "
-            f"or add it to the Keychain:\n"
-            f"  security add-generic-password -U -s {KEYCHAIN_SERVICE} -a {name} -w <value>\n"
-        )
-        sys.exit(2)
+        raise MissingSecretError(name)
     return val

@@ -57,6 +57,12 @@ def build_publishers(cfg: Config) -> list[MeetingPublisher]:
     skipped with a warning rather than raising, on the principle that
     a partially-configured install should still degrade gracefully -
     the user added "obsidian" to sinks but forgot to set vault_path.
+
+    A missing *secret* is the third case and is neither of those (PIPE16): the
+    sink is returned as an `UnavailablePublisher`, so it is present in the run's
+    result as a failure rather than absent from it. Skipped is what the user
+    half-configured; failed is what they configured and could not reach, and
+    only the second may not be quietly rounded up to `publish_state == "full"`.
     """
     out: list[MeetingPublisher] = []
     # effective_sinks applies the regulated/NDA egress clamp once (drops the
@@ -69,6 +75,34 @@ def build_publishers(cfg: Config) -> list[MeetingPublisher]:
     return out
 
 
+class UnavailablePublisher:
+    """A sink that could not be constructed, standing in for it so the failure is
+    *recorded* rather than aborting the fan-out (PIPE16).
+
+    `_build_one` used to let `require_env`'s `sys.exit(2)` out of
+    `build_publishers`, which `fanout` calls before any publisher runs, so one
+    missing `NOTION_TOKEN` killed the Obsidian and filesystem sinks configured
+    beside it, in direct contradiction of this module's own opening contract.
+
+    Skipping the sink silently, the way an empty `obsidian.vault_path` is
+    skipped, would have been the smaller change and is the wrong one: a skipped
+    sink is absent from `per_sink`, so `publish_state` would read `"full"` for a
+    run that reached one fewer destination than it was told to. Failing here
+    instead means the run is honest in every direction at once: the other sinks
+    publish, the state reads `"partial"`, `<stem>.publish.json` records which sink
+    failed and why, a `publisher.sink_failed` event is emitted, and a
+    notion-only workflow still exits 3 through `all_sinks_failed` so the row gets
+    the publish-only retry rather than paying the summarizer again.
+    """
+
+    def __init__(self, name: str, error: Exception) -> None:
+        self.name = name
+        self._error = error
+
+    def upsert(self, **_kwargs: Any) -> dict[str, Any]:
+        raise self._error
+
+
 def _build_one(name: str, cfg: Config) -> MeetingPublisher | None:
     if name == "notion":
         # The zero-egress clamp that used to drop this sink lives in
@@ -76,10 +110,14 @@ def _build_one(name: str, cfg: Config) -> MeetingPublisher | None:
         # routes through it, so a "notion" name reaching here is already
         # allowed to egress.
         from .publish_notion import NotionRestPublisher
-        from .config import require_env
+        from .config import MissingSecretError, require_env
         if not cfg.notion.database_id:
             log.warning("notion.database_id is empty; Notion sink will fail at upsert")
-        token = require_env("NOTION_TOKEN")
+        try:
+            token = require_env("NOTION_TOKEN")
+        except MissingSecretError as e:
+            log.error("notion sink unavailable: %s", e)
+            return UnavailablePublisher(name, e)
         return NotionRestPublisher(token=token, cfg=cfg)
     if name == "obsidian":
         if not cfg.obsidian.vault_path:

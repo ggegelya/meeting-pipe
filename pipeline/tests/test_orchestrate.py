@@ -28,6 +28,7 @@ from mp.orchestrate import (
 )
 from mp.publish_router import EXIT_PUBLISH_FAILED
 from mp.roster import EMBEDDING_DIM, RosterStore
+from mp.schemas import MeetingSummary
 from mp.voiceprint import VoiceprintStore
 
 
@@ -713,6 +714,72 @@ def test_run_all_emits_run_failed_not_run_completed_on_publish_failure(
     failed = next(attrs for _, a, attrs in emitted if a == "run_failed")
     assert failed["stage"] == "publish"
     assert "503" in failed["error"]
+
+
+# --- PIPE16: a publish-stage missing secret is a publish failure -------------
+
+
+def test_run_all_reports_a_missing_publish_secret_as_a_failed_publish(
+    tmp_path: Path, monkeypatch
+):
+    """`require_env`'s `sys.exit(2)` escaped both of this module's handlers.
+
+    `SystemExit` is a `BaseException`, so the `except Exception` at `run_all` and
+    the one at `main` both missed it: no `run_failed`, no exit-3 mapping, no
+    `<stem>.publish.json`. The daemon saw exit 2 over a meeting whose summary was
+    already on disk, mapped it to the generic pipeline stage (whose retry
+    re-summarizes), and `MeetingStore` settled the durable row on **"Ready"** for
+    a meeting that published nowhere.
+
+    Driven through the real `publish_router.fanout`, not a patched one, because
+    the escape happened in `build_publishers` before any publisher ran.
+    """
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    # `entry.prepare` refills the managed tokens from the login Keychain (SEC8),
+    # so on the owner's own Mac `delenv` alone does not make the secret missing:
+    # without this the publisher builds for real and the suite talks to
+    # api.notion.com, which no test here is allowed to do.
+    monkeypatch.setattr("mp.entry.load_secrets", lambda *a, **k: None)
+    emitted: list[tuple] = []
+    monkeypatch.setattr("mp.orchestrate.events.emit",
+                        lambda cat, action, **attrs: emitted.append((cat, action, attrs)))
+
+    stem = "20260516-0900"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)
+    summary_json = tmp_path / f"{stem}.summary.json"
+    summary_json.write_text(
+        MeetingSummary(
+            title="Standup", summary=["a"], decisions=[], actions=[],
+            questions=[], attendees=[], detected_language="en",
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    cfg = Config.model_validate({"output": {"sinks": ["notion"]}})
+
+    with patch("mp.orchestrate.summarize",
+               return_value={"json": summary_json, "md": tmp_path / f"{stem}.summary.md"}):
+        result = run_all(wav, cfg=cfg)
+
+    # Exit 3, not 2: `main` returns EXIT_PUBLISH_FAILED off this flag, which is
+    # the one code `SinkDispatcher` branches on, so the row gets a publish-only
+    # retry over the summary already on disk instead of paying the summarizer
+    # twice.
+    assert result["publish_failed"] is True
+    assert EXIT_PUBLISH_FAILED == 3
+
+    actions = [a for _, a, _ in emitted]
+    assert "run_failed" in actions
+    assert "run_completed" not in actions
+    failed = next(attrs for _, a, attrs in emitted if a == "run_failed")
+    assert failed["stage"] == "publish"
+    assert "NOTION_TOKEN" in failed["error"]
+
+    sidecar = json.loads((tmp_path / f"{stem}.publish.json").read_text(encoding="utf-8"))
+    assert sidecar["state"] == "none"
+    assert sidecar["sinks"]["notion"]["ok"] is False
 
 
 def test_run_all_completes_normally_on_a_partial_publish(tmp_path: Path, monkeypatch):

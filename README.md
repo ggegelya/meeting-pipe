@@ -618,6 +618,7 @@ There are no microphone or output-device settings — the daemon auto-detects bo
 **Notion publish fails with 401 / 404.**
 - 401 → `NOTION_TOKEN` is wrong or revoked. `mp doctor` confirms.
 - 404 → the integration isn't shared with your database, or `notion.database_id` is wrong (use the ID, not the page slug).
+- Not set at all → the Notion sink is reported as failed for that meeting and **the other destinations still publish**. The row reads *Publishing failed*, and **Retry** republishes the summary already on disk rather than re-summarizing it. Before this it was worse in both directions: a missing token aborted the whole fan-out, so an Obsidian or output-folder destination configured beside Notion silently published nowhere, and the row then settled on **Ready** for a meeting that had landed nowhere at all.
 
 **The MeetingPipe actions don't show up in Shortcuts.** Expected: they are off by default (see "Native Shortcuts actions" above). Use a Shortcut built on the **Open URL** action with a `meetingpipe://` URL instead, which is the supported path.
 

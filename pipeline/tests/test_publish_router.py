@@ -10,6 +10,7 @@ import pytest
 from mp.config import Config
 from mp.publish_router import (
     PublisherBuildError,
+    UnavailablePublisher,
     all_sinks_failed,
     build_publishers,
     fanout,
@@ -283,6 +284,97 @@ def test_build_publishers_filesystem_constructs(tmp_path: Path) -> None:
     pubs = build_publishers(cfg)
     assert len(pubs) == 1
     assert pubs[0].name == "filesystem"
+
+
+# ----- PIPE16: a missing secret is a recorded sink failure, never an abort -----
+
+def test_build_publishers_missing_notion_token_yields_a_failing_sink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # It used to `sys.exit(2)` from inside `_build_one`, killing the fan-out
+    # before any publisher ran. The sink is now present-and-failed, which is what
+    # keeps the other two running AND keeps `publish_state` honest.
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    cfg = Config.model_validate({
+        "output": {"sinks": ["notion", "obsidian", "filesystem"]},
+        "obsidian": {"vault_path": str(tmp_path / "vault")},
+        "filesystem": {"output_dir": str(tmp_path / "out")},
+    })
+    pubs = build_publishers(cfg)
+    assert [p.name for p in pubs] == ["notion", "obsidian", "filesystem"]
+    assert isinstance(pubs[0], UnavailablePublisher)
+
+
+def test_missing_notion_token_does_not_stop_the_other_sinks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The module's opening contract, in the case that used to break it: one
+    # sink's failure must not abort the rest. Before PIPE16 a missing
+    # NOTION_TOKEN killed the Obsidian and filesystem sinks configured beside it,
+    # and the process left through both of orchestrate's handlers.
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    cfg = Config.model_validate({
+        "output": {"sinks": ["notion", "obsidian", "filesystem"]},
+        "obsidian": {"vault_path": str(tmp_path / "vault")},
+        "filesystem": {"output_dir": str(tmp_path / "out")},
+    })
+    summary_json = tmp_path / "20260506-150000.summary.json"
+    _write_summary_json(summary_json)
+
+    res = fanout(summary_json=summary_json, cfg=cfg, transcript_md=None)
+
+    assert res["sinks"]["notion"]["error_type"] == "MissingSecretError"
+    assert "NOTION_TOKEN" in res["sinks"]["notion"]["error"]
+    assert not res["sinks"]["obsidian"].get("error"), "obsidian was killed by notion's secret"
+    assert not res["sinks"]["filesystem"].get("error")
+    # Honest in both directions: the run reached two of three destinations, so it
+    # is neither a clean success nor a total failure.
+    assert publish_state(res) == "partial"
+    assert not all_sinks_failed(res)
+
+    sidecar = json.loads((tmp_path / "20260506-150000.publish.json").read_text())
+    assert sidecar["state"] == "partial"
+    assert sidecar["sinks"]["notion"]["ok"] is False
+    assert sidecar["sinks"]["filesystem"]["ok"] is True
+
+
+def test_missing_token_on_the_only_sink_is_an_all_sinks_failed_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The other half of the acceptance: with notion as the only sink there is
+    # nothing left to succeed, so this is the exit-3 contract and the row gets a
+    # publish-only retry rather than paying the summarizer a second time. It used
+    # to exit 2, which `SinkDispatcher` maps to the generic pipeline stage, and
+    # `MeetingStore` then settled the durable row on "Ready".
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    cfg = Config.model_validate({"output": {"sinks": ["notion"]}})
+    summary_json = tmp_path / "20260506-150000.summary.json"
+    _write_summary_json(summary_json)
+
+    res = fanout(summary_json=summary_json, cfg=cfg, transcript_md=None)
+
+    assert publish_state(res) == "none"
+    assert all_sinks_failed(res), "must map to EXIT_PUBLISH_FAILED, not to a generic failure"
+    sidecar = json.loads((tmp_path / "20260506-150000.publish.json").read_text())
+    assert sidecar["state"] == "none"
+
+
+def test_a_missing_secret_never_escapes_an_except_exception_handler() -> None:
+    # The structural defect, pinned directly and at the type level, since that is
+    # where it lived: `SystemExit` derives from `BaseException`, so orchestrate's
+    # two `except Exception` handlers could not see it.
+    from mp.config import MissingSecretError, require_env
+
+    assert issubclass(MissingSecretError, Exception)
+    assert not issubclass(MissingSecretError, SystemExit)
+
+    caught: Exception | None = None
+    try:
+        require_env("MP_DEFINITELY_UNSET_SECRET")
+    except Exception as e:  # noqa: BLE001 - the handler shape under test
+        caught = e
+    assert isinstance(caught, MissingSecretError)
+    assert caught.name == "MP_DEFINITELY_UNSET_SECRET"
 
 
 def test_default_output_sinks_is_notion_only() -> None:
