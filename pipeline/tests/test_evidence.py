@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import json
 
+import pytest
+from pydantic import ValidationError
+
 from mp import evidence as ev
 from mp.json_extract import parse_summary
 from mp.markdown import render_markdown, render_summary_md
@@ -93,6 +96,76 @@ def test_normalizer_is_a_noop_on_the_stored_shape():
         "detected_language": "en",
     }
     assert normalize_model_summary(payload) == payload
+
+
+# --------------------------------------------------------------------------
+# PIPE15: a list field that arrived as a JSON-encoded string
+# --------------------------------------------------------------------------
+
+
+def _stored_payload(**overrides):
+    payload = {
+        "title": "Standup",
+        "summary": ["a", "b"],
+        "decisions": [],
+        "actions": [],
+        "questions": [],
+        "attendees": [],
+        "detected_language": "en",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_stringified_section_round_trips_to_a_list():
+    # The exact shape that killed the 2026-07-20 run and cost a second paid call
+    # on 2026-05-22 and 2026-06-10: the content is right, the model just wrapped
+    # the array in quotes, and the strict `list[str]` field rejected it.
+    s = MeetingSummary.model_validate(
+        _stored_payload(summary=json.dumps(["a", "b"]), questions=json.dumps(["q?"]))
+    )
+    assert s.summary == ["a", "b"]
+    assert s.questions == ["q?"]
+
+
+def test_stringified_attendees_round_trips_to_a_list():
+    s = MeetingSummary.model_validate(_stored_payload(attendees=json.dumps(["Alice", "Bob"])))
+    assert s.attendees == ["Alice", "Bob"]
+
+
+def test_stringified_section_composes_with_the_evidence_flattening():
+    # The decode runs before FEAT10's flattening, so a stringified list of
+    # `{text, evidence}` objects gets both transforms rather than one.
+    s = MeetingSummary.model_validate(
+        _stored_payload(
+            summary=json.dumps(
+                [{"text": "Ships Friday.", "evidence": [{"t": 12.0, "quote": "ship Friday"}]}]
+            )
+        )
+    )
+    assert s.summary == ["Ships Friday."]
+    assert s.evidence["summary"][0][0].quote == "ship Friday"
+
+
+def test_a_prose_string_on_a_list_field_is_still_rejected():
+    # Deliberately not wrapped into a one-item list. A section that came back as
+    # one run-on sentence is the model answering a different question, and
+    # accepting it would ship that sentence as the whole summary.
+    with pytest.raises(ValidationError):
+        MeetingSummary.model_validate(_stored_payload(summary="We talked about the export."))
+
+
+def test_a_string_decoding_to_a_scalar_is_left_alone():
+    # `json.loads("5")` is 5, not a list. Only a decoded *list* is substituted.
+    with pytest.raises(ValidationError):
+        MeetingSummary.model_validate(_stored_payload(summary="5"))
+
+
+def test_the_decode_is_idempotent_on_the_stored_shape():
+    payload = _stored_payload()
+    assert normalize_model_summary(payload) == payload
+    once = normalize_model_summary(_stored_payload(summary=json.dumps(["a"])))
+    assert normalize_model_summary(once) == once
 
 
 def test_legacy_summary_round_trips_unchanged():

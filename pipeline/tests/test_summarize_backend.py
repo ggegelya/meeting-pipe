@@ -535,6 +535,122 @@ def test_anthropic_summarize_request_pins_the_temperature() -> None:
     assert seen[0]["temperature"] == SAMPLING_TEMPERATURE
 
 
+# ----- PIPE15: the schema-violation retry replays the failure -----
+
+@contextmanager
+def _anthropic_transport_sequence(bodies: list[dict]) -> Iterator[list[dict]]:
+    """`_anthropic_transport`, but answering a different body per request, so a
+    two-attempt round trip can be driven end to end: a malformed first reply, a
+    well-formed second. The last body repeats if the client asks again."""
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = bodies[min(len(seen), len(bodies) - 1)]
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, request=request, json=body)
+
+    real_init = httpx.Client.__init__
+
+    def patched_init(self: httpx.Client, *args: Any, **kwargs: Any) -> None:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        real_init(self, *args, **kwargs)
+
+    with patch.object(httpx.Client, "__init__", patched_init):
+        yield seen
+
+
+def _tool_use_body(summary: dict) -> dict:
+    return _message_response(
+        [{"type": "tool_use", "id": "toolu_01", "name": "emit_meeting_summary", "input": summary}],
+        "tool_use",
+    )
+
+
+def test_anthropic_retry_replays_the_validation_error_instead_of_repeating_itself() -> None:
+    # The whole PIPE15 defect: both attempts built a byte-identical payload, so
+    # the model had no way to know it had failed. Two of the three real
+    # occurrences recovered only because the blind re-roll happened to come back
+    # well-formed, at the cost of a second paid call.
+    from mp.summarize import AnthropicSummaryClient
+
+    good = {
+        "title": "Standup", "summary": ["A point."], "decisions": [], "actions": [],
+        "questions": [], "attendees": ["Alice"], "detected_language": "en",
+    }
+    # `title` over its 120-char cap: a content-level violation the decode in
+    # `normalize_model_summary` deliberately cannot repair, so the retry is what
+    # has to carry the fix.
+    bad = {**good, "title": "x" * 200}
+
+    with _anthropic_transport_sequence([_tool_use_body(bad), _tool_use_body(good)]) as seen:
+        out = AnthropicSummaryClient(api_key="sk-test").summarize(
+            system_prompt="Summarize.", transcript="A: hello.",
+            model="claude-x", max_tokens=512,
+        )
+
+    assert out.title == "Standup"
+    assert len(seen) == 2
+    first = seen[0]["messages"][0]["content"]
+    second = seen[1]["messages"][0]["content"]
+    assert second != first, "attempt 2 re-issued an identical request"
+    assert "title" in second, "attempt 2 does not name the field that failed"
+    assert "rejected" in second
+    # The transcript stays in the retry: a content-level violation cannot be
+    # fixed from the error text alone.
+    assert "A: hello." in second
+
+
+def test_anthropic_first_attempt_carries_no_repair_preamble() -> None:
+    # The repair text is retry-only, so a normal run pays nothing for it.
+    from mp.summarize import summary_request
+
+    first = summary_request("A: hello.")
+    assert "rejected" not in first
+    assert first == summary_request("A: hello.", retry_error=None)
+
+
+def test_anthropic_missing_tool_block_also_feeds_the_retry() -> None:
+    # A reply with no tool_use block is the same class of failure and used to
+    # re-issue the same request too.
+    from mp.summarize import AnthropicSummaryClient
+
+    good = {
+        "title": "Standup", "summary": ["A point."], "decisions": [], "actions": [],
+        "questions": [], "attendees": [], "detected_language": "en",
+    }
+    empty = _message_response([{"type": "text", "text": "sorry"}], "end_turn")
+
+    with _anthropic_transport_sequence([empty, _tool_use_body(good)]) as seen:
+        out = AnthropicSummaryClient(api_key="sk-test").summarize(
+            system_prompt="Summarize.", transcript="A: hello.",
+            model="claude-x", max_tokens=512,
+        )
+
+    assert out.title == "Standup"
+    assert "No tool_use block" in seen[1]["messages"][0]["content"]
+
+
+def test_anthropic_stringified_section_needs_no_retry_at_all() -> None:
+    # The shared coercion means the shape that fired three times on the real
+    # corpus now validates on attempt 1, so it costs no second paid call.
+    from mp.summarize import AnthropicSummaryClient
+
+    stringified = {
+        "title": "Standup", "summary": json.dumps(["A point.", "Another."]),
+        "decisions": [], "actions": [], "questions": [], "attendees": [],
+        "detected_language": "en",
+    }
+
+    with _anthropic_transport_sequence([_tool_use_body(stringified)]) as seen:
+        out = AnthropicSummaryClient(api_key="sk-test").summarize(
+            system_prompt="Summarize.", transcript="A: hello.",
+            model="claude-x", max_tokens=512,
+        )
+
+    assert out.summary == ["A point.", "Another."]
+    assert len(seen) == 1, "a repairable shape still cost a second call"
+
+
 def test_anthropic_free_form_request_pins_the_same_temperature() -> None:
     # `engine.AnthropicTextClient` is the free-form sibling behind ask / digest /
     # classify. It carried no temperature either, so the default backend answered

@@ -5,6 +5,7 @@ Field names and types are locked-in; Notion publishing assumes this exact shape.
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
@@ -23,6 +24,13 @@ EVIDENCE_SECTIONS = ("summary", "decisions", "questions")
 # row stays quiet and the output-token bump stays small. A constant, not a config
 # knob (FEAT10 explicitly ships none).
 MAX_EVIDENCE_PER_ITEM = 2
+
+# PIPE15. The list-valued fields a model has actually been observed handing back
+# as a JSON-encoded string instead of a list. `attendees` sits beside the three
+# evidence sections because it is the other bare `list[str]` the tool schema asks
+# for; `actions` and `extra_sections` are lists of objects and have never arrived
+# stringified, so they stay out rather than being added speculatively.
+STRINGIFIED_LIST_FIELDS = (*EVIDENCE_SECTIONS, "attendees")
 
 
 class Evidence(BaseModel):
@@ -124,6 +132,41 @@ class ExtraSection(BaseModel):
     content: list[str] = Field(default_factory=list)
 
 
+def _decode_stringified_lists(payload: dict[str, Any]) -> dict[str, Any]:
+    """PIPE15: accept a `list[str]` field that arrived as a JSON-encoded string.
+
+    Observed three times on the owner's real corpus (2026-05-22 `summary`,
+    2026-06-10 `questions`, 2026-07-20 `summary`), and it is the whole failure:
+    the content is right, the model just wrapped it in quotes, and pydantic's
+    strict `list[str]` rejects it with `list_type`. Two of the three recovered
+    only because the blind attempt-2 re-roll happened to come back well-formed,
+    at the cost of a second paid call; the third killed a run.
+
+    Deliberately narrow. Only a string that `json.loads` to a **list** is
+    replaced, so `"we talked about X"` on a list field still fails validation
+    rather than being silently wrapped into a one-item list: that shape is the
+    model answering a different question, and accepting it would ship a summary
+    whose section is one run-on sentence. A non-string, a non-JSON string, and a
+    string decoding to a scalar or a dict are all left exactly as they were, which
+    is what keeps this a no-op on the stored shape and idempotent on re-validation.
+    """
+    out: dict[str, Any] | None = None
+    for field in STRINGIFIED_LIST_FIELDS:
+        raw = payload.get(field)
+        if not isinstance(raw, str):
+            continue
+        try:
+            decoded = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(decoded, list):
+            continue
+        if out is None:
+            out = dict(payload)
+        out[field] = decoded
+    return out if out is not None else payload
+
+
 def normalize_model_summary(payload: Any) -> Any:
     """FEAT10: flatten the model-facing section shape into the stored one.
 
@@ -143,9 +186,16 @@ def normalize_model_summary(payload: Any) -> Any:
     A no-op on the stored shape (entries already strings) and on anything that is
     not a dict, so a legacy `<stem>.summary.json` round-trips unchanged and
     re-validating an already-normalized payload is idempotent.
+
+    PIPE15 added a second transform in front of the flattening, for the same
+    reason FEAT10's lives here rather than at four call sites: a section handed
+    back as a JSON-encoded string is a malformation every backend can receive, so
+    the repair belongs where every backend inherits it. It runs first so a
+    stringified list of `{text, evidence}` objects gets both treatments.
     """
     if not isinstance(payload, dict):
         return payload
+    payload = _decode_stringified_lists(payload)
     raw_sections = {s: payload.get(s) for s in EVIDENCE_SECTIONS}
     if not any(
         isinstance(items, list) and any(isinstance(i, dict) for i in items)

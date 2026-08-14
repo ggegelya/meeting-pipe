@@ -8,11 +8,23 @@ Prompt caching is enabled on the system prompt so repeated calls within the
 5-minute window only pay ~0.1x for the system block. The transcript itself is
 the volatile part and goes after the cache breakpoint.
 
-Two retry layers:
+Two retry layers, and one repair:
   - `_create_message`: tenacity-wrapped; retries on rate limits, 5xx, and
     transient connection errors with exponential backoff. Inside it, a
     one-shot retry for a timeout the Mac slept through (PIPE10).
-  - `_call_with_retry`: one retry on a schema-violating tool_use response.
+  - `AnthropicSummaryClient.summarize`: one retry on a tool_use response that is
+    missing or schema-violating. That retry replays the validator's complaint
+    through `summary_request` (PIPE15); it used to re-issue a byte-identical
+    request, so the model could not know it had failed and the same malformed
+    reply could recur until the run died.
+  - `schemas.normalize_model_summary`: the shared repair every backend inherits,
+    which is where a section arriving as a JSON-encoded string is decoded (PIPE15)
+    and where FEAT10's `{text, evidence}` shape is flattened.
+
+This is deliberately thinner than the local backend's ladder (three recovery
+layers plus `summarize_local.repair_messages`), because a tool call is already
+schema-constrained at the API. What it must not be is *blind*, which is what it
+was: the normalizer is the shared half of the fix, and the replay the cheap half.
 """
 from __future__ import annotations
 
@@ -339,6 +351,48 @@ def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
     return "\n".join(lines)
 
 
+def summary_request(transcript: str, *, retry_error: Exception | None = None) -> str:
+    """The user turn the Anthropic tool call sends (PIPE15).
+
+    On attempt 1 `retry_error` is None and this is the plain ask. On attempt 2 it
+    carries the real complaint from attempt 1, which is the whole point: the retry
+    used to re-issue a byte-identical request, so the model had no way to know it
+    had failed and the same malformed reply could recur. `summarize_local
+    .repair_messages` has replayed its parser error for the local backend since
+    LOCAL9; the cloud path, which is the shipped default, had nothing.
+
+    Module-level for the same reason `repair_messages` and `augment_with_schema`
+    are: the exact turn the API sees is worth being able to build and inspect from
+    outside the client.
+
+    Unlike `repair_messages` this is not a fresh conversation that shares no prefix
+    with the failed one. That shape exists to defeat mlx-lm's prompt-prefix cache,
+    which returned a byte-identical reply on six of six measured runs; the
+    Anthropic path caches the *system* block only, by explicit `cache_control`, and
+    samples the completion afresh every call, so there is no cache to defeat here.
+    Keeping the transcript in the turn is what lets a content-level violation (a
+    section over its `max_length`, a missing required field) actually be fixed
+    rather than guessed at.
+
+    The error text is model-authored only in the sense that pydantic quotes the
+    offending value back, so it stays outside the untrusted fence around the
+    transcript and is introduced as a report rather than as instructions.
+    """
+    ask = (
+        "Summarize this meeting. Call `emit_meeting_summary` exactly once.\n\n"
+        + wrap_untrusted(transcript)
+    )
+    if retry_error is None:
+        return ask
+    return (
+        "Your previous call to `emit_meeting_summary` was rejected. The validator"
+        f" reported:\n\n{retry_error}\n\nCall the tool again for the same meeting,"
+        " correcting exactly that and changing nothing else. Every list field must"
+        " be a real JSON array, never an array serialized into a string.\n\n"
+        + ask
+    )
+
+
 class AnthropicSummaryClient:
     """Concrete `SummaryClient` backed by Anthropic's tool-use API.
 
@@ -384,13 +438,12 @@ class AnthropicSummaryClient:
                 ],
                 tools=[SUMMARY_TOOL],
                 tool_choice={"type": "tool", "name": "emit_meeting_summary"},
+                # PIPE15: attempt 2 replays attempt 1's failure instead of
+                # re-issuing the identical request it used to.
                 messages=[
                     {
                         "role": "user",
-                        "content": (
-                            "Summarize this meeting. Call `emit_meeting_summary` exactly once.\n\n"
-                            + wrap_untrusted(transcript)
-                        ),
+                        "content": summary_request(transcript, retry_error=last_err),
                     }
                 ],
             )
