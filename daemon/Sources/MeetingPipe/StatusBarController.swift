@@ -495,16 +495,16 @@ final class StatusBarController {
             menu.addItem(.separator())
         }
 
-        // TECH-END4 (c): Accessibility drives native meeting-end detection (the
-        // Leave-button and window AX walks). When it is denied, native end
-        // detection is degraded and the user otherwise has no signal, so call it
-        // out specifically beyond the generic permissions row above. The
+        // TECH-END4 (c): Accessibility is what lets the app read a meeting app's
+        // windows and controls at all, so denying it costs the whole detection
+        // path, start included (DET11), and the user otherwise has no signal. Call
+        // it out specifically beyond the generic permissions row above. The
         // PermissionsSnapshot sink rebuilds this menu when AX flips, so the row
         // appears/clears on its own (the audit showed AX is usually a transient
         // launch race that recovers, so there is deliberately no title glyph).
         if PermissionsCenter.shared.accessibility == .denied {
             let axRow = NSMenuItem(
-                title: "⚠ Accessibility off - meeting end-detection degraded",
+                title: StatusBarModel.accessibilityOffTitle,
                 action: #selector(Coordinator.menuPreferencesPermissions),
                 keyEquivalent: ""
             )

@@ -38,6 +38,14 @@ enum MicInUseTier {
     ///     random app holding the mic (or dictation into a non-meeting app, whose frontmost is that
     ///     app) is not, which keeps the register quiet and covers the "music / dictation do not
     ///     prompt" acceptance without a brittle denylist.
+    ///
+    ///     DET11 asked whether that native exclusion should become conditional, so an
+    ///     Accessibility-denied Mac (where discovery detects nothing at all) would keep a working
+    ///     catch-all tier, and answered **no**: it would condition a tier whose input has never
+    ///     read true, at the cost of a generic prompt naming whichever app was frontmost and a
+    ///     recording that ends on the idle backstop instead of with the call. Revisit only if DET10
+    ///     returns GO, and then on AX trust rather than on "the scan found no winner" (a live call
+    ///     goes tens of seconds with no winner, DET9). Full reasoning in the archived DET11 spec.
     static func decide(
         dwellSec: TimeInterval,
         threshold: TimeInterval,

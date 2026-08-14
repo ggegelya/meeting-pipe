@@ -36,7 +36,7 @@ final class PermissionsCenter: ObservableObject {
             case .screenRecording:
                 return "Required for the other side of the call. Without it, recordings are mic-only."
             case .accessibility:
-                return "Powers the native end-detection that auto-stops the recording when the meeting ends."
+                return "Required to notice a meeting at all: it reads the meeting app's windows and call controls. Without it, nothing is detected and nothing auto-stops."
             case .notifications:
                 return "Used for processing-done, mic-only-fallback, and still-meeting prompts."
             }

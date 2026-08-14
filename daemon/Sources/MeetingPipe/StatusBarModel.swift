@@ -229,8 +229,9 @@ enum StatusBarModel {
             rows.append(.screenRecordingShortcut)
         }
 
-        // TECH-END4 (c): Accessibility drives native meeting-end detection, so a
-        // denial is called out beyond the generic row above.
+        // TECH-END4 (c): Accessibility is what lets the app read a meeting app at
+        // all, so a denial is called out beyond the generic row above. See
+        // `accessibilityOffTitle` for what it actually costs (DET11).
         if i.accessibility == .denied {
             rows.append(.accessibilityDegraded)
         }
@@ -306,6 +307,19 @@ enum StatusBarModel {
         guard let appName = suppressedCandidateAppName else { return "Start Recording" }
         return "Record this \(appName) meeting"
     }
+
+    /// The Accessibility row's title (DET11), here for the reason `startRecordingTitle` is here:
+    /// `StatusBarController.populateMenu` builds its `NSMenuItem`s by hand, so a string spelled
+    /// only there is never checked and drifts from the model the tests do read.
+    ///
+    /// It said "meeting end-detection degraded" from TECH-END4 (c) until DET11, which is the claim
+    /// four surfaces made and the code contradicts. `MeetingSourceScanner.collectSignals` gates
+    /// EVERY native signal on AX trust and `MeetingSourceScorer.pickBest` then drops the
+    /// zero-evidence candidate, so a denied grant means a native meeting is never detected at all;
+    /// browsers do not even become candidates. Nothing auto-starts, so there is nothing left to
+    /// auto-stop late. Recording by hand (the row below this one, or the hotkey) still works, which
+    /// is why the copy names the loss rather than declaring the app broken.
+    static let accessibilityOffTitle = "⚠ Accessibility off - meetings are not detected"
 
     /// The failed-pipeline row's title, or nil when there is nothing to show.
     /// Backed by the durable error sidecar, so a notification missed under Focus

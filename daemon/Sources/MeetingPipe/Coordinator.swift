@@ -599,8 +599,13 @@ final class Coordinator: NSObject {
             Log.main.info("Accessibility: trusted")
             return
         }
-        Log.main.warning("Accessibility: NOT trusted - native meeting end-detection disabled")
-        Log.writeLine("daemon", "ACCESSIBILITY DENIED at startup - native end-detection will not fire. Enable MeetingPipe in Preferences → Permissions, or in System Settings → Privacy & Security → Accessibility.")
+        // DET11: this said "native meeting end-detection disabled" until 2026-08-15, which
+        // understated it by a whole half of the pipeline. Every native signal the scanner
+        // collects is gated on AX trust and the scorer drops a zero-signal candidate, so an
+        // untrusted process never detects a native meeting in the first place; browsers never
+        // become candidates at all. Manual recording is what is left.
+        Log.main.warning("Accessibility: NOT trusted - meeting detection disabled (start and end)")
+        Log.writeLine("daemon", "ACCESSIBILITY DENIED at startup - meetings will not be detected at all: no prompt, no auto-record, no auto-stop. Record by hand with the hotkey, or enable MeetingPipe in Preferences → Permissions, or in System Settings → Privacy & Security → Accessibility.")
         Log.event(category: "coordinator", action: "accessibility_denied_at_startup")
         notifier.notifyAccessibilityBlocked()
     }

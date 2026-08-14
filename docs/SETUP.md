@@ -91,11 +91,13 @@ On first launch a **Welcome** window opens and walks you through the four permis
 | **Notifications** | The record/skip prompt and the "summary ready" alert | You never see the prompt or the result |
 | **Microphone** | Records your own voice | Recording refuses to start at all |
 | **Screen Recording** | The only way macOS allows capturing system audio, which is everyone else's voice | You record yourself against silence |
-| **Accessibility** | Reads meeting window titles to notice when a call ends | Recordings do not auto-stop, so you get up to 15 extra minutes of audio |
+| **Accessibility** | Reads the meeting app's windows and call buttons, which is how a call is noticed at all | Meetings are not detected: no prompt, nothing records by itself. You can still record by hand |
 
 Screen Recording sounds alarming and is worth being precise about: meeting-pipe captures the audio stream only. It never records your screen, and no video is written to disk at any point.
 
 **Accessibility needs one extra move.** macOS decides whether an app is trusted for Accessibility when the app launches, and it does not re-check afterwards. So after you grant it, quit and reopen the app: click the menu-bar icon and choose **Quit MeetingPipe**, and it relaunches itself within a few seconds. Until you do, the permission shows as granted but does nothing.
+
+It is worth doing before your first call rather than after. This is the grant that decides whether the app notices meetings at all: skip it and you get a working recorder that you have to start yourself every time, not an app that misses only the end of a call.
 
 To see where you stand at any time, click the menu-bar icon, open **Preferences**, and go to the **Permissions** tab. It lists all four with their live status and a button to request or open the relevant System Settings pane.
 

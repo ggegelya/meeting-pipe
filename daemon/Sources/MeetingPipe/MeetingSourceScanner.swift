@@ -18,6 +18,12 @@ final class MeetingSourceScanner {
         /// `candidate_dropped` so DET3's auditor sees "an app was running with evidence and
         /// nothing fired" (a whitelist gap or recognizer rot), not just clean misses.
         let droppedCandidates: [MeetingSourceCandidate]
+        /// DET11: whitelisted natives that produced NO signal at all because Accessibility is
+        /// untrusted. They are invisible to `droppedCandidates` by construction (that list is
+        /// built from candidates which already carry a signal, and every native signal is gated
+        /// on AX), so without this a running Teams call under a denied grant left not one line
+        /// in `events.jsonl`. Feeds `candidate_unreadable`.
+        let unreadableNatives: [MeetingSourceCandidate]
     }
 
     /// Known native meeting-app bundle IDs from `meeting_apps.toml`.
@@ -50,7 +56,25 @@ final class MeetingSourceScanner {
     /// Run one discovery pass and return the winner.
     /// - Parameter keepStickyOnEmpty: when true, an empty pass leaves the sticky pin intact (owner is mid-recording; a transient empty scan must not unbias the next pass).
     func scan(keepStickyOnEmpty: Bool) -> Result {
-        var candidates = enumerateCandidates()
+        let axTrusted = AXIsProcessTrusted()
+        return scan(
+            candidates: enumerateCandidates(axTrusted: axTrusted),
+            axTrusted: axTrusted,
+            keepStickyOnEmpty: keepStickyOnEmpty
+        )
+    }
+
+    /// Score an already-enumerated candidate list and return the winner. Split out of `scan` so the
+    /// decisions below (the winner, the DET5 dropped list, the DET11 unreadable-native list) can be
+    /// driven with explicit inputs: the enumeration above is the only half that needs a real
+    /// workspace, and the Accessibility-denied case is otherwise untestable because `AXIsProcessTrusted`
+    /// is a process-wide read no test can flip. Internal, not private, for exactly that reason.
+    func scan(
+        candidates: [MeetingSourceCandidate],
+        axTrusted: Bool,
+        keepStickyOnEmpty: Bool
+    ) -> Result {
+        var candidates = candidates
         let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: lastScorerWinner)
         let count = candidates.count
         // `pickBest` scored `candidates` in place; a dropped candidate is a running app that
@@ -59,22 +83,57 @@ final class MeetingSourceScanner {
             MeetingSourceScorer.distinctSignalCount($0.signals) > 0
                 && $0.source.bundleID != winner?.source.bundleID
         }
+        let unreadable = MeetingSourceScanner.unreadableNatives(in: candidates, axTrusted: axTrusted)
         guard let winner = winner else {
             if !keepStickyOnEmpty {
                 lastScorerWinner = nil
             }
-            return Result(winner: nil, candidateCount: count, winnerChanged: false, droppedCandidates: dropped)
+            return Result(
+                winner: nil,
+                candidateCount: count,
+                winnerChanged: false,
+                droppedCandidates: dropped,
+                unreadableNatives: unreadable
+            )
         }
         let changed = lastScorerWinner?.bundleID != winner.source.bundleID
         lastScorerWinner = winner.source
-        return Result(winner: winner, candidateCount: count, winnerChanged: changed, droppedCandidates: dropped)
+        return Result(
+            winner: winner,
+            candidateCount: count,
+            winnerChanged: changed,
+            droppedCandidates: dropped,
+            unreadableNatives: unreadable
+        )
+    }
+
+    /// DET11: the natives a denied Accessibility grant made unreadable. Pure.
+    ///
+    /// With AX untrusted, `collectSignals` skips every signal collection, so a native is enqueued
+    /// (natives are always enqueued) and then dropped by the scorer's zero-evidence filter. Both
+    /// halves are correct on their own and the result is a start-detection blackout that emits
+    /// nothing: not a `candidate_dropped` (that list needs a signal), not a `discovery_shadow_pick`
+    /// (there is no winner). Four user-facing surfaces said the cost of denying Accessibility was
+    /// a late auto-stop, which is what the silence let stand for months.
+    ///
+    /// Browsers and PWAs are absent by construction rather than by choice: their branches `guard
+    /// axTrusted` before enqueueing at all, so a denied grant leaves nothing here to name. That is
+    /// why this reports natives only, and why "no candidate at all" remains the right reading of an
+    /// AX-denied browser meeting.
+    static func unreadableNatives(
+        in candidates: [MeetingSourceCandidate],
+        axTrusted: Bool
+    ) -> [MeetingSourceCandidate] {
+        guard !axTrusted else { return [] }
+        return candidates.filter {
+            $0.source.kind == .native && MeetingSourceScorer.distinctSignalCount($0.signals) == 0
+        }
     }
 
     // MARK: Candidate enumeration
 
-    /// Produce one candidate per concurrent meeting-app contender. Native bundles are always included (scorer rejects those with zero signals). Browsers only qualify when at least one window matches a meeting-pattern title.
-    private func enumerateCandidates() -> [MeetingSourceCandidate] {
-        let axTrusted = AXIsProcessTrusted()
+    /// Produce one candidate per concurrent meeting-app contender. Native bundles are always included (scorer rejects those with zero signals, and DET11's `unreadableNatives` names the ones a denied Accessibility grant left with none). Browsers only qualify when at least one window matches a meeting-pattern title.
+    private func enumerateCandidates(axTrusted: Bool) -> [MeetingSourceCandidate] {
         let apps = NSWorkspace.shared.runningApplications
         // DET5 walk-gate inputs (see `shouldWalkControlAX`): the frontmost app, and whether
         // exactly one native meeting app is running (so a lone native's control walk is cheap

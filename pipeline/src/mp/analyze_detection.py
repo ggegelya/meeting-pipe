@@ -5,10 +5,12 @@ Two dimensions. **End detection** (the original): pairs each recording session w
 (DET3): correlates mic-busy spans (`detector.mic_busy_started` / `mic_busy_ended`, the frontmost
 app the daemon stamped at grab time) against prompts, recordings, and `candidate_dropped` events,
 so a call the whitelist never saw shows up as a "mic was busy, nothing fired" miss. A miss with a
-`candidate_dropped` in its window is recognizer rot (a known app scored too low); with only a
-`discovery_shadow_pick` it was suppressed (cooldown / skip-latch / consent); with neither it was
-never a candidate (an unlisted app, or Accessibility / Screen Recording denied). Brief spans below
-`--min-miss-sec` (default 30 s) are excluded so dictation / voice-memo blips are not counted.
+`candidate_unreadable` in its window is a denied Accessibility grant (DET11: a known native was
+running and not one signal could be read off it); with a `candidate_dropped` it is recognizer rot
+(a known app scored too low); with only a `discovery_shadow_pick` it was suppressed (cooldown /
+skip-latch / consent); with none of them it was never a candidate (an unlisted app, or a
+permission denied). Brief spans below `--min-miss-sec` (default 30 s) are excluded so dictation /
+voice-memo blips are not counted.
 
 **Zero misses and zero spans are different results, and this report says which one it has** (DET10).
 The mic-busy dimension exists to make silent start-detection false-negatives visible, so it must not
@@ -324,15 +326,21 @@ def classify_mic_spans(
     prompts: list[datetime],
     dropped: list[tuple[datetime, str, str]],  # (ts, bundle_id, reason)
     picks: list[datetime],
+    unreadable: list[tuple[datetime, str]] | None = None,  # (ts, bundle_id), DET11
 ) -> list[MicBusySpan]:
     """Mark each span handled (a recording overlapped it or a prompt fired) or a miss, and for a
     miss pick the most informative reason. Pure; mutates and returns the spans.
 
-    Reason precedence, most-actionable first: a ``candidate_dropped`` in the window means a known
-    app WAS seen but scored below threshold (recognizer rot / a scoring gap); a
-    ``discovery_shadow_pick`` with no prompt means it was discovered but suppressed (cooldown /
-    skip-latch / consent); neither means nothing was ever a candidate (an unlisted app, or AX /
-    Screen-Recording denied)."""
+    Reason precedence, most-actionable first: a ``candidate_unreadable`` in the window means a
+    known native was running and Accessibility was denied, so nothing could be read off it (DET11)
+    and the fix is a permission, not a recognizer; a ``candidate_dropped`` means a known app WAS
+    seen but scored below threshold (recognizer rot / a scoring gap); a ``discovery_shadow_pick``
+    with no prompt means it was discovered but suppressed (cooldown / skip-latch / consent); none
+    of them means nothing was ever a candidate (an unlisted app, or a permission denied).
+
+    The first two never co-occur in practice, since a drop needs a signal and every native signal
+    is gated on the same AX trust the unreadable marker reports missing. The order still matters
+    for a mixed window (an AX-denied native beside a browser the whitelist saw earlier)."""
     session_list = list(sessions)
     for span in spans:
         handled = any(
@@ -344,8 +352,11 @@ def classify_mic_spans(
         if handled:
             span.miss_reason = ""
             continue
+        blind = next((u for u in (unreadable or []) if _in_span(u[0], span)), None)
         drop = next((d for d in dropped if _in_span(d[0], span)), None)
-        if drop is not None:
+        if blind is not None:
+            span.miss_reason = f"unreadable ({blind[1]} was running, Accessibility denied)"
+        elif drop is not None:
             span.miss_reason = f"candidate dropped ({drop[2]})"
         elif any(_in_span(pk, span) for pk in picks):
             span.miss_reason = "discovered but not prompted (cooldown / skip-latch / consent)"
@@ -356,13 +367,21 @@ def classify_mic_spans(
 
 def collect_correlation_markers(
     events: Iterable[dict],
-) -> tuple[list[datetime], list[tuple[datetime, str, str]], list[datetime]]:
+) -> tuple[
+    list[datetime],
+    list[tuple[datetime, str, str]],
+    list[datetime],
+    list[tuple[datetime, str]],
+]:
     """Pull the timestamps DET3 correlates a mic-busy span against: ``prompt_shown`` (a prompt
     fired), ``candidate_dropped`` (a known app scored below threshold; carries bundle + reason),
-    and ``discovery_shadow_pick`` (a winner was found). Returns ``(prompts, dropped, picks)``."""
+    ``discovery_shadow_pick`` (a winner was found), and ``candidate_unreadable`` (DET11: a known
+    native was running while Accessibility was denied, so no signal could be read off it at all).
+    Returns ``(prompts, dropped, picks, unreadable)``."""
     prompts: list[datetime] = []
     dropped: list[tuple[datetime, str, str]] = []
     picks: list[datetime] = []
+    unreadable: list[tuple[datetime, str]] = []
     for ev in events:
         try:
             ts = _parse_ts(str(ev["ts"]))
@@ -375,7 +394,9 @@ def collect_correlation_markers(
             dropped.append((ts, str(ev.get("bundle_id") or "unknown"), str(ev.get("reason") or "")))
         elif cat == "detector" and action == "discovery_shadow_pick":
             picks.append(ts)
-    return prompts, dropped, picks
+        elif cat == "detector" and action == "candidate_unreadable":
+            unreadable.append((ts, str(ev.get("bundle_id") or "unknown")))
+    return prompts, dropped, picks, unreadable
 
 
 # DET10: what the mic-busy dimension actually measured, which is not the same question as how many
@@ -659,11 +680,12 @@ def main(argv: list[str]) -> int:
     sessions = [classify_session(s) for s in pair_sessions(raw, since=since)]
     stats = aggregate(sessions)
 
-    # DET3: correlate mic-busy spans against prompts / recordings / candidate drops.
-    prompts, dropped, picks = collect_correlation_markers(raw)
+    # DET3: correlate mic-busy spans against prompts / recordings / candidate drops, and (DET11)
+    # against the natives an untrusted Accessibility grant made unreadable.
+    prompts, dropped, picks, unreadable = collect_correlation_markers(raw)
     mic_spans = classify_mic_spans(
         pair_mic_spans(raw, since=since), sessions,
-        prompts=prompts, dropped=dropped, picks=picks,
+        prompts=prompts, dropped=dropped, picks=picks, unreadable=unreadable,
     )
     # DET10: and read whether the producer of those spans was alive at all.
     mic_faults = collect_mic_input_faults(raw, since=since)

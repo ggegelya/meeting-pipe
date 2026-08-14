@@ -223,6 +223,9 @@ final class MeetingDiscoveryWatcher {
             // DET5: log candidates that were running with evidence but did not win, before the
             // winner short-circuit, so a no-winner scan (the DET3 miss case) still records why.
             self.emitDroppedCandidates(result.droppedCandidates, hadWinner: result.winner != nil)
+            // DET11: and log the natives that carried no evidence because Accessibility is denied,
+            // which the line above cannot see (it needs a signal to report one).
+            self.emitUnreadableNatives(result.unreadableNatives)
             if let winner = result.winner, result.winnerChanged {
                 Log.event(category: "detector", action: "discovery_shadow_pick", attributes: [
                     "winner_bundle_id": winner.source.bundleID,
@@ -309,6 +312,38 @@ final class MeetingDiscoveryWatcher {
                 "leave_button": c.signals.leaveButton,
                 "mute_button": c.signals.muteButton,
                 "title_match": c.signals.titleMatch,
+            ])
+        }
+    }
+
+    /// Signature of the last `candidate_unreadable` batch. Same throttle as the drops above: a
+    /// denied Accessibility grant is a standing condition, so an unthrottled emit would write a
+    /// line per running native every poll, all day.
+    private var lastUnreadableSignature: String?
+
+    /// DET11: emit `candidate_unreadable` for each whitelisted native that was running while
+    /// Accessibility was untrusted, so the start-detection blackout that grant causes leaves a
+    /// record. Without it the scan is silent in a way that reads as "no meeting app was running":
+    /// no `candidate_dropped` (that list is built from candidates which already have a signal, and
+    /// every native signal is AX-gated), and no `discovery_shadow_pick` (there is no winner).
+    /// Runs on `scanQueue` (serial), so the signature field needs no further synchronisation.
+    private func emitUnreadableNatives(_ unreadable: [MeetingSourceCandidate]) {
+        guard !unreadable.isEmpty else { lastUnreadableSignature = nil; return }
+        let signature = unreadable.map(\.source.bundleID).sorted().joined(separator: ",")
+        guard signature != lastUnreadableSignature else { return }
+        lastUnreadableSignature = signature
+        MeetingDiscoveryWatcher.logUnreadableNatives(unreadable)
+    }
+
+    /// The event itself, lifted out of the throttle above so a test can assert the line that ships
+    /// rather than a re-spelling of it (DET11). Static: it reads no watcher state.
+    static func logUnreadableNatives(_ unreadable: [MeetingSourceCandidate]) {
+        for c in unreadable {
+            Log.event(category: "detector", action: "candidate_unreadable", attributes: [
+                "bundle_id": c.source.bundleID,
+                "display_name": c.source.displayName,
+                "kind": c.source.kind == .browser ? "browser" : "native",
+                "reason": "accessibility_untrusted",
             ])
         }
     }

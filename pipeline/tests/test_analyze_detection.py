@@ -334,9 +334,10 @@ def _mic(bundle: str, start: str, end: str, name: str = "App") -> list[dict]:
 
 def _classify_spans(events: list[dict]) -> list:
     sessions = [classify_session(s) for s in pair_sessions(events)]
-    prompts, dropped, picks = collect_correlation_markers(events)
+    prompts, dropped, picks, unreadable = collect_correlation_markers(events)
     return classify_mic_spans(
-        pair_mic_spans(events), sessions, prompts=prompts, dropped=dropped, picks=picks
+        pair_mic_spans(events), sessions,
+        prompts=prompts, dropped=dropped, picks=picks, unreadable=unreadable,
     )
 
 
@@ -390,6 +391,34 @@ def test_candidate_dropped_in_window_reads_as_recognizer_rot() -> None:
     span = _classify_spans(events)[0]
     assert span.handled is False
     assert span.miss_reason == "candidate dropped (no_confident_winner)"
+
+
+def test_candidate_unreadable_in_window_names_the_denied_permission() -> None:
+    # DET11: the miss a denied Accessibility grant causes used to fall through to the generic
+    # "no candidate (unlisted app, or Accessibility / Screen Recording denied)" guess, because the
+    # daemon emitted nothing at all for it. With the marker the report states the cause and names
+    # the app that was running, which is the difference between a guess and a fix.
+    events = [
+        *_mic("com.microsoft.teams2", "2026-05-01T14:00:00Z", "2026-05-01T14:40:00Z", "Teams"),
+        _event("2026-05-01T14:00:10Z", "detector", "candidate_unreadable",
+               bundle_id="com.microsoft.teams2", kind="native", reason="accessibility_untrusted"),
+    ]
+    span = _classify_spans(events)[0]
+    assert span.handled is False
+    assert span.miss_reason == "unreadable (com.microsoft.teams2 was running, Accessibility denied)"
+
+
+def test_unreadable_outranks_a_drop_in_the_same_window() -> None:
+    # Precedence: a permission that stops every read is more actionable than a scoring gap, and it
+    # also explains the drop rather than competing with it.
+    events = [
+        *_mic("com.microsoft.teams2", "2026-05-01T15:00:00Z", "2026-05-01T15:40:00Z", "Teams"),
+        _event("2026-05-01T15:00:05Z", "detector", "candidate_dropped",
+               bundle_id="com.brave.Browser", reason="no_confident_winner", score=2),
+        _event("2026-05-01T15:00:10Z", "detector", "candidate_unreadable",
+               bundle_id="com.microsoft.teams2", kind="native", reason="accessibility_untrusted"),
+    ]
+    assert "Accessibility denied" in _classify_spans(events)[0].miss_reason
 
 
 def test_shadow_pick_without_prompt_reads_as_suppressed() -> None:

@@ -360,6 +360,16 @@ final class StatusBarModelTests: XCTestCase {
         )
     }
 
+    /// DET11: the row's copy is the shipped string (`StatusBarController` reads it from here), and
+    /// what it must not say is that only end-detection suffers. A denied grant means no native
+    /// meeting is detected at all, so a user who reads "degraded" and skips the grant gets an app
+    /// that never notices a call.
+    func test_accessibility_row_names_the_detection_loss_not_a_late_stop() {
+        XCTAssertEqual(M.accessibilityOffTitle, "⚠ Accessibility off - meetings are not detected")
+        XCTAssertFalse(M.accessibilityOffTitle.lowercased().contains("end-detection"))
+        XCTAssertFalse(M.accessibilityOffTitle.lowercased().contains("auto-stop"))
+    }
+
     func test_failed_meetings_row_pluralizes() {
         XCTAssertNil(M.failedMeetingsTitle(count: 0))
         XCTAssertEqual(

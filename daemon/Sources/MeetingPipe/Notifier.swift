@@ -232,11 +232,11 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(req)
     }
 
-    /// Posted at startup when Accessibility TCC is missing. Without it, detector window probes degrade to nil and native meetings (Teams / Zoom / Webex / Slack) never auto-end. Action button opens System Settings -> Accessibility.
+    /// Posted at startup when Accessibility TCC is missing. Without it every window and control probe returns nothing, so native meetings (Teams / Zoom / Webex / Slack) are never detected at all and browser tabs never become candidates: the prompt does not appear, nothing records itself, and nothing auto-ends because nothing started (DET11, correcting the end-detection-only claim this banner shipped with). Action button opens System Settings -> Accessibility.
     func notifyAccessibilityBlocked() {
         let content = UNMutableNotificationContent()
         content.title = "Accessibility disabled"
-        content.body = "Without it, Teams / Zoom / Webex meetings won't auto-stop when the call ends. Enable in System Settings."
+        content.body = "Meetings won't be detected: no prompt and no automatic recording. You can still record by hand. Enable in System Settings."
         content.categoryIdentifier = Self.accessibilityCategory
         content.sound = .default
         let req = UNNotificationRequest(identifier: "perm-accessibility-startup", content: content, trigger: nil)
