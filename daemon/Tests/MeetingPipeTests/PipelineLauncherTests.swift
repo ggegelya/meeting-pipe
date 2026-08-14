@@ -542,4 +542,35 @@ final class PipelineLauncherTests: XCTestCase {
         try writePublishSidecar("{ not json", stem: "m", in: dir)
         XCTAssertNil(PublishResult.load(stem: "m", in: dir))
     }
+
+    // MARK: - resolveState (PIPE14)
+
+    func test_resolve_state_prefers_the_publish_sidecar() {
+        // The publish sidecar is the only file `mp publish`, `mp merge-meetings`
+        // and `mp publish-from-paste` rewrite, so it outranks a run sidecar that
+        // only `mp run-all` ever refreshes, in both directions.
+        let published = PublishResult(state: "full", pageURL: nil)
+        XCTAssertEqual(
+            PublishResult.resolveState(publish: published, runPublishState: "none"), "full"
+        )
+        let failed = PublishResult(state: "none", pageURL: nil)
+        XCTAssertEqual(
+            PublishResult.resolveState(publish: failed, runPublishState: "full"), "none"
+        )
+    }
+
+    func test_resolve_state_falls_back_to_the_run_sidecar() {
+        // Meetings recorded before PIPE1 shipped the publish sidecar carry only
+        // the run-sidecar value, and dropping the fallback would blank the badge
+        // on all of them.
+        XCTAssertEqual(
+            PublishResult.resolveState(publish: nil, runPublishState: "partial"), "partial"
+        )
+    }
+
+    func test_resolve_state_is_nil_when_neither_file_says_anything() {
+        // A never-published row, and a run that short-circuited before publish
+        // (no speech, BYO, too long, Apple hand-off) which writes neither value.
+        XCTAssertNil(PublishResult.resolveState(publish: nil, runPublishState: nil))
+    }
 }

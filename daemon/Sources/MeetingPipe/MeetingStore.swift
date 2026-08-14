@@ -105,10 +105,12 @@ struct Meeting: Identifiable, Hashable {
     /// Defaulted so test constructors need not supply it.
     var micWarning: Bool = false
 
-    /// Publish outcome from `<stem>.run.json["publish_state"]` (TECH-I6): "full"
-    /// / "partial" / "none", nil for never-published rows. The pipeline writes it
-    /// after fanout; drives the Library partial-publish badge. Defaulted so test
-    /// constructors need not supply it.
+    /// Publish outcome from `<stem>.publish.json`'s `state` (TECH-I6, sourced
+    /// there by PIPE14): "full" / "partial" / "none", nil for never-published
+    /// rows. `publish_router.fanout` rewrites that sidecar on every publish, so
+    /// unlike `<stem>.run.json["publish_state"]` (which only `mp run-all` ever
+    /// refreshes) it reflects a standalone `mp publish` too. Drives the Library
+    /// partial-publish badge. Defaulted so test constructors need not supply it.
     var publishState: String? = nil
 
     /// Why a `.empty` row produced no summary, from `<stem>.empty.json` (PIPE3).
@@ -529,6 +531,10 @@ final class MeetingStore: ObservableObject {
         // this directory, so it is inside the per-stem signature and a rename
         // invalidates the cached row on its own.
         let speakerLabelsURL = files.first { $0.lastPathComponent.hasSuffix(".speaker_labels.json") }
+        // PIPE14: presence-gated so an absent sidecar costs no open. Its contents
+        // are inside the per-stem signature, so a fanout rewriting it invalidates
+        // the cached row on its own.
+        let publishURL = files.first { $0.lastPathComponent.hasSuffix(".publish.json") }
         let errorURL = files.first {
             $0.lastPathComponent.hasSuffix(PipelineFailureSidecar.suffix)
         }
@@ -658,7 +664,10 @@ final class MeetingStore: ObservableObject {
             regulatedMode: (meta?["regulated_mode"] as? Bool),
             micDeviceName: (meta?["mic_device_name"] as? String),
             micWarning: (meta?["mic_silent"] as? Bool) ?? false,
-            publishState: (run?["publish_state"] as? String),
+            publishState: PublishResult.resolveState(
+                publish: publishURL == nil ? nil : PublishResult.load(stem: stem, in: directory),
+                runPublishState: (run?["publish_state"] as? String)
+            ),
             emptyReason: emptyReason,
             hasSummaryJSON: summaryURL != nil,
             hasTranscriptMD: files.contains { $0.lastPathComponent == "\(stem).md" },

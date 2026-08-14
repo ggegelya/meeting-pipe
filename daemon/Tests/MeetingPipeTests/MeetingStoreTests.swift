@@ -66,9 +66,10 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(captured.first?.status, .done)
     }
 
-    func test_publish_state_read_from_run_sidecar() throws {
-        // TECH-I6: the pipeline records publish_state on <stem>.run.json after
-        // fanout; the row reads it for the partial-publish badge.
+    func test_publish_state_falls_back_to_run_sidecar_when_publish_sidecar_absent() throws {
+        // TECH-I6 recorded publish_state on <stem>.run.json, and PIPE14 kept
+        // reading it when there is no <stem>.publish.json beside it: meetings
+        // recorded before PIPE1 shipped the publish sidecar have only this.
         let dir = try tempDir()
         let stem = "20260511-143110"
         try writeFile(dir.appendingPathComponent("\(stem).wav"))
@@ -86,6 +87,35 @@ final class MeetingStoreTests: XCTestCase {
         wait(for: [exp], timeout: 2.0)
         cancel.cancel()
         XCTAssertEqual(captured.first?.publishState, "partial")
+    }
+
+    func test_publish_state_prefers_publish_sidecar_over_stale_run_sidecar() throws {
+        // PIPE14, the whole point of the task. A run-all that published nowhere
+        // stamped `publish_state: none` on the run sidecar; the owner then ran a
+        // standalone `mp publish` that succeeded, which rewrites
+        // <stem>.publish.json and touches the run sidecar not at all. Reading the
+        // run sidecar left the row frozen at "none": Republish could never clear
+        // the Unpublished badge, the meeting stayed in Needs you, and
+        // `AudioRetention.isSettled` stayed false so retention never applied.
+        let dir = try tempDir()
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{\"title\":\"x\"}")
+        try writeFile(dir.appendingPathComponent("\(stem).run.json"),
+                      "{\"stem\":\"\(stem)\",\"publish_state\":\"none\"}")
+        try writeFile(dir.appendingPathComponent("\(stem).publish.json"),
+                      "{\"schema_version\":1,\"state\":\"full\",\"page_url\":null,\"sinks\":{}}")
+        let store = MeetingStore(recordingsDir: dir)
+        let exp = expectation(description: "scan")
+        var captured: [Meeting] = []
+        let cancel = store.$meetings.dropFirst().sink { meetings in
+            captured = meetings
+            exp.fulfill()
+        }
+        store.start()
+        wait(for: [exp], timeout: 2.0)
+        cancel.cancel()
+        XCTAssertEqual(captured.first?.publishState, "full")
     }
 
     func test_status_manual_paste_when_ready_marker_present() throws {

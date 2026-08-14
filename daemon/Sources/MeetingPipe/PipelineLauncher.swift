@@ -310,6 +310,17 @@ struct PublishResult: Equatable {
         self.sinks = sinks
     }
 
+    /// The publish state a Library surface branches on, given this run's publish sidecar and whatever `<stem>.run.json` last recorded (PIPE14).
+    ///
+    /// `<stem>.publish.json` wins because it is the only file every publish path rewrites. `mp publish`, `mp merge-meetings` and `mp publish-from-paste` all fan out and none of them touches the run sidecar, so a state sourced from `run.json` freezes at whatever the last `mp run-all` left there: a successful Republish could not clear "Unpublished", and `AudioRetention.isSettled` stayed false so retention never applied.
+    ///
+    /// The run sidecar survives as a fallback for one reason: it predates PIPE1's publish sidecar, so meetings recorded before that shipped carry a `publish_state` and no `publish.json` at all. It is never *preferred*, because it cannot be fresher than the sidecar every fanout rewrites.
+    ///
+    /// Both absent is nil, which is what a never-published row and a run that short-circuited before publish (no speech, BYO, too long, Apple hand-off) both are.
+    static func resolveState(publish: PublishResult?, runPublishState: String?) -> String? {
+        publish?.state ?? runPublishState
+    }
+
     static func load(stem: String, in dir: URL) -> PublishResult? {
         let url = dir.appendingPathComponent("\(stem).publish.json")
         guard let data = try? Data(contentsOf: url),

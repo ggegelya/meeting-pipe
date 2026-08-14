@@ -125,7 +125,14 @@ enum AudioRetentionSweep {
                 startedAt: startedAt,
                 workflowID: (meta?["workflow_id"] as? String).flatMap(UUID.init(uuidString:)),
                 status: .done,
-                publishState: run?["publish_state"] as? String
+                // PIPE14: the publish sidecar is the source of truth, since it is
+                // the only file a standalone `mp publish` rewrites. Sourcing this
+                // from the run sidecar kept `isSettled` false after a successful
+                // Republish, so retention never reclaimed that meeting's audio.
+                publishState: PublishResult.resolveState(
+                    publish: PublishResult.load(stem: stem, in: directory),
+                    runPublishState: run?["publish_state"] as? String
+                )
             ))
         }
         return out

@@ -44,6 +44,25 @@ final class AudioRetentionSweepTests: XCTestCase {
         XCTAssertEqual(candidates.first?.status, .done)
     }
 
+    func test_candidates_take_publish_state_from_the_publish_sidecar() throws {
+        // PIPE14: the seventh reader of this value, and the one whose staleness
+        // is silent. A run-all that published nowhere leaves `none` on the run
+        // sidecar; a later `mp publish` that succeeded rewrites only
+        // <stem>.publish.json. Reading the run sidecar kept `isSettled` false
+        // forever, so this meeting's audio was never eligible for retention.
+        try write("20260101-120000.wav")
+        try write("20260101-120000.summary.json", "{}")
+        try write("20260101-120000.meta.json", #"{"workflow_id": "\#(workflow.uuidString)"}"#)
+        try write("20260101-120000.run.json", #"{"publish_state": "none"}"#)
+        try write("20260101-120000.publish.json",
+                  #"{"schema_version": 1, "state": "full", "page_url": null, "sinks": {}}"#)
+        let candidates = AudioRetentionSweep.candidates(in: dir)
+        XCTAssertEqual(candidates.first?.publishState, "full")
+        XCTAssertTrue(
+            AudioRetention.isSettled(status: .done, publishState: candidates.first?.publishState)
+        )
+    }
+
     func test_candidates_skip_a_meeting_with_no_summary() throws {
         // No `<stem>.summary.json` means `buildMeeting` would not call it `.done`,
         // so it can never be settled and is not worth two JSON reads.

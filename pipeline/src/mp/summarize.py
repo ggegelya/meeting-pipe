@@ -895,8 +895,10 @@ def rewrite_run_sidecar(transcript_md: Path, out: SummaryOutput) -> None:
     preview writes no live summary, so rewriting the sidecar would attribute the
     live one to a run that did not produce it. And `publish_state` is carried
     across rather than reset: it describes where the summary reached, which this
-    re-summarize has not changed, and dropping it would blank the Library's
-    partial/failed publish badge until the next publish.
+    re-summarize has not changed. Since PIPE14 the Library no longer branches on
+    that key (it reads `<stem>.publish.json`, the only file every publish path
+    rewrites), so carrying it is about keeping this sidecar internally truthful
+    for the pre-PIPE1 meetings that have no publish sidecar, not about a badge.
 
     Best-effort, matching `orchestrate`: attribution metadata is never worth
     failing a summary that is already safely on disk.
