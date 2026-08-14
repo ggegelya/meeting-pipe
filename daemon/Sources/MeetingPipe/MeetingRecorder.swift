@@ -9,14 +9,6 @@ import IOKit.pwr_mgt
 import MeetingPipeCore
 import os
 
-/// Sendable holder for the main-confined recovery-task handle, so `stop()` (which
-/// runs off-main) can read+clear it through a `MainActor.run` hop without capturing
-/// the whole non-Sendable recorder. The `task` slot is only ever touched on the main
-/// actor, which is what makes the `@unchecked Sendable` honest (CONC4).
-private final class RecoveryTaskBox: @unchecked Sendable {
-    var task: Task<Void, Never>?
-}
-
 /// In-process recorder: captures mic and system audio as two independent
 /// WAV files, merged with a short ffmpeg `amix` at stop.
 ///
@@ -50,10 +42,29 @@ final class MeetingRecorder {
     /// only on a genuine wedge, never on a slow-but-live meeting.
     private static let writerDrainTimeoutSeconds = 10.0
 
+    /// REC11(a): the same ceiling for the termination flush, but tighter, because that
+    /// path runs synchronously under `applicationWillTerminate` / the SIGTERM handler
+    /// and those have their own deadline (`rebuild.sh` gives the daemon ~10 s before it
+    /// escalates). It cannot use the graceful path's async `drain`, so this budget IS
+    /// main-thread freeze time and has to be short enough to spend before the OS or the
+    /// script stops waiting. The flush shipped calling the UNBOUNDED `finish()` here
+    /// while `stop()` used REC7's bounded variant on the same writers, so the wedge REC7
+    /// exists to bound was still unbounded on the one path that runs at quit: a full
+    /// disk, or a stalled volume under `~/Documents/Meetings/raw`, hung quit forever on
+    /// the main thread with no way back but a force-quit. Abandoning the drain keeps the
+    /// same guarantee it does in `stop()` - the queue strong-captures the file, so
+    /// whatever landed is still valid for the next launch's orphan sweep.
+    private static let terminationDrainTimeoutSeconds = 3.0
+
     /// In-flight async capture-recovery (it bounds an engine restart off the
     /// main thread). Held so `stop()` can drain it before engine teardown, and
     /// non-nil acts as a one-at-a-time guard against re-entrant recovery.
-    private let recoveryTaskBox = RecoveryTaskBox()
+    ///
+    /// Main-actor-confined by convention: every write is inside a `Task { @MainActor }`
+    /// or in the now-`@MainActor` `stop()`. It used to be a `@unchecked Sendable` box
+    /// so the off-main `stop()` could reach it through a `MainActor.run` hop; REC11
+    /// removed the reason for the hop, and the box with it.
+    private var recoveryTask: Task<Void, Never>?
     private var systemFile: AVAudioFile?
     private var systemCapture: SystemAudioCapture?
     private var systemStartTask: Task<Void, Never>?
@@ -177,6 +188,13 @@ final class MeetingRecorder {
     /// in `stop()`, the termination flush, and whenever a retry actually runs.
     private var systemAudioAutoRetryTimer: DispatchSourceTimer?
     private static let systemAudioAutoRetryDelaySeconds = 7.0
+
+    /// REC10: when the system channel's audio stopped, so a retry can pad the outage
+    /// it is resuming across. `systemUptime`, like every other elapsed measure here.
+    /// Written on main (`handleSystemAudioLost`), advanced to the retry moment by
+    /// `startSystemCapture` so a retry whose own SCStream start fails still leaves the
+    /// next one a correct span to pad. 0 means "no loss on record".
+    private var systemLostUptime: Double = 0
 
     /// REC8: prevents system idle sleep for the whole recording, so an in-person
     /// manual recording with no meeting client holding the Mac awake cannot idle-sleep
@@ -357,6 +375,7 @@ final class MeetingRecorder {
         systemAccumFrames = 0
         micWriteFailures = WriteFailureTracker()
         systemWriteFailures = WriteFailureTracker()
+        systemLostUptime = 0
         // Reset so a prior session's fade/verdict/off-record can't bleed in; the
         // writer itself is rebuilt below once the sample rate is bound.
         gateAccess.withLock {
@@ -541,35 +560,53 @@ final class MeetingRecorder {
     /// channel is torn down (so the stop-time merge knows there is nothing to
     /// mix) and `onSystemAudioDegraded` fires on main; a successful retry
     /// fires `onSystemAudioRecovered`.
+    ///
+    /// REC10: a retry does NOT reopen the path. `AVAudioFile(forWriting:)` truncates
+    /// ("Will overwrite a file at the given URL", `AVAudioFile.h`), so re-entering
+    /// here with the same URL destroyed every system sample captured before the death
+    /// - the partial `handleSystemAudioLost` deliberately leaves on disk for the merge,
+    /// and the one REC4 and REC8 both claimed the retry preserved. When that file is
+    /// still open the retry keeps writing into it and pads the outage with silence
+    /// first, so the pre-loss audio survives AND the recovered audio lands where it was
+    /// captured. `SystemCaptureRetryPlanner` owns that decision; the `.openFresh` branch
+    /// below is the only one that may truncate.
     private func startSystemCapture(systemURL: URL, isRetry: Bool) {
-        // SCStream's delivered format may differ from captureFormat; write
-        // each PCM buffer as-is.
-        let systemFile: AVAudioFile?
-        do {
-            systemFile = try AVAudioFile(
-                forWriting: systemURL,
-                settings: SystemAudioCapture.captureFormat.settings
+        let now = ProcessInfo.processInfo.systemUptime
+        let plan: SystemCaptureRetryPlan = isRetry
+            ? SystemCaptureRetryPlanner.plan(
+                hasOpenFile: systemFile != nil && systemWriter != nil,
+                capturedFirstFrame: systemFirstFrameUptime > 0,
+                lostAtUptime: systemLostUptime,
+                retryAtUptime: now,
+                sampleRate: SystemAudioCapture.captureFormat.sampleRate
             )
-        } catch {
-            Log.writeLine("recorder", "WARN: could not open system file: \(error.localizedDescription)")
-            systemFile = nil
-        }
-        self.systemFile = systemFile
-        // REC9: `forWriting` truncated whatever was there, so the head offset of the
-        // audio this file will hold is not known again until its next first frame.
-        self.systemFirstFrameUptime = 0
-        if let systemFile {
-            self.systemWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.system-writer") { [weak self] buffer in
-                let ok: Bool
-                do {
-                    try systemFile.write(from: buffer)
-                    ok = true
-                } catch {
-                    Log.recorder.error("system write: \(error.localizedDescription)")
-                    ok = false
-                }
-                self?.noteWriteOutcome(channel: .system, success: ok)
-            }
+            : .openFresh
+
+        // Whether this attempt is writing into a file that already holds captured
+        // audio. Read by the start-failure path below, which must not delete it.
+        let resumedOpenFile: Bool
+        switch plan {
+        case .openFresh:
+            resumedOpenFile = false
+            openSystemFile(at: systemURL)
+        case .resumeOpenFile(let padFrames, let gapSeconds, let clamped):
+            resumedOpenFile = true
+            // Advance the mark rather than clearing it: if this retry's own SCStream
+            // start fails, the next retry still has a correct span to pad from.
+            systemLostUptime = now
+            padSystemChannel(frames: padFrames)
+            Log.event(category: "recorder", action: "system_capture_resumed", attributes: [
+                "gap_sec": gapSeconds,
+                "pad_frames": Int(padFrames),
+                "pad_clamped": clamped,
+            ])
+            Log.writeLine(
+                "recorder",
+                String(
+                    format: "resuming the open system WAV across a %.1fs outage (%d silence frames%@)",
+                    gapSeconds, Int(padFrames), clamped ? ", CLAMPED - the recovered audio is late by the excess" : ""
+                )
+            )
         }
 
         let capture = SystemAudioCapture { [weak self] pcm in
@@ -624,23 +661,94 @@ final class MeetingRecorder {
                 }
             } catch {
                 Log.writeLine("recorder", "WARN: SCStream start failed: \(error.localizedDescription), recording mic-only")
-                // Drop the system file so merge knows there's nothing to mix.
                 self?.systemCapture = nil
-                self?.systemFile = nil
-                self?.systemWriter = nil
                 self?.systemDegraded = true
-                try? FileManager.default.removeItem(at: systemURL)
+                // REC10: only tear the file down when it holds nothing. On a resume it
+                // carries every sample captured before the death, so dropping the writer
+                // (and deleting the path) here would be the same data loss this task
+                // exists to close, just moved onto the failed-retry branch. Left open,
+                // it still merges at stop and a later retry can resume it again.
+                if resumedOpenFile == false {
+                    // Drop the system file so merge knows there's nothing to mix.
+                    self?.systemFile = nil
+                    self?.systemWriter = nil
+                    try? FileManager.default.removeItem(at: systemURL)
+                }
                 let reason = error.localizedDescription
                 Task { @MainActor in self?.onSystemAudioDegraded?(reason) }
             }
         }
     }
 
+    /// Open `<stem>.system.wav` for writing and wire its serial writer. The one place
+    /// the system WAV is truncated, which is why `startSystemCapture` reaches it only
+    /// on the `.openFresh` branch (REC10).
+    private func openSystemFile(at systemURL: URL) {
+        // SCStream's delivered format may differ from captureFormat; write
+        // each PCM buffer as-is.
+        let systemFile: AVAudioFile?
+        do {
+            systemFile = try AVAudioFile(
+                forWriting: systemURL,
+                settings: SystemAudioCapture.captureFormat.settings
+            )
+        } catch {
+            Log.writeLine("recorder", "WARN: could not open system file: \(error.localizedDescription)")
+            systemFile = nil
+        }
+        self.systemFile = systemFile
+        // REC9: `forWriting` truncated whatever was there, so the head offset of the
+        // audio this file will hold is not known again until its next first frame.
+        // Cleared HERE and not on the resume branch, which keeps both the audio and
+        // the offset that places it (REC10).
+        self.systemFirstFrameUptime = 0
+        if let systemFile {
+            self.systemWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.system-writer") { [weak self] buffer in
+                let ok: Bool
+                do {
+                    try systemFile.write(from: buffer)
+                    ok = true
+                } catch {
+                    Log.recorder.error("system write: \(error.localizedDescription)")
+                    ok = false
+                }
+                self?.noteWriteOutcome(channel: .system, success: ok)
+            }
+        }
+    }
+
+    /// Enqueue `frames` of silence onto the system writer, so the audio a retry is
+    /// about to append lands at the offset it was captured at rather than butted up
+    /// against the pre-loss audio (REC10). On main, before the SCStream restarts, so
+    /// it is always ahead of the first recovered buffer in the writer's FIFO.
+    ///
+    /// One buffer is allocated and enqueued repeatedly: the writer queue is serial and
+    /// only ever reads it, so a five-minute pad costs one second's worth of memory
+    /// rather than five minutes' worth.
+    private func padSystemChannel(frames: AVAudioFrameCount) {
+        guard frames > 0, let writer = systemWriter else { return }
+        let format = SystemAudioCapture.captureFormat
+        let chunkFrames = AVAudioFrameCount(format.sampleRate)  // 1 s per buffer
+        var remaining = frames
+        if remaining >= chunkFrames {
+            guard let chunk = Self.makeSilenceBuffer(format: format, frames: chunkFrames) else { return }
+            while remaining >= chunkFrames {
+                writer.enqueue(chunk)
+                remaining -= chunkFrames
+            }
+        }
+        if remaining > 0, let tail = Self.makeSilenceBuffer(format: format, frames: remaining) {
+            writer.enqueue(tail)
+        }
+    }
+
     /// Re-attempt system-audio capture after an initial SCStream failure
     /// (TECH-UX4). Main-thread only. No-op when not recording or when the
-    /// system channel is already live. The system WAV picks up from now, so
-    /// the merged recording carries a documented gap for the window it was
-    /// down.
+    /// system channel is already live. When the dead stream's WAV is still open the
+    /// recovered audio is appended to it behind a silence pad covering the outage
+    /// (REC10); when nothing is open (the first start failed, so the path was deleted)
+    /// the system channel starts fresh from now and the merge places it at the offset
+    /// REC9 measured.
     func retrySystemAudio() {
         guard isRecording, systemCapture == nil, let systemURL = systemURL else { return }
         // REC8: a retry (manual or automatic) supersedes any pending auto-retry.
@@ -691,6 +799,10 @@ final class MeetingRecorder {
         }
     }
 
+    /// Both callers (`stop()` and `flushIntermediatesForTermination`) are `@MainActor`,
+    /// which is what makes the non-atomic `holdsIdleSleepAssertion` guard sound. Until
+    /// REC11 `stop()` was nonisolated async and ran off main, so a quit landing during a
+    /// stop could pass this guard twice and double-release the assertion.
     private func releaseIdleSleepAssertion() {
         guard holdsIdleSleepAssertion else { return }
         IOPMAssertionRelease(idleSleepAssertionID)
@@ -731,10 +843,20 @@ final class MeetingRecorder {
     /// down so `retrySystemAudio()` can re-arm it (the stale non-nil `systemCapture` was why
     /// retry no-oped after a death), flag the recording system-degraded for the stop-time
     /// coverage warning, and surface the degraded banner. The partial `system.wav` is left
-    /// on disk so a no-retry stop still merges what was captured. Main-thread only;
+    /// on disk, open, and it stays that way: the retry resumes writing into it behind a
+    /// silence pad rather than reopening it (REC10). Until REC10 that claim was false -
+    /// the retry reopened the path `forWriting`, which truncates, so the automatic retry
+    /// REC8 made hands-off destroyed the very partial this line promises. Main-thread only;
     /// idempotent (a second trigger finds `systemCapture` already nil). REC4 / AUD-13.
-    private func handleSystemAudioLost(reason: String) {
+    ///
+    /// `stalledForSeconds` is how long the counter had been still before the loss was
+    /// noticed, so the watchdog path dates the loss to when the audio actually stopped
+    /// rather than to when the ~1 Hz tick caught it; the `didStopWithError` path is
+    /// prompt and passes 0.
+    private func handleSystemAudioLost(reason: String, stalledForSeconds: TimeInterval = 0) {
         guard isRecording, let dying = systemCapture else { return }
+        // REC10: date the outage now, so a retry knows how much silence to pad.
+        systemLostUptime = max(0, ProcessInfo.processInfo.systemUptime - max(0, stalledForSeconds))
         Log.writeLine("recorder", "system audio lost mid-recording (\(reason)); banner + retry now live")
         Log.event(category: "recorder", action: "system_capture_lost", attributes: [
             "reason": reason,
@@ -777,7 +899,10 @@ final class MeetingRecorder {
             "stall_after_s": systemLivenessMonitor.stallAfter,
         ])
         Log.writeLine("recorder", "system audio stalled with no didStopWithError - treating as mid-meeting death")
-        handleSystemAudioLost(reason: "system_capture_stalled")
+        handleSystemAudioLost(
+            reason: "system_capture_stalled",
+            stalledForSeconds: systemLivenessMonitor.stallAfter
+        )
     }
 
     // MARK: - Mic tap
@@ -959,9 +1084,9 @@ final class MeetingRecorder {
             // thread). Run one at a time: a re-entrant device change while a
             // restart is in flight is dropped; the watchdog or the next change
             // re-triggers. The task clears its own handle on completion.
-            guard recoveryTaskBox.task == nil else { return }
-            recoveryTaskBox.task = Task { @MainActor [weak self] in
-                defer { self?.recoveryTaskBox.task = nil }
+            guard recoveryTask == nil else { return }
+            recoveryTask = Task { @MainActor [weak self] in
+                defer { self?.recoveryTask = nil }
                 await self?.recoverCapture(
                     fileFormat: fileFormat,
                     liveFormat: liveFormat,
@@ -1133,10 +1258,10 @@ final class MeetingRecorder {
         // One recovery at a time (see evaluateConfigurationChange). Stamp the
         // gap start now, before the async hop, so the silence pad measures from
         // the stall, not from when the task happens to run.
-        guard recoveryTaskBox.task == nil else { return }
+        guard recoveryTask == nil else { return }
         let gapStart = Date()
-        recoveryTaskBox.task = Task { @MainActor [weak self] in
-            defer { self?.recoveryTaskBox.task = nil }
+        recoveryTask = Task { @MainActor [weak self] in
+            defer { self?.recoveryTask = nil }
             await self?.recoverCapture(
                 fileFormat: fileFormat,
                 liveFormat: liveFormat,
@@ -1241,6 +1366,23 @@ final class MeetingRecorder {
     /// enqueue the (missing) file, the capture intermediates are kept, and the
     /// orphan sweep recovers them on the next launch (REC1 / AUD-5).
     /// `@discardableResult` for the shutdown flush, which can't act on the result.
+    ///
+    /// `@MainActor` (REC11). It was `nonisolated async`, and per SE-0338 that does not
+    /// inherit the caller's actor, so the whole teardown ran off the main thread while
+    /// writing the four timer handles, the wake observer and the idle-sleep assertion
+    /// that `flushIntermediatesForTermination` claims exclusive main-thread ownership
+    /// of - including `releaseIdleSleepAssertion`'s non-atomic `holdsIdleSleepAssertion`
+    /// guard, so a quit during a stop could double-release. Both teardown paths are
+    /// main-isolated now, which is what makes that guard sound.
+    ///
+    /// Main-isolated does not mean main-blocking: every wait below is a suspension, not
+    /// a block. The SCStream stop, the recovery drain and the ffmpeg merge were already
+    /// `async` and bounded, and the writer drains moved to `SerialBufferWriter.drain`
+    /// for exactly this reason. What does still run synchronously on main here is the
+    /// engine teardown (`removeTap` / `engine.stop()`), matching the two main-thread
+    /// engine call sites this path already had beside it (`recoverCapture` and the
+    /// termination flush); bounding all three is REC13's, not this task's.
+    @MainActor
     @discardableResult
     func stop() async -> Bool {
         guard let final = currentFile,
@@ -1268,6 +1410,7 @@ final class MeetingRecorder {
         self.micFires = 0
         self.systemFires = 0
         self.systemFirstFrameUptime = 0
+        self.systemLostUptime = 0
 
         // Stop the tap-liveness + system-liveness watchdogs before teardown so neither
         // can re-arm or re-surface a recorder that is shutting down.
@@ -1319,14 +1462,11 @@ final class MeetingRecorder {
         // Drain an in-flight async recovery (it bounds an engine restart on a
         // background thread) before touching the engine, so teardown can't race
         // recoverCapture's restart. The observer is already removed and the
-        // watchdog cancelled, so no new recovery launches. The handle is owned on
-        // the main thread, so read and clear it there (through the box, so this
-        // off-main stop() doesn't capture the whole non-Sendable recorder).
-        let recovery = await MainActor.run { [box = recoveryTaskBox] () -> Task<Void, Never>? in
-            let task = box.task
-            box.task = nil
-            return task
-        }
+        // watchdog cancelled, so no new recovery launches. The handle is main-confined
+        // and so is this, so it is a plain read (REC11 removed the MainActor.run hop
+        // and the Sendable box that existed only to make it from off-main).
+        let recovery = recoveryTask
+        recoveryTask = nil
         recovery?.cancel()
         await recovery?.value
         engine.inputNode.removeTap(onBus: 0)
@@ -1351,14 +1491,18 @@ final class MeetingRecorder {
         // inescapable. On timeout the drain is abandoned (its queue strong-captures
         // the file, so it stays valid) and we skip the merge below, keeping the
         // intermediates + a recordfail breadcrumb for the orphan sweep.
-        let micDrained = micWriter?.finish(timeout: Self.writerDrainTimeoutSeconds) ?? true
-        let systemDrained = systemWriter?.finish(timeout: Self.writerDrainTimeoutSeconds) ?? true
+        // `drain` rather than `finish` because this is `@MainActor` now (REC11): same
+        // bounded, abandon-on-timeout contract, but it suspends instead of freezing the
+        // app for the budget.
+        let micDrained = await micWriter?.drain(timeout: Self.writerDrainTimeoutSeconds) ?? true
+        let systemDrained = await systemWriter?.drain(timeout: Self.writerDrainTimeoutSeconds) ?? true
         micWriter = nil
         systemWriter = nil
         let writerWedged = !(micDrained && systemDrained)
         if writerWedged {
             Log.writeLine("recorder", "WARN: writer drain timed out (mic=\(micDrained) system=\(systemDrained)) - keeping intermediates for the orphan sweep")
             Log.event(category: "recorder", action: "writer_drain_timed_out", attributes: [
+                "path": "stop",
                 "mic_drained": micDrained,
                 "system_drained": systemDrained,
             ])
@@ -1484,11 +1628,18 @@ final class MeetingRecorder {
     /// `.recovery.json` manifest all stay on disk, so the orphan sweep merges and
     /// privacy-routes the recording on the next launch. No-op when idle.
     ///
-    /// Main-thread only (it mutates the recorder state the render path also
-    /// touches). Deadlock-free: the only blocking calls are the writers' own
-    /// serial queues, never the main queue. The SCStream stop is async, so the
-    /// stream is left for the OS to reclaim on exit; dropping `systemFile` first
-    /// makes any in-flight system callback no-op rather than race the teardown.
+    /// Main-thread only (it mutates the recorder state the render path also touches),
+    /// and since REC11 so is `stop()`, so the two teardown paths no longer race each
+    /// other over the timer handles, the wake observer, and the idle-sleep assertion.
+    ///
+    /// It used to promise "Deadlock-free: the only blocking calls are the writers' own
+    /// serial queues, never the main queue", which was true about deadlock and quietly
+    /// silent about an indefinite block - the drains below were unbounded. They are
+    /// bounded now (`terminationDrainTimeoutSeconds`), which is the honest form of that
+    /// claim: this cannot deadlock AND it cannot block the main thread for longer than
+    /// its budget. The SCStream stop is async, so the stream is left for the OS to
+    /// reclaim on exit; dropping `systemFile` first makes any in-flight system callback
+    /// no-op rather than race the teardown.
     @MainActor
     func flushIntermediatesForTermination() {
         guard let final = currentFile else { return }
@@ -1528,15 +1679,26 @@ final class MeetingRecorder {
         }
 
         // Drain pending buffers to disk, then close the files so their headers
-        // are valid for the next-launch merge.
-        micWriter?.finish()
-        systemWriter?.finish()
+        // are valid for the next-launch merge. Bounded (REC11(a)): quit has its own
+        // deadline, and an abandoned drain still leaves whatever landed on disk for
+        // the orphan sweep, which is strictly more than a force-quit leaves.
+        let micDrained = micWriter?.finish(timeout: Self.terminationDrainTimeoutSeconds) ?? true
+        let systemDrained = systemWriter?.finish(timeout: Self.terminationDrainTimeoutSeconds) ?? true
         micWriter = nil
         systemWriter = nil
         micFile = nil
+        if !(micDrained && systemDrained) {
+            Log.writeLine("recorder", "WARN: writer drain timed out at termination (mic=\(micDrained) system=\(systemDrained)) - the intermediates may be short; the orphan sweep merges what landed")
+            Log.event(category: "recorder", action: "writer_drain_timed_out", attributes: [
+                "path": "termination",
+                "mic_drained": micDrained,
+                "system_drained": systemDrained,
+            ])
+        }
 
         Log.event(category: "recorder", action: "intermediates_flushed_for_termination", attributes: [
             "file": final.lastPathComponent,
+            "writers_drained": micDrained && systemDrained,
         ])
     }
 

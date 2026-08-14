@@ -588,8 +588,10 @@ final class MeetingSessionController: @unchecked Sendable {
         axWindowWatcher?.stop()
         axWindowWatcher = nil
 
-        // recorder.stop is async (off the UI); once flushed, enqueue for the
-        // pipeline and return to .idle so the next meeting can start.
+        // recorder.stop is `@MainActor async` (REC11): main-isolated so its teardown
+        // cannot race the main-thread owners of the fields it writes, but every wait
+        // inside it is a suspension, so the UI stays live. Once flushed, enqueue for
+        // the pipeline and return to .idle so the next meeting can start.
         let recorder = coordinator.audioRecorder
         Task { @MainActor [weak self] in
             let producedUsableFinal = await recorder.stop()

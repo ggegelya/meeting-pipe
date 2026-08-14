@@ -101,6 +101,33 @@ final class CaptureRecoveryPlannerTests: XCTestCase {
         )
     }
 
+    /// REC10 pads the system channel from a `systemUptime` span rather than two `Date`s,
+    /// and shares this arithmetic rather than copying it, so both channels round and
+    /// overflow-guard identically.
+    func test_silenceFrames_from_a_measured_span_matches_the_date_form() {
+        let start = Date()
+        XCTAssertEqual(
+            CaptureRecoveryPlanner.silenceFrames(gapSeconds: 0.5, sampleRate: 48000),
+            CaptureRecoveryPlanner.silenceFrames(
+                gapStart: start, resumeAt: start.addingTimeInterval(0.5), sampleRate: 48000
+            )
+        )
+    }
+
+    func test_silenceFrames_from_a_measured_span_is_zero_for_a_non_positive_gap() {
+        XCTAssertEqual(CaptureRecoveryPlanner.silenceFrames(gapSeconds: 0, sampleRate: 48000), 0)
+        XCTAssertEqual(CaptureRecoveryPlanner.silenceFrames(gapSeconds: -1, sampleRate: 48000), 0)
+    }
+
+    /// A span long enough to overflow the frame count yields 0 rather than a wrapped
+    /// pad, on both entry points.
+    func test_silenceFrames_from_a_measured_span_refuses_an_overflowing_gap() {
+        XCTAssertEqual(
+            CaptureRecoveryPlanner.silenceFrames(gapSeconds: 1e12, sampleRate: 48000),
+            0
+        )
+    }
+
     // MARK: - nextRetryDelay
 
     func test_nextRetryDelay_returns_each_step_in_the_schedule() {

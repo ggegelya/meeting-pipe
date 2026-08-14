@@ -42,4 +42,26 @@ final class SerialBufferWriter<Item> {
         queue.async { sentinel.signal() }
         return sentinel.wait(timeout: .now() + timeout) == .success
     }
+
+    /// The same bounded drain as `finish(timeout:)`, but it SUSPENDS the caller
+    /// instead of blocking its thread, so a `@MainActor` caller keeps the UI live
+    /// while a wedged disk runs out the budget. The wait itself still has to be a
+    /// blocking semaphore (a `DispatchQueue` offers nothing else), so it is parked on
+    /// a global utility thread; nothing the caller owns is held.
+    ///
+    /// REC11: `stop()` became `@MainActor` so its teardown stops racing the main-thread
+    /// owners of the fields it writes, and the synchronous `finish(timeout:)` would have
+    /// bought that by freezing the app for the whole 10 s drain budget instead. Same
+    /// abandon-on-timeout contract as the synchronous variant: the drain keeps running
+    /// on the queue, which strong-captures the file it writes, so the file stays valid.
+    @discardableResult
+    func drain(timeout: TimeInterval) async -> Bool {
+        let sentinel = DispatchSemaphore(value: 0)
+        queue.async { sentinel.signal() }
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: sentinel.wait(timeout: .now() + timeout) == .success)
+            }
+        }
+    }
 }

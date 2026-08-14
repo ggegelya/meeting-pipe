@@ -37,10 +37,16 @@ enum CaptureRecoveryPlanner {
         resumeAt: Date,
         sampleRate: Double
     ) -> AVAudioFrameCount {
-        guard sampleRate > 0 else { return 0 }
-        let seconds = resumeAt.timeIntervalSince(gapStart)
-        guard seconds > 0 else { return 0 }
-        let frames = (seconds * sampleRate).rounded()
+        silenceFrames(gapSeconds: resumeAt.timeIntervalSince(gapStart), sampleRate: sampleRate)
+    }
+
+    /// The same gap arithmetic over a span that was already measured, for callers
+    /// working in `systemUptime` rather than `Date` (REC10's system-audio outage pad).
+    /// One implementation rather than two, so a fix to the rounding or the overflow
+    /// guard cannot land on only one of the two channels it pads.
+    static func silenceFrames(gapSeconds: Double, sampleRate: Double) -> AVAudioFrameCount {
+        guard sampleRate > 0, gapSeconds > 0 else { return 0 }
+        let frames = (gapSeconds * sampleRate).rounded()
         guard frames > 0, frames < Double(AVAudioFrameCount.max) else { return 0 }
         return AVAudioFrameCount(frames)
     }
