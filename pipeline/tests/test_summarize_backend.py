@@ -32,12 +32,17 @@ from mp.config import parse_local_endpoint
 from mp.summarize import _AutoFallbackClient, _select_backend
 
 
-def _local_cfg(backend: str = "local", regulated: bool = False) -> Config:
+def _local_cfg(
+    backend: str = "local", regulated: bool = False, memory_floor_pct: float = 10.0
+) -> Config:
     return Config.model_validate({
         "summarization": {
             "backend": backend,
             "local_endpoint": "http://127.0.0.1:9999",
             "local_model": "fake-model",
+            # The default matches config.py's, so passing it changes nothing for
+            # every caller that does not care; LOCAL19's test sets it non-default.
+            "local_memory_floor_pct": memory_floor_pct,
         },
         "modes": {"regulated_mode": regulated},
     })
@@ -367,6 +372,49 @@ def test_auto_falls_back_to_local_on_429_and_5xx(
     )
     assert result.title == "Local"
     assert client.last_used_backend == "local"
+
+
+def test_auto_fallback_local_client_carries_the_configured_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # LOCAL19: the auto ladder's local rung built its client without
+    # `memory_floor_pct`, so the free-RAM watchdog ran at
+    # `resource_guard.DEFAULT_FLOOR_PCT` whatever the config said, on the whole
+    # `auto` backend. That knob is exactly what LOCAL18's cheap first leg turns
+    # ("raise the floor until any run trips it"), so run on `auto` that
+    # experiment would have measured this constructor and read as a watchdog
+    # that does not fire.
+    from mp.schemas import MeetingSummary
+    from mp.summarize_local import LocalSummaryClient
+
+    # No key is the ordinary no-cloud-configured case, so the ladder takes the
+    # local rung directly. That rung is what is under test here.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    floors: list[float] = []
+
+    class _RecordingLocal(LocalSummaryClient):
+        """The real client, subclassed rather than faked, so the assertion is on
+        the watchdog it actually built and not merely on a keyword arriving."""
+
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            floors.append(self.watchdog.floor_pct)
+
+        def summarize(self, **_: Any) -> MeetingSummary:
+            return MeetingSummary(
+                title="Local", summary=["b"], decisions=[], actions=[],
+                questions=[], attendees=[], detected_language="en",
+            )
+
+    monkeypatch.setattr("mp.summarize_local.LocalSummaryClient", _RecordingLocal)
+
+    client = _AutoFallbackClient(_local_cfg(backend="auto", memory_floor_pct=42.0))
+    client.summarize(
+        system_prompt="sys", transcript="A: hi.", model="claude-x", max_tokens=100,
+    )
+
+    assert client.last_used_backend == "local"
+    assert floors == [42.0]
 
 
 # ----- Slept-through-it timeout retry (PIPE10) -----

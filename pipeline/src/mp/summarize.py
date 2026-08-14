@@ -872,6 +872,12 @@ class _AutoFallbackClient:
                 map_reduce_above_chars=self._cfg.summarization.skip_above_chars,
                 # LOCAL9: opt-in fine-tuned adapter; empty config keeps the base model.
                 adapter_path=self._cfg.summarization.local_adapter_path or None,
+                # LOCAL16, and the omission LOCAL19 closed: the configured floor,
+                # same as the explicit local backend above. Left out, this rung took
+                # `resource_guard.DEFAULT_FLOOR_PCT` from the constructor default, so
+                # `auto` was the one local path where raising the floor did nothing
+                # and `0` did not turn the watchdog off.
+                memory_floor_pct=self._cfg.summarization.local_memory_floor_pct,
             ) as fallback:
                 out = fallback.summarize(
                     system_prompt=system_prompt, transcript=transcript,

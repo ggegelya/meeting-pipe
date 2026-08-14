@@ -103,7 +103,16 @@ def run_one(
 
     model_id = local_model or cfg.summarization.local_model
     log.info("running local backend (%s)...", model_id)
-    with LocalSummaryClient(model=model_id) as local_client:
+    # LOCAL19: the configured floor here too, though this is an owner-dev bench
+    # rather than a production path. The floor is a promise about this Mac ("0
+    # turns the watchdog off", and a raised floor means a lower ceiling on every
+    # local run), so a harness reading a different number than the config says is
+    # the same surprise on the machine most likely to be pushed. Crossing the
+    # boundary deliberately is what `MP_RAM_GUARD=0` is for, and that escape
+    # works whatever the floor is, so nothing is lost by honouring it.
+    with LocalSummaryClient(
+        model=model_id, memory_floor_pct=cfg.summarization.local_memory_floor_pct
+    ) as local_client:
         local = local_client.summarize(
             system_prompt=sys_prompt, transcript=transcript,
             model=model_id,
@@ -144,7 +153,12 @@ def run_one_adapter(
     host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
 
     log.info("running local base (%s)...", model_id)
-    with LocalSummaryClient(model=model_id, host=host, port=port) as base_client:
+    # Both rungs carry the configured floor, per the note in `run_one`. An A/B
+    # whose two halves ran under different memory ceilings would not be one.
+    with LocalSummaryClient(
+        model=model_id, host=host, port=port,
+        memory_floor_pct=cfg.summarization.local_memory_floor_pct,
+    ) as base_client:
         base = base_client.summarize(
             system_prompt=sys_prompt, transcript=transcript,
             model=model_id, max_tokens=cfg.summarization.max_tokens,
@@ -152,7 +166,8 @@ def run_one_adapter(
 
     log.info("running local + adapter (%s)...", adapter_path)
     with LocalSummaryClient(
-        model=model_id, host=host, port=port + 1, adapter_path=str(adapter_path)
+        model=model_id, host=host, port=port + 1, adapter_path=str(adapter_path),
+        memory_floor_pct=cfg.summarization.local_memory_floor_pct,
     ) as adapter_client:
         adapted = adapter_client.summarize(
             system_prompt=sys_prompt, transcript=transcript,
