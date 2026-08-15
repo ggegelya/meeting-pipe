@@ -50,6 +50,14 @@ Then, whatever the verdict:
 
 On a GO, fix the wiring. On a NO-GO, replace or supplement the signal with a source that actually observes mic contention, and note that DET8's enumeration of `kAudioHardwarePropertyProcessObjectList` is the nearest candidate already under investigation.
 
+## One thing downstream of this verdict, added 2026-08-15
+
+**On a GO, reopen DET11's `MicInUseTier` question.** DET11 shipped the same day and its acceptance required answering, explicitly and in writing, whether `MicInUseTier`'s native exclusion should become conditional so that an Accessibility-denied user gets a working catch-all tier. It answered **no**, and one of its three reasons was this task: conditioning a tier whose input has never once read true buys nothing while the verdict is out. That reason expires the moment the verdict is GO, and the other two do not, so this is a reopen rather than a reversal.
+
+The reasoning lives in DET11's archived spec in [q6-final.md](../q6-final.md), with a pointer beside the exclusion in `daemon/Sources/MeetingPipe/MicInUseTier.swift`. Read it before changing anything: it records that the obvious condition is the wrong one. The condition has to be AX trust, not "the scan found no winner", because a live call goes tens of seconds with no winner (DET9). `detector.candidate_unreadable`, which DET11 shipped, is the signal to reuse.
+
+Nothing is owed here on a NO-GO or a NO VERDICT.
+
 ## Shipped 2026-08-15 (the two legs that land whatever the verdict)
 
 Both are observability, not a fix. Neither branch of the fork is written, deliberately.
