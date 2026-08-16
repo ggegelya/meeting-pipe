@@ -4,8 +4,18 @@ import SwiftUI
 /// Permissions section: one card per TCC permission, icon badge + status pill + Request/Open Settings button, plus a privacy callout at the bottom.
 struct PermissionsSectionView: View {
     @ObservedObject var store: ConfigStore
+    /// UX60: the regulated-mode group offers the model download inline, because
+    /// the clamp it describes lands on a model this Mac may not have and the only
+    /// surface that said so was the menu bar's Finish setup row, a pane away from
+    /// the decision. Nil headless, which suppresses the row rather than asserting
+    /// a model is missing on no evidence.
+    var localModelPreflight: LocalModelPreflight? = nil
     @ObservedObject private var center = PermissionsCenter.shared
     @State private var workingKind: PermissionsCenter.Kind? = nil
+    /// The preflight's probe is a filesystem scan, so it runs on appear and when
+    /// the toggle or the backend changes, never per-render.
+    @State private var localModelMissing = false
+    @State private var localModelDownloadStarted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -41,15 +51,22 @@ struct PermissionsSectionView: View {
             // pass): it is a privacy / egress control, alongside the TCC
             // permissions and the on-device privacy note.
             SettingsGroup("Regulated mode") {
-                SettingsToggleRow("Skip Notion publish",
-                    sublabel: store.regulatedMode
-                        ? "On - Notion publish is disabled for every meeting."
-                        : "Off - meetings publish to each workflow's own sinks (Notion only if that workflow enables it).",
+                SettingsToggleRow(RegulatedMode.title,
+                    sublabel: RegulatedMode.sublabel(
+                        isOn: store.regulatedMode,
+                        configured: store.summarizationBackend
+                    ),
                     isOn: $store.regulatedMode,
-                    showsDivider: false)
+                    showsDivider: modelMissingNotice != nil)
+                if let notice = modelMissingNotice {
+                    localModelDownloadRow(notice)
+                }
             } footer: {
-                Text("Use for client / regulated meetings. The pipeline writes summaries to disk only - no transcript or summary is uploaded to Notion.")
+                Text(RegulatedMode.footer(configured: store.summarizationBackend))
             }
+            .onAppear { refreshLocalModelMissing() }
+            .onChange(of: store.regulatedMode) { _, _ in refreshLocalModelMissing() }
+            .onChange(of: store.summarizationBackend) { _, _ in refreshLocalModelMissing() }
 
             privacyCallout
                 .padding(.top, 4)
@@ -63,6 +80,54 @@ struct PermissionsSectionView: View {
         }
         .onAppear { center.startPolling() }
         .onDisappear { center.stopPolling() }
+    }
+
+    // MARK: - Regulated mode's on-device model (UX60)
+
+    /// What the group has to say about the model the clamp lands on, or nil.
+    private var modelMissingNotice: String? {
+        RegulatedMode.modelMissingNotice(
+            isOn: store.regulatedMode,
+            configured: store.summarizationBackend,
+            modelIsMissing: localModelMissing,
+            downloadSize: localModelPreflight?.downloadSizeLabel() ?? "several GB"
+        )
+    }
+
+    private func refreshLocalModelMissing() {
+        localModelMissing = localModelPreflight?.isModelMissing() ?? false
+    }
+
+    /// The same shape the workflow editor's on-device preset uses (UX21):
+    /// "Download now" routes through the daemon's shared supervisor, so progress
+    /// shows in the menu bar and the download outlives this pane.
+    @ViewBuilder
+    private func localModelDownloadRow(_ notice: String) -> some View {
+        SettingsFullRow(showsDivider: false) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.down.circle")
+                    .foregroundStyle(.mpWarning)
+                if localModelDownloadStarted {
+                    Text("Downloading \(RegulatedMode.forcedEngine.name). Progress shows in the menu bar.")
+                        .font(.mpTextSM)
+                        .foregroundStyle(Color(MPColors.fgMuted))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                } else {
+                    Text(notice)
+                        .font(.mpTextSM)
+                        .foregroundStyle(Color(MPColors.fgMuted))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button("Download now") {
+                        localModelPreflight?.startDownload()
+                        localModelDownloadStarted = true
+                    }
+                    .buttonStyle(.mpGhost)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private var privacyCallout: some View {

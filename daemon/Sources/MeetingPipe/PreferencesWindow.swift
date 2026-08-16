@@ -10,6 +10,15 @@ final class PreferencesWindow {
     private let workflows: WorkflowStore
     /// Shared selection state for `show(initial:)` deeplinks.
     private let selectionState = PreferencesSelectionState()
+    /// UX60: how the Permissions pane reaches the daemon's shared model-download
+    /// supervisor, for the regulated-mode group's inline "Download now".
+    ///
+    /// A provider rather than a value because `Coordinator` builds this window
+    /// inside its own `init`, where `configRefresh` (a `lazy var`) cannot be
+    /// touched yet; the coordinator sets it once it is up. Resolved when the
+    /// window is built, which is enough: `LocalModelPreflight` is a struct of
+    /// closures that read live state on each call.
+    var localModelPreflightProvider: (() -> LocalModelPreflight?)?
 
     init(store: ConfigStore, secrets: SecretsStore, workflows: WorkflowStore) {
         self.store = store
@@ -43,7 +52,8 @@ final class PreferencesWindow {
             store: store,
             secrets: secrets,
             workflows: workflows,
-            selectionState: selectionState
+            selectionState: selectionState,
+            localModelPreflight: localModelPreflightProvider?()
         )
         let host = NSHostingController(rootView: MPControlAccent(view))
         let w = NSWindow(contentViewController: host)

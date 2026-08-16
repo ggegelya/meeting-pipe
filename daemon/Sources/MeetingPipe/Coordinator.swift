@@ -530,6 +530,14 @@ final class Coordinator: NSObject {
         // persistence. Owned by ConfigRefreshCoordinator (TECH-H1-FINISH).
         configRefresh.start()
 
+        // UX60: Preferences ▸ Permissions offers the on-device model's download
+        // beside the regulated-mode toggle, since that toggle forces every summary
+        // onto it. Wired here rather than at construction because the window is
+        // built in `init`, before `configRefresh` may be touched.
+        preferencesWindow?.localModelPreflightProvider = { [weak self] in
+            self?.localModelPreflight
+        }
+
         // Re-evaluate detection the moment Mic/Accessibility flip on, so a
         // daemon restarted mid-meeting (the typical AX-grant flow) doesn't
         // wait for the next Workspace notification.

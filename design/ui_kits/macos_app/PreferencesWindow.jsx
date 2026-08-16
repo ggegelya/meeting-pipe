@@ -396,8 +396,12 @@ const PWPermissionsPane = () => (
         </div>
       ))}
     </PWGroup>
-    <PWGroup label="Regulated mode" footer="Use for client / regulated meetings. The pipeline writes summaries to disk only - no transcript or summary is uploaded to Notion.">
-      <PWToggleRow first on={false} label="Skip Notion publish" sublabel="Off - meetings publish to each workflow's own sinks (Notion only if that workflow enables it)."/>
+    {/* UX60: the toggle names both halves. It shipped as "Skip Notion publish", which
+        described one of the two things it does; the other is that it pins every
+        summary to the on-device model whatever Preferences > Pipeline says. The
+        strings come from `RegulatedMode` in the app, derived from that clamp. */}
+    <PWGroup label="Regulated mode" footer="Use for client / regulated meetings. Two things happen while it is on, and both apply to every meeting rather than the next one: no transcript or summary is uploaded to Notion, and every summary is produced on this Mac by Local MLX, whatever Preferences > Pipeline is set to.">
+      <PWToggleRow first on={false} label="Skip Notion publish and summarize on-device" sublabel="Off - meetings publish to each workflow's own sinks (Notion only if that workflow enables it), and summaries run on Anthropic."/>
     </PWGroup>
     <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "12px 14px", borderRadius: "var(--mp-radius-md)", background: "color-mix(in srgb, transparent 90%, var(--mp-signal-600))", border: "1px solid color-mix(in srgb, transparent 82%, var(--mp-signal-600))" }}>
       <span style={{ color: "var(--mp-signal-600)", display: "flex", flexShrink: 0, marginTop: 1 }}><Icon name="shield" size={16}/></span>

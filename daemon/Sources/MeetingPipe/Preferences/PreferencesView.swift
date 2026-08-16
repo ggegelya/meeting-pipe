@@ -58,6 +58,10 @@ struct PreferencesView: View {
     @ObservedObject var secrets: SecretsStore
     @ObservedObject var workflows: WorkflowStore
     @ObservedObject var selectionState: PreferencesSelectionState
+    /// UX60: the Permissions pane's regulated-mode group offers the on-device
+    /// model's download inline, since the clamp it now names lands on a model this
+    /// Mac may not have. Nil headless, which suppresses the row.
+    var localModelPreflight: LocalModelPreflight? = nil
     @StateObject private var doctor = DoctorRunner()
 
     @State private var doctorSheetOpen: Bool = false
@@ -128,7 +132,7 @@ struct PreferencesView: View {
                 }
             )
         case .permissions:
-            PermissionsSectionView(store: store)
+            PermissionsSectionView(store: store, localModelPreflight: localModelPreflight)
         case .advanced:
             AdvancedSectionView()
         }
