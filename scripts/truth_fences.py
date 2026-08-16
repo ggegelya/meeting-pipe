@@ -100,9 +100,9 @@ CLAUDE_MAX_BYTES = 24_000
 # Known drift, each naming the task that clears it. Same ratchet contract as the
 # two lists above: an entry not listed fails, and a stale entry (a file now
 # passing) fails too, so this cannot quietly absorb new growth.
-CLAUDE_ALLOWLIST: dict[str, str] = {
-    "pipeline/CLAUDE.md": "DOC14: split to pipeline/docs/gotchas.md, in flight",
-}
+# Empty, and that is the intended steady state: DOC14 split `daemon/CLAUDE.md`
+# and `pipeline/CLAUDE.md` onto their `docs/gotchas.md` siblings, and both pass.
+CLAUDE_ALLOWLIST: dict[str, str] = {}
 
 # --------------------------------------------------------------------------
 # Shared helpers
