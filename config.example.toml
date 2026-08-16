@@ -213,6 +213,15 @@ local_memory_floor_pct = 10
 # it, so Re-transcribe and Re-summarize do not replay it over an existing
 # meeting; do that on demand with `mp cleanup-diarization <stem>.json`.
 diarize_cleanup = false
+# UX63. Pin `mp digest`'s narrative to the on-device engine whatever `backend`
+# above says. The digest is the one command that runs unattended on a schedule
+# and reads the WHOLE library, so on a cloud backend a launchd job sends a slice
+# of every workflow's open actions and decisions out on each run, with no UI in
+# front of it. Off by default (the cloud narrative is better); turn it on for the
+# schedule without the egress. Only ever narrows, so it stacks with
+# regulated_mode rather than fighting it, and the facts themselves are gathered
+# on-device either way. Toggle it in Preferences > Pipeline > Weekly digest.
+digest_local_only = false
 
 [output]
 # Ordered list of publishers to invoke after a summary is produced. Each sink

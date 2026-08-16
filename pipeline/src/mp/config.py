@@ -119,6 +119,22 @@ class Summarization(BaseModel):
     #                key in the Keychain (OPENAI_API_KEY). Cloud; clamped by the
     #                egress guard exactly like anthropic.
     backend: BackendName = "anthropic"
+    # UX63. Pin `mp digest`'s narration to the on-device engine whatever
+    # `backend` above says, without moving anything else off it.
+    #
+    # The digest is the one command that runs unattended on a schedule and reads
+    # the WHOLE library: a launchd job every Monday sends a slice of every
+    # workflow's open actions and decisions to the narrating engine, with no UI
+    # in front of it. That is a different bargain from a meeting summary you
+    # watched happen, which is why it gets its own knob rather than inheriting
+    # one. Off by default, so the shipped behaviour is unchanged and the cloud
+    # narrative (which is better) stays the default.
+    #
+    # Only ever narrows: it forces local and never selects a cloud engine, so it
+    # composes with the regulated / NDA clamp instead of fighting it. The facts
+    # the narration is built from are gathered on-device either way; this is
+    # about the sentence that wraps them.
+    digest_local_only: bool = False
     # Default to the 7B-4bit (~4.3 GB resident): the engine-comparison sweet
     # spot (LOCAL6). On par with the 14B on action/decision capture but with
     # named owners, zero failures over the corpus, ~30% lower latency, and

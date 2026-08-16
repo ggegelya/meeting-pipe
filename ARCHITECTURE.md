@@ -379,7 +379,7 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 | `publish_from_paste.py` | `mp publish-from-paste <transcript.md>` | BYO summary, then publish |
 | `diarize_cleanup.py` | `mp cleanup-diarization <transcript.json>` | LLM pass merging same-speaker labels (TECH-DIAR1) |
 | `ask.py` | `mp ask <question>` | engine-backed, cited answer over the library (AI3) |
-| `digest.py` | `mp digest` | weekly review digest, on-device (AI4); its action list is scoped to the review window, grouped by workflow, ranked and capped (AI10) |
+| `digest.py` | `mp digest` | weekly review digest (AI4); its action list is scoped to the review window, grouped by workflow, ranked and capped (AI10). Facts are gathered on-device; the narration runs through `engine.complete_text`, so it goes wherever `effective_backend` points unless `summarization.digest_local_only` pins it local (UX63, applied by `narration_config` as a narrowed config handed to the one chokepoint rather than a second selection path) |
 | `actions.py` | `mp actions` | open action items across the library (TECH-FEAT4 + AI1); `--cluster` groups a series' restatements (AI7) |
 | `prep.py` | `mp prep <workflow>` | CAL2: recap the last meeting recorded under a workflow (opening summary points + the actions it left open). The shell twin of the prompt panel's "Last time" card |
 | `roster_cmd.py` | `mp roster {enroll,list,forget,rename}` | named-speaker voiceprint management (FEAT3-ROSTER; `rename` is FEAT3-MANAGE) |

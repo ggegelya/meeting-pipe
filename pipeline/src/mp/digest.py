@@ -19,6 +19,12 @@ NDA; the facts stay on-device unless you publish to a cloud sink. If the engine
 is unavailable, the digest still generates with a deterministic narrative, so a
 scheduled run never fails to produce output.
 
+Read that first sentence literally, because a Preferences string once did not
+(UX63): honouring `effective_backend()` means a Mac on `backend = "anthropic"`
+POSTS a slice of the whole library's open actions and decisions to Anthropic on
+every scheduled run. `summarization.digest_local_only` is the opt-out, applied
+by `narration_config` below, for someone who wants the schedule without that.
+
 Latency-tolerant by design (a background / scheduled run, not interactive), so
 there is no live-latency budget. No new always-on egress: this is a command you
 run or schedule (e.g. a weekly launchd timer), not a daemon.
@@ -338,12 +344,36 @@ def _fallback_bullets(scope: ActionScope, decisions: list[RecentDecision],
     return bullets[:5]
 
 
+def narration_config(cfg: Config) -> Config:
+    """The config the narration runs under (UX63).
+
+    `summarization.digest_local_only` pins the narrative to the on-device engine
+    whatever `summarization.backend` says, and this is where that pin is applied:
+    as a narrowed config handed to the one chokepoint, rather than as a second
+    backend-selection path beside `effective_backend`. Composing that way is what
+    makes it stack correctly with the regulated / NDA clamp, and it means the
+    apple_intelligence substitution never has to fire here, since the backend is
+    already local before `complete_text` sees it.
+
+    Returns `cfg` itself when there is nothing to narrow, so the common path
+    allocates nothing and an unchanged config is identity-comparable in tests.
+    """
+    if not cfg.summarization.digest_local_only:
+        return cfg
+    if cfg.summarization.backend == "local":
+        return cfg
+    return cfg.model_copy(
+        update={"summarization": cfg.summarization.model_copy(update={"backend": "local"})}
+    )
+
+
 def narrate(cfg: Config, scope: ActionScope, decisions: list[RecentDecision],
             today: date, since_days: int) -> tuple[list[str], str]:
     """Ask the engine for the narrative bullets; degrade to a deterministic
     summary if it is unavailable. Returns (bullets, backend-used)."""
     if not scope.actions and not decisions:
         return (["No open actions or recent decisions this period."], "none")
+    cfg = narration_config(cfg)
     # The whole facts block goes inside the fence (SEC15). Every instruction the
     # narration follows lives in `_NARRATE_SYSTEM`, so the user turn is data and
     # nothing else; the AI10 header the block opens with is a count, not an

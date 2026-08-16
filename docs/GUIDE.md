@@ -264,6 +264,8 @@ A confidential workflow keeps Ask on your Mac exactly as it keeps summaries ther
 
 A digest is a review, not a dump. It shows the commitments this period is actually about, which means the ones raised in the window plus anything already overdue or falling due inside it, grouped by workflow and most-pressing-first. It then says exactly what it left out, and links to Facts for the full list. Age alone never drops an item: a promise from February that is months past due is exactly what a weekly review is for, so it leads the list.
 
+One thing to know before you turn the schedule on. The digest reads every meeting on your Mac, and then asks an engine to write the few sentences at the top. Collecting the facts happens here; writing those sentences happens wherever your summaries happen. So if your summaries go to a cloud engine, a slice of your open actions and decisions across every workflow goes there too, once a week, with nobody watching. If you would rather keep that on your Mac, turn on **Keep the digest on this Mac** in the same Preferences group. It is a little worse at writing and it changes nothing else. The text under those controls always names the engine that will actually do the writing, so you can check rather than remember.
+
 ### Facts
 
 **Facts** in the rail gathers every open action and the decisions from the last 30 days, each row linking back to its source meeting. The amber badge on the rail counts what is overdue or due today, so an ageing promise resurfaces without your opening anything.

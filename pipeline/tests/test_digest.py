@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from mp import digest
-from mp.config import Config
+from mp.config import Config, effective_backend
 from mp.engine import EngineError, EngineResult
 
 
@@ -431,3 +431,85 @@ def test_main_without_publish_does_not_fanout(monkeypatch: pytest.MonkeyPatch, t
 
     monkeypatch.setattr(publish_router, "fanout", _fail)
     assert digest.main(["--dir", str(root), "--out-dir", str(tmp_path / "digests")]) == 0
+
+
+# --- UX63: digest_local_only ------------------------------------------------
+#
+# The Preferences footer said "on-device (no new egress)" while an unattended
+# run on 2026-08-03 logged `POST https://api.anthropic.com/v1/messages`. The
+# owner's call was to tell the truth AND ship the opt-out, so these pin the
+# opt-out's routing: it must reach `complete_text` as an already-local config,
+# not as a second backend-selection path beside `effective_backend`.
+
+
+def _cfg_backend(backend: str, *, local_only: bool = False, regulated: bool = False) -> Config:
+    return Config.model_validate({
+        "summarization": {
+            "backend": backend, "local_model": "fake", "digest_local_only": local_only,
+        },
+        "modes": {"regulated_mode": regulated},
+    })
+
+
+def test_digest_local_only_is_off_by_default() -> None:
+    assert Config().summarization.digest_local_only is False
+
+
+def test_narration_config_is_identity_when_the_opt_out_is_off() -> None:
+    cfg = _cfg_backend("anthropic")
+    assert digest.narration_config(cfg) is cfg
+
+
+def test_narration_config_is_identity_when_the_backend_is_already_local() -> None:
+    cfg = _cfg_backend("local", local_only=True)
+    assert digest.narration_config(cfg) is cfg
+
+
+@pytest.mark.parametrize(
+    "backend", ["anthropic", "auto", "apple_intelligence", "claude_cli", "openai"]
+)
+def test_narration_config_pins_every_non_local_backend(backend: str) -> None:
+    cfg = _cfg_backend(backend, local_only=True)
+    narrowed = digest.narration_config(cfg)
+    assert effective_backend(narrowed) == "local"
+    # And it narrows a copy: the caller's config is untouched, so nothing else
+    # in the same process moves off the configured backend.
+    assert cfg.summarization.backend == backend
+
+
+def test_narration_config_never_widens_a_regulated_config() -> None:
+    cfg = _cfg_backend("anthropic", local_only=False, regulated=True)
+    assert effective_backend(digest.narration_config(cfg)) == "local"
+
+
+def test_narrate_reaches_the_engine_with_a_local_config_when_pinned(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The assertion that matters: what `complete_text` actually receives."""
+    _meeting(tmp_path, _stem(TODAY), title="M", actions=[_action("x", due="2026-06-01")])
+    seen: list[str] = []
+
+    def _spy(cfg, *, system_prompt, user_message, max_tokens, model=None):
+        seen.append(effective_backend(cfg))
+        return EngineResult(text="- a theme", backend="local", model="fake")
+
+    monkeypatch.setattr(digest.engine, "complete_text", _spy)
+    digest.narrate(_cfg_backend("anthropic", local_only=True), _scope(tmp_path), [], TODAY, 7)
+    assert seen == ["local"]
+
+
+def test_narrate_still_reaches_the_cloud_when_the_opt_out_is_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The default is unchanged. A guard that fires on everything would pass the
+    test above and silently move every owner off the better narrative."""
+    _meeting(tmp_path, _stem(TODAY), title="M", actions=[_action("x", due="2026-06-01")])
+    seen: list[str] = []
+
+    def _spy(cfg, *, system_prompt, user_message, max_tokens, model=None):
+        seen.append(effective_backend(cfg))
+        return EngineResult(text="- a theme", backend="anthropic", model="m")
+
+    monkeypatch.setattr(digest.engine, "complete_text", _spy)
+    digest.narrate(_cfg_backend("anthropic"), _scope(tmp_path), [], TODAY, 7)
+    assert seen == ["anthropic"]

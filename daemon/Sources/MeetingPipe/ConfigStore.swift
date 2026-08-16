@@ -70,6 +70,11 @@ final class ConfigStore: ObservableObject {
     /// (`summarization.diarize_cleanup`, TECH-DIAR1). Read by `mp run-all` at spawn
     /// time, so a change applies from the next meeting with no relaunch.
     @Published var summarizationDiarizeCleanup: Bool { didSet { scheduleSave() } }
+    /// Pin `mp digest`'s narrative to the on-device engine whatever
+    /// `summarizationBackend` says (`summarization.digest_local_only`, UX63).
+    /// Read by `mp digest` at spawn, so a change applies to the next run,
+    /// scheduled or on demand, with no relaunch.
+    @Published var summarizationDigestLocalOnly: Bool { didSet { scheduleSave() } }
     @Published var summarizationSkipAboveChars: Int { didSet { scheduleSave() } }
     /// Summarize backend: "anthropic" | "local" | "auto". Mirrors
     /// `summarization.backend`.
@@ -213,6 +218,7 @@ final class ConfigStore: ObservableObject {
         self.diarizationClusteringThreshold = SpeakerSeparation.clamp(clusteringRaw)
         self.summaryLanguage = summ?["summary_language"]?.string ?? "auto"
         self.summarizationDiarizeCleanup = summ?["diarize_cleanup"]?.bool ?? false
+        self.summarizationDigestLocalOnly = summ?["digest_local_only"]?.bool ?? false
         self.summarizationSkipAboveChars = summ?["skip_above_chars"]?.int ?? 80000
         self.summarizationBackend = summ?["backend"]?.string ?? "anthropic"
         self.summarizationLocalModel = summ?["local_model"]?.string
@@ -297,6 +303,7 @@ final class ConfigStore: ObservableObject {
         ensureTable("notion")["include_full_transcript"] = notionIncludeFullTranscript
         ensureTable("summarization")["summary_language"] = summaryLanguage
         ensureTable("summarization")["diarize_cleanup"] = summarizationDiarizeCleanup
+        ensureTable("summarization")["digest_local_only"] = summarizationDigestLocalOnly
         ensureTable("summarization")["skip_above_chars"] = summarizationSkipAboveChars
         ensureTable("summarization")["backend"] = summarizationBackend
         ensureTable("summarization")["local_model"] = summarizationLocalModel
