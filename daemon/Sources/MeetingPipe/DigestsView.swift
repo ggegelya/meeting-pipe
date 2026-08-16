@@ -201,6 +201,22 @@ struct DigestReaderView: View {
     @ObservedObject var model: DigestListModel
     let onOpenFacts: () -> Void
 
+    // UX64, decided and recorded rather than left open: the digest reader does
+    // **not** get the Ask pane's substitution footer, and the reason is that the
+    // fact is not on disk for it to render. `mp digest` narrates through the same
+    // `engine.complete_text`, so it carries the same silent Apple-Intelligence to
+    // local-MLX substitution, but `DigestResult` (`digest.py:411`, `:427`) carries
+    // `backend` only and never `substituted_from`, and this reader loads
+    // `<stem>.summary.json` alone, which carries no engine at all. So shipping the
+    // line here is a Python change plus a new file read plus a provenance register
+    // on a surface that has none, not "the same line one file over".
+    //
+    // The digest's real exposure is answered elsewhere and earlier: UX63 puts the
+    // engine that will actually run into the Preferences footer that switches the
+    // weekly schedule on, using the same `SummarizationEngine` register. That is a
+    // prediction from config rather than a record from an artifact, and it is the
+    // surface where the owner is making the decision, so it is the one that had to
+    // be honest first. Revisit here if the digest artifact ever grows the key.
     var body: some View {
         if let sel = model.selected {
             ScrollView {

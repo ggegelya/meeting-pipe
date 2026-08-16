@@ -230,6 +230,102 @@ final class SummarizationEngineTests: XCTestCase {
         XCTAssertNil(AskView.backendFooter("something_new"))
     }
 
+    // MARK: - The substitution footer (UX64)
+
+    /// The user-visible consequence PIPE12's gap 3 was named for: someone picks
+    /// Apple Intelligence precisely to avoid a resident multi-GB model, and every
+    /// ask spawns one anyway, with nothing on screen saying why.
+    func test_a_substituted_answer_names_both_engines_and_the_reason() {
+        let footer = AskView.backendFooter("local", substitutedFrom: "apple_intelligence")
+        XCTAssertEqual(
+            footer,
+            "Answered on-device by Local MLX, because Apple Intelligence has no question-and-answer path."
+        )
+    }
+
+    /// The plain path is untouched, which is the assertion that catches a
+    /// substitution clause leaking onto every answer.
+    func test_no_substitution_yields_todays_single_engine_phrase() {
+        XCTAssertEqual(AskView.backendFooter("local", substitutedFrom: nil), "Answered on-device")
+        XCTAssertEqual(
+            AskView.backendFooter("anthropic", substitutedFrom: nil), "Answered with Anthropic"
+        )
+    }
+
+    /// Nil on either side, which is stricter than falling back on purpose:
+    /// rendering "Answered on-device" over a run the pipeline recorded as a
+    /// substitution would hide the fact the line exists to show.
+    func test_an_unnameable_engine_on_either_side_yields_nil() {
+        XCTAssertNil(AskView.backendFooter("something_new", substitutedFrom: "apple_intelligence"))
+        XCTAssertNil(AskView.backendFooter("local", substitutedFrom: "something_new"))
+    }
+
+    /// The `claude_cli` rule (UX31) applied to the new phrase: no raw config id
+    /// reaches the screen, from either engine's slot.
+    func test_the_substitution_footer_never_leaks_a_config_id() {
+        for ran in SummarizationEngine.all {
+            for requested in SummarizationEngine.all {
+                guard let footer = SummarizationEngine.answeredFooter(
+                    ran: ran.id, substitutedFrom: requested.id
+                ) else {
+                    return XCTFail("every shipped pair should render: \(requested.id) -> \(ran.id)")
+                }
+                for engine in SummarizationEngine.all {
+                    XCTAssertFalse(footer.contains(engine.id), "raw id in: \(footer)")
+                }
+                XCTAssertTrue(footer.contains(ran.name), footer)
+                XCTAssertTrue(footer.contains(requested.name), footer)
+            }
+        }
+    }
+
+    /// A cloud substitution would read "with X" rather than "on-device by X".
+    /// Nothing produces one today (the only substitution is to local), so this
+    /// pins the derivation rather than a shipped case.
+    func test_a_cloud_engine_that_stood_in_says_which_not_where() {
+        XCTAssertEqual(
+            SummarizationEngine.answeredFooter(ran: "anthropic", substitutedFrom: "apple_intelligence"),
+            "Answered with Anthropic, because Apple Intelligence has no question-and-answer path."
+        )
+    }
+
+    func test_the_substitution_footer_has_no_em_dash() {
+        let footer = AskView.backendFooter("local", substitutedFrom: "apple_intelligence")
+        XCTAssertEqual(footer?.contains("\u{2014}"), false)
+    }
+
+    // MARK: - AskAnswer decoding (UX64)
+
+    private func decodeAnswer(_ json: String) throws -> AskAnswer {
+        try JSONDecoder().decode(AskAnswer.self, from: Data(json.utf8))
+    }
+
+    private static let answerBase = """
+        "question": "q", "answer": "a", "citations": [], "sources_considered": [],
+        "backend": "local", "model": "m", "verified": true, "empty": false, "error": null
+        """
+
+    func test_askAnswer_decodes_a_present_substituted_from() throws {
+        let a = try decodeAnswer("{\(Self.answerBase), \"substituted_from\": \"apple_intelligence\"}")
+        XCTAssertEqual(a.substitutedFrom, "apple_intelligence")
+    }
+
+    /// Present-and-null is the normal path's shape, and it has to read as "no
+    /// substitution" rather than as a decode failure.
+    func test_askAnswer_decodes_an_explicit_null_as_no_substitution() throws {
+        let a = try decodeAnswer("{\(Self.answerBase), \"substituted_from\": null}")
+        XCTAssertNil(a.substitutedFrom)
+    }
+
+    /// An answer file written before PIPE12 has no key at all, and must still
+    /// decode: the daemon reads whatever is on disk, including runs older than
+    /// this build.
+    func test_askAnswer_decodes_an_answer_file_that_predates_the_key() throws {
+        let a = try decodeAnswer("{\(Self.answerBase)}")
+        XCTAssertNil(a.substitutedFrom)
+        XCTAssertEqual(a.backend, "local")
+    }
+
     // MARK: - helpers
 
     private func backendLine(pinning backend: WorkflowBackend?, nda: Bool = false) -> String {

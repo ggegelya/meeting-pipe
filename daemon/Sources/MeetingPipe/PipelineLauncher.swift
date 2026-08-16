@@ -34,10 +34,21 @@ struct AskAnswer: Decodable, Equatable {
     let verified: Bool
     let empty: Bool
     let error: String?
+    /// The backend that was configured but could not serve, when the pipeline
+    /// silently answered on another (PIPE12, rendered by UX64). Only
+    /// `apple_intelligence` produces it today: neither `mp ask` nor `mp digest`
+    /// has an Apple Intelligence path, so `engine.complete_text` answers on the
+    /// local MLX model instead.
+    ///
+    /// Optional so an answer file written before PIPE12 still decodes; the
+    /// writer emits it present-and-null on the normal path, so a reader can tell
+    /// "no substitution" from "older build".
+    let substitutedFrom: String?
 
     enum CodingKeys: String, CodingKey {
         case question, answer, citations, backend, model, verified, empty, error
         case sourcesConsidered = "sources_considered"
+        case substitutedFrom = "substituted_from"
     }
 
     static func load(from url: URL) -> AskAnswer? {

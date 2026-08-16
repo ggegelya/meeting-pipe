@@ -113,7 +113,8 @@ final class AskModelTests: XCTestCase {
             model: nil,
             verified: true,
             empty: false,
-            error: error
+            error: error,
+            substitutedFrom: nil
         )
     }
 

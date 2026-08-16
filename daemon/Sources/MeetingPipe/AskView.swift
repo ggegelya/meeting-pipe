@@ -402,7 +402,7 @@ struct AskView: View {
                 }
             }
 
-            if let footer = AskView.backendFooter(a.backend) {
+            if let footer = AskView.backendFooter(a.backend, substitutedFrom: a.substitutedFrom) {
                 Text(footer)
                     .font(.mpTextXS)
                     .foregroundStyle(Color(MPColors.fgSubtle))
@@ -433,7 +433,11 @@ struct AskView: View {
     /// read "Answered via claude_cli"; a line the reader has to decode is worse
     /// than no line, and the provenance row in the detail header already hides
     /// itself for the same reason.
-    static func backendFooter(_ backend: String?) -> String? {
-        SummarizationEngine.resolve(backend).map { "Answered \($0.runPhrase)" }
+    ///
+    /// UX64 gave it the substitution case. The derivation itself lives on
+    /// `SummarizationEngine`, since the phrase needs two engines and this is a
+    /// render site.
+    static func backendFooter(_ backend: String?, substitutedFrom: String? = nil) -> String? {
+        SummarizationEngine.answeredFooter(ran: backend, substitutedFrom: substitutedFrom)
     }
 }

@@ -23,7 +23,8 @@ final class AskPaneTests: XCTestCase {
                 model: nil,
                 verified: true,
                 empty: false,
-                error: nil
+                error: nil,
+                substitutedFrom: nil
             ))
         )
     }

@@ -116,6 +116,63 @@ struct SummarizationEngine: Equatable {
     var runPhrase: String {
         locality == .onDevice ? "on-device" : "with \(name)"
     }
+
+    /// `runPhrase`, but always naming the engine (UX64).
+    ///
+    /// The plain one deliberately says *where* rather than *which* for an
+    /// on-device engine, because staying on the Mac is the reassurance that line
+    /// exists to give. A substitution inverts that: the whole point is that a
+    /// different engine ran than the one asked for, and someone who picked Apple
+    /// Intelligence precisely to avoid a resident multi-GB model needs to be told
+    /// which model they got.
+    var namedRunPhrase: String {
+        locality == .onDevice ? "on-device by \(name)" : "with \(name)"
+    }
+
+    // MARK: - Two engines
+
+    /// The Ask pane's provenance footer, over the engine that ran and, when the
+    /// pipeline substituted, the one that was asked for (UX64).
+    ///
+    /// `mp ask` and `mp digest` have no Apple Intelligence path at all: when the
+    /// configured backend is `apple_intelligence`, `engine.complete_text` answers
+    /// on the local MLX model instead, spawning a multi-GB process per ask and
+    /// tearing it down after. PIPE12 made that fact explicit end to end on the
+    /// Python side (`substituted_from` on the result, threaded into the answer
+    /// JSON, plus an `engine_backend_substituted` event so a failed answer still
+    /// records it) and the Swift side read none of it, so the pane said the local
+    /// model answered and nothing about *why*. A log line is not a surface for a
+    /// non-technical owner; this footer is.
+    ///
+    /// A function on this type rather than a fourth `var`, because the phrase
+    /// needs **two** engines, and here rather than at the render site because
+    /// UX31 exists precisely for having let seven switch tables drift.
+    ///
+    /// Nil when either engine is one this build cannot name, which is stricter
+    /// than it looks and deliberate: falling back to the plain single-engine line
+    /// on an unnameable `substitutedFrom` would render "Answered on-device" over
+    /// a run the pipeline recorded as a substitution, hiding exactly the fact
+    /// this exists to show. A line the reader has to decode is worse than no
+    /// line, and a line that contradicts the record is worse than both.
+    ///
+    /// - Parameters:
+    ///   - ran: `<answer>.backend`, the engine that actually answered.
+    ///   - substitutedFrom: the engine that was configured, when it could not
+    ///     serve. Nil on the normal path, which is present-and-null in the JSON
+    ///     rather than absent, so a reader can tell "no substitution" from a
+    ///     build that predates the key.
+    static func answeredFooter(ran: String?, substitutedFrom: String?) -> String? {
+        guard let ranEngine = resolve(ran) else { return nil }
+        guard let requestedID = substitutedFrom else {
+            return "Answered \(ranEngine.runPhrase)"
+        }
+        guard let requested = resolve(requestedID) else { return nil }
+        // "question-and-answer path" rather than a generic "cannot run here":
+        // the reason is specific and checkable, and it tells the owner their
+        // choice is still honoured everywhere else (summaries do run on Apple
+        // Intelligence), which a vaguer sentence would leave them doubting.
+        return "Answered \(ranEngine.namedRunPhrase), because \(requested.name) has no question-and-answer path."
+    }
 }
 
 extension WorkflowBackend {
