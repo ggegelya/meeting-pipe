@@ -13,13 +13,23 @@ checker, a linter, or a test:
   2. An **undocumented event category**: a `Log.event` / `events.emit` category
      absent from the CONVENTIONS.md table, so a session reading that table to
      orient gets an incomplete map of the event stream.
+  3. An **over-budget `CLAUDE.md`**: every one of those files is prepended to
+     every prompt in its subtree, so a paragraph added there is re-read on every
+     turn forever. `daemon/CLAUDE.md` went 3.8 KB -> 71 KB in three months
+     (DOC14), which is ~18k tokens before a session reads a line of code, and
+     nothing in the repo noticed. Unlike the first two this is not prose-vs-code
+     drift; it is prose-vs-attention. The failure mode is the same though: a rule
+     buried in the middle of 7,000 words of incident narrative is a rule the
+     model skims.
 
-Both are drift between prose and code, which is exactly what a human reviewer
-stops noticing. This script is the mechanical reader.
+The first two are drift between prose and code, which is exactly what a human
+reviewer stops noticing. The third is drift between a file's job and its size.
+This script is the mechanical reader.
 
-    python3 scripts/truth_fences.py            # both fences
+    python3 scripts/truth_fences.py            # all three fences
     python3 scripts/truth_fences.py config     # config keys only
     python3 scripts/truth_fences.py events     # event categories only
+    python3 scripts/truth_fences.py claude     # CLAUDE.md size budget only
 
 Stdlib only (tomllib, ast, re), so CI can run it without installing anything.
 
@@ -63,6 +73,25 @@ CONFIG_NOT_FROM_TOML = {
 }
 
 EVENT_ALLOWLIST: dict[str, str] = {}
+
+# --------------------------------------------------------------------------
+# Fence 3 budget: CLAUDE.md size
+# --------------------------------------------------------------------------
+
+# Bytes. A CLAUDE.md is the rules; the evidence behind a rule lives in the
+# sibling `docs/gotchas.md` and is read on demand. 12 KB is roughly 3k tokens,
+# which is a generous ceiling for "the short list of things that bite" and a
+# hard one for an incident log. Raising this number is not the fix for a file
+# that outgrew it; moving prose to `docs/gotchas.md` is.
+CLAUDE_MAX_BYTES = 12_000
+
+# Over budget today, each naming the task that clears it. Same ratchet contract
+# as the two lists above: an entry not listed fails, and a stale entry (a file
+# now under budget) fails too, so this cannot quietly absorb new growth.
+CLAUDE_ALLOWLIST: dict[str, str] = {
+    "daemon/CLAUDE.md": "DOC14: split to daemon/docs/gotchas.md, in flight",
+    "pipeline/CLAUDE.md": "DOC14: split to pipeline/docs/gotchas.md, in flight",
+}
 
 # --------------------------------------------------------------------------
 # Shared helpers
@@ -501,6 +530,68 @@ def check_events() -> bool:
     return fence.report()
 
 
+# --------------------------------------------------------------------------
+# Fence 3: CLAUDE.md size budget
+# --------------------------------------------------------------------------
+
+
+def claude_files() -> list[Path]:
+    """Every CLAUDE.md this repo owns.
+
+    Skips `.build/` (checked-out dependencies carry their own, and FluidAudio's
+    is not ours to shrink) and `.claude/worktrees/` (a parallel session's copy of
+    the same files, which would double-report every finding).
+    """
+    skip = (".build", ".claude/worktrees", "node_modules", ".git")
+    out = []
+    for path in sorted(REPO.rglob("CLAUDE.md")):
+        rel = path.relative_to(REPO).as_posix()
+        if any(part in rel for part in skip):
+            continue
+        out.append(path)
+    return out
+
+
+def check_claude() -> bool:
+    fence = Fence("CLAUDE.md budget")
+
+    found = claude_files()
+    if len(found) < 3:
+        fence.fail(f"only found {len(found)} CLAUDE.md files; the walker is stale")
+        return fence.report()
+
+    seen: set[str] = set()
+    for path in found:
+        rel = path.relative_to(REPO).as_posix()
+        size = len(path.read_bytes())
+        seen.add(rel)
+        if size <= CLAUDE_MAX_BYTES:
+            continue
+        if rel in CLAUDE_ALLOWLIST:
+            print(f"  allowed: {rel} at {size:,}B ({CLAUDE_ALLOWLIST[rel]})")
+            continue
+        over = size - CLAUDE_MAX_BYTES
+        fence.fail(
+            f"{rel} is {size:,} bytes, {over:,} over the {CLAUDE_MAX_BYTES:,} budget "
+            f"(~{size // 4:,} tokens, prepended to every prompt in that subtree). "
+            "Move the narrative to the sibling `docs/gotchas.md` and leave the rule "
+            "plus a link behind. Raising CLAUDE_MAX_BYTES is not the fix."
+        )
+
+    # A stale allowlist entry is drift too: it says a file is over budget when it
+    # is not, so the next reader trusts a ratchet that has already been released.
+    for rel, why in sorted(CLAUDE_ALLOWLIST.items()):
+        if rel not in seen:
+            fence.fail(f"allowlist names `{rel}`, which does not exist. Remove the entry ({why}).")
+        elif len((REPO / rel).read_bytes()) <= CLAUDE_MAX_BYTES:
+            fence.fail(
+                f"`{rel}` is now under budget. Delete its CLAUDE_ALLOWLIST entry ({why}); "
+                "the ratchet only moves one way."
+            )
+
+    return fence.report()
+
+
 def main(argv: list[str]) -> int:
     which = argv[0] if argv else "both"
     print(f"CI5 truth fences ({which})")
@@ -509,8 +600,10 @@ def main(argv: list[str]) -> int:
         ok &= check_config()
     if which in ("both", "events"):
         ok &= check_events()
-    if which not in ("both", "config", "events"):
-        print("usage: truth_fences.py [both|config|events]", file=sys.stderr)
+    if which in ("both", "claude"):
+        ok &= check_claude()
+    if which not in ("both", "config", "events", "claude"):
+        print("usage: truth_fences.py [both|config|events|claude]", file=sys.stderr)
         return 2
     return 0 if ok else 1
 

@@ -26,7 +26,7 @@ Two enforcement points, each with two layers:
 
 ### Truth fences (CI5)
 
-Two classes of drift are checked mechanically by [`scripts/truth_fences.py`](scripts/truth_fences.py), run as the `truth-fences` CI job. Both go wrong *by omission*, which is why they are whole-state checks and not diff-based: nothing gets added when a knob quietly stops being read, so there is no added line for a diff guard to flag.
+Three classes of drift are checked mechanically by [`scripts/truth_fences.py`](scripts/truth_fences.py), run as the `truth-fences` CI job. All three go wrong *by omission*, which is why they are whole-state checks and not diff-based: nothing gets added when a knob quietly stops being read, so there is no added line for a diff guard to flag.
 
 **Config keys.** The keys documented in `config.example.toml` (including commented-out ones, which still show the user the knob) and the README's Configuration reference are diffed against the keys the three readers actually parse: `Config.swift`, `ConfigStore.swift` (both the subscript reads and the `ensureTable` write-back), and `config.py`'s pydantic models. Three ways to fail:
 
@@ -38,7 +38,9 @@ Plus a completeness axis: a key in the README reference but not in `config.examp
 
 **Event categories.** Every `Log.event` / `events.emit` category literal is diffed against the `### Categories` table below, in both directions, and action literals are checked for snake_case.
 
-The script's two allowlists exist for known drift a named backlog task will clear, and **both are empty** as of HYG2 (three dead knobs) and DOC9 (eleven keys `config.example.toml` never showed). That is the intended steady state. **A stale allowlist entry fails too**, so a list can neither outlive the drift it describes nor quietly absorb new drift; anything not listed fails from the day it appears.
+**`CLAUDE.md` size (DOC14).** Every `CLAUDE.md` this repo owns is checked against a 12 KB budget (`CLAUDE_MAX_BYTES`, roughly 3k tokens). Unlike the two above, this is not prose-versus-code drift; it is prose-versus-attention. Those files are prepended to every prompt in their subtree, so a paragraph added to one is re-read on every turn forever, and nothing in the repo noticed `daemon/CLAUDE.md` going 3.8 KB to 71 KB in three months. The rule and its evidence are deliberately separated: `CLAUDE.md` carries the rule and a link, the sibling `docs/gotchas.md` carries the incident, and only the first is resident. **Raising the budget is not the fix for a file that outgrew it**; moving prose to `docs/gotchas.md` is. Checked-out dependencies under `.build/` and parallel sessions' copies under `.claude/worktrees/` are skipped.
+
+The script's three allowlists exist for known drift a named backlog task will clear. The config and event lists are **empty** as of HYG2 (three dead knobs) and DOC9 (eleven keys `config.example.toml` never showed); the `CLAUDE.md` list carries the two files DOC14 is splitting. That is the intended steady state. **A stale allowlist entry fails too**, so a list can neither outlive the drift it describes nor quietly absorb new drift; anything not listed fails from the day it appears.
 
 Not mirrored into `scripts/pre-commit`: the whole-state scan takes ~2.7 s, which is too slow for every commit. Same call as the DSN3 token guards, which are also CI-only.
 
