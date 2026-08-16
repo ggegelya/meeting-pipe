@@ -29,12 +29,17 @@ final class CorrectionWindow {
             Self.presentLoadError(stem: stem, error: CorrectionStore.Error.summaryUnreadable(summaryURL))
             return
         }
+        // UX65: capture what was loaded, so `handleOutcome` can tell whether the
+        // file moved under the window. Read here and nowhere else; a capture
+        // taken later would be a capture of somebody else's write.
+        let loadedIdentity = SummaryIdentity.read(at: summaryURL)
 
         let model = CorrectionViewModel(
             stem: stem,
             recordingsDir: recordingsDir,
             runMeta: runMeta,
-            originalSummary: originalSummary
+            originalSummary: originalSummary,
+            loadedIdentity: loadedIdentity
         )
         self.viewModel = model
 
@@ -84,29 +89,119 @@ final class CorrectionWindow {
             let verdict: CorrectionStore.Verdict = outcome.isBad ? .bad : .edited
             let corrected: [String: Any]? = outcome.isBad ? nil : model.makeCorrectedSummary().jsonObject()
             do {
-                try CorrectionStore.write(
-                    stem: model.stem,
-                    transcriptPath: model.transcriptPath,
-                    summaryJsonPath: model.summaryJsonPath,
-                    modelId: model.modelId,
-                    backend: model.backend,
+                switch try Self.performSave(
+                    model: model,
                     verdict: verdict,
-                    originalSummary: model.originalSummary.jsonObject(),
-                    correctedSummary: corrected,
-                    notes: model.notes.isEmpty ? nil : model.notes
-                )
-                Log.event(category: "correction", action: "saved", attributes: [
-                    "stem": model.stem,
-                    "verdict": verdict.rawValue,
-                    "backend": model.backend,
-                    "model_id": model.modelId,
-                ])
-                Log.writeLine("daemon", "correction saved → \(model.stem).json verdict=\(verdict.rawValue)")
-                window?.performClose(nil)
+                    corrected: corrected,
+                    resolveStale: Self.resolveStaleSave
+                ) {
+                case .written:
+                    Log.event(category: "correction", action: "saved", attributes: [
+                        "stem": model.stem,
+                        "verdict": verdict.rawValue,
+                        "backend": model.backend,
+                        "model_id": model.modelId,
+                    ])
+                    Log.writeLine("daemon", "correction saved → \(model.stem).json verdict=\(verdict.rawValue)")
+                    window?.performClose(nil)
+                case .reopened:
+                    // Rebuilds the model from disk in the same window. The
+                    // in-progress edit goes, which is the honest outcome of that
+                    // choice and exactly what the dialog said it would be.
+                    Log.event(category: "correction", action: "stale_reopened", attributes: [
+                        "stem": model.stem,
+                        "verdict": verdict.rawValue,
+                    ])
+                    show(stem: model.stem, recordingsDir: model.recordingsDir)
+                }
             } catch {
                 Self.presentSaveError(stem: model.stem, error: error)
             }
         }
+    }
+
+    /// What the owner chose when the summary moved under the window (UX65).
+    enum StaleSaveChoice { case keep, reopen }
+
+    enum SaveOutcome: Equatable {
+        case written(URL)
+        /// Nothing was written; the caller reopens against the current summary.
+        case reopened
+    }
+
+    /// The save path, with the dialog injected (UX65).
+    ///
+    /// Extracted from `handleOutcome` so the thing that actually matters is
+    /// assertable on the **bytes** of `corrections/<stem>.json` rather than
+    /// through a modal: the whole point is that a stale save writes no record,
+    /// and a test that could only check a return value would pass over a write
+    /// that happened first.
+    ///
+    /// The record's `original_summary` is what `CorrectionsTab.performRevert`
+    /// restores over the live summary, and it is the corpus `mp train-adapter`
+    /// learns from, so it has to be prose the model actually emitted for the run
+    /// being graded. That is the whole reason the comparison exists.
+    static func performSave(
+        model: CorrectionViewModel,
+        verdict: CorrectionStore.Verdict,
+        corrected: [String: Any]?,
+        resolveStale: (CorrectionStore.Verdict) -> StaleSaveChoice,
+        correctionsDirectoryOverride: URL? = nil
+    ) throws -> SaveOutcome {
+        let summaryURL = model.recordingsDir.appendingPathComponent("\(model.stem).summary.json")
+        var original = model.originalSummary
+
+        if SummaryStaleness.hasMoved(
+            loaded: model.loadedIdentity,
+            current: SummaryIdentity.read(at: summaryURL)
+        ) {
+            switch resolveStale(verdict) {
+            case .reopen:
+                return .reopened
+            case .keep:
+                // Record it against what is on disk now. Anything else recreates
+                // the defect one step later: a record whose original is prose
+                // this run never produced, waiting for a Revert to write it back.
+                guard let current = MeetingSummary.load(from: summaryURL) else {
+                    throw CorrectionStore.Error.summaryUnreadable(summaryURL)
+                }
+                original = current
+            }
+        }
+
+        let url = try CorrectionStore.write(
+            stem: model.stem,
+            transcriptPath: model.transcriptPath,
+            summaryJsonPath: model.summaryJsonPath,
+            modelId: model.modelId,
+            backend: model.backend,
+            verdict: verdict,
+            originalSummary: original.jsonObject(),
+            correctedSummary: corrected,
+            notes: model.notes.isEmpty ? nil : model.notes,
+            directoryOverride: correctionsDirectoryOverride
+        )
+        return .written(url)
+    }
+
+    /// The copy is `SummaryStaleness.choice`'s, unmodified, so it is assertable
+    /// without a window; this only decides which button is which.
+    private static func resolveStaleSave(verdict: CorrectionStore.Verdict) -> StaleSaveChoice {
+        let choice = SummaryStaleness.choice(verdict: verdict)
+        let alert = NSAlert()
+        alert.messageText = choice.title
+        alert.informativeText = choice.message
+        alert.alertStyle = .warning
+        // First button added is the default one Return activates, which is the
+        // whole of the per-verdict split.
+        if choice.defaultIsKeep {
+            alert.addButton(withTitle: choice.keepButton)
+            alert.addButton(withTitle: choice.reopenButton)
+            return alert.runModal() == .alertFirstButtonReturn ? .keep : .reopen
+        }
+        alert.addButton(withTitle: choice.reopenButton)
+        alert.addButton(withTitle: choice.keepButton)
+        return alert.runModal() == .alertFirstButtonReturn ? .reopen : .keep
     }
 
     private static func presentLoadError(stem: String, error: Error) {
@@ -171,6 +266,11 @@ final class CorrectionViewModel: ObservableObject {
     let recordingsDir: URL
     let runMeta: [String: Any]
     let originalSummary: MeetingSummary
+    /// UX65: the identity of `<stem>.summary.json` as `show()` read it. Compared
+    /// in `handleOutcome`, never re-read here: a capture that is never compared
+    /// is exactly the failure mode this task is about, and a capture taken later
+    /// would be a capture of whatever overwrote it.
+    let loadedIdentity: SummaryIdentity?
 
     @Published var title: String
     @Published var summary: [String]
@@ -185,12 +285,14 @@ final class CorrectionViewModel: ObservableObject {
         stem: String,
         recordingsDir: URL,
         runMeta: [String: Any],
-        originalSummary: MeetingSummary
+        originalSummary: MeetingSummary,
+        loadedIdentity: SummaryIdentity? = nil
     ) {
         self.stem = stem
         self.recordingsDir = recordingsDir
         self.runMeta = runMeta
         self.originalSummary = originalSummary
+        self.loadedIdentity = loadedIdentity
 
         self.title = originalSummary.title
         self.summary = originalSummary.summary
