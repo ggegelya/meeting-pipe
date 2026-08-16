@@ -78,18 +78,29 @@ EVENT_ALLOWLIST: dict[str, str] = {}
 # Fence 3 budget: CLAUDE.md size
 # --------------------------------------------------------------------------
 
-# Bytes. A CLAUDE.md is the rules; the evidence behind a rule lives in the
-# sibling `docs/gotchas.md` and is read on demand. 12 KB is roughly 3k tokens,
-# which is a generous ceiling for "the short list of things that bite" and a
-# hard one for an incident log. Raising this number is not the fix for a file
-# that outgrew it; moving prose to `docs/gotchas.md` is.
-CLAUDE_MAX_BYTES = 12_000
+# Bytes in one entry: a `- ` bullet or a `| ` table row. This is the real check,
+# because it is the one that separates a **rule** from a **story** rather than
+# punishing a file for having many legitimate rules.
+#
+# The two populations do not overlap, measured 2026-08-16 across all four files:
+# a rule stated as one imperative line plus a link runs 160-680 bytes (daemon's
+# 44 rules max at 376, the repo root's at 624, the Core island's at 672), while
+# a bullet carrying its own incident narrative runs 1,100-3,300 (daemon before
+# DOC14 split it: median 1,141, max 3,337; `pipeline/CLAUDE.md`'s shared-helper
+# bullet is 3,296). 800 sits in the empty gap between them, so the fence fires
+# on narrative and never on a rule.
+CLAUDE_MAX_ENTRY_BYTES = 800
 
-# Over budget today, each naming the task that clears it. Same ratchet contract
-# as the two lists above: an entry not listed fails, and a stale entry (a file
-# now under budget) fails too, so this cannot quietly absorb new growth.
+# Whole-file backstop, deliberately loose. With entries capped above, a file can
+# only grow by accumulating rules, which is legitimate; this catches the far end
+# of that (~85 rules at daemon's current average), where the answer is to ask
+# whether the subtree needs splitting rather than to write another line.
+CLAUDE_MAX_BYTES = 24_000
+
+# Known drift, each naming the task that clears it. Same ratchet contract as the
+# two lists above: an entry not listed fails, and a stale entry (a file now
+# passing) fails too, so this cannot quietly absorb new growth.
 CLAUDE_ALLOWLIST: dict[str, str] = {
-    "daemon/CLAUDE.md": "DOC14: split to daemon/docs/gotchas.md, in flight",
     "pipeline/CLAUDE.md": "DOC14: split to pipeline/docs/gotchas.md, in flight",
 }
 
@@ -560,32 +571,56 @@ def check_claude() -> bool:
         fence.fail(f"only found {len(found)} CLAUDE.md files; the walker is stale")
         return fence.report()
 
+    def offenders(path: Path) -> tuple[list[tuple[int, int, str]], int]:
+        """Over-long entries as (line no, bytes, text), plus the whole-file size."""
+        raw = path.read_bytes()
+        over = []
+        for n, line in enumerate(raw.decode("utf-8").splitlines(), start=1):
+            if not (line.startswith("- ") or line.startswith("| ")):
+                continue
+            size = len(line.encode("utf-8"))
+            if size > CLAUDE_MAX_ENTRY_BYTES:
+                over.append((n, size, line))
+        return over, len(raw)
+
     seen: set[str] = set()
     for path in found:
         rel = path.relative_to(REPO).as_posix()
-        size = len(path.read_bytes())
+        over, size = offenders(path)
         seen.add(rel)
-        if size <= CLAUDE_MAX_BYTES:
+
+        if not over and size <= CLAUDE_MAX_BYTES:
             continue
         if rel in CLAUDE_ALLOWLIST:
-            print(f"  allowed: {rel} at {size:,}B ({CLAUDE_ALLOWLIST[rel]})")
+            print(f"  allowed: {rel}, {len(over)} long entries at {size:,}B ({CLAUDE_ALLOWLIST[rel]})")
             continue
-        over = size - CLAUDE_MAX_BYTES
-        fence.fail(
-            f"{rel} is {size:,} bytes, {over:,} over the {CLAUDE_MAX_BYTES:,} budget "
-            f"(~{size // 4:,} tokens, prepended to every prompt in that subtree). "
-            "Move the narrative to the sibling `docs/gotchas.md` and leave the rule "
-            "plus a link behind. Raising CLAUDE_MAX_BYTES is not the fix."
-        )
 
-    # A stale allowlist entry is drift too: it says a file is over budget when it
-    # is not, so the next reader trusts a ratchet that has already been released.
+        for n, entry_size, line in over:
+            fence.fail(
+                f"{rel}:{n}: entry is {entry_size:,} bytes, over the "
+                f"{CLAUDE_MAX_ENTRY_BYTES:,} limit. That length is narrative, not a rule, "
+                "and this file is prepended to every prompt in its subtree. Move the "
+                "evidence to the sibling `docs/gotchas.md` and leave one imperative line "
+                f"plus a link: {line[:70]}..."
+            )
+        if size > CLAUDE_MAX_BYTES:
+            fence.fail(
+                f"{rel} is {size:,} bytes (~{size // 4:,} tokens), over the "
+                f"{CLAUDE_MAX_BYTES:,} backstop. Every entry may be a fair rule and there "
+                "are still too many to read on every turn; consider whether this subtree "
+                "wants splitting. Raising CLAUDE_MAX_BYTES is not the fix."
+            )
+
+    # A stale allowlist entry is drift too: it says a file is failing when it is
+    # not, so the next reader trusts a ratchet that has already been released.
     for rel, why in sorted(CLAUDE_ALLOWLIST.items()):
         if rel not in seen:
             fence.fail(f"allowlist names `{rel}`, which does not exist. Remove the entry ({why}).")
-        elif len((REPO / rel).read_bytes()) <= CLAUDE_MAX_BYTES:
+            continue
+        over, size = offenders(REPO / rel)
+        if not over and size <= CLAUDE_MAX_BYTES:
             fence.fail(
-                f"`{rel}` is now under budget. Delete its CLAUDE_ALLOWLIST entry ({why}); "
+                f"`{rel}` now passes. Delete its CLAUDE_ALLOWLIST entry ({why}); "
                 "the ratchet only moves one way."
             )
 

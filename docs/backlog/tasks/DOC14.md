@@ -37,8 +37,10 @@ Split rule from evidence, and fence the split.
 
 - **`CLAUDE.md` carries the rule**: one imperative line, plus any constraint that must be obeyed without reading further, plus a link.
 - **The sibling `docs/gotchas.md` carries the evidence**: one section per rule, at whatever length the measurement needs, read on demand.
-- **`scripts/truth_fences.py claude`** enforces a 12 KB per-file budget with the same ratchet-allowlist contract as the config and event fences. Raising the budget is explicitly not the fix.
+- **`scripts/truth_fences.py claude`** enforces it, with the same ratchet-allowlist contract as the config and event fences.
 - **`/tech-task` step 7** now names `gotchas.md` as the default home for that writing and reserves `CLAUDE.md` for rule changes.
+
+The fence checks the **entry**, not the file, and that was a correction found by building it. A 12 KB per-file budget was the first design; it failed daemon's split output at 18.5 KB even though all 44 rules were then one line each, which is a fence punishing a file for having many legitimate rules. The measurement showed a cleaner discriminator: rule-shaped entries run 160-680 bytes and narrative-shaped ones 1,100-3,300, with nothing in between, so an 800-byte cap on a `- ` bullet or `| ` table row fires on narrative and never on a rule. Failures are line-precise, which also makes the fix obvious. A loose 24 KB whole-file backstop stays for the far end, where every entry is fair and there are simply too many.
 
 ## Scope
 
