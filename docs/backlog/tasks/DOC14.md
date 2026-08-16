@@ -44,10 +44,10 @@ The fence checks the **entry**, not the file, and that was a correction found by
 
 ## Scope
 
-1. Fence + `/tech-task` step 7 + CONVENTIONS.md + trim the repo-root `CLAUDE.md` under budget. **Shipped 2026-08-16.**
-2. Split `daemon/CLAUDE.md`. The 44 narrative bullets move verbatim to `daemon/docs/gotchas.md`; the quick index loses its per-row essays and keeps the file names, since [`ARCHITECTURE.md`](../../../ARCHITECTURE.md)'s Daemon section already carries what each one does.
-3. Split `pipeline/CLAUDE.md` the same way.
-4. `AGENTS.md`: it is an untracked hand-fork of the repo-root `CLAUDE.md`, so it drifts invisibly and escapes review. It points at `daemon/AGENTS.md`, `pipeline/AGENTS.md` and `MeetingPipeCore/AGENTS.md`, none of which exist, so a Codex session gets no subtree guidance at all; and its find-and-replace produced `.Codex/worktrees/` where the real path, and what `scripts/prune-worktrees.sh` prunes, is `.claude/worktrees/`.
+1. Fence + `/tech-task` step 7 + CONVENTIONS.md + trim the repo-root `CLAUDE.md`. **Shipped 2026-08-16.**
+2. Split `daemon/CLAUDE.md`. **Shipped 2026-08-16**, 73.7 KB to 18.5 KB: the 44 narrative bullets moved verbatim to `daemon/docs/gotchas.md`, one anchored section each, and the quick index lost its per-row essays since [`ARCHITECTURE.md`](../../../ARCHITECTURE.md)'s Daemon section already carries what each file does.
+3. Split `pipeline/CLAUDE.md` the same way. **Shipped 2026-08-16**, 18.6 KB to 14.3 KB. Only three entries crossed the line and only those three moved; the rest of that file was already rule-shaped by the fence's own measure. `CLAUDE_ALLOWLIST` is now empty.
+4. `AGENTS.md`. **Shipped 2026-08-16.** It was an untracked hand-fork of the repo-root `CLAUDE.md`, so it drifted invisibly and escaped review: it pointed at `daemon/AGENTS.md`, `pipeline/AGENTS.md` and `MeetingPipeCore/AGENTS.md`, none of which exist, so a Codex session got no subtree guidance at all, and its find-and-replace produced `.Codex/worktrees/` where the real path, and what `scripts/prune-worktrees.sh` prunes, is `.claude/worktrees/`. It is a tracked symlink to `CLAUDE.md` now, which kills all three by construction, and `.codex/hooks.json` is tracked beside it the way `.claude/settings.json` already was. The repo-root title is agent-neutral to match.
 
 ## Not in scope
 

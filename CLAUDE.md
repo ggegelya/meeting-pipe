@@ -1,4 +1,6 @@
-# meeting-pipe — operating notes for Claude
+# meeting-pipe — operating notes for coding agents
+
+`AGENTS.md` is a symlink to this file, so Codex and Claude Code read the same copy. It used to be a hand-fork, which drifted: it pointed at `daemon/AGENTS.md`, `pipeline/AGENTS.md` and `MeetingPipeCore/AGENTS.md`, none of which exist, and named a `.Codex/worktrees/` path the janitor never prunes (DOC14). Don't fork it again; the subtree files really are called `CLAUDE.md`.
 
 ## Shape
 
