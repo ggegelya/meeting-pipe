@@ -13,7 +13,11 @@ import AppKit
 /// Both helpers run a modal, so call them on the main thread.
 enum LibraryDialogs {
 
-    /// The sentence every Trash dialog closes on, singular or batch.
+    /// The sentence every Trash dialog closes on, singular or batch. Read by
+    /// `BatchActionConfirmation.merge` too (UX61), which is the same reason it is
+    /// a constant: the merge's fragments go to the Trash like any other soft
+    /// delete, and a fourth spelling of that reassurance is how the first three
+    /// drifted.
     static let trashRecoveryNote = "You can restore from there until the Trash is emptied."
 
     /// Confirm moving one meeting's whole sidecar set to the Trash.

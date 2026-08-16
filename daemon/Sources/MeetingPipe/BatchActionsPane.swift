@@ -24,6 +24,14 @@ struct BatchActionsPane: View {
     /// on those meetings. Shown verbatim rather than summarised to "done",
     /// because a dropped override is work the owner did that is now gone.
     @State private var retranscribeNote: String?
+    /// UX61: true while the merge confirmation is up. The merge used to run
+    /// straight off the click, under a button whose ellipsis promised a surface
+    /// it never opened, and it rewrites the primary in place.
+    @State private var confirmingMerge: Bool = false
+    /// UX61: true while the re-summarize confirmation is up. Same reason as the
+    /// merge: it overwrites `<stem>.summary.json`, which is where the owner's
+    /// text edits and done ticks live, once per selected meeting.
+    @State private var confirmingResummarize: Bool = false
 
     var body: some View {
         ScrollView {
@@ -67,6 +75,52 @@ struct BatchActionsPane: View {
             message: {
                 Text("Each recording is transcribed again from its audio, so the transcript is replaced. Speaker names and text edits are re-anchored onto the new transcript; anything that no longer lines up is dropped, and the count is reported. Summaries are left alone.")
             }
+        )
+        // UX61. Both read `BatchActionConfirmation`, which is also where the
+        // decision NOT to gate `Republish all` is recorded: it rewrites a page
+        // from the current summary and destroys nothing the owner authored.
+        .alert(
+            mergeConfirmation?.title ?? "",
+            isPresented: $confirmingMerge,
+            actions: {
+                Button(mergeConfirmation?.confirmButton ?? "Merge", role: .destructive) {
+                    Task { await runMerge() }
+                }
+                Button("Cancel", role: .cancel) { }
+            },
+            message: { Text(mergeConfirmation?.message ?? "") }
+        )
+        .alert(
+            resummarizeConfirmation.title,
+            isPresented: $confirmingResummarize,
+            actions: {
+                Button(resummarizeConfirmation.confirmButton, role: .destructive) {
+                    Task { await runRegenerate() }
+                }
+                Button("Cancel", role: .cancel) { }
+            },
+            message: { Text(resummarizeConfirmation.message) }
+        )
+    }
+
+    // MARK: Confirmation copy (UX61)
+
+    /// Nil when the selection is not mergeable, in which case the button that
+    /// raises this alert is not on screen either.
+    private var mergeConfirmation: BatchActionConfirmation? {
+        guard case .success(let plan) = MeetingMergeEligibility.decide(meetings) else { return nil }
+        return BatchActionConfirmation.merge(
+            primaryTitle: plan.primary.displayTitle,
+            fragmentCount: plan.fragments.count,
+            // Uniform by construction: `decide` refuses a mixed-posture selection.
+            reachesCloud: !plan.primary.isZeroEgress
+        )
+    }
+
+    private var resummarizeConfirmation: BatchActionConfirmation {
+        BatchActionConfirmation.resummarize(
+            count: meetings.count,
+            cloudCount: meetings.filter { !$0.isZeroEgress }.count
         )
     }
 
@@ -171,7 +225,9 @@ struct BatchActionsPane: View {
                             Spacer()
                         } else {
                             Spacer()
-                            Button("Merge…") { Task { await runMerge() } }
+                            // UX61: the ellipsis is honest now. It used to invoke
+                            // `runMerge` from the click while promising a surface.
+                            Button("Merge…") { confirmingMerge = true }
                                 .buttonStyle(MPPrimaryButtonStyle())
                                 .disabled(isRunning)
                         }
@@ -230,8 +286,10 @@ struct BatchActionsPane: View {
                         // The follow-up the ratchet earns: the new transcript is
                         // on disk, so a summary generated from it is now worth
                         // paying for. Never automatic, because this is the step
-                        // that can egress and rewrite a published page.
-                        Button("Re-summarize all") { Task { await runRegenerate() } }
+                        // that can egress and rewrite a published page, and
+                        // since UX61 it confirms first: it overwrites the
+                        // summary sidecar, edits and done ticks included.
+                        Button("Re-summarize all\u{2026}") { confirmingResummarize = true }
                             .buttonStyle(MPPrimaryButtonStyle())
                             .disabled(isRunning)
                     } else if case .finished(let label, let succeeded, let failed) = state,
