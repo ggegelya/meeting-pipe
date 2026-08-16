@@ -16,6 +16,10 @@ struct MeetingDetailView: View {
     /// Loaded off-main via `.task(id:)`. Caching avoids `Data(contentsOf:)` on the main thread on every observable change, which beach-balled the UI during recording.
     @State var cachedNotionURL: URL? = nil
     @State var cachedObsidianURL: URL? = nil
+    /// UX62: the filesystem or LAN note this run published, off
+    /// `<stem>.publish.json`. The default workflow is filesystem-only, so for
+    /// most meetings this is the *only* Open affordance there is.
+    @State var cachedLocalNote: (sink: PublishSink, url: URL)? = nil
     @State var publishURLsLoadedForStem: String? = nil
     /// Sidecar modification dates the cached URLs were read from (UX53), so a store
     /// revision bump caused by another meeting's write costs two `stat` calls
@@ -269,13 +273,18 @@ struct MeetingDetailView: View {
         let notionPath = PublishURLs.notionPath(stem: stem, in: dir)
         let obsidianPath = PublishURLs.obsidianPath(stem: stem, in: dir)
 
-        let (notion, obsidian) = await Task.detached(priority: .userInitiated) {
-            (PublishURLs.notion(at: notionPath), PublishURLs.obsidian(at: obsidianPath))
+        let (notion, obsidian, local) = await Task.detached(priority: .userInitiated) {
+            (
+                PublishURLs.notion(at: notionPath),
+                PublishURLs.obsidian(at: obsidianPath),
+                PublishURLs.localNote(stem: stem, in: dir)
+            )
         }.value
 
         if meeting.stem == stem {
             cachedNotionURL = notion
             cachedObsidianURL = obsidian
+            cachedLocalNote = local
             publishURLsLoadedForStem = stem
             loadedPublishFingerprint = fingerprint
         }
@@ -292,20 +301,39 @@ enum PublishURLs {
         directory.appendingPathComponent("\(stem).obsidian.json")
     }
 
+    /// UX62: the third Open button's source. Unlike the two above it this is the
+    /// run's own publish sidecar, which is what makes a filesystem or LAN publish
+    /// openable at all.
+    static func publishPath(stem: String, in directory: URL) -> URL {
+        directory.appendingPathComponent("\(stem).publish.json")
+    }
+
     /// Modification dates of every sidecar the header's Open buttons are built
     /// from (UX53), in a fixed order, absent entries included as nil.
     ///
-    /// Both of them, not one: the two buttons are independent, a workflow can
-    /// publish to either sink or to both, and a guard watching only the Notion
-    /// sidecar would skip the reload for an Obsidian-only publish, which is the
-    /// stale button this task exists to remove. `<stem>.publish.json` is
-    /// deliberately absent: nothing here reads it, and the state it carries is on
-    /// `Meeting`, which the same scan rebuilds.
+    /// All three of them, not one: the buttons are independent, a workflow can
+    /// publish to any of these sinks or several, and a guard watching only the
+    /// Notion sidecar would skip the reload for an Obsidian-only publish, which
+    /// is the stale button UX53 removed. `<stem>.publish.json` joined the list in
+    /// UX62, when it stopped being a file "nothing here reads": the local-note
+    /// button is built from it, so a filesystem publish landing while the header
+    /// is open has to invalidate this or that button never appears.
     static func fingerprint(stem: String, in directory: URL) -> [Date?] {
-        [notionPath(stem: stem, in: directory), obsidianPath(stem: stem, in: directory)].map { url in
+        [
+            notionPath(stem: stem, in: directory),
+            obsidianPath(stem: stem, in: directory),
+            publishPath(stem: stem, in: directory),
+        ].map { url in
             (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
                 .contentModificationDate
         }
+    }
+
+    /// The local or LAN note this run published, for the header's third Open
+    /// button (UX62). Off `<stem>.publish.json` via `PublishResult.load`, the
+    /// read `daemon/CLAUDE.md` names, never a per-sink sidecar.
+    static func localNote(stem: String, in directory: URL) -> (sink: PublishSink, url: URL)? {
+        PublishLanding.localNote(publish: PublishResult.load(stem: stem, in: directory))
     }
 
     static func notion(at path: URL) -> URL? {

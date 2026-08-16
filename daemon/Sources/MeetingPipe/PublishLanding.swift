@@ -43,6 +43,19 @@ enum PublishSink: String, CaseIterable, Equatable {
         case .lan:        return "Open the shared note"
         }
     }
+
+    /// The SF Symbol an Open affordance for this sink wears (UX62). Here for the
+    /// same reason the phrase is: the detail header spelled two icons inline and
+    /// was about to spell a third, which is how the phrase came to be spelled at
+    /// two render sites in the first place.
+    var symbolName: String {
+        switch self {
+        case .notion:     return "arrow.up.right.square"
+        case .obsidian:   return "book.closed"
+        case .filesystem: return "doc.text"
+        case .lan:        return "externaldrive.connected.to.line.below"
+        }
+    }
 }
 
 /// Where a finished run's summary landed, as far as a surface may claim (UX49).
@@ -92,6 +105,38 @@ enum PublishLanding: Equatable {
     /// fixed when it is registered.
     static var openable: [PublishLanding] {
         PublishSink.allCases.map(PublishLanding.sink) + [.unnamed]
+    }
+
+    /// The file-backed note a detail header may offer to open, or nil (UX62).
+    ///
+    /// The header had exactly two Open buttons, Notion and Obsidian, each read
+    /// from its own sidecar, so a publish that landed only on the filesystem or
+    /// the LAN share had no open action at all despite `page_url` being a
+    /// `file://` URL `NSWorkspace.open` handles directly. On the owner's library
+    /// that was the common case rather than the exotic one.
+    ///
+    /// Deliberately narrow. It answers only for the two sinks whose destination
+    /// is a file this app can hand to the Finder, because the other two already
+    /// have buttons built from their own sidecars and those carry things
+    /// `publish.json` does not: Notion's page URL is the same either way, but
+    /// Obsidian's is an `obsidian://` deep link assembled from the vault
+    /// relationship, and taking it from here would open the note *outside*
+    /// Obsidian.
+    ///
+    /// Per-sink `page_url`, never the top-level one: that is whichever sink came
+    /// first in `output.sinks` order, so on a two-sink run it may belong to
+    /// Notion while this button claims to open a local file.
+    static func localNote(publish: PublishResult?) -> (sink: PublishSink, url: URL)? {
+        guard let publish = publish else { return nil }
+        // Filesystem first, then LAN: a run doing both wrote the same content to
+        // both, and the local copy is the one that opens with no mount in play.
+        for sink in [PublishSink.filesystem, .lan] {
+            if let outcome = publish.sinks.first(where: { $0.name == sink.sinkTypeName && $0.ok }),
+               let url = outcome.pageURL {
+                return (sink, url)
+            }
+        }
+        return nil
     }
 }
 

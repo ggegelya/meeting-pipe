@@ -227,4 +227,109 @@ final class PublishLandingTests: XCTestCase {
         }
         XCTAssertFalse(phrases.contains(PublishLanding.unnamed.openPhrase!))
     }
+
+    /// UX62 added the icon register beside the phrase, for the same reason: the
+    /// detail header spelled two icons inline and was about to spell a third.
+    func test_every_sink_carries_its_own_symbol() {
+        var symbols: Set<String> = []
+        for sink in PublishSink.allCases {
+            XCTAssertFalse(sink.symbolName.isEmpty, sink.rawValue)
+            XCTAssertTrue(symbols.insert(sink.symbolName).inserted,
+                          "\(sink.rawValue) shares an icon with another sink")
+        }
+    }
+
+    // MARK: - The header's local-note affordance (UX62)
+
+    private func withPageURLs(
+        _ sinks: [(name: String, ok: Bool, page: String?)]
+    ) -> PublishResult {
+        PublishResult(
+            state: sinks.contains(where: \.ok) ? "full" : "none",
+            pageURL: sinks.first(where: \.ok)?.page.flatMap(URL.init(string:)),
+            sinks: sinks.map {
+                PublishResult.SinkOutcome(
+                    name: $0.name, ok: $0.ok, pageURL: $0.page.flatMap(URL.init(string:))
+                )
+            }
+        )
+    }
+
+    /// The defect: the owner's default workflow is filesystem-only, and that
+    /// publish had no open action at all despite `page_url` being a `file://`
+    /// URL `NSWorkspace.open` handles directly.
+    func test_a_filesystem_publish_is_openable() {
+        let note = PublishLanding.localNote(publish: withPageURLs([
+            (name: "filesystem", ok: true, page: "file:///Users/me/published/m.summary.md"),
+        ]))
+        XCTAssertEqual(note?.sink, .filesystem)
+        XCTAssertEqual(note?.url.path, "/Users/me/published/m.summary.md")
+    }
+
+    func test_a_lan_publish_is_openable() {
+        let note = PublishLanding.localNote(publish: withPageURLs([
+            (name: "lan", ok: true, page: "file:///Volumes/share/m.summary.md"),
+        ]))
+        XCTAssertEqual(note?.sink, .lan)
+    }
+
+    /// Notion and Obsidian keep their own buttons, built from their own
+    /// sidecars: Obsidian's is an `obsidian://` deep link assembled from the
+    /// vault relationship, and offering this one instead would open the note
+    /// outside Obsidian.
+    func test_notion_and_obsidian_are_not_this_buttons_business() {
+        XCTAssertNil(PublishLanding.localNote(publish: withPageURLs([
+            (name: "notion", ok: true, page: "https://notion.so/p"),
+        ])))
+        XCTAssertNil(PublishLanding.localNote(publish: withPageURLs([
+            (name: "obsidian", ok: true, page: "file:///Users/me/vault/m.md"),
+        ])))
+    }
+
+    func test_a_failed_filesystem_sink_offers_nothing() {
+        XCTAssertNil(PublishLanding.localNote(publish: withPageURLs([
+            (name: "filesystem", ok: false, page: "file:///Users/me/published/m.summary.md"),
+        ])))
+    }
+
+    func test_a_landed_sink_with_no_page_url_offers_nothing() {
+        XCTAssertNil(PublishLanding.localNote(publish: withPageURLs([
+            (name: "filesystem", ok: true, page: nil),
+        ])))
+    }
+
+    func test_no_publish_sidecar_offers_nothing() {
+        XCTAssertNil(PublishLanding.localNote(publish: nil))
+    }
+
+    /// A run doing both wrote the same content twice; the local copy is the one
+    /// that opens with no mount in play. Pinned because "whichever came first"
+    /// is exactly the accident the top-level `page_url` already is.
+    func test_filesystem_wins_over_lan_when_both_landed() {
+        let note = PublishLanding.localNote(publish: withPageURLs([
+            (name: "lan", ok: true, page: "file:///Volumes/share/m.summary.md"),
+            (name: "filesystem", ok: true, page: "file:///Users/me/published/m.summary.md"),
+        ]))
+        XCTAssertEqual(note?.sink, .filesystem)
+    }
+
+    /// Per-sink `page_url`, never the top-level one, which is whichever sink came
+    /// first in `output.sinks` order: taking it here would put a Notion URL
+    /// behind a button captioned "Open the local note".
+    func test_takes_the_sinks_own_url_not_the_top_level_one() {
+        let publish = PublishResult(
+            state: "full",
+            pageURL: URL(string: "https://notion.so/p"),
+            sinks: [
+                PublishResult.SinkOutcome(
+                    name: "filesystem", ok: true,
+                    pageURL: URL(string: "file:///Users/me/published/m.summary.md")
+                ),
+                PublishResult.SinkOutcome(
+                    name: "notion", ok: true, pageURL: URL(string: "https://notion.so/p")
+                ),
+            ]
+        )
+        XCTAssertEqual(PublishLanding.localNote(publish: publish)?.url.scheme, "file")
+    }
 }

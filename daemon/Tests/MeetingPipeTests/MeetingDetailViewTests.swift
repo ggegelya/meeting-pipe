@@ -165,9 +165,32 @@ final class MeetingDetailViewTests: XCTestCase {
 
     /// A meeting that has never published fingerprints cleanly rather than
     /// throwing, so the guard is safe on a row with no publish sidecars at all.
+    /// Three entries since UX62, when `<stem>.publish.json` joined the two
+    /// per-sink sidecars.
     func test_publish_fingerprint_of_an_unpublished_meeting_is_all_absent() throws {
         let dir = try makePublishDir()
-        XCTAssertEqual(PublishURLs.fingerprint(stem: "nothing-here", in: dir), [nil, nil])
+        XCTAssertEqual(PublishURLs.fingerprint(stem: "nothing-here", in: dir), [nil, nil, nil])
+    }
+
+    /// UX62: the local-note button is built from `<stem>.publish.json`, so a
+    /// filesystem publish landing while the header is open has to invalidate the
+    /// cache. It writes neither per-sink sidecar, so before this the fingerprint
+    /// could not see it at all and the button would never appear.
+    func test_publish_fingerprint_moves_when_only_the_publish_sidecar_is_written() throws {
+        let dir = try makePublishDir()
+        let stem = "20260501-093000"
+        let before = PublishURLs.fingerprint(stem: stem, in: dir)
+
+        let data = try JSONSerialization.data(withJSONObject: [
+            "state": "full",
+            "page_url": "file:///Users/me/published/m.summary.md",
+            "sinks": ["filesystem": ["ok": true, "page_url": "file:///Users/me/published/m.summary.md"]],
+        ])
+        try data.write(to: PublishURLs.publishPath(stem: stem, in: dir), options: .atomic)
+
+        XCTAssertNotEqual(before, PublishURLs.fingerprint(stem: stem, in: dir))
+        // And the read behind it lands, end to end off the file on disk.
+        XCTAssertEqual(PublishURLs.localNote(stem: stem, in: dir)?.sink, .filesystem)
     }
 
     /// UX53's acceptance, pinned where the decision is rather than on the

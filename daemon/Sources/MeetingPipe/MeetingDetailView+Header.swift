@@ -433,26 +433,39 @@ extension MeetingDetailView {
         return name.prefix(1).uppercased() + name.dropFirst()
     }
 
-    /// Notion / Obsidian / Reveal-in-Finder ghost icons. Reveal is rightmost since it's the most common action.
+    /// Notion / Obsidian / local note / Reveal-in-Finder ghost icons. Reveal is rightmost since it's the most common action.
     ///
     /// The help strings come from `PublishSink`, not from literals here (UX49):
     /// this header and the done notification both name where a meeting landed,
     /// and while each spelled it itself the notification said Notion for every
-    /// publish whatever ran.
+    /// publish whatever ran. The icons come from there too since UX62, which is
+    /// when a third button arrived and the inline-literal habit would have grown
+    /// rather than stopped.
+    ///
+    /// The third button is the one that was missing for most meetings (UX62): a
+    /// publish that landed only on the filesystem or the LAN share had no open
+    /// action at all, which on the owner's filesystem-only default workflow was
+    /// nearly every meeting rather than an edge.
     @ViewBuilder
     var ghostShortcuts: some View {
         HStack(spacing: 2) {
             if let url = cachedNotionURL {
                 MPGhostIconButton(
-                    systemImage: "arrow.up.right.square",
+                    systemImage: PublishSink.notion.symbolName,
                     help: PublishSink.notion.openPhrase
                 ) { NSWorkspace.shared.open(url) }
             }
             if let url = cachedObsidianURL {
                 MPGhostIconButton(
-                    systemImage: "book.closed",
+                    systemImage: PublishSink.obsidian.symbolName,
                     help: PublishSink.obsidian.openPhrase
                 ) { NSWorkspace.shared.open(url) }
+            }
+            if let local = cachedLocalNote {
+                MPGhostIconButton(
+                    systemImage: local.sink.symbolName,
+                    help: local.sink.openPhrase
+                ) { NSWorkspace.shared.open(local.url) }
             }
             MPGhostIconButton(
                 systemImage: "folder",

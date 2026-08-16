@@ -590,9 +590,80 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(rows.first?.summaryTitle, "done now")
     }
 
-    // MARK: republish staleness (TECH-UX2)
+    // MARK: republish staleness (TECH-UX2, re-sourced by UX62)
 
-    func test_needsRepublish_true_when_summary_newer_than_publish_sidecar() throws {
+    /// `<stem>.publish.json` as the real writer emits it, with one sink.
+    private func publishSidecar(sink: String, ok: Bool = true) -> String {
+        """
+        {"state": "\(ok ? "full" : "none")", "page_url": "file:///tmp/note.md",
+         "sinks": {"\(sink)": {"ok": \(ok), "page_url": "file:///tmp/note.md"}}}
+        """
+    }
+
+    /// One scan over a stem with a summary and a publish sidecar, at the two
+    /// mtimes that decide the flag.
+    private func republishFlag(
+        sidecar: String?,
+        summaryNewer: Bool
+    ) throws -> Bool? {
+        let dir = try tempDir()
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        let summaryURL = dir.appendingPathComponent("\(stem).summary.json")
+        try writeFile(summaryURL, "{\"title\":\"x\"}")
+        let older = Date(timeIntervalSince1970: 1_700_000_000)
+        let newer = Date(timeIntervalSince1970: 1_700_000_500)
+        if let sidecar = sidecar {
+            let publishURL = dir.appendingPathComponent("\(stem).publish.json")
+            try writeFile(publishURL, sidecar)
+            try setMtime(publishURL, summaryNewer ? older : newer)
+        }
+        try setMtime(summaryURL, summaryNewer ? newer : older)
+        return MeetingStore(recordingsDir: dir).performScan(directory: dir).first?.needsRepublish
+    }
+
+    /// The whole of UX62 in four assertions: **every** sink that ran counts as
+    /// evidence of a publish, not just the two that happen to write their own
+    /// sidecar. Filesystem is the one that mattered, since it is the default
+    /// workflow's only sink and held 107 of 245 stems when this was measured.
+    func test_needsRepublish_true_after_an_edit_for_every_sink_type() throws {
+        for sink in PublishSink.allCases {
+            XCTAssertEqual(
+                try republishFlag(sidecar: publishSidecar(sink: sink.sinkTypeName), summaryNewer: true),
+                true,
+                "a \(sink.sinkTypeName) publish followed by an edit shows no Republish cue"
+            )
+        }
+    }
+
+    func test_needsRepublish_false_when_publish_is_current_for_every_sink_type() throws {
+        for sink in PublishSink.allCases {
+            XCTAssertEqual(
+                try republishFlag(sidecar: publishSidecar(sink: sink.sinkTypeName), summaryNewer: false),
+                false,
+                "a \(sink.sinkTypeName) publish newer than the summary still nags"
+            )
+        }
+    }
+
+    func test_needsRepublish_false_when_never_published() throws {
+        XCTAssertEqual(try republishFlag(sidecar: nil, summaryNewer: true), false)
+    }
+
+    /// A run whose every sink failed is not a publish to be stale against. Those
+    /// meetings are the `Needs you` rail's job, and nagging Republish here would
+    /// describe an edit that was never pushed as an edit that drifted.
+    func test_needsRepublish_false_when_every_sink_failed() throws {
+        XCTAssertEqual(
+            try republishFlag(sidecar: publishSidecar(sink: "notion", ok: false), summaryNewer: true),
+            false
+        )
+    }
+
+    /// The regression that made this task: a per-sink sidecar is not evidence.
+    /// It survives a failed run, and three of the four sinks never write one at
+    /// all, so a filesystem-only publish read as never-published forever.
+    func test_needsRepublish_ignores_a_per_sink_sidecar_with_no_publish_json() throws {
         let dir = try tempDir()
         let stem = "20260511-143110"
         try writeFile(dir.appendingPathComponent("\(stem).wav"))
@@ -602,29 +673,6 @@ final class MeetingStoreTests: XCTestCase {
         try writeFile(notionURL, "{\"page_url\":\"https://n\"}")
         try setMtime(notionURL, Date(timeIntervalSince1970: 1_700_000_000))
         try setMtime(summaryURL, Date(timeIntervalSince1970: 1_700_000_500))
-        let store = MeetingStore(recordingsDir: dir)
-        XCTAssertEqual(store.performScan(directory: dir).first?.needsRepublish, true)
-    }
-
-    func test_needsRepublish_false_when_publish_is_current() throws {
-        let dir = try tempDir()
-        let stem = "20260511-143110"
-        try writeFile(dir.appendingPathComponent("\(stem).wav"))
-        let summaryURL = dir.appendingPathComponent("\(stem).summary.json")
-        let obsidianURL = dir.appendingPathComponent("\(stem).obsidian.json")
-        try writeFile(summaryURL, "{\"title\":\"x\"}")
-        try writeFile(obsidianURL, "{}")
-        try setMtime(summaryURL, Date(timeIntervalSince1970: 1_700_000_000))
-        try setMtime(obsidianURL, Date(timeIntervalSince1970: 1_700_000_500))
-        let store = MeetingStore(recordingsDir: dir)
-        XCTAssertEqual(store.performScan(directory: dir).first?.needsRepublish, false)
-    }
-
-    func test_needsRepublish_false_when_never_published() throws {
-        let dir = try tempDir()
-        let stem = "20260511-143110"
-        try writeFile(dir.appendingPathComponent("\(stem).wav"))
-        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{\"title\":\"x\"}")
         let store = MeetingStore(recordingsDir: dir)
         XCTAssertEqual(store.performScan(directory: dir).first?.needsRepublish, false)
     }

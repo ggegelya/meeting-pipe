@@ -533,8 +533,11 @@ final class MeetingStore: ObservableObject {
         let speakerLabelsURL = files.first { $0.lastPathComponent.hasSuffix(".speaker_labels.json") }
         // PIPE14: presence-gated so an absent sidecar costs no open. Its contents
         // are inside the per-stem signature, so a fanout rewriting it invalidates
-        // the cached row on its own.
+        // the cached row on its own. Parsed once here rather than per reader:
+        // since UX62 the staleness cue reads it too, and two opens of the same
+        // file per row is a scan cost for nothing.
         let publishURL = files.first { $0.lastPathComponent.hasSuffix(".publish.json") }
+        let publishResult = publishURL == nil ? nil : PublishResult.load(stem: stem, in: directory)
         let errorURL = files.first {
             $0.lastPathComponent.hasSuffix(PipelineFailureSidecar.suffix)
         }
@@ -658,14 +661,18 @@ final class MeetingStore: ObservableObject {
             failureReason: failure?.reason,
             failureStage: failure?.stage.rawValue,
             searchableText: searchable,
-            needsRepublish: MeetingStore.needsRepublish(files: files, summaryURL: summaryURL),
+            needsRepublish: MeetingStore.needsRepublish(
+                publish: publishResult,
+                publishModified: publishURL.map { mtime(of: $0) },
+                summaryModified: summaryURL.map { mtime(of: $0) }
+            ),
             detectedLanguage: (summary?.detectedLanguage).flatMap { $0.isEmpty ? nil : $0 },
             workflowNDAMode: (meta?["workflow_nda_mode"] as? Bool),
             regulatedMode: (meta?["regulated_mode"] as? Bool),
             micDeviceName: (meta?["mic_device_name"] as? String),
             micWarning: (meta?["mic_silent"] as? Bool) ?? false,
             publishState: PublishResult.resolveState(
-                publish: publishURL == nil ? nil : PublishResult.load(stem: stem, in: directory),
+                publish: publishResult,
                 runPublishState: (run?["publish_state"] as? String)
             ),
             emptyReason: emptyReason,
@@ -686,19 +693,48 @@ final class MeetingStore: ObservableObject {
         (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
     }
 
-    /// True when a publish sidecar exists and the summary is newer than the
-    /// newest of them, i.e. the meeting changed since its last publish
-    /// (TECH-UX2). A never-published meeting returns false: Republish is for
-    /// re-syncing edits, not first publish.
-    private static func needsRepublish(files: [URL], summaryURL: URL?) -> Bool {
-        guard let summaryURL = summaryURL else { return false }
-        let publishURLs = files.filter {
-            let lc = $0.lastPathComponent
-            return lc.hasSuffix(".notion.json") || lc.hasSuffix(".obsidian.json")
-        }
-        guard !publishURLs.isEmpty else { return false }
-        let latestPublish = publishURLs.map { mtime(of: $0) }.max() ?? .distantPast
-        return mtime(of: summaryURL) > latestPublish
+    /// True when the meeting changed since its last successful publish
+    /// (TECH-UX2), i.e. the row should carry the inline Republish cue. A
+    /// never-published meeting returns false: Republish is for re-syncing edits,
+    /// not for a first publish.
+    ///
+    /// **Read off `<stem>.publish.json`, never off a per-sink sidecar (UX62).**
+    /// The evidence used to be a glob for `.notion.json` or `.obsidian.json`, so
+    /// a meeting published to the filesystem or the LAN share was
+    /// indistinguishable from one never published and the cue could not appear
+    /// for it, ever. That is not an edge: the owner's default `Personal`
+    /// workflow is filesystem-only and held 117 of 190 tagged meetings when this
+    /// was measured, 107 of 245 stems on disk had a `.filesystem.json` and no
+    /// `.notion.json`, 13 of the last 15 meetings were in that blind class, and
+    /// every NDA meeting is too, since NDA mode force-selects filesystem-only
+    /// sinks. It is also the rule `daemon/CLAUDE.md` already stated and this
+    /// reader disobeyed.
+    ///
+    /// Timestamps come from the sidecar's own mtime rather than a field inside
+    /// it: every publish path rewrites that file, so its mtime *is* the last
+    /// publish, and the alternative (parsing `ts`) buys nothing and adds a format
+    /// to keep in step with Python.
+    ///
+    /// - Parameters:
+    ///   - publish: the parsed sidecar. A run whose every sink failed carries
+    ///     `state == "none"`, which is not evidence of a publish; the failed and
+    ///     partial cases are the `Needs you` rail's job, not this cue's.
+    ///   - publishModified: mtime of `<stem>.publish.json`.
+    ///   - summaryModified: mtime of `<stem>.summary.json`. Deliberately the
+    ///     mtime and not the run's `ts`: the question here is "has the file
+    ///     changed since it was pushed", and an action ticked done is a real
+    ///     change worth pushing, unlike UX41's question about when the prose was
+    ///     produced.
+    static func needsRepublish(
+        publish: PublishResult?,
+        publishModified: Date?,
+        summaryModified: Date?
+    ) -> Bool {
+        guard let publish = publish,
+              let publishModified = publishModified,
+              let summaryModified = summaryModified else { return false }
+        guard publish.sinks.contains(where: \.ok) else { return false }
+        return summaryModified > publishModified
     }
 
     /// True when `<stem>.speaker_labels.json` was written after the run that
