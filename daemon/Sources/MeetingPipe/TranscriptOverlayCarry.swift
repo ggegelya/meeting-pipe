@@ -58,11 +58,21 @@ enum TranscriptOverlayCarry {
         /// edited it to. Not a loss: the ratchet subsumed the fix, and keeping
         /// a no-op override would only make the next diff harder to read.
         var retired: Int
+        /// Corrections kept, but now asserting the opposite of a vocabulary rule
+        /// the owner also authored (UX66): the edit puts a term's heard spelling
+        /// back where the new transcript already reads its canonical one.
+        ///
+        /// Counted apart from `carriedCorrections` rather than folded into it,
+        /// which is the whole point. The overlay still wins on screen, because a
+        /// per-meeting fix outranking a global rule is FEAT13's precedence and is
+        /// correct; what was wrong was that the loser was invisible, and a
+        /// contradiction counted as "carried" reads as success.
+        var contradicted: Int
 
         static let empty = Result(
             speakerOverlay: .empty, corrections: [:],
             carriedNames: 0, carriedReassignments: 0, carriedCorrections: 0,
-            dropped: 0, retired: 0
+            dropped: 0, retired: 0, contradicted: 0
         )
 
         var carried: Int { carriedNames + carriedReassignments + carriedCorrections }
@@ -93,11 +103,17 @@ enum TranscriptOverlayCarry {
         }
     }
 
+    /// - Parameter terms: the vocabulary terms in scope for this meeting's
+    ///   workflow, keyed heard -> canonical, as `GlossaryStore.resolvedTerms`
+    ///   resolves them. Passed in rather than read here so the function stays
+    ///   pure and testable; empty is the honest default for a caller with no
+    ///   glossary in hand, and only costs the UX66 contradiction count.
     static func carry(
         old: [Anchor],
         new: [Anchor],
         speakerOverlay: SpeakerLabelStore.Overlay,
-        corrections: [Int: TranscriptCorrectionStore.Correction]
+        corrections: [Int: TranscriptCorrectionStore.Correction],
+        terms: [String: String] = [:]
     ) -> Result {
         guard !speakerOverlay.isEmpty || !corrections.isEmpty else { return .empty }
         // Nothing to anchor to: report everything as dropped rather than
@@ -107,7 +123,7 @@ enum TranscriptOverlayCarry {
                 speakerOverlay: .empty, corrections: [:],
                 carriedNames: 0, carriedReassignments: 0, carriedCorrections: 0,
                 dropped: speakerOverlay.labels.count + speakerOverlay.segments.count + corrections.count,
-                retired: 0
+                retired: 0, contradicted: 0
             )
         }
 
@@ -185,12 +201,50 @@ enum TranscriptOverlayCarry {
             }
             carriedCorrections[match.newIndex] = rebased
             correctionOverlap[match.newIndex] = match.overlap
-            result.carriedCorrections += 1
+            if contradicts(editedText: correction.editedText, newText: target.text, terms: terms) {
+                result.contradicted += 1
+            } else {
+                result.carriedCorrections += 1
+            }
         }
 
         result.speakerOverlay = SpeakerLabelStore.Overlay(labels: labels, segments: segments)
         result.corrections = carriedCorrections
         return result
+    }
+
+    // MARK: - Vocabulary conflicts (UX66)
+
+    /// Does this correction now assert the opposite of a vocabulary rule?
+    ///
+    /// The mirror of the retire test above. That one asks whether the transcript
+    /// moved **toward** `editedText`, and the case it cannot see is the transcript
+    /// moving **away** from it under a rule the owner also authored: the term
+    /// applied, the transcript reads the canonical spelling, and the overlay
+    /// re-anchors on top of it still saying the heard one. The overlay wins at
+    /// load, so the rule looks broken while working correctly.
+    ///
+    /// True when a term's key survives whole-word in the edit while the new
+    /// transcript reads that term's value at the same segment. Matching is
+    /// `Clarify.containsTerm`, which is `mp.glossary`'s own `\b(<key>)\b`
+    /// case-insensitive rule: a test looser than the substitution it checks would
+    /// report conflicts the rule cannot cause. Fuzzy matching is deliberately not
+    /// consulted, so this inherits the same limits as the substitution, `c++`
+    /// included.
+    static func contradicts(
+        editedText: String,
+        newText: String,
+        terms: [String: String]
+    ) -> Bool {
+        for (heard, canonical) in terms {
+            // A term whose halves differ only in case cannot be contradicted:
+            // the edit and the transcript read the same word either way.
+            guard heard.compare(canonical, options: .caseInsensitive) != .orderedSame else { continue }
+            guard Clarify.containsTerm(heard, in: editedText) else { continue }
+            guard Clarify.containsTerm(canonical, in: newText) else { continue }
+            return true
+        }
+        return false
     }
 
     // MARK: - Mappings

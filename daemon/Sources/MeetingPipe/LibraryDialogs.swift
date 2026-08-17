@@ -107,6 +107,13 @@ enum LibraryDialogs {
             if outcome.retired > 0 {
                 lines.append("\(outcome.retired) text correction\(outcome.retired == 1 ? " is" : "s are") no longer needed: the new transcript already reads that way.")
             }
+            if outcome.contradicted > 0 {
+                // UX66: named rather than folded into "carried". The edit still
+                // wins on screen, which is the right precedence, but a stale
+                // override re-anchored onto a transcript that now disagrees with
+                // it is indistinguishable from a fresh one unless this says so.
+                lines.append("\(outcome.contradicted) of your edits now disagree\(outcome.contradicted == 1 ? "s" : "") with a vocabulary rule. Your edit is still what you see; open the line and re-edit it if the rule is the one you want.")
+            }
             if outcome.dropped > 0 {
                 lines.append("\(outcome.dropped) could not be placed on the new transcript and were dropped.")
             }

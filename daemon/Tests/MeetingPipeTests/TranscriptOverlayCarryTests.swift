@@ -334,4 +334,128 @@ final class TranscriptOverlayCarryTests: XCTestCase {
         XCTAssertEqual(anchors.map(\.index), [0, 4])
         XCTAssertEqual(anchors.map(\.speaker), ["ME", "THEM-A"])
     }
+
+    // MARK: - Vocabulary conflicts (UX66)
+
+    /// The existing behaviour these four sit beside, restated with terms in hand
+    /// so the contradiction test cannot regress it: a correction the new
+    /// transcript already satisfies still retires, whatever the glossary says.
+    func testACorrectionTheTranscriptSatisfiesStillRetiresWithTermsInScope() {
+        let carry = TranscriptOverlayCarry.carry(
+            old: [anchor(0, 0, 4, text: "we shipped perfecta")],
+            new: [anchor(0, 0, 4, text: "we shipped Perfeqta")],
+            speakerOverlay: .empty,
+            corrections: [0: correction(0, "we shipped perfecta", "we shipped Perfeqta")],
+            terms: ["perfecta": "Perfeqta"]
+        )
+
+        XCTAssertEqual(carry.retired, 1)
+        XCTAssertEqual(carry.contradicted, 0)
+        XCTAssertEqual(carry.carriedCorrections, 0)
+    }
+
+    /// The defect. The rule applied, the transcript reads the canonical spelling,
+    /// and the overlay re-anchors on top of it still asserting the heard one. It
+    /// is kept (a per-meeting fix outranks a global rule) and counted apart from
+    /// `carried`, which is what makes it visible.
+    func testACorrectionContradictingATermIsCountedApartFromCarried() {
+        let carry = TranscriptOverlayCarry.carry(
+            old: [anchor(0, 0, 4, text: "thanks Jorji")],
+            new: [anchor(0, 0, 4, text: "thanks Georgy")],
+            speakerOverlay: .empty,
+            corrections: [0: correction(0, "thanks Jorji", "thanks Jorji indeed")],
+            terms: ["jorji": "Georgy"]
+        )
+
+        XCTAssertEqual(carry.contradicted, 1)
+        XCTAssertEqual(carry.carriedCorrections, 0)
+        XCTAssertEqual(carry.carried, 0)
+        XCTAssertEqual(carry.dropped, 0)
+        // Kept, not dropped: the overlay still wins on screen.
+        XCTAssertEqual(carry.corrections[0]?.editedText, "thanks Jorji indeed")
+    }
+
+    /// A correction no term touches is an ordinary carry. Without this the count
+    /// could be satisfied by calling everything a contradiction.
+    func testACorrectionNoTermTouchesStillCarries() {
+        let carry = TranscriptOverlayCarry.carry(
+            old: [anchor(0, 0, 4, text: "the deck is ready")],
+            new: [anchor(0, 0, 4, text: "the dek is ready")],
+            speakerOverlay: .empty,
+            corrections: [0: correction(0, "the deck is ready", "the deck is done")],
+            terms: ["jorji": "Georgy"]
+        )
+
+        XCTAssertEqual(carry.carriedCorrections, 1)
+        XCTAssertEqual(carry.contradicted, 0)
+    }
+
+    /// Terms are workflow-scoped, so a rule the caller did not resolve for this
+    /// meeting must not accuse it. Pinned on the resolved dictionary because that
+    /// is the scoping seam: `GlossaryStore.resolvedTerms` merges the global table
+    /// under the meeting's workflow, and a term from another workflow is simply
+    /// not in it.
+    func testATermScopedToAnotherWorkflowIsNotAContradictionHere() {
+        let corrections = [0: correction(0, "thanks Jorji", "thanks Jorji indeed")]
+        let old = [anchor(0, 0, 4, text: "thanks Jorji")]
+        let new = [anchor(0, 0, 4, text: "thanks Georgy")]
+
+        let outOfScope = TranscriptOverlayCarry.carry(
+            old: old, new: new, speakerOverlay: .empty, corrections: corrections,
+            terms: [:]
+        )
+        XCTAssertEqual(outOfScope.contradicted, 0)
+        XCTAssertEqual(outOfScope.carriedCorrections, 1)
+
+        let inScope = TranscriptOverlayCarry.carry(
+            old: old, new: new, speakerOverlay: .empty, corrections: corrections,
+            terms: ["jorji": "Georgy"]
+        )
+        XCTAssertEqual(inScope.contradicted, 1)
+    }
+
+    /// The real one, from `20260803-165412` on 2026-08-04. The glossary carried
+    /// `Jorji = "Georgy"` under the Personal workflow, the transcript on disk came
+    /// back with `Georgy` and no `Jorji` anywhere, and the pane still rendered
+    /// `Jorji` because the overlay on segment 2 was carried and re-snapshotted.
+    /// The owner read it as the rule failing.
+    func testTheJorjiRegressionFixtureReadsAsAContradiction() {
+        let newText = "Okay, Georgy. Got it Then you already put two messages for the Max, right? For the frame? Yeah."
+        let editedText = "Okay, Jorji. Got it Then you already put two messages for the Max, right? For the frame? Yeah."
+
+        let carry = TranscriptOverlayCarry.carry(
+            old: [anchor(2, 10, 20, text: "Okay, Jorji. Got it Then you already put two messages for the Macs, right? For the frame? Yeah.")],
+            new: [anchor(2, 10, 20, text: newText)],
+            speakerOverlay: .empty,
+            corrections: [2: correction(2, "Okay, Jorji. Got it ...", editedText)],
+            terms: ["jorji": "Georgy"]
+        )
+
+        XCTAssertEqual(carry.contradicted, 1)
+        XCTAssertEqual(carry.carriedCorrections, 0)
+        // And the re-snapshot still happens: the sidecar describes what the
+        // pipeline produced, which is the half UX66 explicitly did not change.
+        XCTAssertEqual(carry.corrections[2]?.originalText, newText)
+    }
+
+    /// The matching rule is the substitution's own, not a looser one. A term key
+    /// that only appears inside a longer word is not a match, so an edit reading
+    /// "Jorjinho" is not accused of contradicting `Jorji = "Georgy"`.
+    func testContradictionUsesWholeWordMatchingLikeTheSubstitution() {
+        XCTAssertTrue(TranscriptOverlayCarry.contradicts(
+            editedText: "thanks Jorji", newText: "thanks Georgy", terms: ["jorji": "Georgy"]
+        ))
+        XCTAssertFalse(TranscriptOverlayCarry.contradicts(
+            editedText: "thanks Jorjinho", newText: "thanks Georgy", terms: ["jorji": "Georgy"]
+        ))
+        // The transcript has to actually read the canonical form. A rule that did
+        // not fire on this segment is not a conflict with it.
+        XCTAssertFalse(TranscriptOverlayCarry.contradicts(
+            editedText: "thanks Jorji", newText: "thanks Jorji", terms: ["jorji": "Georgy"]
+        ))
+        // A term whose halves differ only in case cannot be contradicted.
+        XCTAssertFalse(TranscriptOverlayCarry.contradicts(
+            editedText: "thanks georgy", newText: "thanks Georgy", terms: ["georgy": "Georgy"]
+        ))
+    }
 }

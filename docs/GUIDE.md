@@ -210,6 +210,8 @@ All three are in the detail header's `...` menu (Reprocess also sits under the s
 
 One thing worth knowing about Re-transcribe: your hand edits are carried over by **time**, not copied across, because the new transcript renumbers everything. Anything with no clear home in the new version is dropped rather than guessed at, and the count is reported when it finishes, so a lost edit is something you are told about.
 
+The report also tells you when an edit and a vocabulary term have started disagreeing. If you once fixed a word by hand on this meeting, and later added a Vocabulary term that spells the same word the other way, the re-transcribe applies the term to the transcript and then puts your edit back on top of it, because a fix you made on one meeting outranks a rule that applies to all of them. That is the behaviour you want, but it looks exactly like the term not working, so the run names it: *1 of your edits now disagrees with a vocabulary rule*. If the rule is the one you meant, open that line and edit it again to match, and the two stop fighting.
+
 ### After you rename anyone
 
 The transcript and the People rail resolve names every time you open them. The summary does not: it is prose an engine wrote with whatever names existed at the time. So a meeting can read a person's name in the transcript and a cluster label in the summary bullets. The detail header says so, with a **Re-summarize** button beside the sentence. Nothing re-runs on its own, because that is an engine call you should choose.

@@ -541,7 +541,7 @@ struct BatchActionsPane: View {
     @MainActor
     private func runRetranscribe() async {
         let stems = meetings.map(\.stem)
-        var ok = 0, bad = 0, carried = 0, dropped = 0, retired = 0
+        var ok = 0, bad = 0, carried = 0, dropped = 0, retired = 0, contradicted = 0
         cancelRequested = false
         retranscribeNote = nil
         state = .running(label: "Re-transcribing", done: 0, total: stems.count)
@@ -553,21 +553,25 @@ struct BatchActionsPane: View {
                 carried += outcome.carried
                 dropped += outcome.dropped
                 retired += outcome.retired
+                contradicted += outcome.contradicted
             case .failure:
                 bad += 1
             }
             state = .running(label: "Re-transcribing", done: i + 1, total: stems.count)
         }
-        retranscribeNote = BatchActionsPane.carryNote(carried: carried, dropped: dropped, retired: retired)
+        retranscribeNote = BatchActionsPane.carryNote(
+            carried: carried, dropped: dropped, retired: retired, contradicted: contradicted
+        )
         state = .finished(label: "Re-transcribe", succeeded: ok, failed: bad)
     }
 
     /// One line about what happened to the speaker names and text edits. Nil when
     /// the selection carried none, so an untouched batch shows no filler.
-    static func carryNote(carried: Int, dropped: Int, retired: Int) -> String? {
+    static func carryNote(carried: Int, dropped: Int, retired: Int, contradicted: Int = 0) -> String? {
         var parts: [String] = []
         if carried > 0 { parts.append("\(carried) edit\(carried == 1 ? "" : "s") carried") }
         if retired > 0 { parts.append("\(retired) already fixed") }
+        if contradicted > 0 { parts.append("\(contradicted) disagree\(contradicted == 1 ? "s" : "") with a vocabulary rule") }
         if dropped > 0 { parts.append("\(dropped) dropped") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }

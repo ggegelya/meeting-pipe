@@ -133,11 +133,7 @@ enum Clarify {
     /// preview of what "Always fix this" would do to this line after a re-transcribe, so
     /// a user who tries the safe option first is not surprised by the other one later.
     static func substitute(heard: String, with intended: String, in line: String) -> String? {
-        let escaped = NSRegularExpression.escapedPattern(for: heard)
-        guard !escaped.isEmpty,
-              let regex = try? NSRegularExpression(
-                pattern: "\\b\(escaped)\\b", options: [.caseInsensitive]
-              ) else { return nil }
+        guard let regex = wordRegex(heard) else { return nil }
         let whole = NSRange(line.startIndex..<line.endIndex, in: line)
         guard regex.firstMatch(in: line, options: [], range: whole) != nil else { return nil }
         return regex.stringByReplacingMatches(
@@ -146,6 +142,28 @@ enum Clarify {
             range: whole,
             withTemplate: NSRegularExpression.escapedTemplate(for: intended)
         )
+    }
+
+    /// Whether `word` occurs whole-word in `line`, by the same rule `substitute`
+    /// replaces on.
+    ///
+    /// Exposed for UX66's contradiction test, which has to ask exactly the
+    /// question the substitution answers: a conflict detector built on a looser
+    /// match than the rule it is checking would report conflicts the rule cannot
+    /// actually cause.
+    static func containsTerm(_ word: String, in line: String) -> Bool {
+        guard let regex = wordRegex(word) else { return false }
+        let whole = NSRange(line.startIndex..<line.endIndex, in: line)
+        return regex.firstMatch(in: line, options: [], range: whole) != nil
+    }
+
+    /// `\b(<word>)\b`, case-insensitive. The single home for the matching rule, so
+    /// `substitute` and `containsTerm` cannot drift apart from each other or from
+    /// `mp.glossary`.
+    private static func wordRegex(_ word: String) -> NSRegularExpression? {
+        let escaped = NSRegularExpression.escapedPattern(for: word)
+        guard !escaped.isEmpty else { return nil }
+        return try? NSRegularExpression(pattern: "\\b\(escaped)\\b", options: [.caseInsensitive])
     }
 
     /// The scope a rule starts on: the meeting's workflow, so a client's product name

@@ -304,6 +304,11 @@ final class MeetingLibraryService {
         /// carried. The glossary + ASR ratchet subsuming a hand fix is the
         /// feature working, not a loss.
         let retired: Int
+        /// Corrections kept, but now disagreeing with a vocabulary rule the owner
+        /// also authored (UX66). Reported rather than folded into `carried`: the
+        /// overlay still wins on screen, and a conflict counted as a success is
+        /// how the rule came to look broken.
+        let contradicted: Int
     }
 
     /// Re-transcribe an existing recording against the current stack (ASR3).
@@ -366,6 +371,7 @@ final class MeetingLibraryService {
                         "carried": outcome.carried,
                         "dropped": outcome.dropped,
                         "retired": outcome.retired,
+                        "contradicted": outcome.contradicted,
                     ])
                     completion(.success(outcome))
                 case .failure(let err):
@@ -409,11 +415,18 @@ final class MeetingLibraryService {
         corrections: [Int: TranscriptCorrectionStore.Correction]
     ) -> RetranscribeOutcome {
         guard !overlay.isEmpty || !corrections.isEmpty else {
-            return RetranscribeOutcome(stem: stem, carried: 0, dropped: 0, retired: 0)
+            return RetranscribeOutcome(stem: stem, carried: 0, dropped: 0, retired: 0, contradicted: 0)
         }
         let after = Self.transcriptAnchors(stem: stem, in: dir)
         let carry = TranscriptOverlayCarry.carry(
-            old: before, new: after, speakerOverlay: overlay, corrections: corrections
+            old: before, new: after, speakerOverlay: overlay, corrections: corrections,
+            // UX66: the terms this meeting's finalize just applied, so the carry
+            // can tell a stale override from a live one. Resolved the same way
+            // `mp finalize` resolves them, global table under the workflow's.
+            terms: GlossaryStore.resolvedTerms(
+                at: GlossaryStore.defaultURL,
+                workflowName: Self.workflowName(stem: stem, in: dir)
+            )
         )
         do {
             if carry.speakerOverlay != overlay {
@@ -429,8 +442,22 @@ final class MeetingLibraryService {
             stem: stem,
             carried: carry.carried,
             dropped: carry.dropped,
-            retired: carry.retired
+            retired: carry.retired,
+            contradicted: carry.contradicted
         )
+    }
+
+    /// The meeting's workflow name from `<stem>.meta.json`, or nil when the
+    /// meeting matched no workflow. Read from the sidecar rather than from a
+    /// `Meeting` row so the carry does not depend on the library having been
+    /// scanned; `MeetingStore` reads the same key.
+    private static func workflowName(stem: String, in dir: URL) -> String? {
+        let url = dir.appendingPathComponent("\(stem).meta.json")
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return obj["workflow_name"] as? String
     }
 
     /// Parse `<stem>.json` into carry anchors. Deliberately `TranscriptLoader.parse`
