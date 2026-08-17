@@ -51,15 +51,23 @@ enum WCAG {
 
 final class ContrastFloorTests: XCTestCase {
 
+    /// `pin` is nil for a pair whose colour this repo does not own. Every hex token here
+    /// is ours and pins exactly; a pair built on an AppKit system colour (`.systemBlue`
+    /// and friends) cannot, because its RGB moves between macOS releases and a pinned
+    /// ratio then encodes the OS of whoever last recorded it. That is not hypothetical:
+    /// it held CI red from 2026-08-04 to 2026-08-18, green on the author's Mac and six
+    /// pins adrift on the runner. The floor still applies in both cases, and the floor is
+    /// the part that protects anyone. See daemon/docs/gotchas.md.
     private func assertPair(
         _ fg: NSColor, _ fgName: String,
         on bg: NSColor, _ bgName: String,
-        dark: Bool, floor: Double, pin: Double,
+        dark: Bool, floor: Double, pin: Double?,
         file: StaticString = #filePath, line: UInt = #line
     ) {
         let r = WCAG.ratio(fg, on: bg, dark: dark)
         let where_ = "[\(dark ? "dark" : "light")] \(fgName) on \(bgName) = \(String(format: "%.2f", r))"
         XCTAssertGreaterThanOrEqual(r, floor, "\(where_) < floor \(floor)", file: file, line: line)
+        guard let pin else { return }
         XCTAssertEqual(
             r, pin, accuracy: 0.05,
             "\(where_) drifted from pinned \(pin); update the pin and docs/audits/dsn18-contrast-ratios.md",
@@ -148,19 +156,28 @@ final class ContrastFloorTests: XCTestCase {
     /// and 15 of the 16 clear the 4.5 body floor as well (the light-mode orange, 4.32,
     /// is the one that does not, and it carries no text).
     ///
-    /// Pinned per hue rather than as a minimum, per this file's rule: a palette edit that
-    /// moves any pair, even upward, should fail here and be re-recorded rather than pass
-    /// unnoticed. Ratios are higher in dark than on the canvas because the sunk well is
-    /// darker there and lighter on paper.
+    /// The light half is pinned per hue, per this file's rule: those are our own hex
+    /// values, so a palette edit that moves any pair, even upward, should fail here and
+    /// be re-recorded rather than pass unnoticed.
+    ///
+    /// The dark half is floor-only, and deliberately so. UX14 kept the native system
+    /// colour in dark mode (already legible there), so those eight are AppKit's
+    /// `.systemBlue` and friends rather than ours. Their RGB moves between macOS
+    /// releases, so a pinned ratio silently encodes the OS that recorded it: the pins
+    /// taken here on 2026-08-04 passed on the author's Mac and put six of eight adrift
+    /// on the CI runner, holding the daemon job red for two weeks. Re-pinning to the
+    /// runner's numbers only inverts which machine fails. The 3:1 floor is the part that
+    /// protects anyone reading the dot, it holds on both machines, and it is what this
+    /// test now asserts for dark. Pin these again only if the palette stops being
+    /// system-derived.
     func test_speaker_palette_dots_clear_the_ui_floor_in_the_chip_well() {
         let light = [5.40, 5.87, 4.85, 4.32, 4.35, 4.64, 6.80, 5.12]
-        let dark = [5.59, 4.98, 5.13, 8.10, 9.72, 8.94, 5.15, 5.89]
         XCTAssertEqual(MPColors.speakerPalette.count, light.count)
         for (slot, hue) in MPColors.speakerPalette.enumerated() {
             assertPair(hue, "speakerPalette[\(slot)]", on: MPColors.bgSunk, "bgSunk",
                        dark: false, floor: 3.0, pin: light[slot])
             assertPair(hue, "speakerPalette[\(slot)]", on: MPColors.bgSunk, "bgSunk",
-                       dark: true, floor: 3.0, pin: dark[slot])
+                       dark: true, floor: 3.0, pin: nil)
         }
     }
 
