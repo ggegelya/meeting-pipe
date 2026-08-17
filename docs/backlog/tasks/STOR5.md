@@ -1,6 +1,6 @@
 # STOR5: Restore from backup in Preferences (the recovery half of the backup story)
 
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 16: surface capabilities that exist but are CLI-only; the inventory ranked this the top gap by stakes). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 16: surface capabilities that exist but are CLI-only; the inventory ranked this the top gap by stakes). Status and priority live in this task's ToC row in [owner-verification.md](../owner-verification.md), the queue of shipped work awaiting owner confirmation.
 
 ## Context
 

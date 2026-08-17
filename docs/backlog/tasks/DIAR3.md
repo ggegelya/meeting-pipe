@@ -1,6 +1,6 @@
 # DIAR3: Speaker-accuracy controls in Preferences (separation threshold + cleanup pass)
 
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 10: "Anisha was defined as sudip for some reason... perhaps we can have a switch/slider/smart system that will allow fine tune it from inside of the settings"; converged with the item 16 invisible-capability sweep, which independently ranked both of these knobs among the top UI gaps). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 10: "Anisha was defined as sudip for some reason... perhaps we can have a switch/slider/smart system that will allow fine tune it from inside of the settings"; converged with the item 16 invisible-capability sweep, which independently ranked both of these knobs among the top UI gaps). Status and priority live in this task's ToC row in [owner-verification.md](../owner-verification.md), the queue of shipped work awaiting owner confirmation.
 
 ## Progress (2026-07-31, shipped; owner-owed eyeball)
 

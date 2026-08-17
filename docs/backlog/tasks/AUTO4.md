@@ -1,6 +1,6 @@
 # AUTO4: In-app automation reference for the meetingpipe:// verbs
 
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 16: capabilities with zero discoverability). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md). Filed P3 by the band's own definition (power-user payoff) with a promote-on-demand clause; **the owner promoted it to P2 on 2026-08-03**, which is that clause firing, the same way AUTO2's did.
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 16: capabilities with zero discoverability). Status and priority live in this task's ToC row in [owner-verification.md](../owner-verification.md), the queue of shipped work awaiting owner confirmation. Filed P3 by the band's own definition (power-user payoff) with a promote-on-demand clause; **the owner promoted it to P2 on 2026-08-03**, which is that clause firing, the same way AUTO2's did.
 
 ## Progress (2026-08-03, shipped; owner-owed eyeball)
 

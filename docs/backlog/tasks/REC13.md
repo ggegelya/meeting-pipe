@@ -1,6 +1,6 @@
 # REC13: an AVAudioEngine config-change notification deadlocks the engine queue, so a recording never stops and system capture runs unbounded
 
-Band origin: filed 2026-08-14 from a live incident the owner reported the same day ("my last meeting got hang, can you check why it is still in stopping?"), diagnosed against the running process before it was killed. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-08-14 from a live incident the owner reported the same day ("my last meeting got hang, can you check why it is still in stopping?"), diagnosed against the running process before it was killed. Status and priority live in this task's ToC row in [owner-verification.md](../owner-verification.md), the queue of shipped work awaiting owner confirmation.
 
 ## What happened
 

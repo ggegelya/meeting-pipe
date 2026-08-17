@@ -1,6 +1,6 @@
 # LOCAL13: Local model refresh bench
 
-Band origin: filed 2026-07-23 (owner ask from the 2026-07-23 local-quality assessment: raise the local floor; cloud parity explicitly not the target). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-23 (owner ask from the 2026-07-23 local-quality assessment: raise the local floor; cloud parity explicitly not the target). Status and priority live in this task's ToC row in [owner-verification.md](../owner-verification.md), the queue of shipped work awaiting owner confirmation.
 
 **LOCAL13 (P2, new): bench newer 4-bit local models against the incumbent and flip `summarization.local_model` on a measured win.** The incumbent is `mlx-community/Qwen2.5-7B-Instruct-4bit` (a 2024-generation model; config.py:122 default, also the owner's configured value). The gap it leaves is documented by the 2026-07-23 side-by-side on stem `20260723-103118` (12.5-minute Teams stand-up, 8,644-char transcript, identical prompt and transcript for both engines): the local pass produced topic-level bullets ("Discussed deployment of hotfix and assigned tasks"), a generic title, and vague actions, where `claude-sonnet-4-6` produced named, specific, checkable output. Model class is the single biggest lever available before any pipeline redesign (LOCAL14), and it is a config flip.
 

@@ -1,6 +1,6 @@
 # DET9: the skipped-meeting latch lapses mid-call, so a dismissed prompt re-opens over the live meeting
 
-Filed 2026-08-03 by the audit band. Proposed high, sent to an independent skeptic, held at high with one narrowing recorded below.
+Filed 2026-08-03 by the audit band. Proposed high, sent to an independent skeptic, held at high with one narrowing recorded below. Status and priority live in this task's ToC row in [owner-verification.md](../owner-verification.md), the queue of shipped work awaiting owner confirmation.
 
 ## What is wrong
 
