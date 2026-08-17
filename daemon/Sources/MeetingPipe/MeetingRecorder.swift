@@ -483,7 +483,17 @@ final class MeetingRecorder {
             self?.noteWriteOutcome(channel: .mic, success: ok)
         }
 
-        installMicTap(captureFormat: micFormat)
+        // The `sampleRate > 0` check above is a pre-flight on a format read fifty-odd lines
+        // earlier, and it never looked at the channel count; this is the check at the
+        // instant of use, which is the one that matters when the device is mid-transition
+        // (REC12). Unwind and let the caller retry rather than starting an engine we
+        // refused to put a mic tap on.
+        guard installMicTap(captureFormat: micFormat) else {
+            unwindFailedEngineStart(micURL: micURL, recreateEngine: false)
+            throw RecorderError.engineStartFailed(
+                "the input format cannot carry a tap (\(micFormat.sampleRate) Hz, \(micFormat.channelCount) ch)"
+            )
+        }
 
         // AVAudioEngine.start() can wedge on a transitioning audio route (a
         // Bluetooth headset renegotiating HFP was observed 2026-06-12 to hang it
@@ -913,9 +923,18 @@ final class MeetingRecorder {
     // MARK: - Mic tap
 
     /// Install the mic tap. Shared by `start()` and device-change recovery.
-    private func installMicTap(captureFormat: AVAudioFormat) {
-        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: captureFormat) { [weak self] buffer, _ in
-            self?.processMicBuffer(buffer)
+    ///
+    /// REC12: through `GuardedTapInstall` because this is the same bare `installTap` that
+    /// aborted the process four times from `MicLevelMonitor`, on the path where an abort
+    /// costs a meeting rather than a prompt animation, and it is reached from device-change
+    /// recovery, which is exactly the transitional window that crash lives in. Returns
+    /// whether the tap went on; both call sites treat a refusal as a capture failure rather
+    /// than silently recording nothing.
+    private func installMicTap(captureFormat: AVAudioFormat) -> Bool {
+        GuardedTapInstall.install(format: captureFormat, site: "meeting_recorder") {
+            engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: captureFormat) { [weak self] buffer, _ in
+                self?.processMicBuffer(buffer)
+            }
         }
     }
 
@@ -1174,7 +1193,17 @@ final class MeetingRecorder {
             micConverter = nil
         }
 
-        installMicTap(captureFormat: liveFormat)
+        // REC12: the recovery path is the one that runs while the route is mid-transition,
+        // so it is the likeliest place for a format that `installTap` would raise on. A
+        // refusal ends recovery the same way a failed converter above does.
+        guard installMicTap(captureFormat: liveFormat) else {
+            Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
+                "reason": "tap_format_unusable",
+            ])
+            Log.writeLine("recorder", "WARN: the live input format is unusable after a device change - mic capture stopped")
+            reportRecoveryFailure()
+            return
+        }
 
         // Pad the switchover gap with silence so the mic file stays
         // frame-aligned with the system channel. Enqueued before the

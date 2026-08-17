@@ -2,6 +2,8 @@
 
 Band origin: filed 2026-08-14 from the owner's crash report the same day, sent with "worth filling I guess, happens several times already". It happens more than several: **all four MeetingPipe crash reports on this machine are this one bug**, and every one lands inside 100 ms of a meeting prompt appearing. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
 
+> **Shipped 2026-08-17: items 1, 3 and 4 plus the sibling. Item 2 is an open question for the owner and is why this row is not closed.** Each item below carries what landed. Two things to know before reading the rest: the guard that shipped is deliberately probabilistic, and the barrier that would make it total needs a new SwiftPM target rather than the "one file" this spec priced, which is the decision the owner owns. The engineering evidence, including which raise conditions are ruled out and which are not, is in `daemon/docs/gotchas.md` under "installTap raises where start() throws".
+
 ## The crash
 
 ```
@@ -77,9 +79,23 @@ The file's own contract already says what the degraded behaviour should be: "If 
 
 **1. Validate the format before installing.** Skip the tap when `format.sampleRate` or `format.channelCount` is zero, log it, and leave the waveform flat per the contract above. This removes the most likely raise condition without any new machinery.
 
+> **Shipped.** `GuardedTapInstall` (`daemon/Sources/MeetingPipe/GuardedTapInstall.swift`) is the one seam, taking the format, a `site` string and the install closure, and returning whether the tap went on. A refusal writes a `recorder` / `mic_tap_install_skipped` row carrying the site, the sample rate and the channel count, so the next occurrence is readable rather than reconstructed. Worth recording because it is what made the acceptance testable at all: `AVAudioFormat(standardFormatWithSampleRate: 0, channels: 1)` returns a **live object** reporting 0 Hz rather than nil, so a test can build exactly what the input node hands over when the HAL has no usable input, and a non-nil format was never evidence of a usable one.
+
 **2. Put a real barrier around the call.** A guard cannot cover every raise reason, and Swift structurally cannot catch what is left. The remedy is a small Objective-C (or C) shim with `@try`/`@catch` that wraps the `installTap` invocation and reports failure as a Swift-visible value. There is no such shim in the tree today (searched 2026-08-14: no `@try`, no `NSException` handling anywhere in `daemon/Sources`), so this adds one file and is the piece that makes the guarantee total rather than probabilistic. Decide explicitly whether the shim is worth it or whether item 1 plus item 4 is enough, and record the reasoning.
 
+> **Not shipped. The verdict is "worth building", and it is the owner's call because the vehicle costs more than this spec priced.**
+>
+> **Why item 1 plus item 4 is not enough.** Item 1 answers the conditions readable from the format. Item 4, plus the unconditional `stop()`, closes the double-tap route deterministically, since a bus that already has a tap is one of the raise conditions and the desync was what could produce a second install. What is left is the format disagreeing with the node's hardware format at the instant `installTap` re-reads it, and no check made beforehand can close that: it is a race, not a state. It is also the live hypothesis for the observed crashes, given the 08-13 relaunch resolved AirPods Pro at 24000 Hz while the 08-14 crashes resolved the built-in mic at 48000. So the guard that shipped is probabilistic by construction and the barrier is the only thing that makes it total.
+>
+> **What it costs, which is the part the spec got wrong.** SwiftPM has no mixed Objective-C / Swift target, so this is not "one file": it is a new leaf target (`Sources/MeetingPipeObjC/` with a `.m` and a public header, plus a target entry and a dependency line in `Package.swift`). No third-party dependency, and the package is already multi-target, so it is additive rather than a restructure, but it is still a build-graph change rather than a source addition.
+>
+> **The caveat that comes with it.** Catching an `NSException` raised from inside AVFAudio's C++ frames leaves the engine in an unspecified state. That is acceptable only if a caught raise is **terminal for that tap**, never a retry on the same engine: the monitor leaves the waveform flat, and the recorder ends recovery the way it does for any other unusable format. A barrier used as "try again" would be worse than the abort it replaces.
+>
+> **Not proposed:** removing the live waveform. This spec names it as the fallback if the barrier is disproportionate, and it is not: the feature is cheap once the call is safe, and the guard that shipped already keeps the observed crash from happening.
+
 **3. Make the next occurrence self-diagnosing.** Install an uncaught-exception handler that logs the exception's name and `reason` before the process dies. This costs almost nothing and is the difference between this reconstruction and reading one line. It is also what would settle the "not proven" paragraph above.
+
+> **Shipped.** `UncaughtExceptionLogger.install()` is the first statement of `applicationDidFinishLaunching`, and writes name, `reason` and a 12-frame backtrace to `daemon.log` plus a `daemon` / `uncaught_exception` event. `Log.writeLine` first and deliberately: it is unbuffered, and a process one instruction from `abort()` gets one chance at each. It does not prevent the abort and cannot, since it runs while the exception is already unwinding; preventing it is items 1 and 2.
 
 **4. Observe `AVAudioEngineConfigurationChangeNotification`.** When the input device changes, `AVAudioEngine` stops itself and uninstalls taps, but `MicLevelMonitor.isRunning` is never updated, so the monitor's idea of its own state silently diverges from the engine's. This is the state-desync half and is worth fixing whether or not it is the trigger.
 
@@ -87,7 +103,13 @@ The file's own contract already says what the degraded behaviour should be: "If 
 >
 > Read the pattern REC13 established before adding an observer here, because the obvious spelling is the bug: registering with a non-nil `queue:` makes NotificationCenter wrap the handler in an `NSOperation` and have the **poster** wait on it, and the poster is AVFAudio's own engine queue. Use `addMainQueueObserver` (nil queue plus an explicit main hop). Note also that `MicLevelMonitor`'s engine work runs on its own private serial queue, not main, so an observer here has to get back to that queue rather than assuming main. REC13 also bounded this file's `engine.start()` / `stop()` behind `MicLevelMonitor.startBounded` and `runBoundedSync`, so build on those rather than reintroducing a bare call.
 
+> **Shipped, as two changes that compose.** The observer registers in `init` through `addMainQueueObserver`, scoped to this monitor's own engine, and hops main -> `audioQueue` before touching the flag; `deinit` unregisters. The waveform is **not** re-armed on a change, because `onLevel` is deliberately never stored (the tap block captures it directly so the render thread cannot race `audioQueue`), and a flat waveform is this file's documented degradation. Second, `stop()` no longer reads `isRunning` before tearing down, which is what closes the residual REC13 recorded on `startBounded`: an abandoned start that later succeeds leaves a running engine the monitor believes is stopped, and the old guard skipped the teardown for the process lifetime. `removeTap` on an untapped bus is a no-op and the stop is behind `engine.isRunning`, so asking anyway costs a bounded call on a private queue.
+>
+> `engine` and the `NotificationCenter` are now injectable, defaulted, and the app takes the defaults. That is only so the test can post a real configuration change scoped to the same object the observer registers for; an observer registered with a non-nil object does not receive a post made with `object: nil`, so there was no other way in. `isMeteringLive` and `markMeteringLiveForTest` are the read/write pair the same test uses, documented as test-only in the source: the state is reachable only through a live `AVAudioEngine`, and neither CI nor this machine's test runner has an input device with a Microphone grant, so a test routed through `start()` would have asserted nothing.
+
 **Sibling to fix or fence in the same pass:** `MeetingRecorder.installMicTap` ([MeetingRecorder.swift:786-790](../../../daemon/Sources/MeetingPipe/MeetingRecorder.swift#L786)) is the same unguarded `installTap` call, reached from `start()` **and from device-change recovery**, which is precisely the transitional window this crash lives in. It has not been observed crashing, but it is on the recording path, where an abort costs a meeting rather than a prompt. At minimum it routes through the same guarded helper this task builds.
+
+> **Shipped.** It returns `Bool` now and both call sites act on it: `start()` unwinds the partial mic setup and throws `engineStartFailed`, and the device-change recovery emits `configuration_change_unrecoverable` with `reason: tap_format_unusable` and reports the recovery failure, which is the same shape the failed-converter branch above it already had. The `sampleRate > 0` check `start()` already carried stays as a pre-flight, since it names the likely Microphone-permission cause; it is a check on a format read about fifty lines earlier, and the guard is the check at the instant of use. Pinned by a source fence over every `.installTap(onBus:` in `daemon/Sources`, which is red against `main` by arithmetic (one bare call, zero guarded) and goes red again on a third bare call; a behavioural test would need a live engine bound to a real input device.
 
 ## Explicitly not / out of scope
 
@@ -112,6 +134,14 @@ The file's own contract already says what the degraded behaviour should be: "If 
 - `cd daemon && swift build` clean, `swift test` green, with the number of tests this task adds recorded in the ship note. Do not pin an absolute suite total.
 - `python3 scripts/truth_fences.py both` green, with any new event action documented in the `CONVENTIONS.md` event table in the same commit.
 - No em-dashes in changed lines; repo dash guard green.
+
+> **Verified 2026-08-17.** Every line above is met except the barrier one, which is conditional on item 2 and so is not owed unless the owner says build it. **+18 tests**: 7 in `GuardedTapInstallTests` (the predicate, the two refusals with their logged rows, the healthy pass-through, the source fence), 7 added to `MicLevelMonitorTests` (`arm` refusing before touching the engine, the retry-after-refusal property, `arm` on a healthy format, the level shaping, the configuration-change reset, its object scoping, the `stop()` fence), 4 in `UncaughtExceptionLoggerTests`.
+>
+> **The red-against-`main` claim was measured, not asserted**, the way REC13 did it. Neutering the guard to a pass-through turned the zero-sample-rate and zero-channel tests red on the exact assertions ("installTap was reached; on a real node this aborts the process", and the missing skip row), along with four `arm` assertions. Commenting out the observer registration turned the configuration-change test red on "the monitor still believes it is metering an engine that stopped itself". Both were then restored and the suite re-run. The source fence is red against `main` by arithmetic: `git show main:...MeetingRecorder.swift` has one `.installTap(onBus:` and zero `GuardedTapInstall.install(`.
+>
+> `swift build` clean with no new warnings, `swift test` green at 2573 tests, `python3 scripts/truth_fences.py both` green. No new event **category** (`recorder` and `daemon` both already exist), so nothing was owed to the CONVENTIONS.md table, which fences categories rather than actions.
+>
+> One correction made in passing, worth naming because it is a behaviour claim rather than a typo: the level-shaping comment said "quiet-room (~0.001) -> ~0.04, speaking voice (~0.1) -> ~0.7", and the curve gives 0.004 and 0.28. The shaping is untouched; the comment now names measured values and a test holds them.
 
 ## Owner walkthrough (for the session that picks this up)
 

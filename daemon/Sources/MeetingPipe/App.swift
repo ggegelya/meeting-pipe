@@ -100,6 +100,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // REC12: first, so no later startup work can raise past it. An uncaught ObjC
+        // exception aborts this process, and a crash report does not carry the exception's
+        // `reason`, which is the one string that says which precondition failed. Four
+        // aborts were reconstructed without it; the fifth will not have to be.
+        UncaughtExceptionLogger.install()
+
         Log.main.info("MeetingPipe starting")
 
         // Tighten any pre-existing 0644 log files to 0600 once at startup (SEC11);
