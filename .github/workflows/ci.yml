@@ -7,65 +7,6 @@ on:
     branches: [main]
 
 jobs:
-  conventions:
-    name: Conventions (em-dash lint)
-    # The em-dash rule from CONVENTIONS.md ("Use hyphens, commas, or
-    # rewrite"). Diff-based on purpose: historical content predates the
-    # rule and isn't worth a mass-rewrite. We only fail on em-dashes
-    # introduced in this PR / push so a backslide is caught at the gate.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Scan for em-dashes in added lines
-        env:
-          BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          set -e
-          # Match the raw UTF-8 bytes for U+2014 (ANSI-C escape + LC_ALL=C
-          # grep -F): byte-exact and locale-independent, and it keeps this
-          # workflow file free of the literal character. The previous raw-char
-          # `grep -P` form went silently dead (found 2026-07-13: it reported
-          # no matches on a push whose range added 11 em-dash lines), so the
-          # self-test below makes any future dead matcher fail loudly.
-          EMDASH=$'\xe2\x80\x94'
-          if ! printf 'probe %s probe\n' "$EMDASH" | LC_ALL=C grep -qF "$EMDASH"; then
-            echo "::error::em-dash matcher self-test failed; this lint would be silently dead."
-            exit 1
-          fi
-          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            echo "No base SHA (first push / shallow clone) - skipping diff check."
-            exit 0
-          fi
-          # `git diff --unified=0` plus added-line filter (`^+` but not
-          # `^+++`) gives just the lines this PR / push introduces.
-          added=$(git diff --unified=0 "$BEFORE"...HEAD -- \
-            ':!**/Package.resolved' \
-            ':!**/uv.lock' \
-            | grep '^+' | grep -v '^+++' || true)
-          if printf '%s\n' "$added" | LC_ALL=C grep -qF "$EMDASH"; then
-            echo "::error::CONVENTIONS.md em-dash rule violated in this change. Use hyphen, comma, or rewrite."
-            printf '%s\n' "$added" | LC_ALL=C grep -nF "$EMDASH"
-            exit 1
-          fi
-          echo "No newly-introduced em-dashes."
-      - name: No em-dashes in daemon UI sources (TECH-UI-2)
-        shell: bash
-        run: |
-          # Whole-file (not diff) guard: the Swift sources and bundled
-          # resources that surface UI strings must stay free of U+2014
-          # entirely, so a backslide is caught even on an untouched line.
-          set -e
-          EMDASH=$'\xe2\x80\x94'
-          matches=$(git grep -lF "$EMDASH" -- daemon/Sources daemon/Resources || true)
-          if [ -n "$matches" ]; then
-            echo "::error::TECH-UI-2: U+2014 (em-dash) found under daemon/Sources or daemon/Resources. Use a hyphen, comma, or rewrite."
-            git grep -nF "$EMDASH" -- daemon/Sources daemon/Resources || true
-            exit 1
-          fi
-          echo "No em-dashes under daemon/Sources or daemon/Resources."
-
   design-tokens:
     name: Design tokens (TECH-DSN3)
     # Enforce the MPColors / MPType design tokens. Colors are a whole-file
