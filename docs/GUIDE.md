@@ -1,11 +1,12 @@
 # Using meeting-pipe
 
-This is the how-do-I guide: short recipes for the things you actually do with the app, each one a screen or less. It assumes the app is installed and has recorded at least once. If it is not, [`SETUP.md`](./SETUP.md) takes you from a clean Mac to a first summary, and this guide picks up where that one stops.
+This is the how-do-I guide: short recipes for the things you actually do with the app, each one a screen or less. It assumes the app is installed and has recorded at least once.
 
-Nothing here needs a terminal. Where a recipe mentions a deeper reference, it links to it rather than repeating it: [`README.md`](../README.md) is the reference for every surface and every setting.
+Nothing here sends you somewhere else to look something up: each recipe names the controls you click, in the order you click them, and none of it needs a terminal.
 
-You can open this guide from the app at any time: click the menu-bar icon and choose **Guide…**.
+This guide lives in the app. The menu-bar icon's **Guide…** opens it in a window whenever you want it, with the recipes listed down the left.
 
+<!-- repo-only -->
 **Contents**
 
 1. [Recording a meeting](#1-recording-a-meeting)
@@ -19,7 +20,12 @@ You can open this guide from the app at any time: click the menu-bar icon and ch
 9. [Hotkeys and shortcuts](#9-hotkeys-and-shortcuts)
 10. [When something looks wrong](#10-when-something-looks-wrong)
 
-Plus [the words this app uses](#the-words-this-app-uses) at the end.
+Plus [the words this app uses](#the-words-this-app-uses) at the end. In the app that list is the section rail down the left of the window, which is why it is marked repo-only here: two copies of the same contents, one of them dead text, is worse than one.
+
+**Not set up yet?** `docs/SETUP.md`, beside this file, takes a clean Mac to a first summary, and this guide picks up where it stops. The root `README.md` is the reference for every surface and every setting, and the engineering glossary is in `ARCHITECTURE.md`.
+
+**Editing this file?** Everything between `<!-- repo-only -->` and `<!-- /repo-only -->` is dropped before the app renders it. Everything outside those markers is read in a window by somebody with no checkout, so it carries no repo-relative link, no filename used as a filename, and no instruction whose subject is a file rather than a control. Three treatments, in order of preference: **fold the fact in** when the reader needs the fact and not the pointer, **drop the pointer** when the fact already sits somewhere in this guide, and **mark it repo-only** when it genuinely only serves a contributor. The renderer backs that up rather than trusting it, flattening any link it cannot follow down to its label, and `GuideDocumentTests` fails on a link target that contains `../` or ends in `.md` (DOC13).
+<!-- /repo-only -->
 
 ---
 
@@ -318,7 +324,7 @@ If the destination is on an external drive, a backup refuses to run while the dr
 
 This is the way to undo a retention sweep, recover from a bad batch action, or pull your library back after moving it. It writes into your live library, so same-named files are replaced and there is no undo. Files the backup does not carry are left alone, and the setting naming where your library lives is kept rather than overwritten with the old Mac's.
 
-Setting up a **brand new** Mac is different, because it happens before the app exists there. That path is in the README, under [Moving to a new Mac](../README.md#moving-to-a-new-mac).
+Setting up a **brand new** Mac is the one case this window cannot walk you through, because it all happens before the app exists on that Mac: you install it there first, and the restore runs from the Terminal rather than from Preferences. Your keys do not come across either way, so you re-enter those by hand once. What you can do from here is make sure there is a recent archive to restore, which is the section above.
 
 ### Retention: what happens to the audio
 
@@ -461,13 +467,17 @@ Accessibility is missing, or the meeting app is one whose windows cannot be read
 
 ### Anything else
 
-[`README.md`](../README.md#troubleshooting) has the long form, including the failures that only happen with a particular publishing destination or a particular engine.
+Two families of failure are worth naming, because both read as the app being broken and neither is.
+
+**A destination refused it.** Every place a summary publishes succeeds or fails on its own, so a Notion page that will not write does not stop the copy going to Obsidian or your folder. The **Needs you** row names the destination that failed, **Run doctor…** says why (a key that expired, a database the integration was never shared with, a share that is not mounted), and **Retry** sends the summary already on disk rather than writing a new one.
+
+**An engine refused it.** A summary written on your Mac needs its model downloaded and enough free memory to run it, and when either is missing it stops with the reason rather than taking the Mac down: it names the model to fetch, or the memory it wanted against what was free. The row leads with whichever fix applies, so the fix is a click rather than a diagnosis. A cloud engine's refusals arrive the same way, with the key or the limit named.
 
 ---
 
 ## The words this app uses
 
-Plain-language versions of the terms in this guide and in the app. The engineering glossary, if you ever need it, is in [`ARCHITECTURE.md`](../ARCHITECTURE.md#glossary).
+Plain-language versions of the terms in this guide and in the app.
 
 **Workflow.** One saved answer to "how should meetings like this be handled": where the summary goes, which engine writes it, what background that engine gets, whether it is confidential, and what happens to the audio afterwards. See [recipe 2](#2-workflows-one-setup-per-kind-of-meeting).
 

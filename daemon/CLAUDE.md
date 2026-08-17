@@ -76,6 +76,7 @@ swift test                # full Xcode required locally (CI on macos-14 has it)
 - Don't put a document on the pasteboard in one flavor, and don't render a share from `<stem>.json`. `RichTextShare.write` sets `.rtf`, `.html` and `.string` on one item and takes the board as a parameter; `MeetingShare` renders what the reader sees, and the transcript half never goes through the markdown pass. → [gotchas](docs/gotchas.md#a-share-writes-three-flavors-and-renders-what-the-reader-sees) (FEAT16)
 - Don't reference another file's types from `Automation/MeetingPipeAppIntents.swift`. `install.sh` compiles it standalone; the breakage is silent (`swift build` still passes, the Shortcuts actions vanish). → [gotchas](docs/gotchas.md#app-intents-compile-standalone)
 - Don't try to make the native App Intents run on an ad-hoc-signed build, and don't re-derive why they don't. Six causes were excluded by measurement; the remaining one is code signing. → [gotchas](docs/gotchas.md#app-intents-are-discoverable-but-not-invocable)
+- Don't put a repo path in `docs/GUIDE.md` outside a `<!-- repo-only -->` block; it renders in a window to someone with no checkout. `GuideDocument.canFollow` is an allowlist and flattens the rest. → [gotchas](docs/gotchas.md#a-document-rendered-in-a-window-has-a-second-reader) (DOC13)
 
 ## Where things live (quick index)
 

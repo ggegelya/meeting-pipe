@@ -19,7 +19,12 @@ final class GuideWindow {
         let w = NSWindow(contentViewController: host)
         w.title = "MeetingPipe Guide"
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        w.setContentSize(NSSize(width: 940, height: 660))
+        // Wide enough that the document column actually reaches
+        // `SummaryLayout.readingMeasure`: rail + divider + measure + both
+        // gutters is 220 + 1 + 720 + 40 = 981. At the 940 DOC11 shipped, the
+        // column resolved ~40pt short and every paragraph wrapped early, which
+        // is a strange way to read a document on a 1440pt screen.
+        w.setContentSize(NSSize(width: 1000, height: 700))
         // Below the reading measure plus the section rail the columns start
         // fighting, so the floor is the width the content actually asks for.
         w.contentMinSize = NSSize(width: 720, height: 420)

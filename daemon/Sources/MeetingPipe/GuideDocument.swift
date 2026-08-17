@@ -14,6 +14,15 @@ import Foundation
 /// not recognise falls through as a paragraph, so an unhandled construct reads
 /// as its own source rather than disappearing.
 ///
+/// Three of its rules exist because one file serves two readers (DOC13). A
+/// contributor reads it in a checkout, where a path is navigable; a user reads
+/// it in this window, where a path is a dead end and a *link* to one is worse,
+/// because it looks like a working cross-reference. So the parser drops
+/// `repo-only` blocks, flattens any link it cannot follow, and lets a section
+/// heading own its own break. Editorial discipline is the other half and lives
+/// in the document's own repo-only preamble; these are the half that holds when
+/// discipline slips.
+///
 /// Pure, in the `MicGate.decide` / `StatusBarModel` idiom: text in, blocks out,
 /// no I/O and no globals. `bundledMarkdown()` is the one read, kept beside it so
 /// the view has somewhere to ask.
@@ -38,6 +47,17 @@ enum GuideDocument {
         let blockIndex: Int
     }
 
+    // MARK: - Repo-only content
+
+    /// Opens a run of lines the window never sees. A markdown renderer hides the
+    /// marker and shows what follows; this parser does the opposite, which is
+    /// what lets one file carry a contents list, a pointer to a sibling
+    /// document, and a note to its next editor without any of it reaching a
+    /// reader who has no checkout to resolve them against (DOC13).
+    static let repoOnlyOpen = "<!-- repo-only -->"
+    /// Closes a `repoOnlyOpen` run.
+    static let repoOnlyClose = "<!-- /repo-only -->"
+
     // MARK: - Parsing
 
     static func parse(_ markdown: String) -> [Block] {
@@ -57,6 +77,31 @@ enum GuideDocument {
             let line = raw.trimmingCharacters(in: .whitespaces)
 
             if line.isEmpty {
+                flushParagraph()
+                i += 1
+                continue
+            }
+
+            if line == Self.repoOnlyOpen {
+                flushParagraph()
+                i += 1
+                while i < lines.count,
+                      lines[i].trimmingCharacters(in: .whitespaces) != Self.repoOnlyClose {
+                    i += 1
+                }
+                // Steps past the close, or past the end when the block was never
+                // closed. An unclosed block therefore swallows the rest of the
+                // document, which is the safe direction to fail (contributor
+                // content stays out) and the loud one to catch: the balance is
+                // fenced by `GuideDocumentTests`, so the authoring mistake is a
+                // red suite rather than a leak.
+                i += 1
+                continue
+            }
+
+            // A close with no open is a no-op rather than a paragraph, so the
+            // marker never renders as literal text in the window.
+            if line == Self.repoOnlyClose {
                 flushParagraph()
                 i += 1
                 continue
@@ -113,7 +158,27 @@ enum GuideDocument {
             i += 1
         }
         flushParagraph()
-        return blocks
+        return collapsingSectionRules(blocks)
+    }
+
+    /// Drop a horizontal rule that sits immediately above a level-2 heading.
+    ///
+    /// In a file the `---` before each `## Section` is the break. On screen the
+    /// heading already is one: it arrives with its own space above it and at a
+    /// larger size, so the hairline lands as a second separator a few points
+    /// away from the first, and ten of those down a document is most of what
+    /// makes a rendered markdown file look like a rendered markdown file rather
+    /// than an application. Whitespace does the separating instead, which is
+    /// what `design/README.md` asks for ("the blank paper *is* the texture").
+    ///
+    /// Only that one adjacency. A rule between two paragraphs still renders,
+    /// because there it is the only break there is.
+    private static func collapsingSectionRules(_ blocks: [Block]) -> [Block] {
+        blocks.enumerated().compactMap { index, block in
+            guard case .rule = block, index + 1 < blocks.count else { return block }
+            guard case .heading(let level, _) = blocks[index + 1], level == 2 else { return block }
+            return nil
+        }
     }
 
     /// The level-2 headings, in order, for the section rail.
@@ -122,6 +187,33 @@ enum GuideDocument {
             guard case .heading(let level, let text) = block, level == 2 else { return nil }
             return Section(title: text, blockIndex: index)
         }
+    }
+
+    /// Which section the rail marks as current, given each section heading's
+    /// vertical offset from the top of the reading viewport (negative once it
+    /// has scrolled off the top).
+    ///
+    /// The current section is the last one whose heading has reached the top
+    /// band, which is how a reader thinks about it: you are in the section whose
+    /// heading you most recently passed. Pure and explicitly-fed in the
+    /// `MicGate.decide` idiom, because the alternative is scroll arithmetic
+    /// buried in a view body where nothing can test it.
+    ///
+    /// Above the first heading, in the guide's opening paragraphs, this answers
+    /// with the first section rather than with nothing. That is the one place it
+    /// is deliberately not literal: a rail with no mark at all reads as broken
+    /// on open, and a reader in the preamble is on their way into recipe 1.
+    static func currentSection(
+        offsets: [Int: CGFloat],
+        sections: [Section],
+        threshold: CGFloat = 28
+    ) -> Int? {
+        guard let first = sections.first else { return nil }
+        let passed = sections.filter { section in
+            guard let y = offsets[section.blockIndex] else { return false }
+            return y <= threshold
+        }
+        return passed.last?.blockIndex ?? first.blockIndex
     }
 
     // MARK: - Line kinds
@@ -172,10 +264,33 @@ enum GuideDocument {
 
     // MARK: - Inline
 
-    /// Rewrite a same-document link (`[a recipe](#anchor)`) to its label. In a
-    /// file those anchors work; in the window they resolve to nothing, and a
-    /// link that silently does nothing is worse than plain text. Links to a real
-    /// destination are left alone.
+    /// Destinations this window can actually follow. Everything else is a dead
+    /// link on screen, so `flatten` reduces it to its label.
+    ///
+    /// An allowlist rather than a list of shapes to reject, because the shapes
+    /// that fail are open-ended (`#anchor`, `./SETUP.md`, `../README.md`,
+    /// `docs/GUIDE.md`, a bare `assets/x.png`) while the ones that work are a
+    /// closed set: something the system can open. Rejecting shapes is how DOC11
+    /// caught the anchor case and missed the four repo paths beside it.
+    private static let followableSchemes: Set<String> = ["http", "https", "mailto"]
+
+    /// Whether a link target resolves to anything when the guide is read in a
+    /// window rather than in a checkout.
+    static func canFollow(_ target: String) -> Bool {
+        guard let colon = target.firstIndex(of: ":") else { return false }
+        return followableSchemes.contains(target[..<colon].lowercased())
+    }
+
+    /// Rewrite a link the window cannot follow (`[a recipe](#anchor)`,
+    /// `[the readme](../README.md)`) down to its label.
+    ///
+    /// DOC11 did this for same-document anchors, for the recorded reason that
+    /// "one in a window resolves to nothing". A repo-relative path has the
+    /// identical property and fails worse: an anchor that does nothing is a
+    /// disappointment, while a live-looking link to a document the reader has
+    /// just been told is authoritative is a promise the app cannot keep. DOC13
+    /// widened the rule to cover both rather than inventing a second one. Links
+    /// to a real destination are left alone for the view's inline parser.
     static func flatten(_ text: String) -> String {
         var out = ""
         var rest = Substring(text)
@@ -191,7 +306,7 @@ enum GuideDocument {
             let target = rest[rest.index(close, offsetBy: 2)..<end]
             let label = rest[rest.index(after: open)..<close]
             out += rest[..<open]
-            out += target.hasPrefix("#") ? label : rest[open...end]
+            out += canFollow(String(target)) ? rest[open...end] : label
             rest = rest[rest.index(after: end)...]
         }
         out += rest
@@ -211,11 +326,18 @@ enum GuideDocument {
 
     /// Shown in place of the guide when the bundle carries no copy, which means
     /// the app was installed before DOC11. Names the fix rather than the cause.
+    ///
+    /// It keeps its two script names where DOC13 stripped every other repo path
+    /// out of the guide, because this is the one state with no control behind
+    /// it: re-running the installer is the whole fix, and a message in product
+    /// register that named no command would leave the reader stuck. What went
+    /// was the sentence about which file it ships as, which the reader cannot
+    /// act on.
     static let missingCopy = """
         The guide is not in this copy of the app.
 
-        It ships as `docs/GUIDE.md` in the meeting-pipe repository, and the \
-        installer puts it into the app. Re-run `./scripts/install.sh` (or \
-        `./scripts/rebuild.sh`) from the repository to pick it up.
+        That means this build was installed before the guide existed. \
+        Re-running the installer (`./scripts/install.sh`, or \
+        `./scripts/rebuild.sh`) picks it up.
         """
 }
