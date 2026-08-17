@@ -13,7 +13,11 @@ struct LaunchctlResult: Equatable {
 /// The seam UX42 put in front of `/bin/launchctl`, so the launch-at-login state
 /// machine is unit-testable without mutating the developer's own login item.
 /// `LaunchAtLoginServiceTests` drives the whole thing through a fake.
-protocol LaunchctlRunning {
+/// `Sendable` because UX67 moved the calls off the main thread: the service is
+/// handed to a detached task, so everything it holds crosses a concurrency
+/// boundary. `ProcessLaunchctl` is stateless and gets it for free; a fake with
+/// state owes a lock rather than an `@unchecked` (`daemon/CLAUDE.md`).
+protocol LaunchctlRunning: Sendable {
     func run(_ arguments: [String]) -> LaunchctlResult
 }
 
@@ -35,6 +39,40 @@ struct LaunchAtLoginStatus: Equatable {
     let error: String?
 
     var isOn: Bool { state == .enabled }
+}
+
+/// A write that did not move the switch, reduced to what is worth logging (UX67).
+///
+/// The control renders whatever launchd is left holding rather than what was
+/// asked for, which is UX42's design and correct. Its cost is that a `launchctl`
+/// refusing every write is indistinguishable, at the control, from a dead toggle:
+/// the switch snaps back either way, and the only difference is a message in the
+/// group footer that nobody is looking for. So the refusal is recorded too, and
+/// the next occurrence is a log line rather than another walkthrough report.
+///
+/// Pure and separate from the emit so the decision is testable without reading a
+/// log file back.
+struct LaunchAtLoginRefusal: Equatable {
+    let requested: Bool
+    let resulting: LaunchAtLoginState
+    /// The service's own message, which already carries the `launchctl` exit
+    /// status and the tail of its stderr.
+    let reason: String
+
+    /// Nil when the write landed, which is the overwhelmingly common case and
+    /// must stay silent: a log line per successful toggle is noise that makes the
+    /// interesting one harder to find.
+    static func decide(requested: Bool, status: LaunchAtLoginStatus) -> LaunchAtLoginRefusal? {
+        guard status.isOn != requested else { return nil }
+        return LaunchAtLoginRefusal(
+            requested: requested,
+            resulting: status.state,
+            // A refusal with no message is the sharper case, not a reason to stay
+            // quiet: it means the write "succeeded" and the state still did not
+            // move, which no footer would have shown either.
+            reason: status.error ?? "launchctl reported no error"
+        )
+    }
 }
 
 /// Launch at login, owned by the one mechanism that actually starts the app: the
@@ -66,7 +104,7 @@ struct LaunchAtLoginStatus: Equatable {
 /// system-level surface for this switch. That is worth revisiting in a notarized,
 /// Developer-ID world (D8), where SMAppService could own login-start and the
 /// agent could shrink to supervision alone. It is not worth two mechanisms today.
-struct LaunchAtLoginService {
+struct LaunchAtLoginService: Sendable {
     /// Also the app's bundle id. A known sharp edge, carried rather than fixed
     /// (UX42 scope): `launchctl print` output and System Settings ▸ Login Items
     /// entries read ambiguously because of it. Renaming either is a migration.
@@ -80,13 +118,13 @@ struct LaunchAtLoginService {
     private let runner: LaunchctlRunning
     private let uid: uid_t
     private let plistPath: String
-    private let plistExists: (String) -> Bool
+    private let plistExists: @Sendable (String) -> Bool
 
     init(
         runner: LaunchctlRunning = ProcessLaunchctl(),
         uid: uid_t = getuid(),
         plistPath: String = LaunchAtLoginService.defaultPlistPath,
-        plistExists: @escaping (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+        plistExists: @escaping @Sendable (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
     ) {
         self.runner = runner
         self.uid = uid
@@ -190,7 +228,23 @@ struct LaunchAtLoginService {
 /// The real runner. Reads the pipe to EOF before waiting, so a chatty
 /// `print-disabled` (every login item on the machine) cannot fill the buffer and
 /// deadlock the wait.
+///
+/// **Every call is bounded (UX67).** `readDataToEndOfFile` returns when the pipe
+/// closes, which is when the child dies, so a `launchctl` that never exits blocks
+/// this call forever. That is the same freeze class as a stuck `stopCapture` or a
+/// wedged AX round-trip, and here it sat behind a Preferences toggle: a
+/// `rebuild.sh` boots the `com.meetingpipe.daemon` label out and back in while the
+/// pane is open, which is exactly when `bootstrap` and `print` on that domain
+/// block. The watchdog kills the child at the ceiling, which unblocks the read and
+/// the wait together and leaves a non-zero status the callers already know how to
+/// report. `LaunchAtLoginModel` also keeps these calls off the main thread; this
+/// bound is the second half, so a caller that forgets still cannot hang forever.
 struct ProcessLaunchctl: LaunchctlRunning {
+    /// Generous against a slow `print-disabled` on a machine with many agents,
+    /// and short enough that a wedged call is over before a person gives up on
+    /// the control.
+    static let ceilingSeconds: Double = 5
+
     func run(_ arguments: [String]) -> LaunchctlResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
@@ -200,8 +254,16 @@ struct ProcessLaunchctl: LaunchctlRunning {
         process.standardError = pipe
         do {
             try process.run()
+            let watchdog = DispatchWorkItem {
+                guard process.isRunning else { return }
+                Log.main.error("launchctl \(arguments.first ?? "") exceeded its ceiling; terminating")
+                process.terminate()
+            }
+            DispatchQueue.global(qos: .userInitiated)
+                .asyncAfter(deadline: .now() + ProcessLaunchctl.ceilingSeconds, execute: watchdog)
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
+            watchdog.cancel()
             return LaunchctlResult(
                 status: process.terminationStatus,
                 output: String(data: data, encoding: .utf8) ?? ""

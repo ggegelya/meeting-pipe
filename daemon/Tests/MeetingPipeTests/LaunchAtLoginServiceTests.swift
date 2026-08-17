@@ -1,3 +1,4 @@
+import os
 import XCTest
 @testable import MeetingPipe
 
@@ -9,23 +10,40 @@ final class LaunchAtLoginServiceTests: XCTestCase {
 
     // MARK: - Fake
 
+    /// UX67 made `LaunchctlRunning` `Sendable`, because the service now crosses to
+    /// a detached task. The state moves under a lock rather than behind an
+    /// `@unchecked Sendable`, which `daemon/CLAUDE.md` caps at the two that exist.
     private final class FakeLaunchctl: LaunchctlRunning {
-        /// Every argv the service handed to launchctl, in order.
-        private(set) var invocations: [[String]] = []
-        /// Canned results keyed by subcommand (`print-disabled`, `enable`, ...).
-        var responses: [String: LaunchctlResult] = [:]
-
-        init(printDisabled: String = "") {
-            responses["print-disabled"] = LaunchctlResult(status: 0, output: printDisabled)
+        private struct State {
+            var invocations: [[String]] = []
+            var responses: [String: LaunchctlResult] = [:]
         }
 
+        private let state = OSAllocatedUnfairLock(initialState: State())
+
+        init(printDisabled: String = "") {
+            state.withLock { $0.responses["print-disabled"] = LaunchctlResult(status: 0, output: printDisabled) }
+        }
+
+        /// Canned results keyed by subcommand (`print-disabled`, `enable`, ...).
+        var responses: [String: LaunchctlResult] {
+            get { state.withLock { $0.responses } }
+            set { state.withLock { $0.responses = newValue } }
+        }
+
+        /// Every argv the service handed to launchctl, in order.
+        var invocations: [[String]] { state.withLock { $0.invocations } }
+
         func run(_ arguments: [String]) -> LaunchctlResult {
-            invocations.append(arguments)
-            return responses[arguments.first ?? ""] ?? LaunchctlResult(status: 0, output: "")
+            state.withLock { s in
+                s.invocations.append(arguments)
+                return s.responses[arguments.first ?? ""] ?? LaunchctlResult(status: 0, output: "")
+            }
         }
 
         var verbs: [String] { invocations.compactMap(\.first) }
         func argv(_ verb: String) -> [String]? { invocations.first { $0.first == verb } }
+        func count(_ verb: String) -> Int { verbs.filter { $0 == verb }.count }
     }
 
     private let target = "gui/501/com.meetingpipe.daemon"
@@ -238,5 +256,94 @@ final class LaunchAtLoginServiceTests: XCTestCase {
         XCTAssertTrue(
             LaunchAtLoginService.defaultPlistPath
                 .hasSuffix("Library/LaunchAgents/com.meetingpipe.daemon.plist"))
+    }
+
+    // MARK: - UX67: the refusal diagnostic (candidate A)
+
+    /// The control renders the machine rather than the request, which is right and
+    /// stays. What it cannot do is tell a person that the machine declined, and
+    /// nobody reads the group footer they were not expecting. These pin the
+    /// decision, not the sentence: a rendered string would move with the copy.
+    func test_a_write_that_did_not_move_the_switch_is_a_refusal() {
+        let refused = LaunchAtLoginRefusal.decide(
+            requested: true,
+            status: LaunchAtLoginStatus(state: .disabled, error: "Could not turn launch at login on: launchctl exited 5. Boot-out failed")
+        )
+        XCTAssertEqual(refused?.requested, true)
+        XCTAssertEqual(refused?.resulting, .disabled)
+        XCTAssertEqual(refused?.reason.contains("launchctl exited 5"), true,
+                       "the exit status and the stderr tail are the whole point of logging it")
+    }
+
+    func test_a_write_that_landed_logs_nothing() {
+        XCTAssertNil(LaunchAtLoginRefusal.decide(
+            requested: true, status: LaunchAtLoginStatus(state: .enabled, error: nil)))
+        XCTAssertNil(LaunchAtLoginRefusal.decide(
+            requested: false, status: LaunchAtLoginStatus(state: .disabled, error: nil)))
+        XCTAssertNil(LaunchAtLoginRefusal.decide(
+            requested: false, status: LaunchAtLoginStatus(state: .notInstalled, error: nil)),
+            "not installed is off, and asking for off got it")
+    }
+
+    /// The sharper case: launchctl claimed success and the state still did not
+    /// move. No footer would have shown this one at all, so staying quiet here
+    /// would leave the worst variant the least visible.
+    func test_a_silent_refusal_still_logs() {
+        let refused = LaunchAtLoginRefusal.decide(
+            requested: true, status: LaunchAtLoginStatus(state: .notInstalled, error: nil))
+        XCTAssertNotNil(refused)
+        XCTAssertEqual(refused?.reason, "launchctl reported no error")
+    }
+
+    // MARK: - UX67: the pane re-reads (candidate B)
+
+    /// The defect: the model read once in `init` and nothing re-read on open, on
+    /// foreground, or on any notification, so a `rebuild.sh` moving the agent
+    /// underneath left the pane rendering what was true when the view was built.
+    /// Counted on the runner, which is the only place a read is observable.
+    @MainActor
+    func test_the_model_re_reads_when_the_pane_appears() async {
+        let runner = FakeLaunchctl(printDisabled: printDisabled("disabled"))
+        let model = LaunchAtLoginModel(service: service(runner))
+
+        XCTAssertEqual(runner.count("print-disabled"), 1, "the initial read")
+        XCTAssertFalse(model.status.isOn)
+
+        // The agent changes underneath, the way install.sh or rebuild.sh does it.
+        runner.responses["print-disabled"] = LaunchctlResult(status: 0, output: printDisabled("enabled"))
+
+        await model.refresh()?.value
+
+        XCTAssertEqual(runner.count("print-disabled"), 2, "appearing re-takes the reading")
+        XCTAssertTrue(model.status.isOn, "and the pane shows what the machine now holds")
+    }
+
+    /// Not a per-render read. `status()` spawns a subprocess, and UX55 recorded
+    /// what an inline read on a hot path costs; a re-appear mid-write must not
+    /// stack a second one either.
+    @MainActor
+    func test_a_refresh_while_one_is_in_flight_does_not_stack_a_second_read() async {
+        let runner = FakeLaunchctl(printDisabled: printDisabled("enabled"))
+        let model = LaunchAtLoginModel(service: service(runner))
+
+        let first = model.refresh()
+        XCTAssertNil(model.refresh(), "the second is refused while the first is in flight")
+        await first?.value
+
+        XCTAssertEqual(runner.count("print-disabled"), 2, "init plus exactly one refresh")
+    }
+
+    /// A write still reports what launchd is left holding (UX42's rule, unchanged)
+    /// and clears `isBusy` when it lands, so the control comes back.
+    @MainActor
+    func test_a_write_publishes_the_machines_answer_and_clears_busy() async {
+        let runner = FakeLaunchctl(printDisabled: noOverride)
+        let model = LaunchAtLoginModel(service: service(runner))
+
+        await model.set(enabled: false)?.value
+
+        XCTAssertFalse(model.isBusy)
+        XCTAssertEqual(model.status.state, .disabled)
+        XCTAssertTrue(runner.verbs.contains("disable"))
     }
 }

@@ -273,7 +273,7 @@ This table is fenced: `scripts/truth_fences.py events` diffs it against the cate
 
 `pipeline` appears in **both** rows on purpose. It is the pipeline's own category, and the daemon emits exactly one row under it: `LocalServerReaper` logging `local_server_reaped` when it kills an `mlx_lm.server` that a watchdog SIGKILL orphaned. The event is about the pipeline's process, not the daemon's own machinery, so it reads correctly in `mp logs` alongside the pipeline's rows.
 
-`daemon` (Notion database fetches from the Preferences and Workflows pickers) and `detail` (Library detail-pane toolbar actions, for audit traceability) are small and UI-adjacent; they were emitted for months before this table listed them, which is the drift CI5 exists to stop.
+`daemon` (Notion database fetches from the Preferences and Workflows pickers, plus a launch-at-login write launchd declined) and `detail` (Library detail-pane toolbar actions, for audit traceability) are small and UI-adjacent; they were emitted for months before this table listed them, which is the drift CI5 exists to stop. UX67 put its refusal event here rather than opening a `preferences` category, following the rule below: `daemon` already carries Preferences-originated events, and one action is not a new subsystem.
 
 `recorder` and `recording` are both real and are not the same thing: `recorder` is the capture machinery's own narration, while `recording` carries exactly the two mid-recording capture-health transitions the HUD banner rides on (`recording.degraded` / `recording.recovered`, emitted from `Coordinator.onSystemAudioDegraded`). VALID1's UX4 bar asserts on `recording.degraded`, so do not fold it into `recorder`.
 
