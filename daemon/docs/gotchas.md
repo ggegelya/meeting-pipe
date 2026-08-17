@@ -1,4 +1,4 @@
-# daemon/ — the evidence behind the rules
+# daemon/ - the evidence behind the rules
 
 Every rule in [`../CLAUDE.md`](../CLAUDE.md) links to a section here. The rule is what you must do; this section is why, and what it cost to find out. Read one when you are about to touch the thing it names, when a rule looks arbitrary and you want to know whether your case is the exception, or when you are changing the rule itself. Most of these record a measurement, so they are worth reading before you re-derive one.
 

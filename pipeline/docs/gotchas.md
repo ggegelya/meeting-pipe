@@ -1,4 +1,4 @@
-# pipeline/ — the evidence behind the rules
+# pipeline/ - the evidence behind the rules
 
 Rules in [`../CLAUDE.md`](../CLAUDE.md) link here for the incident that produced them. The rule is what you must do; this section is why, and what it cost to find out. Read one before you argue with a rule, change it, or decide your case is the exception.
 
