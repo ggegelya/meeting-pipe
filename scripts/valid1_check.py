@@ -21,6 +21,7 @@ Usage:
   scripts/valid1_check.py --attribution   # only the speaker-attribution coverage read
   scripts/valid1_check.py --der           # DIAR1 DER lower bound, from in-app corrections
   scripts/valid1_check.py --der --reviewed 20260716-113206 ...   # a real DER over meetings you reviewed fully
+  scripts/valid1_check.py --cleanup       # DIAR5: what the LLM speaker-cleanup pass changed, per segment
   scripts/valid1_check.py --coldstart     # A15: measure a cold vs warm local summarize (runs the model)
   scripts/valid1_check.py --timings       # only the run/stage timing table
   scripts/valid1_check.py --since 2026-06-03T00:00:00Z
@@ -584,6 +585,109 @@ def report_corrections(
                   f"actually held {len(m['people'])}+ people: {', '.join(m['people'])}")
 
 
+# ------------------------------- DIAR5: what the LLM cleanup pass did, per segment
+
+def read_cleanup_audit(meetings_dir: Path, stem: str) -> dict | None:
+    """`<stem>.diarize_cleanup.json`: the cleanup pass's per-segment record.
+
+    None when the pass never ran on this meeting, which is the state every
+    meeting before DIAR5 is in and is why the 2026-08-04 regression could only
+    be inferred. Present-with-no-edits means it ran and changed nothing.
+    """
+    try:
+        obj = json.loads(
+            (meetings_dir / f"{stem}.diarize_cleanup.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def revert_cleanup(doc: dict, audit: dict) -> dict:
+    """The transcript as it stood before the cleanup pass, from the audit's
+    `from` labels. This is what makes a before/after DER possible at all: the
+    pre-cleanup transcript is not kept on disk, so without the record there is
+    nothing to score the cleaned one against."""
+    segments = doc.get("segments")
+    if not isinstance(segments, list):
+        return doc
+    restored = [dict(s) if isinstance(s, dict) else s for s in segments]
+    for edit in audit.get("edits") or []:
+        if not isinstance(edit, dict):
+            continue
+        idx = edit.get("segment_index")
+        was = edit.get("from")
+        if isinstance(idx, int) and isinstance(was, str) and 0 <= idx < len(restored):
+            if isinstance(restored[idx], dict):
+                restored[idx]["speaker"] = was
+    return {**doc, "segments": restored}
+
+
+def build_cleanup_report(meetings: list[tuple[str, dict, dict, dict]]) -> dict:
+    """What the cleanup pass changed, and how much of it the owner then undid.
+
+    `meetings` is (stem, transcript, overlay, audit). For each meeting the pass
+    ran on, the record answers the question the aggregate counts could not:
+    which segments it relabelled, whether the owner corrected those same
+    segments afterwards, and what the DER would have been without it.
+    """
+    rows: list[dict] = []
+    for stem, doc, overlay, audit in meetings:
+        edits = [e for e in (audit.get("edits") or []) if isinstance(e, dict)]
+        refused = [e for e in (audit.get("refused") or []) if isinstance(e, dict)]
+        touched = {e.get("segment_index") for e in edits}
+        corrected = {int(k) for k in (overlay.get("segments") or {}) if str(k).isdigit()}
+        cleaned = build_corrections_report([(stem, doc, overlay)])
+        uncleaned = build_corrections_report([(stem, revert_cleanup(doc, audit), overlay)])
+        rows.append({
+            "stem": stem,
+            "edits": len(edits),
+            "refused": len(refused),
+            "eliminated": list(audit.get("labels_eliminated") or []),
+            "corrections": len(corrected),
+            "undone": len(touched & corrected),
+            "der_cleaned": cleaned.get("der_lower_bound"),
+            "der_uncleaned": uncleaned.get("der_lower_bound"),
+        })
+    return {"meetings": len(rows), "rows": sorted(rows, key=lambda r: r["stem"])}
+
+
+def report_cleanup(meetings_dir: Path, since: datetime | None = None) -> None:
+    meetings = []
+    for stem, doc in load_transcripts(meetings_dir, since):
+        audit = read_cleanup_audit(meetings_dir, stem)
+        if audit is not None:
+            meetings.append((stem, doc, read_overlay(meetings_dir, stem), audit))
+    r = build_cleanup_report(meetings)
+    print("== DIAR5: what the LLM speaker-cleanup pass changed ==")
+    if not r["meetings"]:
+        print(f"  (no meeting under {meetings_dir} carries a cleanup audit record)")
+        print("  Only meetings cleaned since DIAR5 have one. On an older meeting the")
+        print("  pass's per-segment decisions were never written down, so a correction")
+        print("  cannot be traced to a cleanup edit and this report cannot infer it.")
+        return
+    print(f"  {r['meetings']} meetings the pass ran on")
+    for m in r["rows"]:
+        line = (f"    {m['stem']}  {m['edits']:3d} edits  {m['refused']:2d} refused  "
+                f"{m['undone']}/{m['corrections']} later corrected by hand")
+        if m["eliminated"]:
+            line += f"  eliminated: {', '.join(m['eliminated'])}"
+        print(line)
+        if m["der_cleaned"] is not None and m["der_uncleaned"] is not None:
+            print(f"       DER with cleanup {m['der_cleaned'] * 100:.1f}%  "
+                  f"without {m['der_uncleaned'] * 100:.1f}%")
+    print("  `undone` is the count this record exists for: a segment the pass relabelled")
+    print("  and the owner then reassigned is a cleanup edit that made attribution worse.")
+    print("  Read `undone` before the DERs. The DER pair only separates when the pass")
+    print("  moved a segment OFF the label the owner then assigned it back to; every")
+    print("  other corrected segment counts as an error under both labels, so a flat")
+    print("  delta means the metric cannot see the edit, not that the edit was harmless.")
+    print("  A merge onto a named person and one onto an unnamed cluster score the same")
+    print("  here and are not the same outcome: a wrong name states something false,")
+    print("  an unnamed cluster only leaves work. Both DERs carry --der's own caveat too,")
+    print("  so without --reviewed they are lower bounds over spot-checked meetings.")
+
+
 # ------------------------------------------------------------ A15 cold-start
 
 def free_memory_pct() -> float | None:
@@ -774,6 +878,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--reviewed", type=str, nargs="+", default=None, metavar="STEM",
                     help="meetings you reviewed line by line; scopes --der to them and "
                          "reports a real DER instead of a lower bound")
+    ap.add_argument("--cleanup", action="store_true",
+                    help="only DIAR5's read of what the LLM speaker-cleanup pass changed")
     ap.add_argument("--timings", action="store_true", help="only the pipeline timing table")
     ap.add_argument("--coldstart", action="store_true",
                     help="A15: measure a cold vs warm local summarize (runs the model)")
@@ -799,11 +905,13 @@ def main(argv: list[str]) -> int:
             return 2
         return 0 if run_coldstart(resolve_mp(), transcript, args.endpoint, args.out) else 1
 
-    selected = args.ux4 or args.diar or args.attribution or args.der or args.timings
+    selected = (args.ux4 or args.diar or args.attribution or args.der
+                or args.cleanup or args.timings)
     run_ux4 = args.ux4 or not selected
     run_diar = args.diar or not selected
     run_attribution = args.attribution or not selected
     run_der = args.der or not selected
+    run_cleanup = args.cleanup or not selected
     run_timings = args.timings or not selected
 
     daemon_events = _load(args.events, since) if (run_ux4 or run_diar) else []
@@ -819,6 +927,8 @@ def main(argv: list[str]) -> int:
         sections.append(lambda: (report_attribution(args.meetings_dir, since), True)[1])
     if run_der:
         sections.append(lambda: (report_corrections(args.meetings_dir, since, args.reviewed), True)[1])
+    if run_cleanup:
+        sections.append(lambda: (report_cleanup(args.meetings_dir, since), True)[1])
     if run_timings:
         sections.append(lambda: (report_timings(pipeline_events), True)[1])
 

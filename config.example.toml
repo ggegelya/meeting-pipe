@@ -212,6 +212,10 @@ local_memory_floor_pct = 10
 # Toggle it in Preferences > Pipeline > Speaker labels. Only run-all runs
 # it, so Re-transcribe and Re-summarize do not replay it over an existing
 # meeting; do that on demand with `mp cleanup-diarization <stem>.json`.
+# DIAR5 bounded it: a relabel that would empty a speaker label is refused
+# unless the two labels' voiceprints agree, and every applied and refused
+# edit is written per segment to `<stem>.diarize_cleanup.json`
+# (`scripts/valid1_check.py --cleanup` reads it back).
 diarize_cleanup = false
 # UX63. Pin `mp digest`'s narrative to the on-device engine whatever `backend`
 # above says. The digest is the one command that runs unattended on a schedule

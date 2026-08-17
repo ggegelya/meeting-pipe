@@ -351,6 +351,42 @@ The moments the user flagged mid-recording, with the flag-moment hotkey or the H
 
 ---
 
+## Diarization cleanup audit (`<stem>.diarize_cleanup.json`)
+
+What the LLM speaker-cleanup pass (`summarization.diarize_cleanup`, TECH-DIAR1) did to one meeting, per segment. Python-only: `diarize_cleanup.cleanup_transcript` writes it, `scripts/valid1_check.py --cleanup` reads it, and no Swift reads it, so it is not a cross-tree contract. Shape:
+
+```json
+{
+  "schema_version": 1,
+  "segments": 81,
+  "labels_before": ["Sudip", "THEM-B", "Prajval"],
+  "labels_after": ["Sudip", "Prajval"],
+  "labels_eliminated": ["THEM-B"],
+  "merges_count": 1,
+  "reattributions_count": 0,
+  "refusals_count": 1,
+  "latency_ms": 900,
+  "edits": [
+    { "segment_index": 59, "from": "THEM-B", "to": "Prajval", "kind": "merge", "similarity": 0.554 }
+  ],
+  "refused": [
+    { "segment_index": 71, "from": "THEM-D", "to": "Anisha", "kind": "merge",
+      "similarity": 0.463, "reason": "voiceprint_distance" }
+  ]
+}
+```
+
+Keyed by the segment's array index, the same join key the two overlay sidecars use. `similarity` is the cosine between the two labels' voiceprints from `<stem>.embeddings.json`, and it is **omitted rather than zeroed** when either label has no embedding, so "allowed because the voices are close" cannot be misread as "allowed because nothing could be measured". `kind` is the model's own word for the edit and nothing validates it; it is recorded for the trail and never acted on (see `pipeline/docs/gotchas.md`).
+
+Two invariants worth keeping:
+
+- **Written on every run of the pass, including the single-speaker no-op.** Presence means the pass ran; absence means it never did. Those two states have opposite readings for any later question about a meeting's labels, and the aggregate event counts cannot separate them.
+- **Rewritten in full, so it describes the last run only.** After a second `mp cleanup-diarization` the `from` labels are the first run's `to` labels, and `valid1_check.revert_cleanup` therefore recovers that intermediate transcript, not the finalizer's.
+
+It exists because the pass emitted only aggregate counts, so no owner correction could be traced to a cleanup edit rather than to a clustering mistake; DIAR5's own demonstration case had to be argued from two sidecars and could not be attributed from disk at all.
+
+---
+
 ## Publish result (`<stem>.publish.json`)
 
 This run's publish outcome (PIPE1). A Python-to-Swift surface: `publish_router.fanout` writes it (atomically) at the end of every fanout, and the daemon reads it back through `PublishResult.load`. Shape:
