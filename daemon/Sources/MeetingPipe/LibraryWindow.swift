@@ -21,6 +21,19 @@ final class LibraryWindow {
         let view = LibraryRootView(model: model)
             .environmentObject(model)
         let host = NSHostingController(rootView: MPControlAccent(view))
+        // UX70: the window must not adopt its content's ideal size. An
+        // NSHostingController defaults to `.preferredContentSize`, and
+        // `NSWindow(contentViewController:)` resizes the window to follow it, so
+        // a centre column whose ideal height grows drags the window with it. That
+        // is why Ask could grow past the display with a `ScrollView` already over
+        // the session: a scroller only takes over once the height it is *offered*
+        // is smaller than its content, and a window that keeps enlarging itself
+        // to match never offers a smaller one. Emptied rather than fixed in the
+        // Ask pane, because the escape is here and every rail rides it: Facts,
+        // People, Meeting time and Digests all render unbounded lists in the same
+        // column. Nothing is lost, since the initial size is set explicitly below
+        // and the frame autosave owns it afterwards.
+        host.sizingOptions = []
         let w = NSWindow(contentViewController: host)
         w.title = "MeetingPipe Library"
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]

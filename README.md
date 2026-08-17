@@ -271,7 +271,7 @@ To change the threshold, edit `summarization.skip_above_chars` in `~/.config/mee
 
 ## Library window
 
-Click the menu bar icon → **Open Library…** to open the main window (900×600, restorable, hides on Cmd+W with the daemon still running).
+Click the menu bar icon → **Open Library…** to open the main window (1120×680 on a first run, never smaller than 1060×480, restorable, hides on Cmd+W with the daemon still running). The window keeps whatever size you give it: nothing inside it can push it larger, so a long Ask session or a long Facts list scrolls within the window instead of growing it off the edge of the display.
 
 While any window is open, MeetingPipe puts a normal menu bar across the top (App / Edit / Find / Window) and takes it back down when the last one closes (UX48). That is what makes the standard chords work: Cmd+C, Cmd+A, Cmd+X, Cmd+V, Cmd+Z, Cmd+M, Cmd+W, Cmd+, for Preferences, and Cmd+K for Quick Find. Before it, the app installed no main menu at all, and since macOS matches every command-key event against the main menu first, each of those was the system beep and a transcript's text could not be copied out with the keyboard. Cmd+K has two owners on purpose (the Find menu here, and the menu-bar dropdown's own row) and they cannot shadow each other, because an `NSMenu` matches its own key equivalents only while it is open and `NSApp.mainMenu.performKeyEquivalent` cannot see a status item's menu at all; that same asymmetry is why the chord did nothing from a window until the Find row was added on 2026-08-04. The dropdown's other shortcuts (Cmd+L, Cmd+Q) remain a different surface and still act only while that dropdown is open.
 
