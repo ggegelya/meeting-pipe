@@ -68,6 +68,14 @@ Constraints:
 - [`docs/GUIDE.md`](../../GUIDE.md) gains the recipe in the same commit.
 - The walkthrough below is what closes the task. A real paste into a real Teams chat is not exercisable in a harness, and it is the only place the claim can actually be checked.
 
+## Shipped 2026-08-17
+
+Every engineering line of the acceptance above is green; the status is the walkthrough below and nothing else. The ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md) carries the full ship note. In short: one new file, `daemon/Sources/MeetingPipe/RichTextShare.swift`, holding `RichTextShare` (the `Document`, the markdown-to-HTML and plain passes, and the one-item three-flavor pasteboard write taking the board as a parameter) and `MeetingShare` (the two documents, resolved through `TranscriptLoader.load` then `MeetingCast.rowSpeaker`). 12 new tests in `RichTextShareTests`; `swift test` 2534 tests 0 failures.
+
+The choice this spec left open went to **two entries in the header's `actionsMenu`** rather than one control per tab, so either document is one click from whichever tab is up and neither reading column gains chrome; the reasoning is on `MeetingDetailView+Header.copyRichText`. Three decisions the spec did not cover: the transcript does not route through the markdown pass (the tab renders spoken text as a plain `String`, so interpreting it here would drop characters the reader can see); `renderMarkdown` is called with no `deeplinkStem`, so anchors copy as readable ` [12:34]` text rather than `meetingpipe://` links a recipient cannot follow; and action-item `[ ]` / `[x]` boxes stay literal, matching the published note.
+
+`./scripts/rebuild.sh` has **not** been run: this shipped from an unlanded worktree. Run it after landing, then walk the steps below.
+
 ## Owner walkthrough (for the session that picks this up)
 
 Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who acts.

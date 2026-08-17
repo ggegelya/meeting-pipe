@@ -317,6 +317,18 @@ extension MeetingDetailView {
                 toolbarAction("republish") { Task { _ = await libraryModel.republishMeeting(stem: meeting.stem) } }
             }
             Divider()
+            // FEAT16: the ad-hoc way out, for when the destination is a chat
+            // compose box rather than a sink configured in advance. Two entries
+            // rather than one control per tab, so either document is one click away
+            // from whichever tab is up (including Audio) and neither reading column
+            // gains chrome; the reasoning is in `copyRichText`.
+            Button(MeetingShare.Surface.summary.menuLabel) {
+                toolbarAction(MeetingShare.Surface.summary.rawValue) { copyRichText(.summary) }
+            }
+            Button(MeetingShare.Surface.transcript.menuLabel) {
+                toolbarAction(MeetingShare.Surface.transcript.rawValue) { copyRichText(.transcript) }
+            }
+            Divider()
             Button("Open meta.json") {
                 toolbarAction("open_meta") { openMetaJSON() }
             }
@@ -673,6 +685,54 @@ extension MeetingDetailView {
     func copyMeetingID() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(meeting.stem, forType: .string)
+    }
+
+    /// FEAT16: put this meeting's summary or transcript on the clipboard in every
+    /// flavor a paste can ask for, so it arrives formatted in a Teams chat and
+    /// still arrives plain under Cmd+Shift+V.
+    ///
+    /// **Why the header rather than a control on each tab.** Both were on offer.
+    /// This wins on three counts: either document is reachable from whichever tab
+    /// is up, including Audio, where a per-tab control would make copying the
+    /// transcript a tab switch first; `toolbarAction` is already the routing here,
+    /// so the `detail` / `toolbar_action` event comes out the same shape as the ten
+    /// actions beside it; and the two reading columns gain no chrome, which UX36
+    /// spent a pass making quiet and DSN3 would have to re-check. The cost is that
+    /// the content is re-read off disk instead of taken from the tab's own state,
+    /// and that cost is small: it is a second *call* of the tabs' own resolutions
+    /// (`MeetingShare.document`), never a second implementation of them, and every
+    /// overlay it resolves lives in a sidecar rather than in view state.
+    ///
+    /// The load is detached because an 80-minute transcript is a real parse; the
+    /// write is back on main because `RichTextShare.rtf` is main-thread-only.
+    func copyRichText(_ surface: MeetingShare.Surface) {
+        let stem = meeting.stem
+        let directory = meeting.recordingsDir
+        let title = meeting.displayTitle
+        Task {
+            let document = await Task.detached(priority: .userInitiated) {
+                MeetingShare.document(surface, stem: stem, title: title, in: directory)
+            }.value
+            await MainActor.run {
+                guard let document else {
+                    reportNothingToCopy(surface)
+                    return
+                }
+                RichTextShare.write(document, to: .general)
+            }
+        }
+    }
+
+    /// Say so rather than leaving whatever was on the clipboard before. Silence
+    /// here is the worst outcome: the next paste would land the owner's previous
+    /// copy and read as this meeting's.
+    private func reportNothingToCopy(_ surface: MeetingShare.Surface) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "There is no \(surface.noun) to copy yet."
+        alert.informativeText = "Nothing was put on the clipboard. A \(surface.noun) appears once the pipeline finishes this meeting."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     /// ASR3: confirm, run, then report what happened to the speaker names and

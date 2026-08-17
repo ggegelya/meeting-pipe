@@ -238,6 +238,16 @@ A search worth repeating becomes a rail item. With any filter active, a **folder
 
 What gets saved is the whole view, not just the text you typed: the rail scope you were in plus every chip. Right-click a folder for **Rename…**, **Update to current view** (re-point it at whatever you are looking at now, keeping its name and place), and **Delete**. Hovering one shows what it is filtering on. Selecting a folder leaves the filter bar live, so you can narrow further inside it and save that as a child.
 
+### Copying a meeting into a chat
+
+Sometimes the place it needs to go is a message somebody is waiting on, not a note or a page. Open the meeting, click the `...` menu on its header, and pick **Copy summary (formatted)** or **Copy transcript (formatted)**. Paste into a Teams chat, an email, a note, anywhere: the headings, bullets and bold arrive as formatting rather than as a wall of `#` and `-` characters.
+
+Your paste-without-formatting still works. Press `⌘⇧V` instead of `⌘V` and the same text arrives plain. That is not a separate mode you have to pick, it is the same copy: the app puts a formatted version and a plain version on the clipboard together, and whichever you ask for is the one you get. Some fields take no formatting from anybody, Google Meet's in-call chat being the common one, and those simply get the plain version and read fine.
+
+The transcript copies the names you see. Someone you have named comes across under their name, a voice nobody has named yet comes across as **Speaker 1** or **Unknown A** exactly as the Transcript tab shows it, and any line you fixed by hand comes across fixed. What is stored in the file underneath is not what gets copied.
+
+Nothing leaves your Mac when you do this and nothing is re-generated, so it works on a confidential meeting like any other. If the meeting has no summary yet, the app says so and leaves your clipboard alone rather than letting you paste whatever was on it before.
+
 ---
 
 ## 6. Ask: questions across every meeting
