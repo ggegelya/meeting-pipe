@@ -40,6 +40,13 @@ enum ConfigDefaults {
 
     static let regulatedMode = false
 
+    // MARK: - [mcp]
+
+    /// Off (AUTO3). MCP is the one surface where an outside client decides what
+    /// leaves this Mac, so it is opt-in; the pipeline's `MCPCfg.enabled` carries
+    /// the same default, and `mcp_serve` refuses to start without it.
+    static let mcpEnabled = false
+
     // MARK: - [transcription]
 
     /// `"auto"`, not `"en"`: before HYG2 wired this key the transcribe call passed

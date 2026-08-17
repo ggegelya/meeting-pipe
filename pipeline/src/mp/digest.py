@@ -21,9 +21,15 @@ scheduled run never fails to produce output.
 
 Read that first sentence literally, because a Preferences string once did not
 (UX63): honouring `effective_backend()` means a Mac on `backend = "anthropic"`
-POSTS a slice of the whole library's open actions and decisions to Anthropic on
-every scheduled run. `summarization.digest_local_only` is the opt-out, applied
-by `narration_config` below, for someone who wants the schedule without that.
+POSTS a slice of the library's open actions and decisions to Anthropic on every
+scheduled run. `summarization.digest_local_only` is the opt-out, applied by
+`narration_config` below, for someone who wants the schedule without that.
+
+Which slice is AUTO3's leg 0: `generate` takes its facts from
+`visibility.visible_stems`, not from every meeting on disk, because a
+library-wide command anchors on no meeting and so per-meeting NDA could never
+clamp it. Before that gate, "a slice of the whole library" included the NDA
+meetings literally.
 
 Latency-tolerant by design (a background / scheduled run, not interactive), so
 there is no live-latency budget. No new always-on egress: this is a command you
@@ -41,7 +47,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from . import actions as actions_mod
-from . import engine, entry, events
+from . import engine, entry, events, visibility
 from .config import Config
 from .schemas import ActionItem, Confidence, ExtraSection, MeetingSummary
 from .markdown import render_summary_md
@@ -104,19 +110,30 @@ def _meeting_day(stem: str) -> date | None:
         return None
 
 
-def collect_open_actions(root: Path, today: date) -> list[actions_mod.OpenAction]:
+def collect_open_actions(
+    root: Path, today: date, *, allow_stems: set[str] | None = None
+) -> list[actions_mod.OpenAction]:
     """Every open action across the library, most-overdue / soonest-due first
-    (undated last). Reuses `mp actions`' discovery + open filter (AI1)."""
+    (undated last). Reuses `mp actions`' discovery + open filter (AI1).
+
+    `allow_stems` is AUTO3's visibility gate, applied inside `discover` so a
+    withheld meeting's commitments are never read, let alone narrated."""
     opens = actions_mod.filter_actions(
-        actions_mod.discover(Path(root)), lifecycle="open", today=today
+        actions_mod.discover(Path(root), allow_stems=allow_stems),
+        lifecycle="open", today=today,
     )
     opens.sort(key=lambda a: (a.due is None, a.due or "", a.stem))
     return opens
 
 
-def collect_recent_decisions(root: Path, today: date, since_days: int) -> list[RecentDecision]:
+def collect_recent_decisions(
+    root: Path, today: date, since_days: int, *, allow_stems: set[str] | None = None
+) -> list[RecentDecision]:
     """Decisions from meetings dated within the last `since_days`, newest first.
-    Decisions are undated, so "recent" is by the meeting's date (like DV1)."""
+    Decisions are undated, so "recent" is by the meeting's date (like DV1).
+
+    `allow_stems` is AUTO3's visibility gate; a withheld meeting contributes no
+    decision, so nothing from it can reach the narration prompt."""
     root = Path(root).expanduser()
     if not root.is_dir():
         return []
@@ -124,6 +141,8 @@ def collect_recent_decisions(root: Path, today: date, since_days: int) -> list[R
     out: list[RecentDecision] = []
     for summary_json in sorted(root.glob("*.summary.json")):
         stem = summary_json.name.split(".", 1)[0]
+        if allow_stems is not None and stem not in allow_stems:
+            continue
         day = _meeting_day(stem)
         if day is None or day < cutoff:
             continue
@@ -444,10 +463,20 @@ class DigestResult:
 
 def generate(cfg: Config, root: Path, *, since_days: int = DEFAULT_SINCE_DAYS,
              today: date | None = None) -> DigestResult:
-    """Aggregate the week's facts, bound them to the review window, and narrate."""
+    """Aggregate the week's facts, bound them to the review window, and narrate.
+
+    AUTO3 leg 0: the facts come from the meetings that may leave this machine,
+    not from the whole library. `mp digest` is library-wide so it anchors on no
+    meeting, so per-meeting NDA could never clamp it and only the global
+    `regulated_mode` did; with a cloud backend and that flag off, an NDA
+    meeting's actions and decisions went into the narration prompt. The gate is
+    unconditional rather than keyed on the backend, because the digest is also
+    written to disk and can be published to a cloud sink.
+    """
     today = today or date.today()
-    scope = scope_actions(collect_open_actions(root, today), today, since_days)
-    decisions = collect_recent_decisions(root, today, since_days)
+    allow = visibility.visible_stems(Path(root))
+    scope = scope_actions(collect_open_actions(root, today, allow_stems=allow), today, since_days)
+    decisions = collect_recent_decisions(root, today, since_days, allow_stems=allow)
     # Narrate over the window (ranked, most pressing first), not the library: a
     # narrative that names a commitment the list below does not carry reads as a
     # hallucination even when it is true. The facts carry the window's totals so
@@ -473,7 +502,9 @@ def main(argv: list[str]) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
-    cfg = entry.prepare()  # SEC13: arm, then secrets. Library-wide, so no meeting anchor.
+    # SEC13: arm, then secrets. Library-wide, so no meeting anchor, which is why
+    # `generate` gates the corpus through `visibility` (AUTO3 leg 0).
+    cfg = entry.prepare()
 
     root = Path(args.dir) if args.dir is not None else cfg.recording.output_dir
     out_dir = Path(args.out_dir) if args.out_dir is not None else Path(root).expanduser().parent / "digests"

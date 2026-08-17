@@ -24,6 +24,15 @@ def _meeting(root: Path, stem: str, *, title: str, transcript: str, summary: str
     (root / f"{stem}.md").write_text(transcript, encoding="utf-8")
     (root / f"{stem}.summary.json").write_text(json.dumps({"title": title}), encoding="utf-8")
     (root / f"{stem}.summary.md").write_text(summary or f"# {title}\n", encoding="utf-8")
+    # AUTO3: `mp ask` is library-wide, so it gates its corpus on
+    # `visibility.visible_stems`, and a meeting with no `<stem>.meta.json` is
+    # withheld fail-closed. A daemon-recorded meeting always has one, so writing
+    # it here is what makes this fixture a real meeting rather than a shape that
+    # only existed in tests. The withholding itself is pinned in
+    # `test_visibility.py`, not weakened here.
+    (root / f"{stem}.meta.json").write_text(
+        json.dumps({"schema_version": 1, "workflow_name": "Standup"}), encoding="utf-8"
+    )
 
 
 def _index(root: Path) -> EmbeddingIndex:

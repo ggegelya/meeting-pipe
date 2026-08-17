@@ -419,6 +419,38 @@ This is an operating-system behaviour, not something the app can override, so me
 
 ---
 
+## Letting an AI tool read your meetings
+
+`mp mcp-serve` is a read-only [MCP](https://modelcontextprotocol.io) server over your library, so Claude Code, Claude Desktop, or any other MCP client can search your meetings, read one, pull a slice of a transcript, list meetings, and list open actions. It is a transport over things that already existed: the same on-device index `mp ask` searches, the same summary files the Library window shows, the same open actions `mp actions` lists.
+
+**It is off until you turn it on.** Every other integration here answers "where does meeting-pipe write?". This one is the inverse: the client decides what to *pull*, and anything it pulls has reached that tool's provider, outside the egress guard that clamps everything else. So it is opt-in, at **Preferences ▸ Integrations ▸ Model Context Protocol**, and the server refuses to start while the switch is off.
+
+**Some meetings are never exposed, and there is no override.** A meeting recorded under an NDA workflow is withheld. So is a meeting with no `<stem>.meta.json` sidecar, which is every meeting recorded before workflows existed: its privacy stance was never written down, and an unknown stance is not permission. To a connected tool a withheld meeting is indistinguishable from a meeting that does not exist, so the refusal cannot confirm it is there. The Preferences panel shows both counts and why, and they come from the same function the server enforces.
+
+**No port is opened.** It speaks over standard input and output, so it is reachable exactly by a process you launched and by nothing on your network. There is also no write tool: nothing a connected tool can call will re-summarize, reassign, publish, or delete anything.
+
+To connect it, point your tool's MCP configuration at the `mp` launcher with the `mcp-serve` subcommand. For Claude Code:
+
+```bash
+claude mcp add meeting-pipe -- ~/.local/share/meeting-pipe/venv/bin/mp mcp-serve
+```
+
+To see what it would expose without starting it:
+
+```bash
+mp mcp-serve --status
+```
+
+The server needs one optional Python package, which `scripts/install.sh` installs for you. If you set the pipeline up by hand, add it with `cd pipeline && uv sync --extra mcp`; the status output and the Preferences panel both say so when it is missing.
+
+Two related commands changed with it. `mp ask` and `mp digest` are library-wide, so they never anchored on a single meeting, and a per-meeting NDA flag could therefore never clamp them: only the global `modes.regulated_mode` did. Both now draw on the same visible set the MCP server does, so an NDA meeting is not in `mp ask`'s search index and its actions and decisions are not in the weekly digest.
+
+**This applies on every backend, including a fully on-device one.** It is worth being blunt about, because the intuitive reading is wrong: the rule is not "NDA meetings are kept out of cloud prompts", it is "NDA meetings are not in the library-wide corpus at all". A `mp ask` running entirely on the local MLX model, egressing nothing, still cannot see them. That is deliberate. The visible set decides what goes into the on-device index, and the index is reused between runs, so making it depend on the current backend would re-embed the difference every time you changed that setting. One corpus, one rule, whichever engine is answering. Per-meeting answers are unaffected: opening an NDA meeting in the Library, re-summarizing it, or asking about it there all work as before, because those anchor on the meeting and the existing NDA clamp already covers them.
+
+The same goes for meetings with no sidecar. If you have any, they are no longer searchable by `mp ask` either; recording them again under a workflow, or writing a sidecar by hand, is what brings them back.
+
+---
+
 ## Backup, and moving to a new Mac
 
 What cannot be recreated is scattered across four places: the library, the config directory (config, workflows, voiceprint, roster, glossary), the corrections corpus, and the Keychain items. `mp backup` gathers the four, names the Keychain items, and exports no secret.
@@ -597,6 +629,8 @@ See [`config.example.toml`](./config.example.toml). Highlights:
 - `filesystem.output_dir`: where the filesystem sink drops the three files. In **Preferences ▸ Integrations ▸ Filesystem**, and worth setting even if you never tick the sink by hand, because an NDA workflow publishes here and nowhere else.
 - `lan.mount_path`: target directory on an already-mounted SMB/NFS share for the `"lan"` sink. Same three files as the filesystem sink, but written atomically and only after a reachability check (it never creates the mount root itself, so a down share fails loudly instead of writing to local disk). `lan.host` is an optional label used only in the unreachable error. Both are in **Preferences ▸ Integrations ▸ LAN share**. On-prem, so `config.effective_sinks` keeps it while dropping Notion under zero egress, but note that a *recorded* meeting reaches the publishers through the workflow overlay first, whose clamp is filesystem-only for a regulated or NDA meeting alike: in practice a LAN sink does not publish under either.
 - `modes.regulated_mode`: when `true`, two things happen and both apply to every meeting. The Notion sink no-ops at upsert time, and `config.effective_backend` pins summarization to the on-device model whatever `summarization.backend` is set to, so you do not have to pair it with anything to get zero egress. A zero-egress run (this flag, or a per-meeting NDA workflow) also strips the cloud API tokens from the pipeline process and pins Hugging Face offline, so nothing downstream, including the local model server it spawns, can reach the network. Surfaced as **Skip Notion publish and summarize on-device** in **Preferences ▸ Permissions ▸ Regulated mode**, which names both halves and offers the on-device model's download inline when it is not yet on disk: the clamp refuses rather than falling back to the cloud, so a missing model means failed summaries until it is fetched.
+
+- `mcp.enabled`: whether `mp mcp-serve`, the read-only MCP server, may run. Off by default, and the server refuses to start while it is off, so **Preferences ▸ Integrations ▸ Model Context Protocol** is a real kill switch rather than a label. It is the one integration that is opt-in rather than on-once-configured, because it is the one where the *client* chooses what leaves this Mac: everything an AI tool pulls has reached that tool's provider, outside the in-process egress guard. See [Letting an AI tool read your meetings](#letting-an-ai-tool-read-your-meetings) for what it exposes and what it withholds.
 
 There are no microphone or output-device settings — the daemon auto-detects both. Change the system default input in System Settings ▸ Sound to swap mics.
 

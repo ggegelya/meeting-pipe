@@ -53,6 +53,7 @@ import numpy as np
 from . import egress_guard, events, resource_guard, transcript_corrections
 from .chunking import chunked_windows
 from .prefetch_model import model_is_cached
+from .visibility import library_stems
 
 log = logging.getLogger("mp.embed_index")
 
@@ -290,18 +291,6 @@ def default_embedder(model_id: str = DEFAULT_EMBED_MODEL) -> Embedder:
     return HashingEmbedder()
 
 
-def _library_stems(root: Path) -> list[str]:
-    """Every meeting stem under `root` that has summary or transcript text.
-    Mirrors `ask.discover`'s one-dot transcript rule so the two stay aligned."""
-    stems: set[str] = set()
-    for p in root.glob("*.md"):
-        if p.name.count(".") == 1:  # `<stem>.md` is the transcript; `.summary.md` has more dots
-            stems.add(p.name.split(".", 1)[0])
-    for p in root.glob("*.summary.json"):
-        stems.add(p.name.split(".", 1)[0])
-    return sorted(stems)
-
-
 def _read_title(root: Path, stem: str) -> str:
     summary_json = root / f"{stem}.summary.json"
     if summary_json.exists():
@@ -345,9 +334,23 @@ def chunk_stem(
     ]
 
 
-def chunk_library(root: Path, *, chunk_chars: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP) -> list[Chunk]:
+def chunk_library(
+    root: Path,
+    *,
+    chunk_chars: int = CHUNK_CHARS,
+    overlap: int = CHUNK_OVERLAP,
+    allow_stems: set[str] | None = None,
+) -> list[Chunk]:
     """One `Chunk` per window of each meeting's `summary.md` + `md` transcript.
     Meetings with neither are skipped (same corpus `mp ask` searches).
+
+    `allow_stems` is AUTO3's visibility gate (`visibility.visible_stems`): a
+    stem outside it is never chunked, so a withheld meeting's text is not in the
+    index and therefore cannot be ranked, packed, or snippeted. Filtering here
+    rather than over the search results is the point: a result filter still
+    embedded the text, still let it compete for the top-k, and still had the
+    withheld words resident in the process that builds a cloud prompt. None (the
+    default) keeps every stem, which is what a caller with no egress asks for.
 
     Whole-library, so it holds the whole corpus as strings; the incremental
     refresh calls `chunk_stem` per batch instead and never materializes more than
@@ -356,7 +359,9 @@ def chunk_library(root: Path, *, chunk_chars: int = CHUNK_CHARS, overlap: int = 
     if not root.is_dir():
         return []
     chunks: list[Chunk] = []
-    for stem in _library_stems(root):
+    for stem in library_stems(root):
+        if allow_stems is not None and stem not in allow_stems:
+            continue
         chunks.extend(chunk_stem(root, stem, chunk_chars=chunk_chars, overlap=overlap))
     return chunks
 
@@ -398,11 +403,14 @@ class EmbeddingIndex:
         *,
         chunk_chars: int = CHUNK_CHARS,
         overlap: int = CHUNK_OVERLAP,
+        allow_stems: set[str] | None = None,
     ) -> "EmbeddingIndex":
         embedder = embedder or default_embedder()
         fingerprint = library_fingerprint(root)
-        stems = library_stem_fingerprints(root)
-        chunks = chunk_library(root, chunk_chars=chunk_chars, overlap=overlap)
+        stems = library_stem_fingerprints(root, allow_stems=allow_stems)
+        chunks = chunk_library(
+            root, chunk_chars=chunk_chars, overlap=overlap, allow_stems=allow_stems
+        )
         if not chunks:
             return cls(embedder, [], np.zeros((0, 0), dtype=np.float32), model=embedder.name, dim=0, fingerprint=fingerprint, stems=stems)
         vectors = embedder.embed([c.text for c in chunks], kind="passage")
@@ -510,13 +518,25 @@ def stem_fingerprint(root: Path, stem: str) -> str:
     return _fingerprint_lines(lines)
 
 
-def library_stem_fingerprints(root: Path) -> dict[str, str]:
+def library_stem_fingerprints(
+    root: Path, *, allow_stems: set[str] | None = None
+) -> dict[str, str]:
     """Every stem the index covers, mapped to its own fingerprint (AI11). This is
-    what the manifest stores and what a refresh diffs against."""
+    what the manifest stores and what a refresh diffs against.
+
+    Under an `allow_stems` gate a withheld stem is simply absent, which is what
+    makes the gate retroactive for free: `plan_refresh` sees it in the manifest
+    and not in the library, calls it `removed`, and drops its rows. An index
+    built before the gate existed therefore un-indexes withheld meetings on the
+    first gated run rather than needing a migration."""
     root = Path(root).expanduser()
     if not root.is_dir():
         return {}
-    return {stem: stem_fingerprint(root, stem) for stem in _library_stems(root)}
+    return {
+        stem: stem_fingerprint(root, stem)
+        for stem in library_stems(root)
+        if allow_stems is None or stem in allow_stems
+    }
 
 
 def library_fingerprint(root: Path) -> str:
@@ -672,6 +692,7 @@ def refresh_index(
     on_progress: Callable[[IndexProgress], None] | None = None,
     chunk_chars: int = CHUNK_CHARS,
     overlap: int = CHUNK_OVERLAP,
+    allow_stems: set[str] | None = None,
 ) -> "EmbeddingIndex":
     """Bring the persisted index up to date with the library, incrementally.
 
@@ -685,13 +706,20 @@ def refresh_index(
     `watchdog` is checked between batches and raises `resource_guard.LowMemoryError`
     rather than letting the machine swap; the work done so far is already on disk
     by then, so the next run picks up where the abort left it.
+
+    `allow_stems` (AUTO3) narrows the corpus to the meetings that may leave this
+    machine. It is applied to the fingerprint map, which is the reuse decision,
+    so a withheld stem is `removed` on the first gated run and its rows leave the
+    persisted index with it. Pass the same allowlist on every run over one
+    `index_dir`: alternating between gated and ungated is a supported but
+    expensive thing to do, since each flip re-embeds the difference.
     """
     root = Path(root).expanduser()
     index_dir = Path(index_dir).expanduser()
     embedder = embedder or default_embedder()
 
     prior = None if rebuild else _load_reusable(index_dir, embedder)
-    current = library_stem_fingerprints(root)
+    current = library_stem_fingerprints(root, allow_stems=allow_stems)
     plan = plan_refresh(prior.stems if prior is not None else {}, current)
 
     if prior is not None and plan.is_noop:
@@ -766,6 +794,7 @@ def load_or_build(
     rebuild: bool = False,
     watchdog: resource_guard.MemoryWatchdog | None = None,
     on_progress: Callable[[IndexProgress], None] | None = None,
+    allow_stems: set[str] | None = None,
 ) -> "EmbeddingIndex":
     """Load a persisted index, refreshing whatever part of it went stale.
 
@@ -773,8 +802,12 @@ def load_or_build(
     Reuse requires the embedder model to match the manifest (a hashing-built
     index under an MLX embedder would have the wrong dimension), and then holds
     per meeting rather than for the library as a whole.
+
+    `allow_stems` is AUTO3's visibility gate, forwarded whole; see
+    `refresh_index`.
     """
     return refresh_index(
         root, index_dir, embedder,
         rebuild=rebuild, watchdog=watchdog, on_progress=on_progress,
+        allow_stems=allow_stems,
     )

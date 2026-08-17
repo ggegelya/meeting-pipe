@@ -30,10 +30,17 @@ def _meeting(root: Path, stem: str, *, title: str, decisions=None, actions=None,
         "detected_language": "en",
     }
     (root / f"{stem}.summary.json").write_text(json.dumps(payload), encoding="utf-8")
+    # AI7 reads the series key off the meeting's sidecar; AI10 groups on it. The
+    # sidecar is now written unconditionally (AUTO3): `mp digest` gates its facts
+    # on `visibility.visible_stems`, and a meeting with no `<stem>.meta.json` is
+    # withheld fail-closed, so a sidecar-less fixture is no longer a meeting the
+    # digest can see. A `workflow=None` meeting is still untagged, which is what
+    # these cases were expressing. The withholding is pinned in
+    # `test_visibility.py`, not weakened here.
+    meta: dict = {"schema_version": 1}
     if workflow is not None:
-        # AI7 reads the series key off the meeting's sidecar; AI10 groups on it.
-        (root / f"{stem}.meta.json").write_text(
-            json.dumps({"schema_version": 1, "workflow_name": workflow}), encoding="utf-8")
+        meta["workflow_name"] = workflow
+    (root / f"{stem}.meta.json").write_text(json.dumps(meta), encoding="utf-8")
 
 
 def _action(task: str, *, owner: str = "A", due: str | None = None,

@@ -134,6 +134,11 @@ jobs:
         # both the lock and this pin, and lands its findings under review.
         # The runtime deps stay ranges on purpose; they are exercised by the
         # tests, not enforcing style on unrelated code.
+        # `mcp` is AUTO3's optional extra, listed here anyway: unlike the mlx
+        # pair it is pure-Python and installs on Linux, so there is no reason for
+        # `mp mcp-serve`'s transport wiring to be the one surface CI cannot
+        # exercise. Its tests skip when it is absent, so dropping this line
+        # degrades coverage rather than turning the job red.
         run: |
           uv venv --python 3.11
           uv pip install \
@@ -143,6 +148,7 @@ jobs:
             "tenacity>=8.2.0" \
             "numpy>=1.26" \
             "soundfile>=0.12.1" \
+            "mcp>=1.29,<2" \
             "pytest>=8.0.0" \
             "ruff==0.15.12" \
             "pyright==1.1.411"

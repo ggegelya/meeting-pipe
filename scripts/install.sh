@@ -389,7 +389,11 @@ mkdir -p "$DATA_DIR"
 (
     cd "$REPO_ROOT/pipeline"
     # Lets us launch `mp` directly via $DATA_DIR/venv/bin/mp.
-    uv sync --frozen 2>/dev/null || uv sync
+    # `--extra mcp` (AUTO3): the MCP SDK is an optional extra so the dependency
+    # is not forced on anyone who never serves, but this Mac is the one that
+    # runs `mp mcp-serve`, so its venv gets it. The server still refuses to
+    # start unless `[mcp] enabled` is on.
+    uv sync --frozen --extra mcp 2>/dev/null || uv sync --extra mcp
     # uv places the env in .venv next to pyproject; copy a stable launcher.
     rm -rf "$DATA_DIR/venv"
     cp -R "$REPO_ROOT/pipeline/.venv" "$DATA_DIR/venv"

@@ -12,6 +12,12 @@ struct IntegrationsSectionView: View {
     /// from cache on open.
     @StateObject private var notionDBs = NotionDatabaseList()
 
+    /// AUTO3 leg 3. Held at view level like `notionDBs`, and refreshed on
+    /// `.onAppear` rather than per render: `refresh()` spawns `mp mcp-serve
+    /// --status`, and UX67 is the incident that says a `Process` on a hot path
+    /// in this pane wedges every control in it.
+    @StateObject private var mcp = MCPStatusStore()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsSectionHeader("Integrations",
@@ -84,7 +90,90 @@ struct IntegrationsSectionView: View {
             obsidianGroup
             filesystemGroup
             lanGroup
+            mcpGroup
         }
+        // Once per appearance, never per render. The counts follow the library,
+        // not the switch beside them, and `store.mcpEnabled` renders itself, so
+        // there is nothing here to re-read when the toggle moves; watching it
+        // would also race `ConfigStore`'s 500 ms save debounce and read back the
+        // value the owner just changed away from.
+        .onAppear { Task { await mcp.refresh() } }
+    }
+
+    // MARK: - Model Context Protocol (AUTO3)
+
+    /// The one place the owner can see what an outside AI tool can reach.
+    ///
+    /// Every other integration here answers "where does meeting-pipe write?".
+    /// This one answers the inverse and harder question: an MCP client decides
+    /// what to *pull*, so the app is no longer the party choosing what leaves.
+    /// The control therefore leads with the two counts rather than with the
+    /// switch: a fail-closed filter is only trustworthy if the number it
+    /// withholds is a number you can read, and it comes from `mp.visibility`,
+    /// the same function the server enforces, rather than a Swift recount.
+    private var mcpGroup: some View {
+        SettingsGroup("Model Context Protocol") {
+            SettingsToggleRow(
+                "Let AI tools read your meetings",
+                sublabel: "Runs a read-only server on standard input and output when a tool you configured launches it. No port is opened and nothing on your network can reach it.",
+                isOn: $store.mcpEnabled,
+                showsDivider: false
+            )
+            SettingsRow("Reachable", sublabel: mcpVisibleSublabel) {
+                if let status = mcp.status {
+                    SettingsStatusPill(
+                        tone: status.visible > 0 ? .granted : .neutral,
+                        icon: "books.vertical.fill",
+                        text: "\(status.visible) meeting\(status.visible == 1 ? "" : "s")"
+                    )
+                } else {
+                    SettingsStatusPill(tone: .neutral, icon: "ellipsis", text: mcpPlaceholder)
+                }
+            }
+            SettingsRow("Withheld", sublabel: mcpWithheldSublabel) {
+                if let status = mcp.status {
+                    SettingsStatusPill(
+                        tone: status.withheld > 0 ? .needed : .neutral,
+                        icon: "lock.fill",
+                        text: "\(status.withheld) meeting\(status.withheld == 1 ? "" : "s")"
+                    )
+                } else {
+                    SettingsStatusPill(tone: .neutral, icon: "ellipsis", text: mcpPlaceholder)
+                }
+            }
+            SettingsRow("Tools", sublabel: "Read-only. There is no tool that can change, publish, or delete anything.") {
+                Text(mcp.status?.tools.joined(separator: ", ") ?? "search, read, list")
+                    .font(.mpTextXS.monospaced())
+                    .foregroundStyle(Color(MPColors.fgMuted))
+            }
+        } footer: {
+            Text(mcpFooter)
+        }
+    }
+
+    private var mcpPlaceholder: String {
+        mcp.isLoading ? "Counting…" : "Unknown"
+    }
+
+    private var mcpVisibleSublabel: String {
+        "What a connected tool can search and read."
+    }
+
+    private var mcpWithheldSublabel: String {
+        guard let status = mcp.status, status.withheld > 0 else {
+            return "NDA meetings, and meetings recorded before workflows existed, are never exposed."
+        }
+        return "\(status.withheldExplanation). To a connected tool these look like meetings that do not exist."
+    }
+
+    private var mcpFooter: String {
+        if let error = mcp.error {
+            return "Could not read the server's status: \(error)"
+        }
+        if let status = mcp.status, !status.sdkAvailable {
+            return "The MCP package is not installed, so the server cannot start yet. Run `cd pipeline && uv sync --extra mcp`, or re-run scripts/install.sh."
+        }
+        return "Point your AI tool at `mp mcp-serve` to connect it. Anything it reads has left this Mac and reached that tool's provider, which is why this is off until you turn it on, and why the withheld meetings stay withheld with no override."
     }
 
     // MARK: - Publish targets (UX45)

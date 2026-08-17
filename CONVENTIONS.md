@@ -211,6 +211,15 @@ A tripwire pins this (PIPE8, `test_entry_contract.py`): it walks every dispatch 
 
 `config.zero_egress(cfg)` is the single predicate behind every clamp (`effective_backend`, `effective_sinks`, `arm_for_config`, `workflow.apply_overrides`, `publish_notion.publish`). Write new clamps against it, never against `regulated_mode or workflow_nda_mode` directly.
 
+**The library-wide form of `prepare()` has a second half (AUTO3).** With no anchor there is no overlay, so `workflow_nda_mode` can never become true and only the global `regulated_mode` clamps the run. That is a scope fact, not a safe default: it is why `mp ask` and `mp digest` could retrieve NDA text into a cloud prompt for as long as they did. So a library-wide command arms the guard *and* gates its corpus:
+
+```python
+cfg = entry.prepare()                              # arms on the global config
+allow = visibility.visible_stems(root)             # AUTO3: which meetings may leave
+```
+
+`mp.visibility` is the single owner of that per-meeting decision the way `zero_egress` is the single owner of the per-run one, and it is fail-closed (`nda`, `regulated`, `no_sidecar`). Pass the resulting `allow_stems` down rather than filtering results: `chunk_library` / `refresh_index` / `load_or_build`, `actions.discover`, `digest.collect_*`, and every `mcp_tools` function take it, so withheld text is never chunked, embedded, or ranked in the first place.
+
 `mp prefetch-model` is the one command that deliberately never arms: fetching a model is its purpose, and a cached model is what lets a later zero-egress run stay offline.
 
 ### Test discipline
@@ -641,6 +650,30 @@ Note for tests: `com.apple.icloud.desktop` can be written by an unprivileged pro
 **The config-root exception.** A new Mac must write `config.toml` *before* restoring, since that file names the destinations. So `config.toml` (and `.last-backup.json`) do not count toward the config root's occupancy check, and the backup's `config.toml` never overwrites an existing one: it names the old Mac's paths, and restoring it would repoint `output_dir` at a library that is not there. Every other config file (workflows, roster, voiceprint, glossary) restores normally. Found by walking the runbook; keep the runbook walkable.
 
 `mp doctor` reports the last backup's age from `~/.config/meeting-pipe/.last-backup.json`. Informational only: the owner may be relying on Time Machine.
+
+---
+
+## MCP server status (`mp mcp-serve --status --json`, AUTO3)
+
+`mp mcp-serve --status --json` prints what the read-only MCP server would expose, without serving:
+
+```json
+{
+  "enabled": false,
+  "transport": "stdio",
+  "tools": ["search_meetings", "get_meeting", "get_transcript", "list_meetings", "list_actions"],
+  "sdk_available": true,
+  "visible": 175,
+  "withheld": 42,
+  "withheld_by_reason": {"nda": 3, "no_sidecar": 39}
+}
+```
+
+Swift's `MCPStatus` (`daemon/Sources/MeetingPipe/Preferences/MCPStatusStore.swift`) decodes it, so the keys are a **Python-to-Swift contract** in the same sense STOR5's restore plan is: rename one and Preferences ▸ Integrations renders "Unknown" for the counts that are the whole point of the control. `withheld_by_reason`'s keys are `visibility`'s three reason constants (`nda`, `regulated`, `no_sidecar`), and Swift maps each to a phrase, so a fourth reason renders as itself rather than vanishing.
+
+**The counts are read, never recomputed.** `mp.visibility` is the single owner of which meetings may leave the machine, and the number the owner reads has to be the number the server enforces, not a second implementation that agrees today. That is also why this is a subprocess call rather than a Swift sidecar walk. It obeys UX67: `MCPStatusStore.refresh()` runs detached, the child is killed at `ceilingSeconds`, and the read is re-taken on the pane's `.onAppear` rather than per render.
+
+`--status` deliberately works without the optional `mcp` extra (`sdk_available` is how it says so), because Preferences has to render on an install that never opted in.
 
 ---
 

@@ -122,6 +122,13 @@ final class ConfigStore: ObservableObject {
     /// that sink runs, and regulated mode was the only in-app lever that stopped it.
     @Published var notionIncludeFullTranscript: Bool { didSet { scheduleSave() } }
 
+    /// Whether `mp mcp-serve` may run (AUTO3). Off by default and consumed by
+    /// the pipeline: `mcp_serve.main` refuses to start while this is false, so
+    /// the Integrations switch is a real kill switch rather than a label. MCP is
+    /// the one surface where the *client* picks what leaves this Mac, which is
+    /// why it is opt-in where every other integration is on once configured.
+    @Published var mcpEnabled: Bool { didSet { scheduleSave() } }
+
     /// Opt-in LoRA adapter the local backend serves (`summarization.local_adapter_path`,
     /// LOCAL9), read straight off the live TOML. Read-only for the same reason as
     /// `outputSinks` below: the warm-server preloader has to know it (a preloader
@@ -176,6 +183,7 @@ final class ConfigStore: ObservableObject {
         let obsidian = doc["obsidian"]?.table
         let filesystem = doc["filesystem"]?.table
         let lan = doc["lan"]?.table
+        let mcp = doc["mcp"]?.table
 
         self.outputDirPath = rec?["output_dir"]?.string ?? ConfigDefaults.outputDirPath
         self.autoConsentApps = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string })
@@ -230,6 +238,7 @@ final class ConfigStore: ObservableObject {
 
         // UX45 publish targets. Defaults mirror the pipeline's models exactly.
         self.notionIncludeFullTranscript = notion?["include_full_transcript"]?.bool ?? true
+        self.mcpEnabled = mcp?["enabled"]?.bool ?? ConfigDefaults.mcpEnabled
         self.obsidianVaultPath = obsidian?["vault_path"]?.string ?? ""
         self.obsidianFolder = obsidian?["folder"]?.string ?? "Meetings"
         self.obsidianAttachAudio = obsidian?["attach_audio"]?.bool ?? true
@@ -301,6 +310,7 @@ final class ConfigStore: ObservableObject {
 
         ensureTable("notion")["database_id"] = notionDatabaseId
         ensureTable("notion")["include_full_transcript"] = notionIncludeFullTranscript
+        ensureTable("mcp")["enabled"] = mcpEnabled
         ensureTable("summarization")["summary_language"] = summaryLanguage
         ensureTable("summarization")["diarize_cleanup"] = summarizationDiarizeCleanup
         ensureTable("summarization")["digest_local_only"] = summarizationDigestLocalOnly

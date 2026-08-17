@@ -270,7 +270,19 @@ Open the Library and pick **Ask** in the left rail. Type a question and press **
 
 **What it cannot do.** It is not a chat: it answers one question at a time and does not remember the previous one. It only knows what is in your meetings, so it cannot answer from anything else. And it only answers, it never acts: it will not send anything, change anything, or schedule anything.
 
-A confidential workflow keeps Ask on your Mac exactly as it keeps summaries there.
+**Confidential meetings are not in Ask at all.** A meeting recorded under an NDA workflow is left out of the searchable index, so Ask cannot quote it and cannot cite it, whichever engine is answering. So are meetings recorded before workflows existed, which have no record of whether they were confidential: the app treats "we never wrote it down" as "do not use it" rather than guessing. If a meeting you expect is missing from an answer, that is usually why.
+
+### Asking from another app
+
+**Goal:** ask the same questions from Claude Code, Claude Desktop, or another AI tool, without leaving what you are doing.
+
+Turn on **Let AI tools read your meetings** in **Preferences ▸ Integrations ▸ Model Context Protocol**, then point your tool at the `mp mcp-serve` command. Your tool can then search your meetings, read one, pull part of a transcript, list meetings, and list what you still owe people.
+
+**It is off until you turn it on, and that is deliberate.** Everywhere else, this app decides what leaves your Mac. Here the other tool decides what to ask for, and anything it reads has gone to whoever runs that tool. So it starts off, and turning it off again stops it.
+
+**The same meetings stay out.** Confidential meetings, and meetings with no record of whether they were confidential, are never handed over, and there is no setting that changes that. To the other tool they look exactly like meetings that do not exist, so it cannot even tell that it is being kept from something. The panel shows you both numbers, how many meetings are reachable and how many are held back, with the reason.
+
+**Two things it cannot do.** It cannot change anything: there is no way for a connected tool to re-summarize, publish, edit, or delete. And it is not on your network. It talks to one program you started, on this Mac, so nothing else can connect to it.
 
 ---
 
@@ -503,7 +515,9 @@ Plain-language versions of the terms in this guide and in the app.
 
 **Smart folder.** A saved search pinned to the Library rail.
 
-**Digest.** A dated review summary across many meetings, rather than a summary of one.
+**Digest.** A dated review summary across many meetings, rather than a summary of one. Confidential meetings, and meetings with no record of whether they were confidential, are left out of it.
+
+**MCP.** A common way for AI tools to reach the things on your computer. Here it is one read-only connection that lets a tool you already use search and read your meetings. Off unless you turn it on; see [asking from another app](#asking-from-another-app).
 
 **Sink, or destination.** Somewhere a summary is published: Notion, an Obsidian vault, a folder on this Mac, or a network share. Each one succeeds or fails on its own; one being down does not block the others.
 

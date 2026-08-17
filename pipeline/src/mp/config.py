@@ -252,6 +252,19 @@ class Modes(BaseModel):
     workflow_nda_mode: bool = False
 
 
+class MCPCfg(BaseModel):
+    """`mp mcp-serve`, the read-only MCP stdio server (AUTO3).
+
+    Off by default, and the default is the point: the server hands an agentic
+    client the choice of what to pull out of the library, which is the one place
+    in this codebase where meeting-pipe is not the party deciding what may
+    leave. Opting in is a deliberate act, reversible from Preferences ▸
+    Integrations, and `mcp_serve.main` refuses to start while this is false, so
+    the switch is a real kill switch rather than a label.
+    """
+    enabled: bool = False
+
+
 class Config(BaseModel):
     recording: Recording = Field(default_factory=Recording)
     detection: Detection = Field(default_factory=Detection)
@@ -263,6 +276,7 @@ class Config(BaseModel):
     lan: LanCfg = Field(default_factory=LanCfg)
     output: OutputCfg = Field(default_factory=OutputCfg)
     modes: Modes = Field(default_factory=Modes)
+    mcp: MCPCfg = Field(default_factory=MCPCfg)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":

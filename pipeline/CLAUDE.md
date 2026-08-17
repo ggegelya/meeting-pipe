@@ -10,6 +10,7 @@ A rule whose evidence runs long links to [`docs/gotchas.md`](docs/gotchas.md), w
 uv run --extra dev ruff check src tests       # from pipeline/
 uv run --extra dev pyright                    # from pipeline/ (basic mode, src/ only)
 uv run --extra dev pytest -q                  # from pipeline/
+uv sync --extra dev --extra mcp               # + AUTO3's optional MCP SDK
 ../scripts/coverage.sh python                 # T3: pytest-cov report, not a gate
 ```
 
@@ -32,6 +33,7 @@ CI also runs pyright (TYPE1), configured in `pyproject.toml`'s `[tool.pyright]`.
   ```
   A new subcommand also adds a row to the subcommand table in [`../ARCHITECTURE.md`](../ARCHITECTURE.md), in the same commit. The table went 17 modules stale before DOC7 rebuilt it; every session that reads it to orient is the cost.
 - **Every entry point calls `entry.prepare(...)` first.** Workflow overlay, then arm the egress guard on the resolved config, then load secrets. Never hand-roll the triple: arming before the overlay misses a per-meeting NDA workflow, loading secrets before arming hands the cloud tokens to the `mlx_lm.server` child. Clamps key off `config.zero_egress(cfg)`, never a fresh `regulated or nda` boolean. See [`../CONVENTIONS.md`](../CONVENTIONS.md) "The entry contract".
+- **A library-wide command asks `visibility`, never `zero_egress` alone.** With no meeting anchor `workflow_nda_mode` can never fire, so pass `allow_stems=visibility.visible_stems(root)` down to anything that chunks, ranks, or returns meeting text. → [gotchas](docs/gotchas.md#a-library-wide-command-cannot-be-clamped-by-a-per-meeting-flag) (AUTO3)
 - **Services as `Protocol`s.** `services.py` defines narrow contracts; concrete implementations live next to use sites (`AnthropicSummaryClient` in `summarize.py`, `NotionRestPublisher` in `publish_notion.py`). Tests inject in-memory fakes, not SDK mocks.
 - **An underscore name belongs to its module.** If a sibling needs it, promote it to a public name in a home that makes sense; never import the private one, and never copy it. The current shared set, and which of them have Swift mirrors pinned by CI3 fixtures, is in → [gotchas](docs/gotchas.md#an-underscore-name-belongs-to-its-module) (PIPE7)
 - **Pydantic schemas as the contract.** `MeetingSummary` (in `schemas.py`) is the JSON shape every publisher expects. Adding a field means updating the schema + every publisher + the tests, **and modeling it in Swift's `MeetingSummary`**: that struct's `jsonObject()` is the writer behind both in-place `summary.json` rewrites, and it drops anything it does not model (see `daemon/CLAUDE.md`).

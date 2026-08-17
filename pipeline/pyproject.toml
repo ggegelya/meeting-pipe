@@ -38,6 +38,26 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# AUTO3: the official MCP SDK, for `mp mcp-serve` only. An extra rather than a
+# runtime dependency, decided 2026-08-18 after the owner chose the SDK over a
+# stdlib JSON-RPC hand-roll. Three reasons it sits here:
+#   - Nothing else in the pipeline imports it. `mp run-all`, `mp summarize` and
+#     `mp publish` would pay ~19 transitive packages (jsonschema/rpds-py,
+#     pyjwt[crypto]/cryptography, pydantic-settings, sse-starlette, ...) for a
+#     transport they never speak.
+#   - `mcp_serve` imports it inside the function that serves, per this tree's
+#     lazy-import contract, so `mp --help` and `mp mcp-serve --status` (which is
+#     what Preferences reads) work with the extra absent.
+#   - The security-carrying half lives in `visibility.py` + `mcp_tools.py`,
+#     which are stdlib-only, so CI exercises the gate and the five tool payloads
+#     whether or not the SDK resolved.
+# CI installs it anyway (see .github/workflows/ci.yml): it is pure-Python and
+# cross-platform, unlike the darwin/arm64 mlx pair, so there is no reason for the
+# transport wiring to go untested on Linux. `scripts/install.sh` syncs the extra
+# so the owner's own install can serve.
+mcp = [
+    "mcp>=1.29,<2",
+]
 dev = [
     "pytest>=8.0.0",
     # No pytest-vcr / vcrpy: outbound HTTP is faked with httpx.MockTransport

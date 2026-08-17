@@ -81,6 +81,13 @@ Subcommands:
                               Weekly review digest of aging open actions +
                               recent decisions, generated on-device; writes to
                               disk and (with --publish) fans out to the sinks
+  mcp-serve [--dir P] [--index-dir P] [--status [--json]]
+                              Read-only MCP server over the library, on stdio
+                              (never a port). Five tools: search_meetings,
+                              get_meeting, get_transcript, list_meetings,
+                              list_actions. NDA meetings and meetings with no
+                              recorded privacy stance are withheld. Off unless
+                              `[mcp] enabled`; --status prints what it exposes
 
 Globals:
   --help, -h                  Show this message
@@ -185,6 +192,9 @@ def _dispatch(cmd: str, rest: list[str]) -> int:
         return run(rest)
     if cmd == "digest":
         from .digest import main as run
+        return run(rest)
+    if cmd in {"mcp-serve", "mcp_serve"}:
+        from .mcp_serve import main as run
         return run(rest)
     if cmd == "roster":
         from .roster_cmd import main as run

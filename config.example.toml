@@ -291,3 +291,16 @@ host = ""
 [modes]
 # When true, pipeline writes local Markdown only and skips Notion entirely.
 regulated_mode = false
+
+[mcp]
+# `mp mcp-serve`, the read-only MCP server that lets an AI tool (Claude Code,
+# Claude Desktop, ...) search and read your meetings. Off by default and
+# refused at startup while false, because this is the one surface where the
+# CLIENT decides what leaves this Mac rather than meeting-pipe deciding.
+#
+# Stdio only: no port is bound and nothing on your network can reach it, so it
+# is reachable exactly by a process you launched. NDA-flagged meetings, and
+# meetings with no recorded privacy stance (no `<stem>.meta.json`), are never
+# exposed and look to a connected tool exactly like meetings that do not exist.
+# There is no override for that; Preferences > Integrations shows both counts.
+enabled = false

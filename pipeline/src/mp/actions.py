@@ -69,14 +69,22 @@ class OpenAction:
         return (not self.resolved) and age is not None and age > 0
 
 
-def discover(root: Path) -> list[OpenAction]:
-    """Collect every action item from the `<stem>.summary.json` files under `root`."""
+def discover(root: Path, *, allow_stems: set[str] | None = None) -> list[OpenAction]:
+    """Collect every action item from the `<stem>.summary.json` files under `root`.
+
+    `allow_stems` is AUTO3's visibility gate (`visibility.visible_stems`), passed
+    by the surfaces that can egress (`mp digest`'s narration, the MCP server's
+    `list_actions`). None keeps every meeting, which is what `mp actions` itself
+    wants: it prints to the owner's own terminal and reaches no engine.
+    """
     root = root.expanduser()
     if not root.is_dir():
         return []
     found: list[OpenAction] = []
     for summary_json in sorted(root.glob("*.summary.json")):
         stem = summary_json.name.split(".", 1)[0]
+        if allow_stems is not None and stem not in allow_stems:
+            continue
         try:
             obj = json.loads(summary_json.read_text(encoding="utf-8"))
         except (OSError, ValueError):

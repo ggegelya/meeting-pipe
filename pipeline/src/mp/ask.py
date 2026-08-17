@@ -7,11 +7,26 @@ that are verified against the retrieved set so every presented citation resolves
 to a real meeting on disk.
 
 Zero-egress + backend: the answer runs through `engine.complete_text`, which
-honours `effective_backend()` (regulated / NDA force the on-device path with no
-cloud fallback) and routes through httpx, so the egress guard armed at entry
-clamps it. Async by design: AI2's spike found on-device long-context synthesis is
-too slow for live typing, so `mp ask` is one blocking call that returns the whole
-answer (the daemon shows a spinner around it), with a ~4K-token context budget.
+honours `effective_backend()` and routes through httpx, so the egress guard armed
+at entry clamps it. Async by design: AI2's spike found on-device long-context
+synthesis is too slow for live typing, so `mp ask` is one blocking call that
+returns the whole answer (the daemon shows a spinner around it), with a ~4K-token
+context budget.
+
+That paragraph used to read "regulated / NDA force the on-device path", which was
+only half true here and is the hole AUTO3's leg 0 closed. Regulated works, but
+per-meeting NDA structurally could not: `workflow_nda_mode` is set only by the
+workflow overlay from one meeting's sidecar, and this command is library-wide, so
+it anchors on nothing and that flag is always false. An NDA meeting's text was
+therefore retrievable into a cloud prompt on any Mac with `regulated_mode` off.
+The corpus is now gated by `visibility.visible_stems` before the index is even
+built, **unconditionally, including on `local` and `apple_intelligence` where
+this run egresses nothing**: one allowlist per index directory is what keeps the
+AI11 incremental refresh from re-embedding the difference every time the backend
+setting moves. So the rule here is not "withheld meetings stay out of cloud
+prompts", it is "withheld meetings are not in this corpus". Accepted cost, put
+to the owner 2026-08-18; see `pipeline/docs/gotchas.md`, "A library-wide command
+cannot be clamped by a per-meeting flag".
 
 This replaces the FEAT2 TF-IDF ranker: retrieval is now semantic (embeddings),
 and the output is an answer, not a ranked file list.
@@ -33,7 +48,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import embed_index, engine, entry, events, rag, resource_guard
+from . import embed_index, engine, entry, events, rag, resource_guard, visibility
 from .config import Config, effective_backend
 
 log = logging.getLogger("mp.ask")
@@ -265,7 +280,9 @@ def main(argv: list[str]) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
-    cfg = entry.prepare()  # SEC13: arm, then secrets. Library-wide, so no meeting anchor.
+    # SEC13: arm, then secrets. Library-wide, so no meeting anchor, which is
+    # exactly why the visibility gate below has to exist (AUTO3 leg 0).
+    cfg = entry.prepare()
 
     root = Path(args.dir) if args.dir is not None else cfg.recording.output_dir
     question = " ".join(args.question).strip()
@@ -300,10 +317,15 @@ def main(argv: list[str]) -> int:
     # here rather than inside the index so the floor comes from config exactly
     # once per run.
     watchdog = resource_guard.MemoryWatchdog(floor_pct=cfg.summarization.local_memory_floor_pct)
+    # AUTO3 leg 0. Computed before the index so a withheld meeting is never
+    # chunked, never embedded, and never a retrieval candidate; filtering the
+    # answer afterwards would already have put the text in a cloud prompt.
+    allow = visibility.visible_stems(Path(root))
     try:
         index = embed_index.load_or_build(
             root, args.index_dir, embedder, rebuild=args.rebuild,
             watchdog=watchdog, on_progress=None if args.as_json else on_progress,
+            allow_stems=allow,
         )
     except (resource_guard.ResourceGuardError, embed_index.EmbedderUnavailableError) as e:
         # A guard abort is a real answer to the question "why did this stop":
