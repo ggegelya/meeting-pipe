@@ -41,10 +41,23 @@ let package = Package(
             // island around where the cross-thread risk actually lives.
             swiftSettings: [.unsafeFlags(["-strict-concurrency=targeted"])]
         ),
+        // REC12 item 2: the Objective-C `@try` barrier around `installTap`, and nothing
+        // else. Its own target because SwiftPM has no mixed Objective-C / Swift target,
+        // not because the code wants a module: `installTap` reports failure by raising
+        // an NSException, Swift cannot catch one, and `objc_terminate` then aborts the
+        // process (all four crash reports on the owner's machine). No third-party
+        // dependency, no dependency of its own, and deliberately not a dependency of
+        // MeetingPipeCore, whose island rules keep its floor at Foundation + TOMLKit.
+        .target(
+            name: "MeetingPipeObjC",
+            path: "Sources/MeetingPipeObjC",
+            publicHeadersPath: "include"
+        ),
         .executableTarget(
             name: "MeetingPipe",
             dependencies: [
                 "MeetingPipeCore",
+                "MeetingPipeObjC",
                 .product(name: "TOMLKit", package: "TOMLKit"),
                 .product(name: "FluidAudio", package: "FluidAudio")
             ],
@@ -61,7 +74,10 @@ let package = Package(
         .testTarget(
             name: "MeetingPipeTests",
             dependencies: [
-                "MeetingPipe"
+                "MeetingPipe",
+                // Directly, so the barrier's own contract is pinned rather than only
+                // observed through GuardedTapInstall.
+                "MeetingPipeObjC"
             ],
             path: "Tests/MeetingPipeTests",
             resources: [

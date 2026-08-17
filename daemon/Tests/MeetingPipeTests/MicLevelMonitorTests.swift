@@ -70,6 +70,7 @@ final class MicLevelMonitorTests: XCTestCase {
 
         let running = MicLevelMonitor.arm(
             format: unusableFormat,
+            engine: AVAudioEngine(),
             budgetSeconds: budget,
             installTap: { installed.value = true },
             startEngine: { started.value = true },
@@ -86,14 +87,62 @@ final class MicLevelMonitorTests: XCTestCase {
     /// format that made the app abort was transitional, and the device it belonged to was
     /// usable seconds later.
     func test_a_refused_install_leaves_metering_not_live_so_a_later_start_can_retry() {
+        // One engine across both calls, deliberately: the retry has to work on the same
+        // engine the refusal happened on, which is the whole point of a refusal not being
+        // terminal the way a caught raise is.
+        let engine = AVAudioEngine()
         XCTAssertFalse(MicLevelMonitor.arm(
-            format: unusableFormat, budgetSeconds: budget,
+            format: unusableFormat, engine: engine, budgetSeconds: budget,
             installTap: {}, startEngine: {}, removeTap: {}
         ))
         XCTAssertTrue(MicLevelMonitor.arm(
-            format: healthyFormat, budgetSeconds: budget,
+            format: healthyFormat, engine: engine, budgetSeconds: budget,
             installTap: {}, startEngine: {}, removeTap: {}
         ), "a monitor latched out by one bad format never meters again for the process lifetime")
+    }
+
+    /// REC12 item 2, from this file's side. A raise out of `installTap` reaches the ObjC
+    /// barrier inside `GuardedTapInstall`, so `arm` returns a value instead of the process
+    /// aborting, and the engine it raised on is never offered another tap: the next prompt
+    /// leaves the waveform flat rather than raising a second time on an engine AVFAudio
+    /// left in an unspecified state.
+    func test_arm_survives_a_raising_install_and_never_re_arms_that_engine() {
+        let engine = AVAudioEngine()
+        let started = OSAllocatedUnfairLockBox<Bool>(false)
+
+        let firstRun = MicLevelMonitor.arm(
+            format: healthyFormat,
+            engine: engine,
+            budgetSeconds: budget,
+            installTap: {
+                NSException(
+                    name: .invalidArgumentException,
+                    reason: "required condition is false: format.sampleRate == hwFormat.sampleRate",
+                    userInfo: nil
+                ).raise()
+            },
+            startEngine: { started.value = true },
+            removeTap: {}
+        )
+
+        XCTAssertFalse(firstRun, "a raise means metering is not live")
+        XCTAssertFalse(started.value, "no point starting an engine whose tap raised")
+
+        let reached = OSAllocatedUnfairLockBox<Bool>(false)
+        let secondRun = MicLevelMonitor.arm(
+            format: healthyFormat,
+            engine: engine,
+            budgetSeconds: budget,
+            installTap: { reached.value = true },
+            startEngine: {},
+            removeTap: {}
+        )
+
+        XCTAssertFalse(secondRun)
+        XCTAssertFalse(
+            reached.value,
+            "the next prompt re-armed an engine a raise had already condemned; that is the retry the barrier exists to prevent"
+        )
     }
 
     /// Not a blanket disable: a healthy format still installs and still brings the engine up.
@@ -103,6 +152,7 @@ final class MicLevelMonitorTests: XCTestCase {
 
         let running = MicLevelMonitor.arm(
             format: healthyFormat,
+            engine: AVAudioEngine(),
             budgetSeconds: budget,
             installTap: { installed.value = true },
             startEngine: { started.value = true },

@@ -409,6 +409,17 @@ final class MeetingRecorder {
         let modeMarkerURL = outputDir.appendingPathComponent("\(stamp).capturemode")
         try? captureMode.marker.write(to: modeMarkerURL, atomically: true, encoding: .utf8)
 
+        // REC12: an `installTap` raise the barrier caught leaves the engine unspecified and
+        // condemned, and a condemned engine is refused every tap from then on. That can
+        // only have happened in a previous session (a raise during this one throws out of
+        // start, or ends device-change recovery), so the cost of not asking here is a
+        // whole meeting failing to start over an engine we already knew was finished.
+        // Replacing it is the only sanctioned way back, and it is free when nothing raised.
+        if GuardedTapInstall.isCondemned(engine) {
+            Log.writeLine("recorder", "replacing the audio engine: a previous installTap raise condemned it")
+            engine = AVAudioEngine()
+        }
+
         // Set BEFORE reading inputNode.outputFormat: voice processing
         // changes the node's output format, so reading first would write a
         // file whose declared format mismatches the tap buffers. A throw
@@ -488,10 +499,18 @@ final class MeetingRecorder {
         // instant of use, which is the one that matters when the device is mid-transition
         // (REC12). Unwind and let the caller retry rather than starting an engine we
         // refused to put a mic tap on.
-        guard installMicTap(captureFormat: micFormat) else {
-            unwindFailedEngineStart(micURL: micURL, recreateEngine: false)
+        let tapOutcome = installMicTap(captureFormat: micFormat)
+        guard tapOutcome.isInstalled else {
+            // A caught raise leaves this engine unspecified, so unwinding by reusing it
+            // (removing a tap that may not exist, reverting voice processing on a
+            // half-configured node) is exactly the retry the barrier must not permit.
+            // Take the fresh-engine path instead, the same one the abandoned-start
+            // timeout takes and for the same reason.
+            unwindFailedEngineStart(micURL: micURL, recreateEngine: tapOutcome.requiresFreshEngine)
             throw RecorderError.engineStartFailed(
-                "the input format cannot carry a tap (\(micFormat.sampleRate) Hz, \(micFormat.channelCount) ch)"
+                tapOutcome.requiresFreshEngine
+                    ? "installTap raised on the input node; the audio engine was replaced"
+                    : "the input format cannot carry a tap (\(micFormat.sampleRate) Hz, \(micFormat.channelCount) ch)"
             )
         }
 
@@ -927,11 +946,12 @@ final class MeetingRecorder {
     /// REC12: through `GuardedTapInstall` because this is the same bare `installTap` that
     /// aborted the process four times from `MicLevelMonitor`, on the path where an abort
     /// costs a meeting rather than a prompt animation, and it is reached from device-change
-    /// recovery, which is exactly the transitional window that crash lives in. Returns
-    /// whether the tap went on; both call sites treat a refusal as a capture failure rather
-    /// than silently recording nothing.
-    private func installMicTap(captureFormat: AVAudioFormat) -> Bool {
-        GuardedTapInstall.install(format: captureFormat, site: "meeting_recorder") {
+    /// recovery, which is exactly the transitional window that crash lives in. Returns the
+    /// outcome rather than a `Bool` because the two failures need different recoveries:
+    /// both call sites treat any of them as a capture failure rather than silently
+    /// recording nothing, and a caught raise additionally retires this engine.
+    private func installMicTap(captureFormat: AVAudioFormat) -> GuardedTapInstall.Outcome {
+        GuardedTapInstall.install(format: captureFormat, site: "meeting_recorder", engine: engine) {
             engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: captureFormat) { [weak self] buffer, _ in
                 self?.processMicBuffer(buffer)
             }
@@ -1194,13 +1214,18 @@ final class MeetingRecorder {
         }
 
         // REC12: the recovery path is the one that runs while the route is mid-transition,
-        // so it is the likeliest place for a format that `installTap` would raise on. A
-        // refusal ends recovery the same way a failed converter above does.
-        guard installMicTap(captureFormat: liveFormat) else {
+        // so it is the likeliest place for a format that `installTap` would raise on, and
+        // the likeliest place for one that raises despite the check. Either way recovery
+        // ends, the same way a failed converter above ends it. A caught raise in particular
+        // must end it: retrying a tap on an engine that just raised is the one thing the
+        // barrier exists to prevent, and the engine is already condemned by the time this
+        // line runs. The next `start()` picks up a fresh one.
+        let tapOutcome = installMicTap(captureFormat: liveFormat)
+        guard tapOutcome.isInstalled else {
             Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
-                "reason": "tap_format_unusable",
+                "reason": tapOutcome.recoveryReason,
             ])
-            Log.writeLine("recorder", "WARN: the live input format is unusable after a device change - mic capture stopped")
+            Log.writeLine("recorder", "WARN: could not install the mic tap after a device change (\(tapOutcome.recoveryReason)) - mic capture stopped")
             reportRecoveryFailure()
             return
         }

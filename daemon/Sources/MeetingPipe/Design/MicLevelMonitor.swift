@@ -44,6 +44,7 @@ final class MicLevelMonitor {
 
             self.isRunning = MicLevelMonitor.arm(
                 format: format,
+                engine: self.engine,
                 budgetSeconds: MicLevelMonitor.startBudgetSeconds,
                 // 1024 @ 48kHz ~= 21ms: enough resolution for the 90ms visual tick, below AVAudioEngine's 4096 input-tap ceiling.
                 // `onLevel` is captured directly (not via a stored property) so the render-thread tap never races `audioQueue` writes.
@@ -81,27 +82,36 @@ final class MicLevelMonitor {
     }
 
     /// The whole of `start`'s decision with the AVFoundation reads lifted out: refuse a
-    /// format `installTap` would raise on (REC12), otherwise install the tap and bring the
-    /// engine up bounded (REC13). Returns whether metering is now live.
+    /// format `installTap` would raise on and survive one that raises anyway (REC12),
+    /// otherwise install the tap and bring the engine up bounded (REC13). Returns whether
+    /// metering is now live.
     ///
     /// The order matters and is the fix: the guard runs **before** the install, where the
     /// shipped code read the format one statement above and installed with it unchecked.
     /// A refused format leaves nothing behind, so `isRunning` stays false and a later
     /// `start` retries from scratch rather than being latched out by one bad moment.
     ///
+    /// A *caught raise* is the one case that must not be retried, since it leaves this
+    /// monitor's engine unspecified, and this file does nothing to arrange that: the engine
+    /// is condemned inside `GuardedTapInstall`, which then refuses it, so the next prompt's
+    /// `start` costs one refusal and leaves the waveform flat. That is deliberate. The
+    /// engine is a `let` held for the monitor's lifetime, so there is no fresh one to move
+    /// to, and a flat waveform is this file's documented degradation.
+    ///
     /// Static and closure-injected for the same reason `startBounded` is: this branching is
     /// what REC12 and REC13 are both about, and neither this machine nor CI can bring a
     /// real input device up in a state that reaches it.
     static func arm(
         format: AVAudioFormat,
+        engine: AVAudioEngine,
         budgetSeconds: Double,
         installTap: () -> Void,
         startEngine: @escaping @Sendable () throws -> Void,
         removeTap: @escaping @Sendable () -> Void
     ) -> Bool {
         guard GuardedTapInstall.install(
-            format: format, site: "mic_level_monitor", installTap: installTap
-        ) else { return false }
+            format: format, site: "mic_level_monitor", engine: engine, installTap: installTap
+        ).isInstalled else { return false }
         return startBounded(
             budgetSeconds: budgetSeconds, startEngine: startEngine, removeTap: removeTap
         )

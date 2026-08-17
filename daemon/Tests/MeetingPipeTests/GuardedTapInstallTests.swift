@@ -46,11 +46,11 @@ final class GuardedTapInstallTests: XCTestCase {
     func test_a_zero_sample_rate_format_does_not_reach_installTap() throws {
         try withScratchLogs { dir in
             let installed = OSAllocatedUnfairLockBox<Bool>(false)
-            let ran = GuardedTapInstall.install(
-                format: zeroSampleRate, site: "mic_level_monitor"
+            let outcome = GuardedTapInstall.install(
+                format: zeroSampleRate, site: "mic_level_monitor", engine: AVAudioEngine()
             ) { installed.value = true }
 
-            XCTAssertFalse(ran)
+            XCTAssertEqual(outcome, .refusedFormat)
             XCTAssertFalse(installed.value, "installTap was reached; on a real node this aborts the process")
             let rows = try skipRows(in: dir)
             XCTAssertEqual(rows.count, 1, "a skip has to be readable afterwards, or the next one is another reconstruction")
@@ -63,11 +63,11 @@ final class GuardedTapInstallTests: XCTestCase {
     func test_a_zero_channel_format_does_not_reach_installTap() throws {
         try withScratchLogs { dir in
             let installed = OSAllocatedUnfairLockBox<Bool>(false)
-            let ran = GuardedTapInstall.install(
-                format: zeroChannels, site: "meeting_recorder"
+            let outcome = GuardedTapInstall.install(
+                format: zeroChannels, site: "meeting_recorder", engine: AVAudioEngine()
             ) { installed.value = true }
 
-            XCTAssertFalse(ran)
+            XCTAssertEqual(outcome, .refusedFormat)
             XCTAssertFalse(installed.value)
             let row = try XCTUnwrap(try skipRows(in: dir).first)
             XCTAssertEqual(row["site"] as? String, "meeting_recorder")
@@ -80,14 +80,121 @@ final class GuardedTapInstallTests: XCTestCase {
     func test_a_healthy_format_installs_the_tap_and_logs_nothing() throws {
         try withScratchLogs { dir in
             let installed = OSAllocatedUnfairLockBox<Bool>(false)
-            let ran = GuardedTapInstall.install(
-                format: healthy, site: "mic_level_monitor"
+            let outcome = GuardedTapInstall.install(
+                format: healthy, site: "mic_level_monitor", engine: AVAudioEngine()
             ) { installed.value = true }
 
-            XCTAssertTrue(ran)
+            XCTAssertEqual(outcome, .installed)
             XCTAssertTrue(installed.value)
             XCTAssertEqual(try skipRows(in: dir).count, 0, "a guard that narrates every healthy start is noise")
         }
+    }
+
+    // MARK: - The barrier (REC12 item 2)
+
+    /// The acceptance bullet the barrier exists for. The guard above answers the raise
+    /// conditions readable from the format; this one is the condition no pre-check can
+    /// reach, the format disagreeing with the node's hardware format at the instant
+    /// `installTap` re-reads it.
+    ///
+    /// Red without the barrier, measured 2026-08-17 by neutering
+    /// `MPRunCatchingObjCException` to a bare `body()`: the raise escapes `install` and
+    /// XCTest reports it as "required condition is false: format.sampleRate ==
+    /// hwFormat.sampleRate (NSInvalidArgumentException)". Note it goes *red*, not *silent*:
+    /// XCTest catches raises itself, so no test can demonstrate the abort. The daemon has
+    /// no such handler, which is the whole bug.
+    func test_a_raising_installTap_surfaces_as_a_value_rather_than_escaping_the_seam() throws {
+        try withScratchLogs { dir in
+            let outcome = GuardedTapInstall.install(
+                format: healthy, site: "mic_level_monitor", engine: AVAudioEngine()
+            ) {
+                NSException(
+                    name: .invalidArgumentException,
+                    reason: "required condition is false: format.sampleRate == hwFormat.sampleRate",
+                    userInfo: nil
+                ).raise()
+            }
+
+            XCTAssertEqual(outcome, .raised)
+
+            let row = try XCTUnwrap(try rows(in: dir, action: "mic_tap_install_raised").first)
+            XCTAssertEqual(row["site"] as? String, "mic_level_monitor")
+            XCTAssertEqual(row["sample_rate"] as? Double, 48_000)
+            let reason = try XCTUnwrap(row["reason"] as? String)
+            XCTAssertTrue(
+                reason.contains("format.sampleRate == hwFormat.sampleRate"),
+                "the reason string is the one thing a crash report never carried, so a caught raise has to record it: \(reason)"
+            )
+        }
+    }
+
+    /// The caveat that came with the barrier, made mechanical. Catching an `NSException`
+    /// out of AVFAudio's C++ frames leaves the engine unspecified, so the retry has to be
+    /// impossible rather than merely discouraged: both call sites have a live retry path
+    /// into this seam (every prompt, every device change).
+    func test_a_caught_raise_condemns_the_engine_so_no_later_tap_reaches_installTap() throws {
+        try withScratchLogs { dir in
+            let engine = AVAudioEngine()
+            XCTAssertFalse(GuardedTapInstall.isCondemned(engine), "precondition")
+
+            _ = GuardedTapInstall.install(format: healthy, site: "meeting_recorder", engine: engine) {
+                NSException(name: .genericException, reason: "boom", userInfo: nil).raise()
+            }
+            XCTAssertTrue(GuardedTapInstall.isCondemned(engine))
+
+            let reached = OSAllocatedUnfairLockBox<Bool>(false)
+            let retry = GuardedTapInstall.install(
+                format: healthy, site: "meeting_recorder", engine: engine
+            ) { reached.value = true }
+
+            XCTAssertEqual(retry, .refusedCondemnedEngine)
+            XCTAssertFalse(reached.value, "a second installTap on an engine that already raised is the worse-than-the-abort case")
+            XCTAssertEqual(try rows(in: dir, action: "mic_tap_install_refused").count, 1)
+        }
+    }
+
+    /// Condemnation is per engine, not a process-wide latch. The way back from a raise is a
+    /// **new** engine, which `MeetingRecorder.start` takes; a global flag would have made
+    /// one raise the end of recording for the process lifetime.
+    func test_condemning_one_engine_leaves_another_installable() throws {
+        try withScratchLogs { _ in
+            let condemned = AVAudioEngine()
+            _ = GuardedTapInstall.install(format: healthy, site: "meeting_recorder", engine: condemned) {
+                NSException(name: .genericException, reason: "boom", userInfo: nil).raise()
+            }
+
+            let replacement = AVAudioEngine()
+            let installed = OSAllocatedUnfairLockBox<Bool>(false)
+            let outcome = GuardedTapInstall.install(
+                format: healthy, site: "meeting_recorder", engine: replacement
+            ) { installed.value = true }
+
+            XCTAssertEqual(outcome, .installed)
+            XCTAssertTrue(installed.value)
+            XCTAssertFalse(GuardedTapInstall.isCondemned(replacement))
+        }
+    }
+
+    /// The two failures a caller has to tell apart, stated on the type rather than left to
+    /// each call site to work out: a refused format is retryable on the same engine (it was
+    /// transitional, and the device was usable seconds later), a caught raise never is.
+    func test_only_a_raise_and_a_condemned_engine_demand_a_fresh_one() {
+        XCTAssertFalse(GuardedTapInstall.Outcome.installed.requiresFreshEngine)
+        XCTAssertFalse(GuardedTapInstall.Outcome.refusedFormat.requiresFreshEngine)
+        XCTAssertTrue(GuardedTapInstall.Outcome.raised.requiresFreshEngine)
+        XCTAssertTrue(GuardedTapInstall.Outcome.refusedCondemnedEngine.requiresFreshEngine)
+
+        XCTAssertTrue(GuardedTapInstall.Outcome.installed.isInstalled)
+        XCTAssertFalse(GuardedTapInstall.Outcome.raised.isInstalled)
+
+        // Distinct reasons, so a failed device-change recovery in the log a year from now
+        // still says which of the two happened.
+        let reasons = Set([
+            GuardedTapInstall.Outcome.refusedFormat.recoveryReason,
+            GuardedTapInstall.Outcome.refusedCondemnedEngine.recoveryReason,
+            GuardedTapInstall.Outcome.raised.recoveryReason,
+        ])
+        XCTAssertEqual(reasons.count, 3)
     }
 
     // MARK: - The sibling on the recording path
@@ -116,6 +223,21 @@ final class GuardedTapInstallTests: XCTestCase {
         }
     }
 
+    /// The other half of "exactly one path from a format to `installTap`": the barrier has
+    /// exactly one Swift caller too. `MPRunCatchingObjCException` catches a raise and hands
+    /// back a string, and the engine it raised on is unspecified afterwards, so a second
+    /// caller would be a second place that has to remember to retire it. Condemnation lives
+    /// in `GuardedTapInstall`, and so does the call.
+    func test_the_objc_barrier_has_exactly_one_caller() throws {
+        for (path, text) in try daemonSourceFiles() where text.contains("MPRunCatchingObjCException") {
+            XCTAssertEqual(
+                path, "MeetingPipe/GuardedTapInstall.swift",
+                "\(path) calls the ObjC exception barrier directly. A caught raise leaves its subject "
+                    + "unusable, and GuardedTapInstall is the one place that records that."
+            )
+        }
+    }
+
     // MARK: - Helpers
 
     /// Point `Log` at a scratch directory so these read back exactly the rows they wrote.
@@ -132,12 +254,16 @@ final class GuardedTapInstallTests: XCTestCase {
     }
 
     private func skipRows(in dir: URL) throws -> [[String: Any]] {
+        try rows(in: dir, action: "mic_tap_install_skipped")
+    }
+
+    private func rows(in dir: URL, action: String) throws -> [[String: Any]] {
         let events = dir.appendingPathComponent("events.jsonl")
         guard let text = try? String(contentsOf: events, encoding: .utf8) else { return [] }
         return text.split(separator: "\n").compactMap { line in
             guard let data = line.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  object["action"] as? String == "mic_tap_install_skipped" else { return nil }
+                  object["action"] as? String == action else { return nil }
             return object
         }
     }
