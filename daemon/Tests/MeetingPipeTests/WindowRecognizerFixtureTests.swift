@@ -32,6 +32,35 @@ final class WindowRecognizerFixtureTests: XCTestCase {
         let entries: [Entry]
     }
 
+    /// What a row's `expected` token asks this suite to do with it (HYG6).
+    ///
+    /// `unknown` exists because the CAL3 probe cannot compute the right answer:
+    /// it deliberately carries no Teams title pattern and never calls
+    /// `isActiveMeetingWindow`, so any verdict it emitted would be asserted
+    /// without having been measured. It used to emit a hardcoded `recognize`,
+    /// and this suite hard-asserts what it is given, so the first real Teams
+    /// title the recognizer rejects would have turned weeks of owner capture
+    /// into a red suite on an unrelated commit. That reject is the outcome CAL3
+    /// exists on the possibility of, so it has to arrive as a finding, not as a
+    /// broken build. An unclassified row is reported instead, and a human
+    /// promotes it to `recognize` or `reject` after reading what the recognizer
+    /// actually returned.
+    enum RowExpectation: Equatable {
+        case recognize
+        case reject
+        case unclassified
+        case malformed(String)
+
+        init(token: String) {
+            switch token {
+            case "recognize": self = .recognize
+            case "reject": self = .reject
+            case "unknown": self = .unclassified
+            default: self = .malformed(token)
+            }
+        }
+    }
+
     private func loadFixture() throws -> Fixture {
         guard let url = Bundle.module.url(forResource: "window_titles", withExtension: "json") else {
             throw XCTSkip("window_titles.json fixture not bundled")
@@ -51,14 +80,42 @@ final class WindowRecognizerFixtureTests: XCTestCase {
                 MeetingSourceScanner.isActiveMeetingWindow(
                     bundleID: entry.bundleID, kind: .native, title: title)
             }
-            let expected = (entry.expected == "recognize")
-            XCTAssertEqual(
-                recognized, expected,
-                "fixture row mismatch: bundle=\(entry.bundleID) state=\(entry.state) "
-                    + "expected=\(entry.expected) actual=\(recognized ? "recognize" : "reject") "
-                    + "titles=\(entry.titles) seeded=\(entry.seeded)"
-            )
+            let actual = recognized ? "recognize" : "reject"
+            let context =
+                "bundle=\(entry.bundleID) state=\(entry.state) "
+                + "titles=\(entry.titles) seeded=\(entry.seeded)"
+
+            let expectation = RowExpectation(token: entry.expected)
+            switch expectation {
+            case .recognize, .reject:
+                XCTAssertEqual(
+                    recognized, expectation == .recognize,
+                    "fixture row mismatch: expected=\(entry.expected) actual=\(actual) \(context)"
+                )
+            case .unclassified:
+                // Reported, never asserted. Read this line, decide, and rewrite
+                // the row's `expected` by hand. A `reject` on a real captured
+                // title is a DET-band finding about `isActiveMeetingWindow`,
+                // not a bad capture; never edit a captured title to go green.
+                print("[fixture] UNCLASSIFIED recognizer=\(actual) \(context)")
+            case .malformed(let token):
+                // A typo must not read as `reject` and quietly pass.
+                XCTFail(
+                    "fixture row has an unreadable `expected` value \"\(token)\": \(context); "
+                        + "use recognize, reject, or unknown"
+                )
+            }
         }
+    }
+
+    /// Pin the rule itself, since the fixture holds no `unknown` row today and a
+    /// suite that only exercises the seeded rows would pass with the branch gone.
+    func test_row_expectation_reads_every_token() {
+        XCTAssertEqual(RowExpectation(token: "recognize"), .recognize)
+        XCTAssertEqual(RowExpectation(token: "reject"), .reject)
+        XCTAssertEqual(RowExpectation(token: "unknown"), .unclassified)
+        XCTAssertEqual(RowExpectation(token: "Recognize"), .malformed("Recognize"))
+        XCTAssertEqual(RowExpectation(token: ""), .malformed(""))
     }
 
     /// Surface the seeded-vs-captured ratio so a reader of test output

@@ -467,6 +467,10 @@ func loadCaptures() -> [Capture] {
 /// The fixture wants `{bundle_id, state, expected, seeded, titles}` in that key
 /// order, so this is hand-built rather than encoded, and the result pastes into
 /// `daemon/Tests/MeetingPipeTests/Fixtures/window_titles.json` unedited.
+///
+/// `in_call_one_on_one` already exists in the fixture and is replaced by its
+/// capture. The other two are new state names with no seeded counterpart, so
+/// they are ADDED; see the paste note in `emitFixtureBlock`.
 func fixtureState(for kind: String) -> String {
     switch kind {
     case "series": return "in_meeting_named_series"
@@ -491,7 +495,7 @@ func emitFixtureBlock(_ captures: [Capture]) {
             {
               "bundle_id": \(jsonLiteral(c.bundleID)),
               "state": \(jsonLiteral(state)),
-              "expected": "recognize",
+              "expected": "unknown",
               "seeded": false,
               "titles": [\(titles)]
             }
@@ -499,8 +503,8 @@ func emitFixtureBlock(_ captures: [Capture]) {
     }
 
     print("")
-    print("── window_titles.json entries: paste into `entries`, REPLACING the seeded rows ──")
-    print("── of the same state. `seeded: false` is what flips the suite's captured count. ──")
+    print("── window_titles.json entries: paste into `entries`. `seeded: false` is what ──")
+    print("── flips the suite's captured count. `expected: \"unknown\"` is deliberate.     ──")
     guard !blocks.isEmpty else {
         print("    (no usable captures to emit)")
         print("── end ──")
@@ -518,10 +522,26 @@ func emitFixtureBlock(_ captures: [Capture]) {
     print("")
     print("No trailing comma is emitted, so add one after the last pasted entry if other")
     print("entries follow it in the array.")
-    print("`expected` is \"recognize\" because a live meeting was in progress for every one")
-    print("of these. If a pasted row turns WindowRecognizerFixtureTests red, that is a REAL")
-    print("finding about `isActiveMeetingWindow`, not a bad capture. File it; do not edit the")
-    print("captured titles to make the suite green.")
+    print("")
+    print("WHICH ROWS THIS REPLACES. `in_call_one_on_one` is already in the fixture, so its")
+    print("capture replaces that seeded row. `in_meeting_named_series` and `in_meeting_ad_hoc`")
+    print("are new state names with nothing to replace, so they are ADDED; decide deliberately")
+    print("which of the seeded Teams rows they supersede rather than leaving guesses beside")
+    print("real captures.")
+    print("")
+    print("WHY `expected` IS \"unknown\" AND NOT \"recognize\". A live meeting was in progress")
+    print("for every one of these, so it is tempting to write \"recognize\". This probe cannot")
+    print("know that: it carries no title pattern on purpose (see the header) and never calls")
+    print("`MeetingSourceScanner.isActiveMeetingWindow`, so emitting \"recognize\" would assert a")
+    print("value it did not compute, and the fixture suite hard-asserts what it is given. A real")
+    print("Teams title that the recognizer REJECTS is precisely the outcome CAL3 exists on the")
+    print("possibility of, and pasting it as \"recognize\" would turn weeks of capture into a red")
+    print("suite on an unrelated commit. An \"unknown\" row is REPORTED by the suite, never")
+    print("asserted: run `swift test --filter WindowRecognizerFixtureTests`, read what the")
+    print("recognizer actually returned for each title, and only then write \"recognize\" or")
+    print("\"reject\" by hand. A `reject` on a real captured title is a DET-band finding about")
+    print("`isActiveMeetingWindow`, not a bad capture. File it; never edit a captured title to")
+    print("make the suite green.")
 }
 
 func runReport() {

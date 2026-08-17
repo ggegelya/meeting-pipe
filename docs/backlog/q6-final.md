@@ -191,6 +191,7 @@
 | UX68 | A pane switch scrolls Preferences to 28pt below the top, not to the top | UX | done | P2 | Shipped 2026-08-17. The anchor moved above the padding rather than the padding being compensated for: `.padding(.horizontal, 32)` and `.padding(.vertical, 28)` now sit on `detailContent` beside the anchor instead of on the `VStack` the anchor is the first child of. Rendered geometry is unchanged and deliberately so, since the anchor is still greedy horizontally and still bounded by the same `.frame(maxWidth: 620)` on the stack, so the content column keeps its 556pt measure; the only thing that moved is where the scrollable content's top edge is. UX43's `ScrollViewReader` plus constant-id strategy is untouched, as the spec required. **The fence needed a correction, and it is the more useful half of this task.** The first version asserted the anchor appears before the padding in the source and it **passed against a deliberate revert to the broken shape**, because a modifier on a container is written after that container's closing brace, so the anchor precedes the padding in the text under both shapes. Source order cannot see nesting. The discriminator is the brace between them, and the fence reads that now: green on the fix, red on the revert, both verified rather than assumed. It also fences out the two tempting compensations (a hand-built `UnitPoint`, a negative `.offset(y:)`) and pins that the scroll target stays a plain `.top`. **Named rather than fixed, per the spec's out-of-scope line:** `GuideView.document` has the same shape, `.padding(.vertical, MPSpace.s6)` on the `VStack` whose children carry the `.id(index)` jump targets, so a jump to block 0 lands below the true top. It is a narrower defect there, because a jump to any later heading is correct by construction (aligning that heading with the viewport top is what was asked), and it has not been reported. The other scrollers use `anchor: .center`, which this class does not touch. `swift build` clean, `swift test` 2512 passed with 1 new. Truth fences green, no em-dashes and no new `.system(size:` in changed lines. Docs: `daemon/docs/gotchas.md` (a new section carrying both the anchor trap and the fence lesson), `daemon/CLAUDE.md` (one rule line). README, ARCHITECTURE, CONVENTIONS, GUIDE.md and `design/` checked, none affected: no user-facing copy, module, schema or visual token changed, and neither README nor GUIDE describes where a Preferences pane opens. |
 | UX70 | Asking several questions grows the Library window past the screen, and the answers cannot be scrolled to | UX | done | P1 | Shipped 2026-08-17. **The spec was right that the obvious fix is wrong, and the escape is not in the Ask pane at all.** `AskView` already scrolls the session and the height constraint it was missing is one line in `LibraryWindow.show()`: an `NSHostingController` propagates its content's size upward by default and `NSWindow(contentViewController:)` follows it, so the window enlarged itself to match the stack and a scroller that only takes over when the offered height is smaller than its content never got a smaller offer. `host.sizingOptions = []` is the fix, set before the window takes the controller so the first sizing pass cannot land either. **Measured rather than argued**, with an offscreen window and a real layout pass: a hosted column of one 200pt entry reports `intrinsicContentSize.height` 200 and forty entries report 8000, while with the options emptied both report `noIntrinsicMetric`. Nothing is lost, since `setContentSize` (1120x680) and the frame autosave already own the window's size and `w.minSize` still floors it. **The neighbouring rails are fixed by the same line, which is why it went there rather than into `AskView`:** Facts, People, Meeting time and Digests all render unbounded lists in the same centre column and all rode the same escape, so this is one fix rather than four, exactly as the spec asked to be checked. One correction worth recording, and it is in `daemon/docs/gotchas.md`: the first version of the test read `preferredContentSize`, which is the property `NSHostingSizingOptions` is named for and which reads `(0, 0)` for every input in this harness, so it passed on the bug and on the fix alike; `intrinsicContentSize` is the same number by a route that is actually observable headlessly. The source fence was likewise verified red against a deliberate revert rather than assumed. `swift build` clean, `swift test` 2515 passed with 3 new. Docs: README (the Library window paragraph, which also had a stale `900x600` against the code's `1120x680`, fixed while directly on that line), `daemon/docs/gotchas.md` (a new section), `daemon/CLAUDE.md` (one rule line). ARCHITECTURE, CONVENTIONS, GUIDE.md and `design/` checked, none affected. Truth fences green, no em-dashes and no new `.system(size:` in changed lines. **Owed: the owner walkthrough**, which is the only place the window's real behaviour under four or five long answers can be confirmed; the headless measurement pins the mechanism, not the felt result. |
 | UX71 | The Ask pane shows answers as raw markdown and leaves its trailing column empty | UX | done | P2 | Shipped 2026-08-17, after UX70 as the spec required. **Rendering:** the answer body goes through `SummaryMarkdown.inline`, promoted out of `SummaryRenderedView` where it was `private`, because Ask is the real second caller that `daemon/CLAUDE.md` names as the trigger to promote. **The spec asked for a reason if the renderer could not be reused as is, and here it is:** `SummaryRenderedView` is a view over a typed `MeetingSummary` with named sections and evidence anchors, so the *view* cannot render a free-form answer; what is shared, and what "the same renderer" means in practice, is the parsing rule, which is now one function with one home. Two of its properties are load-bearing rather than incidental and both are pinned. `.inlineOnly` is what keeps a bare `[20260803-165412]` in the prose literal text instead of a link, which is exactly the spec's constraint that a bracketed stem must not become an affordance competing with the citation chips under the body. And it parses one paragraph, so the pane renders one `Text` per line via a new `SummaryMarkdown.lines` rather than handing it the whole answer, which would collapse a five-item numbered list into a paragraph; `.textSelection(.enabled)` moved with the change, per UX48. **The column: owner chose to drop it for all four projection rails (2026-08-17), not for Ask alone.** Checking what else moves, as the spec required, found the placeholder was not an Ask quirk: `Facts`, `People`, `Meeting time` and `Ask` all rendered the same centred sentence restating what the pane beside them was doing, so fixing one would have left the pane set inconsistent and the other three as later rows. The rule is `LibraryScope.ownsTheWholeCentreColumn` rather than a branch at the render site, so the pane's contents and the column's width cannot disagree, and its `switch` is exhaustive with no `default`, so a scope added later has to answer on purpose. `.digests` is deliberately excluded: its centre column lists the digests and its detail column reads the selected one at full width. The column collapses by clamping `navigationSplitViewColumnWidth` to zero and returning `EmptyView`; the list column has no max (UX36) so it absorbs the width, and the window minimum still clears the remaining floors. `swift build` clean, `swift test` 2522 passed with 7 new. Docs: README (the three-pane sentence, and the Ask rail paragraph), ARCHITECTURE (the `AskView` / `AskPane` entry), `daemon/docs/gotchas.md` (a new section), `daemon/CLAUDE.md` (two rule lines). CONVENTIONS checked, unchanged. GUIDE.md checked, it has no Ask recipe naming these controls. `design/` checked: no token, colour or type change, and the removed placeholders were plain views, not design-system primitives. Truth fences green, no em-dashes and no new `.system(size:` in changed lines (two pre-existing `.system(size: 36)` literals went out with the placeholders). **Owed: the owner's eyeball on the column**, which the spec names as the half a test cannot reach, and which the walkthrough is for. The collapse is pinned as a decision, not as a rendered window. |
+| HYG6 | Spec-truth sweep: stale citations and two walkthroughs that cannot pass | Hygiene | done | P2 | Shipped 2026-08-18. `swift build` clean, `swift test` 2586 passed 0 failures with 1 new, truth fences green, no Python touched. **Two of the five items had already been closed by the code moving under the filing, which is itself the finding.** (1) was fixed in place on 2026-08-03 when filed. (2), UX48's unproducible Cmd+K step, was closed by UX48 itself on 2026-08-04: the false `:33` clause is struck in the archive, step 7 is rewritten, and the Quick Find main-menu row (one of the two fixes HYG6 proposed) actually shipped. One residue was fixed here: the archived spec's own "left to the owner" bullet still read as unshipped. (3) **is the item with teeth and it is fixed properly.** `cal3-teams-title-probe.swift` emitted `"expected": "recognize"` as a literal for every capture while never calling the recognizer and, by its own header, deliberately carrying no Teams title pattern; `WindowRecognizerFixtureTests` hard-asserts that value. The probe now emits `"unknown"`, which the suite **reports** (`[fixture] UNCLASSIFIED recognizer=… titles=…`) rather than asserts, so a real Teams title this recognizer rejects arrives as the DET-band finding it is instead of a red suite on an unrelated commit; a token that is neither `recognize`, `reject` nor `unknown` now fails rather than quietly reading as `reject`. Both branches were proven by mutating the fixture and watching the suite, not by inspection. The state-name mismatch is corrected on all three surfaces (only `in_call_one_on_one` has a row to replace; the other two are additions), and VALOWN1 step 1, the spike doc's follow-up list and the fixture's own `_README` all say so. (4) **The live scope was half what was filed**: UX43 and UX46 are archived, and their citations are pre-fix history in a frozen record, so they were deliberately left; UX45 (owner-verification) and AUTO3 (live) were re-resolved to symbols plus quoted snippets. The cite-by-symbol rule is recorded in `.claude/commands/file-task.md`. (5) **The counts had more than doubled since filing and the mechanism is wider than the back-link**: 47 dead `../` back-links against 4 correct, and the same inherited-from-`tasks/` depth error had also killed 41 code and doc links in the same file, 88 in total, all now swept and verified by resolving every relative link on disk. `q5-final.md` has none and `q4-final.md`'s three dead links are deleted source files rather than depth errors, which confirms the defect entered with the per-task-file split. The source fix is one bullet in `tech-task.md` step 8's done-done branch stating the general rule (every relative link loses one `../` level on the way up), which is what stops the next archival re-adding one. |
 | DIAR4 | Spike: offline-diarizer migration for the failures no threshold can reach | Transcription | done | P2 | Closed 2026-08-18, **NO-GO, measured**, which is the outcome the spec named as a good one. Deliverables: `docs/spikes/diar4-offline-diarizer-migration.md` (thresholds pre-registered before anything ran) and `daemon/scripts/diar4-offline-diarizer-probe/`, its own SwiftPM package so `daemon/`'s build is untouched. **Not TCC-gated**, checked rather than assumed (file I/O over an existing wav plus CoreML inference), so the session ran it; the only gate was a 21.5 MB model download the owner approved. **Question 1, the gate:** at `stepRatio` 0.1 with `minSegmentDurationSeconds` 0.0 the offline diarizer covers [121.84, 147.12] with a single id `S1`, the NO-GO criterion's first clause word for word, so the `stepRatio` lever is closed and questions 2 to 4 do not open. **It argues against itself twice more:** 3 clusters on a meeting where the online control returns 10 and the shipped `<stem>.embeddings.json` carries 9 keys, which is the under-clustering DIAR2 called the broken promise; and the offline embedding model is *different weights at the same 256 dims*, so every enrolled FEAT3 voiceprint would keep comparing in the wrong space (silent wrong roster matches, not a crash). Question 2 also closes the spec's premise: the offline manager returns the same `DiarizationResult` in 0.14.8, so the callers would compile unchanged. **The correction worth carrying:** both pipelines already emit a boundary on the 2:01 handover (online `121.97 -> 124.61` then `125.92 -> ...`; offline `121.84 -> 124.65` then `125.96 -> ...`, within 0.04 s of each other) and both label the two sides the same speaker, so that case is cluster assignment and not the segmentation limit DIAR2 recorded and this task was filed on; `ARCHITECTURE.md` and a new `daemon/docs/gotchas.md` rule now say so. No production diarizer change landed and no migration task was filed, per the acceptance's own condition. |
 
 ## Task specs
@@ -514,7 +515,7 @@ On a retry, do not reopen the same path. Two shapes work:
 - Write the recovered stream to a numbered sibling (`<stem>.system.2.wav`) and teach `produceFinal` to concatenate the system legs with a silence gap before the merge.
 - Or pre-pad the new file with silence covering the outage window so sample 0 still means recording start.
 
-The offset handling is shared with REC9's length policy. REC9 shipped 2026-08-05 (see [q6-final.md](../q6-final.md)) and stands alone, so this is no longer a joint pickup: `RecordingPostProcessor.mergeLengths` already applies `adelay` for a late-starting system channel, and the head offset is measured from `systemUptime` at start against the first frame written into the system WAV as it currently stands, with the mark cleared in `startSystemCapture` precisely because `AVAudioFile(forWriting:)` truncates. Build on that rather than reinventing it. Note what REC9 did and did not change here: a retry's audio now merges at the offset where the retry actually happened rather than at sample 0, but the pre-loss audio the retry overwrote is still lost, which is this task's whole subject.
+The offset handling is shared with REC9's length policy. REC9 shipped 2026-08-05 (see [q6-final.md](./q6-final.md)) and stands alone, so this is no longer a joint pickup: `RecordingPostProcessor.mergeLengths` already applies `adelay` for a late-starting system channel, and the head offset is measured from `systemUptime` at start against the first frame written into the system WAV as it currently stands, with the mark cleared in `startSystemCapture` precisely because `AVAudioFile(forWriting:)` truncates. Build on that rather than reinventing it. Note what REC9 did and did not change here: a retry's audio now merges at the offset where the retry actually happened rather than at sample 0, but the pre-loss audio the retry overwrote is still lost, which is this task's whole subject.
 
 Fix `handleSystemAudioLost`'s doc comment and `REC8.md:5`'s preservation claim in the same commit.
 
@@ -1129,7 +1130,7 @@ Attribution was fixed on the `auto` ladder too, which the spec did not name: `_A
 **Verified:** 940 pytest (3 new: the `adapters` field present when configured, absent when not, and a bad path failing loudly with the path named), ruff, pyright, CI5 truth fences, all green. Docs in the same commit: `config.example.toml`, README's "Improving local quality", the CONVENTIONS served-identity section, and LOCAL9's precondition note updated to record that both of its blockers are now resolved.
 
 
-Band origin: filed 2026-07-23 (found while shipping LOCAL11, commit 65ba629; verified three ways in the filing session before filing). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-23 (found while shipping LOCAL11, commit 65ba629; verified three ways in the filing session before filing). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 **LOCAL15 (P2, new): `summarization.local_adapter_path` is a no-op, because mlx-lm drops the `--adapter-path` flag LOCAL9's serving seam passes.** The base model serves regardless of the setting, silently, with no warning on either side. Correctness in character (a documented, README-advertised config knob does nothing), banded P2 rather than P1 only because the blast radius as of filing is zero: the knob is opt-in with an empty default and no adapter has ever been trained on this Mac. The owner may re-band.
 
@@ -1147,7 +1148,7 @@ Verified three ways on 2026-07-23, so the pickup session does not need to re-der
 
 **Why this is urgent rather than merely true.** LOCAL9 is `partial` with the owner-owed remainder "run `mp train-adapter --source runs --adapter-path <dir>`, then `mp dogfood --adapter <dir> <held-out transcript>`, hand-grade the scorecard, and set `summarization.local_adapter_path` only if it wins". If the adapter never serves, that A/B compares the base model against itself and returns a false negative, and an honest-looking "the adapter did not help" would wrongly close LOCAL9 after the owner spent real training and grading time. Resolve this before that A/B is run.
 
-**Why LOCAL11 did not catch it, and structurally cannot.** LOCAL11 (shipped 2026-07-23, archived in [q6-final.md](../q6-final.md)) verifies what a warm server is serving by reading the listening process's argv. Argv is the **spawn contract**, not a readback of the loaded weights: it catches a server started for a different model or adapter, but a server handed `--adapter-path` and silently ignoring it looks correct from the outside. LOCAL11's archive entry records this under "Known limitation". This task is that blind spot.
+**Why LOCAL11 did not catch it, and structurally cannot.** LOCAL11 (shipped 2026-07-23, archived in [q6-final.md](./q6-final.md)) verifies what a warm server is serving by reading the listening process's argv. Argv is the **spawn contract**, not a readback of the loaded weights: it catches a server started for a different model or adapter, but a server handed `--adapter-path` and silently ignoring it looks correct from the outside. LOCAL11's archive entry records this under "Known limitation". This task is that blind spot.
 
 ## Scope
 
@@ -1483,7 +1484,7 @@ Root cause, and the reason it recurred: no single home. Seven independent hardco
 
 **[DONE] UX47 (P2): prep card wraps its lines, admits its scroll, and stays inside its panel.** Shipped 2026-07-30, filed and closed the same day. Owner confirmed the eyeball after the mask fix ("okay, looks good").
 
-Band origin: filed 2026-07-30 (owner, from a live prompt screenshot during a real Teams call: bullets sliced mid-glyph at the panel edge, "I was thinking text will be line breaked or what... and it is not visible that it is scrollable"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-30 (owner, from a live prompt screenshot during a real Teams call: bullets sliced mid-glyph at the panel edge, "I was thinking text will be line breaked or what... and it is not visible that it is scrollable"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 ## Context
 Three defects wearing one outfit, separated by a layout probe before any design was argued.
 **Defect 1 is a bug with a probe-proven mechanism, a UX34 regression.** UX34 rehosted the card as an `NSScrollView` document, deliberately "frame-sized, not constrained". Under the layout engine a document view with `translatesAutoresizingMaskIntoConstraints` true and constraint-based subviews takes its width from its *content*, not from the frame it was handed, so in a 600pt panel the card laid itself out **879pt wide**. A throwaway XCTest built the card exactly as the panel does and measured where each label ends: the long bullets sat at maxX 773, 867, 823 against a 588 inset, every trailing constraint holding against a right edge 279pt past the glass, and the right-aligned relative-day label sat at maxX 867, meaning **the date has rendered off-panel since UX34 landed** (the owner's screenshot shows nothing to the right of the title). The configured `byTruncatingTail` never fired because the labels were never compressed. Before UX34 the card was constraint-hosted and the same labels ellipsized correctly.
@@ -1520,7 +1521,7 @@ Verified: `swift build` clean, **1888 daemon tests, 0 failures** (2 more than th
 
 **[DONE] UX36 (P2): summary reading measure: centered column, honest padding, wrapping metadata.** **Closed 2026-07-30: owner confirmed the eyeball ("UX36 - good to close") after the fourth pass put both reading tabs on the shared 720 measure.**
 
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 4: "the summary content is cut in width at some level... make size of the text area dynamic to the size of the panel, or make max width of the right panel fixed, or any other options"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 4: "the summary content is cut in width at some level... make size of the text area dynamic to the size of the panel, or make max width of the right panel fixed, or any other options"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 ## Context
 What the owner sees as "cut at some width" is the reading-measure cap, not a clip. `SummaryLayout.readingMeasure = 640` (`SummaryRenderedView.swift:8-10`) is a deliberate typography decision (TECH-DSN8 / UX13: ~70 characters at body size, "reads like paper"), applied to the rendered summary at :91-93:
 - `.padding(MPSpace.s5)` (20pt) is applied INSIDE the cap, so the real text column is 640 - 40 = 600pt.
@@ -1576,7 +1577,7 @@ Verified: `swift build` clean, **1882 daemon tests, 0 failures**, truth fences g
 
 **[DONE] UX35 (P2): hUD width parity between recording and off-the-record states.** **Closed 2026-07-30: owner confirmed the eyeball ("UX35 good to close"); the 96pt pill reads right in both states.**
 
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 3: "Off the record mode looks too wide, while when it is disabled it is too narrow... make it same size"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 3: "Off the record mode looks too wide, while when it is disabled it is too narrow... make it same size"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 ## Context
 The recording HUD has three hard-coded widths: `panelWidth = 76` for normal recording (`RecordingHUDWindow.swift:51`, with the sizing arithmetic in the comment at :48-50: dot 8 + gap 5 + "Recording" ~50 = 63pt plus margin), `offRecordPanelWidth = 150` for off-the-record (:59), and `degradedPanelWidth = 232` for the system-audio-degraded card (:56).
 `setOffTheRecord(_:)` (:238-250) swaps the label text ("Recording" to "Off the record", :239), retints, flips the mic-slash glyph, and resizes the window per state at :248 via `resizePanelAnchoringTopRight`. Nothing measures the text: 150 is a literal, and "Off the record" at the 10pt label size needs ~76pt of text, so the off-record pill carries ~60pt of dead width while the normal pill is snug at 76.
@@ -1659,7 +1660,7 @@ The A/B is now actually held-out: training writes `split.json` beside the adapte
 
 **Progress (2026-07-11): tooling shipped, adoption owner-owed.** The full tooling is in: `train_adapter.py` (`mp train-adapter`) reads the summary-grading corpus, builds `{prompt, completion}` pairs (the base summarization prompt + transcript, from `mp.prompts/meeting_summary.md`, mapped to the owner's corrected summary JSON), splits train/valid/test, and shells out to `mlx_lm.lora --train` (subprocess, matching `build_server_command`'s precedent, so the module stays importable on Linux CI); it refuses below the `corrections-stats` readiness bar unless `--force`, and runs local-only via `entry.prepare(secrets=False)`. `summarization.local_adapter_path` (config, empty default) is the opt-in, threaded through `summarize_local.build_server_command` (+`--adapter-path`) and both `LocalSummaryClient` construction sites plus the `mp serve-local` warm path, so a configured adapter is actually served and never applied when unset. `mp dogfood --adapter <dir>` adds the base-vs-adapter A/B (local-only, no cloud baseline, no zero-egress refusal). README's "Improving local quality" section, `config.example.toml`, and the ARCHITECTURE subcommand table describe the real flow. Verified: pipeline 673 green (ruff + pyright clean), incl. pair-building / split / command-construction / `--adapter-path`-when-set / dogfood-adapter-mode-skips-cloud tests; `mp train-adapter --help` and the readiness gate (0/20 on this Mac) confirmed by hand. The two owner-owed remainders keep this partial: the **corpus is empty on this Mac** (grading volume is owner-owed), and the **A/B adoption decision** (run `mp train-adapter` then `mp dogfood --adapter`, hand-grade, set `local_adapter_path` only if it wins) needs a real corpus + Apple-Silicon Mac, not exercisable here. An honest negative result stays a valid terminal outcome.
 
-**[DONE] DET7 (P2): record the suppressed meeting, attach off the live discovery candidate.** Band origin: filed 2026-07-29 (owner exploratory sweep, item 7: "if the meeting got suppressed cause I didnt click record, after this I am not able to start the meeting recorder connected to a teams, only 'generic' one"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md). P2; the owner hits this in live dogfood, so re-band to P1 on the next recurrence that costs a meeting's attribution.
+**[DONE] DET7 (P2): record the suppressed meeting, attach off the live discovery candidate.** Band origin: filed 2026-07-29 (owner exploratory sweep, item 7: "if the meeting got suppressed cause I didnt click record, after this I am not able to start the meeting recorder connected to a teams, only 'generic' one"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md). P2; the owner hits this in live dogfood, so re-band to P1 on the next recurrence that costs a meeting's attribution.
 
 **Context.**
 
@@ -1713,7 +1714,7 @@ One copy call the owner may want to overrule: the row reads **"Record this Micro
 
 **[DONE] UX37 (P2): Ask is safe to leave (root-owned model, cancellable run, preserved state).** **Shipped 2026-07-30: `AskModel` owns the run, the launcher retains `mp ask` in its own cancel slot, and the deeplink is consumed on completion. History cap 20 and refuse-the-second-ask are the two delegated decisions, recorded. One deliberate deviation from the acceptance text: `retainForCancel` did not become a `PipelineDriver` parameter a fake could record, because every ask should be cancellable and a knob with one possible value is noise. Retention is a `RetainSlot` inside `PipelineLauncher` with a second slot for ask, and the observable half is `cancelAsk()` on the driver protocol, which `MeetingLibraryServiceTests` pins reaching the fake. Owner eyeball still to do; everything else is pinned by 14 `AskModelTests` plus that forwarding test.** Original spec follows.
 
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 6: "Ask should be safe to leave. Currently if I ask anything, and then leave tab and get back, process got interrupted"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 6: "Ask should be safe to leave. Currently if I ask anything, and then leave tab and get back, process got interrupted"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -1747,7 +1748,7 @@ Model-level tests: start an ask, simulate view teardown (drop the view, keep the
 Owner eyeball: ask a question, immediately switch to Facts, come back; the spinner is still there and the answer arrives in place. Cancel a slow ask; the pane says it was cancelled instead of going blank.
 
 **[DONE] FEAT10 (P2): Evidence-grounded summaries (citations with transcript jump).**
-Band origin: filed 2026-07-22 (owner feature ask, designed and approved in the 2026-07-22 review session; owner calls from that session: published notes carry timestamps only, and the decisions section is included). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-22 (owner feature ask, designed and approved in the 2026-07-22 review session; owner calls from that session: published notes carry timestamps only, and the decisions section is included). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 **FEAT10 (P2, new): every summary point carries verified evidence (verbatim phrase + timestamp) and a one-click jump to the transcript row.** The ask: a summary bullet, decision, action item, or open question is currently uncheckable against the meeting; the reader either trusts it or replays audio. Give each point up to two evidence anchors, each a short verbatim phrase plus a timestamp, rendered as quiet [mm:ss] chips in the Summary tab (hover shows the phrase) that switch to the Transcript tab, scroll to the source row, and briefly highlight it. Published Markdown gets plain ` [12:34]` suffixes, timestamps only.
 
@@ -1791,7 +1792,7 @@ Added 2026-07-30 at the owner's request: every task gated on an owner action car
 
 
 **[DONE] UX29 (P2): NDA-aware re-summarize affordance.**
-Band origin: filed 2026-07-23 (owner finding, 2026-07-23 assessment session). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-23 (owner finding, 2026-07-23 assessment session). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 **UX29 (P3, new): the UI offers a cloud action that can never do what it says on an NDA meeting, then stays silent about the substitution.** On 2026-07-23 the owner clicked "Re-summarize with Anthropic" twice on an NDA-workflow meeting (stem `20260723-103118`, toolbar events 07:46:26Z and 07:48:43Z), got local Qwen output both times, and read it as a bug. It is not: the daemon passes `--backend anthropic` and the pipeline's `effective_backend` clamps to local (the PIPE6 one-shot override deliberately "still flows through the regulated/NDA clamp"; the daemon additionally strips the API key from the child env, `PipelineLauncher.cloudSecretPolicy`, PipelineLauncher.swift:827-857). The clamp is the product's core privacy promise and stays untouched. The defect is purely communicative: the menu item is emitted unconditionally (`MeetingDetailView+Header.swift:205-208`, the comment at :203-204 even names the reliance on downstream clamping), and no surface says "this ran locally because NDA".
 
@@ -1812,7 +1813,7 @@ Added 2026-07-30 at the owner's request: every task gated on an owner action car
 
 
 **[DONE] UX33 (P2): Workflow inspector rework.**
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 1: the workflow details panel "looks quite strange to me, I think it requires rework", decision delegated and taken: rework is warranted). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 1: the workflow details panel "looks quite strange to me, I think it requires rework", decision delegated and taken: rework is warranted). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -1905,7 +1906,7 @@ Added 2026-07-30 at the owner's request: every task gated on an owner action car
 
 
 **[DONE] UX38 (P2): Ask surface redesign: invitation empty state, docked input, history.**
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 6: "build a nice animated search bar at center of the page, inviting user to ask anything, and show the results of the search in a list form below... and move the search to the top left/top right once search completed. what do you think?"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 6: "build a nice animated search bar at center of the page, inviting user to ask anything, and show the results of the search in a list form below... and move the search to the top left/top right once search completed. what do you think?"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -1950,7 +1951,7 @@ Presentation-level tests over the view's state derivation: empty model renders i
 Owner eyeball: fresh Ask scope shows the centered invitation; asking docks the input up with a quiet motion (and no motion under Reduce Motion); the answer arrives as the first card with clickable citations; asking again stacks a second card; leaving and returning shows the same history (UX37's guarantee, visible here).
 
 **[DONE] UX40 (P2): Voice chip rename and un-name, honest strip count.**
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 11: "when I name someone from the voice panel, I am not able to rename or unname it"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 11: "when I name someone from the voice panel, I am not able to rename or unname it"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -2020,7 +2021,7 @@ Added 2026-07-31, per the 2026-07-30 standing rule: every task gated on an owner
 
 
 **[DONE] UX41 (P2): Names changed since this summary: quiet cue + one-click re-summarize.**
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 11: after renames "summary might need re-generation... or instead maybe we can infer summary with new names without specific extra re-generation call. I am not 100% sure what is the best option"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 11: after renames "summary might need re-generation... or instead maybe we can infer summary with new names without specific extra re-generation call. I am not 100% sure what is the best option"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -2097,7 +2098,7 @@ Added 2026-07-31, per the 2026-07-30 standing rule: every task gated on an owner
 8. Steps 2, 4 and 6 passing moves UX41 to done. If step 2 shows no line on a meeting you know you renamed in, say so rather than clicking around: the likeliest cause is that the meeting was re-summarized after the rename, which is the cue working.
 
 **[DONE] UX39 (P2): Cmd+Tab truthfulness: activation ordering, close handoff, count drift.**
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 9: "when I open library, it is always displayed at the end of command+tab menu... commandtab cannot switch to it immediately if I was commandtabbed from it"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 9: "when I open library, it is always displayed at the end of command+tab menu... commandtab cannot switch to it immediately if I was commandtabbed from it"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -2144,7 +2145,7 @@ Added with the 2026-07-31 implementation: the code half shipped and is unit-pinn
 **[UX48, 2026-08-04] Two of those legs could not do what they claimed, and both are fixed now.** Step 3 is built on Cmd+M and step 5 on Cmd+K, and at the time this app installed no `NSApp.mainMenu` at all, so Cmd+M was the system beep (the owner had to minimize with the yellow title-bar button) and Cmd+K matched only while the status-bar dropdown was open, which is what the owner reported here and what UX48 was filed from. Step 4 was worse than wrong, it was unfalsifiable: its fail state is "the menu bar still reads MeetingPipe with nothing on screen", and an app with no main menu can never own the menu bar, so it reported pass whatever the activation code did. UX48 installs a main menu with the flip to `.regular` and removes it with the drop back, so step 3 now runs as written and step 4's observable is real. Step 5's "with another app frontmost" half is still not producible: Cmd+K is a menu key equivalent, and no menu, main or otherwise, receives a keystroke while another app is frontmost.
 
 **[DONE] AUTO2 (P2): Published-note transcript deeplinks (meetingpipe:// open at a timestamp).**
-Band origin: filed 2026-07-22 (owner feature ask, approved in the 2026-07-22 review session; P3 promote-on-demand by design: the in-app jump ships in FEAT10, this is the out-of-app half). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-22 (owner feature ask, approved in the 2026-07-22 review session; P3 promote-on-demand by design: the in-app jump ships in FEAT10, this is the out-of-app half). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 **AUTO2 (P3, new): make the published [mm:ss] timestamps clickable from Obsidian / filesystem / LAN notes.** FEAT10 puts plain ` [12:34]` suffixes in published Markdown; this task turns them into `meetingpipe://open?stem=<stem>&t=<seconds>` links that open the Library at that meeting's Transcript tab at that moment. The scheme is shipped and hardware-verified (AUTO1, 2026-07-20, an `automation` `command` event with verb `open_library`): `AutomationCommand.parse` is the pure tested parser (Automation/AutomationCommand.swift:46) whose `library`/`open` verb already takes a scope, the router (`Coordinator+Automation.handleAutomation`) is the single gate, and `CFBundleURLTypes` is already registered by install.sh, so only new verb parsing lands in code. AskView already navigates from a citation to its stem (AskView.swift:12) and FEAT10 adds the pending-seek seam into TranscriptTab; this task is the URL spelling of those two existing moves.
 
@@ -2174,7 +2175,7 @@ Added 2026-07-30 at the owner's request: every task gated on an owner action car
 
 
 **[DONE] PIPE11 (P2): Regenerate correctness: same-stem serialization, provenance, policy snapshot.**
-Band origin: filed 2026-07-23 (event-log forensics on stem `20260723-103118`, 2026-07-23 assessment session). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-23 (event-log forensics on stem `20260723-103118`, 2026-07-23 assessment session). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 **PIPE11 (P2, new): a regenerate can race a concurrent writer, lies about its engine afterwards, and can straddle a policy change mid-chain.** Three defects, one path, all observed in production logs on 2026-07-23.
 
@@ -2199,7 +2200,7 @@ Added 2026-07-30 at the owner's request: every task gated on an owner action car
 3. [session] Verify `<stem>.run.json` now records the answering backend/model and that `publish_state` survived the rewrite; then move PIPE11 to done.
 
 **[DONE] UX28 (P2): Library processing visibility and control.**
-Band origin: filed 2026-07-23 (owner findings, 2026-07-23 assessment session; event-log forensics on stem `20260723-103118`). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-23 (owner findings, 2026-07-23 assessment session; event-log forensics on stem `20260723-103118`). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 **UX28 (P2, new): every Library-triggered job is visible while it runs and stoppable when it should not be.** The owner hit all three gaps in one session on 2026-07-23: a mistaken Reprocess could not be cancelled for its whole ~110 s run, a Re-summarize clicked mid-reprocess produced no visible effect at all ("It looks like nothing happened"), and nothing distinguished a queued job from a finished one. PRODUCT.md's truthful-states principle is the bar; PIPE10's out-of-scope note already anticipated this class ("the Library row keeps showing Failed for the ~40 s between the Retry click and run_started, which reads as retry did nothing").
 
@@ -2223,7 +2224,7 @@ Added 2026-07-30 at the owner's request: every task gated on an owner action car
 4. [session] Confirm `pipeline_cancelled` fired in events.jsonl for step 2 (and `pipeline_dequeued` if a queued duplicate was removed), then move UX28 to done.
 
 **[DONE] FEAT11 (P2): In-app context instruments (glossary editor, voice-resolution surface, context nudges).**
-Band origin: filed 2026-07-23 (owner ask, 2026-07-23 assessment session; owner's framing verbatim: "I want the application to provide me instruments so I can do things", nothing done at any level other than the app itself). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-23 (owner ask, 2026-07-23 assessment session; owner's framing verbatim: "I want the application to provide me instruments so I can do things", nothing done at any level other than the app itself). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 **FEAT11 (P2, new): the three cheapest summary-quality levers exist only as hand-edited config or are invisible; give each an in-app instrument.** These levers move BOTH backends and disproportionately help the small local model, because they turn facts the model must infer (who is speaking, what "PS for Venusaur" was supposed to be, what this team's vocabulary means) into facts written in the transcript. The owner's operating rule is that no lever should require editing a TOML or running a CLI.
 
@@ -2252,7 +2253,7 @@ Added 2026-07-30 at the owner's request: every task gated on an owner action car
 4. Both pass: [session] moves FEAT11 to done. (The strip's "n of m" header wording is UX40's scope, filed separately; do not hold FEAT11 on it.)
 
 **[DONE] UX42 (P2): Launch-at-login toggle truthfulness (one mechanism owns login).**
-Band origin: filed 2026-07-29 (owner report, item 12: "regardless this toggle checked or not (it is not on my app) app is started at login"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner report, item 12: "regardless this toggle checked or not (it is not on my app) app is started at login"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -2337,7 +2338,7 @@ launchctl print-disabled gui/$(id -u) | grep meetingpipe
 11. Steps 3 to 10 passing moves UX42 to done. Worth knowing rather than testing: with launch at login OFF, **Quit MeetingPipe** really quits, because the relaunch-after-quit behaviour is the same launch agent and it is not running the app. That is stated in the Preferences footer, the README, and `docs/SETUP.md`.
 
 **[DONE] LOCAL16 (P1): Local-LLM resource protection: RAM tiers, fail-closed spawn, free-RAM watchdog.**
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 8: "check the available resources, and limit the capabilities to certain threshold of memory... make it crystall clear to the user... and make a system 100% protected from hangs and out of memory things"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 8: "check the available resources, and limit the capabilities to certain threshold of memory... make it crystall clear to the user... and make a system 100% protected from hangs and out of memory things"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 P1 because the broken promise is that on-device processing degrades by refusing with a reason, never by hanging the machine, and the machine has been taken down twice: the 14B OOM-hung this 32 GB Mac at long context (recorded in the `local_model` default's own comment, `config.py:123-127`, and AI2's measurements), and the 2026-07-29 `mp ask` incident ended in a hard reboot (AI11 carries that trace). The owner may re-band.
 
@@ -2406,7 +2407,7 @@ Steps are tagged [owner] / [session] by who acts. The owner does not read code; 
 6. [owner] Say "LOCAL16 good to close" (or what is wrong); [session] moves the row and the spec into `q6-final.md` and deletes this file.
 
 **[DONE] SEC15 (P2): Fence RAG excerpts in mp ask.**
-Band origin: filed 2026-07-29 (found while executing the owner's item 13 system-prompt review: "check the best practices... how accurate"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (found while executing the owner's item 13 system-prompt review: "check the best practices... how accurate"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -2576,7 +2577,7 @@ Docs and process only. No file in either source tree was touched, so there was n
 
 # [DONE] UX57: Speaker menus act on the raw diarization label, not the person the line shows
 
-Band origin: filed 2026-08-03, owner-reported while naming speakers in a real transcript ("I named one as Sudip. but one of the replicas that was before unknown a, and become sudip does not belong to sudip. so I go and 'Assign to' available Unknown E from the list. this replica now become Unknown E. but after that I am not able to name the Unknown E from a dropdown menu under the right click. for some reason when I click rename it shows Sudip"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-08-03, owner-reported while naming speakers in a real transcript ("I named one as Sudip. but one of the replicas that was before unknown a, and become sudip does not belong to sudip. so I go and 'Assign to' available Unknown E from the list. this replica now become Unknown E. but after that I am not able to name the Unknown E from a dropdown menu under the right click. for some reason when I click rename it shows Sudip"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -2584,34 +2585,34 @@ A transcript row carries two different identities and the row menu reads the wro
 
 The first is the **raw diarization label** in `<stem>.json` (`THEM-A`, `speaker_unknown`, or a name the pipeline baked in). The second is **what the row currently displays** after the user's overlay edits. FEAT3-SEGMENT's per-line reassignment writes `SpeakerLabelStore`'s `segments` map and deliberately never touches the raw label, which is the whole point of the FEAT3-UNDO overlay: the diarization label always survives on disk so every naming is reversible.
 
-The row's **name** honours that correctly. `SegmentRow.displayName` ([TranscriptTab.swift:833](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L833)) resolves through `SpeakerLabelStore.displayLabel`, which reads the per-segment override first ([SpeakerLabelStore.swift:154](../../../daemon/Sources/MeetingPipe/SpeakerLabelStore.swift#L154)).
+The row's **name** honours that correctly. `SegmentRow.displayName` ([TranscriptTab.swift:833](../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L833)) resolves through `SpeakerLabelStore.displayLabel`, which reads the per-segment override first ([SpeakerLabelStore.swift:154](../../daemon/Sources/MeetingPipe/SpeakerLabelStore.swift#L154)).
 
-The row's **menu** does not. `SegmentRow.clusterName` ([TranscriptTab.swift:839](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L839)) is `segment.speakerID.flatMap { overlay.labels[$0] }`, a raw-label lookup with no knowledge of the per-segment override, and the whole `contextMenu` branch at [TranscriptTab.swift:911](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L911) is built from it plus a bare `if let raw = segment.speakerID`.
+The row's **menu** does not. `SegmentRow.clusterName` ([TranscriptTab.swift:839](../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L839)) is `segment.speakerID.flatMap { overlay.labels[$0] }`, a raw-label lookup with no knowledge of the per-segment override, and the whole `contextMenu` branch at [TranscriptTab.swift:911](../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L911) is built from it plus a bare `if let raw = segment.speakerID`.
 
 So the owner's exact sequence, verified in the source on 2026-08-03:
 
 1. Line X carries raw label `THEM-A`. The owner names that cluster Sudip, so `overlay.labels["THEM-A"] = "Sudip"` and line X reads Sudip.
-2. Line X does not actually belong to Sudip, so the owner right-clicks it and picks Assign to, Unknown E. That writes `overlay.segments[X] = "THEM-E"` (`CastMember.assignKey` prefers the raw cluster key, [MeetingCast.swift:76](../../../daemon/Sources/MeetingPipe/MeetingCast.swift#L76)).
+2. Line X does not actually belong to Sudip, so the owner right-clicks it and picks Assign to, Unknown E. That writes `overlay.segments[X] = "THEM-E"` (`CastMember.assignKey` prefers the raw cluster key, [MeetingCast.swift:76](../../daemon/Sources/MeetingPipe/MeetingCast.swift#L76)).
 3. Line X now correctly **displays** Unknown E.
 4. The owner right-clicks line X again to name Unknown E. `clusterName` is still `overlay.labels["THEM-A"]`, which is "Sudip", so the menu offers Rename and Undo naming **for Sudip**, and no naming action for Unknown E at all.
 
-That is the reported symptom, and the display half is only the visible face of it. **The menu does not merely name the wrong person, it writes to the wrong person.** `onRename` is handed `raw`, the old cluster label ([TranscriptTab.swift:916](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L916)), which reaches `MeetingLibraryService.renameSpeaker(stem:label:oldName:newName:)` ([MeetingLibraryService.swift:642](../../../daemon/Sources/MeetingPipe/Library/MeetingLibraryService.swift#L642)). For a label with a voiceprint that path runs `mp roster enroll` under the new name, forgets the old name, and sets `overlay.labels["THEM-A"]`. A user who typed a name into that sheet believing they were naming one line would instead rename Sudip on **every** line of the meeting and re-enroll Sudip's voiceprint under the new name. It is a silent wrong-target write into the roster, not a cosmetic defect, and that is what bands this P1.
+That is the reported symptom, and the display half is only the visible face of it. **The menu does not merely name the wrong person, it writes to the wrong person.** `onRename` is handed `raw`, the old cluster label ([TranscriptTab.swift:916](../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L916)), which reaches `MeetingLibraryService.renameSpeaker(stem:label:oldName:newName:)` ([MeetingLibraryService.swift:642](../../daemon/Sources/MeetingPipe/Library/MeetingLibraryService.swift#L642)). For a label with a voiceprint that path runs `mp roster enroll` under the new name, forgets the old name, and sets `overlay.labels["THEM-A"]`. A user who typed a name into that sheet believing they were naming one line would instead rename Sudip on **every** line of the meeting and re-enroll Sudip's voiceprint under the new name. It is a silent wrong-target write into the roster, not a cosmetic defect, and that is what bands this P1.
 
-The same root cause has a third face. `canEnroll` is computed from the raw label too ([TranscriptTab.swift:652](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L652)): `seg.speakerID.map { voiceprintLabels.contains($0) && MeetingCast.isUnnamedCluster($0) }`. So even when the origin cluster is unnamed, a reassigned line offers naming for the cluster it came **from**, never the one it was moved **to**. The owner's report that Unknown E could not be named from the row is exactly this.
+The same root cause has a third face. `canEnroll` is computed from the raw label too ([TranscriptTab.swift:652](../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L652)): `seg.speakerID.map { voiceprintLabels.contains($0) && MeetingCast.isUnnamedCluster($0) }`. So even when the origin cluster is unnamed, a reassigned line offers naming for the cluster it came **from**, never the one it was moved **to**. The owner's report that Unknown E could not be named from the row is exactly this.
 
-**Why the cast strip still worked**, which the owner discovered as the only remaining route: the strip is built from `MeetingCast.members` ([MeetingCast.swift:63](../../../daemon/Sources/MeetingPipe/MeetingCast.swift#L63)), which resolves every segment through the overlay before grouping, so it sees Unknown E as a real cast member and its chip offers the right action. Two surfaces on one screen disagree about who a line belongs to, and the correct one is the one that resolves first. That asymmetry is the tell, and it also names the fix.
+**Why the cast strip still worked**, which the owner discovered as the only remaining route: the strip is built from `MeetingCast.members` ([MeetingCast.swift:63](../../daemon/Sources/MeetingPipe/MeetingCast.swift#L63)), which resolves every segment through the overlay before grouping, so it sees Unknown E as a real cast member and its chip offers the right action. Two surfaces on one screen disagree about who a line belongs to, and the correct one is the one that resolves first. That asymmetry is the tell, and it also names the fix.
 
-Provenance, so the pickup does not read this as a reopen: FEAT3-UNDO shipped the raw-label lookup when a raw label was the only identity a row had, and FEAT3-SEGMENT (shipped 2026-07-11, [q6-final.md](../q6-final.md)) then introduced a second identity without revisiting it. Neither task's acceptance covered a menu opened on an already-reassigned line, so this is a gap in a shipped acceptance rather than a regression against one.
+Provenance, so the pickup does not read this as a reopen: FEAT3-UNDO shipped the raw-label lookup when a raw label was the only identity a row had, and FEAT3-SEGMENT (shipped 2026-07-11, [q6-final.md](./q6-final.md)) then introduced a second identity without revisiting it. Neither task's acceptance covered a menu opened on an already-reassigned line, so this is a gap in a shipped acceptance rather than a regression against one.
 
 ## Scope
 
 Give `SegmentRow` one identity source, so the menu acts on the person the row displays.
 
-The seam already exists and is unused by this call site: `SpeakerLabelStore.assignedLabel(for:using:)` ([SpeakerLabelStore.swift:163](../../../daemon/Sources/MeetingPipe/SpeakerLabelStore.swift#L163)) already returns the per-segment override in preference to the cluster name, and its own doc comment says it is "the signal the row uses to show a name and to branch the context menu". The row shows the name that way and branches the menu the other way. Close that gap.
+The seam already exists and is unused by this call site: `SpeakerLabelStore.assignedLabel(for:using:)` ([SpeakerLabelStore.swift:163](../../daemon/Sources/MeetingPipe/SpeakerLabelStore.swift#L163)) already returns the per-segment override in preference to the cluster name, and its own doc comment says it is "the signal the row uses to show a name and to branch the context menu". The row shows the name that way and branches the menu the other way. Close that gap.
 
 Both reads have to move together, since fixing one alone leaves the pair inconsistent in a new way: the menu's rename/un-name target (`clusterName` plus the `raw` passed to `onRename` and `onUndoName`) and the enrollment gate (`canEnroll`).
 
-Put the decision in a pure rule with explicit inputs rather than inline in the view, matching how the two adjacent decisions are already shaped: `MeetingCast.assignTargets` ([MeetingCast.swift:111](../../../daemon/Sources/MeetingPipe/MeetingCast.swift#L111)) and `VoiceResolutionBar.actions(for:)` (UX40). A pure entry point of the shape "given this segment, this overlay and the voiceprint labels, what does its menu offer and against which label" is testable without a view, which is the only way the four cases below get pinned at all.
+Put the decision in a pure rule with explicit inputs rather than inline in the view, matching how the two adjacent decisions are already shaped: `MeetingCast.assignTargets` ([MeetingCast.swift:111](../../daemon/Sources/MeetingPipe/MeetingCast.swift#L111)) and `VoiceResolutionBar.actions(for:)` (UX40). A pure entry point of the shape "given this segment, this overlay and the voiceprint labels, what does its menu offer and against which label" is testable without a view, which is the only way the four cases below get pinned at all.
 
 Preserve the reversibility invariant: this changes which label an action targets, never how the overlay is stored, and it rewrites no `<stem>.json`.
 
@@ -2635,7 +2636,7 @@ Renaming or un-naming from any transcript row changes only the person named in t
 
 The row menu and the cast strip agree, for every line, about who that line belongs to.
 
-A new pure rule (in `MeetingCast` or beside it) is covered by `MeetingCastTests` or a new peer suite for four cases, each asserting both the offer and the target label: (a) a line on a named cluster, not reassigned; (b) a line reassigned from a named cluster to an unnamed cluster that has a voiceprint; (c) a line reassigned from an unnamed cluster to a named one; (d) a line whose per-segment value is a FEAT3-SEGMENT "New person" name that exists in no cluster, which must offer no roster enrollment (it has no embedding, and `renameSpeaker`'s own guard at [MeetingLibraryService.swift:665](../../../daemon/Sources/MeetingPipe/Library/MeetingLibraryService.swift#L665) is the precedent for why).
+A new pure rule (in `MeetingCast` or beside it) is covered by `MeetingCastTests` or a new peer suite for four cases, each asserting both the offer and the target label: (a) a line on a named cluster, not reassigned; (b) a line reassigned from a named cluster to an unnamed cluster that has a voiceprint; (c) a line reassigned from an unnamed cluster to a named one; (d) a line whose per-segment value is a FEAT3-SEGMENT "New person" name that exists in no cluster, which must offer no roster enrollment (it has no embedding, and `renameSpeaker`'s own guard at [MeetingLibraryService.swift:665](../../daemon/Sources/MeetingPipe/Library/MeetingLibraryService.swift#L665) is the precedent for why).
 
 `cd daemon && swift build` and `swift test` green. No em-dashes in changed lines. `python3 scripts/truth_fences.py both` clean if any event category is touched.
 
@@ -2654,7 +2655,7 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 
 # [DONE] UX48: No main menu, so every command-key shortcut is dead in the Library
 
-Band origin: filed 2026-07-31, owner-confirmed live during the UX39 owner walkthrough ("nothing works, everything make a tick"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-31, owner-confirmed live during the UX39 owner walkthrough ("nothing works, everything make a tick"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -2698,8 +2699,8 @@ Delete the `292dfe49` workaround as part of this, so the file stops carrying a c
 
 **That last sentence is wrong, and the 2026-08-04 pickup did not ship it.** HYG6 filed the same defect independently. `NSApp.mainMenu.performKeyEquivalent` searches the **main menu tree only**, and an `NSStatusItem`'s menu is not in it, so installing a main menu does nothing for a key equivalent that lives on the status-bar menu. Cmd+K therefore still opens Quick Find only while that dropdown is open. The diagnosis in the paragraph above is sound; only the inference that a main menu inherits the status item's chords is not. Two ways to actually deliver it, both **outside the scope enumerated above and left to the owner**:
 
-- **Cmd+K from any MeetingPipe window:** give Quick Find a row on the main menu, four lines beside Preferences and the same `AppDelegate` bridge. This is the one the pickup would recommend.
-- **Cmd+K with another app frontmost:** only a Carbon global hotkey can do this, since a non-active app receives no keystrokes at all. It would take Cmd+K away from every other app on the Mac, which is exactly why `HotkeyManager`'s four existing chords are all Ctrl+Opt-based. Recommended against.
+- **Cmd+K from any MeetingPipe window:** give Quick Find a row on the main menu, four lines beside Preferences and the same `AppDelegate` bridge. This is the one the pickup would recommend. **The owner said yes on 2026-08-04 and it shipped that day**, as a `Find` submenu carrying `Quick Find…` routed through `AppDelegate.openQuickFindFromMainMenu`; the owner then confirmed Cmd+K opens Quick Find from a Library window with no dropdown open. So this half is no longer owed, and the ToC row carries the detail.
+- **Cmd+K with another app frontmost:** only a Carbon global hotkey can do this, since a non-active app receives no keystrokes at all. It would take Cmd+K away from every other app on the Mac, which is exactly why `HotkeyManager`'s four existing chords are all Ctrl+Opt-based. Recommended against, and still not built.
 
 **Do not add per-shortcut view-hierarchy handlers.** That is the approach `292dfe49` took and it is the thing this task exists to stop repeating.
 
@@ -2740,17 +2741,17 @@ Per the 2026-07-30 standing rule: every task gated on an owner action carries on
 
 # [DONE] UX58: Speaker colour is keyed on the raw label and reshuffles on every launch
 
-Band origin: filed 2026-08-03, owner-reported in the same pass as UX57 ("Also colors feels a bit off. once I assign Sudip, then want to re-assign wrong replica from Sudip to someone else, color remains on sudip"). The investigation that followed found two further defects in the same function that the owner had not reported and could not have isolated by eye. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-08-03, owner-reported in the same pass as UX57 ("Also colors feels a bit off. once I assign Sudip, then want to re-assign wrong replica from Sudip to someone else, color remains on sudip"). The investigation that followed found two further defects in the same function that the owner had not reported and could not have isolated by eye. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
-`TranscriptDisplay.color(for:)` ([TranscriptTab.swift:165](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L165)) is the only speaker-colour rule in the app. Three call sites read it, all passing the raw diarization label: the row's dot ([TranscriptTab.swift:847](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L847)), the row's speaker name ([TranscriptTab.swift:854](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L854)), and the line-editor sheet's header ([TranscriptTab.swift:1071](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L1071)).
+`TranscriptDisplay.color(for:)` ([TranscriptTab.swift:165](../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L165)) is the only speaker-colour rule in the app. Three call sites read it, all passing the raw diarization label: the row's dot ([TranscriptTab.swift:847](../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L847)), the row's speaker name ([TranscriptTab.swift:854](../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L854)), and the line-editor sheet's header ([TranscriptTab.swift:1071](../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L1071)).
 
 It has three separate defects.
 
 **(1) It is keyed on the raw label, so colour does not follow a reassignment.** This is the owner's report. `segment.speakerID` never changes when a line is reassigned (FEAT3-SEGMENT writes the overlay's `segments` map instead, by design), so a line moved from Sudip to someone else keeps Sudip's colour while its name correctly changes. Same root confusion as UX57, different consequence, which is why the two are filed separately.
 
-**(2) The key is randomly reseeded on every launch.** The non-`speaker_N` branch is `palette[abs(id.hashValue) % palette.count]` ([TranscriptTab.swift:172](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L172)). Swift's standard library seeds string hashing per process unless `SWIFT_DETERMINISTIC_HASHING` is set, and nothing in this repo sets it (grepped across `daemon/` and `scripts/` on 2026-08-03, no hits). The function's own doc comment claims "Stable tint per speaker so list reordering doesn't reshuffle colors", which is true within one run and false across runs.
+**(2) The key is randomly reseeded on every launch.** The non-`speaker_N` branch is `palette[abs(id.hashValue) % palette.count]` ([TranscriptTab.swift:172](../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L172)). Swift's standard library seeds string hashing per process unless `SWIFT_DETERMINISTIC_HASHING` is set, and nothing in this repo sets it (grepped across `daemon/` and `scripts/` on 2026-08-03, no hits). The function's own doc comment claims "Stable tint per speaker so list reordering doesn't reshuffle colors", which is true within one run and false across runs.
 
 Measured on 2026-08-03 by running the real expression in three separate Swift processes, palette size 8:
 
@@ -2764,7 +2765,7 @@ run 3   THEM-A:7  THEM-B:5  THEM-C:5  THEM-D:2  THEM-E:1  Sudip:6
 
 **(3) Collisions between two people are routine, not rare.** Read the same three runs across: run 1 puts `THEM-C`, `THEM-D` and `Sudip` all on slot 2, three speakers sharing one colour. Run 2 collides `THEM-B` with `THEM-C` and `THEM-A` with `THEM-E`. Run 3 collides `THEM-B` with `THEM-C`. With 6 speakers drawn independently over 8 slots the probability of at least one collision is 1 - (8·7·6·5·4·3)/8^6, about 92%.
 
-The `speaker_N` branch ([TranscriptTab.swift:168](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L168)) indexes by the parsed integer, so it is deterministic and collision-free. It is also not the branch the owner's meetings take: the dogfood corpus is Teams-only and its clusters are labelled `THEM-*` (see the dogfood memory note and `MeetingCast.isUnnamedCluster` at [MeetingCast.swift:52](../../../daemon/Sources/MeetingPipe/MeetingCast.swift#L52)), so real meetings take the hash branch every time.
+The `speaker_N` branch ([TranscriptTab.swift:168](../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L168)) indexes by the parsed integer, so it is deterministic and collision-free. It is also not the branch the owner's meetings take: the dogfood corpus is Teams-only and its clusters are labelled `THEM-*` (see the dogfood memory note and `MeetingCast.isUnnamedCluster` at [MeetingCast.swift:52](../../daemon/Sources/MeetingPipe/MeetingCast.swift#L52)), so real meetings take the hash branch every time.
 
 Net effect for the owner: the dot is wrong after a reassignment, different on every launch, and frequently duplicated between two different people. It cannot currently be used to tell speakers apart, which is the only job it has.
 
@@ -2772,17 +2773,17 @@ Net effect for the owner: the dot is wrong after a reassignment, different on ev
 
 Two changes to one rule.
 
-**Key the colour on resolved identity**, not on the raw label. The resolution already exists and is the same one UX57 is fixing the menu to use: `SpeakerLabelStore.displayLabel(for:using:)` then `TranscriptDisplay.displayName`, which is precisely how `MeetingCast.members` groups people ([MeetingCast.swift:63](../../../daemon/Sources/MeetingPipe/MeetingCast.swift#L63)). Two lines that display the same person get the same colour whether one got there by a baked name and the other by a per-segment override.
+**Key the colour on resolved identity**, not on the raw label. The resolution already exists and is the same one UX57 is fixing the menu to use: `SpeakerLabelStore.displayLabel(for:using:)` then `TranscriptDisplay.displayName`, which is precisely how `MeetingCast.members` groups people ([MeetingCast.swift:63](../../daemon/Sources/MeetingPipe/MeetingCast.swift#L63)). Two lines that display the same person get the same colour whether one got there by a baked name and the other by a per-segment override.
 
 **Assign the palette slot by the speaker's position in the meeting's cast**, not by hash. `MeetingCast.members` already returns the cast in stable first-appearance order, so position in that array is a deterministic, collision-free index up to palette size. That fixes defects (2) and (3) together and makes the doc comment's promise true for the first time. Beyond palette size wrapping is unavoidable; wrap and say so in the comment rather than reaching for a bigger palette.
 
-The call sites take a resolved identity or a cast index instead of `segment.speakerID`. `TranscriptList` already builds `cast` and passes it down ([TranscriptTab.swift:645](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L645)), so the input is in hand at every row; the editor sheet at [TranscriptTab.swift:1071](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L1071) needs it threaded in.
+The call sites take a resolved identity or a cast index instead of `segment.speakerID`. `TranscriptList` already builds `cast` and passes it down ([TranscriptTab.swift:645](../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L645)), so the input is in hand at every row; the editor sheet at [TranscriptTab.swift:1071](../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L1071) needs it threaded in.
 
 Land UX57 first if both are in flight. They touch adjacent lines in the same view and UX57 introduces the resolved-identity read this task consumes.
 
 ## Explicitly not / out of scope
 
-**Not a change to the palette itself.** `MPColors.speakerPalette` ([Design/Tokens.swift:95](../../../daemon/Sources/MeetingPipe/Design/Tokens.swift#L95)) is UX14's appearance-aware set, where light mode uses a deep variant of each hue to clear 4.5:1 on paper and dark mode keeps the native system colour. It is pinned by DSN18's `ContrastFloorTests`. This task changes which speaker gets which hue, never the hues.
+**Not a change to the palette itself.** `MPColors.speakerPalette` ([Design/Tokens.swift:95](../../daemon/Sources/MeetingPipe/Design/Tokens.swift#L95)) is UX14's appearance-aware set, where light mode uses a deep variant of each hue to clear 4.5:1 on paper and dark mode keeps the native system colour. It is pinned by DSN18's `ContrastFloorTests`. This task changes which speaker gets which hue, never the hues.
 
 **Not the cast strip's colours.** UX59, which depends on this one landing first because it needs a stable identity key to mirror.
 
@@ -2818,15 +2819,15 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 
 # [DONE] UX59: The cast strip and the transcript use unrelated colour systems
 
-Band origin: filed 2026-08-03, owner-asked in the same pass as UX57 and UX58 ("also related to colors, would be nice to have consistency between top bar with voices, and transcriptions. to have a color dot or something"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-08-03, owner-asked in the same pass as UX57 and UX58 ("also related to colors, would be nice to have consistency between top bar with voices, and transcriptions. to have a color dot or something"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
 Two surfaces sit one above the other in the Transcript tab and colour the same people by two unrelated rules.
 
-The **cast strip** (FEAT11's `VoiceResolutionBar`, above the rows) tints each chip by **resolution status**: `VoiceResolutionBar.tint(for:)` ([VoiceResolutionBar.swift:232](../../../daemon/Sources/MeetingPipe/VoiceResolutionBar.swift#L232)) returns `warningAccent` for an unresolved voice, `signalAccent` for a roster match, and `fgMuted` otherwise. There is no per-speaker mark on a chip at all.
+The **cast strip** (FEAT11's `VoiceResolutionBar`, above the rows) tints each chip by **resolution status**: `VoiceResolutionBar.tint(for:)` ([VoiceResolutionBar.swift:232](../../daemon/Sources/MeetingPipe/VoiceResolutionBar.swift#L232)) returns `warningAccent` for an unresolved voice, `signalAccent` for a roster match, and `fgMuted` otherwise. There is no per-speaker mark on a chip at all.
 
-The **transcript rows** tint by speaker, through `TranscriptDisplay.color(for:)` ([TranscriptTab.swift:165](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L165)) over the 8-hue `MPColors.speakerPalette`.
+The **transcript rows** tint by speaker, through `TranscriptDisplay.color(for:)` ([TranscriptTab.swift:165](../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L165)) over the 8-hue `MPColors.speakerPalette`.
 
 So the same person is one colour in the strip and a different one in the rows, and the strip's colour carries information about matching state that the rows' colour does not, using a palette the rows also draw from. The owner reads the two as one system that is inconsistent, which is a fair reading of what is on screen.
 
@@ -2838,7 +2839,7 @@ It is filed third and last of the 2026-08-03 speaker-naming cluster because it i
 
 Give each chip the speaker's identity dot from UX58, and decide how it coexists with the status tint rather than replacing it.
 
-The likely shape, to be confirmed by eye rather than in the spec: the dot carries identity (matching the row dot exactly), and the chip's existing treatment keeps carrying status. Both signals stay legible and neither is expressed only by hue, which the a11y floor in [PRODUCT.md](../../../PRODUCT.md) and `design/README.md` require anyway.
+The likely shape, to be confirmed by eye rather than in the spec: the dot carries identity (matching the row dot exactly), and the chip's existing treatment keeps carrying status. Both signals stay legible and neither is expressed only by hue, which the a11y floor in [PRODUCT.md](../../PRODUCT.md) and `design/README.md` require anyway.
 
 The identity input is the same `MeetingCast` cast UX58 keys on, and the strip is already downstream of it, so no new derivation is needed. `VoiceResolutionBar` is presentation-only by construction (every decision lives in the pure `VoiceResolution`), so keep any new rule there and out of the view.
 
@@ -2897,7 +2898,7 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 
 # [DONE] UX51: The cast strip clips its last chips with no sign there are more
 
-Band origin: filed 2026-07-31, owner-reported with a screenshot during FEAT11's walkthrough. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-31, owner-reported with a screenshot during FEAT11's walkthrough. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -2942,7 +2943,7 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 
 # [DONE] UX52: The detail view does not refresh when a re-transcribe finishes
 
-Band origin: filed 2026-07-31, owner-reported during FEAT11's walkthrough: "when re-transcribing, UI is not updated after it is ended. I need to switch between tabs to see new version. this something need fixing as well. and this is not the first issue, I need full assessment all over the app for this." Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-31, owner-reported during FEAT11's walkthrough: "when re-transcribing, UI is not updated after it is ended. I need to switch between tabs to see new version. this something need fixing as well. and this is not the first issue, I need full assessment all over the app for this." Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -2987,7 +2988,7 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 
 # [DONE] FEAT12: Add to Vocabulary from a transcript correction
 
-Band origin: filed 2026-07-29 (owner exploratory sweep, items 15/16; the invisible-capability inventory ranked this the highest-leverage missing bridge). Revisits the optional leg FEAT11 (shipped 2026-07-28) deliberately did not build; its scope note records why, and those reasons are honored below as constraints. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, items 15/16; the invisible-capability inventory ranked this the highest-leverage missing bridge). Revisits the optional leg FEAT11 (shipped 2026-07-28) deliberately did not build; its scope note records why, and those reasons are honored below as constraints. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -3051,7 +3052,7 @@ Every task gated on an owner action carries one (2026-07-30 rule). Walk the owne
 
 # [DONE] FEAT13: Clarify a misheard word where you find it, not in Preferences
 
-Band origin: filed 2026-07-31 at the owner's request, immediately after FEAT11's vocabulary walkthrough made the friction concrete: "I want to have an easy mechanism to 'clarify' things on the flight, not with 'Settings -> Pipeline'. I think it would be nice to select words with mouse, see automatically menu 'Clarify' or something, then enter the clarification, and save it with options to re-transcribe or whatever." Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-31 at the owner's request, immediately after FEAT11's vocabulary walkthrough made the friction concrete: "I want to have an easy mechanism to 'clarify' things on the flight, not with 'Settings -> Pipeline'. I think it would be nice to select words with mouse, see automatically menu 'Clarify' or something, then enter the clarification, and save it with options to re-transcribe or whatever." Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -3145,7 +3146,7 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 
 # [DONE] UX55: "Quit (do not relaunch)" is still offered when nothing can relaunch
 
-Band origin: filed 2026-07-31, owner-reported at the end of UX42's walkthrough: "I guess I just need to see one 'quit' instead of 'quit dont relaunch, no? cause when this flag is off, relaunch is not working for classic quit." Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-31, owner-reported at the end of UX42's walkthrough: "I guess I just need to see one 'quit' instead of 'quit dont relaunch, no? cause when this flag is off, relaunch is not working for classic quit." Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -3201,7 +3202,7 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 
 # [DONE] UX49: The done notification says "Open in Notion" whichever sink actually ran
 
-Band origin: filed 2026-07-31, owner-reported during the owner-owed pass: "notification wording. It keep saying 'Open in Notion' while the notion was not an option and there's no new meetings in here since 28th." Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-31, owner-reported during the owner-owed pass: "notification wording. It keep saying 'Open in Notion' while the notion was not an option and there's no new meetings in here since 28th." Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -3267,7 +3268,7 @@ Per the 2026-07-30 standing rule: every task gated on an owner action carries on
 
 # [DONE] PIPE13: Ctrl-C on any `mp` command dumps a traceback instead of exiting
 
-Band origin: filed 2026-07-31, observed during AI11's owner walkthrough. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-31, observed during AI11's owner walkthrough. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -3333,7 +3334,7 @@ What the session already verified, so it does not need re-doing: a real SIGINT t
 
 # [DONE] LANG2: One stray Cyrillic character disables the whole summary-language target
 
-Band origin: filed 2026-07-31, off a miss the owner caught while running UX41's walkthrough: "summary in UA even tho meeting in english, I thought we fixed that". They were right on both counts, which is what makes this worth a task rather than a bug comment. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-31, off a miss the owner caught while running UX41's walkthrough: "summary in UA even tho meeting in english, I thought we fixed that". They were right on both counts, which is what makes this worth a task rather than a bug comment. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -3352,7 +3353,7 @@ return "en" if cyr == 0 else None
 
 `summary_language.py:106-109`. With `cyr == 25` the function returns `None`, which is the "cannot cheaply verify" answer, and `None` switches off everything LANG1 built: `language_reinforcement` is not added to the prompt, `divergent_sections` is not consulted, and the post-hoc repair never runs. The model was free to answer in any language and nothing was watching. Detection never failed; it was never asked.
 
-**LANG1 (done 2026-07-10, archived in [q6-final.md](../q6-final.md)) is not regressed and this is not a reopen.** Its verifier, its per-section detection including `actions[].task`, and its backend-agnostic repair all work as built. The zero-Cyrillic gate is a deliberate conservatism recorded in its own comment, and its purpose is right: a genuinely code-switched meeting must not be force-flattened into one language. The defect is that the gate is absolute where the thing it is protecting against is proportional, so 0.14% noise is treated identically to a half-Ukrainian meeting.
+**LANG1 (done 2026-07-10, archived in [q6-final.md](./q6-final.md)) is not regressed and this is not a reopen.** Its verifier, its per-section detection including `actions[].task`, and its backend-agnostic repair all work as built. The zero-Cyrillic gate is a deliberate conservatism recorded in its own comment, and its purpose is right: a genuinely code-switched meeting must not be force-flattened into one language. The defect is that the gate is absolute where the thing it is protecting against is proportional, so 0.14% noise is treated identically to a half-Ukrainian meeting.
 
 ## Scope
 
@@ -3433,7 +3434,7 @@ Per the 2026-07-30 standing rule: every task gated on an owner action carries on
 
 # [DONE] UX53: Sweep every operation for whether the open view learns it happened
 
-Band origin: filed 2026-07-31 at the owner's explicit request, so it would not be lost: "this is not the first issue, I need full assessment all over the app for this", said on discovering that a finished re-transcribe leaves the transcript on screen unchanged. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-31 at the owner's explicit request, so it would not be lost: "this is not the first issue, I need full assessment all over the app for this", said on discovering that a finished re-transcribe leaves the transcript on screen unchanged. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -3562,7 +3563,7 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 
 # [DONE] UX44: Vocabulary editor: sample row, de-jargon, fuzzy toggle, workflow cross-link
 
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 15: "I just realize it exists, but not sure what is the purpose", one day after FEAT11 shipped the editor; the owner wants the app usable non-technically). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 15: "I just realize it exists, but not sure what is the purpose", one day after FEAT11 shipped the editor; the owner wants the app usable non-technically). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Progress (2026-08-03, shipped; owner-owed eyeball)
 
@@ -3636,7 +3637,7 @@ Every task gated on an owner action carries one (2026-07-30 rule). Walk the owne
 
 # [DONE] UX46: Flag-moment button on the recording HUD
 
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 16: surface features that exist but are invisible; the flag hotkey ranked high because its surface is on screen whenever the feature is usable). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 16: surface features that exist but are invisible; the flag hotkey ranked high because its surface is on screen whenever the feature is usable). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Progress (2026-08-03, shipped; owner-owed eyeball)
 
@@ -3752,7 +3753,7 @@ The sweep the "Owner-owed" note above reserved was run against the real corpus, 
 
 # [DONE] UX50: A cancelled pipeline is reported to the user as a failure
 
-Band origin: filed 2026-07-31, surfaced the first time UX28's Cancel was exercised against a job long enough to still be running when the click landed. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-31, surfaced the first time UX28's Cancel was exercised against a job long enough to still be running when the click landed. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -3889,7 +3890,7 @@ Only the ~6 s tail is a presentation problem. During the ASR phase there is no s
 
 # [DONE] UX54: Two MeetingPipes can run at once, and nothing stops the second
 
-Band origin: filed 2026-07-31, owner-reported during UX42's walkthrough: "at some point after I launch meeting pipe, after first logout, I got two apps again in menubar, which is not okay", and separately "I see two after rebuild run I think. not sure exactly when". Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-31, owner-reported during UX42's walkthrough: "at some point after I launch meeting pipe, after first logout, I got two apps again in menubar, which is not okay", and separately "I see two after rebuild run I think. not sure exactly when". Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -3985,7 +3986,7 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 
 # [DONE] UX43: Preferences window: scroll reset, honest min width, Custom picker dead branch
 
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 14: scroll persists across tab switches; "choose destination" truncates; "there's a 'Custom' option, which if I click on it - nothing happens"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 14: scroll persists across tab switches; "choose destination" truncates; "there's a 'Custom' option, which if I click on it - nothing happens"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Progress (2026-08-03, all three shipped; owner-owed eyeball only)
 
@@ -4088,7 +4089,7 @@ The owner answered the gate with **fuse**, and the build followed the measuremen
 
 # [DONE] AI11: Ask engine hardening: incremental index, bounded memory, honest budget
 
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 6, off a real incident: Ask "is superslow, it ate ALL available memory and even more, then Mac hang and reboot happened in few min after"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 6, off a real incident: Ask "is superslow, it ate ALL available memory and even more, then Mac hang and reboot happened in few min after"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 P1 because the broken promise is "a question about your own meetings must never take the machine down", and it did, with a hard reboot. The owner may re-band. Cross-referenced with LOCAL16 (filed the same day), which owns the shared memory-guard primitive; this task consumes it in the ask path.
 
@@ -4158,7 +4159,7 @@ Steps are tagged [owner] / [session] by who acts. The owner does not read code; 
 
 # [DONE] AI12: Ask context-size control: let a question buy a wider pack, honestly
 
-Band origin: filed 2026-07-31 at the owner's request, during the AI11 owner walkthrough and immediately after watching a 100K-token pack answer well: "also it may be useful to have a toggle or something picker, that will allow to ask with bigger context window (with all necessary wornings). you seen it works fine when we tried." Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-31 at the owner's request, during the AI11 owner walkthrough and immediately after watching a 100K-token pack answer well: "also it may be useful to have a toggle or something picker, that will allow to ask with bigger context window (with all necessary wornings). you seen it works fine when we tried." Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -4235,7 +4236,7 @@ Per the 2026-07-30 standing rule: every task gated on an owner action carries on
 
 # [DONE] DOC11: In-depth user guide: task-oriented recipes
 
-Band origin: filed 2026-07-29 (owner follow-up to the exploratory sweep: "some training or guide how to use in depth. glossary and other things. not something overcomplicated, just simple, yet useful"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-29 (owner follow-up to the exploratory sweep: "some training or guide how to use in depth. glossary and other things. not something overcomplicated, just simple, yet useful"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 **Shipped 2026-08-04, owner-owed on the eyeball below.** The rendering option this spec reserved for pickup was decided as **(b), the lightweight in-app viewer**: `GuideWindow` / `GuideView` over the pure `GuideDocument`, built on the `DiagnosticsWindow` shell. `docs/GUIDE.md` stays the single copy of the text and the install scripts drop it into the app bundle, so the guide is never duplicated into Swift. (a) was rejected because raw markdown in TextEdit is the wrong reading experience for this document's persona, and (c) buys nothing (a) does not while adding a build step. What remains is the last two acceptance lines: the review pass against the *running* app (control names were verified against the sources, which is weaker), and the walkthrough.
 
@@ -4286,7 +4287,7 @@ Owner eyeball: open the Guide from the menu bar and follow the Vocabulary recipe
 
 # [DONE] HYG4: Retire the dead CLI surfaces: publish-notion verb, classify-meetings
 
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 16: the invisible-capability inventory turned up two verbs that are neither surfaced nor exempt). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md). P3: hygiene, promote on demand (the HYG band's normal shape).
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 16: the invisible-capability inventory turned up two verbs that are neither surfaced nor exempt). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md). P3: hygiene, promote on demand (the HYG band's normal shape).
 
 **Shipped 2026-08-05.** Two owner decisions preceded the pickup, and both are recorded here because this spec is where they were reserved. The P3 band was **promoted on demand**, which is the shape the band was filed with. And the question the spec left open, whether to keep `classify-meetings` on the de-CLI exempt list for a future experiment, was answered **delete**: module, tests, dispatch arm, usage row, the HYG1 `ai2_spike` precedent exactly. `publish-notion` went the other way, verb only: `publish_notion.py` keeps every line of its code because `publish_router.fanout` builds `NotionRestPublisher` out of it on every real publish, and deleting the module would have broken live publishing.
 
@@ -4460,7 +4461,7 @@ Steps tagged [owner] / [session] by who acts.
 
 **[DONE] UX64 (P2): The Ask pane never says the local model stood in for Apple Intelligence.** Shipped 2026-08-16.
 
-Band origin: filed 2026-08-03, handed off from PIPE12 by owner decision the day PIPE12 landed. PIPE12 made the truth available end to end and its own spec scoped the render out (deferring it to UX31, which had already shipped without a register for it); the owner's call was to close PIPE12 as done and file the render here rather than grow that commit. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-08-03, handed off from PIPE12 by owner decision the day PIPE12 landed. PIPE12 made the truth available end to end and its own spec scoped the render out (deferring it to UX31, which had already shipped without a register for it); the owner's call was to close PIPE12 as done and file the render here rather than grow that commit. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -4547,7 +4548,7 @@ Steps tagged [owner] / [session] by who acts.
 
 **[DONE] UX65 (P2): The grading window records a summary that is no longer on disk, and a later Revert writes it back.** Shipped 2026-08-16.
 
-Band origin: filed 2026-08-04 at the owner's explicit request, off UX53's sweep (row 20 of its table), which named it as an owner-gated recommendation rather than filing it. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-08-04 at the owner's explicit request, off UX53's sweep (row 20 of its table), which named it as an owner-gated recommendation rather than filing it. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
@@ -4977,19 +4978,19 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 
 **[DONE] FEAT16 (P2): share the summary or the transcript as rich text, so it pastes formatted into a chat.** Shipped 2026-08-17, closed the same day on the owner walkthrough. The spec text below is the filing as it stood at close.
 
-Band origin: filed 2026-08-17 at the owner's request: a Share button for both the summary and the transcript, so the whole thing can be copied out in a WYSIWYG way and pasted into a Teams chat, a Google Meet chat, or anywhere else, "while maintaining basic 'paste without formatting' options I have in all those tools". Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-08-17 at the owner's request: a Share button for both the summary and the transcript, so the whole thing can be copied out in a WYSIWYG way and pasted into a Teams chat, a Google Meet chat, or anywhere else, "while maintaining basic 'paste without formatting' options I have in all those tools". Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## Context
 
 Every get-content-out path this app has writes a file or a page. The four sinks (Notion, Obsidian, filesystem, LAN) are configured in Preferences ▸ Integrations since UX45, and each of them publishes on the pipeline's own schedule to a destination set up in advance. None of that helps when the destination is a chat compose box someone is looking at right now.
 
-The two clipboard affordances that exist carry no content. [`copyMeetingID`](../../../daemon/Sources/MeetingPipe/MeetingDetailView+Header.swift#L673) puts the stem string on the pasteboard, and AUTO4's [`copyTemplate`](../../../daemon/Sources/MeetingPipe/Automation/AutomationReference.swift#L39) puts a `meetingpipe://` URL on it. Neither the Summary tab nor the Transcript tab has any copy or share control at all: grepping both files for copy, share or export returns only unrelated uses of the word "shared".
+The two clipboard affordances that exist carry no content. [`copyMeetingID`](../../daemon/Sources/MeetingPipe/MeetingDetailView+Header.swift#L673) puts the stem string on the pasteboard, and AUTO4's [`copyTemplate`](../../daemon/Sources/MeetingPipe/Automation/AutomationReference.swift#L39) puts a `meetingpipe://` URL on it. Neither the Summary tab nor the Transcript tab has any copy or share control at all: grepping both files for copy, share or export returns only unrelated uses of the word "shared".
 
 So the route today is to find the published `.md` and paste its source, which arrives in a chat as literal `## Decisions` and `- point` text. That is the gap.
 
-**A markdown render of a summary is already solved in Swift, and must not be solved a second time.** `render_summary_md` ([`markdown.py:234`](../../../pipeline/src/mp/markdown.py#L234)) has an explicit Swift mirror in `AppleIntelligenceSummarizer.renderMarkdown` ([`:426`](../../../daemon/Sources/MeetingPipe/Summarization/AppleIntelligenceSummarizer.swift#L426)), and the two are pinned against each other by the CI3 `summary-md-golden.json` fixture precisely so they cannot drift. The missing pieces are the conversion to rich flavors and the pasteboard write, not the markdown.
+**A markdown render of a summary is already solved in Swift, and must not be solved a second time.** `render_summary_md` ([`markdown.py:234`](../../pipeline/src/mp/markdown.py#L234)) has an explicit Swift mirror in `AppleIntelligenceSummarizer.renderMarkdown` ([`:426`](../../daemon/Sources/MeetingPipe/Summarization/AppleIntelligenceSummarizer.swift#L426)), and the two are pinned against each other by the CI3 `summary-md-golden.json` fixture precisely so they cannot drift. The missing pieces are the conversion to rich flavors and the pasteboard write, not the markdown.
 
-The transcript is the harder half and is where this task can go quietly wrong. Python has `render_markdown` ([`markdown.py:46`](../../../pipeline/src/mp/markdown.py#L46)), but it renders from the structured file and Swift has no transcript renderer at all. **What is on disk is not what the reader sees.** [`TranscriptDisplay.displayName`](../../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L175) maps `speaker_0` to `Speaker 1`, `speaker_unknown` to `Unknown speaker`, and `THEM-A` to `Unknown A`; speaker renames live in `SpeakerLabelStore` and text edits in `TranscriptCorrectionStore`, both reversible overlays applied at read time rather than written back into `<stem>.json`. A share implemented as "read the file, render it" therefore copies raw internal ids and un-corrected text, and it would look correct in every test that does not specifically check for it. The summary has the same property in a milder form: UX26's action checkboxes write back into `<stem>.summary.json`, so the `MeetingSummary` the tab holds is the truth to render.
+The transcript is the harder half and is where this task can go quietly wrong. Python has `render_markdown` ([`markdown.py:46`](../../pipeline/src/mp/markdown.py#L46)), but it renders from the structured file and Swift has no transcript renderer at all. **What is on disk is not what the reader sees.** [`TranscriptDisplay.displayName`](../../daemon/Sources/MeetingPipe/TranscriptTab.swift#L175) maps `speaker_0` to `Speaker 1`, `speaker_unknown` to `Unknown speaker`, and `THEM-A` to `Unknown A`; speaker renames live in `SpeakerLabelStore` and text edits in `TranscriptCorrectionStore`, both reversible overlays applied at read time rather than written back into `<stem>.json`. A share implemented as "read the file, render it" therefore copies raw internal ids and un-corrected text, and it would look correct in every test that does not specifically check for it. The summary has the same property in a milder form: UX26's action checkboxes write back into `<stem>.summary.json`, so the `MeetingSummary` the tab holds is the truth to render.
 
 **The two halves of the owner's ask are one write, not a tradeoff.** A single `NSPasteboard` item can carry `.html`, `.rtf` and `.string` at the same time; the receiving app takes the richest flavor it understands, and Paste and Match Style (Cmd+Shift+V in Teams, Slack, Notes and the rest) reads the plain-text one. Writing all three is what makes "preserve rich text" and "keep paste without formatting working" the same feature. Writing only HTML is the failure mode: it looks right on the first paste and silently removes the owner's plain-paste option everywhere.
 
@@ -5005,15 +5006,15 @@ The smallest change that closes the class: one pure renderer, one pasteboard wri
 
 **3. RTF derived from the HTML**, via `NSAttributedString(html:documentAttributes:)` and then `.rtf` data, so HTML stays the single source and there is no hand-built RTF to keep in step. Named here so the pickup session does not build a parallel path.
 
-**4. The pasteboard write takes the pasteboard as a parameter** rather than reaching for `.general` inside, following AUTO4's precedent at [`AutomationReference.swift:39`](../../../daemon/Sources/MeetingPipe/Automation/AutomationReference.swift#L39), so the tests pin real behaviour against a scratch board instead of stomping the owner's clipboard on every run.
+**4. The pasteboard write takes the pasteboard as a parameter** rather than reaching for `.general` inside, following AUTO4's precedent at [`AutomationReference.swift:39`](../../daemon/Sources/MeetingPipe/Automation/AutomationReference.swift#L39), so the tests pin real behaviour against a scratch board instead of stomping the owner's clipboard on every run.
 
-**5. The affordance, on both surfaces.** The natural seam is the detail header's [`actionsMenu`](../../../daemon/Sources/MeetingPipe/MeetingDetailView+Header.swift#L273), where `Copy meeting ID` already lives, routed through [`toolbarAction(_:_:)`](../../../daemon/Sources/MeetingPipe/MeetingDetailView+Header.swift#L508) so the share emits its `detail` / `toolbar_action` event like every other action there. Whether this ships as two menu entries or as one control on each tab that shares the tab you are on is the pickup session's call; both must be reachable, since the owner asked for both. Record which was chosen and why.
+**5. The affordance, on both surfaces.** The natural seam is the detail header's [`actionsMenu`](../../daemon/Sources/MeetingPipe/MeetingDetailView+Header.swift#L273), where `Copy meeting ID` already lives, routed through [`toolbarAction(_:_:)`](../../daemon/Sources/MeetingPipe/MeetingDetailView+Header.swift#L508) so the share emits its `detail` / `toolbar_action` event like every other action there. Whether this ships as two menu entries or as one control on each tab that shares the tab you are on is the pickup session's call; both must be reachable, since the owner asked for both. Record which was chosen and why.
 
 Constraints:
 
 - Copy names the mechanism, not the metaphor. This puts formatted text on the clipboard, so a label that says paste is more honest than one that implies a share sheet.
 - DSN3 applies to any new chrome: 4.5:1 contrast, no new `.system(size:)` literals on changed lines.
-- Read [`docs/GUIDE.md`](../../GUIDE.md) before shipping and add the recipe in the same commit, per the CLAUDE.md rule that a change to user-visible surfaces updates the guide with it.
+- Read [`docs/GUIDE.md`](../GUIDE.md) before shipping and add the recipe in the same commit, per the CLAUDE.md rule that a change to user-visible surfaces updates the guide with it.
 
 ## Explicitly not / out of scope
 
@@ -5042,12 +5043,12 @@ Constraints:
 - No test touches `NSPasteboard.general`; all use a scratch `NSPasteboard(name:)`, per AUTO4.
 - `cd daemon && swift build` clean and `swift test` green, with the number of tests this task adds recorded in the ship note. Do not pin an absolute suite total.
 - `python3 scripts/truth_fences.py both` clean, no em-dashes on changed lines, dash guard green.
-- [`docs/GUIDE.md`](../../GUIDE.md) gains the recipe in the same commit.
+- [`docs/GUIDE.md`](../GUIDE.md) gains the recipe in the same commit.
 - The walkthrough below is what closes the task. A real paste into a real Teams chat is not exercisable in a harness, and it is the only place the claim can actually be checked.
 
 ## Shipped 2026-08-17
 
-Every engineering line of the acceptance above is green; the status is the walkthrough below and nothing else. The ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md) carries the full ship note. In short: one new file, `daemon/Sources/MeetingPipe/RichTextShare.swift`, holding `RichTextShare` (the `Document`, the markdown-to-HTML and plain passes, and the one-item three-flavor pasteboard write taking the board as a parameter) and `MeetingShare` (the two documents, resolved through `TranscriptLoader.load` then `MeetingCast.rowSpeaker`). 12 new tests in `RichTextShareTests`; `swift test` 2534 tests 0 failures.
+Every engineering line of the acceptance above is green; the status is the walkthrough below and nothing else. The ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md) carries the full ship note. In short: one new file, `daemon/Sources/MeetingPipe/RichTextShare.swift`, holding `RichTextShare` (the `Document`, the markdown-to-HTML and plain passes, and the one-item three-flavor pasteboard write taking the board as a parameter) and `MeetingShare` (the two documents, resolved through `TranscriptLoader.load` then `MeetingCast.rowSpeaker`). 12 new tests in `RichTextShareTests`; `swift test` 2534 tests 0 failures.
 
 The choice this spec left open went to **two entries in the header's `actionsMenu`** rather than one control per tab, so either document is one click from whichever tab is up and neither reading column gains chrome; the reasoning is on `MeetingDetailView+Header.copyRichText`. Three decisions the spec did not cover: the transcript does not route through the markdown pass (the tab renders spoken text as a plain `String`, so interpreting it here would drop characters the reader can see); `renderMarkdown` is called with no `deeplinkStem`, so anchors copy as readable ` [12:34]` text rather than `meetingpipe://` links a recipient cannot follow; and action-item `[ ]` / `[x]` boxes stay literal, matching the published note.
 
@@ -5067,7 +5068,7 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 
 **[DONE] CI7 (P2): `uv sync` cannot build the pipeline package inside a worktree, so the documented verification commands do not run there.** Shipped 2026-08-18. The spec text below is the filing as it stood at close.
 
-Band origin: filed 2026-08-15 (found by three of four parallel sessions in one `/tech-task` batch: PIPE17, LOCAL19, DET10, DET11). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-08-15 (found by three of four parallel sessions in one `/tech-task` batch: PIPE17, LOCAL19, DET10, DET11). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
 
 ## What is wrong
 
@@ -5165,3 +5166,88 @@ Deliverables: [`docs/spikes/diar4-offline-diarizer-migration.md`](../spikes/diar
 **Question 2 closed a priori, and this spec's own premise was wrong for 0.14.8.** `OfflineDiarizerManager.process` returns the same `DiarizationResult` with the same `[TimedSpeakerSegment]` that `performCompleteDiarization` returns, so "a different result type that FEAT3 voiceprints depend on" stopped being true after DIAR2 read the API on 2026-07-17; `FluidAudioRunner.runDiarization`'s consumers would compile unchanged. The real cost sits one layer down: the offline path embeds with a **different model at the same 256 dimensions**, so every enrolled roster voiceprint and every `<stem>.embeddings.json` would keep loading and keep producing cosine distances that mean nothing. Silent wrong roster matches, not a crash.
 
 **The correction worth carrying past this task.** This spec, DIAR2 before it, and `ARCHITECTURE.md` after it all recorded the 2:01 case as a *segmentation* failure. The conclusion about thresholds was right and the premise was wrong: a boundary is already there, and both pipelines find it. Online at 0.55 returns `121.97 -> 124.61` then `125.92 -> 129.94`; offline at 0.1 returns `121.84 -> 124.65` then `125.96 -> 147.12`. Two pipelines sharing no clustering algorithm, no embedding model and no step size put a boundary within 0.04 s of each other in the middle of the transcript row, and both label the two sides the same speaker. The boundary is a 1.31 s silence, which is why it is cheap to find; what neither does is decide the voice after it belongs to someone else. So the defect is **cluster assignment across an existing boundary**, it belongs in the same family as the multi-person `THEM-A` in `20260803-103042`, and the next attempt works on assignment (per-span re-scoring against enrolled voiceprints, or an overlap-aware pass) rather than on segmentation. The reading trap that produced the original claim is now a rule: a transcript row is not the diarizer's unit, because `SegmentBuilder.coalesce` folds consecutive same-speaker spans into one turn (`daemon/docs/gotchas.md`, "A transcript row is not the diarizer's unit").
+
+# [DONE] HYG6: spec-truth sweep, stale citations and two walkthroughs that cannot pass
+
+Filed 2026-08-03 by the audit band. Medium. This is the task-spec half of the doc-truth work, split from DOC12 because the audience is different: DOC12's readers are humans reading the product's documentation, and this one's readers are sessions executing a spec and the owner following a walkthrough.
+
+## Shipped 2026-08-18
+
+`swift build` clean, `swift test` **2586 passed, 0 failures**, 1 new test; `python3 scripts/truth_fences.py both` green; no Python touched, so ruff and pytest were not in play. Every relative link under `docs/backlog/` was resolved against disk before and after, which is how the item 5 numbers below were measured rather than estimated.
+
+**Two of the five items were already closed by the code moving under the filing, which is itself worth recording:** a spec-truth sweep filed on 2026-08-03 and executed on 2026-08-18 had drifted the same way the specs it was auditing had. Item 1 was fixed in place at filing time. Item 2 was closed by UX48 on 2026-08-04. Item 4's live scope was half of what it named. Item 5's counts had more than doubled. Only item 3 was still exactly as filed, and it was the one with teeth.
+
+Per-item outcome, in the order they appear below:
+
+1. **No action, as filed.** Already fixed in place on 2026-08-03.
+2. **Closed by UX48 itself on 2026-08-04, verified rather than assumed.** The false `:33` acceptance clause is struck in this archive with the reason, step 7 is rewritten to the observation a main menu can actually produce, and the Quick Find main-menu row (one of the two fixes this item proposed) shipped the same day, with the owner confirming Cmd+K from a Library window. One residue was fixed here: the archived spec's own "two ways to actually deliver it, both outside the scope and left to the owner" bullet still read as though neither had shipped, which is the same class of untrue spec this task exists to remove.
+3. **Fixed properly, on all four surfaces.** `daemon/scripts/cal3-teams-title-probe.swift` now emits `"expected": "unknown"` for every captured row instead of a hardcoded `"recognize"` it never computed, and `WindowRecognizerFixtureTests` **reports** an `unknown` row (`[fixture] UNCLASSIFIED recognizer=... titles=...`) instead of asserting it, so a real Teams title this recognizer rejects arrives as a DET-band finding rather than as a red suite on an unrelated commit. A token that is neither `recognize`, `reject` nor `unknown` now fails the suite rather than quietly reading as `reject`, since a typo satisfying the negative case is the same defect one level down. Both new branches were proven by mutating the fixture and watching the suite go red and print, not by inspection. `RowExpectation` is a small pure type with its own test, because the committed fixture holds no `unknown` row today and a suite exercising only the seeded rows would pass with the branch deleted. The secondary state-name defect is corrected on every surface that stated it: only `in_call_one_on_one` has a seeded row to replace, while `in_meeting_named_series` and `in_meeting_ad_hoc` are additions, and the probe's paste note, VALOWN1 step 1, the spike doc's follow-up list and the fixture's `_README` now all say so. VALOWN1's acceptance also gained "no row left `unknown`", since an unclassified row is a decision nobody has made rather than a result. The generalisation went to `daemon/docs/gotchas.md` with one rule line in `daemon/CLAUDE.md`.
+4. **Half the named scope was gone, and the two remaining were re-resolved.** UX43 and UX46 are done and archived in this file; their citations are pre-fix history in a frozen record, no session executes them, and re-resolving them by symbol would rewrite the record without a reader, so they were deliberately left. UX45 (shipped, in `owner-verification.md`, so still read) and AUTO3 (live) were re-resolved: `WorkflowsView.sinksSection`, `Workflow.effectiveSinks` with its `flags.ndaMode ? [.filesystem] : sinks` snippet, `WorkflowSink` (three cases at filing, four since UX45 shipped, and the spec now says so), the OpenAI branch in `PreferencesView+Pipeline.swift`, and `ask.main` / `digest.main` for the anchorless `entry.prepare()` (cited as `ask.py:159` and `digest.py:434`, actually at 268 and 476). AUTO3's own four links were also one directory level too shallow and dead; they are fixed. The cite-by-symbol rule is recorded in `.claude/commands/file-task.md` beside the absolute-total rule, as this item asked.
+5. **The sweep was more than twice the filed size, and the mechanism is wider than the back-link.** Measured on 2026-08-18: **47** dead back-links against **4** correct ones, not the 20 against 1 recorded at filing. The same inherited-from-`tasks/` depth error had also killed **41** other links in the same file (15 to `TranscriptTab.swift` alone, plus `MeetingCast.swift`, `markdown.py`, `PRODUCT.md`, `GUIDE.md` and others), for **88** dead links in one archive. All 88 are swept, by a rule that rewrites a link only when it is dead now **and** resolves after removing exactly one `../` level, so no correct link could be touched. `q5-final.md` has zero dead relative links and `q4-final.md`'s three are deleted source files rather than depth errors, which confirms the defect entered with the per-task-file split. The source fix is one bullet in `.claude/commands/tech-task.md` step 8's done-done branch stating the **general** rule, that every relative link in a moved body loses one `../` level, of which the back-link is one case; writing only the back-link rule would have left the next archival re-adding a dead `../../../daemon/...` instead. The optional fence was deliberately **not** built: the procedure note is what this item called the minimum, the eight sessions archiving tasks in the same batch all read `tech-task.md`, and a new CI check that false-positives on a quoted pattern would have cost more than it caught.
+
+**Left as findings rather than absorbed**, since each is a different mechanism from the one this task swept, and named here so they are not lost. Fourteen dead relative links remain in four live specs, all the same one-level depth error: `AUTO1.md` (2), `CAL3.md` (7), `DIAR5.md` (1), `DOC13.md` (4). Ten links in this file point at `tasks/<ID>.md` files that were deleted when those tasks were archived (UX44, UX49, UX52, UX57, UX58, UX71, AI12, LANG2, LOCAL15), which is a third mechanism: an archival kills every citation of the spec it moves. And `q4-final.md` carries three links to source files that no longer exist. None of these were touched, both to stay in scope and because two of those files were being edited by parallel sessions on the same day.
+
+## 1. DIAR2 and DIAR3 tell the owner to watch for a `THEM-*` chip on the surface that renders `Unknown A`
+
+**Fixed in place on 2026-08-03 rather than left for this task, because DIAR2 is P1 and the owner is running its sweep now.** Recorded here as the trail.
+
+`docs/backlog/tasks/DIAR3.md:74` step 6 says "read the cast strip above the transcript ... an over-split shows an extra unnamed `THEM-*` chip". `docs/backlog/tasks/DIAR2.md:37` uses the same wording, and `:30` step 4's over-split trigger depends on it.
+
+The cast strip does not render `THEM-*`. `VoiceResolutionBar.swift` renders `Text(voice.displayName)`, and `VoiceResolution.swift` states `displayName` "is what the transcript shows", mapped through `TranscriptDisplay.displayName`, which in `TranscriptTab.swift` turns `THEM-A` into `Unknown A`.
+
+This is the FEAT11 defect shape exactly (FEAT11 step 3 told the owner to click a `THEM-*` chip when the UI renders `Unknown A/B/C`), recurring in two more specs. The audit's own skeptic initially refuted this finding by proving `THEM-*` **does** render in the summary, which is true and is why the summary is a valid place to see cluster labels. The owner corrected it on 2026-08-03: `THEM-*` appears only in the summary view, never in the transcript view or the cast strip, and DIAR3 step 6 names the cast strip. Recorded because the near-miss is instructive: a refutation that proves a string exists **somewhere** does not answer whether it exists on the surface the step points at.
+
+## 2. UX48's step 7 and its acceptance pre-register an observation the scoped fix cannot produce
+
+**Closed by UX48 on 2026-08-04, before this task was picked up.** The finding held and was filed independently by that pickup; both halves of the fix this item proposed were taken. Verified 2026-08-18: the acceptance clause reads "Cmd+K still opens Quick Find with keyboard focus (the regression check)", the strike is recorded beside it, step 7 asks for Cmd+K in the open dropdown and explains why the old wording was unproducible, and the `Find` submenu carrying `Quick Find...` shipped so Cmd+K now works from any MeetingPipe window. The one thing still untrue in the archived body, that the two delivery options were "left to the owner", was corrected in the same commit as this archival.
+
+As filed: `docs/backlog/tasks/UX48.md:66` step 7 read "with another app frontmost and **no menu open**, press **Cmd+K**. Pass: Quick Find appears with keyboard focus". `:33` asserted the same as acceptance, so it was not a walkthrough slip.
+
+It cannot pass, for two independent reasons:
+
+- With another app frontmost, macOS delivers the command-key equivalent to that app. UX48's scope installs a main menu only while MeetingPipe is `.regular`, and with the Library closed it is `.accessory` with no main menu at all.
+- The scope's enumerated menu contents were the App menu (Preferences), an Edit menu, and a Window menu (Minimize, Close). **No Quick Find item.** So even frontmost-and-`.regular`, nothing in the main menu matched Cmd+K.
+
+The risk was concrete and named in the spec's own "not in scope": a session chasing the stated acceptance adds a Carbon global hotkey via `HotkeyManager`, which UX48 explicitly forbids ("Do not add per-shortcut view-hierarchy handlers. That is the approach `292dfe49` took and it is the thing this task exists to stop repeating"). It was also a near-verbatim re-run of UX39's step 5, whose premise was refuted in writing on 2026-07-31.
+
+## 3. VALOWN1 tells the owner to paste probe output into a suite that hard-asserts the value the probe hardcodes
+
+`daemon/scripts/cal3-teams-title-probe.swift` emitted `"expected": "recognize"` as a string literal for every capture, in `emitFixtureBlock`, without ever calling `MeetingSourceScanner.isActiveMeetingWindow` to check whether that is true.
+
+`daemon/Tests/MeetingPipeTests/WindowRecognizerFixtureTests.swift` read it as `let expected = (entry.expected == "recognize")` and then `XCTAssertEqual(recognized, expected, ...)`, a hard assertion rather than a report.
+
+`docs/backlog/tasks/VALOWN1.md` step 1 instructed, "**whatever the verdict says**", that "the emitted fixture block replaces the seeded Teams entries ... with `seeded: false`".
+
+So if any real captured Teams title is one the recognizer rejects, which is plausible **precisely because CAL3 exists on the finding that real Teams titles do not match this repo's guessed formats**, the paste turns weeks of owner capture into a red suite on an unrelated commit. VALOWN1's own acceptance ("the fixture test reports a non-zero captured count") would be satisfied while the suite is failing.
+
+Secondary: `fixtureState(for:)` emits states `in_meeting_named_series` and `in_meeting_ad_hoc`, neither of which exists in the fixture's 21 entries, so "REPLACING the seeded rows" has nothing to replace for those and the paste grows the fixture rather than converting it.
+
+**Shipped fix.** The probe emits `unknown`, which is the second of the two options this item offered, and it is the right one rather than the cheap one: the probe's own header records that it carries no Teams title pattern **on purpose**, and it is not linked against the app target, so computing `expected` would mean duplicating the recognizer into a script whose entire premise is that it holds no such knowledge. The suite gained a `RowExpectation` type reading exactly three tokens, reports `unknown`, asserts `recognize` and `reject`, and fails anything else. Both new branches were verified against a deliberately mutated fixture. `in_call_one_on_one` is the only emitted state with a seeded row to replace, and that is now stated by the probe's paste note, the fixture's `_README`, the spike doc and VALOWN1. A `reject` on a real captured title is named as a DET-band finding in all four places. The generalisation is in `daemon/docs/gotchas.md` under "A capture tool must not emit a verdict it never computed", with one rule line in `daemon/CLAUDE.md`.
+
+## 4. Four active specs anchor on `file:line` ranges that now land on unrelated code
+
+UX43, UX45, UX46 and AUTO3 each cite the exact line of the code they exist to change, and in every case the cited line now holds something else, in three of the four by 40 to 200 lines, after LOCAL16, UX35 and AI11 shifted those files.
+
+**Two of the four had shipped and been archived by 2026-08-18**, so the live scope was UX45 and AUTO3. See the shipped note above for what each citation resolved to. The durable half is the rule, now in `.claude/commands/file-task.md`: cite a symbol plus a short quoted snippet, never a bare line number, because a line number is true against exactly one commit and rots the same way an absolute suite total does, and a reader cannot tell a stale citation from a wrong one.
+
+## 5. Every archived spec's link back to the active backlog is broken, and each new archival copies it
+
+Added 2026-08-03, found by SEC15's pickup read and re-verified after the nine-task band landed.
+
+`docs/backlog/q6-final.md` carried its links back to the active backlog with a `../` prefix where a `./` one was needed: **20** of them at filing, **47** by 2026-08-18, against 1 and then 4 spelled correctly. The archive is a sibling of the active backlog, both directly under `docs/backlog/`, so the `../` form resolves to `docs/meetingpipe-q6-backlog.md`, which does not exist. Every one of those was dead in a Markdown viewer and in any link checker.
+
+The mis-spelling is inherited, not invented per task. An archived spec is the task's `tasks/<ID>.md` body moved up one directory, and from `tasks/` the `../` form is **correct**; nothing in the move rewrites it. That is why the count grows on its own. `q4-final.md` and `q5-final.md` are clean, so the defect entered with the per-task-file split, and the correctly spelled links in `q6-final.md` show the right form was known.
+
+**What execution added to the diagnosis:** the back-link is one case of a general rule, not a special one. Every relative link in a moved body is one level too deep, and 41 further links in the same file were dead for exactly that reason, giving 88 in total. The sweep therefore rewrote any link that was dead **and** resolved one level shallower, which is precise enough that no correct link could be caught by it, and the procedure note in `tech-task.md` states the general rule rather than the back-link special case.
+
+Why it belongs in this row rather than DOC12's: the reader is a session opening an archived spec to learn how something shipped, which is this task's stated audience, not a human reading product documentation.
+
+## Scope
+
+Items 2, 3, 4 and 5. Item 1 is already fixed and is recorded here for the trail.
+
+## Acceptance
+
+UX48's step 7 and acceptance clause describe something the scope can deliver. The CAL3 probe cannot emit an `expected` it did not compute, and VALOWN1's paste step says what to do with a `reject`. The four stale citations resolve. `.claude/commands/file-task.md` records the cite-by-symbol rule. `docs/backlog/q6-final.md` has zero dead back-links to the active backlog, and the archival step in `.claude/commands/tech-task.md` says to rewrite the path on the way up, so the count cannot regrow. No code behaviour change beyond the probe, so both suites stay green.
+
+**The filed acceptance named "21" correct back-links, from the 20-against-1 counts at filing. The measured numbers on execution day were 47 against 4, so the shipped bar is zero dead and 51 correct**, which is the same bar with the arithmetic redone rather than a different one. This is the drift that the acceptance rule about absolute totals exists to prevent, appearing in a task about drift.
