@@ -1,5 +1,9 @@
-import AVFoundation
+// @preconcurrency: AVFAudio predates Sendable, so passing the engine into the bounded
+// off-queue `engine.start()` closure trips a strict-concurrency capture warning the
+// module cannot resolve on its own (CONC4), same as MeetingRecorder.
+@preconcurrency import AVFoundation
 import Foundation
+import os
 
 /// Reads RMS level from the default mic and publishes a 0...1 scalar on the main queue. Used by `LiveWaveformView` to show activity without recording. No buffer is persisted - RMS is computed in-tap and discarded.
 ///
@@ -35,22 +39,77 @@ final class MicLevelMonitor {
                 DispatchQueue.main.async { onLevel(min(1, max(0, shaped))) }
             }
 
+            self.isRunning = MicLevelMonitor.startBounded(
+                budgetSeconds: MicLevelMonitor.startBudgetSeconds,
+                startEngine: { [engine = self.engine] in try engine.start() },
+                removeTap: { input.removeTap(onBus: 0) }
+            )
+        }
+    }
+
+    /// Budget for the blocking `engine.start()`. Matches `MeetingRecorder`'s: a healthy
+    /// start is ~25 ms, so this is "how long before we give up on a wedged device".
+    static let startBudgetSeconds = 8.0
+
+    /// Bring the metering engine up, bounded, and tear the tap back down if it did not
+    /// come up. Returns whether metering is now running.
+    ///
+    /// REC13: `engine.start()` here was the last unbounded `AVAudioEngine.start()` in the
+    /// tree. Unbounded it was worse than it looks: it runs on this monitor's private
+    /// serial queue, and `stop()` runs on that same queue, so a start wedged on a
+    /// contended or transitioning device did not merely leave the waveform flat, it made
+    /// the monitor un-stoppable for the process lifetime, holding the tap and the engine
+    /// open behind it. Bounding it means the budget is spent and `stop()` can still run.
+    ///
+    /// Static and closure-injected so the timeout branching is testable without a wedged
+    /// audio device, the way `boundedEngineStart` and `EngineTeardown` are. `runBoundedSync`
+    /// rather than the async helper because the caller is a `DispatchQueue` block with no
+    /// async context; blocking that private queue for the budget is the intended cost.
+    ///
+    /// Known residual, left deliberately: an abandoned start that later succeeds leaves a
+    /// running engine this monitor believes is stopped, and `stop()`'s `isRunning` guard
+    /// then skips it. That is the same state-desync REC12's item 4 is about, in this same
+    /// file, so it belongs there rather than here. It is strictly better than what it
+    /// replaces, where a wedged start held this queue forever and `stop()` could not run
+    /// at all; a bounded start at least frees the queue.
+    static func startBounded(
+        budgetSeconds: Double,
+        startEngine: @escaping @Sendable () throws -> Void,
+        removeTap: @escaping @Sendable () -> Void
+    ) -> Bool {
+        let failure = OSAllocatedUnfairLock<String?>(initialState: nil)
+        let finished = runBoundedSync(seconds: budgetSeconds) {
             do {
-                try self.engine.start()
-                self.isRunning = true
+                try startEngine()
             } catch {
-                Log.main.warning("MicLevelMonitor failed to start: \(error.localizedDescription)")
-                input.removeTap(onBus: 0)
-                self.isRunning = false
+                failure.withLock { $0 = error.localizedDescription }
             }
         }
+        if !finished {
+            // Abandoned, so the start may still be running and the engine may yet come
+            // up on its own. The tap comes off regardless: a live tap feeding a monitor
+            // that reports itself stopped is the worse of the two states.
+            Log.main.warning("MicLevelMonitor start timed out after \(budgetSeconds)s - waveform stays flat")
+            removeTap()
+            return false
+        }
+        if let message = failure.withLock({ $0 }) {
+            Log.main.warning("MicLevelMonitor failed to start: \(message)")
+            removeTap()
+            return false
+        }
+        return true
     }
 
     func stop() {
         audioQueue.async { [weak self] in
             guard let self = self, self.isRunning else { return }
-            self.engine.inputNode.removeTap(onBus: 0)
-            if self.engine.isRunning { self.engine.stop() }
+            // Bounded for the same reason the start is: these serialize on the engine's
+            // own queue, and a wedge there would otherwise strand this private queue.
+            runBoundedSync(seconds: MicLevelMonitor.startBudgetSeconds) { [engine = self.engine] in
+                engine.inputNode.removeTap(onBus: 0)
+                if engine.isRunning { engine.stop() }
+            }
             self.isRunning = false
         }
     }

@@ -115,6 +115,10 @@ final class MeetingSessionController: @unchecked Sendable {
     /// `hasSystemAudio` read draws the line here (TECH-END3).
     private static let systemSilenceThresholdDb: Double = -50.0
 
+    /// REC13(4): reports a stop that has not completed by its ceiling. Armed in
+    /// `stopRecording`, disarmed when `recorder.stop()` returns.
+    let stopStallWatchdog = StopStallWatchdog()
+
     init(coordinator: any SessionHost) {
         self.coordinator = coordinator
     }
@@ -593,8 +597,19 @@ final class MeetingSessionController: @unchecked Sendable {
         // inside it is a suspension, so the UI stays live. Once flushed, enqueue for
         // the pipeline and return to .idle so the next meeting can start.
         let recorder = coordinator.audioRecorder
+        // REC13(4): 52 minutes in `.stopping` produced no event and no notification on
+        // 2026-08-14, so the only symptom was a Library row that never settled. Every
+        // engine call inside `stop()` is bounded now, so this should never fire; if it
+        // does, the next occurrence is readable from `events.jsonl` instead of needing a
+        // live `sample` of the process.
+        stopStallWatchdog.arm(file: file) { [weak self] elapsed in
+            self?.coordinator.notifications.notifyError(
+                StopStallWatchdog.stallMessage(elapsed: elapsed)
+            )
+        }
         Task { @MainActor [weak self] in
             let producedUsableFinal = await recorder.stop()
+            self?.stopStallWatchdog.disarm()
             guard let self = self else { return }
             Log.writeLine("daemon", "recording stopped → \(file.path)")
             Log.event(category: "coordinator", action: "recording_stopped", attributes: [

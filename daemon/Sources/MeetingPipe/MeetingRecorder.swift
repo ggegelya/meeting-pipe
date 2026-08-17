@@ -54,7 +54,12 @@ final class MeetingRecorder {
     /// the main thread with no way back but a force-quit. Abandoning the drain keeps the
     /// same guarantee it does in `stop()` - the queue strong-captures the file, so
     /// whatever landed is still valid for the next launch's orphan sweep.
-    private static let terminationDrainTimeoutSeconds = 3.0
+    ///
+    /// Internal rather than private since REC13, so `AppDelegateRelaunchTests` can fence
+    /// it against the process-wide termination ceiling: raising this budget past that
+    /// ceiling would make the backstop fire on a healthy quit, which is a regression the
+    /// two constants cannot see from their own files.
+    static let terminationDrainTimeoutSeconds = 3.0
 
     /// In-flight async capture-recovery (it bounds an engine restart off the
     /// main thread). Held so `stop()` can drain it before engine teardown, and
@@ -1020,14 +1025,22 @@ final class MeetingRecorder {
 
     /// Register the device-change observer. Split out of `start()` (which is
     /// async) so the NotificationCenter `@Sendable` block isn't formed in an
-    /// async region, which flags the weak-self capture; the handler still runs
-    /// on the main queue via the observer's `queue: .main`. Removed in `stop()`.
+    /// async region, which flags the weak-self capture. Removed in `stop()`.
+    ///
+    /// REC13: this used to register with `queue: .main`, which is what deadlocked
+    /// the engine on 2026-08-14. A non-nil queue makes NotificationCenter wrap the
+    /// handler in an `NSOperation` and have the POSTER wait on it, and the poster of
+    /// this notification is AVFAudio's own engine queue, so the engine ended up
+    /// waiting on an operation that never ran while every engine call, including the
+    /// stop path's, queued behind it. `addMainQueueObserver` registers with a nil
+    /// queue and hops to main explicitly: same thread for the handler, no wait for
+    /// the poster. The full incident is in that helper's doc comment.
     private func armConfigurationChangeObserver() {
-        configChangeObserver = NotificationCenter.default.addObserver(
+        configChangeObserver = addMainQueueObserver(
+            on: .default,
             forName: .AVAudioEngineConfigurationChange,
-            object: engine,
-            queue: .main
-        ) { [weak self] _ in
+            object: engine
+        ) { [weak self] in
             self?.handleConfigurationChange()
         }
     }
@@ -1121,8 +1134,31 @@ final class MeetingRecorder {
         needsConverter: Bool,
         gapStart: Date
     ) async {
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
+        // REC13: bounded like the other two teardown sites. This one runs while the
+        // engine is mid-route-change, which is precisely when its queue is most
+        // likely to be busy, and an unbounded stop here would wedge the recovery
+        // that exists to keep the recording alive. Not `EngineTeardown` because the
+        // order here is the other way round on purpose (see the doc comment: the
+        // engine goes down first so the tap's converter is swapped with the audio
+        // thread already stopped), and that ordering is worth more than sharing a
+        // helper. A wedged engine ends recovery the same way a timed-out restart
+        // does below: mic capture stops, system audio keeps recording.
+        let engineStopped = await runWithTimeout(seconds: EngineTeardown.defaultBudgetSeconds) { [engine] in
+            engine.stop()
+        }
+        let tapRemoved = await runWithTimeout(seconds: EngineTeardown.defaultBudgetSeconds) { [engine] in
+            engine.inputNode.removeTap(onBus: 0)
+        }
+        if !(engineStopped && tapRemoved) {
+            Log.event(category: "recorder", action: "engine_teardown_timed_out", attributes: [
+                "path": "recover_capture",
+                "engine_stopped": engineStopped,
+                "tap_removed": tapRemoved,
+            ])
+            Log.writeLine("recorder", "WARN: audio engine teardown timed out during device-change recovery (stopped=\(engineStopped) tap_removed=\(tapRemoved)) - mic capture stopped")
+            reportRecoveryFailure()
+            return
+        }
 
         if needsConverter {
             guard let converter = AVAudioConverter(from: liveFormat, to: fileFormat) else {
@@ -1469,11 +1505,46 @@ final class MeetingRecorder {
         recoveryTask = nil
         recovery?.cancel()
         await recovery?.value
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        // REC13: bounded, off-main, abandon-on-timeout. These three calls were
+        // synchronous on main, so they inherited any wedge on AVAudioEngine's own
+        // serial queue, and on 2026-08-14 that is exactly what stranded `.stopping`
+        // for 52 minutes. VoiceProcessing is reverted here rather than further down
+        // so the whole engine teardown is one bounded unit; leaving it enabled keeps
+        // the HAL device degraded for other apps until this process exits (2026-05-13).
+        var revertVoiceProcessing: (@Sendable () -> Void)?
+        if voiceProcessingEnabledForSession {
+            voiceProcessingEnabledForSession = false
+            revertVoiceProcessing = { [engine] in
+                do {
+                    try engine.inputNode.setVoiceProcessingEnabled(false)
+                    Log.writeLine("recorder", "voice processing disabled on inputNode")
+                } catch {
+                    Log.writeLine(
+                        "recorder",
+                        "WARN: setVoiceProcessingEnabled(false) failed: \(error.localizedDescription) - system mic may stay degraded until app restart"
+                    )
+                }
+            }
+        }
+        let teardown = await EngineTeardown.run(
+            removeTap: { [engine] in engine.inputNode.removeTap(onBus: 0) },
+            stop: { [engine] in engine.stop() },
+            revertVoiceProcessing: revertVoiceProcessing
+        )
+        if !teardown.isClean {
+            Log.writeLine("recorder", "WARN: audio engine teardown timed out (\(teardown.timedOutSteps.joined(separator: ","))) - finalizing the intermediates anyway")
+            Log.event(category: "recorder", action: "engine_teardown_timed_out", attributes: [
+                "path": "stop",
+                "steps": teardown.timedOutSteps,
+            ])
+        }
         // MIC15/REC7: snapshot the render-thread-accumulated coverage tally only
         // after the tap is removed, so this read can't race a buffer still being
-        // written into micTotalSeconds / micUnmutedSeconds / micPeakUnmutedDb.
+        // written into micTotalSeconds / micUnmutedSeconds / micPeakUnmutedDb. That
+        // ordering holds only when the removeTap above returned; on a teardown
+        // timeout it is abandoned and a late buffer can still land, so the coverage
+        // figures may be slightly short. A slightly short diagnostic beats a stop
+        // that never returns, and `engine_teardown_timed_out` says when to distrust it.
         self.lastMicCoverage = MicCoverageSnapshot(
             recordingSeconds: micTotalSeconds,
             unmutedSeconds: micUnmutedSeconds,
@@ -1508,22 +1579,12 @@ final class MeetingRecorder {
             ])
         }
 
-        // CRITICAL: macOS does not auto-disable VPIO on stop, so the HAL
-        // device stays degraded and other clients (Teams, Zoom) keep hearing
-        // the user at reduced gain until the process exits (symptom on
-        // 2026-05-13: mic became extremely low until restart). Revert it.
-        if voiceProcessingEnabledForSession {
-            do {
-                try engine.inputNode.setVoiceProcessingEnabled(false)
-                Log.writeLine("recorder", "voice processing disabled on inputNode")
-            } catch {
-                Log.writeLine(
-                    "recorder",
-                    "WARN: setVoiceProcessingEnabled(false) failed: \(error.localizedDescription) - system mic may stay degraded until app restart"
-                )
-            }
-            voiceProcessingEnabledForSession = false
-        }
+        // CRITICAL: macOS does not auto-disable VPIO on stop, so the HAL device stays
+        // degraded and other clients (Teams, Zoom) keep hearing the user at reduced
+        // gain until the process exits (symptom on 2026-05-13: mic became extremely
+        // low until restart). That revert is the third step of the bounded
+        // `EngineTeardown.run` above; it moved there with REC13 because it is an
+        // engine call like the other two and was the only one still unbounded on main.
 
         // Drop the AVAudioFiles to flush their headers before ffmpeg reads.
         micFile = nil
@@ -1632,14 +1693,32 @@ final class MeetingRecorder {
     /// and since REC11 so is `stop()`, so the two teardown paths no longer race each
     /// other over the timer handles, the wake observer, and the idle-sleep assertion.
     ///
-    /// It used to promise "Deadlock-free: the only blocking calls are the writers' own
-    /// serial queues, never the main queue", which was true about deadlock and quietly
-    /// silent about an indefinite block - the drains below were unbounded. They are
-    /// bounded now (`terminationDrainTimeoutSeconds`), which is the honest form of that
-    /// claim: this cannot deadlock AND it cannot block the main thread for longer than
-    /// its budget. The SCStream stop is async, so the stream is left for the OS to
-    /// reclaim on exit; dropping `systemFile` first makes any in-flight system callback
-    /// no-op rather than race the teardown.
+    /// **The boundedness claim here has been wrong twice, so read it carefully.** It
+    /// first promised "Deadlock-free: the only blocking calls are the writers' own serial
+    /// queues, never the main queue", which was true about deadlock and quietly silent
+    /// about an indefinite block, since the drains were unbounded. REC11 bounded the
+    /// drains and rewrote the claim as "this cannot deadlock AND it cannot block the main
+    /// thread for longer than its budget" - which was still false, because the three
+    /// engine calls below (`removeTap`, `engine.stop()`, the VoiceProcessing revert) were
+    /// unbounded, and every one of them serializes on AVAudioEngine's own queue. REC13
+    /// bounds those too (`EngineTeardown.runSync`), so the claim finally holds for
+    /// everything this function does: worst case is the sum of its own budgets.
+    ///
+    /// **What it still cannot promise is that it runs at all**, and that is the half the
+    /// 2026-08-14 incident actually found. SIGTERM stopped the capture, the process did
+    /// not exit in ten seconds, and `kill -9` was required. The log is decisive about
+    /// where it did not get to: the `Log.writeLine` on this function's second line is
+    /// unbuffered (open, seek, write, close), and that line is absent for the whole of
+    /// 2026-08-14, so execution never reached it. The block was upstream, in
+    /// `flushAndExit` before the recorder is touched at all. **Which call blocked is not
+    /// established** - the live `sample` was taken before the SIGTERM was sent, so it
+    /// cannot say - and no bound placed inside this function would have helped, because
+    /// this function never started. That is why the process-wide ceiling lives in
+    /// `AppDelegate.flushAndExit`, armed off the main thread before `shutdown()` runs.
+    ///
+    /// The SCStream stop is async, so the stream is left for the OS to reclaim on exit;
+    /// dropping `systemFile` first makes any in-flight system callback no-op rather than
+    /// race the teardown.
     @MainActor
     func flushIntermediatesForTermination() {
         guard let final = currentFile else { return }
@@ -1668,14 +1747,30 @@ final class MeetingRecorder {
         systemFile = nil
         systemCapture = nil
 
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-
-        // Revert VoiceProcessing's system-wide AGC like stop() does, in case the
-        // process lingers after this (a SIGTERM the user later cancels).
+        // REC13: the same bounded teardown `stop()` uses, in its synchronous form
+        // (this path has no async context). VoiceProcessing's system-wide AGC is
+        // reverted as its third step, like stop() does, in case the process lingers
+        // after this (a SIGTERM the user later cancels). Unbounded, these three were
+        // the calls most likely to inherit a wedged engine queue on the one path that
+        // has no way back: a quit that never returns needs a force-quit.
+        var revertVoiceProcessing: (@Sendable () -> Void)?
         if voiceProcessingEnabledForSession {
-            try? engine.inputNode.setVoiceProcessingEnabled(false)
             voiceProcessingEnabledForSession = false
+            revertVoiceProcessing = { [engine] in
+                try? engine.inputNode.setVoiceProcessingEnabled(false)
+            }
+        }
+        let teardown = EngineTeardown.runSync(
+            removeTap: { [engine] in engine.inputNode.removeTap(onBus: 0) },
+            stop: { [engine] in engine.stop() },
+            revertVoiceProcessing: revertVoiceProcessing
+        )
+        if !teardown.isClean {
+            Log.writeLine("recorder", "WARN: audio engine teardown timed out at termination (\(teardown.timedOutSteps.joined(separator: ","))) - draining the writers anyway")
+            Log.event(category: "recorder", action: "engine_teardown_timed_out", attributes: [
+                "path": "termination",
+                "steps": teardown.timedOutSteps,
+            ])
         }
 
         // Drain pending buffers to disk, then close the files so their headers

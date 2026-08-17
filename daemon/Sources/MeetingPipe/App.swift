@@ -238,11 +238,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         flushAndExit()
     }
 
+    /// REC13(3): how long the whole termination path gets before the process exits
+    /// regardless. Above the sum of the budgets a healthy teardown can spend (two 3 s
+    /// writer drains plus a 1.5 s bounded engine teardown) and below the ~10 s that
+    /// launchd and `rebuild.sh` give the daemon before they escalate to SIGKILL, so a
+    /// real quit always beats it and a wedged one never outlives it. The window is
+    /// genuinely narrow; `AppDelegateRelaunchTests` fences both ends, because neither
+    /// constant can see the other from its own file.
+    static let terminationCeilingSeconds: TimeInterval = 9
+    /// Whether the ceiling that fires below actually exits. Tests set it false to
+    /// pin the arming and the log line without killing the test runner.
+    static var terminationCeilingExits = true
+
     /// Single synchronous teardown path for SIGTERM and a normal quit: stop the
     /// preloader, flush the recorder (so no in-flight recording is stranded,
     /// REC2 / AUD-6), then exit with the exit code the LaunchAgent keys off
     /// (TECH-UX7): non-zero asks launchd to relaunch, zero quits fully.
+    ///
+    /// REC13: a hard ceiling is armed first, because on 2026-08-14 this path did not
+    /// come back. SIGTERM stopped the capture, the process was still alive ten seconds
+    /// later, and `kill -9` was the only way out. `MeetingRecorder.flushIntermediatesForTermination`
+    /// never ran at all: its first statement is an unbuffered `Log.writeLine` and that
+    /// line is absent for the whole day, so something upstream of it here blocked the
+    /// main thread. Which call is NOT established (the live `sample` predates the
+    /// SIGTERM), and that is the point of putting the ceiling here rather than inside
+    /// the flush: bounding the flush's own internals, which REC13 also does, would not
+    /// have saved that recording, because the flush never started.
     private func flushAndExit() -> Never {
+        armTerminationCeiling()
         localModelPreloader.stop()
         coordinator?.shutdown()
         let relaunch = AppDelegate.shouldRelaunchOnQuit(
@@ -250,5 +273,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             disableAutoRestart: UISettings.shared.disableAutoRestart
         )
         exit(relaunch ? EXIT_FAILURE : EXIT_SUCCESS)
+    }
+
+    /// Arm the termination ceiling on a global queue, so it fires whatever the main
+    /// thread is doing. The exit code is resolved here, before `shutdown()` runs,
+    /// for two reasons: nothing in `shutdown()` touches `pendingRelaunchOverride` or
+    /// `disableAutoRestart`, so it is the same answer either way, and reading
+    /// main-owned settings from the timer's thread after main has wedged is exactly
+    /// the kind of call that would make the backstop need a backstop.
+    ///
+    /// Exiting mid-flush loses only whatever the writers had not drained yet. The
+    /// capture intermediates are append-only and already on disk, and the
+    /// `.recovery.json` manifest is written at start, so the next launch's orphan
+    /// sweep merges and publishes what landed. That is strictly more than the
+    /// `kill -9` this replaces, which is what actually happened on 2026-08-14.
+    private func armTerminationCeiling() {
+        let relaunch = AppDelegate.shouldRelaunchOnQuit(
+            override: AppDelegate.pendingRelaunchOverride,
+            disableAutoRestart: UISettings.shared.disableAutoRestart
+        )
+        let ceiling = AppDelegate.terminationCeilingSeconds
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + ceiling) {
+            Log.writeLine("daemon", "WARN: termination did not finish within \(Int(ceiling))s - forcing exit; the orphan sweep recovers any in-flight recording on the next launch")
+            Log.event(category: "daemon", action: "termination_ceiling_exceeded", attributes: [
+                "ceiling_s": ceiling,
+                "relaunch": relaunch,
+            ])
+            guard AppDelegate.terminationCeilingExits else { return }
+            exit(relaunch ? EXIT_FAILURE : EXIT_SUCCESS)
+        }
     }
 }

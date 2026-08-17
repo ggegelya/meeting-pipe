@@ -67,6 +67,8 @@ Normally you do not: the app notices the call ended and stops on its own. Otherw
 
 After Stop, the Mac transcribes the audio, writes the summary, and publishes it. You get a notification when it is done, and the Library row moves through Processing to Ready on its own.
 
+Finishing a recording takes a second or two. If it ever takes much longer, you get a notification saying so rather than a row that quietly sits there; the recording itself is safe on disk either way, and quitting the app is always allowed, including mid-recording. Whatever was captured is picked up and finished the next time the app starts.
+
 ---
 
 ## 2. Workflows: one setup per kind of meeting
