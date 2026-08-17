@@ -3,7 +3,11 @@ name = "meeting-pipe"
 version = "0.1.0"
 description = "Local meeting transcription + summarization + Notion publishing pipeline"
 requires-python = ">=3.11,<3.13"
-readme = "../README.md"
+# No `readme` key on purpose (CI7). Hatchling refuses a readme outside the project
+# directory, so `readme = "../README.md"` failed every build from a fresh venv with
+# `ValueError: Readme path must be within the project directory`. This package is
+# personal and unpublished, so the metadata bought nothing, and pointing it at a
+# pipeline-local copy would fork the root README that DOC7 and DOC9 both swept up.
 license = { text = "MIT" }
 authors = [{ name = "meeting-pipe contributors" }]
 
