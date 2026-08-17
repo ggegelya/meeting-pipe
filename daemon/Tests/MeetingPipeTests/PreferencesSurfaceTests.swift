@@ -67,6 +67,58 @@ final class PreferencesSurfaceTests: XCTestCase {
                        "identity reset would also discard pane-local @State; the reader only moves the scroller")
     }
 
+    // MARK: - UX68: the anchor has to be outside the padding
+
+    /// The half of the test above that calling `scrollTo` cannot prove. UX43's code
+    /// called it correctly and still landed 28pt low, because the anchor was the
+    /// padded stack's **first child** while `.padding(.vertical, 28)` was on the
+    /// stack, putting the anchor's top edge below the scrollable content's true
+    /// top. `anchor: .top` then did exactly as asked and left the padding scrolled
+    /// off above the viewport.
+    ///
+    /// Pinned on ordering in the source, which is where this is decided: SwiftUI
+    /// offers no runtime read of what a modifier is applied to, and the failure is
+    /// invisible to anything that merely constructs the view.
+    func test_the_top_anchor_is_not_a_child_of_the_padded_container() throws {
+        let view = code(try daemonSource("Sources/MeetingPipe/Preferences/PreferencesView.swift"))
+        guard let scroller = view.range(of: "ScrollView {"),
+              let onChange = view.range(of: ".onChange(of: selectionState.current)",
+                                        range: scroller.upperBound ..< view.endIndex) else {
+            return XCTFail("the detail ScrollView no longer has this shape; re-point this fence")
+        }
+        let block = String(view[scroller.upperBound ..< onChange.lowerBound])
+
+        guard let anchor = block.range(of: ".id(Self.topAnchor)"),
+              let padding = block.range(of: ".padding(.vertical,",
+                                        range: anchor.upperBound ..< block.endIndex) else {
+            return XCTFail("the anchor or the vertical padding moved out of the ScrollView block")
+        }
+        // Source order alone proves nothing here: a modifier on a container is
+        // written after the container's closing brace, so the anchor precedes the
+        // padding in the text under both the broken and the fixed shape. The
+        // discriminator is the brace. A `}` between them means the padding is
+        // applied to the stack the anchor sits inside, which is the defect; none
+        // means it is applied to `detailContent` beside the anchor, which is the
+        // fix. A fence built on ordering passes on the bug, and this one was,
+        // until it was checked against a deliberate revert.
+        let between = String(block[anchor.upperBound ..< padding.lowerBound])
+        XCTAssertFalse(between.contains("}"),
+                       "the vertical padding must belong to detailContent, not to the stack holding the anchor")
+        XCTAssertTrue(between.contains("detailContent"),
+                      "the padding has to be the content's own, so the anchor stays at the true top")
+
+        // The tempting one-liner, fenced out: a numeric compensation would look
+        // right today and rot the moment the constant moves, which is the class
+        // HYG5 spent a task removing.
+        XCTAssertFalse(block.contains("anchor: UnitPoint("),
+                       "a hand-built UnitPoint is how a padding offset gets compensated for")
+        XCTAssertFalse(block.contains(".offset(y: -"),
+                       "no negative offset may stand in for putting the anchor in the right place")
+        XCTAssertTrue(block.contains("proxy.scrollTo(Self.topAnchor, anchor: .top)")
+                      || view.contains("proxy.scrollTo(Self.topAnchor, anchor: .top)"),
+                      "the scroll target stays a plain .top; UX68 moved the anchor, not the alignment")
+    }
+
     // MARK: - (b) The window's floor, and the control column under a squeeze
 
     /// The window used to allow 720x560 while the SwiftUI root inside it declared

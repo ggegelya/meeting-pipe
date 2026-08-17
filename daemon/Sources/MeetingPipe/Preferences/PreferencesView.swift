@@ -73,6 +73,16 @@ struct PreferencesView: View {
     /// disclosure the user just opened), which is a far larger change than "open at
     /// the top". This moves the scroller and nothing else. The id is a constant, so
     /// the anchor itself never re-identifies anything either.
+    ///
+    /// UX68: **it has to sit above the padding, not inside it.** The padding used
+    /// to be applied to the `VStack` while the anchor was that stack's first
+    /// child, which put the anchor's top edge 28pt below the scrollable content's
+    /// true top. `scrollTo(anchor: .top)` then aligned the anchor with the viewport
+    /// exactly as asked and left the top padding scrolled off above it, so a pane
+    /// switch landed close to the top with a band still to scroll up into. The
+    /// offset was not approximate and not a SwiftUI quirk: it was the padding
+    /// constant, and it would have tracked any change to it. Compensating
+    /// numerically was therefore the wrong fix twice over.
     private static let topAnchor = "preferences-top"
 
     var body: some View {
@@ -82,11 +92,17 @@ struct PreferencesView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
+                        // The anchor is the first thing in the scrollable content
+                        // and carries no padding of its own, so its top edge IS
+                        // the content's top (UX68). The padding moved onto the
+                        // content beside it; the stack's width is unchanged,
+                        // because the anchor is still greedy horizontally and the
+                        // 620 cap below is still what bounds it.
                         Color.clear.frame(height: 0).id(Self.topAnchor)
                         detailContent
+                            .padding(.horizontal, 32)
+                            .padding(.vertical, 28)
                     }
-                    .padding(.horizontal, 32)
-                    .padding(.vertical, 28)
                     .frame(maxWidth: 620, alignment: .topLeading)
                     .frame(maxWidth: .infinity, alignment: .top)
                 }
