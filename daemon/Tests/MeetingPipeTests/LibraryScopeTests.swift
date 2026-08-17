@@ -224,4 +224,39 @@ final class LibraryScopeTests: XCTestCase {
         m.publishState = publishState
         return m
     }
+    // MARK: - UX71: which rails own the whole centre column
+
+    /// Four rails render a projection in the centre column and had nothing for the
+    /// detail column beside it, so each rendered a placeholder restating what the
+    /// pane next to it was already doing. Owner's call was to drop the column for
+    /// all four rather than for Ask alone, since they shared the shape.
+    func test_the_projection_rails_take_the_whole_centre_column() {
+        for scope in [LibraryScope.facts, .ask, .people, .stats] {
+            XCTAssertTrue(scope.ownsTheWholeCentreColumn,
+                          "\(scope.title) renders a projection, not a meeting list")
+        }
+    }
+
+    /// Digests is the one that reads like these four and is not one of them: its
+    /// centre column lists the digests and the detail column reads the selected
+    /// one at full width, which is why the reader was moved there in the first
+    /// place. Collapsing its column would take the reader with it.
+    func test_digests_keeps_its_detail_column() {
+        XCTAssertFalse(LibraryScope.digests.ownsTheWholeCentreColumn)
+    }
+
+    /// And every meeting rail keeps it, because there the detail column is the
+    /// meeting. A scope added later has to answer this on purpose: the switch is
+    /// exhaustive with no `default`, so a new case fails the build rather than
+    /// silently inheriting one answer.
+    func test_the_meeting_rails_keep_their_detail_column() {
+        let rails: [LibraryScope] = [
+            .allMeetings, .today, .last7Days, .last30Days, .needsYou, .ndaOnly,
+            .untagged, .workflow(UUID()), .saved(UUID()),
+        ]
+        for scope in rails {
+            XCTAssertFalse(scope.ownsTheWholeCentreColumn,
+                           "a meeting rail's detail column is the meeting")
+        }
+    }
 }

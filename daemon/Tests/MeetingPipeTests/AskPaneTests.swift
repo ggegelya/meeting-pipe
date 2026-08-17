@@ -229,4 +229,49 @@ final class AskPaneTests: XCTestCase {
         XCTAssertLessThanOrEqual(suggestions.count, AskPane.suggestionLimit)
         XCTAssertEqual(Set(suggestions.map(\.text)).count, suggestions.count)
     }
+    // MARK: - UX71: the answer renders as prose, not as markers
+
+    /// The defect: `Text(a.answer)` on a `String` renders markdown literally, and
+    /// the engines are prompted for prose and return markdown, so the owner's
+    /// screenshot had five numbered items every one of which showed its `**`.
+    /// Pinned on the parsed representation rather than on a screenshot.
+    func test_bold_markers_do_not_survive_into_the_rendered_answer() {
+        let rendered = SummaryMarkdown.inline("**Planning the final release** is next")
+        let text = String(rendered.characters)
+        XCTAssertFalse(text.contains("**"), "the markers must be styling, not text")
+        XCTAssertEqual(text, "Planning the final release is next")
+    }
+
+    /// A numbered list keeps its items on their own lines. Handed the whole answer
+    /// at once the inline parse would run them together, which is why the pane
+    /// renders one `Text` per line.
+    func test_a_numbered_list_stays_five_lines() {
+        let answer = """
+        1. **Cut the release branch**
+        2. Run the suite
+
+        3. Publish the notes
+        """
+        let lines = SummaryMarkdown.lines(answer)
+        XCTAssertEqual(lines.count, 3, "blank separators drop out, real lines do not")
+        XCTAssertEqual(String(SummaryMarkdown.inline(lines[0]).characters), "1. Cut the release branch")
+    }
+
+    /// The constraint the spec named: citations already render as their own chips
+    /// under the answer, so a bracketed stem in the prose must not become a second,
+    /// competing affordance. A bare `[stem]` carries no `(url)`, so the inline
+    /// parse leaves it as the literal text it is and attaches no link.
+    func test_a_bracketed_stem_in_the_prose_is_text_and_not_a_link() {
+        let rendered = SummaryMarkdown.inline("We agreed in [20260803-165412] to ship on Friday.")
+        XCTAssertEqual(String(rendered.characters),
+                       "We agreed in [20260803-165412] to ship on Friday.")
+        XCTAssertTrue(rendered.runs.allSatisfy { $0.link == nil },
+                      "a stem reference must not turn into a link beside the citation chips")
+    }
+
+    /// A malformed answer stays readable rather than blanking the card.
+    func test_an_unclosed_marker_still_renders_its_text() {
+        let text = String(SummaryMarkdown.inline("**unclosed bold").characters)
+        XCTAssertTrue(text.contains("unclosed bold"))
+    }
 }

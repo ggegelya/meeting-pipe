@@ -261,12 +261,51 @@ struct SummaryRenderedView: View {
 
     /// Parse inline markdown per bullet (bold, italic, code, links only - each bullet is already one paragraph).
     private func inlineMarkdown(_ s: String) -> AttributedString {
+        SummaryMarkdown.inline(s)
+    }
+}
+
+/// The one markdown rule the reading surfaces render prose through.
+///
+/// Promoted out of `SummaryRenderedView` by UX71, which gained the real second
+/// caller: the Ask pane rendered `Text(a.answer)` on a `String`, so an answer
+/// containing `**Planning the final release**` showed its asterisks, on every
+/// item of every numbered list, because the engines are prompted for prose and
+/// return markdown. Writing a second parser there is what `daemon/CLAUDE.md`
+/// warns about; a shared-looking primitive does not stay `private` once a second
+/// caller is real.
+enum SummaryMarkdown {
+    /// Inline markdown only: bold, italic, code, and proper `[text](url)` links.
+    ///
+    /// `.inlineOnly` is load-bearing rather than incidental, and UX71 depends on
+    /// it for a second reason. A bare `[20260803-165412]` stem reference carries
+    /// no `(url)`, so this renders it as the literal text it is and never as a
+    /// link, which is what keeps a stem in the prose from becoming a second,
+    /// competing affordance beside the citation chips under the answer.
+    /// `failurePolicy` keeps a malformed answer readable instead of blanking it.
+    static func inline(_ s: String) -> AttributedString {
         let opts = AttributedString.MarkdownParsingOptions(
             allowsExtendedAttributes: false,
             interpretedSyntax: .inlineOnly,
             failurePolicy: .returnPartiallyParsedIfPossible
         )
         return (try? AttributedString(markdown: s, options: opts)) ?? AttributedString(s)
+    }
+
+    /// Split multi-paragraph prose into the lines to render separately.
+    ///
+    /// `inline` parses one paragraph, so a whole answer handed to it straight
+    /// collapses its line breaks and a five-item numbered list runs together. The
+    /// engines emit real newlines between list items and blank lines between
+    /// paragraphs, so splitting on newline and dropping the blanks keeps both
+    /// shapes and needs no block parser. Deliberately not `.full` markdown:
+    /// `AttributedString`'s block parsing loses the line structure a `Text` per
+    /// line preserves, and headings inside an answer are not a shape this surface
+    /// wants anyway.
+    static func lines(_ s: String) -> [String] {
+        s.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 }
 

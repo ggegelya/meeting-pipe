@@ -380,11 +380,23 @@ struct AskView: View {
 
     private func answerBody(_ a: AskAnswer) -> some View {
         VStack(alignment: .leading, spacing: MPSpace.s3) {
-            Text(a.answer)
-                .font(.mpTextBase)
-                .foregroundStyle(Color(MPColors.fg))
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+            // UX71: through the summary's own markdown rule, not a second one.
+            // `Text` on a `String` renders markers literally, and the engines are
+            // prompted for prose and return markdown, so an answer showing its
+            // `**` is the normal case rather than a malformed reply. One `Text`
+            // per line because the parse is inline-only: handed the whole answer
+            // it would collapse a numbered list into a paragraph.
+            VStack(alignment: .leading, spacing: MPSpace.s2) {
+                ForEach(Array(SummaryMarkdown.lines(a.answer).enumerated()), id: \.offset) { _, line in
+                    Text(SummaryMarkdown.inline(line))
+                        .font(.mpTextBase)
+                        .foregroundStyle(Color(MPColors.fg))
+                        // UX48: a real mouse selection is how text leaves this
+                        // app, so this survives the change of renderer.
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
             if !a.citations.isEmpty {
                 VStack(alignment: .leading, spacing: MPSpace.s2) {

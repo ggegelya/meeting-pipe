@@ -893,10 +893,16 @@ struct LibraryRootView: View {
                     // wide window widens the meeting list rather than inflating
                     // the reading pane past its own measures; the list column has
                     // no max, so it absorbs whatever the cap declines.
+                    // UX71: a rail that owns the whole centre column gets no
+                    // detail column at all, so the width it would have taken goes
+                    // back to the projection rather than to a placeholder. The
+                    // list column has no max (UX36), so it absorbs the whole
+                    // amount; the window minimum still clears the two remaining
+                    // floors, which `LibraryLayoutTests` pins.
                     .navigationSplitViewColumnWidth(
-                        min: LibraryLayout.detailMinWidth,
-                        ideal: LibraryLayout.detailIdealWidth,
-                        max: LibraryLayout.detailMaxWidth
+                        min: scope.ownsTheWholeCentreColumn ? 0 : LibraryLayout.detailMinWidth,
+                        ideal: scope.ownsTheWholeCentreColumn ? 0 : LibraryLayout.detailIdealWidth,
+                        max: scope.ownsTheWholeCentreColumn ? 0 : LibraryLayout.detailMaxWidth
                     )
             }
         } else {
@@ -1018,47 +1024,13 @@ struct LibraryRootView: View {
     @ViewBuilder
     private func detailPane(workflowStore store: WorkflowStore) -> some View {
         let selected = model.meetingStore.meetings.filter { meetingSelection.contains($0.id) }
-        if case .facts = scope {
-            // Facts owns the center column; the detail stays a quiet hint (a row's
-            // "open" jumps to All Meetings, which re-renders this pane normally).
-            VStack(spacing: 8) {
-                Image(systemName: "list.bullet.rectangle")
-                    .font(.system(size: 36))
-                    .foregroundStyle(Color(MPColors.fgSubtle))
-                Text("Open actions and recent decisions across your meetings.")
-                    .foregroundStyle(Color(MPColors.fgMuted))
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 260)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if case .ask = scope {
-            // Ask owns the center column (like Facts); a citation's "open" jumps to
-            // All Meetings, which re-renders this pane normally.
-            VStack(spacing: 8) {
-                Image(systemName: "bubble.left.and.text.bubble.right")
-                    .font(.system(size: 36))
-                    .foregroundStyle(Color(MPColors.fgSubtle))
-                Text("Answers are drawn from your meetings, on-device, with citations.")
-                    .foregroundStyle(Color(MPColors.fgMuted))
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 260)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if case .stats = scope {
-            // Meeting time owns the center column; the detail stays a quiet hint,
-            // the same shape Facts and Ask use.
-            VStack(spacing: 8) {
-                // DSN3: the token scale, not a raw literal, so the CI font guard
-                // stays green. The neighbouring hints are pre-token 36pt.
-                Image(systemName: "clock")
-                    .font(.mpText2XL)
-                    .foregroundStyle(Color(MPColors.fgSubtle))
-                Text("Hours per workflow and how much of the talking was yours, over a range you pick.")
-                    .foregroundStyle(Color(MPColors.fgMuted))
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 260)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        if scope.ownsTheWholeCentreColumn {
+            // UX71: nothing at all, and the column is collapsed to zero width
+            // below. Facts, Ask, People and Meeting time each used to render a
+            // placeholder here that restated what the pane beside it was already
+            // doing, across roughly half the window. The rule lives on
+            // `LibraryScope` so this branch and that width cannot disagree.
+            EmptyView()
         } else if case .digests = scope {
             // Digests: the center column lists them; the detail reads the selected one at
             // full width (the reader moved here from the narrow, split center column).

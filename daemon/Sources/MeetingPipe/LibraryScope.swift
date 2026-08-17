@@ -34,6 +34,35 @@ enum LibraryScope: Hashable {
     /// name, so a rename can't silently drop the scope.
     case saved(SavedSearch.ID)
 
+    /// Whether this scope owns the whole centre column and wants no detail column
+    /// beside it (UX71).
+    ///
+    /// Four rails render a projection in the centre column rather than a meeting
+    /// list, and each of them left the detail column with nothing to show. So it
+    /// rendered a placeholder restating what the pane beside it is: "Answers are
+    /// drawn from your meetings, on-device, with citations." next to an answer
+    /// already on screen, across roughly half the window on the owner's display.
+    /// Owner's call, 2026-08-17, was to drop it for all four rather than for Ask
+    /// alone, because they all had the same shape and fixing one would have left
+    /// the pane set reading inconsistently.
+    ///
+    /// `.digests` is deliberately not in this set: its centre column lists the
+    /// digests and its detail column reads the selected one at full width, which
+    /// is a real use of the column and the reason the reader was moved there.
+    /// Neither are the meeting rails, whose detail column is the meeting.
+    ///
+    /// A rule on the scope rather than a branch at the render site, so the column
+    /// width and the pane's contents cannot disagree about which rails have one.
+    var ownsTheWholeCentreColumn: Bool {
+        switch self {
+        case .facts, .ask, .people, .stats:
+            return true
+        case .allMeetings, .today, .last7Days, .last30Days, .needsYou, .ndaOnly,
+             .untagged, .digests, .workflow, .saved:
+            return false
+        }
+    }
+
     /// Rail row label and list header.
     var title: String {
         switch self {
