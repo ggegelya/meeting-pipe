@@ -206,6 +206,40 @@ final class AskContextWidthTests: XCTestCase {
         XCTAssertTrue(o.sublabel.contains("falls back"), o.sublabel)
     }
 
+    /// UX72: what the refusal says, in the register the sublabels beside it use.
+    /// Three jobs and no fourth: which backend is answering, what this Mac has,
+    /// and the one thing that would lift the cap. It used to close on a sentence
+    /// about a night this Mac went down, which is a report of this installation's
+    /// past to a reader who may have none, and unverifiable where it is read. The
+    /// reboot that set the ceiling is why the guard exists and is not going
+    /// anywhere; it lives in `AskContextWidth`'s comments, where a maintainer
+    /// reads it and a user never does.
+    func test_the_local_reason_states_the_constraint_rather_than_this_macs_history() {
+        let reason = offer(local, ramGB: 32).reason ?? "no reason"
+        XCTAssertTrue(reason.contains("Local MLX answers on this Mac"), reason)
+        XCTAssertTrue(reason.contains("capped at what 32 GB can hold"), reason)
+        XCTAssertTrue(reason.contains("Switch to a cloud backend in Preferences"), reason)
+    }
+
+    /// And no reason this control can show reaches for the past, on any backend or
+    /// any machine. The tense is the tell: a refusal that says what *is* holds on a
+    /// Mac that has never crashed, one that says what *happened* does not. Narrower
+    /// than "no past tense anywhere" on purpose, because a reason may legitimately
+    /// say "before you ask"; what is banned is this installation reporting its own
+    /// history to somebody who cannot check it.
+    func test_no_reason_this_control_shows_reports_something_that_already_happened() {
+        for backend in [cloud, local, "auto", "apple_intelligence", "something_new"] {
+            for ram in [8.0, 32.0, 48.0] {
+                for regulated in [false, true] {
+                    let reason = offer(backend, ramGB: ram, regulated: regulated).reason ?? ""
+                    for past in ["has taken", "took this Mac", "has crashed", "used to", "last time"] {
+                        XCTAssertFalse(reason.contains(past), "\(backend) at \(ram) GB: \(reason)")
+                    }
+                }
+            }
+        }
+    }
+
     func test_no_line_this_control_shows_carries_an_em_dash() {
         for backend in [cloud, local, "auto", "apple_intelligence", "something_new"] {
             for ram in [8.0, 32.0, 48.0] {
@@ -216,5 +250,44 @@ final class AskContextWidthTests: XCTestCase {
                 }
             }
         }
+    }
+
+    // MARK: - Source fence
+
+    /// The sentence UX72 took out, spelled here and nowhere under `daemon/Sources`.
+    /// It is unusually easy to reintroduce: it is quoted verbatim in `tasks/UX72.md`
+    /// and in the backlog row, which are exactly what a session reads before editing
+    /// this control. Whole-source rather than one property, so the fence still holds
+    /// if the copy moves to another type, and comments are read too, since a code
+    /// comment restating it in the second person is one lift away from shipping it
+    /// again.
+    func test_no_daemon_source_tells_the_reader_this_mac_has_been_taken_down() throws {
+        let sources = try daemonSourceFiles()
+        XCTAssertFalse(sources.isEmpty, "found no daemon sources to fence")
+        for (path, text) in sources {
+            XCTAssertFalse(
+                text.contains("has taken this Mac down before"),
+                "\(path) tells the reader about this installation's past. The width refusal names "
+                    + "what this Mac can hold and what to do instead (UX72); the 2026-07-29 reboot "
+                    + "is the reason for the ceiling and belongs in AskContextWidth's comments."
+            )
+        }
+    }
+
+    /// Every `.swift` under `daemon/Sources`, by path relative to it, for the fence
+    /// above (`GuardedTapInstallTests`' idiom).
+    private func daemonSourceFiles() throws -> [(String, String)] {
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // MeetingPipeTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // daemon
+            .appendingPathComponent("Sources")
+        guard let walker = FileManager.default.enumerator(atPath: sources.path) else { return [] }
+        var found: [(String, String)] = []
+        for case let relative as String in walker where relative.hasSuffix(".swift") {
+            let text = try String(contentsOf: sources.appendingPathComponent(relative), encoding: .utf8)
+            found.append((relative, text))
+        }
+        return found
     }
 }

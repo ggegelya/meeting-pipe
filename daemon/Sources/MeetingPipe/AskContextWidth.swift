@@ -192,6 +192,18 @@ enum AskContextWidth {
     /// offers the way out only where there is one: under regulated mode every
     /// backend is clamped, so pointing at Preferences would point at a door that
     /// opens onto a wall (`ReSummarizeMenu.offersWorkflowChange`, same rule).
+    ///
+    /// **UX72: the incident stays out of what the control says.** The refusal used
+    /// to close by naming the 2026-07-29 reboot as something that had happened to
+    /// this Mac. True of the machine this was written on, and a report of that
+    /// machine's past to a reader who has no such past: unverifiable where it is
+    /// read, and mildly alarming on a Mac that has never crashed. What is left is
+    /// the cause the reader can check, this backend and this Mac's memory, in the
+    /// same shape the sublabels beside it use. Why the ceiling exists is not lost,
+    /// it is in the type comment above, where a maintainer looks and a user does
+    /// not. `AskContextWidthTests` fences the old sentence out of `daemon/Sources`,
+    /// because it is quoted in this task's spec and in the backlog row and both
+    /// are what a later session reads before editing this file.
     private static func reason(
         engine: SummarizationEngine?,
         regulatedMode: Bool,
@@ -209,8 +221,7 @@ enum AskContextWidth {
         let opener = engine.locality == .cloudThenLocal
             ? "\(engine.name) can fall back to the model on this Mac"
             : "\(engine.name) answers on this Mac"
-        return "\(opener), so the width is capped at what \(ram) GB can hold; going past that cap "
-            + "has taken this Mac down before. Switch to a cloud backend in Preferences \u{25B8} "
-            + "Pipeline to read wider."
+        return "\(opener), so the width is capped at what \(ram) GB can hold. Switch to a cloud "
+            + "backend in Preferences \u{25B8} Pipeline to read wider."
     }
 }

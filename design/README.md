@@ -84,6 +84,12 @@ out of the way.
 - **Quiet about the AI.** The product uses Claude under the hood but does not
   brand itself with it. The summary just appears in Notion; the user doesn't
   need a sparkle icon to know.
+- **Present tense, about this request.** A refusal or a disabled state says what
+  is true now: what the request needs, what this Mac has, what to do instead.
+  *"Needs about 24 GB; this Mac has 16 GB."* Not this installation's history
+  ("that crashed this Mac before"), which the reader may not share, cannot
+  check, and can only be alarmed by. The incident that set a limit belongs in
+  the code comment that sets it (UX72).
 
 ### Casing
 - **Sentence case** for everything: titles, buttons, menu items, panel labels.
