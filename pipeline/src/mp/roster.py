@@ -6,6 +6,11 @@ to up to three k-means centroids so one outlier sample can't dominate a match.
 Matching uses a two-gate accept rule (top similarity AND a runner-up margin) so
 the roster biases to leaving a speaker unknown over pinning a wrong name.
 
+A declined match still knows who the voice came closest to, and `match_detail`
+reports it (FEAT14) instead of discarding it with the ranking. That near miss is
+a suggestion for a person to accept by hand, never a name anything writes on its
+own: the two gates above decide every automatic name and are untouched by it.
+
 Stdlib-only (json, math, pathlib). Embeddings are 256-d and L2-normalized; the
 per-person sample count is capped, so the k-means stays trivially cheap.
 """
@@ -13,6 +18,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import NamedTuple
 
 from .diarize import cosine_similarity
 from .voiceprint import EMBEDDING_DIM, _l2_normalize
@@ -27,6 +33,34 @@ _MAX_SAMPLES = 12  # per person; oldest samples drop out so the roster self-boun
 # gap to the runner-up person must clear MATCH_MARGIN; otherwise leave unknown.
 MATCH_MIN = 0.65
 MATCH_MARGIN = 0.07
+
+# The floor under a *suggestion* (FEAT14), well below MATCH_MIN because the whole
+# point is the band the accept rule refuses. Under it the top candidate is a
+# stranger rather than a near miss: every roster has a closest person to any voice,
+# so with no floor at all the app would offer a name for every unknown speaker it
+# ever hears, and a suggestion that is usually wrong teaches the owner to ignore
+# the one that is right. Not a config knob, for the same reason the two gates
+# above are not: it is a property of the matcher, not of a deployment.
+SUGGEST_MIN = 0.50
+
+
+class MatchResult(NamedTuple):
+    """What one voice scored against the roster (FEAT14).
+
+    `name` is the two-gate verdict and the only value anything auto-names from;
+    it is exactly what `match` returns. `near_miss` is the person the voice came
+    closest to when the verdict was to decline, offered to a human to accept or
+    ignore. `similarity` is the top candidate's cosine, kept inside the pipeline:
+    it is a distance between two vectors, not the probability that this is Dana,
+    and a number shown beside a name is read as a confidence it cannot support.
+    """
+
+    name: str | None
+    near_miss: str | None
+    similarity: float | None
+
+
+_NO_CANDIDATES = MatchResult(None, None, None)
 
 
 def _mean(vectors: list[list[float]]) -> list[float]:
@@ -101,9 +135,34 @@ class RosterStore:
         rule, or None (leave unknown). A single enrolled person only needs to
         clear `min_similarity`; two close people fail the margin and stay
         unknown, so a stranger is never pinned to the wrong name."""
+        return self.match_detail(
+            embedding, min_similarity=min_similarity, margin=margin
+        ).name
+
+    def match_detail(
+        self,
+        embedding: list[float] | None,
+        *,
+        min_similarity: float = MATCH_MIN,
+        margin: float = MATCH_MARGIN,
+        suggest_min: float = SUGGEST_MIN,
+    ) -> MatchResult:
+        """`match`'s verdict plus what it took to reach it (FEAT14).
+
+        The accept rule is the whole of the automatic naming and is unchanged:
+        `name` is set only when the top candidate clears `min_similarity` AND the
+        gap to the runner-up person clears `margin`. What is new is that a
+        decline no longer throws the ranking away.
+
+        `near_miss` is offered only when the *sole* thing standing in the way was
+        the similarity floor: a top candidate the runner-up is level with is a
+        coin flip between two enrolled people, and putting one of those two names
+        in front of the owner is the wrong-name outcome the margin gate exists to
+        prevent. Below `suggest_min` nobody is near enough to name at all.
+        """
         people = self._people()
         if not embedding or not people:
-            return None
+            return _NO_CANDIDATES
         scored: list[tuple[float, str]] = []
         for p in people:
             name = p.get("name")
@@ -113,15 +172,15 @@ class RosterStore:
             best = max((cosine_similarity(embedding, c) for c in centroids), default=-1.0)
             scored.append((best, name))
         if not scored:
-            return None
+            return _NO_CANDIDATES
         scored.sort(key=lambda t: t[0], reverse=True)
         top_sim, top_name = scored[0]
-        if top_sim < min_similarity:
-            return None
         runner_up = scored[1][0] if len(scored) > 1 else -1.0
-        if top_sim - runner_up < margin:
-            return None
-        return top_name
+        clears_margin = top_sim - runner_up >= margin
+        if top_sim >= min_similarity and clears_margin:
+            return MatchResult(top_name, None, top_sim)
+        near_miss = top_name if (clears_margin and top_sim >= suggest_min) else None
+        return MatchResult(None, near_miss, top_sim)
 
     def enroll(self, name: str, embedding: list[float]) -> None:
         """Add a sample embedding to `name` (creating the person if new) and

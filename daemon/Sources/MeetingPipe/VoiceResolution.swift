@@ -43,6 +43,16 @@ enum VoiceResolution {
         /// only a per-line label (enrolling a label with no embedding hard-failed with
         /// "pipeline exited 2", which is why this gate exists at all).
         let canEnroll: Bool
+        /// FEAT14: the enrolled person the pipeline's roster match came closest to and
+        /// still declined to name, for a voice that is still unresolved. Nil for every
+        /// other voice, and nil whenever that person is no longer enrolled.
+        ///
+        /// A suggestion, and the chip menu is the only thing that may do anything with
+        /// it: it is never pre-filled into the naming sheet and never written on its
+        /// own. With one or two enrolment samples per person a near miss is often
+        /// wrong, and a wrong name applied silently is worse than an unnamed voice,
+        /// which is the trade `mp.roster`'s two gates were written to make.
+        let suggestedName: String?
         /// This person's slot in the meeting's cast (UX58's `MeetingCast.colorIndex`),
         /// so a chip can carry the same identity dot their transcript rows carry
         /// (UX59). Resolved here rather than in the view because the strip is
@@ -121,6 +131,8 @@ enum VoiceResolution {
     ///     slot (UX58), which is what lets a chip and a row draw one person one colour.
     ///   - voiceprintLabels: keys of `<stem>.embeddings.json`, i.e. the labels the
     ///     pipeline itself assigned to a voice it had an embedding for.
+    ///   - nearMisses: that sidecar's `near_misses` (FEAT14), keyed the same way: the
+    ///     person the roster came closest to on a voice it refused to name.
     ///   - rosterNames: the enrolled people. Only used to tell an empty roster from a
     ///     populated one; whether a given voice was matched is read off the sidecar,
     ///     not off today's roster, so removing somebody does not rewrite history.
@@ -128,6 +140,7 @@ enum VoiceResolution {
     static func derive(
         cast: [CastMember],
         voiceprintLabels: Set<String>,
+        nearMisses: [String: String] = [:],
         rosterNames: [String],
         userLabel: String
     ) -> Outcome {
@@ -170,12 +183,27 @@ enum VoiceResolution {
             case .you, .unattributed: break
             }
 
+            // FEAT14. Two gates on top of the pipeline's own, both of them refusals:
+            //
+            // - only an unresolved voice with a voiceprint, since a named voice needs
+            //   no suggestion and one with no embedding cannot be enrolled at all;
+            // - only a person who is still enrolled. The sidecar is a record of what
+            //   the pipeline decided, so it outlives a `roster forget`, and offering
+            //   somebody the owner deliberately removed would argue with that removal.
+            //   It also carries FEAT11's honesty rule for free: with nobody enrolled
+            //   no name can be a member, so an empty roster suggests nobody and the
+            //   headline's "nothing could be matched" stands alone.
+            let suggestion: String? = (origin == .unresolved && canEnroll)
+                ? nearMisses[key].flatMap { rosterNames.contains($0) ? $0 : nil }
+                : nil
+
             voices.append(
                 Voice(
                     displayName: member.displayName,
                     assignKey: key,
                     origin: origin,
                     canEnroll: canEnroll,
+                    suggestedName: suggestion,
                     // Through the shared function rather than off this loop's position,
                     // even though `members` de-duplicates by display name so the two are
                     // the same number today. The point of UX59 is that one rule answers

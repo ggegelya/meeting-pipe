@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import stat
 from pathlib import Path
 from typing import Iterable
@@ -399,6 +400,87 @@ def test_finalize_roster_names_enrolled_person_and_clusters_unknown(
 
     data = json.loads(out["json"].read_text(encoding="utf-8"))
     assert [s["speaker"] for s in data["segments"]] == ["Me", "Alice", "THEM-A"]
+
+
+def test_finalize_records_the_near_miss_it_declined_to_name(
+    tmp_path: Path, monkeypatch
+):
+    """FEAT14: a voice the roster came close to and still refused to name leaves
+    the transcript exactly as it was, a THEM cluster, and leaves the person it
+    came closest to in the embeddings sidecar for the app to offer as a
+    suggestion. This is the measured stalled-loop case: 0.62 against their own
+    centroid, under the 0.65 floor, which used to render as an unnamed voice with
+    nothing anywhere saying who it nearly was."""
+    def axis(i: int) -> list[float]:
+        v = [0.0] * EMBEDDING_DIM
+        v[i] = 1.0
+        return v
+
+    e0, e1 = axis(0), axis(1)  # me, and the colleague who scores just under
+    close_to_e1 = [0.0] * EMBEDDING_DIM
+    close_to_e1[1] = 0.62
+    close_to_e1[3] = math.sqrt(1.0 - 0.62**2)
+
+    roster = RosterStore(tmp_path / "roster.json")
+    roster.enroll("Alice", close_to_e1)
+    store = VoiceprintStore(tmp_path / "vp.json")
+    store.update(e0)
+
+    wav = tmp_path / "20260501-1400.wav"
+    wav.write_bytes(b"")
+    streamed = _streamed_with_embeddings(
+        wav,
+        [
+            {"start": 0.0, "end": 9.0, "text": "lots", "speaker": "speaker_0"},
+            {"start": 9.0, "end": 11.0, "text": "hi", "speaker": "speaker_1"},
+        ],
+        {"speaker_0": e0, "speaker_1": e1},
+    )
+    monkeypatch.setattr("mp.diarize.is_stereo_recording", lambda w: False)
+    out = finalize_streamed_transcript(
+        wav, streamed, user_label="Me", voiceprint_store=store, roster_store=roster,
+    )
+
+    data = json.loads(out["json"].read_text(encoding="utf-8"))
+    assert [s["speaker"] for s in data["segments"]] == ["Me", "THEM-A"], (
+        "a near miss names nobody; the suggestion is offered, never applied"
+    )
+    emb = json.loads((wav.parent / f"{wav.stem}.embeddings.json").read_text(encoding="utf-8"))
+    assert emb["near_misses"] == {"THEM-A": "Alice"}
+    assert "similarity" not in json.dumps(emb), (
+        "no score crosses into the app, so no surface can render one as a confidence"
+    )
+
+
+def test_finalize_writes_no_near_miss_key_when_there_is_none(
+    tmp_path: Path, monkeypatch
+):
+    def axis(i: int) -> list[float]:
+        v = [0.0] * EMBEDDING_DIM
+        v[i] = 1.0
+        return v
+
+    e0, e1 = axis(0), axis(1)
+    store = VoiceprintStore(tmp_path / "vp.json")
+    store.update(e0)
+    wav = tmp_path / "20260501-1500.wav"
+    wav.write_bytes(b"")
+    streamed = _streamed_with_embeddings(
+        wav,
+        [
+            {"start": 0.0, "end": 9.0, "text": "lots", "speaker": "speaker_0"},
+            {"start": 9.0, "end": 11.0, "text": "hi", "speaker": "speaker_1"},
+        ],
+        {"speaker_0": e0, "speaker_1": e1},
+    )
+    monkeypatch.setattr("mp.diarize.is_stereo_recording", lambda w: False)
+    finalize_streamed_transcript(
+        wav, streamed, user_label="Me",
+        voiceprint_store=store, roster_store=RosterStore(tmp_path / "roster.json"),
+    )
+    emb = json.loads((wav.parent / f"{wav.stem}.embeddings.json").read_text(encoding="utf-8"))
+    assert "near_misses" not in emb  # an empty roster suggests nobody
+    assert emb["schema_version"] == 2
 
 
 def _finalize_branch(kind: str, tmp_path: Path, monkeypatch) -> tuple[Path, dict]:

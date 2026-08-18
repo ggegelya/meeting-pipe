@@ -647,24 +647,35 @@ def _me_signals(
 
 
 def _write_embeddings_sidecar(
-    wav: Path, speaker_embeddings: dict | None, mapping: dict[str, str]
+    wav: Path,
+    speaker_embeddings: dict | None,
+    mapping: dict[str, str],
+    near_misses: dict[str, str] | None = None,
 ) -> None:
     """Persist per-speaker embeddings keyed by FINAL label to
     `<stem>.embeddings.json`, so the Library naming UI can enroll a renamed
     speaker into the roster later. Keyed by the label the transcript shows
     (e.g. "THEM-A") so the daemon can look up the embedding for a label it
-    renames. No-op when the daemon wrote no embeddings."""
+    renames. No-op when the daemon wrote no embeddings.
+
+    `near_misses` (FEAT14) rides along under the same keys: for a `THEM-x` the
+    roster declined but came close on, the person it came closest to. It is the
+    same shape of record as the keys themselves, what the pipeline decided at
+    finalize, so the app reads a suggestion off disk rather than re-running the
+    matcher in a second language. Written only when there is one, and with no
+    similarity beside it (`roster.MatchResult` says why)."""
     if not isinstance(speaker_embeddings, dict) or not speaker_embeddings:
         return
     by_label: dict[str, list[float]] = {}
     for raw_id, emb in speaker_embeddings.items():
         label = mapping.get(str(raw_id), str(raw_id))
         by_label.setdefault(label, emb)  # first wins on collision
+    payload: dict = {"schema_version": 2, "embeddings": by_label}
+    if near_misses:
+        payload["near_misses"] = dict(near_misses)
     path = wav.parent / f"{wav.stem}.embeddings.json"
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(
-        json.dumps({"schema_version": 1, "embeddings": by_label}), encoding="utf-8"
-    )
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
     tmp.replace(path)
 
 
@@ -700,12 +711,14 @@ def finalize_streamed_transcript(
         log.info("FluidAudio sidecar already labelled segments; finalizing as-is")
         segs = streamed.get("segments") or []
         mic_me, voiceprint_me = _me_signals(segs, speaker_embeddings, wav, store)
-        mapping = resolve_speaker_labels(
+        resolved = resolve_speaker_labels(
             segs, speaker_embeddings, roster,
             user_label=user_label, mic_me=mic_me, voiceprint_me=voiceprint_me,
         )
-        segments = apply_speaker_labels(segs, mapping)
-        _write_embeddings_sidecar(wav, speaker_embeddings, mapping)
+        segments = apply_speaker_labels(segs, resolved.mapping)
+        _write_embeddings_sidecar(
+            wav, speaker_embeddings, resolved.mapping, resolved.near_misses
+        )
         structured = {**streamed, "segments": segments, "finalized": True}
         # Atomic (PIPE8) + 0600 (SEC14): a crash mid-finalize leaves the prior
         # transcript intact, not a truncated one; transcripts carry meeting content.

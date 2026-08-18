@@ -20,6 +20,10 @@ struct VoiceResolutionBar: View {
     let onUnname: (String, String) -> Void
     /// Rename a roster person everywhere, through `RosterRename` (`currentName`).
     let onRenameEverywhere: (String) -> Void
+    /// FEAT14: accept the suggested name for an unresolved voice (`assignKey`, `name`),
+    /// which is the same enroll the naming sheet runs, with the typing skipped. Only
+    /// ever reached by a click on the menu item that spells the name out.
+    let onAcceptSuggestion: (String, String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -109,14 +113,18 @@ struct VoiceResolutionBar: View {
             case .renameEverywhere:
                 Button(Self.title(for: action)) { onRenameEverywhere(voice.displayName) }
                     .accessibilityLabel(Self.accessibilityLabel(for: action))
-                if let caption = Self.caption(for: action) {
-                    // The one item here that writes outside the meeting on screen, so it
-                    // says how far it reaches under itself rather than in a dialog after
-                    // the fact (the UX29 idiom).
-                    Text(caption)
-                        .font(.mpTextXS)
-                        .foregroundStyle(Color(MPColors.fgSubtle))
-                }
+            case .suggest(let name):
+                Button(Self.title(for: action)) { onAcceptSuggestion(voice.assignKey, name) }
+                    .accessibilityLabel(Self.accessibilityLabel(for: action))
+            }
+            if let caption = Self.caption(for: action) {
+                // An item whose consequence the reader cannot see from its own words
+                // says the rest under itself rather than in a dialog after the fact
+                // (the UX29 idiom). Rendered here, once, rather than inside each case,
+                // since a second captioned item arrived with FEAT14.
+                Text(caption)
+                    .font(.mpTextXS)
+                    .foregroundStyle(Color(MPColors.fgSubtle))
             }
         }
     }
@@ -188,6 +196,11 @@ struct VoiceResolutionBar: View {
         case unname
         /// The roster rename: the roster entry plus the carry across every meeting.
         case renameEverywhere
+        /// FEAT14: enroll this voice as the person the roster came closest to and
+        /// still refused to name. Carries the name because the whole item is the name;
+        /// a suggestion the reader cannot see before clicking is a guess applied for
+        /// them.
+        case suggest(name: String)
     }
 
     /// What this chip's menu offers, in order. Empty means no menu.
@@ -207,6 +220,10 @@ struct VoiceResolutionBar: View {
     ///   that does, and it is global by nature, which is why the item says so.
     /// - an unresolved voice keeps the `Name` affordance the chip already had, as a menu
     ///   item too, so every chip that does anything does it the same way.
+    /// - a near miss the roster declined (FEAT14) is offered under it, by name, when
+    ///   `derive` has one to offer. It is deliberately the second item: the deliberate
+    ///   path stays where the owner already knows to find it, and the shortcut reads as
+    ///   an extra offer rather than as the app's answer.
     static func actions(for voice: VoiceResolution.Voice) -> [ChipAction] {
         switch voice.origin {
         case .namedHere:
@@ -214,7 +231,9 @@ struct VoiceResolutionBar: View {
         case .roster:
             return [.renameEverywhere]
         case .unresolved:
-            return voice.canEnroll ? [.name] : []
+            guard voice.canEnroll else { return [] }
+            guard let suggested = voice.suggestedName else { return [.name] }
+            return [.name, .suggest(name: suggested)]
         case .you, .unattributed:
             return []
         }
@@ -224,21 +243,36 @@ struct VoiceResolutionBar: View {
     /// un-name acts on the spot, so it does not.
     static func title(for action: ChipAction) -> String {
         switch action {
-        case .name:             return "Name this voice\u{2026}"
-        case .rename:           return "Rename\u{2026}"
-        case .unname:           return "Un-name"
-        case .renameEverywhere: return "Rename everywhere\u{2026}"
+        case .name:                 return "Name this voice\u{2026}"
+        case .rename:               return "Rename\u{2026}"
+        case .unname:               return "Un-name"
+        case .renameEverywhere:     return "Rename everywhere\u{2026}"
+        // The name, and only the name. The similarity that produced it never leaves
+        // the pipeline (FEAT14): a cosine distance beside a name reads as a
+        // probability that the voice is that person, which is not what it measures,
+        // and at one or two enrolment samples it is not even a good proxy for one.
+        case .suggest(let name):    return "Name as \(name)"
         }
     }
 
-    /// The quiet line under an item whose reach is wider than the meeting on screen.
-    /// Only the roster rename has one: it is the only action here that writes outside
-    /// this meeting, and "everywhere" is a claim the reader should be able to check
-    /// before clicking rather than discover afterwards.
+    /// The quiet line under an item the reader cannot fully judge from its own words.
+    /// Two have one, for the two things worth knowing before clicking rather than
+    /// after: how far it reaches, and how sure the app is.
+    ///
+    /// - the roster rename is the only action here that writes outside this meeting,
+    ///   and "everywhere" is a claim to be able to check first;
+    /// - the suggestion is the only one the app is not sure of, and saying so is the
+    ///   difference between an offer and a confident answer. It is the same fact the
+    ///   two gates already act on, in words rather than as a score.
+    ///
+    /// The other three stay bare on purpose: caption everything and the two that
+    /// matter read as boilerplate.
     static func caption(for action: ChipAction) -> String? {
         switch action {
         case .renameEverywhere:
             return "Renames this person in your roster and in every meeting they are in."
+        case .suggest:
+            return "The closest of your named voices, but not a certain match, so check it before accepting."
         case .name, .rename, .unname:
             return nil
         }

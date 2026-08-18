@@ -491,6 +491,29 @@ final class MeetingStore: ObservableObject {
         return Set(embeddings.keys)
     }
 
+    /// The near misses the pipeline recorded in `<stem>.embeddings.json` (FEAT14),
+    /// keyed by the same final label as the embeddings above: for a `THEM-x` cluster
+    /// the roster declined, the enrolled person it came closest to.
+    ///
+    /// A **suggestion to offer**, never a name to write. The two gates in `mp.roster`
+    /// are what decide an automatic name and they declined this one, which is the
+    /// honest answer when a person carries one or two enrolment samples. The
+    /// similarity behind it deliberately does not cross the language boundary, so no
+    /// surface here can render a cosine distance as a confidence.
+    ///
+    /// Empty for a missing or malformed sidecar, and for every meeting finalized
+    /// before this key existed, which reads as "nothing to suggest".
+    static func nearMisses(stem: String, in directory: URL) -> [String: String] {
+        let url = directory.appendingPathComponent("\(stem).embeddings.json")
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = obj["near_misses"] as? [String: Any] else {
+            return [:]
+        }
+        return raw.compactMapValues { $0 as? String }
+            .filter { !$0.key.isEmpty && !$0.value.isEmpty }
+    }
+
     /// A `.mic.wav` capture intermediate modified within `liveCaptureFreshnessSec`,
     /// i.e. one an in-progress recording is actively writing. Returns nil for a
     /// stale intermediate so an orphaned/failed capture is not surfaced as a row.

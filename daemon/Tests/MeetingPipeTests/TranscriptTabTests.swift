@@ -179,6 +179,60 @@ final class TranscriptTabTests: XCTestCase {
         XCTAssertEqual(result.voiceprintLabels, ["THEM-A"])
     }
 
+    func test_nearMisses_reads_the_suggestion_the_pipeline_declined_to_apply() throws {
+        // FEAT14. The same sidecar, one more key: for a cluster the roster refused to
+        // name, who it came closest to. Absent for every meeting finalized before the
+        // key existed, and that has to read as "nothing to suggest" rather than as an
+        // error, since the library is 200-odd meetings deep in that shape.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NearMissTests-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let stem = "20260501-101500"
+        let url = dir.appendingPathComponent("\(stem).embeddings.json")
+
+        XCTAssertEqual(MeetingStore.nearMisses(stem: stem, in: dir), [:], "no sidecar")
+
+        try JSONSerialization.data(withJSONObject: ["embeddings": ["THEM-A": [0.1]]])
+            .write(to: url)
+        XCTAssertEqual(MeetingStore.nearMisses(stem: stem, in: dir), [:], "sidecar, no key")
+
+        let payload: [String: Any] = [
+            "schema_version": 2,
+            "embeddings": ["THEM-A": [0.1]],
+            "near_misses": ["THEM-A": "Dana", "THEM-B": "", "": "Nobody", "THEM-C": 0.62],
+        ]
+        try JSONSerialization.data(withJSONObject: payload).write(to: url)
+        // Fail-open the way every other sidecar reader here is: an empty key, an empty
+        // name and a non-string value are dropped rather than rendered. The number is
+        // the case worth naming, since a similarity is exactly what must never reach a
+        // menu item, and a reader that coerced it would put one there.
+        XCTAssertEqual(MeetingStore.nearMisses(stem: stem, in: dir), ["THEM-A": "Dana"])
+    }
+
+    func test_load_threads_the_near_misses_from_the_sidecar() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NearMissLoadTests-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let stem = "20260501-101500"
+
+        let transcript: [String: Any] = ["segments": [
+            ["start": 0.0, "end": 1.0, "text": "hi", "speaker": "THEM-A"],
+        ]]
+        try JSONSerialization.data(withJSONObject: transcript)
+            .write(to: dir.appendingPathComponent("\(stem).json"))
+        try JSONSerialization.data(withJSONObject: [
+            "embeddings": ["THEM-A": [0.1]], "near_misses": ["THEM-A": "Dana"],
+        ]).write(to: dir.appendingPathComponent("\(stem).embeddings.json"))
+
+        let result = try XCTUnwrap(TranscriptLoader.load(stem: stem, in: dir))
+        XCTAssertEqual(result.nearMisses, ["THEM-A": "Dana"])
+        // Still an unnamed cluster on disk and in the loaded segments: the suggestion
+        // is offered on the chip, and changes nothing until somebody accepts it.
+        XCTAssertEqual(result.segments.first?.speakerID, "THEM-A")
+    }
+
     func test_timestamp_formats_short_and_long_durations() {
         XCTAssertEqual(TranscriptDisplay.timestamp(0), "0:00")
         XCTAssertEqual(TranscriptDisplay.timestamp(75), "1:15")

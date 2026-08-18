@@ -182,6 +182,8 @@ Click **Name** on an unnamed voice to name it. Right-click a chip for the rest:
 - A voice matched from your saved voices offers **Rename everywhere…**, which renames that person here, in your saved voices, and in every past meeting they appear in.
 - A voice you introduced line by line has no whole-voice name to change, so its chip offers nothing; fix it on the line instead.
 
+Sometimes an unnamed voice offers a second item that reads **Name as** and then somebody's actual name. That is a voice the app found close to one of your saved voices without being sure enough to use the name on its own. It is a suggestion and nothing else: nothing has been written, and the line under it says the app is not certain. If you know it is right, click it. The voice takes the name here, and that person gains another sample of their voice, which is what makes them recognised on their own next time. If you do not recognise the suggestion, ignore it and name the voice yourself; nothing is left behind either way. A voice the app has no guess about simply does not show the item, which is deliberate: it does not invent one to fill the space.
+
 ### Naming someone so it sticks
 
 Right-click any line from a voice that has not been named and choose **Name this speaker…**. From then on that voice is recognised automatically in later meetings. It is fully reversible: right-click a named speaker for **Rename…** or **Undo naming**, which also stops later meetings using the name.

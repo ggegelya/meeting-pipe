@@ -16,11 +16,16 @@ final class VoiceResolutionTests: XCTestCase {
     private func derive(
         _ cast: [CastMember],
         voiceprints: Set<String> = [],
+        nearMisses: [String: String] = [:],
         roster: [String] = ["Rana"],
         user: String = "Heorhii"
     ) -> VoiceResolution.Outcome {
         VoiceResolution.derive(
-            cast: cast, voiceprintLabels: voiceprints, rosterNames: roster, userLabel: user
+            cast: cast,
+            voiceprintLabels: voiceprints,
+            nearMisses: nearMisses,
+            rosterNames: roster,
+            userLabel: user
         )
     }
 
@@ -167,7 +172,8 @@ final class VoiceResolutionTests: XCTestCase {
         for origin in origins {
             XCTAssertFalse(VoiceResolutionBar.glyph(for: origin).isEmpty, "\(origin)")
             let voice = VoiceResolution.Voice(
-                displayName: "x", assignKey: "x", origin: origin, canEnroll: true, colorIndex: 0
+                displayName: "x", assignKey: "x", origin: origin,
+                canEnroll: true, suggestedName: nil, colorIndex: 0
             )
             XCTAssertFalse(VoiceResolutionBar.state(for: voice).isEmpty, "\(origin)")
         }
@@ -336,15 +342,153 @@ final class VoiceResolutionTests: XCTestCase {
     func test_every_action_that_can_be_offered_has_words() {
         // The glyph map's rule, applied to the menu: an action that reaches a row with no
         // title renders as a blank line you can still click.
-        for action in [VoiceResolutionBar.ChipAction.name, .rename, .unname, .renameEverywhere] {
+        let every: [VoiceResolutionBar.ChipAction] =
+            [.name, .rename, .unname, .renameEverywhere, .suggest(name: "Dana")]
+        for action in every {
             XCTAssertFalse(VoiceResolutionBar.title(for: action).isEmpty, "\(action)")
             XCTAssertFalse(VoiceResolutionBar.accessibilityLabel(for: action).isEmpty, "\(action)")
         }
-        // Only the action that writes outside this meeting explains its reach; captioning
-        // the local ones too would make the one that matters read as boilerplate.
+        // Only the two the reader cannot judge from the item alone are captioned, the one
+        // that reaches outside this meeting and the one the app is unsure of; captioning
+        // the rest too would make those two read as boilerplate.
         XCTAssertNil(VoiceResolutionBar.caption(for: .name))
         XCTAssertNil(VoiceResolutionBar.caption(for: .rename))
         XCTAssertNil(VoiceResolutionBar.caption(for: .unname))
+    }
+
+    // MARK: - The near miss the roster declined (FEAT14)
+
+    func test_an_unresolved_voice_with_a_near_miss_offers_the_name_under_the_naming_item() {
+        let out = derive(
+            [member("Unknown B", key: "THEM-B")],
+            voiceprints: ["THEM-B"],
+            nearMisses: ["THEM-B": "Rana"]
+        )
+
+        XCTAssertEqual(out.voices[0].suggestedName, "Rana")
+        // The deliberate path stays first and unchanged; the shortcut is an extra offer
+        // under it, never the app's answer standing in front of the owner's own.
+        XCTAssertEqual(
+            VoiceResolutionBar.actions(for: out.voices[0]), [.name, .suggest(name: "Rana")]
+        )
+    }
+
+    func test_a_near_miss_names_nobody_by_itself() {
+        // The whole honesty rule in one assertion. The chip still reads as an unnamed
+        // voice, the counts still say so, and the headline is the one it would have had
+        // with no suggestion at all. A suggestion is offered; nothing is applied.
+        let out = derive(
+            [member("Heorhii", key: "Heorhii"), member("Unknown B", key: "THEM-B")],
+            voiceprints: ["Heorhii", "THEM-B"],
+            nearMisses: ["THEM-B": "Rana"]
+        )
+
+        let voice = out.voices[1]
+        XCTAssertEqual(voice.origin, .unresolved)
+        XCTAssertEqual(voice.displayName, "Unknown B", "the strip shows the cluster, not the guess")
+        XCTAssertTrue(voice.offersNaming)
+        XCTAssertEqual(out.rosterMatched, 0)
+        XCTAssertEqual(out.unresolved, 1)
+        XCTAssertEqual(out.headline, "0 of 1 other voice named.")
+    }
+
+    func test_an_empty_roster_offers_no_suggestion_even_with_one_on_disk() {
+        // FEAT11's rule, which this must not undercut: with nobody enrolled the strip
+        // says nothing could be matched, and a stale sidecar suggestion is not a way
+        // around that. `roster forget` on the last person is exactly this state.
+        let out = derive(
+            [member("Unknown B", key: "THEM-B")],
+            voiceprints: ["THEM-B"],
+            nearMisses: ["THEM-B": "Rana"],
+            roster: []
+        )
+
+        XCTAssertTrue(out.rosterIsEmpty)
+        XCTAssertNil(out.voices[0].suggestedName)
+        XCTAssertEqual(VoiceResolutionBar.actions(for: out.voices[0]), [.name])
+        XCTAssertEqual(
+            out.headline,
+            "No named voices yet, so nothing could be matched. Name a voice below to start."
+        )
+    }
+
+    func test_a_suggestion_for_somebody_no_longer_enrolled_is_dropped() {
+        // The sidecar records what the pipeline decided at finalize, so it outlives the
+        // person: removing Dana from the roster and being offered her name next time is
+        // the app arguing with a decision the owner already made.
+        let out = derive(
+            [member("Unknown B", key: "THEM-B")],
+            voiceprints: ["THEM-B"],
+            nearMisses: ["THEM-B": "Dana"],
+            roster: ["Rana"]
+        )
+
+        XCTAssertNil(out.voices[0].suggestedName)
+        XCTAssertEqual(VoiceResolutionBar.actions(for: out.voices[0]), [.name])
+    }
+
+    func test_a_voice_with_no_voiceprint_is_offered_nothing_even_with_a_near_miss() {
+        // Accepting the suggestion runs the same enroll the sheet does, and a label with
+        // no embedding cannot be enrolled ("pipeline exited 2"). An offer that would fail
+        // is worse than no offer, which is the gate `.name` already lives behind.
+        let out = derive(
+            [member("Unknown C", key: "THEM-C")],
+            voiceprints: [],
+            nearMisses: ["THEM-C": "Rana"]
+        )
+
+        XCTAssertNil(out.voices[0].suggestedName)
+        XCTAssertTrue(VoiceResolutionBar.actions(for: out.voices[0]).isEmpty)
+    }
+
+    func test_a_voice_that_already_has_a_name_is_never_given_a_suggestion() {
+        // A roster match, a voice named in the app, and the owner. All three have a name
+        // already, so a "did you mean" against it is noise at best and a contradiction of
+        // the owner's own naming at worst.
+        let out = derive(
+            [member("Heorhii", key: "Heorhii"),
+             member("Rana", key: "Rana"),
+             member("Anisha", key: "THEM-D")],
+            voiceprints: ["Heorhii", "Rana", "THEM-D"],
+            nearMisses: ["Heorhii": "Rana", "Rana": "Dana", "THEM-D": "Rana"],
+            roster: ["Rana", "Dana"]
+        )
+
+        XCTAssertEqual(out.voices.map(\.origin), [.you, .roster, .namedHere])
+        XCTAssertEqual(out.voices.compactMap(\.suggestedName), [])
+    }
+
+    func test_the_suggestion_says_the_name_and_never_a_score() {
+        // The second hard constraint: the similarity that produced this never leaves the
+        // pipeline, so there is no number here to render as a confidence. What the item
+        // owes the reader instead is that the app is not sure, in words.
+        let action = VoiceResolutionBar.ChipAction.suggest(name: "Rana")
+
+        XCTAssertEqual(VoiceResolutionBar.title(for: action), "Name as Rana")
+        XCTAssertFalse(
+            VoiceResolutionBar.title(for: action).contains(where: \.isNumber),
+            "a similarity beside a name reads as a probability it is not"
+        )
+        let caption = try? XCTUnwrap(VoiceResolutionBar.caption(for: action))
+        XCTAssertNotNil(caption)
+        XCTAssertTrue(caption?.contains("not a certain match") ?? false, "\(caption ?? "nil")")
+        XCTAssertTrue(
+            VoiceResolutionBar.accessibilityLabel(for: action).contains(caption ?? "?"),
+            "a caption row never reaches VoiceOver, so the uncertainty rides in the label too"
+        )
+    }
+
+    func test_two_unresolved_voices_get_their_own_suggestions() {
+        // Keyed by label, so the second unnamed voice cannot inherit the first one's near
+        // miss, which is the shape a per-meeting single suggestion would have.
+        let out = derive(
+            [member("Unknown B", key: "THEM-B"), member("Unknown C", key: "THEM-C")],
+            voiceprints: ["THEM-B", "THEM-C"],
+            nearMisses: ["THEM-C": "Rana"]
+        )
+
+        XCTAssertNil(out.voices[0].suggestedName)
+        XCTAssertEqual(out.voices[1].suggestedName, "Rana")
     }
 
     // MARK: - The sheet a chip opens (UX40)
@@ -428,7 +572,8 @@ final class VoiceResolutionTests: XCTestCase {
             onName: { _ in },
             onRename: { _, _ in },
             onUnname: { _, _ in },
-            onRenameEverywhere: { _ in }
+            onRenameEverywhere: { _ in },
+            onAcceptSuggestion: { _, _ in }
         )
         XCTAssertNotNil(bar.body)
     }

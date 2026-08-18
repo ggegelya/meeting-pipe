@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
     # `roster` imports `cosine_similarity` from this module, so importing it at
@@ -304,6 +304,21 @@ def them_label(idx: int) -> str:
     return f"THEM-{letters}"
 
 
+class SpeakerLabelResolution(NamedTuple):
+    """What `resolve_speaker_labels` worked out for one meeting.
+
+    `mapping` is the diarization speaker id -> final label table the transcript is
+    rewritten through. `near_misses` is keyed by the FINAL `THEM-x` label instead,
+    because that is the label the app shows and the one a suggestion is offered
+    against; it holds only the voices the roster declined to name and came close
+    on (FEAT14). The similarity behind each one is deliberately left here: the app
+    is offered a name to suggest, never a number to render as a confidence.
+    """
+
+    mapping: dict[str, str]
+    near_misses: dict[str, str]
+
+
 def resolve_speaker_labels(
     segments: list[dict],
     speaker_embeddings: dict[str, list[float]] | None,
@@ -313,7 +328,7 @@ def resolve_speaker_labels(
     channel_me: str = USER_SPEAKER,
     mic_me: str | None = None,
     voiceprint_me: str | None = None,
-) -> dict[str, str]:
+) -> SpeakerLabelResolution:
     """Map each diarization speaker id present in `segments` to its final label:
     the user's name ("me"), a matched roster name (`roster.match`), or a stable
     THEM-A/B cluster for an unknown voice. A speaker with no embedding keeps its
@@ -323,7 +338,12 @@ def resolve_speaker_labels(
     When no signal identifies the user (`_resolve_me_id` returns None, the
     silent-owner case), no speaker is given `user_label`; every voice falls
     through to a roster match or a THEM-x cluster, which the user can name in
-    the app."""
+    the app.
+
+    A cluster the roster declined but came close on is reported in `near_misses`
+    (FEAT14) so the app can offer that person as a suggestion. It changes no
+    label here: a near miss is still a `THEM-x` cluster on disk, and stays one
+    until a human accepts the name."""
     mapping: dict[str, str] = {}
     me = _resolve_me_id(
         segments, channel_me=channel_me, mic_me=mic_me, voiceprint_me=voiceprint_me
@@ -339,15 +359,23 @@ def resolve_speaker_labels(
             seen.add(spk)
             order.append(spk)
     unknown_idx = 0
+    near_misses: dict[str, str] = {}
     for spk in order:
         emb = speaker_embeddings.get(spk) if speaker_embeddings else None
-        name = roster.match(emb) if (roster is not None and emb) else None
+        scored = roster.match_detail(emb) if (roster is not None and emb) else None
+        name = scored.name if scored else None
         if name and name != label:
             mapping[spk] = name
         elif emb is not None:
-            mapping[spk] = them_label(unknown_idx)
+            them = them_label(unknown_idx)
+            mapping[spk] = them
             unknown_idx += 1
-    return mapping
+            # Same guard the accept path applies: the owner is identified by their
+            # own voiceprint, so suggesting their name for another voice would be
+            # wrong in the one case the roster cannot arbitrate.
+            if scored and scored.near_miss and scored.near_miss != label:
+                near_misses[them] = scored.near_miss
+    return SpeakerLabelResolution(mapping, near_misses)
 
 
 def apply_speaker_labels(segments: list[dict], mapping: dict[str, str]) -> list[dict]:

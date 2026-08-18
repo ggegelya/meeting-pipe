@@ -14,19 +14,32 @@ from mp.diarize import (
     resolve_speaker_labels,
     them_label,
 )
+from mp.roster import MatchResult
 
 
 class _FakeRoster:
-    """Match by exact embedding value, for deterministic resolve_labels tests."""
+    """Match by exact embedding value, for deterministic resolve_labels tests.
 
-    def __init__(self, matches: list[tuple[list[float], str]]):
+    `near` is FEAT14's other half: embeddings the two-gate rule declined and came
+    close on, which `resolve_speaker_labels` reports without naming anybody.
+    """
+
+    def __init__(
+        self,
+        matches: list[tuple[list[float], str]],
+        near: list[tuple[list[float], str]] | None = None,
+    ):
         self._matches = matches
+        self._near = near or []
 
-    def match(self, emb):
+    def match_detail(self, emb):
         for vec, name in self._matches:
             if emb == vec:
-                return name
-        return None
+                return MatchResult(name, None, 0.9)
+        for vec, name in self._near:
+            if emb == vec:
+                return MatchResult(None, name, 0.6)
+        return MatchResult(None, None, None)
 
 
 def _seg(speaker, start, end, text="x"):
@@ -205,7 +218,9 @@ def test_resolve_labels_me_and_unknown_them():
     # The mic channel identified speaker_0 -> "Me"; the other two carry
     # embeddings but no roster match -> stable THEM-A / THEM-B in
     # first-appearance order.
-    mapping = resolve_speaker_labels(segs, emb, None, user_label="Me", mic_me="speaker_0")
+    mapping = resolve_speaker_labels(
+        segs, emb, None, user_label="Me", mic_me="speaker_0"
+    ).mapping
     assert mapping == {"speaker_0": "Me", "speaker_1": "THEM-A", "speaker_2": "THEM-B"}
 
 
@@ -214,7 +229,7 @@ def test_resolve_labels_no_me_when_user_did_not_speak():
     # so `user_label` is applied to nobody and every voice clusters as unknown.
     segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6)]
     emb = {"speaker_0": [1.0], "speaker_1": [2.0]}
-    mapping = resolve_speaker_labels(segs, emb, None, user_label="Me")
+    mapping = resolve_speaker_labels(segs, emb, None, user_label="Me").mapping
     assert mapping == {"speaker_0": "THEM-A", "speaker_1": "THEM-B"}
     assert "Me" not in mapping.values()
 
@@ -223,7 +238,9 @@ def test_resolve_labels_roster_names_win_over_them():
     segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6), _seg("speaker_2", 6, 7)]
     emb = {"speaker_0": [1.0], "speaker_1": [2.0], "speaker_2": [3.0]}
     roster = _FakeRoster([([2.0], "Bob")])  # speaker_1 -> Bob
-    mapping = resolve_speaker_labels(segs, emb, roster, user_label="Me", mic_me="speaker_0")
+    mapping = resolve_speaker_labels(
+        segs, emb, roster, user_label="Me", mic_me="speaker_0"
+    ).mapping
     assert mapping == {"speaker_0": "Me", "speaker_1": "Bob", "speaker_2": "THEM-A"}
 
 
@@ -233,7 +250,9 @@ def test_resolve_labels_me_never_roster_matched():
     # speaker_0 is "me" by the mic channel, so it keeps the user's name even
     # though the roster would match it; speaker_1 gets its roster name.
     roster = _FakeRoster([([1.0], "Alice"), ([2.0], "Bob")])
-    mapping = resolve_speaker_labels(segs, emb, roster, user_label="Me", mic_me="speaker_0")
+    mapping = resolve_speaker_labels(
+        segs, emb, roster, user_label="Me", mic_me="speaker_0"
+    ).mapping
     assert mapping["speaker_0"] == "Me"
     assert mapping["speaker_1"] == "Bob"
 
@@ -243,8 +262,54 @@ def test_resolve_labels_no_embedding_keeps_raw_id():
     segs = [_seg("speaker_user", 0, 5), _seg("speaker_other", 5, 6)]
     mapping = resolve_speaker_labels(
         segs, None, None, user_label="Me", channel_me="speaker_user"
-    )
+    ).mapping
     assert mapping == {"speaker_user": "Me"}  # speaker_other unmapped -> raw id kept
+
+
+def test_resolve_labels_reports_a_near_miss_without_naming_anybody():
+    # FEAT14: the roster declined speaker_1 and came closest to Bob. The label on
+    # disk is unchanged, a THEM cluster exactly as before, and the suggestion
+    # rides beside the mapping keyed by that label rather than replacing it.
+    segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6)]
+    emb = {"speaker_0": [1.0], "speaker_1": [2.0]}
+    roster = _FakeRoster([], near=[([2.0], "Bob")])
+    resolved = resolve_speaker_labels(
+        segs, emb, roster, user_label="Me", mic_me="speaker_0"
+    )
+    assert resolved.mapping == {"speaker_0": "Me", "speaker_1": "THEM-A"}
+    assert resolved.near_misses == {"THEM-A": "Bob"}
+
+
+def test_resolve_labels_has_no_near_miss_for_a_voice_it_named():
+    segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6)]
+    emb = {"speaker_0": [1.0], "speaker_1": [2.0]}
+    roster = _FakeRoster([([2.0], "Bob")])
+    resolved = resolve_speaker_labels(
+        segs, emb, roster, user_label="Me", mic_me="speaker_0"
+    )
+    assert resolved.mapping["speaker_1"] == "Bob"
+    assert resolved.near_misses == {}
+
+
+def test_resolve_labels_never_suggests_the_owner_for_another_voice():
+    # The owner is identified by their own voiceprint, never by the roster, so a
+    # near miss on their name is the one case the roster cannot arbitrate. Same
+    # guard the accept path has always applied, now applied to the suggestion.
+    segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6)]
+    emb = {"speaker_0": [1.0], "speaker_1": [2.0]}
+    roster = _FakeRoster([], near=[([2.0], "Me")])
+    resolved = resolve_speaker_labels(
+        segs, emb, roster, user_label="Me", mic_me="speaker_0"
+    )
+    assert resolved.mapping["speaker_1"] == "THEM-A"
+    assert resolved.near_misses == {}
+
+
+def test_resolve_labels_without_a_roster_has_no_near_misses():
+    segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6)]
+    emb = {"speaker_0": [1.0], "speaker_1": [2.0]}
+    resolved = resolve_speaker_labels(segs, emb, None, user_label="Me", mic_me="speaker_0")
+    assert resolved.near_misses == {}
 
 
 def test_apply_speaker_labels_replaces_only_mapped():

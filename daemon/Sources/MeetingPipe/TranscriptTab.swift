@@ -79,6 +79,10 @@ enum TranscriptLoader {
         /// has no voice to remember, so the row offers per-line assignment instead of
         /// cluster enrollment. Enrolling one used to hard-fail with "pipeline exited 2".
         var voiceprintLabels: Set<String> = []
+        /// FEAT14: for a cluster the roster declined, the person it came closest to,
+        /// from the same sidecar. Offered on the chip menu as a suggestion; nothing
+        /// here writes it.
+        var nearMisses: [String: String] = [:]
     }
 
     static func path(stem: String, in directory: URL) -> URL {
@@ -126,7 +130,8 @@ enum TranscriptLoader {
             language: parsed.language,
             speakerOrder: parsed.speakerOrder,
             speakerOverlay: SpeakerLabelStore.read(stem: stem, in: directory),
-            voiceprintLabels: MeetingStore.voiceprintLabels(stem: stem, in: directory)
+            voiceprintLabels: MeetingStore.voiceprintLabels(stem: stem, in: directory),
+            nearMisses: MeetingStore.nearMisses(stem: stem, in: directory)
         )
     }
 
@@ -334,7 +339,10 @@ struct TranscriptTab: View {
                         namingTarget = NamingTarget(label: label, currentName: current)
                     },
                     onUnname: { label, current in undoNaming(label: label, name: current) },
-                    onRenameEverywhere: { current in renameEverywhere(currentName: current) }
+                    onRenameEverywhere: { current in renameEverywhere(currentName: current) },
+                    onAcceptSuggestion: { label, name in
+                        acceptSuggestion(label: label, name: name)
+                    }
                 )
                 .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
                 .padding(.horizontal, SummaryLayout.contentPadding)
@@ -479,6 +487,20 @@ struct TranscriptTab: View {
                 await reload()
             }
         }
+    }
+
+    /// Accept the roster's near miss for a voice (FEAT14). Exactly `nameSpeaker`, with
+    /// the sheet skipped because the name was already on the menu item the owner
+    /// clicked: the suggestion is offered by name, so accepting it types nothing.
+    ///
+    /// Logged apart from a typed naming so the question this task exists to answer,
+    /// whether surfacing near misses actually grows the enrolment corpus, is
+    /// answerable from the event log rather than by guessing at roster sample counts.
+    private func acceptSuggestion(label: String, name: String) {
+        Log.event(category: "coordinator", action: "roster_suggestion_accepted", attributes: [
+            "stem": meeting.stem, "label": label,
+        ])
+        nameSpeaker(label: label, name: name)
     }
 
     /// Undo a naming (FEAT3-UNDO): drop the overlay so the cluster reverts to its
@@ -811,6 +833,7 @@ struct TranscriptTab: View {
         voices = VoiceResolution.derive(
             cast: cast,
             voiceprintLabels: voiceprintLabels,
+            nearMisses: result?.nearMisses ?? [:],
             rosterNames: loaded.roster,
             userLabel: owner
         )
