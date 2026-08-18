@@ -72,6 +72,18 @@ say "Re-signing"
 ensure_dev_cert
 sign_app_with_resources "$APP"
 
+# DIST3: this script writes into ~/Applications/MeetingPipe.app too, so it gets
+# the same ask install.sh makes. The marginal value is lower here, since the
+# bundle path is unchanged and an already-indexed app stays indexed; it earns
+# its fraction of a second because a rebuild is the fast path the owner runs
+# most often, so an index that was missing after an install gets another chance
+# on every rebuild rather than only on a full reinstall. Non-fatal and quiet on
+# success, because a rebuild's output is a progress log rather than a report.
+if command -v mdimport >/dev/null 2>&1; then
+    mdimport "$APP" >/dev/null 2>&1 \
+        || warn "mdimport failed; the app may not appear in Spotlight search ('mp doctor' checks it)."
+fi
+
 # Full bootout + bootstrap, NOT `kickstart -k`. A rebuild changes the binary's
 # cdhash, which staleifies launchd's cached launch constraint (the LWCR). The
 # cheaper `kickstart -k` reuses that stale constraint, so the respawn fails with

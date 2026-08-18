@@ -17,6 +17,7 @@ from mp.config import Config
 from mp.doctor import (
     _report_local_server_identity,
     _scan_recorder_log_for_tcc,
+    check_app_index,
     check_last_backup,
     check_library_sync,
     check_local_stack,
@@ -407,3 +408,119 @@ def test_identity_probe_is_silent_without_config(capsys, monkeypatch) -> None:
     _fake_served(monkeypatch, _identity("some/model"))
     _report_local_server_identity(None, None)
     assert capsys.readouterr().out == ""
+
+
+# ---------- DIST3: the Spotlight index check --------------------------------
+#
+# The four states are deliberately four, not two. "Spotlight answered and does
+# not know it" and "Spotlight could not be asked" are different facts, and
+# collapsing the second into the first is how a void check gets reported as a
+# real one, so each has its own test.
+
+
+class _Proc:
+    def __init__(self, stdout: str = "", returncode: int = 0) -> None:
+        self.stdout = stdout
+        self.returncode = returncode
+
+
+def _bundle(tmp_path: Path, monkeypatch) -> Path:
+    """An existing MeetingPipe.app under a fake home, so the check gets past
+    its "nothing to index" branch."""
+    app = tmp_path / "Applications" / "MeetingPipe.app"
+    app.mkdir(parents=True)
+    monkeypatch.setattr("mp.doctor._APP_BUNDLE", app)
+    return app
+
+
+def _fake_mdfind(monkeypatch, proc: _Proc | None, *, present: bool = True) -> None:
+    monkeypatch.setattr(
+        "mp.doctor.shutil.which", lambda name: "/usr/bin/mdfind" if present else None
+    )
+    if proc is not None:
+        monkeypatch.setattr("mp.doctor.subprocess.run", lambda *a, **k: proc)
+
+
+def test_app_index_ok_when_spotlight_knows_the_bundle(tmp_path, monkeypatch, capsys) -> None:
+    app = _bundle(tmp_path, monkeypatch)
+    _fake_mdfind(monkeypatch, _Proc(stdout=f"{app}\n"))
+    check_app_index()
+    out = capsys.readouterr().out
+    assert "[ OK ]" in out
+    assert "[FAIL]" not in out
+
+
+def test_app_index_fails_when_spotlight_answers_and_does_not_know_it(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """The DIST3 bug itself: the bundle is on disk and Spotlight does not have
+    it, so the app cannot be launched by name."""
+    _bundle(tmp_path, monkeypatch)
+    _fake_mdfind(monkeypatch, _Proc(stdout=""))
+    check_app_index()
+    out = capsys.readouterr().out
+    assert "[FAIL]" in out
+    assert "mdimport" in out
+    # The remediation must stop short of repairing the volume index, which DIST3
+    # puts out of scope as the owner's machine-level decision.
+    assert "mdutil -s /" in out
+    assert "mdutil -E" not in out
+
+
+def test_app_index_reports_unknown_rather_than_missing_when_mdfind_is_absent(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _bundle(tmp_path, monkeypatch)
+    _fake_mdfind(monkeypatch, None, present=False)
+    check_app_index()
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "[FAIL]" not in out
+    assert "not the same as 'not indexed'" in out
+
+
+def test_app_index_reports_unknown_when_mdfind_exits_non_zero(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _bundle(tmp_path, monkeypatch)
+    _fake_mdfind(monkeypatch, _Proc(stdout="", returncode=1))
+    check_app_index()
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "[FAIL]" not in out
+
+
+def test_app_index_reports_unknown_when_mdfind_raises(tmp_path, monkeypatch, capsys) -> None:
+    _bundle(tmp_path, monkeypatch)
+    monkeypatch.setattr("mp.doctor.shutil.which", lambda _n: "/usr/bin/mdfind")
+
+    def _boom(*_a, **_k):
+        raise OSError("mdfind exploded")
+
+    monkeypatch.setattr("mp.doctor.subprocess.run", _boom)
+    check_app_index()
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "[FAIL]" not in out
+
+
+def test_app_index_skips_when_no_bundle_is_installed(tmp_path, monkeypatch, capsys) -> None:
+    """Running from a build tree is normal and is not a failure."""
+    monkeypatch.setattr("mp.doctor._APP_BUNDLE", tmp_path / "Applications" / "MeetingPipe.app")
+    check_app_index()
+    out = capsys.readouterr().out
+    assert "nothing to index" in out
+    assert "[FAIL]" not in out
+
+
+def test_app_index_names_other_indexed_copies_when_ours_is_missing(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """A stale copy elsewhere is the likeliest reason a search 'works' while the
+    installed one is unfindable, so the check names what Spotlight does hold."""
+    _bundle(tmp_path, monkeypatch)
+    _fake_mdfind(monkeypatch, _Proc(stdout="/Applications/MeetingPipe.app\n"))
+    check_app_index()
+    out = capsys.readouterr().out
+    assert "[FAIL]" in out
+    assert "/Applications/MeetingPipe.app" in out

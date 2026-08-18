@@ -737,12 +737,79 @@ def check_screen_recording() -> None:
     _ok("most recent SCStream start did not log a TCC denial")
 
 
+# ---------- Spotlight index for the installed bundle (DIST3) ----------------
+
+_APP_BUNDLE = Path.home() / "Applications" / "MeetingPipe.app"
+
+
+def _mdfind_app_bundles() -> list[str] | None:
+    """Ask Spotlight for every indexed `MeetingPipe.app`.
+
+    Returns the matching paths, or None when the question could not be asked at
+    all (mdfind absent, non-zero, or timed out). None and `[]` must stay
+    distinct: an empty list means Spotlight answered and does not know the
+    bundle, while None means nothing was measured, and reporting the second as
+    the first is how a void check gets banked as a real one.
+    """
+    if shutil.which("mdfind") is None:
+        return None
+    try:
+        proc = subprocess.run(
+            ["mdfind", "-name", "MeetingPipe.app"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return [ln for ln in proc.stdout.splitlines() if ln.strip()]
+
+
+def check_app_index() -> None:
+    """Report whether the installed bundle is findable in Spotlight (DIST3).
+
+    The app can be installed and registered correctly and still be unfindable:
+    Launch Services and the Spotlight index are separate, so `open` resolving
+    the path says nothing about whether typing the name finds it. This check
+    exists so the next occurrence is one command instead of the reconstruction
+    that filed DIST3.
+    """
+    print("\n== Spotlight index (finding the app by name) ==")
+    if not _APP_BUNDLE.exists():
+        _warn(f"no bundle at {_APP_BUNDLE}, so there is nothing to index")
+        _info("this is expected if you run the daemon from a build tree rather than an install")
+        return
+
+    found = _mdfind_app_bundles()
+    if found is None:
+        _warn("could not ask Spotlight (mdfind unavailable or failed), so the index state is unknown")
+        _info(f"this is not the same as 'not indexed'; {_APP_BUNDLE.name} may well be findable")
+        return
+
+    if str(_APP_BUNDLE) in found:
+        _ok(f"{_APP_BUNDLE} is indexed and will appear in Spotlight")
+        return
+
+    _fail(f"{_APP_BUNDLE} exists but Spotlight does not know it")
+    _info("so typing the app's name finds nothing and you have to open ~/Applications in Finder")
+    _info(f"Fix, first try: mdimport {_APP_BUNDLE}")
+    _info("then re-run mp doctor. install.sh and rebuild.sh already make that same request,")
+    _info("so if it stays unfound the volume's own index is in an unknown or damaged state.")
+    _info("Repairing that is a machine-level decision and can take a long time, so nothing here")
+    _info("does it for you: 'mdutil -s /' reports the volume's indexing status if you want to look.")
+    if found:
+        _info(f"Spotlight does know {len(found)} other copy/copies: {', '.join(found)}")
+
+
 # ---------- entry point ----------------------------------------------------
 
 def main(argv: list[str]) -> int:
     if argv and argv[0] in {"-h", "--help"}:
         print("usage: mp doctor")
-        print("Validates secrets, config, storage, the claude_cli binary, and live access to Anthropic / OpenAI / Notion / HuggingFace.")
+        print("Validates secrets, config, storage, the claude_cli binary, the installed bundle's Spotlight index, and live access to Anthropic / OpenAI / Notion / HuggingFace.")
         return 0
 
     print("mp doctor — preflight check\n")
@@ -769,6 +836,7 @@ def main(argv: list[str]) -> int:
         check_notion(presence["NOTION_TOKEN"], cfg)
         check_huggingface(presence["HF_TOKEN"])
     check_screen_recording()
+    check_app_index()
 
     print("\nDone. Re-run after fixing each [FAIL] above.")
     # Exit 0 even on partial failures — this is a diagnostic tool, not a gate.

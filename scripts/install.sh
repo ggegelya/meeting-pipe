@@ -332,15 +332,33 @@ fi
 #
 # ~/Applications wins over /Applications here: it doesn't need admin, it
 # doesn't conflict with package managers, and Spotlight indexes it the
-# same way. mdimport at the end forces the index to refresh immediately
-# instead of waiting for the next housekeeping pass.
+# same way. mdimport at the end asks Spotlight to index the bundle now
+# rather than waiting for the next housekeeping pass.
 APPS_DIR="$HOME/Applications"
 APP="$APPS_DIR/MeetingPipe.app"
 mkdir -p "$APPS_DIR"
 say "Installing app bundle → $APP"
 rm -rf "$APP"
 ditto "$APP_BUILD" "$APP"
-mdimport "$APP" >/dev/null 2>&1 || true
+
+# DIST3: non-fatal on purpose, because a missing search index is an annoyance
+# and failing an otherwise good install over it would be the worse outcome. But
+# it says what happened rather than swallowing it: this call has been here since
+# 2026-04-30 and the owner still could not find the app in Spotlight on
+# 2026-08-04, and a silent `>/dev/null 2>&1 || true` is why nothing in the
+# install output distinguished "asked and it worked" from "asked and it failed".
+# Asking is all this does. It cannot fix a volume whose index is in an unknown
+# or damaged state, which is a machine-level condition and the owner's call to
+# repair; `mp doctor` reports whether the bundle actually ended up indexed.
+if ! command -v mdimport >/dev/null 2>&1; then
+    warn "mdimport not found; did not ask Spotlight to index the bundle."
+    warn "  The app works either way; it may just not appear in Spotlight search."
+elif mdimport "$APP" >/dev/null 2>&1; then
+    say "Asked Spotlight to index the bundle"
+else
+    warn "mdimport failed; the app may not appear in Spotlight search."
+    warn "  Nothing else is affected. Run 'mp doctor' to see whether it is indexed."
+fi
 
 # Re-sign the assembled bundle with a stable signing identifier and
 # bind the Info.plist into the signature.

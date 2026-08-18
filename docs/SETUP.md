@@ -188,6 +188,8 @@ That is the whole loop. From here, meetings turn into summaries without you doin
 
 **There is no icon in the menu bar.** Open `~/Applications` in Finder, right-click `MeetingPipe.app`, choose **Open**, and confirm the unverified-developer dialog. A double-click will not get past it the first time.
 
+**The app does not come up when you search for it.** Type its name into Spotlight (the magnifying glass, or Cmd+Space) and nothing appears, even though the app is installed and works. This is your Mac's search index not having noticed the app, rather than anything wrong with the install. The installer already asks it to look, and you can ask again by opening Terminal and running `mdimport ~/Applications/MeetingPipe.app`. To check whether it worked, run `mp doctor` and read the **Spotlight index** section near the end. If it still cannot find it, your Mac's search index itself needs attention, which is a separate thing worth looking at on its own time. Nothing is broken meanwhile: open `~/Applications` in Finder to launch the app, and drag it to your Dock if you want it one click away.
+
 **Nothing happens when you join a meeting.** Open **Preferences ▸ Permissions** and check all four are granted. If Accessibility was granted recently, quit and reopen the app so the grant takes effect. You can always record manually with `Ctrl+Option+M`.
 
 **The recording only has your voice.** Screen Recording is missing or was granted after the app started. Grant it in System Settings ▸ Privacy & Security ▸ Screen Recording, then quit and reopen the app.
