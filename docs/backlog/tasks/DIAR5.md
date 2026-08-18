@@ -1,6 +1,6 @@
 # DIAR5: the LLM cleanup pass is a second merge source, and it merges on text with no audio
 
-Band origin: filed 2026-08-04 by DIAR2's closing sweep, which found it while reading the corpus for something else. Read DIAR2's `[DONE]` entry in [`q6-final.md`](./q6-final.md) for the sweep context.
+Band origin: filed 2026-08-04 by DIAR2's closing sweep, which found it while reading the corpus for something else. Read DIAR2's `[DONE]` entry in [`q6-final.md`](../q6-final.md) for the sweep context.
 
 ## What was seen
 
