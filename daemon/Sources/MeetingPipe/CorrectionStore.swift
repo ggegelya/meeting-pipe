@@ -60,7 +60,7 @@ enum CorrectionStore {
         }
     }
 
-    /// Writes `<stem>.json`. `correctedSummary` is omitted when nil (good/bad verdicts produce smaller records than edited ones). Atomic via temp-file + rename so a crash never leaves a half-formed file that breaks Phase 3.
+    /// Writes `<stem>.json`. `correctedSummary` is omitted when nil (good/bad verdicts produce smaller records than edited ones). Atomic replacement, so a crash leaves either the previous record or the new one and never neither (PERF8).
     @discardableResult
     static func write(
         stem: String,
@@ -108,15 +108,22 @@ enum CorrectionStore {
         try FileManager.default.createDirectory(at: dir,
                                                 withIntermediateDirectories: true)
         let final = dir.appendingPathComponent("\(stem).json")
-        let temp = dir.appendingPathComponent("\(stem).json.tmp")
+        // PERF8 (0): atomic replacement, no window where the destination is absent.
+        //
+        // This was `write(to: temp)`, then `removeItem(url)`, then `moveItem(temp, url)`. Between
+        // the remove and the move the real sidecar did not exist and the only copy of the data was
+        // in a `.tmp` nothing in either tree reads or sweeps, so a process death in that window did
+        // not lose the edit being saved: it silently lost every hand-made entry this file ever
+        // held, unrecoverably, because the reader is fail-open and a missing file reads as empty.
+        // That is the wrong failure direction, and it is not theoretical here (four `.ips` reports
+        // on 2026-08-13 and 08-14; REC12 is a confirmed abort that runs no termination handler).
+        //
+        // `.atomic` already writes to a temporary file and renames it into place, so the manual
+        // dance was both redundant and strictly less safe than the one-liner it wrapped. A failure
+        // now leaves the previous file exactly as it was.
         do {
-            try data.write(to: temp, options: .atomic)
-            if FileManager.default.fileExists(atPath: final.path) {
-                _ = try? FileManager.default.removeItem(at: final)
-            }
-            try FileManager.default.moveItem(at: temp, to: final)
+            try data.write(to: final, options: .atomic)
         } catch {
-            try? FileManager.default.removeItem(at: temp)
             throw Error.writeFailed(error.localizedDescription)
         }
         return final

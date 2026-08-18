@@ -80,6 +80,20 @@ The reasoning is a cost the file pays that other docs do not: it is prepended to
 
 **What DOC15 did, in the order to try again.** Move what is not a rule (the file index went to `ARCHITECTURE.md`, whose Daemon section the index's own intro already named as the authority). Delete a second copy of something another always-loaded file already says (the build commands are in the root verify table). Merge rules that share a subject, since two lines on one anchor were two lines to read. Trim narrative out of rule lines that had it inline while the section they link to carried it in full. Only then consider a further subtree split, which is the owner's call because a fourth always-loaded file is a cost every session in that directory pays.
 
+### A save must never destroy the old state before installing the new one
+
+Don't write a file by removing the destination and moving a temporary into its place. `Data.write(to:options:.atomic)` already writes to a temporary and renames it in, so the manual dance is redundant, and it is strictly less safe than the one-liner it wraps.
+
+PERF8 found the shape copy-pasted into **four** sidecar writers: `SpeakerLabelStore`, `TranscriptCorrectionStore`, `CorrectionStore` and `PipelineFailureSidecar`. All four did `write(to: temp)`, then `removeItem(destination)`, then `moveItem(temp, destination)`.
+
+**The failure direction is the point.** Between the remove and the move the real file does not exist, and the only copy of the data is in a `.tmp` that nothing in either tree reads or sweeps. Every reader here is fail-open, so a missing file reads as empty rather than as an error. A process death in that window therefore does not lose the edit being saved: it silently loses **every** entry the file ever held, unrecoverably, and the app reports no problem at all. Three of the four hold hand-made edits the pipeline cannot regenerate, which is which voice the owner said was Sudip and which words they corrected.
+
+That window is not theoretical for this app. Four `.ips` reports landed on 2026-08-13 and 08-14, and REC12 is a confirmed uncatchable ObjC abort that runs no termination handler, so nothing gets a chance to tidy up.
+
+**Two things to copy.** First, the repo already had the right pattern one file over: `WorkflowStore.persist` writes a `.writing` sibling then `replaceItemAt`, and `ConfigStore` does the same. Reach for those or for plain `.atomic` rather than inventing a third shape. Second, **fence the shape rather than the effect**. A behavioural test here is weak: the obvious way to make a write fail, an unwritable directory, fails at the *first* step, so the old code preserves the previous file too and the test passes against the bug. The window only opens between two operations inside one function and is not observable from outside the process. `AtomicSidecarWriteTests` therefore greps the four writers for `moveItem(at: temp`, which is what actually fails against the pre-fix tree, and keeps the behavioural tests as a check on the property rather than as the regression guard.
+
+A defect that was copy-pasted four times will be copy-pasted a fifth. The grep is what catches that.
+
 ### A zero is a measurement, and an unfinalized WAV is full of them
 
 Don't let a parser return `0` for something it could not read. A nil propagates into a fallback that was written for the unknown case; a zero flows into arithmetic as if it were a fact, and `max(x, 0)` quietly discards whatever the zero was standing in for.

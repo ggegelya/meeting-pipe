@@ -172,7 +172,7 @@ enum SpeakerLabelStore {
 
     // MARK: - Internal
 
-    /// Atomic temp-file + rename. An empty overlay deletes the sidecar, so the next
+    /// Atomic replacement (PERF8). An empty overlay deletes the sidecar, so the next
     /// load reads as "no overrides" (matching `TranscriptCorrectionStore`).
     private static func write(overlay: Overlay, stem: String, in directory: URL) throws {
         let url = path(stem: stem, in: directory)
@@ -201,15 +201,22 @@ enum SpeakerLabelStore {
         } catch {
             throw WriteError.serializationFailed(error.localizedDescription)
         }
-        let temp = url.appendingPathExtension("tmp")
+        // PERF8 (0): atomic replacement, no window where the destination is absent.
+        //
+        // This was `write(to: temp)`, then `removeItem(url)`, then `moveItem(temp, url)`. Between
+        // the remove and the move the real sidecar did not exist and the only copy of the data was
+        // in a `.tmp` nothing in either tree reads or sweeps, so a process death in that window did
+        // not lose the edit being saved: it silently lost every hand-made entry this file ever
+        // held, unrecoverably, because the reader is fail-open and a missing file reads as empty.
+        // That is the wrong failure direction, and it is not theoretical here (four `.ips` reports
+        // on 2026-08-13 and 08-14; REC12 is a confirmed abort that runs no termination handler).
+        //
+        // `.atomic` already writes to a temporary file and renames it into place, so the manual
+        // dance was both redundant and strictly less safe than the one-liner it wrapped. A failure
+        // now leaves the previous file exactly as it was.
         do {
-            try data.write(to: temp, options: .atomic)
-            if fm.fileExists(atPath: url.path) {
-                _ = try? fm.removeItem(at: url)
-            }
-            try fm.moveItem(at: temp, to: url)
+            try data.write(to: url, options: .atomic)
         } catch {
-            try? fm.removeItem(at: temp)
             throw WriteError.writeFailed(error.localizedDescription)
         }
     }

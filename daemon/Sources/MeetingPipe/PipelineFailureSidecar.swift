@@ -46,7 +46,7 @@ enum PipelineFailureSidecar {
         dir.appendingPathComponent(fileName(forStem: stem))
     }
 
-    /// Write (or overwrite) the failure sidecar. Atomic via temp-file + rename. Write failures are swallowed - losing the sidecar must never escalate into a daemon crash. Returns the written URL, or nil on failure.
+    /// Write (or overwrite) the failure sidecar. Atomic replacement (PERF8). Write failures are swallowed - losing the sidecar must never escalate into a daemon crash. Returns the written URL, or nil on failure.
     @discardableResult
     static func write(
         stem: String,
@@ -71,16 +71,17 @@ enum PipelineFailureSidecar {
             return nil
         }
         let final = url(forStem: stem, in: dir)
-        let temp = final.appendingPathExtension("tmp")
+        // PERF8 (0): atomic replacement, no window where the destination is absent. This is the
+        // fourth instance of the remove-then-move shape, and the one PERF8's spec did not name: it
+        // scoped to the three stores holding hand-made edits, on the grounds that those cannot be
+        // regenerated. This sidecar can be, so the severity is lower, but losing it is still
+        // user-visible (a failed meeting reads as clean in the Needs you rail and loses its retry
+        // affordance), and leaving one known-bad copy of a data-loss shape is the debt the spec
+        // cites as its own reason for fixing three rather than one.
         do {
-            try data.write(to: temp, options: .atomic)
-            if FileManager.default.fileExists(atPath: final.path) {
-                _ = try? FileManager.default.removeItem(at: final)
-            }
-            try FileManager.default.moveItem(at: temp, to: final)
+            try data.write(to: final, options: .atomic)
             return final
         } catch {
-            try? FileManager.default.removeItem(at: temp)
             Log.main.warning(
                 "PipelineFailureSidecar: write failed for \(stem): \(error.localizedDescription)"
             )

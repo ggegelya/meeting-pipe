@@ -128,7 +128,9 @@ enum TranscriptCorrectionStore {
 
     // MARK: - Internal
 
-    /// Atomic temp-file + rename so a crash never leaves a half-formed file. An empty dict deletes the sidecar so the next load reads as "no corrections".
+    /// Atomic replacement, so a crash leaves either the previous file or the new one and never
+    /// neither (PERF8; the shape this replaced claimed crash safety and did not have it). An empty
+    /// dict deletes the sidecar so the next load reads as "no corrections".
     private static func write(
         corrections: [Int: Correction],
         stem: String,
@@ -168,15 +170,22 @@ enum TranscriptCorrectionStore {
         } catch {
             throw WriteError.serializationFailed(error.localizedDescription)
         }
-        let temp = url.appendingPathExtension("tmp")
+        // PERF8 (0): atomic replacement, no window where the destination is absent.
+        //
+        // This was `write(to: temp)`, then `removeItem(url)`, then `moveItem(temp, url)`. Between
+        // the remove and the move the real sidecar did not exist and the only copy of the data was
+        // in a `.tmp` nothing in either tree reads or sweeps, so a process death in that window did
+        // not lose the edit being saved: it silently lost every hand-made entry this file ever
+        // held, unrecoverably, because the reader is fail-open and a missing file reads as empty.
+        // That is the wrong failure direction, and it is not theoretical here (four `.ips` reports
+        // on 2026-08-13 and 08-14; REC12 is a confirmed abort that runs no termination handler).
+        //
+        // `.atomic` already writes to a temporary file and renames it into place, so the manual
+        // dance was both redundant and strictly less safe than the one-liner it wrapped. A failure
+        // now leaves the previous file exactly as it was.
         do {
-            try data.write(to: temp, options: .atomic)
-            if fm.fileExists(atPath: url.path) {
-                _ = try? fm.removeItem(at: url)
-            }
-            try fm.moveItem(at: temp, to: url)
+            try data.write(to: url, options: .atomic)
         } catch {
-            try? fm.removeItem(at: temp)
             throw WriteError.writeFailed(error.localizedDescription)
         }
     }
