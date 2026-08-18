@@ -76,3 +76,59 @@ New tests extend `MeetingSourceScannerTests` and pin the admission decision thro
 `cd daemon && swift build` and `cd daemon && swift test` both green, with the number of tests this task adds recorded in the same commit.
 
 The repo dash guard stays green (no U+2014 in any changed line, and none at all under `daemon/Sources` or `daemon/Resources`).
+
+## Progress (2026-08-18, partial)
+
+Shipped: the instrument, the decision tree, the visibility event and the pure seam. Owed: the measurement itself and any widening that follows it.
+
+**The pure seam.** `MeetingSourceScanner.decideBrowserAdmission(windowTitles:urlFragments:)` returns `BrowserAdmission`, one of `.admit`, `.noMeetingSignal` or `.weakTitleOnly(matchedTitle:)`. It replaces the two inline guards the spec's Context section describes, and it is the seam the fix lands in whichever branch the verdict takes. Two things fell out of lifting it. Every case is now reachable from a test, which none were while the guards sat in a `private` method behind live AX reads; and the branch collects window titles once instead of once per predicate, so a browser costs one recursive AX window walk per scan rather than up to three. A refused tab also no longer pays for the three control-button AX walks in `collectSignals`, whose result was computed and then discarded on that path.
+
+**The refusal is visible.** `MeetingSourceScanner.Result.rejectedBrowserTabs` carries each refused tab out of the scan, and `MeetingDiscoveryWatcher.logRejectedBrowserTabs` emits `detector.browser_tab_rejected` with `bundle_id`, `display_name`, `kind`, `title` and `reason` (`weak_title_only` today). It needed its own list for exactly the structural reason DET11's `unreadableNatives` did: both `droppedCandidates` and `unreadableNatives` are built by filtering the candidate array, and a refused tab never enters it. Throttled per bundle plus reason plus title, which differs from its two neighbours on purpose, since the tab's title is the unit being refused. Read it with `mp logs --action browser_tab_rejected`.
+
+`mp analyze-detection` was deliberately **not** taught to read it. That auditor correlates a miss against a mic-busy span, and DET10 left the mic-busy dimension itself unestablished (zero spans across the whole dogfood log, cause unknown), so wiring a fifth correlation marker into it would build machinery on a signal that may be dead. `mp logs` needs no allowlist and reads the action already.
+
+**The instrument.** `daemon/scripts/det6-browser-url-probe.swift`, read-only, typecheck-clean under `swiftc -typecheck`. It prints its Accessibility state before anything else and refuses to capture or emit any verdict without it, because an untrusted process reads zero windows and zero attributes from every browser and that empty read is indistinguishable from a genuine "the URL is not exposed". It probes by shape rather than by selector: it hardcodes no address-bar `AXIdentifier` and no candidate title pattern, dumps every text field it finds in a depth-bounded chrome walk, and reports which held something URL-shaped. Bounded twice (depth and node budget) and with a one-second AX messaging timeout, since a browser's AX tree contains the whole rendered page.
+
+**The verdict tree is pre-registered** in `docs/spikes/det6-browser-url-readability.md`, with an explicitly empty Measured section so a filled-in result cannot be confused with a prediction.
+
+**Tests.** 13 added to `MeetingSourceScannerTests`, in two groups the file marks apart by comment. Unconditional fences: the two Meet admissions, and "Webex vs Zoom Comparison" plus two more doc titles which must stay refused in every branch of the tree (END5's original concern). Pre-verdict, pinning today's behaviour rather than the intended end state: the bare `microsoft teams`, `webex` and `huddle` refusals. The rest pin the seam's contract, including that Zoom-in-browser is refused one step earlier and for a different reason, and that the two refusal kinds stay distinct so a clean miss stays silent.
+
+**Not done, and deliberately.** `strongTitleMatchers` was not widened. The missing Zoom `defaultTitleMatchers` entry and the missing Slack URL fragment in `meeting_apps.toml` were both left alone: the spec folds them in but says they close by the same measured change, and both are unreachable until an admission path exists.
+
+## Owner walkthrough
+
+Steps tagged [owner] / [session] by who acts. What it costs you: two browser calls you were going to have anyway, plus about five minutes of pasting. Nothing is installed and nothing is changed on your Mac.
+
+1. [session] Build the probe and the verdict tree. **Done 2026-08-18:** `daemon/scripts/det6-browser-url-probe.swift` and `docs/spikes/det6-browser-url-readability.md`.
+
+2. [owner] Check the refusal event is real, which needs no call at all and takes a minute. Open a browser tab at `teams.microsoft.com` and leave it open for half a minute, then paste:
+
+       mp logs --action browser_tab_rejected
+
+   Pass: at least one line naming your browser's bundle id and the tab's title, with `reason weak_title_only`. That line is the whole point of this half of the task: before it, a browser meeting was refused with nothing written down anywhere. If nothing appears, MeetingPipe is either not running or does not hold the Accessibility grant, which is worth knowing on its own.
+
+3. [owner] The measurement needs a **live browser call**, in Chrome, Safari or Edge, in Teams, Webex or a Slack huddle. It does not need to be a real meeting; a test call with yourself is fine, and you do not have to record it. Open Terminal **yourself** (not from the app, not from an editor or an agent) so it carries its own permissions. From the repo root, once the call is joined and its tab is frontmost:
+
+       swift daemon/scripts/det6-browser-url-probe.swift --product teams --kind call
+
+   Substitute `webex` or `slack` for `teams` to match the product you are in. It watches for twenty seconds and exits; carry on with the call while it runs.
+
+   Pass: it prints `PRECONDITION  Accessibility access for this process: GRANTED` and then a per-sample line. If it says NOT GRANTED, stop and say so, because that is the harness caveat and not a result; the probe refuses to go further by design. Fix it at System Settings, Privacy and Security, Accessibility, by enabling Terminal, then re-run.
+
+4. [owner] Then, with the call over, open an ordinary page **about** the same product (the vendor's own marketing page, or a comparison article, anything that is not a call) and run the same command with `--kind doc`:
+
+       swift daemon/scripts/det6-browser-url-probe.swift --product teams --kind doc
+
+   This half is not optional and is easy to skip. The question is whether a call's title can be told apart from a page about the product, and a corpus of calls alone answers nothing.
+
+5. [owner] Repeat steps 3 and 4 once more for the same product, so there are two of each. The bars were set at two per side because one call and one page cannot tell a real marker from a coincidence of that particular page.
+
+6. [owner] Paste the report back:
+
+       swift daemon/scripts/det6-browser-url-probe.swift --report
+
+   It prints both legs against bars written down before any of your data existed, then names branch A, B or C. Branch C (neither leg clears) is a pre-registered acceptable answer, not a failure.
+
+7. [owner] Privacy note worth reading before step 3: the capture log lands in the repo at `docs/spikes/det6-browser-captures.jsonl`. URLs are recorded cut down to host plus one path segment, and printed in full only to your own terminal. **Window titles are recorded whole**, because their exact shape is the question, so a meeting title with a client's name in it will be written to that file. Redact it before it is committed if that matters, or pass `--out ~/det6.jsonl` to keep it out of the repo entirely.
+
+8. [session] Files the report into the spike doc's **Measured** section, takes the branch the tree names, and lands the widening (or the NO-GO close) as its own change.

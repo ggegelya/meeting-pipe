@@ -24,6 +24,30 @@ final class MeetingSourceScanner {
         /// on AX), so without this a running Teams call under a denied grant left not one line
         /// in `events.jsonl`. Feeds `candidate_unreadable`.
         let unreadableNatives: [MeetingSourceCandidate]
+        /// DET6: plain-browser tabs that carried a weak meeting title and were refused at the
+        /// admission gate. Invisible to `droppedCandidates` for the same structural reason
+        /// `unreadableNatives` is: that list filters `candidates`, and a refused tab never enters
+        /// it. Feeds `browser_tab_rejected`.
+        let rejectedBrowserTabs: [RejectedBrowserTab]
+    }
+
+    /// DET6: one plain-browser tab refused at the admission gate, carried out of the scan so the
+    /// refusal can be logged. A browser tab running Teams, Webex or a Slack huddle matches a weak
+    /// brand-token title and is then rejected, and until this existed the rejection left no line in
+    /// `events.jsonl` at all, so the miss rate could not be measured even in hindsight.
+    struct RejectedBrowserTab: Equatable {
+        let bundleID: String
+        let displayName: String
+        /// The window title that matched a weak matcher. A real page title, so it lands in the
+        /// event log the way a meeting title already does.
+        let title: String
+        /// Why it was refused. One value today; a second would appear only if DET6's measurement
+        /// widens the gate and introduces a different refusal.
+        let reason: String
+
+        /// A brand-token title (`microsoft teams`, `webex`, a `huddle` word) with no strong marker
+        /// beside it.
+        static let weakTitleOnly = "weak_title_only"
     }
 
     /// Known native meeting-app bundle IDs from `meeting_apps.toml`.
@@ -70,9 +94,11 @@ final class MeetingSourceScanner {
     /// observable. Re-open it if a second simultaneous candidate ever becomes real.
     func scan() -> Result {
         let axTrusted = AXIsProcessTrusted()
+        let enumerated = enumerateCandidates(axTrusted: axTrusted)
         return scan(
-            candidates: enumerateCandidates(axTrusted: axTrusted),
-            axTrusted: axTrusted
+            candidates: enumerated.candidates,
+            axTrusted: axTrusted,
+            rejectedBrowserTabs: enumerated.rejectedBrowserTabs
         )
     }
 
@@ -81,9 +107,13 @@ final class MeetingSourceScanner {
     /// driven with explicit inputs: the enumeration above is the only half that needs a real
     /// workspace, and the Accessibility-denied case is otherwise untestable because `AXIsProcessTrusted`
     /// is a process-wide read no test can flip. Internal, not private, for exactly that reason.
+    /// `rejectedBrowserTabs` is passed in rather than derived here, because a refused tab is not in
+    /// `candidates` by definition (DET6). It defaults to empty so a caller driving only the scoring
+    /// decisions does not have to spell it.
     func scan(
         candidates: [MeetingSourceCandidate],
-        axTrusted: Bool
+        axTrusted: Bool,
+        rejectedBrowserTabs: [RejectedBrowserTab] = []
     ) -> Result {
         var candidates = candidates
         let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: lastScorerWinner)
@@ -103,7 +133,8 @@ final class MeetingSourceScanner {
                 candidateCount: count,
                 winnerChanged: false,
                 droppedCandidates: dropped,
-                unreadableNatives: unreadable
+                unreadableNatives: unreadable,
+                rejectedBrowserTabs: rejectedBrowserTabs
             )
         }
         let changed = lastScorerWinner?.bundleID != winner.source.bundleID
@@ -113,7 +144,8 @@ final class MeetingSourceScanner {
             candidateCount: count,
             winnerChanged: changed,
             droppedCandidates: dropped,
-            unreadableNatives: unreadable
+            unreadableNatives: unreadable,
+            rejectedBrowserTabs: rejectedBrowserTabs
         )
     }
 
@@ -142,8 +174,15 @@ final class MeetingSourceScanner {
 
     // MARK: Candidate enumeration
 
+    /// One enumeration pass: the candidates, plus the plain-browser tabs it refused (DET6). The
+    /// refusals ride out separately because they are precisely the things that are *not* candidates.
+    struct Enumeration {
+        let candidates: [MeetingSourceCandidate]
+        let rejectedBrowserTabs: [RejectedBrowserTab]
+    }
+
     /// Produce one candidate per concurrent meeting-app contender. Native bundles are always included (scorer rejects those with zero signals, and DET11's `unreadableNatives` names the ones a denied Accessibility grant left with none). Browsers only qualify when at least one window matches a meeting-pattern title.
-    private func enumerateCandidates(axTrusted: Bool) -> [MeetingSourceCandidate] {
+    private func enumerateCandidates(axTrusted: Bool) -> Enumeration {
         let apps = NSWorkspace.shared.runningApplications
         // DET5 walk-gate inputs (see `shouldWalkControlAX`): the frontmost app, and whether
         // exactly one native meeting app is running (so a lone native's control walk is cheap
@@ -153,6 +192,7 @@ final class MeetingSourceScanner {
             if let b = a.bundleIdentifier, nativeBundles.contains(b) { count += 1 }
         } == 1
         var candidates: [MeetingSourceCandidate] = []
+        var rejectedBrowserTabs: [RejectedBrowserTab] = []
 
         for app in apps {
             guard let bid = app.bundleIdentifier else { continue }
@@ -189,23 +229,18 @@ final class MeetingSourceScanner {
                 // browser lifecycle adapter owns (as the PWA branch below already does), keeping the URL
                 // fragment as a bonus signal for any browser that does surface the URL in the title.
                 guard axTrusted else { continue }
-                let fragmentMatch = anyWindowMatchesMeetingFragment(pid: pid)
-                let titleMatched = anyWindowMatchesMeetingTitle(pid: pid)
-                guard titleMatched || fragmentMatch else { continue }
-                let source = AppSource(
-                    bundleID: bid,
-                    displayName: app.localizedName ?? "Browser",
-                    kind: .browser
+                // DET6 lifted the whole decision below into `decideBrowserAdmission`, a pure
+                // function over the window titles. Two things fall out of that. The titles are now
+                // collected once instead of once per predicate (the branch used to run up to three
+                // separate recursive AX window walks per browser per scan), and every case the gate
+                // can reach is reachable from a test, which it was not while the guards sat inline
+                // in this `private` method behind live AX reads.
+                let windowTitles = MeetingSourceScanner.collectAXWindowTitles(pid: pid) ?? []
+                let admission = MeetingSourceScanner.decideBrowserAdmission(
+                    windowTitles: windowTitles,
+                    urlFragments: browserURLFragments
                 )
-                let signals = collectSignals(
-                    bundleID: bid,
-                    kind: .browser,
-                    pid: pid,
-                    axTrusted: axTrusted,
-                    preTitleMatch: true,
-                    isFrontmost: bid == frontmostBundle,
-                    isLoneNative: false
-                )
+                let displayName = app.localizedName ?? "Browser"
                 // END5: a strong meeting title / URL (a Google Meet code, `meet.google.com`) stands
                 // alone; a bare brand-token title (a page whose title merely contains "webex" /
                 // "microsoft teams" / "huddle") can't be told from a doc *about* those products, so
@@ -218,22 +253,54 @@ final class MeetingSourceScanner {
                 // had translated the shell PID, which never registers as a CoreAudio client), but
                 // end-side only, and did NOT re-add this disjunct. Re-admitting bare brand-token
                 // titles is a start-side false-positive question, which is DET6's to answer with a
-                // measurement rather than a free consequence of the end-side flip. The consequence
-                // below is therefore still live today. The gap is a real one, stated
-                // plainly so it is not rediscovered as a surprise: a plain browser tab running
-                // Teams, Webex or a Slack huddle can never become a candidate, and Zoom-in-browser
-                // never reaches here at all (no Zoom title matcher). Only Google Meet clears
-                // `strongMatch`, because `strongTitleMatchers` holds only the Meet room-code
-                // pattern and `fragmentMatch` reads the window title, which browsers fill with the
-                // page title and not the URL. Rejected tabs never enter `candidates`, so they do
-                // not show up in `droppedCandidates` either. Native apps and Chromium PWAs are
+                // measurement rather than a free consequence of the end-side flip. The refusal
+                // below is therefore still live today: a plain browser tab running Teams, Webex or
+                // a Slack huddle never becomes a candidate, and Zoom-in-browser never reaches here
+                // at all (no Zoom title matcher). Only Google Meet clears the strong gate, because
+                // `strongTitleMatchers` holds only the Meet room-code pattern and the URL-fragment
+                // disjunct reads the window title, which browsers fill with the page title and not
+                // the URL.
+                //
+                // What DET6 changed is that the refusal is no longer silent. It still does not
+                // enter `candidates`, so `droppedCandidates` still cannot see it; instead it rides
+                // out on `rejectedBrowserTabs` and the watcher emits `browser_tab_rejected`, which
+                // is what makes the miss rate countable. Native apps and Chromium PWAs remain
                 // unaffected (the PWA branch below has no such gate).
                 //
                 // Do not "fix" this by widening `strongTitleMatchers`: an unmeasured widening
-                // reopens the doc-title false start END5 closed. The gap is filed as its own task.
-                let strongMatch = fragmentMatch
-                    || (titleMatched && anyWindowMatchesStrongMeetingTitle(pid: pid))
-                guard strongMatch else { continue }
+                // reopens the doc-title false start END5 closed. The measurement is DET6's probe
+                // (`daemon/scripts/det6-browser-url-probe.swift`) and its pre-registered verdict
+                // tree in `docs/spikes/det6-browser-url-readability.md`.
+                switch admission {
+                case .noMeetingSignal:
+                    // Not a meeting window at all. Every browser on the machine is in this state
+                    // most of the day, so it stays silent: this is a clean miss, not a refusal.
+                    continue
+                case .weakTitleOnly(let matchedTitle):
+                    rejectedBrowserTabs.append(RejectedBrowserTab(
+                        bundleID: bid,
+                        displayName: displayName,
+                        title: matchedTitle,
+                        reason: RejectedBrowserTab.weakTitleOnly
+                    ))
+                    continue
+                case .admit:
+                    break
+                }
+                let source = AppSource(
+                    bundleID: bid,
+                    displayName: displayName,
+                    kind: .browser
+                )
+                let signals = collectSignals(
+                    bundleID: bid,
+                    kind: .browser,
+                    pid: pid,
+                    axTrusted: axTrusted,
+                    preTitleMatch: true,
+                    isFrontmost: bid == frontmostBundle,
+                    isLoneNative: false
+                )
                 candidates.append(MeetingSourceCandidate(source: source, signals: signals))
                 continue
             }
@@ -270,7 +337,7 @@ final class MeetingSourceScanner {
             }
         }
 
-        return candidates
+        return Enumeration(candidates: candidates, rejectedBrowserTabs: rejectedBrowserTabs)
     }
 
     /// Cisco Webex keeps the mic open after a call for ultrasound device discovery. That is why it
@@ -376,43 +443,12 @@ final class MeetingSourceScanner {
         return signals
     }
 
-    private func anyWindowMatchesMeetingFragment(pid: pid_t) -> Bool {
-        let axApp = AXUIElementCreateApplication(pid)
-        var windowsRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-              let windows = windowsRef as? [AXUIElement] else { return false }
-        for win in windows {
-            var titleRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef) == .success,
-                  let title = titleRef as? String,
-                  !title.isEmpty else { continue }
-            if titleMatchesMeetingFragment(title) { return true }
-        }
-        return false
-    }
-
-    private func titleMatchesMeetingFragment(_ title: String) -> Bool {
-        let lowered = title.lowercased()
-        return browserURLFragments.contains(where: { lowered.contains($0) })
-    }
-
-    /// True when any AX window of `pid` matches a browser meeting-title pattern. Counterpart of `anyWindowMatchesMeetingFragment`: a browser/PWA window carries the page title, not the URL, so it matches title patterns from the browser lifecycle adapter. Used for both Chromium PWAs and (START2/AUD-3) plain browser tabs.
+    /// True when any AX window of `pid` matches a browser meeting-title pattern: a browser/PWA window carries the page title, not the URL, so it matches title patterns from the browser lifecycle adapter. Used by the Chromium PWA branch; the plain-browser branch reads its titles once and routes them through `decideBrowserAdmission` instead (DET6).
     private func anyWindowMatchesMeetingTitle(pid: pid_t) -> Bool {
         guard let titles = MeetingSourceScanner.collectAXWindowTitles(pid: pid) else {
             return false
         }
         return titles.contains { MeetingSourceScanner.browserWindowIndicatesMeeting(title: $0) }
-    }
-
-    /// True when any AX window of `pid` matches a *strong* browser meeting-title pattern (END5): a
-    /// Google Meet code / host, which stands alone at START. A bare brand-token title
-    /// (webex/teams/huddle) is not strong and returns false here, so the caller demands a live-audio
-    /// corroborator before it admits the tab as a candidate.
-    private func anyWindowMatchesStrongMeetingTitle(pid: pid_t) -> Bool {
-        guard let titles = MeetingSourceScanner.collectAXWindowTitles(pid: pid) else {
-            return false
-        }
-        return titles.contains { MeetingSourceScanner.browserWindowIndicatesStrongMeeting(title: $0) }
     }
 
     /// True when a browser/PWA window `title` looks like an active meeting. Pure (no AX), so the
@@ -429,6 +465,55 @@ final class MeetingSourceScanner {
     /// START, versus a bare brand-token match that also fires on pages about those products.
     static func browserWindowIndicatesStrongMeeting(title: String) -> Bool {
         BrowserMeetingLifecycleAdapter.strongTitleMatchers.contains { $0(title) }
+    }
+
+    // MARK: Plain-browser admission (DET6)
+
+    /// What the plain-browser admission gate decided about one browser process, given its AX window
+    /// titles. Pure, and that is the point: the gate used to be two inline `guard`s inside a
+    /// `private` method behind live AX reads, so not one of the cases below could be pinned without
+    /// a real browser holding a real call.
+    enum BrowserAdmission: Equatable {
+        /// Strong evidence. Enqueue the browser as a candidate.
+        case admit
+        /// No meeting signal at all, not even a weak brand token. A clean miss, and deliberately
+        /// silent: this is the state every browser on the machine is in most of the day.
+        case noMeetingSignal
+        /// A weak brand-token title with nothing strong beside it, which is refused (END5: such a
+        /// title also fires on a page *about* the product, e.g. "Webex vs Zoom Comparison"). Carries
+        /// the title that matched, so the refusal can be reported instead of vanishing.
+        case weakTitleOnly(matchedTitle: String)
+    }
+
+    /// Decide whether a plain browser tab is admitted as a meeting candidate.
+    ///
+    /// The three outcomes are exactly the three the inline guards had, in the same order:
+    /// a URL fragment or a strong title admits, a weak title alone is refused, and anything else was
+    /// never a meeting window. What changed with DET6 is only that the middle case is now a value
+    /// rather than a bare `continue`.
+    ///
+    /// `urlFragments` is checked against the window TITLE, which is the defect DET6 exists to
+    /// measure rather than to guess at: browsers put the page title there and never the URL, so this
+    /// disjunct effectively never fires and every non-Meet product falls through to the weak case.
+    /// It is left reading the title on purpose until the probe says whether the real URL is
+    /// reachable through an accessible channel. See `docs/spikes/det6-browser-url-readability.md`.
+    static func decideBrowserAdmission(
+        windowTitles: [String],
+        urlFragments: [String]
+    ) -> BrowserAdmission {
+        let fragmentMatch = windowTitles.contains { title in
+            let lowered = title.lowercased()
+            return urlFragments.contains { lowered.contains($0) }
+        }
+        if fragmentMatch { return .admit }
+        guard let weakTitle = windowTitles.first(where: { browserWindowIndicatesMeeting(title: $0) })
+        else {
+            return .noMeetingSignal
+        }
+        if windowTitles.contains(where: { browserWindowIndicatesStrongMeeting(title: $0) }) {
+            return .admit
+        }
+        return .weakTitleOnly(matchedTitle: weakTitle)
     }
 
     // MARK: Window-title recognizer

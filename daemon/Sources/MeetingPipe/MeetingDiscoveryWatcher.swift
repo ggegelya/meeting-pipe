@@ -226,6 +226,9 @@ final class MeetingDiscoveryWatcher {
             // DET11: and log the natives that carried no evidence because Accessibility is denied,
             // which the line above cannot see (it needs a signal to report one).
             self.emitUnreadableNatives(result.unreadableNatives)
+            // DET6: and the plain-browser tabs refused at the admission gate, which neither line
+            // above can see: a refused tab is not a candidate, and it is not a native.
+            self.emitRejectedBrowserTabs(result.rejectedBrowserTabs)
             if let winner = result.winner, result.winnerChanged {
                 Log.event(category: "detector", action: "discovery_shadow_pick", attributes: [
                     "winner_bundle_id": winner.source.bundleID,
@@ -344,6 +347,45 @@ final class MeetingDiscoveryWatcher {
                 "display_name": c.source.displayName,
                 "kind": c.source.kind == .browser ? "browser" : "native",
                 "reason": "accessibility_untrusted",
+            ])
+        }
+    }
+
+    /// Signature of the last `browser_tab_rejected` batch. The title is part of it on purpose,
+    /// unlike the two throttles above: a browser tab's title is the unit being refused, so a second
+    /// weakly-matching tab (or the same tab moving to a different meeting) is a new fact and must
+    /// re-log. A live call holds one title for its whole length, so a real call still writes one
+    /// line rather than one per 3 to 12 s poll.
+    private var lastRejectedBrowserSignature: String?
+
+    /// DET6: emit `browser_tab_rejected` for each plain-browser tab that carried a weak meeting
+    /// title and was refused at the admission gate. Neither DET5's drop list nor DET11's unreadable
+    /// list can carry it: both are built from `candidates`, and a refused tab never enters that
+    /// array, so a browser meeting in Teams, Webex or a Slack huddle was seen and refused with no
+    /// line anywhere in `events.jsonl`. That silence is why the miss rate could not be measured even
+    /// in hindsight, which is a precondition for deciding whether to widen the gate at all.
+    /// Runs on `scanQueue` (serial), so the signature field needs no further synchronisation.
+    private func emitRejectedBrowserTabs(_ rejected: [MeetingSourceScanner.RejectedBrowserTab]) {
+        guard !rejected.isEmpty else { lastRejectedBrowserSignature = nil; return }
+        let signature = rejected
+            .map { "\($0.bundleID)|\($0.reason)|\($0.title)" }
+            .sorted()
+            .joined(separator: ",")
+        guard signature != lastRejectedBrowserSignature else { return }
+        lastRejectedBrowserSignature = signature
+        MeetingDiscoveryWatcher.logRejectedBrowserTabs(rejected)
+    }
+
+    /// The event itself, lifted out of the throttle so a test can assert the line that ships rather
+    /// than a re-spelling of it (the DET11 shape). Static: it reads no watcher state.
+    static func logRejectedBrowserTabs(_ rejected: [MeetingSourceScanner.RejectedBrowserTab]) {
+        for tab in rejected {
+            Log.event(category: "detector", action: "browser_tab_rejected", attributes: [
+                "bundle_id": tab.bundleID,
+                "display_name": tab.displayName,
+                "kind": "browser",
+                "title": tab.title,
+                "reason": tab.reason,
             ])
         }
     }

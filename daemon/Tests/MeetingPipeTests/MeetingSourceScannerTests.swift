@@ -51,6 +51,186 @@ final class MeetingSourceScannerTests: XCTestCase {
         XCTAssertTrue(MeetingSourceScanner.browserWindowIndicatesMeeting(title: "Huddle - #engineering"))
     }
 
+    // MARK: - DET6: the plain-browser admission gate
+
+    /// The URL fragments the production registry ships, so these cases run against the same list
+    /// `enumerateCandidates` passes in rather than a convenient invention.
+    private let productionURLFragments = [
+        "meet.google.com",
+        "teams.microsoft.com",
+        "teams.live.com",
+        "zoom.us/j/",
+        "zoom.us/wc/",
+        "webex.com/meet",
+        "webex.com/wbxmjs",
+    ]
+
+    private func admission(_ titles: String...) -> MeetingSourceScanner.BrowserAdmission {
+        MeetingSourceScanner.decideBrowserAdmission(
+            windowTitles: titles,
+            urlFragments: productionURLFragments
+        )
+    }
+
+    // Unconditional: a Google Meet tab is the one product that clears this gate today, and it must
+    // keep clearing it under every branch of DET6's verdict tree. Both forms of the strong matcher.
+
+    func test_meet_room_code_title_is_admitted() {
+        XCTAssertEqual(admission("Meet - abc-defg-hij"), .admit)
+    }
+
+    func test_meet_google_com_title_is_admitted() {
+        // Two routes reach `.admit` for this one string and both are real: `meet.google.com` is a
+        // registered URL fragment AND the `googleMeet` strong matcher's host branch.
+        XCTAssertEqual(admission("meet.google.com/abc-defg-hij"), .admit)
+    }
+
+    // Unconditional: the END5 regression fence. A page ABOUT these products is not a meeting, and
+    // must stay rejected whichever branch DET6's measurement takes. If a later widening of
+    // `strongTitleMatchers` makes this admit, that widening is wrong, not this test.
+
+    func test_doc_title_about_meeting_products_is_never_admitted() {
+        XCTAssertNotEqual(admission("Webex vs Zoom Comparison"), .admit)
+        XCTAssertNotEqual(admission("Microsoft Teams vs Slack - buyer's guide"), .admit)
+        XCTAssertNotEqual(admission("How to run a good huddle - Notion"), .admit)
+    }
+
+    // PRE-VERDICT. The three brand-token cases below pin what the gate does TODAY, which is refuse.
+    // That is the state DET6 was filed against, not the intended end state: whether a live browser
+    // call in Teams / Webex / Slack is admitted is answered by the owner-run probe
+    // (`daemon/scripts/det6-browser-url-probe.swift`) against the verdict tree in
+    // `docs/spikes/det6-browser-url-readability.md`. Expect these to change when it lands. They are
+    // here so the refusal is a decision the suite states out loud, rather than a silent `continue`
+    // nobody can see.
+
+    func test_bare_microsoft_teams_title_is_refused_pre_verdict() {
+        XCTAssertEqual(
+            admission("Weekly sync | Microsoft Teams"),
+            .weakTitleOnly(matchedTitle: "Weekly sync | Microsoft Teams")
+        )
+    }
+
+    func test_bare_webex_title_is_refused_pre_verdict() {
+        XCTAssertEqual(
+            admission("Webex Meeting - Acme"),
+            .weakTitleOnly(matchedTitle: "Webex Meeting - Acme")
+        )
+    }
+
+    func test_bare_huddle_title_is_refused_pre_verdict() {
+        XCTAssertEqual(
+            admission("Huddle - #engineering"),
+            .weakTitleOnly(matchedTitle: "Huddle - #engineering")
+        )
+    }
+
+    /// The two refusals are different facts and the gate has to tell them apart: an ordinary browser
+    /// window is a clean miss and stays silent, while a weakly-matching one is a refusal that gets
+    /// an event. Collapsing them would drown the signal in one line per browser per poll, all day.
+    func test_an_ordinary_browser_window_is_not_a_refusal() {
+        XCTAssertEqual(admission("Inbox (12) - Gmail"), .noMeetingSignal)
+        XCTAssertEqual(admission(), .noMeetingSignal)
+    }
+
+    /// The URL-fragment disjunct is still live code, and this is the only shape that reaches it: a
+    /// browser that puts the URL in its window title. DET6 exists because no shipping browser does,
+    /// which is why this case is synthetic and the ones above are not.
+    func test_a_url_fragment_in_the_window_title_admits_without_a_strong_title() {
+        XCTAssertEqual(admission("teams.microsoft.com/l/meetup-join/19:meeting"), .admit)
+        XCTAssertEqual(admission("zoom.us/j/8675309"), .admit)
+    }
+
+    /// Zoom-in-browser is refused one step earlier than the other three, and for a different reason:
+    /// `defaultTitleMatchers` carries no Zoom entry at all, so a Zoom web-client tab is not even a
+    /// weak match and produces no event. Pinned so the asymmetry is not mistaken for a bug in the
+    /// refusal path; closing it is part of DET6's measured change.
+    func test_zoom_web_client_title_is_not_even_a_weak_match() {
+        XCTAssertEqual(admission("Zoom Meeting"), .noMeetingSignal)
+    }
+
+    /// One window refusing does not decide the process: a browser holds many tabs, and a strong
+    /// title anywhere admits the whole browser. This is the multi-window OR the inline guards had.
+    func test_a_strong_title_in_any_window_admits_the_browser() {
+        XCTAssertEqual(
+            admission("Weekly sync | Microsoft Teams", "Inbox - Gmail", "Meet - abc-defg-hij"),
+            .admit
+        )
+    }
+
+    /// The refusal reports the title that actually matched, not the first window the browser
+    /// happened to return, or the event names the wrong page.
+    func test_the_refusal_names_the_title_that_matched() {
+        XCTAssertEqual(
+            admission("Inbox - Gmail", "Standup | Microsoft Teams"),
+            .weakTitleOnly(matchedTitle: "Standup | Microsoft Teams")
+        )
+    }
+
+    // MARK: - DET6: the refusal is visible in the event log
+
+    /// The emitted line, not a re-spelling of it: this is the function `emitRejectedBrowserTabs`
+    /// calls, writing through the real `Log.event` into a redirected logs dir (the DET11 shape).
+    func test_refused_browser_tab_emits_browser_tab_rejected() throws {
+        let fm = FileManager.default
+        let logs = fm.temporaryDirectory
+            .appendingPathComponent("mp-det6-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: logs, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: logs) }
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+
+        let scanner = MeetingSourceScanner()
+        let result = scanner.scan(
+            candidates: [],
+            axTrusted: true,
+            rejectedBrowserTabs: [
+                MeetingSourceScanner.RejectedBrowserTab(
+                    bundleID: "com.google.Chrome",
+                    displayName: "Google Chrome",
+                    title: "Weekly sync | Microsoft Teams",
+                    reason: MeetingSourceScanner.RejectedBrowserTab.weakTitleOnly
+                )
+            ]
+        )
+        MeetingDiscoveryWatcher.logRejectedBrowserTabs(result.rejectedBrowserTabs)
+
+        let rows = try String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)
+            .split(separator: "\n")
+            .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+        let refused = rows.filter { $0["action"] as? String == "browser_tab_rejected" }
+
+        XCTAssertEqual(refused.count, 1, "a refused browser tab must not be silent")
+        XCTAssertEqual(refused.first?["category"] as? String, "detector")
+        XCTAssertEqual(refused.first?["bundle_id"] as? String, "com.google.Chrome")
+        XCTAssertEqual(refused.first?["title"] as? String, "Weekly sync | Microsoft Teams")
+        XCTAssertEqual(refused.first?["reason"] as? String, "weak_title_only")
+        XCTAssertEqual(refused.first?["kind"] as? String, "browser")
+    }
+
+    /// The refusal rides beside the scoring decisions rather than through them: a refused tab is not
+    /// a candidate, so it must not appear in `droppedCandidates`, must not count toward
+    /// `candidateCount`, and must not invent a winner.
+    func test_a_refused_browser_tab_is_not_a_candidate() {
+        let scanner = MeetingSourceScanner()
+        let result = scanner.scan(
+            candidates: [],
+            axTrusted: true,
+            rejectedBrowserTabs: [
+                MeetingSourceScanner.RejectedBrowserTab(
+                    bundleID: "com.google.Chrome",
+                    displayName: "Google Chrome",
+                    title: "Webex Meeting - Acme",
+                    reason: MeetingSourceScanner.RejectedBrowserTab.weakTitleOnly
+                )
+            ]
+        )
+        XCTAssertNil(result.winner)
+        XCTAssertEqual(result.candidateCount, 0)
+        XCTAssertTrue(result.droppedCandidates.isEmpty)
+        XCTAssertTrue(result.unreadableNatives.isEmpty)
+        XCTAssertEqual(result.rejectedBrowserTabs.map(\.title), ["Webex Meeting - Acme"])
+    }
+
     // MARK: - PERF6 + DET5: control-button AX-walk gate
 
     func test_idle_backgrounded_app_in_a_multi_native_scan_skips_the_control_walk() {

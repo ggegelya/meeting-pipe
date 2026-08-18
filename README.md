@@ -15,7 +15,7 @@ Record your video meetings on-device, transcribe them with speaker labels, and p
 ## Why
 
 1. **On-device by default.** Audio, transcript, and diarization stay on your Mac. Summarization is the only step that leaves the machine, and only when you keep the Anthropic backend on. Flip `summarization.backend = "local"` for a fully zero-egress pipeline (MLX-Qwen on Metal, no outbound calls).
-2. **Hands-off recording.** Detects Zoom, Teams, Meet, Webex, and Slack huddles across native apps and browser tabs, pops a prompt before each call, and auto-stops when the meeting ends. Transcription runs on-device right after Stop (FluidAudio on the Apple Neural Engine).
+2. **Hands-off recording.** Detects Zoom, Teams, Meet, Webex, and Slack huddles in their native apps and as installed web apps, plus Google Meet in a plain browser tab, pops a prompt before each call, and auto-stops when the meeting ends. Transcription runs on-device right after Stop (FluidAudio on the Apple Neural Engine).
 3. **Owns nothing.** Recordings live in `~/Documents/Meetings/raw/`. Output is plain Markdown. Notion, Obsidian, and filesystem sinks fan out independently, and one going down doesn't block the others.
 
 **Architecture overview:** see [ARCHITECTURE.md](./ARCHITECTURE.md) for the subsystem map, meeting-lifecycle sequence, and the verdict-fusion stack that drives mute handling.
@@ -34,7 +34,7 @@ Then `⌃⌥M` to record manually, or join any meeting and answer the prompt. De
 
 ## What it does
 
-1. **Detects** when you're in a meeting (Zoom, Teams, Slack huddles, Google Meet, Webex — native apps and browser tabs).
+1. **Detects** when you're in a meeting (Zoom, Teams, Slack huddles, Google Meet, Webex, in their native apps or installed as web apps). In a plain browser tab only Google Meet is detected; the others are seen and refused, for the reason under Troubleshooting.
 2. **Asks** to record via an on-screen panel (top-right, Notion-style).
 3. **Captures** system audio (every other process) + your mic into a stereo WAV (mic left, system right) in `~/Documents/Meetings/raw/`.
 4. **Transcribes** on-device with FluidAudio (Parakeet TDT for ASR, pyannote for speaker diarization, both on the Apple Neural Engine).
@@ -637,6 +637,8 @@ There are no microphone or output-device settings — the daemon auto-detects bo
 ---
 
 ## Troubleshooting
+
+**A meeting in a plain browser tab is not detected unless it is Google Meet.** This is a known limit rather than a misconfiguration. A browser window's title carries the page title, not the address, and a title that merely contains "Microsoft Teams" or "Webex" cannot be told apart from a page *about* those products, so admitting one would pop a Record prompt over a comparison article. Google Meet is the exception because a live call's title carries the room code. The same meetings **are** detected in their native apps, and in a browser installed as an app (Chrome or Edge's "Install this site as an app"), which is the workaround. A refused tab is not silent: it writes a line you can read with `mp logs --action browser_tab_rejected`, naming the browser and the tab title. Whether the limit can be lifted is an open measurement, not a decision anyone has taken; the instrument and the pre-registered verdict tree are in `docs/spikes/det6-browser-url-readability.md`.
 
 **No recording starts when I join a Zoom call.** Check Accessibility first, in **Preferences ▸ Permissions**: without that grant no native meeting is detected at all (the whole discovery scan reads windows and call controls through it), and a grant made after the app launched does not take effect until the app is restarted. Past that, detection fuses several signals (the meeting app running and frontmost, its audio-process activity, and window-title / screen-share cues) rather than requiring the mic to be held, so joining muted still triggers it. A catch-all backstop also raises a quiet generic "Record?" prompt when the mic stays held by a plausible meeting app (a browser, FaceTime, Discord, …) for ~30 s and nothing else matched, so a call on a domain the whitelist never listed still gets caught (permission-light: it needs neither Accessibility nor Screen Recording). If a call is still missed, start recording manually with the `⌃⌥M` hotkey. To teach the daemon a meeting app it does not know without rebuilding, drop a `~/.config/meeting-pipe/meeting_apps.toml` overlay next to `config.toml` (same tables as the bundled list: `[native]`, `[browser.bundles]`, `[browser].url_fragments`, `[mic_plausible]`) and relaunch; its entries are unioned over the built-in defaults.
 
