@@ -102,6 +102,34 @@ final class LibraryProcessingTests: XCTestCase {
         XCTAssertEqual(p.label, "Summarizing with Anthropic")
     }
 
+    // MARK: - The phases before the first heartbeat (UX69)
+
+    func test_the_transcription_pass_reads_as_transcribing_with_no_clock() {
+        // Published at the start of the daemon's own pass, which has no heartbeat
+        // to ride and so put nothing on the row at all until the pipeline was up
+        // 58.6 s later. There is no elapsed time to render, and a clock frozen at
+        // 0:00 for a minute reads as a stuck row rather than as a phase.
+        let p = LibraryProcessing.presentation(
+            stem: "m",
+            active: active(stage: SinkDispatcher.transcribeStage, elapsed: 0),
+            pending: []
+        )
+        XCTAssertEqual(p.label, "Transcribing")
+        XCTAssertTrue(p.canCancel, "the pass is interruptible, which is why the row offers this")
+    }
+
+    func test_a_spawned_pipeline_reads_as_processing_until_it_beats() {
+        let p = LibraryProcessing.presentation(
+            stem: "m",
+            active: active(stage: SinkDispatcher.spawnedStage, elapsed: 0),
+            pending: []
+        )
+        // Deliberately not one of the pipeline's own stage names: it is up and has
+        // not said what it is doing yet, and the daemon must not answer for it.
+        XCTAssertEqual(p.label, "Processing")
+        XCTAssertTrue(p.canCancel)
+    }
+
     func test_a_queued_job_says_what_it_is_waiting_to_do() {
         let p = LibraryProcessing.presentation(stem: "m", active: nil, pending: [queued(label: "Reprocess")])
         XCTAssertEqual(p.label, "Queued: Reprocess")

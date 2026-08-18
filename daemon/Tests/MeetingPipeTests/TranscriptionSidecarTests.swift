@@ -316,3 +316,45 @@ final class FluidAudioRunnerEmbeddingTests: XCTestCase {
         XCTAssertEqual(out["speaker_1"]?.count, 3)
     }
 }
+
+/// UX69: the runner's half of `TranscriptionRunner`'s cancellation contract.
+///
+/// Only the first checkpoint is reachable without models on the machine, and it
+/// is the one worth a fence anyway: it is what makes a Cancel that lands before
+/// the engine is up cost nothing, and it is the line a later edit would most
+/// easily drop. The checkpoints further in, and FluidAudio's own per-chunk ones
+/// inside `AsrManager.transcribe`, need a real Parakeet load and a real WAV, so
+/// they are covered by the dispatcher-level tests in `SinkDispatcherTests` over a
+/// runner that participates in cancellation the same way.
+///
+/// One thing to know before reading a failure here: with the checkpoint removed
+/// this test proceeds into the real model load, so it goes red slowly (33 s
+/// locally, and on a runner with no cached Parakeet it reaches for the network
+/// and reports `modelLoadFailed` instead). Red either way, but the shape of the
+/// failure is a symptom of the same missing line rather than a second problem.
+final class FluidAudioRunnerCancellationTests: XCTestCase {
+
+    func test_a_cancelled_pass_throws_before_the_models_are_touched() async {
+        let runner = FluidAudioRunner()
+        let wav = URL(fileURLWithPath: "/nonexistent/mp-ux69.wav")
+
+        let task = Task { () -> TranscriptSidecar in
+            // Park until the cancel below is observed, so the call below is
+            // entered with the flag already set. Spinning rather than sleeping
+            // keeps this free of a timing window: without it, a body that starts
+            // first would reach the model load and download Parakeet.
+            while !Task.isCancelled { await Task.yield() }
+            return try await runner.transcribe(wavURL: wav, languageHint: nil)
+        }
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("a cancelled pass must not return a sidecar")
+        } catch is CancellationError {
+            // The contract.
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+    }
+}

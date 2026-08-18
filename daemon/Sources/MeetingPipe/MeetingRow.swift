@@ -392,6 +392,12 @@ struct MeetingRow: View, Equatable {
     /// Maps a pipeline stage id to a present-tense label.
     static func stageLabel(_ stage: String) -> String {
         switch stage {
+        // UX69: the daemon's own ASR pass, which is not one of the pipeline's
+        // stages and is the phase a long meeting spends most of its first minute
+        // in. It reached the row as the default "Processing" before the pass was
+        // interruptible, and naming it is what lets the owner tell the half that
+        // stops instantly from the half that runs out of process.
+        case "transcribe":      return "Transcribing"
         case "finalize":        return "Finalizing"
         case "diarize_cleanup": return "Cleaning up"
         case "summarize":       return "Summarizing"

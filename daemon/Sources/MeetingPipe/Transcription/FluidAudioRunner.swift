@@ -43,10 +43,25 @@ final class FluidAudioRunner: TranscriptionRunner {
         self.clusteringThreshold = clusteringThreshold
     }
 
+    /// UX69: the checkpoints below are this file's half of `TranscriptionRunner`'s
+    /// cancellation contract. The engine calls between them carry the other half
+    /// and are not equal: `AsrManager.transcribe` routes long audio through
+    /// FluidAudio's own `ChunkProcessor`, which calls `Task.checkCancellation()`
+    /// once per chunk and again before every CoreML prediction, so a click during
+    /// the ASR phase lands within a chunk. `DiarizerManager.performCompleteDiarization`
+    /// is synchronous and declares no checkpoint of its own, so a click that lands
+    /// inside it is honoured when it returns rather than mid-pass. That bound is
+    /// the reason the checkpoint after it exists, and it is upstream's to remove:
+    /// driving the diarizer chunk by chunk here to shorten it would re-implement
+    /// its speaker tracking and move output DIAR2 tuned against a hand-labelled
+    /// corpus, which is a migration (DIAR4) and not a cancel.
     func transcribe(
         wavURL: URL,
         languageHint: String?
     ) async throws -> TranscriptSidecar {
+        // Ahead of the model load, so a click that lands before the engine is up
+        // does not first download or compile anything.
+        try Task.checkCancellation()
         let asr = try await ensureAsr()
         let language = Self.resolveLanguage(hint: languageHint)
 
@@ -61,6 +76,7 @@ final class FluidAudioRunner: TranscriptionRunner {
             throw TranscriptionError.audioReadFailed(wavURL, underlying: error)
         }
 
+        try Task.checkCancellation()
         var decoderState = TdtDecoderState.make()
         let asrResult: ASRResult
         do {
@@ -77,14 +93,25 @@ final class FluidAudioRunner: TranscriptionRunner {
         var speakerEmbeddings: [String: [Float]] = [:]
         var diarizationOK = true
         var diarizationFailureReason: String? = nil
+        try Task.checkCancellation()
         do {
             let diarized = try await runDiarization(samples: samples)
             speakers = diarized.spans
             speakerEmbeddings = diarized.embeddings
+        } catch is CancellationError {
+            // A cancel is not a diarization fault, and degrading it into one is
+            // the exact trap `TranscriptionRunner`'s contract names: this catch
+            // exists so a meeting whose diarizer failed still gets its transcript,
+            // and swallowing a cancel here would hand the caller a finished
+            // sidecar for a job the owner stopped, which then spawns the pipeline.
+            throw CancellationError()
         } catch {
             diarizationOK = false
             diarizationFailureReason = String(describing: error)
         }
+        // The one stretch above with no checkpoint inside it, so this is where a
+        // click that landed during it is honoured.
+        try Task.checkCancellation()
 
         let tokens = Self.tokens(from: asrResult)
         let built = SegmentBuilder.build(

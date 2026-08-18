@@ -49,7 +49,15 @@ enum ProcessingPresentation: Equatable {
             return ""
         case .active(let p):
             if let label = p.label, !label.isEmpty { return label }
-            return "\(MeetingRow.stageLabel(p.stage)) \(MeetingRow.formatDuration(Double(p.elapsedSec)))"
+            let stage = MeetingRow.stageLabel(p.stage)
+            // UX69: the two phases published before the pipeline's first
+            // heartbeat carry no elapsed time to render, and a clock frozen at
+            // 0:00 for the length of a long meeting's ASR pass reads as a stuck
+            // row rather than as a phase without a clock. A real heartbeat never
+            // arrives at zero: the pipeline beats every 5 s, so the first one it
+            // sends already says 5.
+            guard p.elapsedSec > 0 else { return stage }
+            return "\(stage) \(MeetingRow.formatDuration(Double(p.elapsedSec)))"
         case .queued(let job):
             return "Queued: \(job.label)"
         }

@@ -39,7 +39,14 @@ final class SinkDispatcher: @unchecked Sendable {
     /// Fires once per job at completion (success or failure), on main.
     var onJobCompleted: ((ProcessingJob, Result<URL?, Error>) -> Void)?
 
-    /// Live pipeline progress for the active job (TECH-UX5): (stem, stage+elapsed). Main queue.
+    /// The active job's live phase (TECH-UX5): (stem, stage+elapsed). Main queue.
+    ///
+    /// Named for the pipeline heartbeat it was built for, and since UX69 it
+    /// carries the two phases that come before the first beat as well: the
+    /// daemon's own transcription pass, and the moment the pipeline subprocess is
+    /// spawned. It is one channel rather than three because the row's entry is
+    /// one thing with one clear (`onActiveProgressEnded`), and UX50 was filed over
+    /// what happens when the writes and the clear stop matching.
     var onActiveProgress: ((String, PipelineProgress) -> Void)?
 
     /// The active job's live progress entry has ended (UX50). Fires once per job
@@ -58,6 +65,14 @@ final class SinkDispatcher: @unchecked Sendable {
 
     private var processingJobs: [ProcessingJob] = []
     private var activeJob: ProcessingJob?
+
+    /// The active job's in-daemon transcription pass, retained so Cancel can
+    /// interrupt it (UX69). Nil whenever no pass is running, which is every
+    /// moment of a `.libraryRun` and every moment of a full job after the
+    /// pipeline subprocess takes over. Cancelling a Task that has already
+    /// finished is a no-op, so `cancelActiveJob` signals it unconditionally
+    /// rather than branching on which half of the job is live.
+    private var transcriptionTask: Task<Void, Never>?
 
     /// Per-job completions for `.retranscribe` jobs (ASR3), keyed by job id. The
     /// broadcast `onJobCompleted` is a fan-out to the notifier and the badge; a
@@ -251,7 +266,11 @@ final class SinkDispatcher: @unchecked Sendable {
         // The job that just became active left the pending list (UX28).
         publishQueueState()
 
-        Task { [weak self] in
+        // UX69: held onto, because this Task is the only handle on the daemon's
+        // own FluidAudio pass and Cancel has to be able to stop it. Before that,
+        // the click reached `cancelActiveRun`, which had nothing to signal until
+        // the pipeline spawned about a minute later on a long meeting.
+        transcriptionTask = Task { [weak self] in
             await self?.runDaemonTranscription(job: next)
         }
     }
@@ -285,12 +304,41 @@ final class SinkDispatcher: @unchecked Sendable {
         // for recovery and is never destroyed on failure.
         await MuteRedactor.redactIfNeeded(wav: job.file)
 
+        let loc = SinkDispatcher.sidecarLocation(for: job)
+        // UX69 leg (b): the row's live entry begins here, not at the pipeline's
+        // first heartbeat. On the owner's 110 minute meeting those were 58.6 s
+        // apart, and about 52.5 s of that gap was this pass, which scales with
+        // meeting length. Publishing it here is only honest because the pass is
+        // now interruptible: the entry is what puts Cancel on the row, and a
+        // Cancel that cannot stop the work is worse than no Cancel at all.
+        //
+        // A `.retranscribe` is deliberately left out. It is started from a
+        // Library surface that already shows its own progress and result (ASR3),
+        // so an entry here would render one run in two places, and its Cancel is
+        // withheld for the same reason.
+        if job.kind == .full {
+            await MainActor.run {
+                self.onActiveProgress?(
+                    loc.stem,
+                    PipelineProgress(stage: SinkDispatcher.transcribeStage, elapsedSec: 0)
+                )
+            }
+        }
+
         Log.event(category: "transcription", action: "engine_started", attributes: [
             "file": job.file.lastPathComponent,
             "engine": transcriptionRunner.backendName,
         ])
         do {
             let sidecar = try await transcriptionRunner.transcribe(wavURL: job.file, languageHint: languageHint)
+            // UX69: the pass can also finish in the moments after the click, with
+            // nothing left to throw from. Checking here, before anything is
+            // written, is what stops that click being silently swallowed and the
+            // pipeline spawning for a job the owner stopped. Deliberately ahead
+            // of the sidecar write: a retry re-derives the transcript from the
+            // audio anyway, so discarding it costs nothing and keeps a cancelled
+            // job from leaving half its artifacts behind.
+            try Task.checkCancellation()
             let jsonURL = job.file
                 .deletingPathExtension()
                 .appendingPathExtension("json")
@@ -314,6 +362,34 @@ final class SinkDispatcher: @unchecked Sendable {
                 }
             }
         } catch {
+            // UX69: the owner pressed Cancel and this is not a fault, so nothing
+            // reports it as one. `engine_failed` does not fire (the
+            // `pipeline_cancelled` the click already wrote is the record of it),
+            // and the completion below answers `PipelineLauncher.isCancellation`,
+            // which is what keeps `pipeline_failed`, the error banner, and the
+            // notification quiet downstream. UX50's shape reused, rather than a
+            // second cancellation vocabulary invented beside it.
+            //
+            // The marker is written here too, and that is the half that is easy
+            // to get wrong: a terminal sidecar is the only thing keeping the row
+            // out of the 2 hour age fallback, which turns a row stuck in
+            // Processing into a `Failed` naming no reason at all. That is the
+            // empty-recording bug this repo has already been burned by, and it is
+            // why every way out of a cancelled pass writes one.
+            if PipelineLauncher.isCancellation(error) {
+                Log.writeLine("daemon", "transcription cancelled -> \(loc.stem)")
+                await MainActor.run {
+                    if job.kind == .full {
+                        PipelineFailureSidecar.write(
+                            stem: loc.stem, in: loc.dir,
+                            stage: SinkDispatcher.stage(for: error),
+                            reason: SinkDispatcher.cancelledReason
+                        )
+                    }
+                    self.completeActiveJob(job, with: .failure(error))
+                }
+                return
+            }
             Log.main.error("\(self.transcriptionRunner.backendName) transcription failed: \(error.localizedDescription)")
             Log.event(category: "transcription", action: "engine_failed", attributes: [
                 "file": job.file.lastPathComponent,
@@ -322,7 +398,6 @@ final class SinkDispatcher: @unchecked Sendable {
                 "kind": job.kind == .retranscribe ? "retranscribe" : "full",
             ])
             await MainActor.run {
-                let loc = SinkDispatcher.sidecarLocation(for: job)
                 // A failed re-transcribe wrote nothing: the meeting still has the
                 // transcript and summary it had before, so marking the row failed
                 // would be a lie about a healthy meeting. The caller surfaces the
@@ -374,6 +449,13 @@ final class SinkDispatcher: @unchecked Sendable {
     private func invokePipeline(for job: ProcessingJob) {
         let stem = SinkDispatcher.sidecarLocation(for: job).stem
         startStallTracking(stem: stem)
+        // UX69 leg (a): the row's entry moves to the pipeline's own phase when the
+        // subprocess is spawned, rather than at its first heartbeat 5 s later.
+        // `runAll` puts that spawn in `cancelActiveRun`'s slot on this same main
+        // queue turn, so there is no moment in which the row offers a Cancel with
+        // nothing behind it. It also stops the row still claiming to be
+        // transcribing after the pass it names has finished.
+        onActiveProgress?(stem, PipelineProgress(stage: SinkDispatcher.spawnedStage, elapsedSec: 0))
         launcher.runAll(
             wav: job.file,
             summaryMode: job.summaryMode,
@@ -435,6 +517,11 @@ final class SinkDispatcher: @unchecked Sendable {
 
     private func completeActiveJob(_ job: ProcessingJob, with result: Result<URL?, Error>) {
         stopStallTracking()
+        // UX69: this job's pass is over however it ended, so drop the handle
+        // before the next job's is taken below. Holding a finished one would make
+        // a later Cancel signal a Task that cannot answer, which is harmless but
+        // reads as though it could.
+        transcriptionTask = nil
         // The live progress entry ends with the job, on every path, for the same
         // reason the busy chip below does (UX50). It used to be cleared by the
         // *routing* of the completion instead, so the two paths that deliberately
@@ -490,14 +577,34 @@ final class SinkDispatcher: @unchecked Sendable {
     /// same shape as PIPE3's stranded-job reason.
     static let cancelledReason = "You cancelled this run. Reprocess to run it again."
 
+    /// The two phases the row shows before the pipeline's first heartbeat (UX69).
+    ///
+    /// Deliberately neither of them one of `mp run-all`'s own stage names
+    /// (`finalize`, `diarize_cleanup`, `summarize`, `publish`). Those are the
+    /// pipeline's claims about itself, and the daemon must not make one on its
+    /// behalf: the first is its own ASR pass, and the second is a subprocess that
+    /// is up but has not said what it is doing yet. `MeetingRow.stageLabel`
+    /// renders the first as "Transcribing" and falls the second through to its
+    /// "Processing" default, which is exactly the second one's claim.
+    static let transcribeStage = "transcribe"
+    static let spawnedStage = "starting"
+
     /// Cancel the active pipeline subprocess (TECH-UX5). The launcher terminates
     /// it; the termination handler then completes the job as a failure, which is
     /// what makes the row retryable and is deliberate. UX50 narrowed which
     /// failure: a cancelled run lands as `LaunchError.cancelled`, so the row
     /// stays actionable while nothing reports the app's own kill as a fault.
+    /// UX69: a full job has two halves and the click does not know which one it
+    /// landed in, so both are signalled. The daemon's own FluidAudio pass runs
+    /// inside `transcriptionTask` and stops by having that Task cancelled; the
+    /// pipeline is a subprocess and stops by SIGTERM. Each call is a no-op for
+    /// the half that is not running (a finished Task ignores `cancel()`, and
+    /// `cancelActiveRun` finds an empty slot), which is why this asks neither
+    /// which phase is live nor keeps a second copy of that answer.
     func cancelActiveJob() {
         guard activeJob != nil else { return }
         Log.event(category: "coordinator", action: "pipeline_cancelled", attributes: [:])
+        transcriptionTask?.cancel()
         launcher.cancelActiveRun()
     }
 
@@ -506,15 +613,17 @@ final class SinkDispatcher: @unchecked Sendable {
          job.file.deletingLastPathComponent())
     }
 
-    /// Attribute a pipeline failure to the stage that produced it. A missing executable is the only launch-stage failure. `mp` exits `publishFailedExitCode` when every configured sink failed (PIPE1), which leaves a complete summary on disk, so the Library can retry publish alone. A cancelled run (UX50) is `.interrupted`, PIPE3's label for work that stopped without faulting; it carries no exit code, so it cannot collide with the publish contract. A memory refusal or watchdog abort (LOCAL16) is recognised by the marker its message carries, because it has no exit code of its own and "Summarize and publish failed" would hide the one fact the user can act on. Everything else faults somewhere inside summarize/publish and gets the coarse `.pipeline` label. Internal for `SinkDispatcherTests`.
+    /// Attribute a pipeline failure to the stage that produced it. A missing executable is the only launch-stage failure. `mp` exits `publishFailedExitCode` when every configured sink failed (PIPE1), which leaves a complete summary on disk, so the Library can retry publish alone. A cancelled run (UX50) is `.interrupted`, PIPE3's label for work that stopped without faulting; it carries no exit code, so it cannot collide with the publish contract, and since UX69 that covers a cancel during the daemon's own transcription pass too, which arrives as a `CancellationError` instead. A memory refusal or watchdog abort (LOCAL16) is recognised by the marker its message carries, because it has no exit code of its own and "Summarize and publish failed" would hide the one fact the user can act on. Everything else faults somewhere inside summarize/publish and gets the coarse `.pipeline` label. Internal for `SinkDispatcherTests`.
     static func stage(for error: Error) -> PipelineFailureSidecar.Stage {
+        // Asked first, and through the one predicate, because since UX69 a cancel
+        // arrives as either of two error types depending on which half of the job
+        // the click landed in, and both mean the same thing to the row.
+        if PipelineLauncher.isCancellation(error) { return .interrupted }
         switch error {
         case PipelineLauncher.LaunchError.mpNotFound:
             return .launch
         case PipelineLauncher.LaunchError.nonZeroExit(PipelineLauncher.publishFailedExitCode, _):
             return .publish
-        case PipelineLauncher.LaunchError.cancelled:
-            return .interrupted
         default:
             let reason = error.localizedDescription
             if reason.range(

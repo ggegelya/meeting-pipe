@@ -75,7 +75,7 @@ Both the flag and the off-the-record keys do nothing when no recording is runnin
 
 Normally you do not: the app notices the call ended and stops on its own. Otherwise, press `⌃⌥M` again, click **Stop recording** on the recording panel, or pick **Stop Recording** from the menu bar. `⌃⌥⇧M` is the panic key: it only ever stops, so it can never start a recording by accident.
 
-After Stop, the Mac transcribes the audio, writes the summary, and publishes it. You get a notification when it is done, and the Library row moves through Processing to Ready on its own.
+After Stop, the Mac transcribes the audio, writes the summary, and publishes it. You get a notification when it is done, and the Library row moves through Processing to Ready on its own. While it works, the row says which part it is on (**Transcribing** while the Mac is turning the audio into words, then **Summarizing** and **Publishing**) and carries a **Cancel** beside it the whole time, from the moment it starts rather than a minute in. Stopping it is safe at any point: nothing is reported as an error, and the meeting stays one click from running again.
 
 Finishing a recording takes a second or two. If it ever takes much longer, you get a notification saying so rather than a row that quietly sits there; the recording itself is safe on disk either way, and quitting the app is always allowed, including mid-recording. Whatever was captured is picked up and finished the next time the app starts.
 
@@ -446,7 +446,7 @@ Failed meetings collect in the Library's **Needs you** rail, which carries an am
 
 Some failures lead with a more specific fix than plain Retry, because plain Retry would just fail again. A summary the engine refused because of the language leads with re-summarizing on the on-device model. A confidential meeting that needed a model you have not downloaded leads with **Download model**, then Retry.
 
-A meeting you stopped yourself lands here too, and says so: **Interrupted**, with "You cancelled this run. Reprocess to run it again." Nothing is reported when you press Cancel, since you asked for it; the row is here only so the meeting stays one click from running again rather than looking finished when it is not.
+A meeting you stopped yourself lands here too, and says so: **Interrupted**, with "You cancelled this run. Reprocess to run it again." That is the same whichever part you stopped, including one you cancel while it is still transcribing. Nothing is reported when you press Cancel, since you asked for it; the row is here only so the meeting stays one click from running again rather than looking finished when it is not.
 
 ### When a re-transcribe is the answer
 

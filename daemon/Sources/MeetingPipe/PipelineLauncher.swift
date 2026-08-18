@@ -501,16 +501,25 @@ final class PipelineLauncher: PipelineDriver {
         }
     }
 
-    /// True when the run ended because this app terminated it on the owner's
+    /// True when the run ended because this app stopped it on the owner's
     /// Cancel, rather than because anything went wrong (UX50).
     ///
     /// Every surface that reports a pipeline failure has to ask this first. The
     /// app sends the SIGTERM itself, so without the check it reports its own
     /// deliberate action back to the person who asked for it, as an unexplained
     /// failure captioned with whatever the child happened to log last.
+    ///
+    /// Two error types mean it, because a full job has two halves and only the
+    /// second one is a subprocess (UX69). `LaunchError.cancelled` is a spawn this
+    /// app sent a SIGTERM to. `CancellationError` is the daemon's own FluidAudio
+    /// pass, which has no process to signal and is stopped by cancelling the Task
+    /// it runs in, so it reports itself in Swift's own vocabulary. One click can
+    /// produce either depending on which half it lands in, so both answer this
+    /// one predicate rather than growing a second one every surface would have to
+    /// remember to ask as well.
     static func isCancellation(_ error: Error) -> Bool {
         if case LaunchError.cancelled = error { return true }
-        return false
+        return error is CancellationError
     }
 
     /// Log levels the pipeline's formatter can put on a line. Python's standard

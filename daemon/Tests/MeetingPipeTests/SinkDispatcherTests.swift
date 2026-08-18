@@ -278,9 +278,12 @@ final class SinkDispatcherTests: XCTestCase {
         driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: 12))
         drainMain()
 
-        XCTAssertEqual(progress.count, 1)
-        XCTAssertEqual(progress.first?.0, "clip")
-        XCTAssertEqual(progress.first?.1, PipelineProgress(stage: "summarize", elapsedSec: 12))
+        // Three entries reach the row for one job since UX69 (the transcription
+        // pass, the spawn, then this beat), so the heartbeat is the last rather
+        // than the only one. Which entries arrive is pinned by the UX69 tests at
+        // the foot of this file; what this one is about is the fan-out.
+        XCTAssertEqual(progress.last?.0, "clip")
+        XCTAssertEqual(progress.last?.1, PipelineProgress(stage: "summarize", elapsedSec: 12))
     }
 
     func test_cancel_active_job_terminates_the_run() throws {
@@ -652,7 +655,8 @@ final class SinkDispatcherTests: XCTestCase {
         driver.finish(.failure(PipelineLauncher.LaunchError.cancelled))
         drainMain()
 
-        XCTAssertEqual(progress.count, 1, "there has to be a live entry for the row to be left holding")
+        XCTAssertEqual(progress.last?.1.stage, "diarize_cleanup",
+                       "there has to be a live entry for the row to be left holding")
         XCTAssertEqual(ended, 1, "the entry a heartbeat put on the row has to end with the job")
     }
 
@@ -1189,5 +1193,258 @@ final class SinkDispatcherTests: XCTestCase {
 
         guard case .failure? = landed else { return XCTFail("expected the failure to surface") }
         XCTAssertEqual(dispatcher.queueDepth, 0)
+    }
+
+    // MARK: - Cancel before the pipeline exists (UX69)
+
+    /// A pass that occupies its Task the way the real FluidAudio one occupies it
+    /// for tens of seconds on a long meeting, and reports the click by throwing,
+    /// which is what a cooperative checkpoint does.
+    private final class ParkedRunner: TranscriptionRunner {
+        let backendName = "parked"
+        let started = XCTestExpectation(description: "the transcription pass is running")
+
+        struct NeverCancelled: Error {}
+
+        func transcribe(wavURL: URL, languageHint: String?) async throws -> TranscriptSidecar {
+            started.fulfill()
+            // A cancelled sleep throws `CancellationError`, which is how
+            // FluidAudio's own chunk loop reports the click to its caller.
+            try await Task.sleep(nanoseconds: 30 * NSEC_PER_SEC)
+            throw NeverCancelled()
+        }
+    }
+
+    /// The other exit a cancelled pass can take: it finishes successfully in the
+    /// moments after the click, so the runner has nothing left to throw from.
+    private final class LateFinishRunner: TranscriptionRunner {
+        let backendName = "late"
+        let started = XCTestExpectation(description: "the transcription pass is running")
+
+        func transcribe(wavURL: URL, languageHint: String?) async throws -> TranscriptSidecar {
+            started.fulfill()
+            while !Task.isCancelled { await Task.yield() }
+            return TranscriptSidecar(
+                language: "en",
+                segments: [],
+                audioPath: wavURL.path,
+                audioSeconds: 0,
+                model: "late",
+                backend: backendName,
+                diarization: false,
+                diarizationFailed: false,
+                diarizationFailureReason: nil,
+                streaming: false,
+                finalized: true
+            )
+        }
+    }
+
+    private func makeParkedDispatcher(
+        _ driver: FakeDriver, _ runner: TranscriptionRunner
+    ) -> SinkDispatcher {
+        SinkDispatcher(launcher: driver, transcriptionRunner: runner)
+    }
+
+    /// Leg (a), the acceptance: the row's entry is published when the subprocess is
+    /// spawned rather than when it first beats. Those were 5.1 s apart on the
+    /// owner's run of `20260716-163031`, and no heartbeat is emitted here, so
+    /// anything the row got arrived without one.
+    func test_the_row_gets_an_entry_when_the_pipeline_subprocess_is_spawned() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        var progress: [(String, PipelineProgress)] = []
+        dispatcher.onActiveProgress = { progress.append(($0, $1)) }
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        drainMain()
+
+        XCTAssertEqual(progress.last?.0, "clip")
+        XCTAssertEqual(progress.last?.1.stage, SinkDispatcher.spawnedStage)
+        XCTAssertEqual(progress.last?.1.elapsedSec, 0,
+                       "nothing has beat yet, so there is no elapsed time to claim")
+    }
+
+    /// Leg (b)'s visible half: the entry exists from the start of the daemon's own
+    /// pass, which is where 52.5 s of the owner's 58.6 s window went and the share
+    /// that scales with meeting length.
+    func test_the_row_gets_an_entry_when_the_transcription_pass_starts() throws {
+        let driver = FakeDriver()
+        let runner = ParkedRunner()
+        let dispatcher = makeParkedDispatcher(driver, runner)
+        var progress: [(String, PipelineProgress)] = []
+        dispatcher.onActiveProgress = { progress.append(($0, $1)) }
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        wait(for: [runner.started], timeout: 2.0)
+        drainMain()
+
+        XCTAssertTrue(driver.startedFiles.isEmpty,
+                      "the pipeline has not spawned yet, which is the whole point of this entry")
+        XCTAssertEqual(progress.first?.0, "clip")
+        XCTAssertEqual(progress.first?.1.stage, SinkDispatcher.transcribeStage)
+
+        dispatcher.cancelActiveJob()
+        drainMain()
+    }
+
+    /// A re-transcribe is left out on purpose: it runs from a Library surface that
+    /// shows its own progress and result (ASR3), so an entry here would render one
+    /// run twice, and it is also why its Cancel is not offered.
+    func test_a_retranscribe_publishes_no_row_entry() throws {
+        let driver = FakeDriver()
+        let runner = ParkedRunner()
+        let dispatcher = makeParkedDispatcher(driver, runner)
+        var progress: [(String, PipelineProgress)] = []
+        dispatcher.onActiveProgress = { progress.append(($0, $1)) }
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueueRetranscribe(file: wav) { _ in }
+        wait(for: [runner.started], timeout: 2.0)
+        drainMain()
+
+        XCTAssertTrue(progress.isEmpty)
+
+        dispatcher.cancelActiveJob()
+        drainMain()
+    }
+
+    /// Leg (b), the acceptance: a Cancel during the daemon's own pass stops the
+    /// work and lands the way the run-all cancel does. The pipeline never spawns,
+    /// the marker is terminal and honest, and the job still completes as a failure,
+    /// which is what keeps the row retryable.
+    func test_a_cancel_during_transcription_lands_as_a_cancellation() throws {
+        let driver = FakeDriver()
+        let runner = ParkedRunner()
+        let dispatcher = makeParkedDispatcher(driver, runner)
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        wait(for: [runner.started], timeout: 2.0)
+        dispatcher.cancelActiveJob()
+        waitForJobCompletion { completed.count }
+
+        XCTAssertTrue(driver.startedFiles.isEmpty,
+                      "the pass was stopped, so the pipeline must never have spawned")
+        let failure = PipelineFailureSidecar.read(stem: "clip", in: dir)
+        XCTAssertEqual(failure?.stage, .interrupted)
+        XCTAssertEqual(failure?.reason, SinkDispatcher.cancelledReason)
+        guard case .failure(let err)? = completed.first?.1 else {
+            return XCTFail("a cancelled pass still completes as a failure, which is what keeps it retryable")
+        }
+        XCTAssertTrue(PipelineLauncher.isCancellation(err),
+                      "every surface that stays quiet downstream is gated on this one predicate")
+        XCTAssertEqual(dispatcher.queueDepth, 0, "the lane drains, or the next meeting waits forever")
+    }
+
+    /// The exit with no error to carry the click: the pass finishes in the moments
+    /// after Cancel, so nothing throws. Without the dispatcher's own checkpoint the
+    /// click is swallowed and the pipeline spawns for a job the owner stopped, with
+    /// no marker written, which is the shape that leaves a row in Processing until
+    /// the 2 hour age fallback turns it into a `Failed` naming no reason at all.
+    func test_a_cancel_that_lands_as_the_pass_finishes_still_stops_the_job() throws {
+        let driver = FakeDriver()
+        let runner = LateFinishRunner()
+        let dispatcher = makeParkedDispatcher(driver, runner)
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        wait(for: [runner.started], timeout: 2.0)
+        dispatcher.cancelActiveJob()
+        waitForJobCompletion { completed.count }
+
+        XCTAssertTrue(driver.startedFiles.isEmpty,
+                      "the click landed before the spawn, so the spawn must not happen")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: dir.appendingPathComponent("clip.json").path),
+            "a cancelled job leaves no half-finished artifacts; a retry re-derives the transcript"
+        )
+        let failure = PipelineFailureSidecar.read(stem: "clip", in: dir)
+        XCTAssertEqual(failure?.stage, .interrupted, "the marker is owed on this path too")
+        XCTAssertEqual(failure?.reason, SinkDispatcher.cancelledReason)
+    }
+
+    /// The quiet half, read out of the log rather than off the screen. UX50 stopped
+    /// `pipeline_failed` firing for a cancel; the pass has its own failure event and
+    /// it stays quiet for exactly the same reason.
+    func test_a_cancel_during_transcription_logs_no_failure() throws {
+        let driver = FakeDriver()
+        let runner = ParkedRunner()
+        let dispatcher = makeParkedDispatcher(driver, runner)
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        wait(for: [runner.started], timeout: 2.0)
+        dispatcher.cancelActiveJob()
+        waitForJobCompletion { completed.count }
+
+        let actions = try String(
+            contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8
+        )
+        .split(separator: "\n")
+        .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+        .compactMap { $0["action"] as? String }
+
+        XCTAssertTrue(actions.contains("pipeline_cancelled"))
+        XCTAssertFalse(actions.contains("engine_failed"),
+                       "the owner stopped the pass; the engine did not fail")
+        XCTAssertFalse(actions.contains("pipeline_failed"))
+    }
+
+    /// The row's entry ends with the job on this path too. UX50 was filed a second
+    /// time over a row left rendering its last phase after a cancel, and the pass
+    /// is now a writer of that same entry.
+    func test_a_cancelled_transcription_ends_the_rows_live_progress_entry() throws {
+        let driver = FakeDriver()
+        let runner = ParkedRunner()
+        let dispatcher = makeParkedDispatcher(driver, runner)
+        var ended = 0
+        var completed = 0
+        dispatcher.onActiveProgressEnded = { ended += 1 }
+        dispatcher.onJobCompleted = { _, _ in completed += 1 }
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        wait(for: [runner.started], timeout: 2.0)
+        dispatcher.cancelActiveJob()
+        waitForJobCompletion { completed }
+
+        XCTAssertEqual(ended, 1)
+    }
+
+    /// UX69 reuses UX50's predicate rather than growing a second one, so the two
+    /// halves of a job report the same click with different error types and every
+    /// surface asks one question.
+    func test_a_cancelled_transcription_pass_maps_to_the_interrupted_stage() {
+        XCTAssertTrue(PipelineLauncher.isCancellation(CancellationError()))
+        XCTAssertEqual(SinkDispatcher.stage(for: CancellationError()), .interrupted)
+        struct Boom: Error {}
+        XCTAssertFalse(PipelineLauncher.isCancellation(Boom()))
+        XCTAssertEqual(SinkDispatcher.stage(for: Boom()), .pipeline,
+                       "a genuine transcription fault is still a fault")
     }
 }

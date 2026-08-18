@@ -59,6 +59,20 @@ protocol TranscriptionRunner: AnyObject {
 
     /// Run ASR + diarization and return the sidecar. languageHint is the workflow's
     /// language code (en/uk/es/ru/auto); runners may ignore it for auto-detection.
+    ///
+    /// **Cancellable, and that is part of the contract (UX69).** The pass takes
+    /// tens of seconds on a long meeting and scales with its length, so the
+    /// Library offers a Cancel while it runs; the owner's click cancels the Task
+    /// this is called in, and an implementation is required to notice and throw
+    /// `CancellationError` rather than run to completion. There is no `cancel()`
+    /// method here on purpose: Swift's own cancellation is the vocabulary
+    /// FluidAudio's ASR already speaks internally, and a second one beside it
+    /// would be a seam every future runner had to remember to wire up.
+    ///
+    /// A runner that degrades a failure into a partial result (the way
+    /// `FluidAudioRunner` records a diarization failure and keeps the transcript)
+    /// must exempt cancellation from that: swallowing it returns a sidecar for a
+    /// job the owner stopped, and the caller then spawns the pipeline for it.
     func transcribe(
         wavURL: URL,
         languageHint: String?
