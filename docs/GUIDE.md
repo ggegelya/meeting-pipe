@@ -116,7 +116,7 @@ The editor's **Context prompt** is the background the engine is given for every 
 - **The words this team says out loud** that a transcript will mangle: product names, client names, internal acronyms.
 - **What kind of meeting this is.** A standup, a client review, and a one-to-one want different summaries.
 
-A workflow with none carries a quiet `· no context` beside its name in the rail. That is an observation, not a warning; a workflow that genuinely wants none can keep the marker.
+A workflow with none carries a small question-mark glyph beside its name in the rail; hover it and it says `no context`. That is an observation, not a warning; a workflow that genuinely wants none can keep the marker.
 
 ### NDA mode
 

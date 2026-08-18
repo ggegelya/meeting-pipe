@@ -455,7 +455,12 @@ private struct SavedSearchScopeRow: View {
     var body: some View {
         Label {
             HStack(spacing: 6) {
+                // UX76 checked this row for the workflow row's caption competition and it has
+                // none: one text against a fixed-width count. It was missing the line limit
+                // though, and the name is user-typed, so a long saved search grew the row to two
+                // or three lines instead of truncating like every neighbour.
                 Text(search.name)
+                    .lineLimit(1)
                 Spacer(minLength: 0)
                 Text(count.formatted(.number))
                     .font(.mpTextXS.monospacedDigit())
@@ -473,48 +478,119 @@ private struct SavedSearchScopeRow: View {
     }
 }
 
+/// UX76: what one workflow rail row shows, decided before SwiftUI lays anything out.
+///
+/// The row used to put five things in one `HStack` under a single `.lineLimit(1)`: the emoji, the
+/// name, `· default`, WF9's duplicate-name caption and FEAT11's no-context marker. Five siblings
+/// competing for a fixed-width rail truncate together, and the name had no priority over the
+/// footnotes describing it, so the row degraded exactly backwards. The owner's main workflow, 105
+/// of the library's meetings, rendered as `Pers… · defa… · no c…` and identified nothing
+/// (2026-08-04). Each caption arrived with its own task and each was individually defensible; what
+/// nobody owned was the total width budget.
+///
+/// Two changes fix the mechanism rather than postponing it to a narrower rail. The footnotes are
+/// booleans, so each becomes one glyph instead of a phrase, which is most of the width back; and
+/// the name takes layout priority, so whatever is still tight truncates footnotes first and the
+/// name last. Composing it here rather than inline is what makes the row assertable: a fourth
+/// caption appended to the `HStack` the way the first three were now has to come through `decide`,
+/// and `WorkflowRailRowTests` fails when the name stops surviving.
+struct WorkflowRailRow: Equatable {
+
+    /// One footnote about the workflow, reduced to a glyph that keeps the meaning its own task
+    /// established. Nothing here is an alarm: WF9's comment is explicit that a duplicate name is a
+    /// quiet fact, and FEAT11's that a missing context is an observation about the workflow rather
+    /// than a warning about the app, so both stay `fgSubtle` outline glyphs rather than warning
+    /// chrome.
+    struct Marker: Equatable {
+        let symbol: String
+        /// What VoiceOver reads in place of the words this glyph replaced.
+        let accessibilityLabel: String
+        /// The element-level tooltip, or nil when the row already carries the sentence. Only WF9's
+        /// collision marker is nil: its explanation is attached to the whole row, deliberately, so
+        /// it does not fight FEAT11's element-level tooltip. That layering predates this task and
+        /// the spec says not to collapse it.
+        let help: String?
+    }
+
+    /// Never abbreviated here. Truncation, if the rail is narrow enough to force any, is SwiftUI's
+    /// and happens last because of the layout priority the view attaches.
+    let name: String
+    let markers: [Marker]
+
+    static func decide(workflow: Workflow, sameNamed: Int) -> WorkflowRailRow {
+        var markers: [Marker] = []
+        if workflow.isDefault {
+            markers.append(Marker(
+                symbol: "checkmark.circle",
+                accessibilityLabel: "default",
+                help: "Default workflow."
+            ))
+        }
+        if WorkflowNameCollision.railCaption(others: sameNamed) != nil {
+            markers.append(Marker(
+                symbol: "square.on.square",
+                accessibilityLabel: "duplicate name",
+                help: nil
+            ))
+        }
+        if WorkflowContextHint.needsContext(workflow) {
+            markers.append(Marker(
+                symbol: "questionmark.circle",
+                accessibilityLabel: WorkflowContextHint.listMarker,
+                help: WorkflowContextHint.listMarkerHelp
+            ))
+        }
+        return WorkflowRailRow(name: workflow.name, markers: markers)
+    }
+}
+
+/// One demoted caption. Split out so the conditional tooltip does not need a branch inside the
+/// row's own `HStack`.
+private struct WorkflowRailMarkerView: View {
+    let marker: WorkflowRailRow.Marker
+
+    var body: some View {
+        let glyph = Image(systemName: marker.symbol)
+            .font(.mpTextXS)
+            .foregroundStyle(Color(MPColors.fgSubtle))
+            .accessibilityLabel(marker.accessibilityLabel)
+        if let help = marker.help {
+            glyph.help(help)
+        } else {
+            glyph
+        }
+    }
+}
+
 private struct WorkflowScopeRow: View {
     let workflow: Workflow
     let count: Int
     /// WF9: other workflows carrying this exact name. Zero in the normal case.
     var sameNamed: Int = 0
 
+    private var row: WorkflowRailRow {
+        WorkflowRailRow.decide(workflow: workflow, sameNamed: sameNamed)
+    }
+
     var body: some View {
         Label {
             HStack(spacing: 6) {
                 HStack(spacing: 4) {
                     if let emoji = workflow.emoji, !emoji.isEmpty {
-                        Text(emoji).font(.system(size: 11))
+                        // Tokenised on the way past: `MPType.textXS` is the same 11pt, and the
+                        // DSN3 guard rejects raw font literals on changed lines.
+                        Text(emoji).font(.mpTextXS)
                     }
-                    Text(workflow.name)
-                    if workflow.isDefault {
-                        Text("· default")
-                            .font(.mpTextXS)
-                            .foregroundStyle(Color(MPColors.fgSubtle))
-                    }
-                    // WF9: a quiet fact, not an alarm. The row's count is resolved by
-                    // name, so a duplicate name means the number beside it belongs to
-                    // whichever same-named row won, and cleaning that up is the owner's
-                    // call (the duplicates may differ in fields worth comparing first).
-                    if let caption = WorkflowNameCollision.railCaption(others: sameNamed) {
-                        Text(caption)
-                            .font(.mpTextXS)
-                            .foregroundStyle(Color(MPColors.fgSubtle))
-                    }
-                    // FEAT11: a workflow with no team context summarizes blind, and
-                    // nothing said so. Same subtle style as `default` on purpose: it is
-                    // an observation about the workflow, not a warning about the app.
-                    // Its tooltip is on the Text, not the row, so it does not fight the
-                    // row-level collision tooltip WF9 attaches below.
-                    if WorkflowContextHint.needsContext(workflow) {
-                        Text("· \(WorkflowContextHint.listMarker)")
-                            .font(.mpTextXS)
-                            .foregroundStyle(Color(MPColors.fgSubtle))
-                            .help(WorkflowContextHint.listMarkerHelp)
-                            .accessibilityLabel(WorkflowContextHint.listMarkerHelp)
+                    // UX76: the name outranks every footnote about it. Priority is what makes the
+                    // row degrade the right way round; the glyphs below are what stop it needing
+                    // to. WF9's and FEAT11's facts are unchanged, only their presentation is.
+                    Text(row.name)
+                        .lineLimit(1)
+                        .layoutPriority(1)
+                    ForEach(Array(row.markers.enumerated()), id: \.offset) { _, marker in
+                        WorkflowRailMarkerView(marker: marker)
                     }
                 }
-                .lineLimit(1)
                 Spacer(minLength: 0)
                 Text(count.formatted(.number))
                     .font(.mpTextXS.monospacedDigit())
