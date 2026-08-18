@@ -16,12 +16,53 @@ final class ModelDownloadSupervisor {
     /// Called on the main queue on every state change; Coordinator uses this to rebuild the menu-bar title and menu.
     var onStateChange: ((State) -> Void)?
 
+    /// LOCAL20: what a terminating prefetch is allowed to do, decided with explicit inputs so the
+    /// reported defect is a test rather than a subprocess.
+    ///
+    /// The owner switched away from a local model mid-download and got a failure banner they could
+    /// not dismiss. Their log settles what happened: `rc=15` is SIGTERM, which is exactly what
+    /// `cancel()` sends, so nothing failed. `cancel()` cleared `process` but left `state` at
+    /// `.downloading`, and the termination handler tested only that state and the non-zero status,
+    /// so it manufactured a failure out of the user's own switch, about 99 seconds later.
+    enum TerminationOutcome: Equatable {
+        /// Not the process being tracked, so an abandoned prefetch from a `cancel()` or from
+        /// `ensure`'s replace. It writes nothing at all. That last part matters as much as the
+        /// state: the handler also nils `process`, `stdoutHandle` and `currentModelId`, so an
+        /// abandoned termination arriving after a replacement had spawned used to tear down the
+        /// *live* download on its way past.
+        case ignore
+        /// Tracked, and it really did fail.
+        case fail(modelId: String, error: String)
+        /// Tracked, and either it exited cleanly or a stdout event already wrote the terminal state.
+        case keep
+    }
+
+    static func terminationOutcome(
+        isTrackedProcess: Bool,
+        state: State,
+        terminationStatus: Int32
+    ) -> TerminationOutcome {
+        guard isTrackedProcess else { return .ignore }
+        // Still `.downloading` means no stdout event reported a terminal state, so a non-zero exit
+        // is the only evidence there is and it is a real failure.
+        if case .downloading(let modelId, _, _, _) = state, terminationStatus != 0 {
+            return .fail(modelId: modelId, error: "prefetch exited \(terminationStatus)")
+        }
+        return .keep
+    }
+
     private(set) var state: State = .idle {
         didSet {
             if oldValue != state {
                 onStateChange?(state)
             }
         }
+    }
+
+    /// The starting state is injectable (LOCAL20) so a test can begin from a `.failed` that a real
+    /// run needs a network failure to reach. Defaulted, so no call site changes.
+    init(state: State = .idle) {
+        self.state = state
     }
 
     private var process: Process?
@@ -144,6 +185,20 @@ final class ModelDownloadSupervisor {
         stdoutHandle = nil
         stdoutBuffer.removeAll()
         currentModelId = nil
+        // LOCAL20: a cancelled download is not a download, and it is not a failed one either.
+        // Leaving `.downloading` here is half of what let a SIGTERM read as a failure; the
+        // identity guard in `handleTermination` is the other half, and both are wanted. This also
+        // clears a `.failed` that the user is switching away from, which is the staleness rule:
+        // a failure for a model the app is no longer configured to use is not worth a banner.
+        state = .idle
+    }
+
+    /// LOCAL20: drop a failure the user has read and does not want to act on. Only `.failed` is
+    /// dismissible: an in-flight download is not a notice, and `.completed` collapses on its own
+    /// after a moment. Retry used to be the only exit from a failed row, which meant the only way
+    /// to clear it was to re-download the model you had just moved away from.
+    func dismissFailure() {
+        if case .failed = state { state = .idle }
     }
 
     private func spawn(modelId: String) {
@@ -248,6 +303,22 @@ final class ModelDownloadSupervisor {
     }
 
     private func handleTermination(_ proc: Process) {
+        let outcome = Self.terminationOutcome(
+            isTrackedProcess: proc === process,
+            state: state,
+            terminationStatus: proc.terminationStatus
+        )
+        // LOCAL20: an abandoned prefetch touches nothing. Returning before the teardown below is
+        // the point, not an optimisation: those three lines belong to whichever download is live
+        // now, which after a replace is a different one.
+        if outcome == .ignore {
+            Log.writeLine(
+                "daemon",
+                "model prefetch terminated rc=\(proc.terminationStatus) (abandoned, ignored)"
+            )
+            return
+        }
+
         // Flush any remaining buffered bytes before clearing the handle.
         if let h = stdoutHandle {
             let remaining = h.availableData
@@ -260,8 +331,8 @@ final class ModelDownloadSupervisor {
         process = nil
 
         // Non-zero exit without a prior "failed" event - synthesize the failure state.
-        if case .downloading(let modelId, _, _, _) = state, proc.terminationStatus != 0 {
-            state = .failed(modelId: modelId, error: "prefetch exited \(proc.terminationStatus)")
+        if case .fail(let modelId, let error) = outcome {
+            state = .failed(modelId: modelId, error: error)
         }
         Log.writeLine("daemon", "model prefetch terminated rc=\(proc.terminationStatus) state=\(state)")
         currentModelId = nil

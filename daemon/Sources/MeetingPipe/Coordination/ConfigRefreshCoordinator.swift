@@ -144,4 +144,11 @@ final class ConfigRefreshCoordinator {
             break
         }
     }
+
+    /// LOCAL20: the menu's Dismiss on a failed download row. Routed through here rather than
+    /// straight at the supervisor so the Coordinator keeps one collaborator for prefetch, the same
+    /// way Retry goes through `ensureModelPrefetchIfNeeded`.
+    func dismissModelDownloadFailure() {
+        modelDownload.dismissFailure()
+    }
 }

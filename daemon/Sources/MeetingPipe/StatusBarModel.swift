@@ -32,8 +32,10 @@ enum StatusBarModel {
     /// rows (Open Library, Preferences, Quit, ...) are not modelled: they are
     /// not a decision, and listing them here would just duplicate `populateMenu`.
     enum Row: Equatable {
-        /// Informational unless `retryable`, which is the LOCAL1 retry affordance.
-        case modelDownload(title: String, retryable: Bool, toolTip: String?)
+        /// Informational unless `retryable`, which is the LOCAL1 retry affordance. `dismissible`
+        /// (LOCAL20) adds the exit that is not Retry: clearing a failure used to mean
+        /// re-downloading the model you had just moved away from.
+        case modelDownload(title: String, retryable: Bool, toolTip: String?, dismissible: Bool)
         /// One row per missing permission, naming what stops working (UX23):
         /// "Microphone off: recordings will be silent", etc. Replaces the old
         /// single vague "Permissions need attention" row.
@@ -405,13 +407,15 @@ enum StatusBarModel {
             return .modelDownload(
                 title: "Downloading \(shortModelId(modelId)): \(body)",
                 retryable: false,
-                toolTip: nil
+                toolTip: nil,
+                dismissible: false
             )
         case .completed(let modelId):
             return .modelDownload(
                 title: "✓ Downloaded \(shortModelId(modelId))",
                 retryable: false,
-                toolTip: nil
+                toolTip: nil,
+                dismissible: false
             )
         case .failed(let modelId, let error):
             // Actionable (LOCAL1): clicking re-spawns the prefetch. The full
@@ -419,7 +423,8 @@ enum StatusBarModel {
             return .modelDownload(
                 title: "⚠ Model download failed (\(shortModelId(modelId))) - Retry",
                 retryable: true,
-                toolTip: error
+                toolTip: error,
+                dismissible: true
             )
         }
     }

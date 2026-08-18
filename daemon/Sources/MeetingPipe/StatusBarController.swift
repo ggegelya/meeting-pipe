@@ -601,8 +601,17 @@ final class StatusBarController {
 
     private func addRow(_ row: StatusBarModel.Row, to menu: NSMenu, setupItems: [SetupChecklist.Item]) {
         switch row {
-        case .modelDownload(let title, let retryable, let toolTip):
+        case .modelDownload(let title, let retryable, let toolTip, let dismissible):
             menu.addItem(modelDownloadMenuItem(title: title, retryable: retryable, toolTip: toolTip))
+            // LOCAL20: a second row rather than a second meaning for the first. The failed row is
+            // click-to-retry and says so; this is the exit for a failure you have read and do not
+            // want to act on.
+            if dismissible {
+                menu.addItem(actionRow(
+                    title: "Dismiss",
+                    action: #selector(Coordinator.menuDismissModelDownload)
+                ))
+            }
 
         // One row per missing permission, each naming what stops working (UX23),
         // routing to the Permissions tab (TECH-E3).

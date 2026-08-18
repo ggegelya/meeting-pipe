@@ -73,6 +73,14 @@ extension Coordinator {
         configRefresh.ensureModelPrefetchIfNeeded()
     }
 
+    /// LOCAL20: clear a failed prefetch without re-downloading anything. Retry was the only exit
+    /// from that row, so the owner's way out of a failure they did not want was to fetch the model
+    /// again. The supervisor owns the state, so the dismiss goes there and comes back through
+    /// `onStateChange` like every other transition.
+    @objc func menuDismissModelDownload() {
+        configRefresh.dismissModelDownloadFailure()
+    }
+
     @objc func menuOpenLibrary() {
         libraryWindow.show()
     }

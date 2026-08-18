@@ -434,7 +434,7 @@ final class StatusBarModelTests: XCTestCase {
             finishSetupTitle: "Finish setup (3 steps left)"
         ))
         XCTAssertEqual(rows, [
-            .modelDownload(title: "⚠ Model download failed (b) - Retry", retryable: true, toolTip: "boom"),
+            .modelDownload(title: "⚠ Model download failed (b) - Retry", retryable: true, toolTip: "boom", dismissible: true),
             .permissionConsequence(title: "⚠ Microphone off: recordings will be silent"),
             .permissionConsequence(title: "⚠ Screen Recording off: the call audio will not be recorded (mic only)"),
             .screenRecordingShortcut,
@@ -452,12 +452,12 @@ final class StatusBarModelTests: XCTestCase {
         XCTAssertNil(M.downloadRow(.idle))
         XCTAssertEqual(
             M.downloadRow(.completed(modelId: "mlx-community/Qwen2.5-7B-Instruct-4bit")),
-            .modelDownload(title: "✓ Downloaded Qwen2.5-7B-Instruct-4bit", retryable: false, toolTip: nil)
+            .modelDownload(title: "✓ Downloaded Qwen2.5-7B-Instruct-4bit", retryable: false, toolTip: nil, dismissible: false)
         )
         XCTAssertEqual(
             M.downloadRow(.downloading(modelId: "a/b", progress: 0.5,
                                        downloadedBytes: 2_147_483_648, totalBytes: 4_294_967_296)),
-            .modelDownload(title: "Downloading b: 2.0 GB / 4.0 GB (50%)", retryable: false, toolTip: nil)
+            .modelDownload(title: "Downloading b: 2.0 GB / 4.0 GB (50%)", retryable: false, toolTip: nil, dismissible: false)
         )
     }
 
@@ -467,7 +467,7 @@ final class StatusBarModelTests: XCTestCase {
         XCTAssertEqual(
             M.downloadRow(.downloading(modelId: "a/b", progress: nil,
                                        downloadedBytes: 1_048_576, totalBytes: 0)),
-            .modelDownload(title: "Downloading b: 1 MB downloaded", retryable: false, toolTip: nil)
+            .modelDownload(title: "Downloading b: 1 MB downloaded", retryable: false, toolTip: nil, dismissible: false)
         )
     }
 
@@ -478,7 +478,7 @@ final class StatusBarModelTests: XCTestCase {
             ModelDownloadSupervisor.State.completed(modelId: "a/b"),
             .downloading(modelId: "a/b", progress: 0.1, downloadedBytes: 1, totalBytes: 10),
         ] {
-            guard case .modelDownload(_, let retryable, let tip)? = M.downloadRow(state) else {
+            guard case .modelDownload(_, let retryable, let tip, _)? = M.downloadRow(state) else {
                 return XCTFail("expected a row for \(state)")
             }
             XCTAssertFalse(retryable)
