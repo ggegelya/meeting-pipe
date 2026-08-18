@@ -86,6 +86,24 @@ enum RecordingPostProcessor {
     /// cut, so the merge ends with the **mic**: a deliberate bias, since the mic is
     /// the channel the owner cannot re-obtain, and it is still strictly longer than
     /// the `min()` the bare filter produced.
+    ///
+    /// **REC14 took route B, deriving the duration, over route A, re-biasing this
+    /// fallback**, and the reason is worth keeping so nobody re-litigates REC9's bias.
+    /// The fallback was not what discarded 67 minutes of the 2026-08-14 call. An
+    /// unfinalized WAV does not read as *unreadable*: its `data` chunk size is a
+    /// placeholder `0` until the handle closes, so `audioDurationSec` returned `0.0`,
+    /// this function saw two readable durations, and `max(2798.5, offset + 0)` cut the
+    /// merge to the mic. Re-biasing the nil branch would have left that untouched and
+    /// the test for it would have passed. `audioDurationSec` now measures the payload
+    /// against the file's real size, so the length is exact and the nil branch is
+    /// reached only when the `fmt ` chunk itself is unreadable, which is a file nothing
+    /// downstream could use anyway.
+    ///
+    /// Two consequences kept here rather than there. A **non-positive** duration is
+    /// treated as no measurement, so a zero can never win a `max()` again. And when
+    /// exactly one leg measures, the target covers **that** leg rather than defaulting
+    /// to the mic: preferring the mic is only right when there is nothing to compare
+    /// it against, which is the case REC9 was actually reasoning about.
     static func mergeLengths(
         micDurationSec: Double?,
         systemDurationSec: Double?,
@@ -93,21 +111,35 @@ enum RecordingPostProcessor {
     ) -> MergeLengths {
         let offset = systemHeadOffsetSec >= systemHeadOffsetFloorSec ? systemHeadOffsetSec : 0
         let delayMs = Int((offset * 1000).rounded())
-        guard let mic = micDurationSec, let system = systemDurationSec else {
+        // A duration of zero is a file whose header never got patched, not a zero-length
+        // capture, and treating it as a measurement is what lost the far side of a call.
+        let mic = micDurationSec.flatMap { $0 > 0 ? $0 : nil }
+        let system = systemDurationSec.flatMap { $0 > 0 ? $0 : nil }
+
+        switch (mic, system) {
+        case let (mic?, system?):
+            let target = max(mic, offset + system)
             return MergeLengths(
-                systemDelayMs: delayMs,
-                padMic: false,
-                targetDurationSec: nil,
-                expectedDurationSec: micDurationSec
+                systemDelayMs: delayMs, padMic: true,
+                targetDurationSec: target, expectedDurationSec: target
+            )
+        case let (nil, system?):
+            // Only the system leg measured. Cutting at the mic here is what discarded the
+            // longer channel; cover the leg that is actually known instead.
+            let target = offset + system
+            return MergeLengths(
+                systemDelayMs: delayMs, padMic: true,
+                targetDurationSec: target, expectedDurationSec: target
+            )
+        case (_?, nil), (nil, nil):
+            // Nothing measurable about the system leg, so there is no length to prefer over
+            // the mic's and REC9's bias stands: pad the system leg, set no cut, end with the
+            // mic. `expectedDurationSec` stays the mic's, or nil when even that is unknown.
+            return MergeLengths(
+                systemDelayMs: delayMs, padMic: false,
+                targetDurationSec: nil, expectedDurationSec: mic
             )
         }
-        let target = max(mic, offset + system)
-        return MergeLengths(
-            systemDelayMs: delayMs,
-            padMic: true,
-            targetDurationSec: target,
-            expectedDurationSec: target
-        )
     }
 
     /// Whether a produced artifact may be promoted, given what the inputs said it
@@ -520,6 +552,8 @@ enum RecordingPostProcessor {
 
         var byteRate: UInt32?
         var dataSize: UInt32?
+        /// Where the `data` payload starts, so REC14 can measure it against the file's real size.
+        var dataPayloadOffset = 0
         // Chunks after "WAVE": [id(4)][size(4 LE)][body], body even-padded.
         var cursor = 12
         while cursor + 8 <= head.count {
@@ -530,12 +564,41 @@ enum RecordingPostProcessor {
                 byteRate = u32(body + 8)
             } else if id == Data("data".utf8) {
                 dataSize = size
+                dataPayloadOffset = body
                 break
             }
             cursor = body + Int(size) + (Int(size) & 1)
         }
 
-        guard let rate = byteRate, rate > 0, let payload = dataSize else { return nil }
+        guard let rate = byteRate, rate > 0, let declared = dataSize else { return nil }
+
+        // REC14, route B: derive the payload length from the file itself rather than trusting the
+        // `data` chunk's size field.
+        //
+        // That field is a placeholder until the writing handle closes, so a process that died
+        // without closing its files leaves it at **0** while the samples sit on disk. The old read
+        // returned `0 / byteRate` = 0.0, which is not "unreadable", it is a measurement of zero,
+        // and `mergeLengths` then took `max(mic, offset + 0)` and cut the merge to the mic. That is
+        // the whole of the 2026-08-14 loss: a 114-minute call whose system leg held 1,314,082,816
+        // bytes was cut to the mic's 2798.5 s and about 67 minutes of the far side was discarded.
+        //
+        // `byteRate` needs no such patching. It is in the `fmt ` chunk, written when the file is
+        // created, so it survives any kill, which is what makes this arithmetic exact rather than a
+        // heuristic and is why route B replaces the fallback rather than re-biasing it.
+        let onDisk = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? UInt64) ?? nil
+        let payloadOnDisk = onDisk.map { $0 > UInt64(dataPayloadOffset) ? $0 - UInt64(dataPayloadOffset) : 0 }
+
+        // A declared size is authoritative when it exists, since trailing chunks after `data` would
+        // otherwise inflate the on-disk figure. It can only ever be capped by reality: a truncated
+        // file declares more than it holds.
+        let payload: UInt64
+        if declared > 0 {
+            payload = min(UInt64(declared), payloadOnDisk ?? UInt64(declared))
+        } else if let onDiskPayload = payloadOnDisk, onDiskPayload > 0 {
+            payload = onDiskPayload
+        } else {
+            return nil
+        }
         return Double(payload) / Double(rate)
     }
 }
