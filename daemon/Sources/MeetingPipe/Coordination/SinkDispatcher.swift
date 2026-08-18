@@ -155,26 +155,96 @@ final class SinkDispatcher: @unchecked Sendable {
         completion: @escaping (Result<URL?, Error>) -> Void,
         work: @escaping (LibraryRunToken) -> Void
     ) -> Bool {
-        if processingJobs.contains(where: { $0.kind == .libraryRun(run) }) {
-            Log.writeLine("daemon", "library run coalesced -> \(run.verb.rawValue) \(run.stem)")
-            Log.event(category: "coordinator", action: "pipeline_coalesced", attributes: [
-                "stem": run.stem,
-                "verb": run.verb.rawValue,
-                "backend": run.backend ?? NSNull(),
-            ])
-            return false
-        }
         let job = ProcessingJob(
             id: UUID(), file: anchor, summaryMode: .auto,
             startedAt: Date(), kind: .libraryRun(run)
         )
+        // PIPE18 folded PIPE11's own `contains` onto the shared predicate. The check stays here
+        // rather than only in the funnel because this path has to answer its caller *before* it
+        // registers any work: `startNextJobIfNeeded` can begin the job inside `enqueue`, which
+        // needs `libraryRunWork` populated, so registration cannot wait for the funnel's verdict.
+        if Self.isAlreadyQueued(job, in: processingJobs) {
+            logCoalesced(job)
+            return false
+        }
         libraryRunWork[job.id] = work
         libraryRunCompletions[job.id] = completion
         enqueue(job: job, completion: nil)
         return true
     }
 
-    private func enqueue(job: ProcessingJob, completion: ((Result<Void, Error>) -> Void)?) {
+    /// PIPE18: the stem a job is about, which is the identity two redundant jobs share.
+    static func stem(of file: URL) -> String {
+        file.deletingPathExtension().lastPathComponent
+    }
+
+    /// PIPE18: is this work already in the queue?
+    ///
+    /// PIPE11 built this guard for `.libraryRun` after a Reprocess and three regenerates raced on
+    /// one stem, and it covered one of the three kinds that can hit the same meeting. On
+    /// 2026-08-14 the owner pressed **Retry pipeline** seven times in twelve seconds, on the
+    /// `.full` path, and got seven full `mp run-all` passes queued for one 25-minute recording,
+    /// then removed six of them by hand. The first click had already worked; the run took 66
+    /// seconds and every later click was made while it was running.
+    ///
+    /// Identity is per kind and deliberately narrow. Two run-alls over one recording are redundant
+    /// by construction, and so are two re-transcribes, so **the audio file itself** is the whole
+    /// identity for those two: both kinds are only ever enqueued with the recording URL that
+    /// `MeetingStore.finalRecordingURL` resolves, so the same meeting is always the same URL. It is
+    /// the file rather than the bare stem on purpose. Comparing `lastPathComponent` looked
+    /// equivalent, since one directory holds every recording under a timestamp stem, and it is not:
+    /// two files named `clip.wav` in different directories are different recordings, and the
+    /// existing `SinkDispatcherTests` are built on exactly that shape.
+    ///
+    /// A library run keeps PIPE11's `(verb, stem, backend)`, which `LibraryRun`'s own equality
+    /// carries, so Local-then-Anthropic stays two asks rather than collapsing into one. It does not
+    /// consult the file at all, which is what lets it anchor on the transcript while the queue holds
+    /// audio. Different kinds never coalesce into each other: a re-transcribe and a run-all on one
+    /// meeting are different work and both are wanted.
+    ///
+    /// This is a coalescer, not a lockout. It only ever looks at what is *in the queue*, so once a
+    /// job has run and left, the same ask queues again; a genuine second retry after a second
+    /// failure is exactly the case that must keep working.
+    static func isAlreadyQueued(_ candidate: ProcessingJob, in queued: [ProcessingJob]) -> Bool {
+        queued.contains { existing in
+            switch (existing.kind, candidate.kind) {
+            case (.full, .full), (.retranscribe, .retranscribe):
+                return existing.file == candidate.file
+            case (.libraryRun(let existingRun), .libraryRun(let candidateRun)):
+                return existingRun == candidateRun
+            default:
+                return false
+            }
+        }
+    }
+
+    /// One place to record a dropped duplicate, so the library path (which has to answer its
+    /// caller before it registers any work) and the funnel below report it identically.
+    private func logCoalesced(_ job: ProcessingJob) {
+        Log.writeLine("daemon", "pipeline coalesced -> \(job.kind.label) \(Self.stem(of: job.file))")
+        var attributes: [String: Any] = [
+            "stem": Self.stem(of: job.file),
+            "kind": job.kind.label,
+            "queue_depth": processingJobs.count,
+        ]
+        if case .libraryRun(let run) = job.kind {
+            attributes["verb"] = run.verb.rawValue
+            attributes["backend"] = run.backend ?? NSNull()
+        }
+        Log.event(category: "coordinator", action: "pipeline_coalesced", attributes: attributes)
+    }
+
+    /// Returns false when the job was a duplicate and nothing was queued.
+    ///
+    /// PIPE18 put the check here rather than at the call sites precisely because the call sites
+    /// are where it went missing: three of the four enqueue paths forgot it for a month. A fifth
+    /// entry point now inherits the guard instead of having to remember it.
+    @discardableResult
+    private func enqueue(job: ProcessingJob, completion: ((Result<Void, Error>) -> Void)?) -> Bool {
+        if Self.isAlreadyQueued(job, in: processingJobs) {
+            logCoalesced(job)
+            return false
+        }
         processingJobs.append(job)
         if let completion { jobCompletions[job.id] = completion }
         publishQueueState()
@@ -186,6 +256,7 @@ final class SinkDispatcher: @unchecked Sendable {
             "kind": job.kind.label,
         ])
         startNextJobIfNeeded()
+        return true
     }
 
     var queueDepth: Int { processingJobs.count }

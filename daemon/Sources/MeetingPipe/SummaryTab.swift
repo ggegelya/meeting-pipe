@@ -432,7 +432,20 @@ struct SummaryTab: View {
                 }
                 .frame(maxWidth: SummaryLayout.noticeMeasure, maxHeight: 150)
             }
-            if meeting.failureSuggestsModelDownload {
+            if case .inFlight(let label) = retryAffordance {
+                // PIPE18: a run for this meeting is already queued or active, so there is nothing
+                // to ask for. Saying what is happening, in the same words the header uses, is the
+                // half that stops the seven-click burst; coalescing only makes it harmless.
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(label)
+                        .font(.mpTextSM)
+                        .foregroundStyle(Color(MPColors.fgMuted))
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: SummaryLayout.noticeMeasure)
+                .accessibilityElement(children: .combine)
+            } else if meeting.failureSuggestsModelDownload {
                 // UX21: the on-device model was not downloaded, so a regulated / NDA
                 // run refused to fetch it and summarize failed after the recording
                 // was already captured. The in-app remedy replaces the reason text's
@@ -481,6 +494,12 @@ struct SummaryTab: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
+    }
+
+    /// PIPE18: read from the very `ProcessingPresentation` the detail header's queued line is built
+    /// from, so the pane and the header cannot disagree about whether work is in flight.
+    private var retryAffordance: RetryAffordance {
+        RetryAffordance.decide(processing: libraryModel.processing(for: meeting.stem))
     }
 
     private var stageLabel: String? {

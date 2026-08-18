@@ -444,6 +444,8 @@ The menu bar's **Diagnostics…** opens a read-only view of what the app has bee
 
 Failed meetings collect in the Library's **Needs you** rail, which carries an amber count. The row names the stage that failed and offers **Retry**, which does the least work that stage needs: a meeting that failed only at publishing republishes the summary already on disk rather than re-doing the whole thing, so a retry after an outage costs nothing and cannot produce a different summary than the one you read.
 
+Once you press Retry the button steps aside and the pane says what is happening, so you can tell the click landed without pressing it again; pressing it repeatedly queues one run, not one per press.
+
 Some failures lead with a more specific fix than plain Retry, because plain Retry would just fail again. A summary the engine refused because of the language leads with re-summarizing on the on-device model. A confidential meeting that needed a model you have not downloaded leads with **Download model**, then Retry.
 
 A meeting you stopped yourself lands here too, and says so: **Interrupted**, with "You cancelled this run. Reprocess to run it again." That is the same whichever part you stopped, including one you cancel while it is still transcribing. Nothing is reported when you press Cancel, since you asked for it; the row is here only so the meeting stays one click from running again rather than looking finished when it is not.

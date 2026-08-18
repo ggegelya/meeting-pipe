@@ -64,6 +64,35 @@ enum ProcessingPresentation: Equatable {
     }
 }
 
+/// PIPE18: whether the Summary pane may offer to start a run for this meeting, and what it says
+/// when it may not.
+///
+/// The owner pressed **Retry pipeline** seven times in twelve seconds on 2026-08-14. Coalescing
+/// (`SinkDispatcher.isAlreadyQueued`) makes that harmless, but it would not have stopped it: the
+/// clicks accelerate through the burst, which is the shape of someone concluding nothing happened
+/// and pressing harder, not someone queueing work on purpose. `runRetry` answered success with
+/// `break`, so a click that worked looked exactly like a click that did nothing.
+///
+/// The window already knew better. The detail header rendered `Queued: Reprocess` with a working
+/// Remove about 200 points above a pane still offering `Retry pipeline`, so one window disagreed
+/// with itself about whether anything was happening. Both halves now read the same
+/// `ProcessingPresentation`, which is why this takes one rather than any new state.
+enum RetryAffordance: Equatable {
+    /// Nothing is in flight for this meeting; offer the button.
+    case offer
+    /// A run is already queued or active for it. The pane says so instead, in the row's own words.
+    case inFlight(label: String)
+
+    var isOffered: Bool { self == .offer }
+
+    static func decide(processing: ProcessingPresentation) -> RetryAffordance {
+        // `isBusy` is exactly "queued or active", which is the question the button should have been
+        // asking all along. Deriving it rather than restating it is what stops the two surfaces
+        // drifting apart again.
+        processing.isBusy ? .inFlight(label: processing.label) : .offer
+    }
+}
+
 /// UX77: the pipeline queue as the aggregate surfaces need to see it.
 ///
 /// `depth` counts the union of running and waiting work, because that is what the queue publishes
