@@ -70,6 +70,7 @@ struct PermissionsSectionView: View {
             .onAppear { refreshLocalModelMissing() }
             .onChange(of: store.regulatedMode) { _, _ in refreshLocalModelMissing() }
             .onChange(of: store.summarizationBackend) { _, _ in refreshLocalModelMissing() }
+            .tutorialAnchor(.regulatedMode)
 
             privacyCallout
                 .padding(.top, 4)

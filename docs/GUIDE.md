@@ -6,6 +6,8 @@ Nothing here sends you somewhere else to look something up: each recipe names th
 
 This guide lives in the app. The menu-bar icon's **Guide…** opens it in a window whenever you want it, with the recipes listed down the left.
 
+If you would rather be shown than told, **Tutorial…** in the same menu is a short guided tour: it opens the app's own windows, rings one real control at a time, and says what it is for. Seven stops, and you can leave at any of them. It only ever runs when you pick it.
+
 <!-- repo-only -->
 **Contents**
 

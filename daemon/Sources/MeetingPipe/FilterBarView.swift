@@ -79,6 +79,7 @@ struct FilterBarView: View {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(Color(MPColors.bgSunk))
         )
+        .tutorialAnchor(.search)
     }
 
     /// Show the badge once any filter is active so the user sees a running confirmation.

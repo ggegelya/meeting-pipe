@@ -39,6 +39,7 @@ struct LibraryToolbar: View {
                 isEnabled: model.canToggleRecording,
                 action: { model.toggleRecording() }
             )
+            .tutorialAnchor(.record)
 
             Button {
                 model.openPreferences()
@@ -48,6 +49,7 @@ struct LibraryToolbar: View {
             }
             .buttonStyle(.borderless)
             .help("Preferences…")
+            .tutorialAnchor(.preferencesGear)
         }
         .padding(.horizontal, 12)
         .frame(height: 44)

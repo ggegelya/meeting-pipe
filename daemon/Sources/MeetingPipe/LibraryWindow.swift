@@ -563,6 +563,8 @@ struct LibraryRootView: View {
             }
             split
         }
+        // FEAT15: the tour runs inside this window rather than over it.
+        .tutorialStage(.library)
         .frame(minWidth: LibraryLayout.windowMinWidth)
         // UX48: Cmd+, is an item on `MainMenu`'s App menu now, installed for as long as a window
         // is up. A zero-opacity `Button` carrying `.keyboardShortcut(",")` used to sit here

@@ -232,6 +232,7 @@ struct PipelineSectionView: View {
             } footer: {
                 Text("These change how voices are told apart, not what they are called. If a speaker is simply named wrong, fix that meeting in its Transcript tab (right-click a speaker); reach for these when two different people keep sharing one label, or one person is split across several.")
             }
+            .tutorialAnchor(.speakerLabels)
 
             SettingsGroup("Long meetings") {
                 SettingsStackRow("Chunking threshold", showsDivider: false) {

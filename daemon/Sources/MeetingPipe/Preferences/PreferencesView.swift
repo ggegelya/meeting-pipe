@@ -115,6 +115,9 @@ struct PreferencesView: View {
                 }
             }
         }
+        // FEAT15: both Preferences surfaces share this stage; which pane is
+        // selected shows up as which anchors report a frame at all.
+        .tutorialStage(.preferences)
         .frame(minWidth: 780, minHeight: 660)
         .sheet(isPresented: $doctorSheetOpen) { doctorSheet }
     }

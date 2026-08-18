@@ -25,6 +25,16 @@ extension Coordinator {
         guideWindow.show()
     }
 
+    /// Run the guided tour over the app's own windows (FEAT15).
+    ///
+    /// Started from a menu item and never on launch. The deferral this reverses
+    /// covers onboarding that runs at people; a tour someone opens on purpose is
+    /// the carve-out, and the difference is exactly that this needs a click.
+    @objc func menuOpenTutorial() {
+        TutorialSession.shared.presenter = self
+        TutorialSession.shared.start()
+    }
+
     @objc func menuOpenRecordings() {
         let dir = liveOutputDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -65,6 +75,23 @@ extension Coordinator {
 
     @objc func menuOpenLibrary() {
         libraryWindow.show()
+    }
+
+    // MARK: Tutorial surfaces (FEAT15)
+
+    /// The one thing the tutorial asks of the app: put a surface where its
+    /// control can be seen. Every case routes through a window opener that
+    /// already exists for the app's own deeplinks, so the tour cannot reach a
+    /// state the app could not reach on its own.
+    func presentTutorialSurface(_ surface: TutorialSurface) {
+        switch surface {
+        case .library:
+            libraryWindow.show()
+        case .preferencesPipeline:
+            preferencesWindow?.show(initial: .pipeline)
+        case .preferencesPermissions:
+            preferencesWindow?.show(initial: .permissions)
+        }
     }
 
     @objc func menuQuickFind() {
@@ -251,3 +278,8 @@ extension Coordinator {
         )
     }
 }
+
+/// FEAT15: the tour asks for one thing, and `presentTutorialSurface` above is it.
+/// Declared in an extension, like `AskRunning`, so a protocol never retroactively
+/// isolates a type the Coordinator already drives on main by its own contract.
+extension Coordinator: TutorialSurfacePresenter {}

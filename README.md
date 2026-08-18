@@ -28,7 +28,7 @@ cd meeting-pipe
 ./scripts/install.sh
 ```
 
-Then `⌃⌥M` to record manually, or join any meeting and answer the prompt. Detailed install steps, requirements, and the configuration reference live below. **If you would rather be walked through it**, including the prerequisites the three lines above assume you already have, [`docs/SETUP.md`](./docs/SETUP.md) is the clean-Mac-to-first-summary guide, and [`docs/GUIDE.md`](./docs/GUIDE.md) picks up where that one stops with task-oriented recipes for actually using the app (it is also in the menu bar, under **Guide…**). The design rationale is in [Why it is shaped this way](#why-it-is-shaped-this-way) and the [ADRs](./docs/decisions/).
+Then `⌃⌥M` to record manually, or join any meeting and answer the prompt. Detailed install steps, requirements, and the configuration reference live below. **If you would rather be walked through it**, including the prerequisites the three lines above assume you already have, [`docs/SETUP.md`](./docs/SETUP.md) is the clean-Mac-to-first-summary guide, and [`docs/GUIDE.md`](./docs/GUIDE.md) picks up where that one stops with task-oriented recipes for actually using the app (it is also in the menu bar, under **Guide…**). The menu bar's **Tutorial…** is the same ground shown rather than read: it opens the app's own windows and rings the controls it is talking about, one at a time. The design rationale is in [Why it is shaped this way](#why-it-is-shaped-this-way) and the [ADRs](./docs/decisions/).
 
 ---
 

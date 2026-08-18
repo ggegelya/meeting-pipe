@@ -502,6 +502,15 @@ final class StatusBarController {
         openGuide.target = coordinator
         menu.addItem(openGuide)
 
+        // FEAT15: the guided tour, next to the guide it complements. Also
+        // unconditional, and also not in `StatusBarModel.Row`. A menu item is the
+        // whole surface area of the reversal: the tour runs when someone asks for
+        // it and never on launch, which is what separates it from the first-run
+        // machinery the root `CLAUDE.md` still defers.
+        let openTutorial = NSMenuItem(title: "Tutorial…", action: #selector(Coordinator.menuOpenTutorial), keyEquivalent: "")
+        openTutorial.target = coordinator
+        menu.addItem(openTutorial)
+
         let openRecordings = NSMenuItem(title: "Open Recordings Folder", action: #selector(Coordinator.menuOpenRecordings), keyEquivalent: "")
         openRecordings.target = coordinator
         menu.addItem(openRecordings)

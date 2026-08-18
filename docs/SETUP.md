@@ -178,7 +178,7 @@ To watch it happen, click the menu-bar icon and choose **Open Library…**. Your
 
 That is the whole loop. From here, meetings turn into summaries without you doing anything.
 
-**What to read next.** This guide stops here on purpose: you are set up. [`GUIDE.md`](./GUIDE.md) picks up from this point with short recipes for actually using the app, one per thing you might want to do: recording modes, workflows, teaching it your team's words, putting names on voices, finding an old meeting, backups, the full hotkey list, and what to do when something looks wrong. It is also in the app, under the menu-bar icon's **Guide…**, so you never have to come back here to find it.
+**What to read next.** This guide stops here on purpose: you are set up. [`GUIDE.md`](./GUIDE.md) picks up from this point with short recipes for actually using the app, one per thing you might want to do: recording modes, workflows, teaching it your team's words, putting names on voices, finding an old meeting, backups, the full hotkey list, and what to do when something looks wrong. It is also in the app, under the menu-bar icon's **Guide…**, so you never have to come back here to find it. Beside it is **Tutorial…**, a short guided tour that opens the app's own windows and rings each control as it explains it; if you would rather be shown the app than read about it, start there.
 
 ## When something goes wrong
 

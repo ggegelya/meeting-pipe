@@ -95,6 +95,7 @@ struct VocabularySection: View {
         }
         .onChange(of: pendingScope.wrappedValue) { _, _ in applyPendingScope() }
         .onDisappear { glossary.flush() }
+        .tutorialAnchor(.vocabulary)
     }
 
     private var terms: [GlossaryTerm] {

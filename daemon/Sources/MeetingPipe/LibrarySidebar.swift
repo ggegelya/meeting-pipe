@@ -147,6 +147,10 @@ struct LibrarySidebar: View {
             ideal: LibraryLayout.sidebarIdealWidth,
             max: LibraryLayout.sidebarMaxWidth
         )
+        // FEAT15: the rail as a whole, not one of its rows. A probe inside a
+        // `List` row rides an NSTableView cell that is recycled and may not be
+        // realised at all when the tour arrives; the column always is.
+        .tutorialAnchor(.scopeRail)
     }
 
     /// UX32: right-click on a workflow row. Mirrors the saved-folder menu one section up,
