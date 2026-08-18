@@ -8,7 +8,7 @@ A rule whose evidence runs long links to [`docs/gotchas.md`](docs/gotchas.md), w
 
 ```bash
 uv run --extra dev ruff check src tests       # from pipeline/
-uv run --extra dev pyright                    # from pipeline/ (basic mode, src/ only)
+uv run --extra dev --extra mcp pyright        # from pipeline/ (basic mode, src/ only)
 uv run --extra dev pytest -q                  # from pipeline/
 uv sync --extra dev --extra mcp               # + AUTO3's optional MCP SDK
 ../scripts/coverage.sh python                 # T3: pytest-cov report, not a gate
@@ -16,10 +16,11 @@ uv sync --extra dev --extra mcp               # + AUTO3's optional MCP SDK
 
 CI runs ruff strictly — any F401 unused import fails the pipeline job. Run locally before committing.
 
-CI also runs pyright (TYPE1), configured in `pyproject.toml`'s `[tool.pyright]`. It covers `src/` only; `tests/` is full of deliberately-partial fakes and would need its own pass. Two things to know when it complains:
+CI also runs pyright (TYPE1), configured in `pyproject.toml`'s `[tool.pyright]`. It covers `src/` only; `tests/` is full of deliberately-partial fakes and would need its own pass. Three things to know when it complains:
 
 - **Don't reach for a blanket suppression.** The errors it finds are usually real (`getattr(b, "type", ...)` defeats union narrowing where `b.type` does not; `isinstance(seg.get("end"), float)` narrows nothing about the value the comprehension then collects).
 - **The three imports CI cannot resolve** (`mlx_embeddings`, `mlx.core`, `huggingface_hub` — darwin/arm64-only, never installed on the Linux runner) carry a `# pyright: ignore[reportMissingImports]` at their lazy import site. That is deliberately per-site, not a global `reportMissingImports = "none"`, so a genuine typo in any other import still fails the build. A new heavy lazy import needs the same comment.
+- **`mcp` is installed, not suppressed.** AUTO3's SDK is an optional extra, so pyright needs `--extra mcp` (above); without it `mcp_serve.py`'s three `mcp.*` imports come back unresolved. CI installs `mcp` in its light dep set, so a bare `--extra dev` run is red locally while the build stays green. `uv run --extra dev` does not evict an extra an earlier run installed, so anyone who has run the `--extra mcp` form once stops being able to reproduce the red at all; `uv sync --extra dev` is what prunes.
 
 ## Patterns to match
 

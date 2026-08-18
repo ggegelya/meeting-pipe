@@ -25,6 +25,7 @@ Run these before opening a PR. CI enforces ruff strictly (any unused import fail
 | Step | Command |
 |---|---|
 | Pipeline lint | `cd pipeline && uv run --extra dev ruff check src tests` |
+| Pipeline typecheck | `cd pipeline && uv run --extra dev --extra mcp pyright` (drop `--extra mcp` and it reports 3 unresolved imports) |
 | Pipeline tests | `cd pipeline && uv run --extra dev pytest -q` |
 | Daemon build | `cd daemon && swift build` |
 | Daemon tests | `cd daemon && swift test` (needs full Xcode) |

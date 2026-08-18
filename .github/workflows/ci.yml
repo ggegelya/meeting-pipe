@@ -125,7 +125,7 @@ jobs:
 
       - name: Install dev deps + editable package (no project deps)
         # The two linters are pinned to the exact versions uv.lock resolves, so
-        # this job and the local `uv run --extra dev ruff/pyright` commands in
+        # this job and the local `uv run` ruff/pyright commands in
         # CLAUDE.md run identical tooling. They were ranges (`ruff>=0.5.0`,
         # `pyright>=1.1.400`), which meant CI floated to latest while the lock
         # held a older version: ruff 0.16.0 shipped a wider default rule set and

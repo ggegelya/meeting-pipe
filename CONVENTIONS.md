@@ -242,12 +242,12 @@ Any F401 (unused import) fails CI. Run locally before committing. Config in `pip
 ### Pyright checks the annotations (TYPE1)
 
 ```bash
-cd pipeline && uv run --extra dev pyright
+cd pipeline && uv run --extra dev --extra mcp pyright
 ```
 
 Basic mode over `src/` only, config in `pipeline/pyproject.toml`. The package was near-universally annotated long before anything verified the annotations, so drift landed silently. CI runs it as its own step and fails on a type regression.
 
-`tests/` is out of scope for now (its fakes are deliberately partial); ratcheting to `strict` is a later decision. The darwin/arm64-only imports the Linux runner cannot resolve (`mlx_embeddings`, `mlx.core`, `huggingface_hub`) are suppressed per-site with `# pyright: ignore[reportMissingImports]` rather than globally, so a real typo in any other import still fails. A new heavy lazy import needs the same comment.
+`tests/` is out of scope for now (its fakes are deliberately partial); ratcheting to `strict` is a later decision. The darwin/arm64-only imports the Linux runner cannot resolve (`mlx_embeddings`, `mlx.core`, `huggingface_hub`) are suppressed per-site with `# pyright: ignore[reportMissingImports]` rather than globally, so a real typo in any other import still fails. A new heavy lazy import needs the same comment. AUTO3's `mcp` SDK goes the other way, resolved rather than ignored: it is pure-Python, CI installs it, and the local command carries `--extra mcp` so `mcp_serve.py`'s three imports resolve. Drop the extra and pyright is 3 errors red on a clean venv while CI stays green.
 
 ---
 
