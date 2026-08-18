@@ -183,8 +183,8 @@ extension Coordinator: RecordingHUDDelegate {
 
     func recordingHUDDidRequestFlagMoment(_ hud: RecordingHUDWindow) {
         // FEAT8 discoverability (UX46): same entry point the flag-moment hotkey uses, so there is
-        // one marker writer. A no-op when idle; `flagMoment` calls back into `hud.blink` to
-        // acknowledge.
+        // one marker writer. A no-op when idle; `flagMoment` calls back into
+        // `hud.acknowledgeFlag(count:)` to acknowledge (UX73).
         session.flagMoment()
     }
 }

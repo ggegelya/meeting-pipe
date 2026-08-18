@@ -745,10 +745,16 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         let (controller, host) = makeController()
         controller.flagMoment()
         await settle()
-        XCTAssertEqual(host.hudSpy.blinkCount, 0, "nothing was flagged, so nothing is acknowledged")
+        XCTAssertEqual(
+            host.hudSpy.acknowledgedFlagCounts, [],
+            "nothing was flagged, so nothing is acknowledged"
+        )
     }
 
-    func test_flagMoment_whileRecording_acknowledgesEveryPress() async {
+    /// UX73's core: the acknowledgement counts, and it counts up. FEAT8 acknowledged with a
+    /// whole-panel opacity dip that said nothing about what had been recorded, so a press that
+    /// registered and a press that did nothing looked identical after the animation ended.
+    func test_flagMoment_whileRecording_acknowledgesWithTheRunningCount() async {
         let (controller, host) = makeController()
         host.stateMachine.setRecording(
             file: tempDir.appendingPathComponent("rec.wav"), source: source(), summaryMode: .auto
@@ -758,9 +764,47 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         controller.flagMoment()
         await settle()
 
-        // One quiet blink per moment, and the blink is the whole acknowledgement: no chrome, and
-        // the markers themselves are flushed to the sidecar at stop.
-        XCTAssertEqual(host.hudSpy.blinkCount, 2)
+        XCTAssertEqual(host.hudSpy.acknowledgedFlagCounts, [1, 2], "each press acknowledges its own number")
+        XCTAssertEqual(host.hudSpy.flagCount, 2, "and the control is left showing the total")
+    }
+
+    /// A press the guard rejects must not advance the count either, or the badge starts claiming
+    /// moments the sidecar will not contain. The idle no-op above proves the zero case; this proves
+    /// the count does not drift once a recording is under way and then ends.
+    func test_flagMoment_afterTheRecordingEnds_stopsCounting() async {
+        let (controller, host) = makeController()
+        host.stateMachine.setRecording(
+            file: tempDir.appendingPathComponent("rec.wav"), source: source(), summaryMode: .auto
+        )
+        controller.flagMoment()
+        await settle()
+
+        host.stateMachine.setIdle()
+        controller.flagMoment()
+        await settle()
+
+        XCTAssertEqual(
+            host.hudSpy.acknowledgedFlagCounts, [1],
+            "the second press was outside a recording, so it neither marked nor counted"
+        )
+    }
+
+    /// The `:453` reset already dropped the marker batch per recording; this pins that the surface
+    /// follows it, so a second meeting does not open with the first one's count still on the button.
+    func test_flagCount_resetsOnTheNextRecording() async {
+        let (controller, host) = makeController()
+        host.stateMachine.setRecording(
+            file: tempDir.appendingPathComponent("rec.wav"), source: source(), summaryMode: .auto
+        )
+        controller.flagMoment()
+        controller.flagMoment()
+        await settle()
+        XCTAssertEqual(host.hudSpy.flagCount, 2)
+
+        controller.beginRecording(source: source(), summaryMode: .auto)
+        await waitUntil({ host.hudSpy.flagResetCount > 0 }, "the next recording to reset the flag count")
+
+        XCTAssertEqual(host.hudSpy.flagCount, 0, "the new recording starts from an empty count")
     }
 }
 

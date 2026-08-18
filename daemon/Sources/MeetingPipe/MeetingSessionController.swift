@@ -266,7 +266,8 @@ final class MeetingSessionController: @unchecked Sendable {
     /// semantics like `forceStop`: pressing it when nothing is recording is a
     /// logged no-op, so it can never start a recording. The offset is seconds
     /// from recording start (the same clock the transcript segments use), the
-    /// HUD blinks once to acknowledge, and the batch is flushed at stop.
+    /// flag control acknowledges with the running count (UX73), and the batch
+    /// is flushed at stop.
     func flagMoment() {
         guard case .recording(let file, _, _) = coordinator.stateMachine.current else {
             Log.event(category: "recorder", action: "marker_flag_ignored", attributes: [
@@ -277,7 +278,9 @@ final class MeetingSessionController: @unchecked Sendable {
         let startedAt = coordinator.audioRecorder.startedAt ?? Date()
         let elapsed = max(0, Date().timeIntervalSince(startedAt))
         markerSeconds.append(elapsed)
-        coordinator.hud.blink()
+        // UX73: the acknowledgement reads its count straight off the array the sidecar is written
+        // from, so the badge cannot claim a different number of moments than the artifact holds.
+        coordinator.hud.acknowledgeFlag(count: markerSeconds.count)
         Log.event(category: "recorder", action: "marker_flagged", attributes: [
             "file": file.lastPathComponent,
             "t_seconds": elapsed,
@@ -451,6 +454,7 @@ final class MeetingSessionController: @unchecked Sendable {
                 self.activeWorkflow = resolvedWorkflow
                 self.activeCaptureMode = captureMode
                 self.markerSeconds = []  // FEAT8: fresh marker batch per recording
+                self.coordinator.hud.resetFlagCount()  // UX73: and a fresh count on the control
                 // Persist the privacy + summary routing at START (REC2 / AUD-6) so a
                 // crash / kill / rebuild before stop() can still recover this meeting
                 // on-device: the manifest carries the summary mode (BYO must not become
@@ -710,6 +714,7 @@ final class MeetingSessionController: @unchecked Sendable {
             self.activeWorkflow = nil
             self.activeCaptureMode = nil
             self.markerSeconds = []
+            self.coordinator.hud.resetFlagCount()  // UX73: paired with every markerSeconds reset
             self.offTheRecordOn = false
             // Arm the re-prompt cooldown so a post-call mic grab (Teams chat,
             // Zoom teardown toast) can't re-prompt right after the flush.

@@ -10,7 +10,9 @@
 // three-control row (Stop + the off-record toggle + the flag button, 102pt) became
 // the widest thing in the pill. This recreation does not model the off-the-record
 // state, the two icon controls beside Stop, or the shipped 192 height; all three
-// predate UX46 and are drift this file still owes.
+// predate UX46 and are drift this file still owes. Since UX73 the flag control also
+// carries a running count of flagged moments as a badge on its glyph, so re-mocking
+// the control row means mocking that state too, not just the three resting controls.
 //
 // Layout (top to bottom): app glyph (24), the pulsing coral recording dot with
 // its "Recording" label, the elapsed timer (the 24px anchor, mono tabular, grown

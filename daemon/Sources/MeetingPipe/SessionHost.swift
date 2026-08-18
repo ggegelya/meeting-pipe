@@ -134,7 +134,14 @@ protocol SessionRecording: AnyObject {
 protocol SessionHUDPresenting: AnyObject {
     func present(source: AppSource?, workflow: Workflow?, startedAt: Date, levelProvider: (() -> Float)?)
     func dismiss(animated: Bool)
-    func blink()
+    /// UX73: acknowledge a flagged moment on the flag control itself, carrying the running count of
+    /// moments in this recording. Replaced FEAT8's `blink()`, a whole-panel opacity dip the owner
+    /// read as no reaction at all. `count` is the caller's `markerSeconds.count`, which is what
+    /// keeps the badge and the marker sidecar the same number.
+    func acknowledgeFlag(count: Int)
+    /// UX73: drop the count for a fresh recording, playing no acknowledgement. Called wherever
+    /// `markerSeconds` is reset, so the surface cannot outlive the batch it counts.
+    func resetFlagCount()
     /// MIC14: show or clear the persistent "Off the record" state on the HUD.
     func setOffTheRecord(_ on: Bool)
 }

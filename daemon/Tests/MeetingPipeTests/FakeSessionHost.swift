@@ -199,16 +199,31 @@ final class SpyRecorder: SessionRecording {
 final class SpyHUD: SessionHUDPresenting {
     private(set) var presentCount = 0
     private(set) var dismissCount = 0
-    private(set) var blinkCount = 0
     private(set) var presentedWorkflows: [Workflow?] = []
     private(set) var offTheRecordStates: [Bool] = []
+
+    /// UX73: what the flag control is currently showing. One value rather than a call counter,
+    /// because the acknowledgement is now a state a user can read after the fact, so what a test
+    /// needs to assert is what the surface says, not how many times it was poked.
+    private(set) var flagCount = 0
+    /// Every count handed to `acknowledgeFlag`, in order, so a test can tell two presses apart from
+    /// one press that happened to land on 2.
+    private(set) var acknowledgedFlagCounts: [Int] = []
+    private(set) var flagResetCount = 0
 
     func present(source: AppSource?, workflow: Workflow?, startedAt: Date, levelProvider: (() -> Float)?) {
         presentCount += 1
         presentedWorkflows.append(workflow)
     }
     func dismiss(animated: Bool) { dismissCount += 1 }
-    func blink() { blinkCount += 1 }
+    func acknowledgeFlag(count: Int) {
+        flagCount = count
+        acknowledgedFlagCounts.append(count)
+    }
+    func resetFlagCount() {
+        flagCount = 0
+        flagResetCount += 1
+    }
     func setOffTheRecord(_ on: Bool) { offTheRecordStates.append(on) }
 }
 

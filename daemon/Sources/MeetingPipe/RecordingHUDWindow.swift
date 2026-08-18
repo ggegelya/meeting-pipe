@@ -10,8 +10,8 @@ protocol RecordingHUDDelegate: AnyObject {
     func recordingHUDDidRequestToggleOffTheRecord(_ hud: RecordingHUDWindow)
     /// User flagged a moment from the HUD (FEAT8 discoverability, UX46): the flag button on the
     /// control row, or the right-click menu. Routes to the same session entry the flag-moment hotkey
-    /// uses, so the marker has exactly one writer; the quiet blink is the acknowledgement, and a
-    /// press while nothing is recording is the same no-op the hotkey is.
+    /// uses, so the marker has exactly one writer; `acknowledgeFlag(count:)` is the acknowledgement
+    /// (UX73), and a press while nothing is recording is the same no-op the hotkey is.
     func recordingHUDDidRequestFlagMoment(_ hud: RecordingHUDWindow)
 }
 
@@ -76,6 +76,44 @@ enum HUDPanelGeometry {
     }
 }
 
+/// UX73: what the flag control shows once a moment has been flagged. Pure, in the same house
+/// `decide` style as `HUDPanelGeometry` above: explicit inputs, nothing read off AppKit inside, so
+/// the acknowledgement is pinned by a test rather than by re-reading an animation block.
+///
+/// FEAT8 acknowledged a flag by dipping the *whole panel's* `alphaValue` to 0.4 and back, and the
+/// owner read that as no reaction at all (2026-08-04, "pretty weird feeling"). Three things made it
+/// read that way: a window-level fade is the gesture macOS uses for a window losing focus, so it
+/// reads as the HUD reacting to the click rather than to the flag; it left nothing behind, so a
+/// user watching the call window could not learn afterwards that the press registered; and it said
+/// nothing about what was recorded, though `flagMoment` had the count in hand the whole time. So
+/// the acknowledgement moved onto the control that was pressed, and it carries the count.
+struct HUDFlagAcknowledgement: Equatable {
+    /// Flagged moments so far in this recording. Always the count of the same `markerSeconds` the
+    /// marker sidecar is written from, so the badge and the artifact cannot disagree about how many
+    /// moments were flagged.
+    let count: Int
+
+    /// Whether the press plays its scale. False under reduced motion, where the tint is applied and
+    /// released without it, the way `blink()` collapsed to an instant dip-and-restore.
+    let animated: Bool
+
+    /// Nothing to show before the first flag: the resting control stays the plain outline glyph,
+    /// per the design system's "no filled icons as primary state, filled is reserved for selected".
+    var showsBadge: Bool { count > 0 }
+
+    var badgeText: String { count > 0 ? String(count) : "" }
+
+    /// The VoiceOver label, which has to carry the count too: a badge a sighted user can read after
+    /// the fact is not an acknowledgement for someone who cannot see it.
+    func accessibilityLabel(base: String) -> String {
+        count > 0 ? "\(base), \(count) flagged" : base
+    }
+
+    static func decide(count: Int, reduceMotion: Bool) -> HUDFlagAcknowledgement {
+        HUDFlagAcknowledgement(count: max(0, count), animated: !reduceMotion)
+    }
+}
+
 /// Threading: every public method must run on the main queue. Same contract
 /// as `MeetingPromptWindow`.
 final class RecordingHUDWindow {
@@ -110,6 +148,10 @@ final class RecordingHUDWindow {
     /// The off-the-record toggle beside Stop (MIC14 discoverability, UX23). Held so `setOffTheRecord`
     /// can flip its glyph + tint to reflect the live state.
     private weak var offRecordButton: HUDOffRecordButton?
+
+    /// The flag-a-moment button (UX46). Held so `acknowledgeFlag` can render the count on it (UX73);
+    /// before that the control was momentary and there was nothing to render.
+    private weak var flagButton: HUDFlagButton?
 
     private static let edgeInset: CGFloat = 16
 
@@ -226,30 +268,25 @@ final class RecordingHUDWindow {
         })
     }
 
-    /// FEAT8: a single quiet opacity blink acknowledging a flagged moment. No
-    /// persistent chrome. Under reduced motion it collapses to an instant
-    /// dip-and-restore. Main-queue only; a no-op when the HUD isn't showing.
-    func blink() {
-        guard let panel = panel else { return }
-        let dip: CGFloat = 0.4
-        if MPMotion.reduceMotion {
-            panel.alphaValue = dip
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak panel] in
-                panel?.alphaValue = 1
-            }
-            return
-        }
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = MPMotion.durFast
-            ctx.timingFunction = MPMotion.easeOut
-            panel.animator().alphaValue = dip
-        }, completionHandler: { [weak panel] in
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = MPMotion.durFast
-                ctx.timingFunction = MPMotion.easeOut
-                panel?.animator().alphaValue = 1
-            }
-        })
+    /// UX73: acknowledge a flagged moment at the control that was pressed, carrying the running
+    /// count. Replaces FEAT8's whole-panel opacity dip, which the owner reported as no reaction at
+    /// all. `count` is the caller's `markerSeconds.count`, so the badge and the marker sidecar are
+    /// the same number by construction. Main-queue only; a no-op when the HUD isn't showing.
+    func acknowledgeFlag(count: Int) {
+        flagButton?.apply(
+            HUDFlagAcknowledgement.decide(count: count, reduceMotion: MPMotion.reduceMotion),
+            pulsing: true
+        )
+    }
+
+    /// UX73: drop the count for a fresh recording, with no acknowledgement played. Paired with
+    /// every `markerSeconds` reset in `MeetingSessionController` so the surface can never outlive
+    /// the batch it is counting.
+    func resetFlagCount() {
+        flagButton?.apply(
+            HUDFlagAcknowledgement.decide(count: 0, reduceMotion: MPMotion.reduceMotion),
+            pulsing: false
+        )
     }
 
     // MARK: Degraded state (TECH-UX4)
@@ -432,11 +469,12 @@ final class RecordingHUDWindow {
 
         // Flag-a-moment button, the third control on the row (FEAT8 discoverability, UX46). FEAT8
         // was hotkey-only, so the one surface that is on screen for exactly as long as flagging is
-        // possible never offered it. Momentary, not a toggle: it keeps no state, the quiet blink
-        // acknowledges it, and it fires the same session entry the hotkey does.
+        // possible never offered it. Still not a toggle, and it fires the same session entry the
+        // hotkey does; UX73 gave it the one piece of state it does carry, the running count.
         let flag = HUDFlagButton(target: bg, action: #selector(HUDBackgroundView.didClickFlagMoment))
         flag.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(flag)
+        self.flagButton = flag
 
         // Retain refs so the degraded banner can be added lazily (TECH-UX4):
         // keeping it out of the tree while collapsed stops its wide content
@@ -541,8 +579,9 @@ final class RecordingHUDWindow {
 
     /// UX46: the button and the right-click item both land here, and this is the only thing either
     /// does. No marker is written on this side; the delegate hop reaches the same
-    /// `MeetingSessionController.flagMoment` the hotkey calls, which stamps the timestamp and asks
-    /// the HUD to blink.
+    /// `MeetingSessionController.flagMoment` the hotkey calls, which stamps the timestamp and calls
+    /// back into `acknowledgeFlag(count:)` with the new count (UX73). That single hop is why both
+    /// controls acknowledge identically without either of them knowing the count.
     fileprivate func handleFlagMoment() {
         delegate?.recordingHUDDidRequestFlagMoment(self)
     }
@@ -854,14 +893,27 @@ private final class HUDOffRecordButton: NSButton {
 }
 
 /// Compact flag-a-moment button on the HUD control row (FEAT8 discoverability, UX46). Its sibling
-/// above is a toggle; this one is momentary, so it has no active state to render: a press stamps a
-/// timestamp on the running recording and the HUD's own quiet blink is the whole acknowledgement.
-/// Outline rather than filled, per the design system's rule that filled is reserved for a selected
-/// state, and tinted `fgMuted` like the toggle beside it (the AA-clearing muted step, not `fgFaint`).
+/// above is a toggle; this one is not, and UX73 gave it the only state it carries: the running count
+/// of moments flagged in this recording, as a badge on the glyph, plus the press acknowledgement
+/// that used to live on the whole panel.
+///
+/// The glyph stays outline and monochrome in every state, per the design system's two iconography
+/// rules ("no filled icons as primary state, filled is reserved for selected in toggles" and
+/// "monochrome only, never tinted decoratively"). A count is not a selection, so it does not earn a
+/// fill. The one tint is the press itself, which uses `signal600`, the sanctioned active state, and
+/// releases straight back to `fgMuted` (the AA-clearing muted step, not `fgFaint`).
 private final class HUDFlagButton: NSButton {
     /// Named once, so the tooltip, the VoiceOver label, and the right-click item cannot drift into
     /// three descriptions of one action.
     static let label = "Flag this moment"
+
+    /// The running count, bottom-trailing on the glyph. Hidden at zero so an untouched control is
+    /// byte-for-byte the resting state UX46 shipped.
+    private let badge = NSTextField(labelWithString: "")
+
+    /// Guards the settle: two presses inside one press duration would otherwise let the first one's
+    /// restore fire during the second and leave the control muted mid-acknowledgement.
+    private var pulseGeneration = 0
 
     init(target: AnyObject?, action: Selector?) {
         super.init(frame: .zero)
@@ -878,8 +930,66 @@ private final class HUDFlagButton: NSButton {
         contentTintColor = MPColors.fgMuted
         toolTip = HUDFlagButton.label
         setAccessibilityLabel(HUDFlagButton.label)
+
+        badge.font = .systemFont(ofSize: MPType.textXS, weight: MPType.semibold)
+        badge.textColor = MPColors.fgMuted
+        badge.isHidden = true
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(badge)
+        NSLayoutConstraint.activate([
+            badge.trailingAnchor.constraint(equalTo: trailingAnchor),
+            badge.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Render `ack`, and when `pulsing` play the press acknowledgement on the control itself. The
+    /// count is rendered either way, so the reset path shares this one code path and there is no
+    /// second implementation to drift.
+    func apply(_ ack: HUDFlagAcknowledgement, pulsing: Bool) {
+        badge.stringValue = ack.badgeText
+        badge.isHidden = !ack.showsBadge
+        setAccessibilityLabel(ack.accessibilityLabel(base: HUDFlagButton.label))
+        guard pulsing else { return }
+        pulse(animated: ack.animated)
+    }
+
+    /// The blessed press feedback (DSN24), applied here on demand rather than on a real mouse-down:
+    /// the acknowledgement has to fire for the right-click item and the hotkey too, neither of which
+    /// presses this button. Scale to 0.97 over `durPress` about the bounds centre, exactly as
+    /// `MPButton.applyPressScale` does, plus the `signal600` tint. Under reduced motion the scale is
+    /// skipped and only the tint plays, which is the same collapse `blink()` made.
+    private func pulse(animated: Bool) {
+        pulseGeneration += 1
+        let generation = pulseGeneration
+        contentTintColor = MPColors.signal600
+        badge.textColor = MPColors.signal600
+        if animated { applyPressScale(0.97) }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + MPMotion.durPress) { [weak self] in
+            guard let self = self, self.pulseGeneration == generation else { return }
+            self.contentTintColor = MPColors.fgMuted
+            self.badge.textColor = MPColors.fgMuted
+            if animated { self.applyPressScale(1) }
+        }
+    }
+
+    /// An NSView-backed layer anchors at (0,0), so scale about the bounds centre via
+    /// translate -> scale -> translate-back.
+    private func applyPressScale(_ scale: CGFloat) {
+        guard let layer = layer else { return }
+        let mid = CGPoint(x: bounds.midX, y: bounds.midY)
+        let transform = CATransform3DConcat(
+            CATransform3DConcat(
+                CATransform3DMakeTranslation(-mid.x, -mid.y, 0),
+                CATransform3DMakeScale(scale, scale, 1)),
+            CATransform3DMakeTranslation(mid.x, mid.y, 0))
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(MPMotion.durPress)
+        CATransaction.setAnimationTimingFunction(MPMotion.easeOut)
+        layer.transform = transform
+        CATransaction.commit()
+    }
 
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 }

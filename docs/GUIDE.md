@@ -67,7 +67,7 @@ What that actually does depends on the workflow. Under an ordinary workflow the 
 
 ### Flagging a moment
 
-When something is said that you know you will want to find later, press `⌃⌥F`, or click the **flag** button on the recording panel (also **Flag this moment** on its right-click menu). The panel blinks once to confirm. The moment shows up in the summary as a flagged moment and as a clickable chip in the **Transcript** tab that jumps you to it.
+When something is said that you know you will want to find later, press `⌃⌥F`, or click the **flag** button on the recording panel (also **Flag this moment** on its right-click menu). The button itself confirms the press, and then keeps a small count beside the flag of how many moments you have marked in this recording, so you can tell it registered even if you were looking at the call rather than at the panel. The count starts again from nothing on your next recording. The moment shows up in the summary as a flagged moment and as a clickable chip in the **Transcript** tab that jumps you to it.
 
 Both the flag and the off-the-record keys do nothing when no recording is running, so a mistimed press is harmless.
 

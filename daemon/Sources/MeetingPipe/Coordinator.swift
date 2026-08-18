@@ -498,7 +498,8 @@ final class Coordinator: NSObject {
         }
 
         // Flag-moment hotkey (FEAT8): stamps a timestamp marker on the active
-        // recording (a quiet HUD blink); a no-op when idle, like force-stop.
+        // recording (the flag control acknowledges with its count, UX73); a
+        // no-op when idle, like force-stop.
         let flagHotkey = liveFlagMomentHotkey
         if flagHotkey == liveManualHotkey || flagHotkey == liveForceStopHotkey {
             Log.main.warning("Flag-moment hotkey matches another hotkey - skipping registration")

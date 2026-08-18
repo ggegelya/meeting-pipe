@@ -211,4 +211,155 @@ final class HUDControlRowTests: XCTestCase {
         )
         _ = hud
     }
+
+    // MARK: - UX73: the acknowledgement is on the control, and it counts
+
+    /// UX46 pinned that both controls reach one delegate hop. UX73 depends on that being the *only*
+    /// route, because the count is computed session-side and pushed back to one button: if either
+    /// control acknowledged locally the two would drift apart the moment one of them was used. So
+    /// assert the property directly, on the control the acknowledgement lands on.
+    func test_both_entry_points_acknowledge_the_same_control() throws {
+        let (hud, _, content) = makeHUD()
+        let button = try flagButton(in: content)
+        let menu = try XCTUnwrap(content.menu(for: rightClick()))
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Flag this moment" })
+
+        // Neither control renders anything on its own; both leave it to the session's callback.
+        try fire(button.target, button.action)
+        XCTAssertEqual(button.accessibilityLabel(), "Flag this moment", "the button must not self-acknowledge")
+        try fire(item.target, item.action)
+        XCTAssertEqual(button.accessibilityLabel(), "Flag this moment", "nor may the menu item")
+
+        // And one callback moves the one control, whichever was pressed.
+        hud.acknowledgeFlag(count: 1)
+        XCTAssertEqual(button.accessibilityLabel(), "Flag this moment, 1 flagged")
+    }
+
+    /// The count has to be readable after the fact, which is the whole complaint: a user watching
+    /// the call window rather than the HUD could not tell a press that registered from one that did
+    /// not, because the old acknowledgement was over before they looked.
+    func test_the_count_persists_on_the_button_and_resets_with_the_recording() throws {
+        let (hud, _, content) = makeHUD()
+        let button = try flagButton(in: content)
+
+        hud.acknowledgeFlag(count: 1)
+        XCTAssertEqual(button.accessibilityLabel(), "Flag this moment, 1 flagged")
+        hud.acknowledgeFlag(count: 2)
+        XCTAssertEqual(button.accessibilityLabel(), "Flag this moment, 2 flagged")
+
+        hud.resetFlagCount()
+        XCTAssertEqual(
+            button.accessibilityLabel(), "Flag this moment",
+            "a fresh recording shows the resting control, not the last meeting's total"
+        )
+    }
+
+    /// The acknowledgement is not allowed to resize the pill. UX35's contract is that the panel has
+    /// exactly two shapes, and a badge that grew the control row would break it silently at the
+    /// point a user flagged a tenth moment rather than at build time.
+    func test_the_badge_does_not_change_the_control_size() throws {
+        let (hud, _, content) = makeHUD()
+        let button = try flagButton(in: content)
+        let resting = button.intrinsicContentSize
+
+        hud.acknowledgeFlag(count: 999)
+        XCTAssertEqual(button.intrinsicContentSize, resting, "the count must live inside the 26pt control")
+        XCTAssertEqual(HUDPanelGeometry.controlRowWidth, 102, "and the row it sits in is unchanged")
+    }
+}
+
+/// UX73: the pure half of the acknowledgement, pinned the way `HUDPanelGeometry` is. What the
+/// control shows is a decision with two inputs and no AppKit in it, so it is asserted here rather
+/// than by reading an animation block and hoping.
+final class HUDFlagAcknowledgementTests: XCTestCase {
+
+    /// Before the first flag the control is exactly what UX46 shipped: no badge, no state.
+    func test_zero_shows_no_badge() {
+        let ack = HUDFlagAcknowledgement.decide(count: 0, reduceMotion: false)
+        XCTAssertFalse(ack.showsBadge)
+        XCTAssertEqual(ack.badgeText, "")
+        XCTAssertEqual(ack.accessibilityLabel(base: "Flag this moment"), "Flag this moment")
+    }
+
+    func test_a_count_shows_and_reads_out() {
+        let ack = HUDFlagAcknowledgement.decide(count: 3, reduceMotion: false)
+        XCTAssertTrue(ack.showsBadge)
+        XCTAssertEqual(ack.badgeText, "3")
+        XCTAssertEqual(
+            ack.accessibilityLabel(base: "Flag this moment"), "Flag this moment, 3 flagged",
+            "a badge only a sighted user can read is not an acknowledgement for everyone"
+        )
+    }
+
+    /// Reduced motion collapses the press the way `blink()` did, and this is the seam that has to
+    /// keep covering it: the spec's rule is one implementation that degrades, not a second design.
+    func test_reduced_motion_keeps_the_acknowledgement_and_drops_only_the_motion() {
+        let still = HUDFlagAcknowledgement.decide(count: 2, reduceMotion: true)
+        let moving = HUDFlagAcknowledgement.decide(count: 2, reduceMotion: false)
+
+        XCTAssertFalse(still.animated)
+        XCTAssertTrue(moving.animated)
+        // What is acknowledged is identical; only how it plays differs.
+        XCTAssertEqual(still.badgeText, moving.badgeText)
+        XCTAssertEqual(still.showsBadge, moving.showsBadge)
+    }
+
+    /// Defensive, because the count arrives from the session rather than from this file.
+    func test_a_negative_count_cannot_render_a_badge() {
+        let ack = HUDFlagAcknowledgement.decide(count: -1, reduceMotion: false)
+        XCTAssertEqual(ack.count, 0)
+        XCTAssertFalse(ack.showsBadge)
+    }
+}
+
+/// UX73's regression fence. The old acknowledgement was a whole-panel `alphaValue` dip, and the
+/// thing that made it wrong is invisible to every behavioural test above: they would all still pass
+/// if `blink()` came back alongside the badge. So assert its absence on the checkout, the way
+/// `TutorialFenceTests` asserts the tour's claims.
+final class HUDFlagAcknowledgementFenceTests: XCTestCase {
+
+    private func repoFile(_ relativePath: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // MeetingPipeTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // daemon
+            .deletingLastPathComponent()   // repo root
+        return try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
+    /// The HUD protocol is the whole surface the session can reach, so a `blink` requirement here is
+    /// the only way the panel dip could be driven again.
+    func test_the_hud_protocol_no_longer_offers_a_blink() throws {
+        let source = try repoFile("daemon/Sources/MeetingPipe/SessionHost.swift")
+        XCTAssertFalse(
+            source.contains("func blink("),
+            "SessionHUDPresenting must not offer blink(); UX73 replaced it with acknowledgeFlag(count:)"
+        )
+        XCTAssertTrue(source.contains("func acknowledgeFlag(count: Int)"))
+        XCTAssertTrue(source.contains("func resetFlagCount()"))
+    }
+
+    func test_the_hud_no_longer_implements_a_blink() throws {
+        let source = try repoFile("daemon/Sources/MeetingPipe/RecordingHUDWindow.swift")
+        XCTAssertFalse(
+            source.contains("func blink("),
+            "RecordingHUDWindow must not implement blink(); the acknowledgement is on the flag control"
+        )
+    }
+
+    /// AC: the acknowledgement state is derived from the same `markerSeconds` the marker sidecar is
+    /// written from. Two counters kept in step would satisfy every behavioural test and still drift,
+    /// so pin the single expression that makes drift impossible.
+    func test_the_count_is_read_off_the_markers_the_sidecar_is_written_from() throws {
+        let source = try repoFile("daemon/Sources/MeetingPipe/MeetingSessionController.swift")
+        XCTAssertTrue(
+            source.contains("acknowledgeFlag(count: markerSeconds.count)"),
+            "the acknowledgement must count markerSeconds itself, not a separate tally"
+        )
+        XCTAssertTrue(
+            source.contains("MarkerFile.write(seconds: self.markerSeconds, forFinal: file)"),
+            "and the sidecar must still be written from that same array"
+        )
+        XCTAssertFalse(source.contains("hud.blink()"))
+    }
 }
