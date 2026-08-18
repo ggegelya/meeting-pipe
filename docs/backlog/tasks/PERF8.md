@@ -66,6 +66,42 @@ The same file already does the right thing for the neighbouring edit. `Transcrip
 
 So a transcript **text** edit is already optimistic and local, while a transcript **speaker** edit re-reads the world. There is no design reason for the asymmetry; the speaker path grew through FEAT3-UNDO and FEAT3-SEGMENT with a reload as the refresh mechanism and nobody revisited it. Fix (1) below is making the speaker path do what the text path already does.
 
+## Crash safety: a durability defect that is already there, and that this task must not widen
+
+Raised by the owner on 2026-08-18 when reviewing this spec: "did you take into consideration sudden shutdown? if the app got quit mid-save, it should be failsafe". The answer is that the current write is **not** failsafe, that it fails in the worse of the two possible directions, and that the write-behind in scope item (1) would widen the exposure window unless the two land together.
+
+`SpeakerLabelStore.write(overlay:stem:in:)` saves like this:
+
+```swift
+try data.write(to: temp, options: .atomic)
+if fm.fileExists(atPath: url.path) {
+    _ = try? fm.removeItem(at: url)
+}
+try fm.moveItem(at: temp, to: url)
+```
+
+Between the `removeItem` and the `moveItem` the real sidecar **does not exist**, and the only copy of the data is in `<stem>.speaker_labels.json.tmp`. `SpeakerLabelStore.read(stem:in:)` is fail-open, so a missing file reads as `.empty`, and nothing in either tree ever reads or sweeps a `.tmp` (grepped 2026-08-18: `CorrectionStore` is the only file that even names the extension, as its own temp path). A process death inside that window therefore does not lose the edit being saved, it **silently loses every speaker name the owner ever assigned to that meeting**, unrecoverably.
+
+That is the wrong failure direction. A save that fails should leave the previous state intact; this one destroys the previous state first and then tries to install the new one.
+
+The repo already contains the correct pattern, one file over. `WorkflowStore.persist` writes a `.writing` sibling then calls `fm.replaceItemAt(url, withItemAt: tmp)`, and its type doc says why: "Saves write through a `.writing` sibling then `replaceItemAt` for crash safety." `replaceItemAt` is an atomic replacement with no window where the destination is absent. Plain `data.write(to: url, options: .atomic)` is equally safe and simpler, because that option already writes to a temporary file and renames it into place; the manual temp-remove-move dance is both redundant and strictly less safe than the one-liner it wraps.
+
+**The same defect is in three stores, and all three hold hand-made edits that cannot be regenerated.** `SpeakerLabelStore.write` (speaker names), `TranscriptCorrectionStore.write` (transcript text fixes) and `CorrectionStore.record` (summary corrections) each use the remove-then-move shape. The pipeline can re-derive a transcript or a summary; it cannot re-derive which voice the owner said was Sudip.
+
+This is not theoretical for this app. Four `.ips` reports landed on 2026-08-13 and 2026-08-14, and REC12 is a confirmed uncatchable ObjC exception that aborted the daemon within 100 ms of a prompt. A `SIGABRT` runs no termination handler at all.
+
+### What the write-behind has to guarantee
+
+The graceful half already has a seam. `AppDelegate.flushAndExit()` is the single synchronous teardown path for both `applicationWillTerminate` and the SIGTERM dispatch source, it is already used to flush the recorder (REC2 / AUD-6), and REC13 armed a 9 s ceiling over it. A pending-overlay flush belongs there, beside the recorder flush, and it must be synchronous and cheap (a 150-byte write) so it cannot be what makes that path miss its ceiling.
+
+The ungraceful half cannot be flushed at all, so it has to be bounded instead:
+
+- The coalescing window is short and stated as a named constant with its reasoning, not tuned by feel. Sub-second is the target, so the worst case a `SIGKILL` or panic can cost is roughly one pick, which the owner would notice and redo, rather than a batch of twenty which they would not.
+- Every write is atomic replacement, so a death mid-write leaves either the old overlay or the new one, never neither.
+- Anything that ends the pane's ownership of the in-memory overlay flushes first: switching meetings, switching tabs, closing the Library window, and app deactivation. A batch of edits must never survive only in a view's `@State`.
+
+Under those three, the exposure a `SIGKILL` can reach is one coalescing window of edits, and the exposure it can reach *today*, through the remove-then-move window, is the entire file. The net durability after this task is better than before it, which is the bar this task has to clear rather than merely not regress.
+
 ## Prior art to not re-litigate
 
 TECH-A12 (resolved 2026-05-28, in [`q3-final.md`](../q3-final.md)) already fixed the scan's *parse* cost with the per-stem mtime cache in `performScan`, which is why the measured rescan here is 30 ms rather than seconds. Its resolution note also recorded, after a stop-and-ask, that the watcher is dir-level and "gives no per-file change event, so the stop-and-ask resolves to the mtime cache rather than a watch upgrade".
@@ -74,7 +110,9 @@ That finding stands and this task does not overturn it. Fix (2) below does not n
 
 ## Scope
 
-Four changes, in payoff order. (1) and (3) are the interaction; (2) removes the floor; (4) is optional and may be split out.
+Five changes. (0) is a correctness precondition and lands first or alongside (1); (1) and (3) are the interaction; (2) removes the floor; (4) is optional and may be split out.
+
+**(0) Make the overlay write crash-safe, before anything is allowed to defer it.** Replace the temp-remove-move shape with an atomic replacement, either `data.write(to: url, options: .atomic)` directly or `WorkflowStore.persist`'s `replaceItemAt` idiom. The seam is `SpeakerLabelStore.write(overlay:stem:in:)`, plus the identical shape in `TranscriptCorrectionStore.write` and `CorrectionStore.record`. Fixing all three is the recommendation, because it is the same few lines in each and leaving two known-broken copies of a data-loss bug is the doc-and-code-truth debt DOC7 and HYG6 keep clearing; narrowing it to `SpeakerLabelStore` alone is the owner's call to make, not a session's. Also flush any pending in-memory overlay from `AppDelegate.flushAndExit()`, beside the existing recorder flush, and on every event that ends the pane's ownership of it.
 
 **(1) Make the speaker overlay an in-memory model with coalesced write-behind.** The pane owns `speakerOverlay`; a pick mutates it in memory and the row repaints on the next frame. The disk write is coalesced and moves off the main thread. The seam is `TranscriptTab.reassign(indices:toLabel:)` plus the four sibling actions that share its shape (`resetReassignment(indices:)`, `nameSpeaker`, `renameSpeaker`, `undoNaming`), and `MeetingLibraryService.reassignSegments(stem:indices:toLabel:)` / `resetSegmentReassignment(stem:indices:)`. Follow `saveCorrection`'s pattern. A batch of 20 picks should produce one write, not 20.
 
@@ -96,7 +134,9 @@ Four changes, in payoff order. (1) and (3) are the interaction; (2) removes the 
 
 **The `NSCursor.push()` / `NSCursor.pop()` pair in `TranscriptRow.onHover`.** Observed while investigating: a re-render that removes a hovered row can skip the `pop`, so the cursor stack can grow. It is a real smell, it is not the latency, and it is not filed. Named here so it is not lost.
 
-**The four-operation write in `SpeakerLabelStore.write`.** `data.write(options: .atomic)` already writes to a temp and renames, so the extra `removeItem` plus `moveItem` on top is redundant. It measures 2 ms so it is not worth a task on its own, but if (2) is implemented by counting expected filesystem events, this redundancy matters and should be collapsed then.
+**Durability beyond the coalescing window.** No journal, no write-ahead log, no undo history on disk. The bar is that a crash costs at most one coalescing window of edits and can never cost the existing file, which scope item (0) delivers. Anything stronger is a different task and nobody has asked for one.
+
+**Note on an earlier draft of this spec.** The first version of this file listed the temp-remove-move write under out-of-scope, on the grounds that it measures 2 ms and was therefore not worth a task. That was the wrong lens: it is a data-loss window, not a performance redundancy, and the owner caught it on 2026-08-18 by asking what happens on a sudden shutdown. It is now scope item (0). Recorded here so the pickup session does not read the git history and reinstate the earlier judgement.
 
 ## Acceptance
 
@@ -104,6 +144,9 @@ Four changes, in payoff order. (1) and (3) are the interaction; (2) removes the 
 - Reassigning one segment repaints its row without any disk read of `<stem>.json`. A test drives the reassign path against a stem whose transcript file has been made unreadable after load, and asserts the resolved display label for that segment changes anyway. It fails against `main`, where `reload()` re-reads the file.
 - A batch of N reassignments produces one overlay write, not N. A test drives several reassignments inside the coalescing window and asserts the write count (via a seam that counts writes, not by timing).
 - The overlay write no longer happens synchronously on the main thread from the view action.
+- No write path leaves a window in which the destination sidecar is absent. A test drives the writer with an existing overlay on disk, simulates a failure after the temporary file is written, and asserts the previous overlay is still readable. It fails against `main`, where the destination has already been removed by that point.
+- Quitting the app with unflushed edits loses nothing. A test drives `AppDelegate.flushAndExit()` with a pending in-memory overlay and asserts the sidecar on disk matches it afterwards.
+- The coalescing window is a named constant with its reasoning in a comment, and a test asserts a pending edit is flushed by switching meetings, switching tabs, and closing the Library window, so no batch of edits lives only in view state.
 - A local overlay write does not bump `MeetingStore.revision`. A test writes an overlay sidecar through the app's own path and asserts the store's revision is unchanged, while a write that did not come from the app still triggers a rescan. That second half is load-bearing: suppression that also swallows the pipeline's writes would stop finished meetings appearing.
 - The pipeline's own writes still refresh the library within the existing debounce window, so A12's and UX52's guarantees survive. Pin this with a test rather than by reasoning.
 - Every naming path shares the new shape: cluster naming, rename, undo, per-segment reassign, per-segment reset. A path left on the old reload is a half fix, and the owner reassigns in batches of 20.
