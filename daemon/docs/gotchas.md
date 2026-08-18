@@ -94,6 +94,18 @@ The real fix is that the length was never a guess to begin with. `byteRate` live
 
 Two habits worth carrying. **Check what a parser returns for a damaged input before designing around it**; a five-line probe that built an unfinalized WAV and printed `0.0` is what redirected this task. And **treat a non-positive duration as no measurement** at the policy layer too, as belt and braces, so the next zero from anywhere cannot win a `max()` the way this one did.
 
+### A documented divergence is still a divergence
+
+Don't let a comment explaining why two surfaces disagree stand in for a reason they should. Writing the split down makes it look decided, and the next reader inherits a justification instead of a defect.
+
+UX79 is the worked example, and what makes it worth recording is how well documented the bug was. `StatusBarController.setStopping` set `titleState = .stopping(...)` and then called `rebuildMenu(state: .idle)`, so the menu-bar title read "Stopping…" while the menu header one click below it read "MeetingPipe: Idle". Three separate places said so on purpose: the call site ("Deliberately `.idle`, not `titleState`: the menu built during a flush is the idle one"), the field's own doc ("Deliberately NOT `lastMenuState` ... Collapsing the two would change what the menu says mid-stop"), and `menuInputs` ("`state` is a parameter rather than a read of `lastMenuState` because `setStopping` passes `.idle` here on purpose"). Each revision that touched it re-justified the split rather than questioning it, and T3's archive entry then claimed the fix had shipped, which ARCH6 had to correct in place.
+
+**The cost was hiding in the half nobody wrote down.** The `.idle` menu does not just carry the wrong header, it carries the `.idle` **rows**, which means a Start Recording row. Its action reaches `MeetingSessionController.toggleManual`'s `.stopping` case, which is a bare `break`. So the app offered a control that did nothing, said nothing and logged nothing, for the length of the post-processing. `rows(_:)`'s own switch already had `default: break` with the comment "`.stopping` is a genuine no-op mid-flush", so the model knew the right answer the whole time and the controller was withholding the state that would apply it.
+
+The fix was one line, `rebuildMenu(state: titleState)`. That is the shape to watch for: when a comment says two things are deliberately out of step, check what *else* rides on the value being passed, because a state is rarely consulted for one thing only.
+
+Two things to carry. **Fence the call, not just the output.** Every model-level test here would stay green if a later caller passed `.idle` again, since they read `StatusBarModel`; the regression that actually recurs is at the call site, and it recurred three times. And **an unreachable branch is a claim about a state you never enter**: `headerLabel`'s `.stopping` case was written, correct, and reached only from tests for as long as the split stood, which is the same finding CI6 made about a deny-list nobody could reach the end of.
+
 ### A guard belongs at the funnel every path goes through, not at the call sites
 
 Don't put a "have I already got one of these" check on the entry point that happened to need it. Put it where every entry point converges, or the next one added inherits nothing and the bug comes back under a different name.

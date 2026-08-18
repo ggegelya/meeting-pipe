@@ -73,7 +73,7 @@ Both the flag and the off-the-record keys do nothing when no recording is runnin
 
 ### Stopping
 
-Normally you do not: the app notices the call ended and stops on its own. Otherwise, press `⌃⌥M` again, click **Stop recording** on the recording panel, or pick **Stop Recording** from the menu bar. `⌃⌥⇧M` is the panic key: it only ever stops, so it can never start a recording by accident.
+Normally you do not: the app notices the call ended and stops on its own. Otherwise, press `⌃⌥M` again, click **Stop recording** on the recording panel, or pick **Stop Recording** from the menu bar. `⌃⌥⇧M` is the panic key: it only ever stops, so it can never start a recording by accident. After you stop, the menu bar reads **Stopping…** while it finishes writing the recording, and the menu offers no start or stop row until that is done, since neither would do anything. How long that takes depends on how long the meeting was.
 
 After Stop, the Mac transcribes the audio, writes the summary, and publishes it. You get a notification when it is done, and the Library row moves through Processing to Ready on its own. While it works, the row says which part it is on (**Transcribing** while the Mac is turning the audio into words, then **Summarizing** and **Publishing**) and carries a **Cancel** beside it the whole time, from the moment it starts rather than a minute in. Stopping it is safe at any point: nothing is reported as an error, and the meeting stays one click from running again.
 

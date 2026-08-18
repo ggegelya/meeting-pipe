@@ -24,11 +24,14 @@ final class StatusBarController {
     /// doesn't need the caller to re-supply it.
     private var lastMenuState: AppState = .idle
 
-    /// The state the title and the icon are showing. Deliberately NOT `lastMenuState`:
-    /// `setStopping` rebuilds the menu as `.idle` (which is what ships, header and Start
-    /// row included), while the title has always read "Stopping…" through the flush.
-    /// Collapsing the two would change what the menu says mid-stop, so they stay apart
-    /// and the difference is stated here rather than left to be rediscovered.
+    /// The state the title and the icon are showing.
+    ///
+    /// It used to be deliberately NOT `lastMenuState`, because `setStopping` rebuilt the menu
+    /// as `.idle` while the title read "Stopping…". UX79 removed that split: every setter now
+    /// writes this field and hands `rebuildMenu` the same value, so the two agree in every path.
+    /// The fields are still separate because collapsing them touches every `rebuildMenu` caller,
+    /// including the three that pass `lastMenuState` for a permission-driven rebuild, and that is
+    /// a refactor with its own blast radius rather than part of this fix.
     private var titleState: AppState = .idle
 
     /// The workflow whose clause the recording title carries (TECH-B5). Only read while
@@ -162,9 +165,16 @@ final class StatusBarController {
         titleState = .stopping(file: file, source: source, summaryMode: summaryMode)
         applyIcon()
         applyTitle()
-        // Deliberately `.idle`, not `titleState`: the menu built during a flush is the
-        // idle one (its header and its Start row), which is what has always shipped.
-        rebuildMenu(state: .idle)
+        // UX79 route A. This passed `.idle` for three deliberate revisions, so the menu
+        // header read "MeetingPipe: Idle" while the title one click above it read
+        // "Stopping…", and the `.idle` menu carried a Start Recording row whose action
+        // reaches `toggleManual`'s `.stopping` case and does nothing at all. Handing the
+        // real state fixes both at once: `headerLabel` agrees with the title, and
+        // `rows(_:)` takes its `default: break`, which is what its own comment already
+        // said it wanted for a flush. The window is not always brief either, since it
+        // runs for the length of the post-processing; REC13's watchdog records 52
+        // minutes of it on 2026-08-14.
+        rebuildMenu(state: titleState)
         libraryModel?.status = .stopping
         // Keep liveRecordingStem until setIdle fires so the row's pulse
         // stays visible through the flush.
@@ -384,8 +394,9 @@ final class StatusBarController {
     /// and a `hasPendingPermissionIssue` with no caller at all) collapse into this one:
     /// every row now comes out of a single `rows(_:)` call over a single snapshot.
     ///
-    /// `state` is a parameter rather than a read of `lastMenuState` because
-    /// `setStopping` passes `.idle` here on purpose while the title says "Stopping…".
+    /// `state` is a parameter rather than a read of `lastMenuState` so a caller can build a menu
+    /// for a state it is about to enter. Since UX79 no caller passes anything but the state it
+    /// also gave `titleState`; `setStopping` was the one exception and its `.idle` is gone.
     private func menuInputs(state: AppState, finishSetupTitle: String?) -> StatusBarModel.Inputs {
         let center = PermissionsCenter.shared
         return StatusBarModel.Inputs(
