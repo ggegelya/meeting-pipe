@@ -1,3 +1,4 @@
+import AVFoundation
 import Combine
 import XCTest
 @testable import MeetingPipe
@@ -294,6 +295,141 @@ final class MeetingStoreTests: XCTestCase {
             "the transcript is `<stem>.json`; a sibling sidecar carries no audio_seconds "
                 + "and reading one silently loses the duration of a meeting whose audio "
                 + "a retention policy reclaimed (CI6)"
+        )
+    }
+
+    // MARK: duration derivation (UX74)
+
+    /// A real, decodable WAV of `seconds`, so a header read has something to
+    /// measure. Mono 16 kHz silence: the fixture only needs a truthful header.
+    private func writeWAV(_ url: URL, seconds: Double) throws {
+        let sampleRate = 16_000.0
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+        let file = try AVAudioFile(forWriting: url, settings: [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+        ])
+        let frames = AVAudioFrameCount(sampleRate * seconds)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buffer.frameLength = frames
+        try file.write(from: buffer)
+    }
+
+    func test_duration_prefers_transcript_audio_seconds_over_a_touched_wav_mtime() throws {
+        // `20260429-212202` from the owner's library, reduced: nine seconds of
+        // audio whose file something other than the recorder wrote to long after
+        // the stop. Only the recorder writing the file makes mtime mean "when
+        // recording stopped"; a copy, a restore or an rsync turns it into
+        // "recording start to whenever that happened", which grows with age.
+        let dir = try tempDir()
+        let started = Date().addingTimeInterval(-3600)
+        let stem = MeetingFormatters.stem.string(from: started)
+        let wav = dir.appendingPathComponent("\(stem).wav")
+        try writeFile(wav)
+        try setMtime(wav, started.addingTimeInterval(544.6 * 3600))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{}")
+        try writeFile(dir.appendingPathComponent("\(stem).json"), #"{"audio_seconds": 9.0453125}"#)
+
+        let rows = MeetingStore(recordingsDir: dir).performScan(directory: dir)
+
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(
+            rows.first?.durationSec, 9.0453125,
+            "the transcript's audio_seconds is a measurement of the audio; the file's "
+                + "mtime is a measurement of the last thing that touched the file (UX74)"
+        )
+    }
+
+    func test_duration_falls_back_to_the_audio_header_when_the_transcript_has_no_audio_seconds() throws {
+        // 29 of the owner's 249 transcripts carry no `audio_seconds`, and a row
+        // whose transcript has not been written yet carries none either. The file
+        // still knows its own length, and reading the header is not the same as
+        // trusting the mtime.
+        let dir = try tempDir()
+        let started = Date().addingTimeInterval(-3600)
+        let stem = MeetingFormatters.stem.string(from: started)
+        let wav = dir.appendingPathComponent("\(stem).wav")
+        try writeWAV(wav, seconds: 2.5)
+        try setMtime(wav, started.addingTimeInterval(500 * 3600))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{}")
+        try writeFile(dir.appendingPathComponent("\(stem).json"), #"{"segments": []}"#)
+
+        let rows = MeetingStore(recordingsDir: dir).performScan(directory: dir)
+
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(
+            rows.first?.durationSec ?? -1, 2.5, accuracy: 0.01,
+            "with no audio_seconds to read, the audio's own header answers, not its mtime (UX74)"
+        )
+    }
+
+    func test_duration_still_comes_from_mtime_for_audio_with_no_transcript() throws {
+        // The floor, and the reason mtime is demoted rather than deleted. This
+        // file is not decodable audio, so the header read has nothing to say, and
+        // there is no transcript to ask: exactly the shape of a still-recording
+        // row. Nil here would blank the length label on both per-meeting
+        // surfaces, which is a worse answer than an upper bound.
+        //
+        // Green before UX74 as well as after, deliberately: it fences the fix
+        // against over-correcting, where the other three fence the defect.
+        let dir = try tempDir()
+        let started = Date().addingTimeInterval(-3600)
+        let stem = MeetingFormatters.stem.string(from: started)
+        let wav = dir.appendingPathComponent("\(stem).wav")
+        try writeFile(wav)
+        try setMtime(wav, started.addingTimeInterval(600))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{}")
+
+        let rows = MeetingStore(recordingsDir: dir).performScan(directory: dir)
+
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(
+            rows.first?.durationSec ?? -1, 600, accuracy: 1,
+            "mtime survives as the last resort; a row with audio must still report a length"
+        )
+    }
+
+    func test_meeting_time_rail_totals_in_hours_when_a_recording_was_touched() throws {
+        // The owner's reported symptom rather than its cause: one touched stem
+        // put the Meeting time rail's All-time Total at 2469 h against 75.8 h of
+        // real audio, and with no workflow in its sidecar the Untagged row
+        // absorbed nearly all of it. Driven from disk through the same
+        // `StatsLoader` the rail uses, so the whole chain is pinned.
+        let dir = try tempDir()
+        let touchedStart = Date().addingTimeInterval(-3600)
+        let touchedStem = MeetingFormatters.stem.string(from: touchedStart)
+        let touchedWAV = dir.appendingPathComponent("\(touchedStem).wav")
+        try writeFile(touchedWAV)
+        try setMtime(touchedWAV, touchedStart.addingTimeInterval(544.6 * 3600))
+        try writeFile(dir.appendingPathComponent("\(touchedStem).summary.json"), "{}")
+        try writeFile(dir.appendingPathComponent("\(touchedStem).json"),
+                      #"{"audio_seconds": 9.0453125}"#)
+
+        for (offsetHours, seconds) in [(5.0, 1800.0), (9.0, 2700.0)] {
+            let start = Date().addingTimeInterval(-offsetHours * 3600)
+            let stem = MeetingFormatters.stem.string(from: start)
+            try writeFile(dir.appendingPathComponent("\(stem).wav"))
+            try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{}")
+            try writeFile(dir.appendingPathComponent("\(stem).json"),
+                          "{\"audio_seconds\": \(seconds)}")
+        }
+
+        let rows = MeetingStore(recordingsDir: dir).performScan(directory: dir)
+        XCTAssertEqual(rows.count, 3)
+        let facts = StatsLoader.load(meetings: rows, ownerLabel: "Me").facts
+        let snapshot = MeetingStats.derive(meetings: facts, range: .all)
+
+        XCTAssertEqual(
+            snapshot.total?.totalSec ?? -1, 9.0453125 + 1800 + 2700, accuracy: 0.01,
+            "the Total line sums the audio, not the file mtimes (UX74)"
+        )
+        XCTAssertEqual(snapshot.rows.map(\.name), [MeetingStats.untaggedName])
+        XCTAssertLessThan(
+            snapshot.rows.first?.totalSec ?? .infinity, 4 * 3600,
+            "one touched recording used to put hundreds of hours into Untagged on its own"
         )
     }
 

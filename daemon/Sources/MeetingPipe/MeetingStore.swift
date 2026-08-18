@@ -526,6 +526,59 @@ final class MeetingStore: ObservableObject {
         return mic
     }
 
+    /// One stem's length, in the order the available sources can be trusted
+    /// (UX74). Nil only when nothing on disk can answer.
+    ///
+    ///   1. `audio_seconds` from the transcript sidecar: the transcriber's own
+    ///      measurement of the audio, exact, and the only source left once a
+    ///      `drop` retention policy has reclaimed the file. 220 of the owner's
+    ///      249 transcripts carry it.
+    ///   2. The audio's header, via `AudioTranscoder.duration(of:)`, which opens
+    ///      the file and divides frames by sample rate. It decodes nothing, so it
+    ///      costs an open and a header parse, not a pass over the samples. This
+    ///      answers for a transcript written before the key existed and for a row
+    ///      transcription has not reached yet.
+    ///   3. The mtime span, clamped to a positive interval. Demoted rather than
+    ///      deleted, because it is all a still-recording row has and all an
+    ///      undecodable or hand-imported file has, and an upper bound reads better
+    ///      than a blank length label. No ceiling is imposed on it: capping the
+    ///      proxy at a plausible maximum would quiet the loudest rows while
+    ///      leaving every other one silently over-reported, and it would invent a
+    ///      number where an exact answer is usually on disk.
+    ///
+    /// Evaluated lazily in that order, so a present `audio_seconds` costs no
+    /// header read and a readable header costs no stat. Called from
+    /// `buildMeeting`, i.e. inside the derivation `cacheable` governs, so a
+    /// terminal row pays these reads once per signature change rather than once
+    /// per scan.
+    private static func duration(
+        audio: URL?,
+        transcriptJSON: URL?,
+        startedAt: Date
+    ) -> TimeInterval? {
+        if let seconds = transcriptJSON
+            .flatMap({ readJSON(at: $0) })
+            .flatMap({ $0["audio_seconds"] as? Double }),
+            seconds.isFinite, seconds > 0 {
+            return seconds
+        }
+        guard let audio = audio else { return nil }
+        // Only a *final* recording's header is a measurement. A capture
+        // intermediate is still being written and a WAV's frame count is only
+        // truthful once the file is closed, so a live row falls through to the
+        // mtime below rather than reading a header that has not been finalized.
+        // A zero or unreadable result means the same thing: not a zero-length
+        // meeting, so it does not win either.
+        if MeetingStore.isFinalRecording(audio),
+           let seconds = try? AudioTranscoder.duration(of: audio),
+           seconds.isFinite, seconds > 0 {
+            return seconds
+        }
+        let mtime = (try? audio.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate
+        return mtime.flatMap { $0 > startedAt ? $0.timeIntervalSince(startedAt) : nil }
+    }
+
     private static func buildMeeting(
         stem: String,
         files: [URL],
@@ -589,22 +642,19 @@ final class MeetingStore: ObservableObject {
             failure = nil
         }
 
-        // Duration is the recording's last-write minus the stem's start time. When
-        // a `drop` policy reclaimed the audio there is nothing to stat, so fall
-        // back to the transcript sidecar's `audio_seconds`, which the transcriber
-        // recorded from the file that no longer exists. Only read on that rare
-        // path: parsing a full transcript to recover one number is not worth it
-        // for the common case, and the result is cached with the `.done` row.
-        let duration: TimeInterval?
-        if let audio = audio {
-            let mtime = (try? audio.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate)
-            duration = mtime.flatMap { $0 > startedAt ? $0.timeIntervalSince(startedAt) : nil }
-        } else {
-            duration = transcriptJSON
-                .flatMap { readJSON(at: $0) }
-                .flatMap { $0["audio_seconds"] as? Double }
-        }
+        // Duration is a measurement of the audio, taken from the best source that
+        // can answer (UX74). It used to be the recording's last-write minus the
+        // stem's start time whenever a file existed, with the transcript consulted
+        // only when the audio was gone. That is the length of the meeting exactly
+        // as long as nothing but the recorder ever writes the file; the instant
+        // anything else touches it (a copy, a restore, an rsync, a backup tool) the
+        // span becomes "recording start to whenever that happened", which is
+        // unbounded and grows with age. Five such stems put 2392.7 h into the
+        // owner's Meeting time rail against 75.8 h of real audio, and the reliable
+        // source was being skipped precisely when a file existed to be misread.
+        let duration = MeetingStore.duration(
+            audio: audio, transcriptJSON: transcriptJSON, startedAt: startedAt
+        )
 
         let status: Meeting.Status
         let cacheable: Bool
