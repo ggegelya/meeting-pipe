@@ -4,6 +4,9 @@ import SwiftUI
 /// Permissions section: one card per TCC permission, icon badge + status pill + Request/Open Settings button, plus a privacy callout at the bottom.
 struct PermissionsSectionView: View {
     @ObservedObject var store: ConfigStore
+    /// DOC12 item 5: the privacy callout is derived from where data actually
+    /// goes, and the sink half of that lives per workflow rather than in config.
+    @ObservedObject var workflows: WorkflowStore
     /// UX60: the regulated-mode group offers the model download inline, because
     /// the clamp it describes lands on a model this Mac may not have and the only
     /// surface that said so was the menu bar's Finish setup row, a pane away from
@@ -136,7 +139,11 @@ struct PermissionsSectionView: View {
                 .font(.system(size: 16))
                 .foregroundStyle(Color(MPColors.signal600))
                 .padding(.top, 1)
-            Text("Audio capture is fully on-device. The pipeline only reaches the network when sending the transcript to Anthropic for summarization, and when publishing to Notion.")
+            Text(PrivacyReach.callout(
+                configuredBackend: store.summarizationBackend,
+                regulatedMode: store.regulatedMode,
+                sinks: workflows.workflows.flatMap { $0.effectiveSinks }
+            ))
                 .font(.mpTextSM)
                 .lineSpacing(2)
         }
@@ -208,7 +215,13 @@ private struct PermissionsCardRow: View {
                             text: pillText
                         )
                     }
-                    Text(rationale)
+                    // DOC12 item 9: `PermissionsCenter.Kind.rationale` is the one
+                    // copy, shared with the onboarding step. This row kept a
+                    // private second switch table that DET11's rewording never
+                    // reached, so the pane still promised browser-tab reading on
+                    // an Accessibility grant that exists for native call
+                    // controls. A duplicate that renders is worse than none.
+                    Text(kind.rationale)
                         .font(.mpTextSM)
                         .foregroundStyle(Color(MPColors.fgMuted))
                         .lineSpacing(1)
@@ -256,19 +269,6 @@ private struct PermissionsCardRow: View {
         case .screenRecording: return "rectangle.dashed"
         case .accessibility:   return "figure.stand"
         case .notifications:   return "bell"
-        }
-    }
-
-    private var rationale: String {
-        switch kind {
-        case .microphone:
-            return "Captures your voice via AVAudioEngine. Audio stays on this Mac."
-        case .screenRecording:
-            return "Captures system audio via ScreenCaptureKit. No video is recorded."
-        case .accessibility:
-            return "Reads browser tab titles to detect Meet and Teams Web sessions."
-        case .notifications:
-            return "Record / skip prompts and 'meeting published' alerts."
         }
     }
 

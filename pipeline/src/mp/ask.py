@@ -35,8 +35,10 @@ AI11 hardened the run around that shape after an ask ate all available memory an
 the Mac hard-rebooted. Three of its five mechanisms are here (the index lifecycle
 is in `embed_index`): the context budget is sized on the *retrieved text's script
 mix* instead of a Latin-calibrated constant, `--context-tokens` is clamped to what
-this machine can answer with, and the retrieval embedder is released before the
-answer model spawns, so the two never stack.
+this machine can answer with **when the answer runs here** (`context_ceiling`
+returns None for any backend outside `ON_DEVICE_BACKENDS`, so a cloud answer is
+not clamped at all), and the retrieval embedder is released before the answer
+model spawns, so the two never stack.
 """
 from __future__ import annotations
 
@@ -270,7 +272,8 @@ def main(argv: list[str]) -> int:
                     help="where the embedding index is cached")
     ap.add_argument("--context-tokens", type=int, default=DEFAULT_CONTEXT_TOKENS,
                     help=f"retrieved context budget in tokens (default {DEFAULT_CONTEXT_TOKENS}); "
-                         "clamped to what this Mac's RAM tier can answer with")
+                         "on an on-device backend, clamped to what this Mac's RAM tier can "
+                         "answer with; on a cloud backend, unclamped")
     ap.add_argument("--model", default=None,
                     help="override the answer model (14B is recommended for citation fidelity, per AI2)")
     ap.add_argument("--rebuild", action="store_true", help="force a rebuild of the embedding index")

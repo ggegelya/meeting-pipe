@@ -148,7 +148,7 @@ struct PreferencesView: View {
                 }
             )
         case .permissions:
-            PermissionsSectionView(store: store, localModelPreflight: localModelPreflight)
+            PermissionsSectionView(store: store, workflows: workflows, localModelPreflight: localModelPreflight)
         case .advanced:
             AdvancedSectionView()
         }

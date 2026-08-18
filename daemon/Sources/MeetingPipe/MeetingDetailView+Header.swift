@@ -93,15 +93,20 @@ extension MeetingDetailView {
     }
 
     /// Edited-locally caption (DSN22 #6): the meeting carries a summary-correction
-    /// record. Quiet and faint, the same register as the provenance line above it.
+    /// record. Quiet, the same register as the provenance line above it.
+    ///
+    /// `fgSubtle`, not the mockup's fainter token: at `mpTextXS` this is the
+    /// smallest type step in the header, and `fgFaint` sits near 2.8:1 against a
+    /// 4.5:1 body floor (DSN18). The caption below it moved off `fgFaint` for
+    /// exactly that reason and this one had been left behind (DOC12 item 10).
     var editedCaption: some View {
         HStack(spacing: 5) {
             Image(systemName: "pencil")
                 .font(.mpTextXS)
-                .foregroundStyle(Color(MPColors.fgFaint))
+                .foregroundStyle(Color(MPColors.fgSubtle))
             Text("Summary edited locally")
                 .font(.mpTextXS)
-                .foregroundStyle(Color(MPColors.fgFaint))
+                .foregroundStyle(Color(MPColors.fgSubtle))
         }
         .accessibilityElement(children: .combine)
     }
@@ -118,9 +123,9 @@ extension MeetingDetailView {
     /// clamp would silently substitute (UX29).
     ///
     /// Register: the caption slot beside "Summary edited locally", one line, no
-    /// pill and no tint. `fgSubtle` rather than the neighbour's `fgFaint`,
-    /// because this line is actionable and `fgFaint` sits near 2.8:1 (the same
-    /// reason the provenance row above it moved off the mockup's fainter token).
+    /// pill and no tint. `fgSubtle`, like that neighbour and like the provenance
+    /// row above it: `fgFaint` sits near 2.8:1 against a 4.5:1 body floor, so
+    /// nothing in this stack uses the mockup's fainter token.
     /// It clears itself: a re-summarize rewrites `run.json`'s `ts` (PIPE11), so
     /// the comparison behind it flips back on the next scan.
     var namesChangedCaption: some View {

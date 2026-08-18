@@ -13,7 +13,10 @@ reusing `chunked_windows` for windowing. The embedding backend is pluggable:
 hashing fallback. Search is cosine similarity over L2-normalized rows.
 
 This module is the durable artifact AI3 (engine-backed cited answers) builds on,
-consumed by `rag.py` for `mp ask` and `mp digest`.
+consumed by `rag.py` for `mp ask` and, since AUTO3, by `mcp_serve` / `mcp_tools`
+for `mp mcp-serve`. `mp digest` does no retrieval: it reads `<stem>.summary.json`
+and narrates it. `action_clusters.py` is the remaining reader, pulling
+`default_embedder` for `mp actions --cluster`.
 The heavy MLX import is deferred into the methods that use it, per the pipeline's
 lazy-import contract, so importing this module costs only numpy.
 

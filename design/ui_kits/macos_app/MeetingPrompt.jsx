@@ -155,7 +155,7 @@ const MeetingPrompt = ({
 
         {/* action cluster -- the primary Record is now the Instrument record key */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <PromptButton onClick={onBYO} title="Record, but skip the Anthropic API call. You'll summarize the transcript yourself.">Record (BYO)</PromptButton>
+          <PromptButton onClick={onBYO} title="Record, but skip the summarization step. You'll summarize the transcript yourself.">Record (BYO)</PromptButton>
           <PromptRecordKey label="Record" onClick={onRecord}/>
           <PromptButton chevron title={`Always for ${source.displayName}  ·  Skip this meeting  ·  Open Screen Recording Settings…`}>
             <Icon name="chevron-down" size={12}/>

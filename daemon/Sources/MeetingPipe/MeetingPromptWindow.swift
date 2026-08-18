@@ -516,11 +516,19 @@ final class MeetingPromptWindow {
         let menu = NSMenu()
 
         // Record (BYO): record normally, but the pipeline writes a manual-paste bundle
-        // instead of calling Anthropic. Moved here from an inline button to keep the
-        // prompt's action cluster quiet.
+        // instead of asking an engine for a summary. Moved here from an inline button
+        // to keep the prompt's action cluster quiet.
+        //
+        // DOC12 item 6: the tooltip named Anthropic, which is wrong on every other
+        // backend the app now ships (local, Claude CLI, OpenAI, Apple Intelligence).
+        // Nothing reachable here resolves the engine (the prompt holds a workflow,
+        // not the global config, and regulated mode clamps below both), so it names
+        // the step rather than a vendor, matching docs/GUIDE.md's "does not ask any
+        // engine for a summary". A name that cannot be derived is a name that goes
+        // stale.
         let byo = NSMenuItem(title: "Record (BYO)", action: #selector(menuPickBYO), keyEquivalent: "")
         byo.target = self
-        byo.toolTip = "Record, but skip the Anthropic API call. You'll summarize the transcript yourself."
+        byo.toolTip = "Record, but skip the summarization step. You'll summarize the transcript yourself."
         menu.addItem(byo)
 
         let always = NSMenuItem(title: "Always for \(source.displayName)", action: #selector(menuPickAlways), keyEquivalent: "")

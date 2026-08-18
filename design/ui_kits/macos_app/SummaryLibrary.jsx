@@ -649,9 +649,11 @@ const SLContextBanner = ({ label }) => (
 );
 
 // Edited-locally caption (DSN22 audit #6): the meeting carries a correction record.
-// Quiet, faint, never celebrated -- same register as the provenance line above it.
+// Quiet, never celebrated, same register as the provenance line above it.
+// `fg-subtle`, not `fg-faint`: at the smallest type step `fg-faint` sits near
+// 2.8:1 against a 4.5:1 body floor (DSN18, DOC12 item 10).
 const SLEditedCaption = () => (
-  <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 6, fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-faint)" }}>
+  <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 6, fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-subtle)" }}>
     <Icon name="pencil" size={11}/>
     <span>Summary edited locally</span>
   </div>

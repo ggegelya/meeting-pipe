@@ -371,10 +371,13 @@ const PWIntegrationsPane = () => (
   </div>
 );
 
+// Rationales mirror `PermissionsCenter.Kind.rationale`, the one copy the pane and
+// the onboarding step both render (DET11 wrote them, DOC12 collapsed the pane's
+// private second table onto them). Copy them across; don't write new ones here.
 const PW_PERMISSIONS = [
   { name: "Microphone", icon: "mic", rationale: "Captures your voice via AVAudioEngine. Audio stays on this Mac.", tone: "granted", text: "Granted", action: "Open Settings" },
   { name: "Screen Recording", icon: "monitor", rationale: "Captures system audio via ScreenCaptureKit. No video is recorded.", tone: "granted", text: "Granted", action: "Open Settings" },
-  { name: "Accessibility", icon: "user", rationale: "Reads browser tab titles to detect Meet and Teams Web sessions.", tone: "needed", text: "Needed", action: "Request" },
+  { name: "Accessibility", icon: "user", rationale: "Required to notice a meeting at all: it reads the meeting app's windows and call controls. Without it, nothing is detected and nothing auto-stops.", tone: "needed", text: "Needed", action: "Request" },
   { name: "Notifications", icon: "bell", rationale: "Record / skip prompts and 'meeting published' alerts.", tone: "granted", text: "Granted", action: "Open Settings" },
 ];
 
@@ -405,7 +408,11 @@ const PWPermissionsPane = () => (
     </PWGroup>
     <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "12px 14px", borderRadius: "var(--mp-radius-md)", background: "color-mix(in srgb, transparent 90%, var(--mp-signal-600))", border: "1px solid color-mix(in srgb, transparent 82%, var(--mp-signal-600))" }}>
       <span style={{ color: "var(--mp-signal-600)", display: "flex", flexShrink: 0, marginTop: 1 }}><Icon name="shield" size={16}/></span>
-      <span style={{ fontSize: 12, lineHeight: 1.5, color: "var(--mp-fg-muted)" }}>Audio capture is fully on-device. The pipeline only reaches the network when sending the transcript to Anthropic for summarization, and when publishing to Notion.</span>
+      {/* Derived at runtime by `PrivacyReach.callout` from the configured backend
+          and every workflow's effective sinks (DOC12 item 5). This is the shipped
+          default rendering (anthropic + Notion); an OpenAI Mac publishing to
+          Obsidian names neither of these. Don't hand-write a new sentence here. */}
+      <span style={{ fontSize: 12, lineHeight: 1.5, color: "var(--mp-fg-muted)" }}>Audio capture and transcription are fully on-device. Summarizing sends the transcript to Anthropic. Publishing sends it to Notion.</span>
     </div>
   </div>
 );

@@ -10,7 +10,7 @@ meeting-pipe is a menu-bar app. It notices when you join a meeting, asks whether
 
 **Time:** about 30 minutes, most of it waiting on downloads.
 
-**What gets downloaded:** roughly 1.5 GB in total. Homebrew and its tools are a few hundred MB, the speech models are about 475 MB, and the rest is build output. If you later switch summarization to the on-device model, that is a further 4.3 GB, downloaded on demand and not part of this setup.
+**What gets downloaded:** roughly 1.5 GB in total. Homebrew and its tools are a few hundred MB, the speech models are about 630 MB (the figure the installer prints as it fetches them), and the rest is build output. If you later switch summarization to the on-device model, that is a further 4.3 GB, downloaded on demand and not part of this setup.
 
 **What it costs:** nothing to install. Summarizing through Anthropic's API costs a few cents per meeting. There are free alternatives (an on-device model, or your existing Claude Code subscription), covered in [step 7](#step-7-choose-how-summaries-are-written).
 

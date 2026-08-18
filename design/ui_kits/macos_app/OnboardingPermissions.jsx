@@ -10,7 +10,7 @@ const OnboardingPermissions = () => (
     <div style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 8 }}>
       <PermRow icon="mic" name="Microphone" why="Captures your voice via AVAudioEngine." state="granted"/>
       <PermRow icon="monitor" name="Screen Recording" why="Captures system audio via ScreenCaptureKit. We don't record video." state="granted"/>
-      <PermRow icon="user" name="Accessibility" why="Reads browser tab titles to detect Meet / Teams Web." state="needed" cta="Open System Settings"/>
+      <PermRow icon="user" name="Accessibility" why="Required to notice a meeting at all: it reads the meeting app's windows and call controls. Without it, nothing is detected and nothing auto-stops." state="needed" cta="Open System Settings"/>
       <PermRow icon="alert" name="Notifications" why="Record / skip prompts and completion alerts." state="needed"/>
     </div>
     <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 24, gap: 8 }}>
