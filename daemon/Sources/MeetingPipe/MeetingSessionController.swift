@@ -1153,6 +1153,30 @@ final class MeetingSessionController: @unchecked Sendable {
             bundleID: source.bundleID,
             cooldownSec: coordinator.liveRepromptCooldownSec
         ) {
+            // DET13: this branch used to be a bare `return`, which is the asymmetry with the one
+            // above. The cooldown is anchored on the *previous* meeting's end, so for 60 s after
+            // any recording stops the same bundle yielded neither a prompt nor a retained
+            // candidate, and a manual Record in that window fell to `beginRecording(source: nil)`:
+            // default workflow, no source in the sidecar, no app chip, and nothing for
+            // `armLifecycleLeaveButton` to arm on, so the recording did not stop when the call did
+            // (15 m 35 s of room audio on 2026-08-04). The sighting is proof of what is running
+            // here exactly as it is there, so keep it.
+            //
+            // Keeping it is all this does. The cooldown still suppresses the prompt, which is
+            // load-bearing against END9's false-end re-prompt storms, and no skip latch is armed,
+            // so the meeting still prompts normally once the window lapses.
+            let previous = coordinator.stateMachine.liveSuppressedCandidate()
+            coordinator.stateMachine.noteSuppressedCandidate(source)
+            if previous?.bundleID != source.bundleID {
+                // Once per retention, not once per poll: discovery re-sights the same call every 3
+                // to 12 s for the whole window. The 2026-08-04 occurrence was unreadable from
+                // `events.jsonl` alone, which is what this fixes.
+                Log.event(category: "coordinator", action: "cooldown_candidate_retained", attributes: [
+                    "bundle_id": source.bundleID,
+                    "display_name": source.displayName,
+                    "cooldown_sec": coordinator.liveRepromptCooldownSec,
+                ])
+            }
             return
         }
         engageLifecycle(for: source)

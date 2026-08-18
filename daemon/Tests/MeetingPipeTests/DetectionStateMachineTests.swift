@@ -242,6 +242,75 @@ final class DetectionStateMachineTests: XCTestCase {
                        "suppression is per-bundle; clearing Zoom must not forget the Teams call")
     }
 
+    // MARK: - DET13: the cooldown-suppressed candidate
+
+    /// The 2026-08-04 incident in one arrangement. A recording for this bundle just ended, so the
+    /// re-prompt cooldown is armed and the discovery sighting of the call the owner joined 22 s
+    /// later lands in that branch instead of prompting. The sighting is still proof of what is
+    /// running, and a manual Record during that minute has to be able to attach to it: before
+    /// DET13 the branch dropped it, the start fell through to `beginRecording(source: nil)`, and
+    /// the recording carried no app identity and therefore no AX end anchor.
+    func test_candidate_noted_during_a_cooldown_is_attachable() {
+        let m = DetectionStateMachine()
+        m.recordCooldownEnd(bundleID: Self.teams.bundleID)
+        XCTAssertTrue(m.isCoolingDown(bundleID: Self.teams.bundleID, cooldownSec: 60))
+        // Nobody dismissed a prompt here, the previous meeting simply ended, so there is no skip
+        // latch for the candidate to ride and DET7's gate alone would return nil.
+        XCTAssertFalse(m.isSkipLatched(bundleID: Self.teams.bundleID))
+
+        m.noteSuppressedCandidate(Self.teams)
+
+        XCTAssertEqual(m.liveSuppressedCandidate(), Self.teams,
+                       "a cooling-down sighting is the only handle on the call the owner just joined")
+    }
+
+    /// The other half, and the reason the lifetime is bounded at all: a candidate that never
+    /// expires lets a manual start minutes later attribute itself to a call that has ended, which
+    /// is the misattribution DET9's comment names.
+    func test_cooldown_candidate_lapses_once_discovery_stops_seeing_it() {
+        let m = DetectionStateMachine()
+        m.recordCooldownEnd(bundleID: Self.teams.bundleID)
+        let seenAt = Date()
+        m.noteSuppressedCandidate(Self.teams, at: seenAt)
+        XCTAssertEqual(m.liveSuppressedCandidate(now: seenAt), Self.teams)
+
+        let afterGrace = seenAt.addingTimeInterval(DetectionStateMachine.suppressedCandidateGraceSec + 1)
+        XCTAssertNil(m.liveSuppressedCandidate(now: afterGrace))
+        // And the drop is durable, not just a filtered read, so nothing runs a timer to expire it.
+        XCTAssertNil(m.liveSuppressedCandidate())
+    }
+
+    /// DET9's rule applied to the second latch, which is the bug this task must not repeat. The
+    /// grace is the poll it exists to bridge rather than a number: DET9's was a hardcoded 15
+    /// justified as "5x the 3 s poll", and it silently decayed to 1.25 polls when PERF6 moved the
+    /// quiet poll to 12 s. It is deliberately the same width as the skip latch's, because both are
+    /// refreshed by the same confident-winner sighting and both have to clear the same measured
+    /// control blackout (48 s on 2026-07-27, 21-33 s in END9).
+    func test_suppressedCandidateGrace_is_derived_from_the_live_discovery_poll() {
+        XCTAssertEqual(
+            DetectionStateMachine.suppressedCandidateGraceSec,
+            DiscoveryScanCadence.discoveryDefault.idle * DetectionStateMachine.skipLatchGracePolls,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            DetectionStateMachine.suppressedCandidateGraceSec,
+            DetectionStateMachine.skipLatchGraceSec,
+            accuracy: 0.001,
+            "one sighting rule, so widening one grace has to widen the other"
+        )
+    }
+
+    /// Both suppression branches write the same slot now, so this pins the half DET13 must not
+    /// touch: retaining a cooling-down sighting arms no skip latch, so once the 60 s cooldown
+    /// lapses the meeting prompts normally. Arming one here would swallow the call for its whole
+    /// lifetime, which is a missed recording rather than the missed prompt DET13 fixes.
+    func test_retaining_a_cooldown_candidate_arms_no_skip_latch() {
+        let m = DetectionStateMachine()
+        m.recordCooldownEnd(bundleID: Self.teams.bundleID)
+        m.noteSuppressedCandidate(Self.teams)
+        XCTAssertFalse(m.isSkipLatched(bundleID: Self.teams.bundleID))
+    }
+
     // MARK: - Pending config refresh
 
     func test_pending_refresh_is_idempotent_and_idle_gated() {

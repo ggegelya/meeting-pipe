@@ -47,6 +47,8 @@ Join a call in Zoom, Teams, Google Meet, Webex, or a Slack huddle and a small pa
 
 If you ignore the panel it does what **Preferences ▸ Prompt** says after the timeout, which by default is to skip. A skipped meeting is not lost: the menu bar reads `Suppressed (<app>)` for as long as the call is still running, and the menu's top action changes to **Record this `<app>` meeting**, so you can start late and still get the app chip and the automatic stop. It stays that way even when you switch to another app and leave the call in the background, and it clears about a minute after the call actually ends.
 
+The same top action covers back-to-back meetings. When a recording ends, the app stops asking about that meeting app for about a minute, which is what keeps a prompt from popping up seconds after you hang up. Join another call inside that minute and you will not be prompted for it either, so start it from **Record this `<app>` meeting**, or with the `⌃⌥M` hotkey, which does the same thing here. Either way the recording is attached to the call, so it gets the app chip and stops on its own when you leave, instead of running on until you notice.
+
 ### Recording by hand
 
 Press `⌃⌥M` anywhere in macOS, or pick **Start Recording** from the menu bar. No meeting required, so it doubles as a voice memo. Press it again to stop.

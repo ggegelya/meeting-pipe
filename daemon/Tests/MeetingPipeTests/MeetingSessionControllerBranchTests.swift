@@ -581,6 +581,107 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
                        "attaching must not quietly rewrite the requested summary mode")
     }
 
+    // MARK: - DET13: attach during the re-prompt cooldown
+
+    /// Read every JSON row the daemon wrote into a redirected logs dir. The emitted line, not a
+    /// re-spelling of it, the way `MeetingSourceScannerTests` reads DET11's.
+    private func eventRows(in logs: URL) -> [[String: Any]] {
+        let text = (try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? ""
+        return text.split(separator: "\n").compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }
+    }
+
+    /// The asymmetry DET13 fixes. `handleDiscovery`'s skip-latch branch keeps its sighting and the
+    /// `isCoolingDown` branch beside it was a bare `return`, so for the 60 s after a recording
+    /// ended the same bundle produced neither a prompt nor a retained candidate.
+    func test_coolingDownSighting_cachesTheCandidate() {
+        let (controller, host) = makeController()
+        let teams = AppSource(bundleID: "com.microsoft.teams2", displayName: "Microsoft Teams")
+        host.stateMachine.recordCooldownEnd(bundleID: teams.bundleID)
+
+        controller.handleDiscovery(teams)
+
+        XCTAssertEqual(host.stateMachine.liveSuppressedCandidate(), teams)
+        // Nothing was dismissed here, so the branch must not borrow the skip latch: the call still
+        // has to prompt normally once the cooldown lapses.
+        XCTAssertFalse(host.stateMachine.isSkipLatched(bundleID: teams.bundleID))
+    }
+
+    /// The 2026-08-04 sequence end to end. A Teams recording ends at 12:32:41, the owner joins
+    /// another call 22 s later (well inside the 60 s `repromptCooldownSec`, so the discovery
+    /// sighting lands in the cooldown branch and no prompt is shown), and presses Record by hand at
+    /// 12:33:03. Before DET13 that took `beginRecording(source: nil)`: `20260804-123303.meta.json`
+    /// carries `source_bundle_id: null`, `armLifecycleLeaveButton` had nothing to arm on, and the
+    /// recording ran 15 m 35 s of room audio until the owner noticed and stopped it by hand.
+    func test_backToBackMeeting_manualStartAttachesInsteadOfRecordingHeadless() async {
+        let (controller, host) = makeController()
+        let teams = AppSource(bundleID: "com.microsoft.teams2", displayName: "Microsoft Teams")
+        host.recorderSpy.fileToReturn = tempDir.appendingPathComponent("20260804-122739.wav")
+        // The remote side was captured, so the stop path takes neither warning branch and never
+        // reads the Screen Recording grant; this test is about the cooldown, not about coverage.
+        host.recorderSpy.lastSystemFires = 1
+
+        // 1) The first meeting records and ends. The real flush path is what arms the cooldown.
+        controller.beginRecording(source: teams, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current.isRecording }, "the first meeting to record")
+        controller.stopRecording(file: host.recorderSpy.fileToReturn, source: teams, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
+        XCTAssertTrue(host.stateMachine.isCoolingDown(bundleID: teams.bundleID, cooldownSec: 60))
+
+        // 2) 22 s later the owner is in a second call and discovery produces a confident winner for
+        //    the same bundle. Still inside the cooldown, so nothing prompts.
+        controller.handleDiscovery(teams)
+        XCTAssertEqual(host.promptSpy.presentCount, 0,
+                       "the cooldown is load-bearing against END9's false-end re-prompt storms")
+
+        // 3) The owner presses Record.
+        controller.startManual(summaryMode: .auto, trigger: "manual")
+        await waitUntil({ host.stateMachine.current.isRecording }, "the manual recording to start")
+
+        XCTAssertEqual(host.statusBarSpy.recordings.last?.source, teams,
+                       "a headless recording has no meeting to watch, so it runs until it is hand-stopped")
+        let meta = MeetingMetaSidecar.build(source: host.statusBarSpy.recordings.last?.source, workflow: nil)
+        XCTAssertEqual(meta["source_bundle_id"] as? String, "com.microsoft.teams2")
+        XCTAssertEqual(meta["source_display_name"] as? String, "Microsoft Teams")
+    }
+
+    /// DET13's audit trail. The 2026-08-04 occurrence was unreadable from `events.jsonl` alone: the
+    /// cooldown branch returned silently, so the log shows a 22 s hole with no `lifecycle starting`,
+    /// no `prompt_shown`, and nothing saying why. One row per retention rather than one per poll,
+    /// since discovery re-sights the same call every 3 to 12 s for the whole window.
+    func test_coolingDownSighting_emitsOneRetainedEvent_andTheSkipLatchBranchEmitsNone() throws {
+        let logs = tempDir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+
+        let (controller, host) = makeController()
+        let teams = AppSource(bundleID: "com.microsoft.teams2", displayName: "Microsoft Teams")
+        host.stateMachine.recordCooldownEnd(bundleID: teams.bundleID)
+
+        controller.handleDiscovery(teams)
+        controller.handleDiscovery(teams)  // the next poll, 3 to 12 s later
+        controller.handleDiscovery(teams)
+
+        let retained = eventRows(in: logs).filter { $0["action"] as? String == "cooldown_candidate_retained" }
+        XCTAssertEqual(retained.count, 1, "one row per retention, not one per discovery poll")
+        XCTAssertEqual(retained.first?["category"] as? String, "coordinator")
+        XCTAssertEqual(retained.first?["bundle_id"] as? String, "com.microsoft.teams2")
+
+        // The branch above it is untouched and stays silent. `abandonPrompt` arms the skip latch
+        // AND the cooldown, so this is exactly the both-armed case, and DET7 already has its own
+        // handle on that meeting: the skip-latch branch has to keep winning.
+        let (skipController, skipHost) = makeController()
+        skipHost.stateMachine.setPrompting(source: teams)
+        skipHost.stateMachine.abandonPrompt(source: teams)
+        skipController.handleDiscovery(teams)
+
+        XCTAssertEqual(skipHost.stateMachine.liveSuppressedCandidate(), teams, "DET7's path still caches")
+        let after = eventRows(in: logs).filter { $0["action"] as? String == "cooldown_candidate_retained" }
+        XCTAssertEqual(after.count, 1, "a skip-latched sighting must still take the branch above")
+    }
+
     /// UX10's timeout-skip keeps its loud banner; DET7 only added the silent one for an
     /// explicit dismissal, which is a different surface for a different event.
     func test_promptTimeout_notifiesWithTheTimedOutOrigin() async {

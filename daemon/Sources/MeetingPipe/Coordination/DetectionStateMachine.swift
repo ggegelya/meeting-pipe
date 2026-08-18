@@ -98,34 +98,63 @@ final class DetectionStateMachine {
 
     // MARK: - Suppressed-meeting candidate (DET7)
 
-    /// The last discovery sighting of a meeting whose skip latch is still held, i.e. the
-    /// meeting the user dismissed and which is still running right now. Written by
-    /// `MeetingSessionController.handleDiscovery` at the ~3 s discovery cadence, where
-    /// the source used to be discarded.
+    /// The last discovery sighting of a meeting a suppression branch declined to prompt for, i.e.
+    /// the meeting that is running right now with no prompt in front of it. Written by
+    /// `MeetingSessionController.handleDiscovery` at the ~3 s discovery cadence, where the source
+    /// used to be discarded.
     ///
-    /// It lives here, beside the latch, because its lifetime *is* the latch's: a candidate
-    /// is meaningful exactly while `isSkipLatched` holds for its bundle, so the read below
-    /// self-expires rather than needing a timer. Everything that can start a recording
-    /// (the menu row, `toggleManual`, the `meetingpipe://` router) reaches the state
-    /// machine already, so nothing has to grow a second seam to see it.
+    /// Both suppression branches write it. DET7 added the skip latch's, and DET13 the re-prompt
+    /// cooldown's, after a back-to-back meeting inside the 60 s window recorded with no app
+    /// identity at all. The read below self-expires rather than needing a timer. Everything that
+    /// can start a recording (the menu row, `toggleManual`, the `meetingpipe://` router) reaches
+    /// the state machine already, so nothing has to grow a second seam to see it.
+    /// How long a sighting stays attachable, measured from the sighting itself (DET13).
+    ///
+    /// DET7 gave the candidate the skip latch's lifetime, which was right while a skip was the only
+    /// way to reach this slot. It is not any more: `handleDiscovery`'s re-prompt-cooldown branch
+    /// writes here too now, and in a cooldown there is no latch, so a latch-only gate would return
+    /// nil however the write was added.
+    ///
+    /// Deliberately the same width as the latch's, and derived from it rather than restated, per
+    /// DET9's rule. Both are refreshed by the same confident-winner discovery sighting and both
+    /// have to clear the same measured control blackout (48 s on 2026-07-27, 21-33 s in END9), so a
+    /// narrower grace here would drop the candidate mid-call and reproduce DET9's bug in the second
+    /// latch. It cannot decay the way DET9's hardcoded 15 did either: the number comes from the
+    /// live `DiscoveryScanCadence` through `skipLatchGraceSec`.
+    ///
+    /// It is bounded for the reason DET9's comment names: a candidate that outlives its meeting
+    /// lets a later manual start attribute itself to a dead call. The exposure is small here by
+    /// construction, since the cooldown branch can only write for `repromptCooldownSec` (60 s)
+    /// after an end, and only on a *confident* winner, never on the title-only sighting that a
+    /// post-call chat surface produces.
+    static let suppressedCandidateGraceSec: Double = DetectionStateMachine.skipLatchGraceSec
+
     private var suppressedCandidate: (source: AppSource, seenAt: Date)?
 
-    /// Remember this sighting as the attachable candidate. Only called while the bundle's
-    /// latch holds, so an ordinary discovery scan never populates it.
+    /// Remember this sighting as the attachable candidate. Only called from a suppression branch
+    /// (the skip latch, or the re-prompt cooldown), so an ordinary discovery scan never populates
+    /// it: an unsuppressed sighting engages the lifecycle and gets a prompt of its own.
     func noteSuppressedCandidate(_ source: AppSource, at: Date = Date()) {
         suppressedCandidate = (source: source, seenAt: at)
     }
 
-    /// The still-live skipped meeting to attach a manual start to, or nil when there is
-    /// none. Lapses with the latch: once discovery stops seeing the meeting for a whole
-    /// `skipLatchGraceSec` the latch expires and the stale candidate is dropped here, so a start
-    /// after the call really ended records generic rather than attributing itself to a dead
-    /// meeting. The window in which that misattribution is possible is the grace, so it widened
-    /// with it in DET9; recording generic is the failure it protects against, and a live meeting
-    /// wrongly read as dead is the worse one.
+    /// The still-live suppressed meeting to attach a manual start to, or nil when there is none.
+    ///
+    /// Two suppressions reach this slot and the read has to serve both (DET13). A skip-latched
+    /// meeting keeps DET7's rule exactly, because the latch is the stronger liveness oracle: every
+    /// discovery sighting refreshes it, and an explicit start drops latch and candidate together.
+    /// A cooling-down meeting has no latch at all, which is why the write alone was not enough,
+    /// so it falls through to the sighting's own age against `suppressedCandidateGraceSec`.
+    ///
+    /// Either way the candidate self-expires on read rather than needing a timer: once discovery
+    /// has stopped seeing the meeting for a whole grace, the stale candidate is dropped here, so a
+    /// start after the call really ended records generic rather than attributing itself to a dead
+    /// meeting. Recording generic is the failure that guards against, and a live meeting wrongly
+    /// read as dead is the worse one, which is why the grace is DET9-wide rather than tight.
     func liveSuppressedCandidate(now: Date = Date()) -> AppSource? {
         guard let candidate = suppressedCandidate else { return nil }
-        guard isSkipLatched(bundleID: candidate.source.bundleID, now: now) else {
+        if isSkipLatched(bundleID: candidate.source.bundleID, now: now) { return candidate.source }
+        guard now.timeIntervalSince(candidate.seenAt) < Self.suppressedCandidateGraceSec else {
             suppressedCandidate = nil
             return nil
         }
