@@ -88,6 +88,11 @@ struct MeetingDetailView: View {
         .onChange(of: meeting.stem) { _, _ in
             syncEditingTitle(force: true)
             consumeTranscriptJump()
+            // UX78: this view has no `.id(meeting.stem)`, so SwiftUI reuses it and the player
+            // survives the selection change with the previous meeting's file still loaded. Only
+            // the two audio-bearing tabs call `load`, so from Summary nothing would replace it and
+            // the meeting you just left kept playing under the new title.
+            playback.pause()
         }
         .onChange(of: libraryModel.pendingTranscriptJump) { _, _ in consumeTranscriptJump() }
         .onChange(of: meeting.displayTitle) { _, _ in syncEditingTitle(force: false) }

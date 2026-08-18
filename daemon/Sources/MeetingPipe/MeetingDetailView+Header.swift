@@ -1,6 +1,57 @@
 import AppKit
 import SwiftUI
 
+/// UX78: whether the detail header shows a playback transport, and what it reads.
+///
+/// The player is a `@StateObject` on the detail view and outlives a tab switch, which is
+/// deliberate: it is what lets a summary citation jump into the transcript and keep its play head.
+/// What was missing is that every transport control lives inside `AudioTab` and `TranscriptTab`, so
+/// selecting Summary removed the whole surface while the audio kept going. The owner's report is
+/// exact: "I have no controls, and playback still running". With nothing on screen to press, the
+/// only exits were switching back to a tab that has controls or closing the window, which on a
+/// shared screen is worse than inconvenient.
+///
+/// So the header grows a transport, and it is a decision rather than an `if isPlaying` because two
+/// of its three rules are not about playing. Pausing from the header must not make the header
+/// vanish, or the control that just stopped the audio cannot restart it. And after switching
+/// meetings the player still holds the *previous* meeting's file, so a transport shown then would
+/// play the wrong audio under the right title; the URL check is what makes that unreachable rather
+/// than unlikely.
+struct DetailTransport: Equatable {
+    /// "1:05 / 42:18", in the same clock the rest of the Library uses.
+    let position: String
+    /// Drives the glyph and the accessibility label. Filled glyphs, matching `AudioTab`'s own
+    /// transport rather than inventing a second vocabulary for the same control.
+    let isPlaying: Bool
+
+    var systemImage: String { isPlaying ? "pause.fill" : "play.fill" }
+    var actionLabel: String { isPlaying ? "Pause" : "Play" }
+
+    /// Nil means the header shows nothing, which is the resting state: the band must not grow a
+    /// permanent row for a player nobody has started.
+    static func decide(
+        loadedURL: URL?,
+        meetingAudioURL: URL?,
+        isPlaying: Bool,
+        currentTime: TimeInterval,
+        duration: TimeInterval
+    ) -> DetailTransport? {
+        // The loaded file has to be this meeting's. Switching meetings from the Summary tab loads
+        // nothing (only the two audio-bearing tabs call `load`), so without this the header would
+        // offer a transport over the meeting the user just left.
+        guard let loaded = loadedURL, let expected = meetingAudioURL, loaded == expected else {
+            return nil
+        }
+        // A play head exists once it is playing or parked part-way through. Paused counts, so the
+        // control survives its own press.
+        guard isPlaying || currentTime > 0 else { return nil }
+        return DetailTransport(
+            position: "\(MeetingRow.formatDuration(currentTime)) / \(MeetingRow.formatDuration(duration))",
+            isPlaying: isPlaying
+        )
+    }
+}
+
 // TECH-UI-X1: header rendering + title-editing/toolbar actions split out of
 // MeetingDetailView.swift so the detail container stays focused on tab
 // plumbing. Same type, a different file.
@@ -20,7 +71,40 @@ extension MeetingDetailView {
             if meeting.hasCorrections { editedCaption }
             if meeting.namesChangedSinceSummary { namesChangedCaption }
             processingRow
+            transportRow
             publishStateLine
+        }
+    }
+
+    /// UX78: play/pause and position, on every tab, for as long as there is a play head. Sits with
+    /// `processingRow` because it is the same kind of row: conditional chrome reporting something
+    /// in flight, with the one control for it beside the text. Play/pause and position only; the
+    /// waveform, rate, channel and skip-silence controls stay in `AudioTab` where they belong.
+    @ViewBuilder
+    var transportRow: some View {
+        if let transport = DetailTransport.decide(
+            loadedURL: playback.loadedURL,
+            meetingAudioURL: meeting.audioURL,
+            isPlaying: playback.isPlaying,
+            currentTime: playback.currentTime,
+            duration: playback.duration
+        ) {
+            HStack(spacing: 8) {
+                Button { playback.togglePlayPause() } label: {
+                    Image(systemName: transport.systemImage)
+                }
+                .buttonStyle(.plain)
+                .controlSize(.small)
+                .fixedSize()
+                .help("\(transport.actionLabel) this meeting's audio")
+                .accessibilityLabel(transport.actionLabel)
+                Text(transport.position)
+                    .font(.mpTextXS.monospacedDigit())
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+                    .lineLimit(1)
+                    .accessibilityLabel("Position \(transport.position)")
+            }
+            .accessibilityElement(children: .contain)
         }
     }
 
