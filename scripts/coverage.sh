@@ -77,6 +77,11 @@ run_swift() {
   # The table above has four `Cover` columns (region / function / line / branch)
   # and it is easy to read the wrong one, so restate the line number plainly.
   echo
+  # The reader below binds the three numbers before formatting them. The obvious
+  # `{totals["covered"]}` cannot be written inline: the program is a single-quoted
+  # shell word, so a nested `"` has to be escaped, and a backslash inside an
+  # f-string expression is a SyntaxError. That was CI6 item 1, and it exited 1 on
+  # every run of this leg from f78ca057 (2026-07-20) until it was fixed.
   xcrun llvm-cov export "$bin" \
     -instr-profile "$profdata" \
     -ignore-filename-regex='(\.build|Tests)/' \
@@ -84,7 +89,8 @@ run_swift() {
   | python3 -c '
 import json, sys
 totals = json.load(sys.stdin)["data"][0]["totals"]["lines"]
-print(f"LINE COVERAGE: {totals[\"covered\"]}/{totals[\"count\"]} = {totals[\"percent\"]:.1f}%")
+covered, count, percent = totals["covered"], totals["count"], totals["percent"]
+print(f"LINE COVERAGE: {covered}/{count} = {percent:.1f}%")
 '
 }
 

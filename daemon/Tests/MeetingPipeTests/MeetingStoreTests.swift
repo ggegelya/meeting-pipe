@@ -249,6 +249,22 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(rows.first?.status, .done)
     }
 
+    /// Every per-stem `.json` sidecar a real meeting directory can hold, taken
+    /// from `ARCHITECTURE.md`'s "Where files live on disk" table plus the publish
+    /// receipts in `CONVENTIONS.md`'s `schema_version` paragraph. The transcript
+    /// itself is deliberately absent: it is added by the test that wants it.
+    ///
+    /// This list is the point of the test below (CI6). The old one built a
+    /// directory from a hand-listed subset of what it expected, so it could not
+    /// see that the transcript selector was a deny-list thirteen sidecars behind
+    /// this inventory, and `files.first` could return any of the thirteen.
+    private static let perStemJSONSidecars = [
+        "meta", "run", "empty", "error", "recordfail", "recovery", "mute-timeline",
+        "publish", "notion", "obsidian", "filesystem", "lan", "apple_pending",
+        "summary", "summary.candidate", "correction", "embeddings",
+        "speaker_labels", "transcript_corrections", "markers", "diarize_cleanup",
+    ]
+
     func test_audioless_meeting_recovers_its_duration_from_the_transcript_sidecar() throws {
         let dir = try tempDir()
         let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
@@ -256,6 +272,29 @@ final class MeetingStoreTests: XCTestCase {
         try writeFile(dir.appendingPathComponent("\(stem).json"), #"{"audio_seconds": 1830.5}"#)
         let rows = MeetingStore(recordingsDir: dir).performScan(directory: dir)
         XCTAssertEqual(rows.first?.durationSec, 1830.5)
+    }
+
+    func test_duration_recovery_reads_the_transcript_and_not_a_neighbouring_sidecar() throws {
+        // The directory a real audio-less meeting leaves behind, not the two
+        // files this assertion needs. Every sidecar here is a `.json` carrying no
+        // `audio_seconds`, so picking any of them yields a nil duration, and
+        // `contentsOfDirectory` guarantees no order that would make that a
+        // reliably-red test rather than an intermittent one.
+        let dir = try tempDir()
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
+        for sidecar in Self.perStemJSONSidecars {
+            try writeFile(dir.appendingPathComponent("\(stem).\(sidecar).json"), "{}")
+        }
+        try writeFile(dir.appendingPathComponent("\(stem).json"), #"{"audio_seconds": 1830.5}"#)
+
+        let rows = MeetingStore(recordingsDir: dir).performScan(directory: dir)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(
+            rows.first?.durationSec, 1830.5,
+            "the transcript is `<stem>.json`; a sibling sidecar carries no audio_seconds "
+                + "and reading one silently loses the duration of a meeting whose audio "
+                + "a retention policy reclaimed (CI6)"
+        )
     }
 
     func test_no_audio_and_no_terminal_sidecar_is_still_no_row() throws {

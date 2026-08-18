@@ -105,18 +105,26 @@ def _configure_logging() -> None:
     the first run, even if nothing is logged. Without this, a silent failure
     earlier in the pipeline left the user with no log to grep — which is how
     the diarization regression went undiagnosed for weeks.
-    """
-    logs_dir = Path(os.path.expanduser("~/Library/Logs/MeetingPipe"))
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_file = logs_dir / "pipeline.log"
-    log_file.touch(exist_ok=True)
 
+    Everything touching that path sits **below** the already-configured guard
+    (CI6). Above it, a caller that owns the root logger already, which in
+    practice means the test suite, created `~/Library/Logs/MeetingPipe/` and an
+    empty `pipeline.log` under the process umask rather than the 0600 SEC14
+    ships for that file, and bumped the real one's mtime on a developer's Mac.
+    A run that reaches the handler below still gets the file, which is the only
+    caller the promise above was ever about.
+    """
     fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
     root = logging.getLogger()
     if root.handlers:
         return  # already configured by caller (e.g. tests)
     root.setLevel(logging.INFO)
+
+    logs_dir = Path(os.path.expanduser("~/Library/Logs/MeetingPipe"))
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = logs_dir / "pipeline.log"
+    log_file.touch(exist_ok=True)
 
     stream = logging.StreamHandler(stream=sys.stderr)
     stream.setFormatter(logging.Formatter(fmt))

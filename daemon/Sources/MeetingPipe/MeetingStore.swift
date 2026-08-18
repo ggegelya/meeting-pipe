@@ -541,18 +541,19 @@ final class MeetingStore: ObservableObject {
         let errorURL = files.first {
             $0.lastPathComponent.hasSuffix(PipelineFailureSidecar.suffix)
         }
-        let transcriptJSON = files.first { url in
-            let lc = url.lastPathComponent
-            return lc.hasSuffix(".json")
-                && !lc.hasSuffix(".meta.json")
-                && !lc.hasSuffix(".run.json")
-                && !lc.hasSuffix(".empty.json")
-                && !lc.hasSuffix(".summary.json")
-                && !lc.hasSuffix(".summary.candidate.json")   // TECH-A16 preview sidecar
-                && !lc.hasSuffix(".notion.json")
-                && !lc.hasSuffix(".publish.json")             // PIPE1 run-scoped publish result
-                && !lc.hasSuffix(PipelineFailureSidecar.suffix)
-        }
+        // The transcript is `<stem>.json` exactly, and both writers agree on that
+        // (`orchestrate._finalize_streamed_transcript` on the Python side, the
+        // FluidAudio draft on ours). Matching the name is therefore the whole
+        // rule, and it is deliberately not a deny-list of sidecar suffixes
+        // (CI6): this was one, `files.first` returned whichever `.json` readdir
+        // happened to hand back first, and the list had fallen thirteen sidecars
+        // behind the inventory in ARCHITECTURE.md's on-disk table, `.embeddings`,
+        // `.filesystem`, `.speaker_labels`, `.markers`, `.recovery` and the rest
+        // among them. Picking one of those yields a sidecar with no
+        // `audio_seconds`, so the audio-less duration recovery below silently
+        // returns nil. A deny-list has to be re-completed every time a sidecar is
+        // added and says nothing when it is not; this cannot fall behind.
+        let transcriptJSON = files.first { $0.lastPathComponent == "\(stem).json" }
 
         let meta = metaURL.flatMap { readJSON(at: $0) }
         let run = runURL.flatMap { readJSON(at: $0) }

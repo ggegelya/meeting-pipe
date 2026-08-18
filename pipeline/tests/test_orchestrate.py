@@ -10,6 +10,7 @@ missing-sidecar error path.
 from __future__ import annotations
 
 import json
+import logging
 import stat
 from pathlib import Path
 from typing import Iterable
@@ -22,6 +23,7 @@ from mp.config import Config
 from mp.diarize import cosine_similarity
 from mp.orchestrate import (
     _check_too_long,
+    _configure_logging,
     finalize_streamed_transcript,
     _will_summarize_locally,
     _write_manual_bundle,
@@ -903,3 +905,63 @@ def test_main_returns_the_publish_failed_exit_code(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr("mp.orchestrate.run_all", lambda w, **_: {"page_url": "u"})
     assert orchestrate_main([str(wav)]) == 0
+
+
+# ---------------------------------------------------------------------------
+# CI6: `_configure_logging` must not touch the production log path above its own
+# already-configured guard. A pytest run holds root handlers, so the guard fires
+# before the FileHandler is ever built; with the mkdir + touch above it, every
+# suite run still bumped `~/Library/Logs/MeetingPipe/pipeline.log`'s mtime and,
+# on a fresh checkout or a CI runner, created the directory plus an empty log
+# under the process umask rather than the 0600 SEC14 ships for that file.
+# ---------------------------------------------------------------------------
+
+def _redirect_home(monkeypatch, tmp_path: Path) -> Path:
+    """Point `~` at `tmp_path` and hand back the log dir that implies."""
+    monkeypatch.setattr("os.path.expanduser", lambda p: p.replace("~", str(tmp_path), 1))
+    return tmp_path / "Library" / "Logs" / "MeetingPipe"
+
+
+def _install_root_logger(monkeypatch, logger: logging.Logger) -> None:
+    """Make `logging.getLogger()` hand `_configure_logging` our own logger.
+
+    The real root logger is pytest's, and mutating it leaks handlers into every
+    later test in the session.
+    """
+    monkeypatch.setattr("logging.getLogger", lambda *a, **k: logger)
+
+
+def test_configure_logging_touches_nothing_when_a_caller_owns_the_root_logger(
+    tmp_path: Path, monkeypatch
+):
+    logs_dir = _redirect_home(monkeypatch, tmp_path)
+    already_configured = logging.Logger("mp-ci6-configured")
+    already_configured.addHandler(logging.NullHandler())
+    _install_root_logger(monkeypatch, already_configured)
+
+    _configure_logging()
+
+    assert not logs_dir.exists(), (
+        "a call that returns at the already-configured guard must not create "
+        "~/Library/Logs/MeetingPipe: under pytest that is every call, and it "
+        "lands the log with the process umask rather than SEC14's 0600 (CI6)"
+    )
+    assert not (tmp_path / "Library").exists()
+
+
+def test_configure_logging_still_opens_the_log_when_it_configures_the_root(
+    tmp_path: Path, monkeypatch
+):
+    """The other half of the move: a real run still gets `pipeline.log` on disk
+    before anything is logged, which is the promise those two lines exist for."""
+    logs_dir = _redirect_home(monkeypatch, tmp_path)
+    fresh = logging.Logger("mp-ci6-fresh")  # no handlers, so it takes the full path
+    _install_root_logger(monkeypatch, fresh)
+
+    try:
+        _configure_logging()
+        assert (logs_dir / "pipeline.log").exists()
+    finally:
+        for handler in list(fresh.handlers):
+            handler.close()
+            fresh.removeHandler(handler)

@@ -36,8 +36,14 @@
     "",
     "The current entries are seeded from `WindowRecognizerTests` and",
     "represent expected formats, not yet field-verified captures.",
-    "Once Heorhii captures real titles, replace `seeded: true` with",
-    "`seeded: false` for that entry."
+    "When the owner captures real titles, replace `seeded: true` with",
+    "`seeded: false` for that entry.",
+    "",
+    "Until at least one entry carries `seeded: false`, the suite SKIPS",
+    "`test_fixture_is_backed_by_real_captures` rather than passing it",
+    "(CI6): with every row seeded, the rows above pin this repo's model",
+    "of a window title rather than a window title, and a skip is the",
+    "runner's word for that. The first real capture clears the skip."
   ],
   "entries": [
     {
