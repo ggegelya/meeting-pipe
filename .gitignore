@@ -83,3 +83,5 @@ ds-bundle/
 .design-sync/learnings/
 .design-sync/node_modules
 design/.ds-entry.jsx
+.claude/loops/state/
+.claude/sdlc/
