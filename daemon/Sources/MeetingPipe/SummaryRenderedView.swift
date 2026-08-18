@@ -70,27 +70,36 @@ struct SummaryRenderedView: View {
                     bulletList(decisions, numbered: true, section: "decisions")
                 }
             }
-            if !actionRuns.isEmpty {
+            if !actionListRows.isEmpty {
                 section(title: "Action items", systemImage: "checklist") {
                     // A digest can carry a few dozen actions across several groups
                     // (AI10 bounds it; before that it was the library's whole open
                     // set). LazyVStack (inside the enclosing ScrollView) realizes and
                     // markdown-parses only the visible rows, instead of building and
                     // laying out all of them up front, which froze scrolling.
+                    //
+                    // UX75: one `ForEach` over one flat, homogeneous sequence, never
+                    // an outer `ForEach` whose body emits a heading plus a nested
+                    // one. That older shape handed this container compound subtrees
+                    // to realize instead of rows, and every group after the first
+                    // drew its heading and then reserved its rows' height and drew
+                    // nothing. The laziness is not the defect and stays; the
+                    // reasoning, and why the spacing is unchanged, is on
+                    // `actionListRows`.
                     LazyVStack(alignment: .leading, spacing: MPSpace.s2) {
-                        ForEach(Array(actionRuns.enumerated()), id: \.offset) { _, run in
-                            // AI10: a roll-up across meetings names each run's source
-                            // (workflow, or the meeting when untagged). A meeting's own
-                            // summary has one nameless run, so it renders flat as before.
-                            if let group = run.group {
-                                Text(group)
+                        ForEach(actionListRows) { row in
+                            switch row {
+                            case .groupHeader(let name, _):
+                                // AI10: a roll-up across meetings names each run's source
+                                // (workflow, or the meeting when untagged). A meeting's own
+                                // summary has one nameless run, so it renders flat as before.
+                                Text(name)
                                     .font(.mpTextXS.weight(.semibold))
                                     .tracking(0.08 * 10)
                                     .textCase(.uppercase)
                                     .foregroundStyle(Color(MPColors.fgMuted))
                                     .padding(.top, MPSpace.s2)
-                            }
-                            ForEach(Array(run.actions.enumerated()), id: \.offset) { _, a in
+                            case .action(let a):
                                 ActionItemRow(
                                     action: a,
                                     onCite: onCite,
@@ -200,6 +209,63 @@ struct SummaryRenderedView: View {
             guard !rows.isEmpty else { return nil }
             let name = run.group?.isEmpty == false ? run.group : nil
             return (group: name, actions: rows)
+        }
+    }
+
+    /// One direct child of the action list: a run's heading, or one action row.
+    ///
+    /// UX75 introduced it. The list used to be built by an outer `ForEach` over
+    /// `actionRuns` whose body emitted an optional heading plus a *nested*
+    /// `ForEach`, so the `LazyVStack` in `body` was handed compound subtrees to
+    /// realize rather than rows. On the owner's 2026-08-04 digest every group
+    /// after the first drew its heading and then reserved its rows' height and
+    /// drew nothing, and it stayed that way after scrolling. A flat, homogeneous
+    /// sequence is the shape a lazy container realizes one child at a time.
+    ///
+    /// It carries `ActionItemRow.Action` whole rather than re-spelling its
+    /// fields, so `index`, the position in `summary.actions` that UX26's toggle
+    /// writes back through, cannot drift on the way through the flatten.
+    enum ActionListRow: Identifiable {
+        case groupHeader(name: String, runStart: Int)
+        case action(ActionItemRow.Action)
+
+        /// Stable, and unique across the whole list, which is what `ForEach`
+        /// needs. An action is named by the position it already owns in
+        /// `summary.actions`. A heading is named by the index of the first row it
+        /// heads rather than by its own text, because `actionRuns` splits into
+        /// *runs* and not buckets: a writer emitting `A, B, A` legitimately
+        /// produces two headings reading `A`, and the text alone would collide.
+        var id: String {
+            switch self {
+            case .groupHeader(_, let runStart): return "h\(runStart)"
+            case .action(let a): return "a\(a.index)"
+            }
+        }
+    }
+
+    /// `actionRuns` flattened into the one sequence the container renders: each
+    /// run's heading, when it has one, followed by that run's rows.
+    ///
+    /// The geometry is unchanged by construction rather than by re-tuning. The
+    /// container keeps its `MPSpace.s2` spacing, which already applied between
+    /// every leaf the nested shape produced, and both row kinds keep the exact
+    /// modifier chain they had nested, including the heading's own
+    /// `.padding(.top, MPSpace.s2)`. That padding is what puts more air above a
+    /// heading than between a heading and the first row under it, so it is the
+    /// one thing a "tidy the spacing up while you are in here" pass would break.
+    ///
+    /// A summary with one nil-group run (every meeting's own) flattens to its
+    /// rows and nothing else, so it keeps rendering as the flat list it always
+    /// was.
+    ///
+    /// Internal rather than private for the same reason `actionRuns` is: a test
+    /// pins the order, the interleaved headings and the carried indices without
+    /// rasterising anything (the T2 no-snapshots rule).
+    var actionListRows: [ActionListRow] {
+        actionRuns.flatMap { run -> [ActionListRow] in
+            let rows = run.actions.map(ActionListRow.action)
+            guard let group = run.group, let first = run.actions.first else { return rows }
+            return [.groupHeader(name: group, runStart: first.index)] + rows
         }
     }
 

@@ -271,6 +271,141 @@ final class ActionResolveTests: XCTestCase {
         XCTAssertEqual(rows.map(\.index), [0, 2, 3], "the empty row still occupies index 1 on disk")
     }
 
+    // MARK: - UX75: the flattened row sequence
+
+    /// The reported digest's shape: four groups, one of them a single row, the
+    /// rest with several. Every group after the first drew its heading and then
+    /// reserved its rows' height and nothing else, because the container was
+    /// handed one compound subtree per run rather than one child per row.
+    ///
+    /// What is pinned here is the sequence the container is handed: every action
+    /// from every run, in the writer's order, with each run's heading immediately
+    /// before the rows it heads. A unit test cannot prove SwiftUI then realizes
+    /// and draws them; that is what the owner walkthrough is for.
+    private func reportedDigestSummary() -> MeetingSummary {
+        MeetingSummary(actions: [
+            MeetingSummary.ActionItem(task: "General one", group: "General"),
+            MeetingSummary.ActionItem(task: "General two", group: "General"),
+            MeetingSummary.ActionItem(task: "Personal one", group: "Personal"),
+            MeetingSummary.ActionItem(task: "Personal two", group: "Personal"),
+            MeetingSummary.ActionItem(task: "Standup one", group: "Team Standup: Portal Updates"),
+            MeetingSummary.ActionItem(task: "Client one", group: "Client work"),
+            MeetingSummary.ActionItem(task: "Client two", group: "Client work"),
+        ])
+    }
+
+    /// Describes a flattened row as a comparable string, so a failure names what
+    /// the sequence actually was rather than dumping an enum.
+    private func describe(_ rows: [SummaryRenderedView.ActionListRow]) -> [String] {
+        rows.map { row in
+            switch row {
+            case .groupHeader(let name, _): return "# \(name)"
+            case .action(let a): return a.task
+            }
+        }
+    }
+
+    func testTheFlattenedListInterleavesEveryHeadingWithItsOwnRows() {
+        let rows = SummaryRenderedView(summary: reportedDigestSummary()).actionListRows
+
+        XCTAssertEqual(describe(rows), [
+            "# General", "General one", "General two",
+            "# Personal", "Personal one", "Personal two",
+            "# Team Standup: Portal Updates", "Standup one",
+            "# Client work", "Client one", "Client two",
+        ], "the container has to be handed one child per row, in the writer's order")
+    }
+
+    /// The whole defect in one assertion: the runs after the first contribute
+    /// their rows, not just their headings.
+    func testEveryRunAfterTheFirstContributesItsRows() {
+        let rows = SummaryRenderedView(summary: reportedDigestSummary()).actionListRows
+        let tasks = rows.compactMap { row -> String? in
+            if case .action(let a) = row { return a.task }
+            return nil
+        }
+
+        XCTAssertEqual(tasks.count, 7, "the screenshot showed 2 of 7: only the first group's rows drew")
+    }
+
+    /// UX26's correctness clause carried through the flatten. The index is the
+    /// position in `summary.actions`, which is what the toggle writes back
+    /// through, so an off-by-one here resolves somebody else's commitment. The
+    /// empty-task row is dropped from the render and still occupies its index on
+    /// disk, and the headings must not consume one.
+    func testFlattenedRowsKeepTheirIndexIntoTheSummaryAcrossEveryRun() {
+        let summary = MeetingSummary(actions: [
+            MeetingSummary.ActionItem(task: "First", group: "Client work"),
+            MeetingSummary.ActionItem(task: "", group: "Client work"),
+            MeetingSummary.ActionItem(task: "Second", group: "Internal"),
+            MeetingSummary.ActionItem(task: "Third", group: "Internal"),
+        ])
+        let rows = SummaryRenderedView(summary: summary).actionListRows
+
+        XCTAssertEqual(describe(rows), ["# Client work", "First", "# Internal", "Second", "Third"])
+        let actions = rows.compactMap { row -> ActionItemRow.Action? in
+            if case .action(let a) = row { return a }
+            return nil
+        }
+        XCTAssertEqual(actions.map(\.index), [0, 2, 3], "the empty row still occupies index 1 on disk")
+        XCTAssertEqual(
+            actions.map(\.index),
+            SummaryRenderedView(summary: summary).actionRuns.flatMap(\.actions).map(\.index),
+            "the flatten must carry `actionRuns`' mapping unchanged, not re-derive it"
+        )
+    }
+
+    /// Walkthrough step 4: a meeting's own summary is one run with a nil group and
+    /// must keep rendering as the flat list it always was. This is the case the
+    /// flattening could plausibly break by inventing an empty heading.
+    func testAMeetingsOwnSummaryFlattensToRowsWithNoHeading() {
+        let summary = MeetingSummary(actions: [
+            MeetingSummary.ActionItem(task: "Send the deck"),
+            MeetingSummary.ActionItem(task: "Book the room"),
+        ])
+        let rows = SummaryRenderedView(summary: summary).actionListRows
+
+        XCTAssertEqual(describe(rows), ["Send the deck", "Book the room"])
+        XCTAssertFalse(rows.contains { if case .groupHeader = $0 { return true } else { return false } },
+                       "a nil group must not produce a heading row, empty or otherwise")
+    }
+
+    /// An empty-string group is folded to nil by `actionRuns`, so it must not
+    /// produce a blank heading either.
+    func testAnEmptyGroupNameProducesNoHeading() {
+        let summary = MeetingSummary(actions: [
+            MeetingSummary.ActionItem(task: "Send the deck", group: ""),
+        ])
+
+        XCTAssertEqual(describe(SummaryRenderedView(summary: summary).actionListRows), ["Send the deck"])
+    }
+
+    /// `ForEach` needs unique ids, and `actionRuns` splits into runs rather than
+    /// buckets, so `A, B, A` legitimately yields two headings reading `A`. Naming
+    /// a heading by its text would collide there; naming it by the index of the
+    /// first row it heads does not.
+    func testRowIdentitiesAreUniqueEvenWhenTwoRunsShareAGroupName() {
+        let summary = MeetingSummary(actions: [
+            MeetingSummary.ActionItem(task: "First", group: "Client work"),
+            MeetingSummary.ActionItem(task: "Second", group: "Internal"),
+            MeetingSummary.ActionItem(task: "Third", group: "Client work"),
+        ])
+        let rows = SummaryRenderedView(summary: summary).actionListRows
+
+        XCTAssertEqual(describe(rows), ["# Client work", "First", "# Internal", "Second", "# Client work", "Third"])
+        let ids = rows.map(\.id)
+        XCTAssertEqual(Set(ids).count, ids.count, "duplicate ids make ForEach drop or reuse rows: \(ids)")
+    }
+
+    /// The empty case still renders nothing, since `body` gates the whole section
+    /// on this list now rather than on `actionRuns`.
+    func testNoActionsFlattensToNoRows() {
+        XCTAssertTrue(SummaryRenderedView(summary: MeetingSummary()).actionListRows.isEmpty)
+        XCTAssertTrue(SummaryRenderedView(summary: MeetingSummary(actions: [
+            MeetingSummary.ActionItem(task: "", group: "General"),
+        ])).actionListRows.isEmpty, "a run left with no rows must not leave its heading behind")
+    }
+
     func testActionRowsCarryTheResolvedFlag() {
         let summary = MeetingSummary(actions: [
             MeetingSummary.ActionItem(task: "Open one"),
